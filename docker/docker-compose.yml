@@ -4,12 +4,11 @@
 # Stop:     docker compose down
 # Destroy:  docker compose down -v --remove-orphans
 
-name: supabase
+name: warehouse-template
 
 services:
 
   studio:
-    container_name: supabase-studio
     image: supabase/studio:2025.06.30-sha-6f5982d
     restart: unless-stopped
     healthcheck:
@@ -42,13 +41,9 @@ services:
       NEXT_PUBLIC_ENABLE_LOGS: true
       NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
     ports:
-      - ${STUDIO_PORT}:3000
-    networks:
-      default:
-        ipv4_address: 172.20.0.15
+      - "${BIND_ADDRESS:-127.0.0.1}:${STUDIO_PORT}:3000"
 
   kong:
-    container_name: supabase-kong
     image: kong:3.4-ubuntu
     restart: unless-stopped
     ulimits:
@@ -62,27 +57,13 @@ services:
       retries: 3
       start_period: 30s
     ports:
-      - ${KONG_HTTP_PORT}:8000/tcp
-      - ${KONG_HTTPS_PORT}:8443/tcp
+      - "${BIND_ADDRESS:-127.0.0.1}:${KONG_HTTP_PORT}:8000/tcp"
+      - "${BIND_ADDRESS:-127.0.0.1}:${KONG_HTTPS_PORT}:8443/tcp"
     volumes:
-      - ./volumes/api/kong.yml:/tmp/temp.yml:ro,z
+      - ./kong.yml:/tmp/temp.yml:ro,z
     depends_on:
       analytics:
         condition: service_healthy
-    # Static host mappings for instant DNS resolution (avoids 4s Kong DNS delay)
-    extra_hosts:
-      - "rest:172.20.0.10"
-      - "storage:172.20.0.11"
-      - "functions:172.20.0.12"
-      - "analytics:172.20.0.13"
-      - "meta:172.20.0.14"
-      - "studio:172.20.0.15"
-      - "realtime-dev.supabase-realtime:172.20.0.16"
-    dns_opt:
-      - ndots:1
-    networks:
-      default:
-        ipv4_address: 172.20.0.2
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
@@ -110,7 +91,6 @@ services:
   # GoTrue auth service DISABLED - using custom phone OTP authentication instead
   # To re-enable: remove the 'profiles' line and uncomment auth routes in kong.yml
   auth:
-    container_name: supabase-auth
     image: supabase/gotrue:v2.176.1
     profiles: ["disabled"]
     restart: unless-stopped
@@ -155,7 +135,6 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
-    container_name: supabase-rest
     image: postgrest/postgrest:v12.2.12
     restart: unless-stopped
     depends_on:
@@ -172,12 +151,8 @@ services:
       PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
     command: ["postgrest"]
-    networks:
-      default:
-        ipv4_address: 172.20.0.10
 
   realtime:
-    container_name: realtime-dev.supabase-realtime
     image: supabase/realtime:v2.34.47
     restart: unless-stopped
     depends_on:
@@ -212,12 +187,8 @@ services:
       APP_NAME: realtime
       SEED_SELF_HOST: true
       RUN_JANITOR: true
-    networks:
-      default:
-        ipv4_address: 172.20.0.16
 
   storage:
-    container_name: supabase-storage
     image: supabase/storage-api:v1.24.7
     restart: unless-stopped
     volumes:
@@ -248,12 +219,8 @@ services:
       GLOBAL_S3_BUCKET: stub
       ENABLE_IMAGE_TRANSFORMATION: "true"
       IMGPROXY_URL: http://imgproxy:5001
-    networks:
-      default:
-        ipv4_address: 172.20.0.11
 
   imgproxy:
-    container_name: supabase-imgproxy
     image: darthsim/imgproxy:v3.8.0
     restart: unless-stopped
     volumes:
@@ -268,12 +235,8 @@ services:
       IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
       IMGPROXY_USE_ETAG: "true"
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
-    networks:
-      default:
-        ipv4_address: 172.20.0.20
 
   meta:
-    container_name: supabase-meta
     image: supabase/postgres-meta:v0.89.3
     restart: unless-stopped
     depends_on:
@@ -288,12 +251,8 @@ services:
       PG_META_DB_NAME: ${POSTGRES_DB}
       PG_META_DB_USER: supabase_admin
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
-    networks:
-      default:
-        ipv4_address: 172.20.0.14
 
   functions:
-    container_name: supabase-edge-functions
     image: supabase/edge-runtime:v1.67.4
     restart: unless-stopped
     healthcheck:
@@ -303,8 +262,7 @@ services:
       retries: 3
       start_period: 60s
     volumes:
-      - ./volumes/functions:/home/deno/functions:Z
-      - ./volumes/bundles:/home/deno/bundles:Z
+      - ../functions:/home/deno/functions:ro,Z
     depends_on:
       analytics:
         condition: service_healthy
@@ -315,7 +273,9 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       GOTENBERG_URL: http://gotenberg:3000
-      VERIFY_JWT: "${FUNCTIONS_VERIFY_JWT}"
+      VERIFY_JWT: "true"
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      APP_ENV: ${APP_ENV:-development}
     command:
       [
         "start",
@@ -323,16 +283,12 @@ services:
         "--import-map", "/home/deno/functions/import_map.json",
         "--request-wait-timeout", "60000"
       ]
-    networks:
-      default:
-        ipv4_address: 172.20.0.12
 
   analytics:
-    container_name: supabase-analytics
     image: supabase/logflare:1.14.2
     restart: unless-stopped
     ports:
-      - "127.0.0.1:4000:4000"
+      - "127.0.0.1:14000:4000"
     healthcheck:
       test: ["CMD", "curl", "http://localhost:4000/health"]
       timeout: 5s
@@ -357,12 +313,8 @@ services:
       POSTGRES_BACKEND_URL: postgresql://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
       POSTGRES_BACKEND_SCHEMA: _analytics
       LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
-    networks:
-      default:
-        ipv4_address: 172.20.0.13
 
   db:
-    container_name: supabase-db
     image: supabase/postgres:15.8.1.060
     restart: unless-stopped
     volumes:
@@ -380,9 +332,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    depends_on:
-      vector:
-        condition: service_healthy
     environment:
       POSTGRES_HOST: /var/run/postgresql
       PGPORT: ${POSTGRES_PORT}
@@ -394,49 +343,23 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXP: ${JWT_EXPIRY}
     ports:
-      - 127.0.0.1:5433:5432
-      - 127.0.0.1:6544:6543
+      - "127.0.0.1:${DATABASE_HOST_PORT:-15433}:5432"
     command:
       [
         "postgres",
         "-c", "config_file=/etc/postgresql/postgresql.conf",
         "-c", "log_min_messages=fatal"
       ]
-    networks:
-      default:
-        ipv4_address: 172.20.0.3
-
-  vector:
-    container_name: supabase-vector
-    image: timberio/vector:0.28.1-alpine
-    restart: unless-stopped
-    volumes:
-      - ./volumes/logs/vector.yml:/etc/vector/vector.yml:ro,z
-      - ${DOCKER_SOCKET_LOCATION}:/var/run/docker.sock:ro,z
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://vector:9001/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-    environment:
-      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
-    command: ["--config", "/etc/vector/vector.yml"]
-    security_opt:
-      - "label=disable"
-    networks:
-      default:
-        ipv4_address: 172.20.0.21
 
   # Connection pooler — start with: docker compose --profile pooler up -d
   supavisor:
-    container_name: supabase-pooler
     image: supabase/supavisor:2.5.6
     restart: unless-stopped
     profiles: ["pooler"]
     ports:
-      - "127.0.0.1:4001:4000"
-      - "127.0.0.1:5432:5432"
-      - "127.0.0.1:6543:6543"
+      - "127.0.0.1:14001:4000"
+      - "127.0.0.1:15432:5432"
+      - "127.0.0.1:16543:6543"
     volumes:
       - ./volumes/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,z
     healthcheck:
@@ -477,13 +400,9 @@ services:
         "/bin/sh", "-c",
         "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
       ]
-    networks:
-      default:
-        ipv4_address: 172.20.0.22
 
   # CUPS Print Server — start with: docker compose --profile printing up -d
   cups:
-    container_name: supabase-cups
     build:
       context: ./cups
       dockerfile: Dockerfile
@@ -491,7 +410,7 @@ services:
     profiles: ["printing"]
     privileged: true
     ports:
-      - "6310:631"
+      - "127.0.0.1:16310:631"
     volumes:
       - ./cups/config/cupsd.conf:/etc/cups/cupsd.conf.custom:ro,z
       - ./cups/spool:/var/spool/cups:rw,z
@@ -500,24 +419,20 @@ services:
       - /dev/bus/usb:/dev/bus/usb
     environment:
       CUPS_ADMIN_USER: ${CUPS_ADMIN_USER:-admin}
-      CUPS_ADMIN_PASSWORD: ${CUPS_ADMIN_PASSWORD:-admin}
+      CUPS_ADMIN_PASSWORD: ${CUPS_ADMIN_PASSWORD:?Run setup to generate a password}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:631/"]
       timeout: 10s
       interval: 30s
       retries: 3
       start_period: 40s
-    networks:
-      default:
-        ipv4_address: 172.20.0.23
 
   # Gotenberg - HTML to PDF conversion (Chromium-based)
   gotenberg:
-    container_name: supabase-gotenberg
     image: gotenberg/gotenberg:8
     restart: unless-stopped
     ports:
-      - "3100:3000"
+      - "127.0.0.1:${GOTENBERG_HOST_PORT:-13100}:3000"
     environment:
       - CHROMIUM_DISABLE_JAVASCRIPT=false
       - CHROMIUM_ALLOW_FILE_ACCESS_FROM_FILES=true
@@ -535,18 +450,8 @@ services:
       interval: 30s
       retries: 3
       start_period: 30s
-    networks:
-      default:
-        ipv4_address: 172.20.0.24
 
 volumes:
   db-config:
 
-# Static IP network to bypass Kong DNS cold-start delay
-networks:
-  default:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/24
-          ip_range: 172.20.0.128/25
+# Compose allocates a project-scoped network; services resolve by DNS name.

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — second-pass review
+
+- Corrected readiness claims: fresh migrations and mobile API coverage fail;
+  setup/start and future releases are gated pending a complete sanitized export.
+- Added isolated migration/contract tests, credential-preservation and JWT/profile
+  regression tests, Compose ownership checks, and explicit readiness documentation.
+- Hardened custom-auth function checks and corrected public configuration URLs.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

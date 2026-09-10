@@ -42,3 +42,10 @@ node_modules/
 *.sql.gz
 *.sql.bak
 database_backups/
+
+# Generated configuration and copied runtime files
+.env.*
+!.env.example
+docker/volumes/api/
+docker/volumes/functions/
+docker/cups/spool/

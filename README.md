@@ -1,164 +1,88 @@
 # Supabase Warehouse Template
 
-An open-source, self-hosted Supabase starter for warehouse and cold storage management. Features custom phone OTP authentication, CUPS printing, PDF generation, and an optional monitoring stack.
+Work-in-progress source release for a warehouse application. Companion:
+[rn-warehouse-template](https://github.com/abhiguru/rn-warehouse-template).
 
-## Quick Start
+**Not yet runnable end to end.** A fresh-database second pass found that the v0.1.0
+schema does not apply and the export omits APIs required by the mobile app.
+Read [READINESS.md](docs/READINESS.md) before trying to deploy. Setup/start
+deliberately fail before accessing Docker or generating credentials until the
+backend export is completed. Earlier "one-command setup" claims were incorrect.
+
+## What you can do now
+
+Use Node.js 22.18+ to run the isolated configuration and authentication checks:
 
 ```bash
 git clone https://github.com/abhiguru/supabase-warehouse-template.git
 cd supabase-warehouse-template
-./setup.sh
+npm ci
+npm test
+docker compose --env-file .env.example -f docker/docker-compose.yml -f docker/docker-compose.override.yml config --quiet
 ```
 
-That's it. Open http://localhost:54323 for Supabase Studio.
-
-## What's Included
-
-| Feature | Description |
-|---------|-------------|
-| **Custom Phone OTP Auth** | JWT-based phone authentication without GoTrue dependency |
-| **Warehouse Schema** | Customers, GRN, invoices, dispatch, stock tracking |
-| **PDF Generation** | HTML-to-PDF via Gotenberg (Chromium-based) |
-| **CUPS Printing** | IPP-based print server for receipts and documents |
-| **Monitoring** | Prometheus + Grafana + AlertManager with Slack alerts |
-| **Edge Functions** | Deno-based serverless functions with router pattern |
-| **Connection Pooling** | Supavisor for high-concurrency deployments |
-| **API Gateway** | Kong with rate limiting, CORS, and key-auth |
-
-## Architecture
-
-```
-┌─────────┐     ┌──────┐     ┌──────┐     ┌────┐
-│ Client  │────▶│ Kong │────▶│ REST │────▶│ DB │
-└─────────┘     │ :8000│     │:3000 │     │:5432│
-                │      │     └──────┘     └────┘
-                │      │────▶┌──────────┐
-                │      │     │Functions  │──▶ Gotenberg (PDF)
-                │      │     │:9000     │──▶ CUPS (Print)
-                │      │     └──────────┘
-                │      │────▶┌──────────┐
-                └──────┘     │ Storage  │
-                             │:5000     │
-                             └──────────┘
-```
-
-**Core containers** (~10): db, kong, rest, studio, storage, imgproxy, meta, functions, vector, gotenberg
-
-**Optional profiles:**
-- `printing` — CUPS print server
-- `pooler` — Supavisor connection pooler
-- `monitoring` — Prometheus, Grafana, AlertManager, exporters
-
-## Usage
+Reproduce the database blocker with Docker Compose v2, Docker, and OpenSSL:
 
 ```bash
-./start.sh              # Start services
-./stop.sh               # Stop services
-./health-check.sh       # Check all services
-./rotate-keys.sh        # Regenerate JWT keys
+npm run test:migrations
 ```
 
-### Enable optional services
+This creates a disposable, network-isolated database, publishes no ports, mounts
+no production data, stops on the first SQL error, and removes its own container.
+It currently **fails**, as expected for the incomplete export.
+
+With the mobile repository installed alongside this one:
 
 ```bash
-# Printing
-docker compose --profile printing up -d
-
-# Monitoring (Grafana at localhost:3001)
-docker compose --profile monitoring up -d
-
-# Connection pooler
-docker compose --profile pooler up -d
+node scripts/check-mobile-contract.mjs ../rn-warehouse-template
 ```
 
-### Test the API
+This reports missing literal RPC/table/function names from TypeScript syntax,
+ignores comments/tests, and exits nonzero on gaps. Name coverage is not proof of
+matching parameters, return shapes, SQL validity, security, or runtime behavior.
 
-```bash
-# Hello function
-curl http://localhost:8000/functions/v1/hello \
-  -H "Authorization: Bearer YOUR_ANON_KEY"
+## Configuration and isolation
 
-# Generate a PDF
-curl -X POST http://localhost:8000/functions/v1/generate-sample-pdf \
-  -H "Authorization: Bearer YOUR_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"title": "My Report"}' --output report.pdf
-```
+Only newly created `docker/.env` files receive fresh secrets. Existing files are
+never read or overwritten by the configuration generator. No credentials from
+another installation are needed. Automatic rotation is disabled.
 
-## Custom OTP Authentication
+The planned local ports are API **18000**, Studio **54325**, database **15433**,
+and PDF service **13100**, bound to loopback. These are not the original Supabase
+deployment's ports. Compose uses service DNS, not fixed container names or a
+fixed subnet. Use `bash scripts/compose.sh ...` for project ownership checks;
+`WAREHOUSE_PROJECT_NAME` must start with `warehouse-`.
 
-This template replaces Supabase's GoTrue with a custom phone OTP system:
+Once the release gate is satisfied, `setup.sh` will create configuration,
+start services, apply migrations transactionally, and run failing health checks.
+The migration runner records applied filenames; checksum/concurrent-run
+protection and JWT database synchronization still need completion.
 
-1. Client calls `send_otp(phone_number)` RPC
-2. Server generates OTP, sends via Twilio/MSG91 (or returns test OTP in dev mode)
-3. Client calls `verify_otp_or_register(phone, otp_code)` RPC
-4. Server validates OTP, creates/finds user, returns JWT token
-5. Client uses JWT for all subsequent API calls
+For a physical phone on an isolated development LAN, both the backend
+`SUPABASE_PUBLIC_URL` and mobile `EXPO_PUBLIC_CONFIG_API_URL` must use the
+same phone-reachable address, for example `http://192.0.2.10:18000` (replace
+with your actual LAN IP). Binding beyond loopback requires an explicit
+`BIND_ADDRESS` change. Do not expose test OTP mode to the internet.
 
-**Test mode** (default): OTP is always `123456`, no SMS sent.
+Only `hello` and `get-public-config` are public functions. Other functions
+verify JWT signatures; configuration checks active profiles, and PDF/print
+operations require an admin/supervisor. The service-role key is server-only.
 
-See [docs/CUSTOM_AUTH.md](docs/CUSTOM_AUTH.md) for details.
+## Scope and release requirements
 
-## Environment Variables
+The tree contains schema fragments, OTP/custom-JWT code, configuration functions,
+sample PDF/IPP code, and Compose definitions. It is **not a complete export of
+the original application**. The detailed completion and deployment-security
+checklist is in [READINESS.md](docs/READINESS.md). Older architecture/operations
+guides describe intended behavior, not tested guarantees.
 
-All configuration is in `.env.example` (~70 variables), organized by group:
-- Database, JWT & Auth, API Gateway, Studio, Edge Functions
-- SMS Provider (Twilio/MSG91), CUPS Printing, Monitoring
-- Slack Webhooks, Feature Flags
+MIT covers this project's code. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [LICENSES](LICENSES/) cover bundled upstream material.
 
-Run `./setup.sh` to auto-generate all secrets.
+## CI status
 
-## Project Structure
-
-```
-├── setup.sh                  # One-command bootstrap
-├── start.sh / stop.sh        # Service management
-├── health-check.sh           # Health verification
-├── rotate-keys.sh            # JWT key rotation
-├── .env.example              # All env vars documented
-├── docker/
-│   ├── docker-compose.yml    # Core services
-│   ├── docker-compose.override.yml  # Tuning + monitoring
-│   ├── kong.yml              # API gateway config
-│   ├── prometheus.yml        # Metrics collection
-│   ├── alertmanager.yml      # Alert routing
-│   └── cups/                 # Print server
-├── functions/
-│   ├── main/                 # Edge function router
-│   ├── _shared/              # Auth, CORS, Gotenberg, IPP helpers
-│   ├── hello/                # Health check function
-│   ├── get-config/           # Dynamic config endpoint
-│   ├── generate-sample-pdf/  # PDF generation demo
-│   └── print-via-ipp/        # CUPS printing
-├── migrations/
-│   └── 00000000000000_initial_schema.sql
-├── config/
-│   └── seed-config.sql
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── CUSTOM_AUTH.md
-    ├── PRINTING.md
-    ├── MONITORING.md
-    ├── PDF_GENERATION.md
-    └── PRODUCTION_CHECKLIST.md
-```
-
-## Continuous Integration
-
-Ready-to-enable GitHub Actions definitions are included in
-`docs/github-workflows/`. A maintainer with permission to manage workflows can
-copy them into `.github/workflows/` to enable Compose validation, integration
-tests, the database security baseline, and tagged releases.
-
----
-
-## Requirements
-
-- Docker 24+ with Compose v2
-- 4GB RAM minimum (8GB recommended)
-- 10GB disk space
-- `openssl` (for key generation)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+Definitions in `docs/github-workflows/` are **inactive**. The GitHub credential
+used for the initial publication cannot manage workflows. A maintainer with
+workflow permission must install them in `.github/workflows/`; no existing
+credential needs to be revoked or rotated. The migration, contract, and release
+gates must pass before advertising a working release.

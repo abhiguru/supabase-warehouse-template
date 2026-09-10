@@ -1,55 +1,22 @@
-#!/bin/bash
-# Supabase Health Check
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOCKER_DIR="$SCRIPT_DIR/docker"
-ANON_KEY=$(grep "^ANON_KEY=" "$DOCKER_DIR/.env" 2>/dev/null | cut -d'=' -f2)
-
-echo "=== Supabase Health Check ==="
-echo "Date: $(date)"
-echo ""
-
-echo "=== Service Status ==="
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(supabase|realtime)" | sort
-
-echo ""
-echo "=== Unhealthy/Restarting Services ==="
-UNHEALTHY=$(docker ps --format "{{.Names}}: {{.Status}}" | grep -E "(unhealthy|Restarting)")
-if [ -z "$UNHEALTHY" ]; then
-    echo "All services healthy"
-else
-    echo "Issues detected:"
-    echo "$UNHEALTHY"
-fi
-
-echo ""
-echo "=== API Response ==="
-if [ -n "$ANON_KEY" ]; then
-    API_RESPONSE=$(curl -s -o /dev/null -w "HTTP %{http_code} in %{time_total}s" \
-      http://localhost:8000/rest/v1/ \
-      -H "apikey: $ANON_KEY" 2>/dev/null)
-    echo "API: $API_RESPONSE"
-else
-    echo "ANON_KEY not found in .env - skipping API check"
-fi
-
-echo ""
-echo "=== Database ==="
-docker exec -i supabase-db psql -U postgres -d postgres -c "SELECT count(*) as active_connections FROM pg_stat_activity;" 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" || echo "Database not reachable"
-
-echo ""
-echo "=== Edge Functions ==="
-if [ -n "$ANON_KEY" ]; then
-    HELLO=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/functions/v1/hello -H "Authorization: Bearer $ANON_KEY" 2>/dev/null)
-    echo "hello function: HTTP $HELLO"
-else
-    echo "Skipped (no ANON_KEY)"
-fi
-
-echo ""
-echo "=== Gotenberg (PDF) ==="
-GOTENBERG=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3100/health 2>/dev/null)
-echo "Gotenberg: HTTP $GOTENBERG"
-
-echo ""
-echo "=== Done ==="
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+failed=0
+for service in db kong rest studio storage functions gotenberg; do
+  id=$(compose ps -q "$service")
+  if [[ -z "$id" ]]; then
+    echo "$service: missing"; failed=1; continue
+  fi
+  state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")
+  echo "$service: $state"
+  if [[ "$state" != running* || "$state" == *unhealthy* || "$state" == *starting* ]]; then
+    failed=1
+  fi
+done
+compose exec -T db pg_isready -U postgres || failed=1
+# Probe the intended project internally, never an unrelated server on a fixed host port.
+compose exec -T kong bash -c 'curl --fail --silent --show-error --max-time 15 http://localhost:8000/rest/v1/ -H "apikey: $SUPABASE_ANON_KEY" -o /dev/null' || failed=1
+compose exec -T kong curl --fail --silent --show-error --max-time 30 http://localhost:8000/functions/v1/get-public-config -o /dev/null || failed=1
+compose exec -T gotenberg curl --fail --silent --show-error --max-time 15 http://localhost:3000/health -o /dev/null || failed=1
+exit "$failed"

@@ -5,13 +5,23 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { htmlToPdf, createFooterHtml } from '../_shared/gotenberg-client.ts'
+import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
+
+const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 
 serve(async (req) => {
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
 
   try {
+    await validatePrintAccess(req);
     const { title = 'Sample Document', items = [] } = await req.json().catch(() => ({}));
+    if (typeof title !== 'string' || title.length > 200 || !Array.isArray(items) || items.length > 500 ||
+        items.some(item => !item || typeof item.name !== 'string' || item.name.length > 500 ||
+          !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.rate) || item.rate < 0)) {
+      throw { status: 400, message: 'Invalid sample document inputs' };
+    }
 
     const defaultItems = [
       { name: 'Cold Storage Rental - Room A', quantity: 100, rate: 5.00 },
@@ -21,7 +31,7 @@ serve(async (req) => {
 
     const displayItems = items.length > 0 ? items : defaultItems;
     const total = displayItems.reduce((sum: number, item: any) =>
-      sum + (item.quantity || 1) * (item.rate || 100), 0
+      sum + item.quantity * item.rate, 0
     );
 
     const html = `<!DOCTYPE html>
@@ -47,7 +57,7 @@ serve(async (req) => {
 </head>
 <body>
   <div class="header">
-    <h1>${title}</h1>
+    <h1>${escapeHtml(title)}</h1>
     <p>Generated on ${new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
   </div>
 
@@ -80,10 +90,10 @@ serve(async (req) => {
       ${displayItems.map((item: any, i: number) => `
       <tr>
         <td>${i + 1}</td>
-        <td>${item.name || 'Item'}</td>
-        <td class="text-right">${item.quantity || 1}</td>
-        <td class="text-right">${(item.rate || 100).toFixed(2)}</td>
-        <td class="text-right">${((item.quantity || 1) * (item.rate || 100)).toFixed(2)}</td>
+        <td>${escapeHtml(item.name || 'Item')}</td>
+        <td class="text-right">${item.quantity}</td>
+        <td class="text-right">${item.rate.toFixed(2)}</td>
+        <td class="text-right">${(item.quantity * item.rate).toFixed(2)}</td>
       </tr>`).join('')}
       <tr class="total-row">
         <td colspan="4">Total</td>
@@ -112,9 +122,6 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error('generate-sample-pdf ERROR:', error);
-    return new Response(
-      JSON.stringify({ success: false, error: error.message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
-    );
+    return createAuthErrorResponse(error, corsHeaders);
   }
 });

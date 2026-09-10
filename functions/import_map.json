@@ -1,5 +1,6 @@
 {
   "imports": {
+    "jose": "https://esm.sh/jose@5.10.0",
     "std/": "https://deno.land/std@0.192.0/",
     "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.0",
     "@supabase/functions-js": "https://esm.sh/@supabase/functions-js@2.1.5"

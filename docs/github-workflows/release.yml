@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -13,12 +16,13 @@ jobs:
 
       - name: Validate
         run: |
-          cp .env.example docker/.env
-          cd docker
-          docker compose -f docker-compose.yml -f docker-compose.override.yml config --quiet
+          docker compose --env-file .env.example -f docker/docker-compose.yml -f docker/docker-compose.override.yml config --quiet
+
+      - name: Release readiness gate
+        run: bash scripts/check-readiness.sh
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
         env:

@@ -1,0 +1,14 @@
+{
+  "name": "supabase-warehouse-template-checks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.18.0" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:migrations": "bash tests/migrations.sh",
+    "check:contract": "node scripts/check-mobile-contract.mjs"
+  },
+  "devDependencies": { "jose": "5.10.0" }
+}

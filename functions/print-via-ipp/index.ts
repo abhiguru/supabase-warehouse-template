@@ -5,6 +5,7 @@ import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { Buffer } from 'node:buffer'
 
 serve(async (req) => {
   const corsResponse = handleCors(req);
@@ -29,10 +30,13 @@ serve(async (req) => {
       );
     }
 
+    if (typeof printer_name !== 'string' || !/^[a-zA-Z0-9_-]{1,127}$/.test(printer_name)) {
+      throw { status: 400, message: 'Invalid printer name' };
+    }
     const printerUrl = `http://cups:631/printers/${printer_name}`;
     console.log(`print-via-ipp: Printing to ${printerUrl} for user ${userProfile.name}`);
 
-    const ipp = await import("npm:ipp");
+    const ipp = await import("npm:ipp@2.0.1");
     const printer = ipp.Printer(printerUrl);
 
     const buffer = new TextEncoder().encode(content);
