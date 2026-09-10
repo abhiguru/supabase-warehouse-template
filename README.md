@@ -143,6 +143,15 @@ Run `./setup.sh` to auto-generate all secrets.
     └── PRODUCTION_CHECKLIST.md
 ```
 
+## Continuous Integration
+
+Ready-to-enable GitHub Actions definitions are included in
+`docs/github-workflows/`. A maintainer with permission to manage workflows can
+copy them into `.github/workflows/` to enable Compose validation, integration
+tests, the database security baseline, and tagged releases.
+
+---
+
 ## Requirements
 
 - Docker 24+ with Compose v2
