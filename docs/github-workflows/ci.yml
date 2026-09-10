@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose syntax
+        run: |
+          cp .env.example docker/.env
+          cd docker
+          docker compose -f docker-compose.yml -f docker-compose.override.yml config --quiet
+
+      - name: Lint shell scripts
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          ignore_paths: 'docker'
+
+      - name: Check .env.example completeness
+        run: |
+          # Ensure all env vars referenced in docker-compose.yml are in .env.example
+          COMPOSE_VARS=$(grep -oP '\$\{(\w+)' docker/docker-compose.yml | sed 's/\${//' | sort -u)
+          MISSING=""
+          for var in $COMPOSE_VARS; do
+            if ! grep -q "^${var}=" .env.example; then
+              MISSING="$MISSING $var"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "Missing from .env.example:$MISSING"
+            exit 1
+          fi
+          echo "All env vars documented"
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run setup
+        run: |
+          chmod +x setup.sh start.sh stop.sh health-check.sh rotate-keys.sh
+          echo "y" | ./setup.sh
+
+      - name: Wait for services
+        run: sleep 30
+
+      - name: Health check
+        run: ./health-check.sh
+
+      - name: Verify database security baseline
+        run: docker exec -i supabase-db psql -U postgres -d postgres < tests/security_baseline.sql
+
+      - name: Test API endpoint
+        run: |
+          ANON_KEY=$(grep "^ANON_KEY=" docker/.env | cut -d'=' -f2)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://localhost:8000/rest/v1/ \
+            -H "apikey: $ANON_KEY")
+          echo "API returned: HTTP $HTTP_CODE"
+          [ "$HTTP_CODE" = "200" ] || exit 1
+
+      - name: Test hello function
+        run: |
+          ANON_KEY=$(grep "^ANON_KEY=" docker/.env | cut -d'=' -f2)
+          RESPONSE=$(curl -s http://localhost:8000/functions/v1/hello \
+            -H "Authorization: Bearer $ANON_KEY")
+          echo "Hello response: $RESPONSE"
+          echo "$RESPONSE" | grep -q "Hello" || exit 1
+
+      - name: Test Gotenberg health
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3100/health)
+          echo "Gotenberg: HTTP $HTTP_CODE"
+          [ "$HTTP_CODE" = "200" ] || exit 1
+
+      - name: Cleanup
+        if: always()
+        run: ./stop.sh

@@ -1,0 +1,27 @@
+# Grafana datasource configuration
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://supabase-prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: PostgreSQL-Sec
+    type: postgres
+    uid: PG_SEC_001
+    url: supabase-db:5432
+    database: postgres
+    user: postgres
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: "disable"
+      postgresVersion: 1500
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    isDefault: false
+    editable: true

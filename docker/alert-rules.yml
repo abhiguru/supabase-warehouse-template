@@ -1,0 +1,142 @@
+groups:
+  - name: supabase_alerts
+    rules:
+      - alert: HighCPU
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage above 80% for more than 5 minutes"
+
+      - alert: HighMemory
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage above 85% for more than 5 minutes"
+
+      - alert: DatabaseConnectionsHigh
+        expr: pg_stat_activity_count > 200
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connections"
+          description: "Database connections above 200"
+
+      - alert: SlowQueries
+        expr: pg_stat_activity_max_tx_duration > 60
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow query detected"
+          description: "Query running longer than 60 seconds"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space below 20% on root filesystem"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is not responding"
+
+  - name: database_performance_alerts
+    rules:
+      - alert: LongRunningTransaction
+        expr: pg_stat_activity_max_tx_duration > 300
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Long running transaction"
+          description: "Transaction running for {{ $value }} seconds"
+
+      - alert: LowCacheHitRatio
+        expr: (pg_stat_database_blks_hit{datname="postgres"} / (pg_stat_database_blks_hit{datname="postgres"} + pg_stat_database_blks_read{datname="postgres"} + 0.001)) < 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low cache hit ratio"
+          description: "PostgreSQL cache hit ratio below 90%"
+
+      - alert: HighDeadTuples
+        expr: sum(pg_stat_user_tables_n_dead_tup) > 100000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High dead tuple count"
+          description: "High dead tuple count: {{ $value }}. Consider running VACUUM."
+
+  - name: container_alerts
+    rules:
+      - alert: ContainerOOM
+        expr: increase(container_oom_events_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container OOM event"
+          description: "Container OOM event detected"
+
+      - alert: ContainerHighMemory
+        expr: (container_memory_usage_bytes{name=~"supabase.*"} / container_spec_memory_limit_bytes{name=~"supabase.*"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container high memory"
+          description: "Container {{ $labels.name }} using >90% memory"
+
+      - alert: ContainerRestarting
+        expr: increase(container_start_time_seconds{name=~"supabase.*"}[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restarting frequently"
+          description: "Container {{ $labels.name }} has restarted more than 3 times in the last hour"
+
+  - name: api_alerts
+    rules:
+      - alert: APIHighLatency
+        expr: histogram_quantile(0.95, sum(rate(kong_latency_bucket{type="request"}[5m])) by (le, service)) > 2000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile API latency above 2 seconds for service {{ $labels.service }}"
+
+      - alert: APIHighErrorRate
+        expr: sum(rate(kong_http_status{code=~"5.."}[5m])) / sum(rate(kong_http_status[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API error rate"
+          description: "API 5xx error rate above 5%"
+
+      - alert: APIDown
+        expr: up{job="kong"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API Gateway is down"
+          description: "Kong API Gateway is not responding"

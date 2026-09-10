@@ -1,0 +1,314 @@
+# Production tuning & monitoring profiles
+# This file is automatically loaded by Docker Compose alongside docker-compose.yml
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    logging: *default-logging
+    # PostgreSQL performance tuning
+    command: >-
+      postgres
+      -c max_connections=250
+      -c listen_addresses=*
+      -c shared_preload_libraries=pg_stat_statements,pg_cron
+      -c pg_stat_statements.track=all
+      -c cron.database_name=postgres
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c log_min_messages=warning
+      -c log_connections=on
+      -c log_disconnections=on
+      -c log_statement=mod
+      -c log_min_duration_statement=1000
+      -c log_lock_waits=on
+      -c log_temp_files=0
+      -c wal_level=replica
+      -c archive_mode=off
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c work_mem=32MB
+      -c maintenance_work_mem=512MB
+      -c wal_buffers=32MB
+      -c checkpoint_completion_target=0.9
+      -c checkpoint_timeout=15min
+      -c min_wal_size=256MB
+      -c max_wal_size=2GB
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+
+  # Analytics disabled by default to reduce resource usage and startup time.
+  # To re-enable: remove the 'replicas: 0' line below and restart.
+  analytics:
+    deploy:
+      replicas: 0
+
+  # Override depends_on to remove analytics dependency (since it's disabled)
+  studio:
+    depends_on: !reset
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  auth:
+    depends_on: !reset
+      db:
+        condition: service_healthy
+
+  meta:
+    depends_on: !reset
+      db:
+        condition: service_healthy
+
+  functions:
+    depends_on: !reset
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9000'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  kong:
+    logging: *default-logging
+    environment:
+      # Added prometheus plugin for metrics and rate-limiting
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus
+      KONG_STATUS_LISTEN: "0.0.0.0:8100"
+    depends_on: !reset
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  rest:
+    depends_on: !reset
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_POOL: "120"
+      PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
+      PGRST_DB_CONFIG: "false"
+      PGRST_DB_PREPARED_STATEMENTS: "true"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  supavisor:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  storage:
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # ============ MONITORING STACK ============
+  # Start with: docker compose --profile monitoring up -d
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: supabase-prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+      - '--storage.tsdb.retention.size=500MB'
+      - '--web.enable-lifecycle'
+    ports:
+      - "127.0.0.1:9095:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: supabase-alertmanager
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: supabase-postgres-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres?sslmode=disable"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9187/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: supabase-node-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: supabase-grafana
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASS:-changeme}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3001
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-piechart-panel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./volumes/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: supabase-cadvisor
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["monitoring"]
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "9998:8080"
+    devices:
+      - /dev/kmsg
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+volumes:
+  prometheus_data:
+  grafana_data:

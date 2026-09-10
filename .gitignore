@@ -1,0 +1,44 @@
+# Environment
+docker/.env
+.env
+.env.local
+.env.*.local
+
+# Docker volumes (persistent data)
+docker/volumes/db/data/
+docker/volumes/storage/
+docker/volumes/logs/
+docker/volumes/bundles/
+docker/logs/
+
+# Secrets
+*.key
+*.pem
+*.crt
+!docker/cups/config/*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Node
+node_modules/
+
+# Build artifacts
+*.eszip
+
+# Backups
+*.sql.gz
+*.sql.bak
+database_backups/
