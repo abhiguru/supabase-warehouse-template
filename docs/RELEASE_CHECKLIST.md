@@ -56,43 +56,56 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       `print-grn-preprinted`, `print-invoice-preprinted`) so mobile contract inventory has 0 missing endpoints.
 - [x] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
 
-### 4. Clean-install and native acceptance — pending
+### 4. Clean-install verified; native/device acceptance pending
 
-- [ ] Reproduce setup from public-only source in a clean, isolated environment,
+- [x] Reproduce setup from public-only source in a clean, isolated environment,
       including prerequisite documentation, generated credentials, and safe reruns.
+      Fresh public clones at backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`
+      and mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf` passed setup,
+      75 mobile tests, API tests and migration reruns. See [CLEAN_INSTALL.md](CLEAN_INSTALL.md).
 - [ ] Build native Android and iOS applications and test fresh install, login,
       restart, refresh, logout, offline/retry, camera, secure storage, deep links and
       role-dependent screens.
 - [ ] Record platform/device/build evidence. JavaScript export is not an APK,
       an iOS build, or a physical-device test.
 
-### 5. Authorization and business-flow coverage — completed
+### 5. Authorization and business-flow coverage — selected flows verified; broader acceptance open
 
-- [x] Image upload/confirmation/deletion and cross-customer Storage denial.
+- [x] GRN image upload/confirmation/deletion, anonymous/customer upload denial,
+      and assigned-customer read visibility before/after confirmation/deletion.
       Verified in `tests/api-demo.mjs`: anonymous upload to `grn-images` denied (HTTP 400/403 RLS violation),
       customer role upload denied, admin registers upload via `register_grn_image_upload` and uploads binary,
       unconfirmed image hidden from customer, confirmation via `confirm_grn_image_upload` grants read access to
       assigned customer, deletion via `delete_grn_image` immediately revokes customer read access, and admin cleans up storage.
-- [x] Disabled users, changed assignments/roles, refresh/logout races and replay.
+- [x] Disabled-user login, changed customer assignments, staff/customer role boundaries,
+      sequential refresh replay and logout revocation.
       Verified in `tests/auth_and_access.sql` and `tests/api-demo.mjs`: inactive accounts cannot authenticate,
       customer role is denied access to staff RPCs (`save_grn`), dynamic customer assignment removal immediately
       hides assigned customers from RLS and reassignment restores access, refresh token rotation with replay denial,
       and logout session revokes both REST and Edge Function credentials.
-- [x] Concurrent dispatch, idempotency, oversell prevention, invoice calculations, payments, orders, reports and recovery.
+- [x] Concurrent dispatch oversell denial, invoice save/malformed-input rejection,
+      and selected reporting response smoke checks.
       Verified in `tests/api-demo.mjs`: concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
       and the other fails with "Insufficient stock", leaving exact stock of 20; single oversell requests (999 items) rejected;
-      malformed invoice data structures rejected; operational reporting calculations (`get_operations_dashboard` KPIs
-      and `get_stock_aging_report`) verified.
-- [x] Review all imported RPC signatures, return shapes, grants and callers.
-      `scripts/check-mobile-contract.mjs` verifies 100% of the 100 mobile-called RPCs, 8 tables, and 10 Edge functions
-      match schema definitions (0 missing). `tests/auth_and_access.sql` enforces that anonymous function execution
+      malformed invoice data structures rejected; the dashboard returns a finite stock KPI
+      and the stock-aging response reports success. Expected financial totals are not asserted.
+- [x] Static name inventory: all 100 mobile RPC names, 8 table/view names and 10 Edge names
+      are present (0 missing). This is not signature or full runtime contract validation.
+      `tests/auth_and_access.sql` enforces that anonymous function execution
       is restricted strictly to the 5 authentication endpoints (`send_otp`, `verify_otp_or_register`, `refresh_jwt_token`,
       `logout_session`, `check_session`).
 
-### 6. Distribution, privacy and rights — completed
+- [ ] Verify cross-customer access to another customer's confirmed Storage images,
+      dispatch-image/customer-image lifecycles and retention cleanup.
+- [ ] Test actual refresh-versus-logout races, changed roles during an active session,
+      retry/idempotency, payments, orders and recovery.
+- [ ] Assert invoice/pricing/tax calculations and reporting values against independently
+      specified expected results; review all RPC signatures, return shapes and grants.
+
+### 6. Distribution, privacy and rights — source/redaction checks done; approval and artifacts open
 
 - [x] Scan source and Git history for secrets/customer data (Gitleaks verified 0 leaks in publishable files and history).
-- [x] Confirm rights to code, fonts, images and other assets; retain applicable third-party notices.
+- [x] Add third-party notice summaries for code, fonts and images.
       Both repositories now include `THIRD_PARTY_NOTICES.md` documenting upstream Apache 2.0, SIL OFL 1.1,
       and MIT licenses for icons, SDKs, and Supabase bootstrap files.
 - [x] Replace or clearly label placeholder privacy/terms/contact information;
@@ -104,7 +117,13 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       before transmission. Documented retention window and cleanup policy in `docs/TELEMETRY_AND_PRIVACY.md`.
       Verified with 16 automated Jest tests in `src/config/__tests__/sentryConfig.test.ts`.
 
-### 7. Documentation and release integrity — completed
+- [ ] Obtain maintainer confirmation of ownership/redistribution rights and complete
+      bundled license texts/attributions where required; a notice list alone is not approval.
+- [ ] Inspect tags, release attachments and native artifacts for secrets/customer data.
+- [ ] Validate actual telemetry payloads/native crashes, privacy declarations and
+      server retention/cleanup configuration. Documentation does not enforce server retention.
+
+### 7. Documentation and release integrity — demo release preparation
 
 - [x] Reconcile current setup, ports and production instructions; do not prescribe
       rotating another installation's credentials.
@@ -112,7 +131,9 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       loopback demo ports (`127.0.0.1:18000`, `127.0.0.1:54325`, `127.0.0.1:15433`),
       and contract parity for preprinted document functions.
 - [x] Record a tested frontend/backend commit pair and known limitations.
-      Tested and verified commit pair on `main`: - Mobile (`rn-warehouse-template`): commit `e3a51f4` (or current `main`) - Backend (`supabase-warehouse-template`): commit `5ec2726` (or current `main`)
+      Clean-install-tested source pair: mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf`,
+      backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`. Release tags must record
+      exact final commits, not the moving label "current main".
       Documented known limitations: - Dependency audit: 1 root moderate finding (`decode-uri-component` via `query-string`/Expo Router) tracked in `DEPENDENCY_SECURITY.md`. - Physical device acceptance (Item 4) requires real hardware testing: physical camera barcode scanning, Bluetooth/thermal printer hardware, deep links, biometric/keychain persistence across device reboots. - Separate production gate: production SMS and operator onboarding without fixed OTP, TLS/CORS hardening, container isolation, backup recovery, and production credentials.
 - [x] Prepare an explicitly scoped demo/prerelease; do not repoint historical
       tags or claim production readiness.
@@ -134,6 +155,17 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12 follow-up: corrected earlier completion overstatements. Static inventory
+  proves names, not all RPC signatures/results. Concurrent oversell and malformed
+  invoices do not establish idempotency, payments/orders or invoice calculations.
+  License summaries do not establish ownership approval, and documented telemetry
+  retention is not a deployed cleanup mechanism. Earlier entries below are historical;
+  the current unchecked items above are the authoritative remaining work.
+- 2026-09-12 follow-up: fresh unauthenticated public clones passed backend install,
+  all five migrations/full stack startup, API tests, byte-preserving setup rerun,
+  data preservation and disposable SQL security tests. Mobile fresh install passed
+  75 Jest tests, 7 bootstrap/dependency tests, typecheck, lint and public bootstrap.
+  Android native generation passed; physical-device and iOS acceptance are not run.
 - 2026-09-12: Completed Item 7 (Documentation and release integrity). Reconciled `README.md` and setup
   instructions across both repositories to reflect active CI workflows, loopback demo ports (`127.0.0.1:18000`,
   `127.0.0.1:54325`, `127.0.0.1:15433`), and preprinted printing status. Documented the verified commit pair,
