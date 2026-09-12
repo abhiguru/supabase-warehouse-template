@@ -31,7 +31,8 @@ No original repository, service, data, or credential was changed.
 - Mobile: custom-session renewal retained after access expiry; concurrent refresh
   serialized; temporary network failures do not delete refresh credentials;
   custom logout; GoTrue-free OTP authentication; paginated item lookup handling.
-  50 Jest tests and TypeScript/ESLint error checks pass. Public bootstrap against
+  59 Jest tests and TypeScript/ESLint error checks pass after the token-storage
+  follow-up. Public bootstrap against
   this running demo passes.
 - A fresh Android JavaScript export passes (2,934 modules, 45 assets). This is
   not a compiled APK or physical-device acceptance.
@@ -96,8 +97,9 @@ no broad rule exclusions were added.
 5. Complete Android/iOS native builds, fresh-install/login/restart/offline/device
    flows, camera/secure-storage/deep-link checks, and frontend role acceptance.
    JS/Jest/API tests are not substitutes for this.
-6. Resolve mobile dependency findings (2026-09-10 audit: 9 high, 20 moderate),
-   with SDK-compatible updates and native regression tests.
+6. Resolve remaining mobile dependency findings (2026-09-12 follow-up audit:
+   0 high, 8 moderate, 0 critical), with navigation-compatible fixes and native
+   regression tests. See the [ordered release tracker](RELEASE_CHECKLIST.md).
 7. Perform deployment review: TLS/CORS, gateway/body limits, privileged optional
    host mounts, renderer isolation, backups/restores, startup-failure recovery,
    service image updates, rights/assets/legal/privacy text, and release artifacts.
