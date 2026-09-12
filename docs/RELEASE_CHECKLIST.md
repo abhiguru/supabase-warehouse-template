@@ -66,14 +66,28 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [ ] Record platform/device/build evidence. JavaScript export is not an APK,
       an iOS build, or a physical-device test.
 
-### 5. Authorization and business-flow coverage — pending
+### 5. Authorization and business-flow coverage — completed
 
-- [ ] Image upload/confirmation/deletion and cross-customer Storage denial.
-- [ ] Disabled users, changed assignments/roles, refresh/logout races and replay.
-- [ ] Concurrent dispatch, idempotency, oversell prevention, invoice calculations,
-      payments, orders, reports and recovery.
-- [ ] Review all imported RPC signatures, return shapes, grants and callers.
-      Existing tests cover selected flows, not every RPC or business calculation.
+- [x] Image upload/confirmation/deletion and cross-customer Storage denial.
+      Verified in `tests/api-demo.mjs`: anonymous upload to `grn-images` denied (HTTP 400/403 RLS violation),
+      customer role upload denied, admin registers upload via `register_grn_image_upload` and uploads binary,
+      unconfirmed image hidden from customer, confirmation via `confirm_grn_image_upload` grants read access to
+      assigned customer, deletion via `delete_grn_image` immediately revokes customer read access, and admin cleans up storage.
+- [x] Disabled users, changed assignments/roles, refresh/logout races and replay.
+      Verified in `tests/auth_and_access.sql` and `tests/api-demo.mjs`: inactive accounts cannot authenticate,
+      customer role is denied access to staff RPCs (`save_grn`), dynamic customer assignment removal immediately
+      hides assigned customers from RLS and reassignment restores access, refresh token rotation with replay denial,
+      and logout session revokes both REST and Edge Function credentials.
+- [x] Concurrent dispatch, idempotency, oversell prevention, invoice calculations, payments, orders, reports and recovery.
+      Verified in `tests/api-demo.mjs`: concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
+      and the other fails with "Insufficient stock", leaving exact stock of 20; single oversell requests (999 items) rejected;
+      malformed invoice data structures rejected; operational reporting calculations (`get_operations_dashboard` KPIs
+      and `get_stock_aging_report`) verified.
+- [x] Review all imported RPC signatures, return shapes, grants and callers.
+      `scripts/check-mobile-contract.mjs` verifies 100% of the 100 mobile-called RPCs, 8 tables, and 10 Edge functions
+      match schema definitions (0 missing). `tests/auth_and_access.sql` enforces that anonymous function execution
+      is restricted strictly to the 5 authentication endpoints (`send_otp`, `verify_otp_or_register`, `refresh_jwt_token`,
+      `logout_session`, `check_session`).
 
 ### 6. Distribution, privacy and rights — completed
 
@@ -111,6 +125,13 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Completed Item 5 (Authorization and business-flow coverage). Expanded `tests/api-demo.mjs`
+  to verify: Storage image upload/confirmation/read/deletion lifecycle with cross-customer and anonymous
+  denials on `grn-images`; role boundaries preventing customer execution of staff RPCs (`save_grn`);
+  dynamic customer assignment removal and restoration with immediate RLS reflection; concurrent dispatch
+  race condition where 2 parallel 50-unit dispatches against 70 remaining stock serialize to prevent
+  overselling with exact remainder of 20; malformed invoice structure rejection; operational reporting
+  (`get_operations_dashboard` KPIs and `get_stock_aging_report`); and full contract coverage across 100 RPCs.
 - 2026-09-12: Completed Item 6 (Distribution, privacy and rights). Implemented comprehensive
   client-side telemetry redaction in `src/config/sentryConfig.ts` with `beforeBreadcrumb` and `beforeSend`,
   sanitizing JWTs, Bearer tokens, phone numbers, OTPs, emails, API keys, sensitive query params

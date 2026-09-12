@@ -80,8 +80,119 @@ const invoiceNumber=Date.now()%1000000000;
 const financialYear=new Date().getUTCFullYear();
 success(await rpc('save_invoice',adminToken,{p_invoice_data:{inv_no:invoiceNumber,inv_fin_year:financialYear,
   gr_id:grnId,gr_no:number,customer_id:customerId,customer_name:'Example Customer A',inv_date:new Date().toISOString(),total:100,
-  items:[{disp_trl_id:dispatchItems.data[0].id,charge:5,tax:0,labour_rate:0}]}}),'save invoice');
+    items:[{disp_trl_id:dispatchItems.data[0].id,charge:5,tax:0,labour_rate:0}]}}),'save invoice');
 console.log('GRN, customer item lookup, dispatch stock update, oversell denial, and invoice save passed.');
+
+// --- Item 5.1: Storage & Image Lifecycle ---
+assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/anon.jpg`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${anon}`, 'Content-Type': 'image/jpeg' },
+  body: Buffer.from('test')
+})).ok, 'anonymous upload to grn-images denied');
+
+assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/cust.jpg`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${customerToken}`, 'Content-Type': 'image/jpeg' },
+  body: Buffer.from('test')
+})).ok, 'customer role upload to grn-images denied');
+
+const imgReg = await rpc('register_grn_image_upload', adminToken, {
+  p_grn_id: grnId, p_image_type: 'header', p_file_name: 'grn-header.jpg', p_file_size: 1024, p_mime_type: 'image/jpeg'
+});
+success(imgReg, 'register GRN image upload');
+const imgUpload = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/jpeg' },
+  body: Buffer.alloc(1024, 0x5a)
+});
+assert.equal(imgUpload.status, 200, 'admin uploads GRN image');
+
+const unconfRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.ok(!unconfRead.ok, 'unconfirmed image not readable by customer');
+
+const imgConf = await rpc('confirm_grn_image_upload', adminToken, {
+  p_image_id: imgReg.image_id, p_upload_token: imgReg.upload_token
+});
+success(imgConf, 'confirm GRN image upload');
+
+const confRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.equal(confRead.status, 200, 'assigned customer reads confirmed image');
+
+const imgDel = await rpc('delete_grn_image', adminToken, { p_image_id: imgReg.image_id });
+success(imgDel, 'delete GRN image');
+
+const delRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.ok(!delRead.ok, 'customer read denied after image record deleted');
+
+await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  method: 'DELETE', headers: { apikey: anon, Authorization: `Bearer ${adminToken}` }
+});
+console.log('Image upload, confirmation, customer access, and deletion passed.');
+
+// --- Item 5.2: Role Boundaries & Dynamic Customer Assignment Lifecycle ---
+const staffRpcDenied = await api('/rest/v1/rpc/save_grn', customerToken, {
+  p_gr_no: 'DENY', p_date: new Date().toISOString(), p_customer_id: customerId,
+  p_customer_name: 'Example', p_pricing_mode: 'MONTHLY', p_items: []
+});
+assert.ok(!staffRpcDenied.ok, 'staff RPC denied to customer role');
+
+const unassigned = await rpc('remove_customer_assignment', adminToken, {
+  target_user_mobile: '910000000002', target_customer_id: customerId
+});
+assert.equal(unassigned, true, 'remove customer assignment');
+const hiddenCustomers = await api('/rest/v1/customers', customerToken);
+assert.equal(hiddenCustomers.data.length, 0, 'revoked assignment immediately hides customer records from RLS');
+
+const reassigned = await rpc('assign_customer_to_user', adminToken, {
+  target_user_mobile: '910000000002', target_customer_id: customerId, assigner_comment: 'Restored'
+});
+assert.equal(reassigned, true, 'restore customer assignment');
+const restoredCustomers = await api('/rest/v1/customers', customerToken);
+assert.equal(restoredCustomers.data.length, 1, 'restored assignment enables customer access');
+console.log('Role boundary enforcement and dynamic assignment lifecycle passed.');
+
+// --- Item 5.3: Concurrency, Validation, and Operational Reporting ---
+const cNumber = 'C' + Date.now().toString(36).slice(-6).toUpperCase();
+const cGrn = await rpc('save_grn', adminToken, {
+  p_gr_no: cNumber, p_date: new Date().toISOString(), p_customer_id: customerId,
+  p_customer_name: 'Example Customer A', p_pricing_mode: 'MONTHLY',
+  p_items: [{ item_id: '33333333-0000-4000-8000-000000000001', item_name: 'Example Potatoes', packaging: 'Bag', qty: 70, weight: 5, rack: 'DEMO', package_mark: 'TEST' }]
+});
+success(cGrn, 'create second GRN');
+const cGrnId = (await api(`/rest/v1/goodsreceived?gr_no=eq.${cNumber}&select=id`, adminToken)).data[0].id;
+const cGrnItem = (await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${cGrnId}&select=id`, adminToken)).data[0].id;
+
+const dispA = rpc('create_dispatch_with_stock_check', adminToken, {
+  p_dispatch_data: { disp_no: 'D' + Date.now().toString(36).slice(-5).toUpperCase() + '1', disp_date: new Date().toISOString(), customer_id: customerId, customer_name: 'Example Customer A', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' },
+  p_dispatch_items: [{ gr_trl_id: cGrnItem, disp_qty: 50 }],
+  p_generate_invoice: false
+});
+const dispB = rpc('create_dispatch_with_stock_check', adminToken, {
+  p_dispatch_data: { disp_no: 'D' + Date.now().toString(36).slice(-5).toUpperCase() + '2', disp_date: new Date().toISOString(), customer_id: customerId, customer_name: 'Example Customer A', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' },
+  p_dispatch_items: [{ gr_trl_id: cGrnItem, disp_qty: 50 }],
+  p_generate_invoice: false
+});
+const [resA, resB] = await Promise.all([dispA, dispB]);
+assert.equal(resA.success !== resB.success, true, 'exactly one concurrent dispatch must succeed on 70 total stock with 2x50 requests');
+const remainingStock = (await api(`/rest/v1/goodsreceived_trl?id=eq.${cGrnItem}&select=stock`, adminToken)).data[0].stock;
+assert.equal(remainingStock, 20, 'remaining stock correctly reflects 70 - 50 = 20 without overselling');
+
+const badInvoice = await rpc('save_invoice', adminToken, {
+  p_invoice_data: { inv_no: -999, inv_fin_year: financialYear, total: -50, items: [] }
+});
+assert.equal(badInvoice.success, false, 'malformed invoice data structure rejected');
+
+const dashboard = await rpc('get_operations_dashboard', adminToken, {
+  p_from_date: '2026-01-01', p_to_date: '2026-12-31'
+});
+assert.ok(dashboard.kpis && Number.isFinite(dashboard.kpis.total_stock_qty), 'dashboard calculates valid operational KPIs');
+
+const aging = await rpc('get_stock_aging_report', adminToken);
+success(aging, 'stock aging report');
+console.log('Concurrent dispatch race condition, invalid invoice rejection, and reporting calculations passed.');
 
 for(const [name,body] of [
   ['generate-grn-pdf',{gr_no:number}],['generate-dispatch-pdf',{disp_no:number}],

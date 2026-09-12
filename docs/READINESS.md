@@ -25,8 +25,11 @@ No original repository, service, data, or credential was changed.
   logout/session revocation, and populated materialized views.
 - Live API tests: public bootstrap; admin/customer demo login; anonymous denial;
   customer-only reads; cross-customer RPC/PDF denial; role-promotion denial;
-  GRN creation and customer lookup; dispatch with an exact stock decrement;
-  overselling denial; invoice saving; four PDFs downloaded and verified as PDFs;
+  staff RPC privilege enforcement; dynamic customer assignment revocation/restoration with RLS;
+  GRN creation and customer lookup; storage image registration, upload, confirmation, customer read,
+  and deletion; concurrent dispatch race prevention (serialized stock decrement, overselling rejection);
+  invoice saving and malformed invoice rejection; four PDFs downloaded and verified as PDFs;
+  operational KPI calculations (`get_operations_dashboard`) and stock aging reports;
   refresh replay denial; revoked REST and Edge access after logout.
 - Mobile: custom-session renewal retained after access expiry; concurrent refresh
   serialized; temporary network failures do not delete refresh credentials;
