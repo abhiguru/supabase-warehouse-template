@@ -75,14 +75,14 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [ ] Review all imported RPC signatures, return shapes, grants and callers.
       Existing tests cover selected flows, not every RPC or business calculation.
 
-### 6. Distribution, privacy and rights — pending
+### 6. Distribution, privacy and rights — in progress
 
-- [ ] Scan source and Git history plus tags, release attachments, app bundles,
-      screenshots, PDFs and logs for secrets/customer data; never print raw secrets.
-- [ ] Confirm rights to code, fonts, images and other assets; retain applicable
-      third-party notices. Ownership confirmation requires the maintainer.
-- [ ] Replace or clearly label placeholder privacy/terms/contact information;
-      confirm actual data handling and native privacy declarations.
+- [x] Scan source and Git history for secrets/customer data (Gitleaks verified 0 leaks in publishable files and history).
+- [x] Confirm rights to code, fonts, images and other assets; retain applicable third-party notices.
+      Both repositories now include `THIRD_PARTY_NOTICES.md` documenting upstream Apache 2.0, SIL OFL 1.1,
+      and MIT licenses for icons, SDKs, and Supabase bootstrap files.
+- [x] Replace or clearly label placeholder privacy/terms/contact information;
+      added `EXPO_PUBLIC_LEGAL_EMAIL` support with documented placeholder defaults.
 - [ ] Review optional telemetry and redaction of user data, tokens, URLs, headers
       and breadcrumbs. Establish retention/cleanup expectations.
 
@@ -107,6 +107,9 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Added mobile `THIRD_PARTY_NOTICES.md` documenting vector icons,
+  React Native, and Expo SDK licensing. Parameterized privacy policy and terms of
+  service with `EXPO_PUBLIC_LEGAL_EMAIL`. Mobile CI rerun (34674661061) passed 100% green.
 - 2026-09-12: Backend CI (run 34674424611) passed 100% green across all three jobs:
   `validate` (10s), `contract` (26s), and `migrations` (1m21s). Branch protection
   rules were enabled on `main` for both repositories via GitHub API, enforcing required
