@@ -66,8 +66,8 @@ npm run test:setup
 npm run check:backend
 ```
 
-The API inventory command still intentionally fails on missing optional print
-endpoints. Do not suppress that full-contract/release failure.
+The API inventory command verifies full name coverage across called RPCs,
+tables, and Edge Functions.
 
 ## Publication scan
 
@@ -105,9 +105,9 @@ no broad rule exclusions were added.
    service image updates, rights/assets/legal/privacy text, and release artifacts.
    Synchronous materialized-view refresh is intentionally for small demo installs;
    larger deployments need a reviewed refresh-worker design.
-8. CI workflows are activated under `.github/workflows/` (validation and migrations pass in CI).
-   Resolve the 3 unexported preprinted endpoints (`print-dispatch-preprinted`, `print-grn-preprinted`,
-   `print-invoice-preprinted`) to achieve a full green contract gate. Do not tag a production-ready
+8. CI workflows are activated under `.github/workflows/` (validation, migrations,
+   and mobile contract checks pass in CI). The 3 preprinted document endpoints
+   are exported, closing the static contract gate. Do not tag a production-ready
    release from this checkpoint.
 
 A local failed-initialization directory may be kept under ignored

@@ -51,8 +51,9 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Authenticate maintainer with workflow-capable access (`abhiguru` active).
 - [x] Verify and enable secret scanning/push protection, dependency alerts, and a working private vulnerability-reporting channel.
 - [x] Review and activate workflows from `docs/github-workflows/` into `.github/workflows/`.
-- [ ] Run unit, migration, contract, security and dependency checks in CI.
-      Do not hide known missing optional endpoints to obtain a misleading green gate.
+- [x] Run unit, migration, contract, security and dependency checks in CI.
+      Exported and reviewed the 3 preprinted document endpoints (`print-dispatch-preprinted`,
+      `print-grn-preprinted`, `print-invoice-preprinted`) so mobile contract inventory has 0 missing endpoints.
 - [ ] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
 
 ### 4. Clean-install and native acceptance — pending
@@ -106,6 +107,11 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Exported and reviewed the three preprinted document endpoints
+  (`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
+  and `functions/_shared/print-status-monitor.ts`. Sanitized key logging in `print-grn-preprinted`.
+  Contract check (`check-mobile-contract.mjs`) now passes with 0 missing RPCs, 0 missing tables,
+  and 0 missing Edge functions.
 - 2026-09-12: Pushed commits to `origin/main` on both repositories:
   - Mobile (`rn-warehouse-template` run 34673422024): All CI jobs passed 100% green
     (`Lint & Type Check` passed in 1m19s, `dependencies` passed in 25s).
