@@ -30,9 +30,10 @@ No original repository, service, data, or credential was changed.
   refresh replay denial; revoked REST and Edge access after logout.
 - Mobile: custom-session renewal retained after access expiry; concurrent refresh
   serialized; temporary network failures do not delete refresh credentials;
-  custom logout; GoTrue-free OTP authentication; paginated item lookup handling.
-  59 Jest tests and TypeScript/ESLint error checks pass after the token-storage
-  follow-up. Public bootstrap against
+  custom logout; GoTrue-free OTP authentication; paginated item lookup handling;
+  client-side telemetry redaction across headers, URLs, breadcrumbs, and user PII.
+  75 Jest tests (6 suites) and TypeScript/ESLint error checks pass after the token-storage
+  and telemetry hardening follow-ups. Public bootstrap against
   this running demo passes.
 - A fresh Android JavaScript export passes (2,934 modules, 45 assets). This is
   not a compiled APK or physical-device acceptance.

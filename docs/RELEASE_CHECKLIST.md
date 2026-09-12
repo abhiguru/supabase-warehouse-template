@@ -75,7 +75,7 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [ ] Review all imported RPC signatures, return shapes, grants and callers.
       Existing tests cover selected flows, not every RPC or business calculation.
 
-### 6. Distribution, privacy and rights — in progress
+### 6. Distribution, privacy and rights — completed
 
 - [x] Scan source and Git history for secrets/customer data (Gitleaks verified 0 leaks in publishable files and history).
 - [x] Confirm rights to code, fonts, images and other assets; retain applicable third-party notices.
@@ -83,8 +83,12 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       and MIT licenses for icons, SDKs, and Supabase bootstrap files.
 - [x] Replace or clearly label placeholder privacy/terms/contact information;
       added `EXPO_PUBLIC_LEGAL_EMAIL` support with documented placeholder defaults.
-- [ ] Review optional telemetry and redaction of user data, tokens, URLs, headers
+- [x] Review optional telemetry and redaction of user data, tokens, URLs, headers
       and breadcrumbs. Establish retention/cleanup expectations.
+      Enhanced Sentry/GlitchTip configuration with client-side sanitization of URLs, query
+      params, headers, user PII (phone, email, IP), recursive payloads, and real-time breadcrumbs
+      before transmission. Documented retention window and cleanup policy in `docs/TELEMETRY_AND_PRIVACY.md`.
+      Verified with 16 automated Jest tests in `src/config/__tests__/sentryConfig.test.ts`.
 
 ### 7. Documentation and release integrity — pending
 
@@ -107,6 +111,11 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Completed Item 6 (Distribution, privacy and rights). Implemented comprehensive
+  client-side telemetry redaction in `src/config/sentryConfig.ts` with `beforeBreadcrumb` and `beforeSend`,
+  sanitizing JWTs, Bearer tokens, phone numbers, OTPs, emails, API keys, sensitive query params
+  and headers. Added 16 unit tests in `src/config/__tests__/sentryConfig.test.ts` (75 total mobile tests pass).
+  Created `docs/TELEMETRY_AND_PRIVACY.md` establishing opt-in telemetry and 30-90 day data retention expectations.
 - 2026-09-12: Added mobile `THIRD_PARTY_NOTICES.md` documenting vector icons,
   React Native, and Expo SDK licensing. Parameterized privacy policy and terms of
   service with `EXPO_PUBLIC_LEGAL_EMAIL`. Mobile CI rerun (34674661061) passed 100% green.
