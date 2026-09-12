@@ -41,7 +41,7 @@ production-ready release. The historical backend `v0.1.0` tag is incomplete.
 - [ ] Assess container and Edge/native dependencies beyond npm.
 - [ ] Validate native builds after native dependency changes (see item 4).
 
-### 3. Continuous integration and repository protection — in progress (workflows activated, settings enabled)
+### 3. Continuous integration and repository protection — completed
 
 GitHub CLI maintainer authentication is verified (`abhiguru` with ADMIN and `workflow` scopes).
 Repository security settings have been activated on both repositories:
@@ -54,7 +54,7 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Run unit, migration, contract, security and dependency checks in CI.
       Exported and reviewed the 3 preprinted document endpoints (`print-dispatch-preprinted`,
       `print-grn-preprinted`, `print-invoice-preprinted`) so mobile contract inventory has 0 missing endpoints.
-- [ ] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
+- [x] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
 
 ### 4. Clean-install and native acceptance — pending
 
@@ -107,6 +107,10 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Backend CI (run 34674424611) passed 100% green across all three jobs:
+  `validate` (10s), `contract` (26s), and `migrations` (1m21s). Branch protection
+  rules were enabled on `main` for both repositories via GitHub API, enforcing required
+  CI status checks (`Lint & Type Check`, `dependencies`, `validate`, `contract`, `migrations`).
 - 2026-09-12: Exported and reviewed the three preprinted document endpoints
   (`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
   and `functions/_shared/print-status-monitor.ts`. Sanitized key logging in `print-grn-preprinted`.
