@@ -105,8 +105,9 @@ no broad rule exclusions were added.
    service image updates, rights/assets/legal/privacy text, and release artifacts.
    Synchronous materialized-view refresh is intentionally for small demo installs;
    larger deployments need a reviewed refresh-worker design.
-8. Activate CI with a workflow-capable maintainer authorization and get the full
-   contract/security/dependency/release gates green. Do not tag a production-ready
+8. CI workflows are activated under `.github/workflows/` (validation and migrations pass in CI).
+   Resolve the 3 unexported preprinted endpoints (`print-dispatch-preprinted`, `print-grn-preprinted`,
+   `print-invoice-preprinted`) to achieve a full green contract gate. Do not tag a production-ready
    release from this checkpoint.
 
 A local failed-initialization directory may be kept under ignored
