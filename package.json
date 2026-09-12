@@ -11,5 +11,5 @@
     "test:api": "node tests/api-demo.mjs",
     "check:contract": "node scripts/check-mobile-contract.mjs"
   },
-  "devDependencies": { "jose": "5.10.0" }
+  "devDependencies": { "jose": "6.2.12" }
 }
