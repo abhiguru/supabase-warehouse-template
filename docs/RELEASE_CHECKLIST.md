@@ -116,6 +116,8 @@ input or access where unavailable.
   sanitizing JWTs, Bearer tokens, phone numbers, OTPs, emails, API keys, sensitive query params
   and headers. Added 16 unit tests in `src/config/__tests__/sentryConfig.test.ts` (75 total mobile tests pass).
   Created `docs/TELEMETRY_AND_PRIVACY.md` establishing opt-in telemetry and 30-90 day data retention expectations.
+  Verified in CI: Mobile run 34675088177 (`Lint & Type Check` 1m55s, `dependencies` 30s) and Backend run 34675093154
+  (`validate` 9s, `contract` 27s, `migrations` 1m31s) both passed 100% green.
 - 2026-09-12: Added mobile `THIRD_PARTY_NOTICES.md` documenting vector icons,
   React Native, and Expo SDK licensing. Parameterized privacy policy and terms of
   service with `EXPO_PUBLIC_LEGAL_EMAIL`. Mobile CI rerun (34674661061) passed 100% green.
