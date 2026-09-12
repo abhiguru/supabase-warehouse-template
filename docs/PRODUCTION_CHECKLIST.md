@@ -1,66 +1,53 @@
-# Production Checklist
+# Production acceptance gate
 
-## Before Going Live
+Current source supports only an isolated local demo. Production setup remains
+blocked by `scripts/check-readiness.sh`. This document is an acceptance checklist,
+not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
 
-### Security
-- [ ] Run `./rotate-keys.sh` to generate production JWT keys
-- [ ] Change `DASHBOARD_PASSWORD` to a strong password
-- [ ] Change `GRAFANA_ADMIN_PASS`
-- [ ] Change `CUPS_ADMIN_PASSWORD`
-- [ ] Set `FUNCTIONS_VERIFY_JWT=true`
-- [ ] Set `SMS_PRODUCTION_MODE=true`
-- [ ] Configure real SMS provider credentials (Twilio or MSG91)
-- [ ] Bind all ports to `127.0.0.1` (use reverse proxy for external access)
-- [ ] Set up SSL/TLS termination (Cloudflare Tunnel, nginx, or Caddy)
-- [ ] Set `.env` file permissions to `600`
+## Credentials and deployment boundaries
 
-### Database
-- [ ] Change `POSTGRES_PASSWORD` to a strong password
-- [ ] Enable SSL for database connections
-- [ ] Set up automated backups (pg_dump + cron)
-- [ ] Configure WAL archiving for point-in-time recovery
-- [ ] Review and test RLS policies
+- [ ] Design a new deployment independently; never run this schema baseline
+  against an existing/private database.
+- [ ] Generate unique credentials for the **new installation**. The setup generator
+  creates its environment only when absent, with mode 0600. Existing credentials
+  and environment files must not be overwritten, revoked or rotated by this
+  release workflow. Do not use the legacy `rotate-keys.sh` as a setup prerequisite.
+- [ ] Implement real SMS, operator onboarding, delivery failures and abuse limits
+  without any fixed-code fallback. A configuration flag alone is not implementation.
+- [ ] Review custom-session JWT verification, refresh/logout behavior, RLS and
+  every exposed RPC/Storage/Edge permission. Do not assume GoTrue sessions.
+- [ ] Review all images/dependencies, renderer isolation, mounts, resource limits,
+  service privileges, network boundaries and secret/log handling.
 
-### Monitoring
-- [ ] Enable monitoring profile: `docker compose --profile monitoring up -d`
-- [ ] Configure Slack webhook URLs for alerts
-- [ ] Set up Grafana dashboards
-- [ ] Test alert routing (fire a test alert)
+## Data correctness and operations
 
-### Performance
-- [ ] Adjust `shared_buffers` in override (25% of available RAM)
-- [ ] Adjust `effective_cache_size` (75% of available RAM)
-- [ ] Set `PGRST_DB_POOL` based on expected concurrency
-- [ ] Enable connection pooler if >50 concurrent users
+- [ ] Verify concurrent mutations, idempotency, prices/taxes/invoice calculations,
+  payments, orders, reconciliation, soft deletion and recovery with expected values.
+- [ ] Restore backups into a separate isolated database and compare integrity;
+  scheduling a backup alone is not a restore test.
+- [ ] Test startup failure, migration mismatch, service restart and recovery paths
+  without resetting an existing database.
+- [ ] Configure retention/deletion for documents, images, auth/audit data and
+  optional telemetry; verify the cleanup actually executes.
+- [ ] Set resource budgets, connection limits and monitor disk/memory growth.
+  Review synchronous materialized-view refresh before scaling beyond small demos.
+- [ ] Establish incident contacts, alert delivery, operator access and recovery
+  runbooks. Optional monitoring integrations remain disabled until tested.
 
-### Operations
-- [ ] Set up log rotation (configured in override, verify)
-- [ ] Set up health check cron job
-- [ ] Document runbook for common issues
-- [ ] Test `./stop.sh` and `./start.sh` recovery
-- [ ] Set up systemd service for auto-start on boot
+## Network and native acceptance
 
-## Reverse Proxy Setup
+- [ ] After the production auth gate is implemented and verified, review TLS,
+  CORS, request/body limits and an authenticated deployment's reverse proxy.
+  **Do not tunnel or publicly expose the current fixed-OTP demo.**
+- [ ] Keep database, Studio and renderer off public interfaces.
+- [ ] Complete native Android/iOS and physical-device acceptance, app permissions,
+  privacy declarations and artifact/signing review using newly owned credentials.
+- [ ] Verify printer/sensor/Realtime hardware and authorization before enabling
+  optional features. Presence of an exported endpoint is not hardware acceptance.
+- [ ] Obtain ownership/redistribution approval and complete applicable license
+  notices; verify privacy/contact information and actual data collection.
 
-### Cloudflare Tunnel (recommended)
-```bash
-cloudflared tunnel create my-warehouse
-cloudflared tunnel route dns my-warehouse api.example.com
-cloudflared tunnel run --url http://localhost:8000 my-warehouse
-```
-
-### nginx
-```nginx
-server {
-    listen 443 ssl;
-    server_name api.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
+The default demo uses API `127.0.0.1:18000`, Studio `127.0.0.1:54325`,
+database `127.0.0.1:15433`, and renderer `127.0.0.1:13100`.
+See [READINESS.md](READINESS.md), [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md),
+and [CLEAN_INSTALL.md](CLEAN_INSTALL.md) for demonstrated checks and open work.

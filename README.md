@@ -61,6 +61,8 @@ so the device can use the same localhost origin. If Metro runs on that host,
 also use `adb reverse tcp:8081 tcp:8081`. iOS simulator access assumes the backend
 is reachable on the Mac; a remote backend requires an appropriate local tunnel.
 Native app builds and physical-device flows are still acceptance tasks.
+Fresh public-clone setup and safe reruns are documented in
+[CLEAN_INSTALL.md](docs/CLEAN_INSTALL.md), including isolated ports for a second checkout.
 
 No private key is copied into the mobile app. It retrieves the public anon key
 from bootstrap configuration.
@@ -99,9 +101,10 @@ See [READINESS.md](docs/READINESS.md) and [API_CONTRACT.md](docs/API_CONTRACT.md
 for the exact boundary of testing. Older operational documents are not deployment
 guarantees.
 
-GitHub Actions workflows (`.github/workflows/ci.yml` and `release.yml`) are
-active and enforce linting, contract parity, migrations in disposable PostgreSQL,
-and security checks on all pushes and pull requests to `main`.
+GitHub Actions CI runs unit checks, a static name inventory and disposable
+PostgreSQL migration/security tests on pushes and pull requests to `main`.
+Tag validation is separate; releases are explicitly published as prereleases
+after their validation passes. A green name inventory is not full RPC acceptance.
 
 MIT covers project code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 and [LICENSES](LICENSES/) for bundled upstream material.
