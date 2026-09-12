@@ -106,6 +106,14 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Pushed commits to `origin/main` on both repositories:
+  - Mobile (`rn-warehouse-template` run 34673422024): All CI jobs passed 100% green
+    (`Lint & Type Check` passed in 1m19s, `dependencies` passed in 25s).
+  - Backend (`supabase-warehouse-template` run 34673438189): `validate` (9s) and
+    `migrations` (1m9s with full disposable postgres container test) passed. `contract`
+    failed on the 3 unexported preprinted functions (`print-dispatch-preprinted`,
+    `print-grn-preprinted`, `print-invoice-preprinted`), maintaining the intentional
+    gate documented in `READINESS.md`.
 - 2026-09-12: Maintainer authentication confirmed via GitHub CLI for `abhiguru`
   with ADMIN permission and `workflow` scope. Enabled secret scanning, secret scanning
   push protection, Dependabot vulnerability alerts, automated security fixes, and private
@@ -115,10 +123,6 @@ input or access where unavailable.
   files (101 backend, 477 mobile files), with redacted output; no leaks found.
   Ignored environment files and deployment volumes were excluded. This does
   not complete the pending release-attachment/native-bundle/privacy review.
-- 2026-09-12: Work so far is local and uncommitted; no workflow, repository setting,
-  release, or new commit has been published during this checklist pass. GitHub
-  CLI authentication check failed. Item 3 needs maintainer access; items 4–7 and
-  the separate production gate remain open.
 - 2026-09-12: Reviewed mobile overrides select Metro 0.83.8, PostCSS 8.5.28,
   UUID 11.1.1 only for Xcode/ngrok. Audit now reports 8 moderate, 0 high,
   0 critical; all remaining package findings trace to URL decoding in navigation.
