@@ -91,15 +91,17 @@ Generated PDFs use a generic, escaped starter layout, private storage, and
 one-hour signed links. Configure business details and document terms before use.
 
 Printing, sensors, Realtime, monitoring and other optional integrations are not
-validated by the default demo. In particular, the three preprinted document
-functions and dynamic print-job management are not yet exported.
+validated by the default demo. The three preprinted document functions
+(`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
+and print status monitoring are exported for contract parity, but physical
+printing hardware remains unverified.
 See [READINESS.md](docs/READINESS.md) and [API_CONTRACT.md](docs/API_CONTRACT.md)
 for the exact boundary of testing. Older operational documents are not deployment
 guarantees.
 
-GitHub Actions definitions in `docs/github-workflows/` are **inactive**.
-A maintainer with workflow permission must install them in `.github/workflows/`.
-This does not require revoking or rotating any existing credential.
+GitHub Actions workflows (`.github/workflows/ci.yml` and `release.yml`) are
+active and enforce linting, contract parity, migrations in disposable PostgreSQL,
+and security checks on all pushes and pull requests to `main`.
 
 MIT covers project code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 and [LICENSES](LICENSES/) for bundled upstream material.

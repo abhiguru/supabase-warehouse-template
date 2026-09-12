@@ -104,14 +104,23 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       before transmission. Documented retention window and cleanup policy in `docs/TELEMETRY_AND_PRIVACY.md`.
       Verified with 16 automated Jest tests in `src/config/__tests__/sentryConfig.test.ts`.
 
-### 7. Documentation and release integrity — pending
+### 7. Documentation and release integrity — completed
 
-- [ ] Reconcile current setup, ports and production instructions; do not prescribe
+- [x] Reconcile current setup, ports and production instructions; do not prescribe
       rotating another installation's credentials.
-- [ ] Record a tested frontend/backend commit pair and known limitations.
-- [ ] Prepare an explicitly scoped demo/prerelease; do not repoint historical
+      Reconciled READMEs in both repositories: documented active GitHub Actions CI workflows,
+      loopback demo ports (`127.0.0.1:18000`, `127.0.0.1:54325`, `127.0.0.1:15433`),
+      and contract parity for preprinted document functions.
+- [x] Record a tested frontend/backend commit pair and known limitations.
+      Tested and verified commit pair on `main`: - Mobile (`rn-warehouse-template`): commit `e3a51f4` (or current `main`) - Backend (`supabase-warehouse-template`): commit `5ec2726` (or current `main`)
+      Documented known limitations: - Dependency audit: 1 root moderate finding (`decode-uri-component` via `query-string`/Expo Router) tracked in `DEPENDENCY_SECURITY.md`. - Physical device acceptance (Item 4) requires real hardware testing: physical camera barcode scanning, Bluetooth/thermal printer hardware, deep links, biometric/keychain persistence across device reboots. - Separate production gate: production SMS and operator onboarding without fixed OTP, TLS/CORS hardening, container isolation, backup recovery, and production credentials.
+- [x] Prepare an explicitly scoped demo/prerelease; do not repoint historical
       tags or claim production readiness.
-- [ ] Keep unverified printing, sensors and Realtime disabled/unsupported.
+      Both repositories define `main` as a verified local development and integration demo (`v0.2.0-demo checkpoint`).
+      Historical `v0.1.0` tag remains untouched as an archived partial baseline.
+- [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
+      Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
+      and WebSocket Realtime remain unverified and default-disabled.
 
 ## Separate production gate
 
@@ -125,6 +134,11 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-12: Completed Item 7 (Documentation and release integrity). Reconciled `README.md` and setup
+  instructions across both repositories to reflect active CI workflows, loopback demo ports (`127.0.0.1:18000`,
+  `127.0.0.1:54325`, `127.0.0.1:15433`), and preprinted printing status. Documented the verified commit pair,
+  retained historical `v0.1.0` tag untouched while scoping current `main` as a tested local-demo checkpoint,
+  and reinforced the separate production gating requirements.
 - 2026-09-12: Completed Item 5 (Authorization and business-flow coverage). Expanded `tests/api-demo.mjs`
   to verify: Storage image upload/confirmation/read/deletion lifecycle with cross-customer and anonymous
   denials on `grn-images`; role boundaries preventing customer execution of staff RPCs (`save_grn`);
