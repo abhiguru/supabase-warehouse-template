@@ -10,8 +10,10 @@ cleanup() {
 }
 trap cleanup EXIT
 docker run -d --name "$container" --label purpose=warehouse-migration-test \
-  --network none --memory 768m --cpus 1 \
-  --tmpfs /var/lib/postgresql/data:rw,size=512m \
+  --network none --memory 1g --cpus 1 \
+  --tmpfs /var/lib/postgresql/data:rw,size=768m \
+  -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
+  -e AUTH_MODE=demo -e APP_ENV=development \
   -e POSTGRES_PASSWORD=disposable-test-database-only supabase/postgres:15.8.1.060 >/dev/null
 created=true
 ready=false
@@ -20,8 +22,17 @@ for ((i=0; i<60; i++)); do
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Test database did not start' >&2; exit 1; }
-for migration in "$ROOT"/migrations/*.sql; do
-  echo "Testing $(basename "$migration")"
-  docker exec -i "$container" psql -X -U postgres -d postgres --single-transaction -v ON_ERROR_STOP=1 < "$migration"
+for pass in 1 2; do
+  echo "Migration ledger pass $pass (second pass must skip unchanged files)"
+  node "$ROOT/scripts/migration-plan.mjs" |
+    docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 done
-docker exec -i "$container" psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/security_baseline.sql"
+for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql"; do
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
+done
+for pass in 1 2; do
+  for configuration in "$ROOT/scripts/configure-auth.sql" "$ROOT/scripts/demo-seed.sql"; do
+    docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$configuration"
+  done
+done
+echo 'Migration reruns, auth configuration, and demo seed reruns passed.'

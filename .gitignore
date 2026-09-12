@@ -6,6 +6,8 @@ docker/.env
 
 # Docker volumes (persistent data)
 docker/volumes/db/data/
+docker/volumes/db/data.failed-init-*/
+docker/volumes/db/data.review-*/
 docker/volumes/storage/
 docker/volumes/logs/
 docker/volumes/bundles/

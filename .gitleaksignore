@@ -1,0 +1,8 @@
+# Reviewed historical documentation placeholders, not credentials for any deployment.
+# Current files use non-token placeholders and have zero default-rule findings.
+cf07ab97dcc9a0271263be9dd1841e22c3ec14ab:README.md:curl-auth-header:78
+cf07ab97dcc9a0271263be9dd1841e22c3ec14ab:README.md:curl-auth-header:82
+cf07ab97dcc9a0271263be9dd1841e22c3ec14ab:docs/PDF_GENERATION.md:curl-auth-header:16
+# Historical .env.example JWTs declare issuer supabase-demo and match no generated key.
+cf07ab97dcc9a0271263be9dd1841e22c3ec14ab:.env.example:jwt:25
+cf07ab97dcc9a0271263be9dd1841e22c3ec14ab:.env.example:jwt:26

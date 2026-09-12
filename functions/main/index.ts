@@ -4,7 +4,8 @@ import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 
 const publicFunctions = new Set(['hello', 'get-public-config']);
-const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp']);
+const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp',
+  'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);
 
 serve(async (req: Request) => {
   const cors = handleCors(req);

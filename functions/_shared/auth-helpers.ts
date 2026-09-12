@@ -24,8 +24,10 @@ export async function validateUserAccess(req: Request): Promise<UserProfile> {
   const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!url || !key) throw { status: 500, message: 'Server configuration missing' };
   const response = await fetch(`${url}/rest/v1/user_profiles?auth_user_id=eq.${encodeURIComponent(payload.sub)}&select=id,auth_user_id,name,display_name,mobile,role,active`, {
-    headers: { apikey: key, Authorization: `Bearer ${key}` },
+    // Preserve the caller JWT so PostgREST's session hook checks revocation too.
+    headers: { apikey: key, Authorization: req.headers.get('Authorization')! },
   });
+  if (response.status === 401 || response.status === 403) throw { status: 403, message: 'Session expired or revoked' };
   if (!response.ok) throw { status: 503, message: 'Profile lookup unavailable' };
   const profiles = await response.json();
   if (!Array.isArray(profiles) || profiles.length !== 1 || !profiles[0].active) {

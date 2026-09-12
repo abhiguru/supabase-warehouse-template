@@ -13,9 +13,9 @@ services:
     # PostgreSQL performance tuning
     command: >-
       postgres
-      -c max_connections=250
+      -c max_connections=100
       -c listen_addresses=*
-      -c shared_preload_libraries=pg_stat_statements,pg_cron
+      -c shared_preload_libraries=pg_stat_statements,pg_cron,pg_net
       -c pg_stat_statements.track=all
       -c cron.database_name=postgres
       -c random_page_cost=1.1
@@ -23,16 +23,16 @@ services:
       -c log_min_messages=warning
       -c log_connections=on
       -c log_disconnections=on
-      -c log_statement=mod
-      -c log_min_duration_statement=1000
+      -c log_statement=none
+      -c log_min_duration_statement=-1
       -c log_lock_waits=on
       -c log_temp_files=0
-      -c wal_level=replica
+      -c wal_level=logical
       -c archive_mode=off
-      -c shared_buffers=1GB
-      -c effective_cache_size=3GB
-      -c work_mem=32MB
-      -c maintenance_work_mem=512MB
+      -c shared_buffers=128MB
+      -c effective_cache_size=512MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
       -c wal_buffers=32MB
       -c checkpoint_completion_target=0.9
       -c checkpoint_timeout=15min
@@ -43,10 +43,10 @@ services:
       resources:
         limits:
           cpus: '2.0'
-          memory: 4G
+          memory: 1G
         reservations:
           cpus: '0.5'
-          memory: 2G
+          memory: 256M
 
   # Analytics disabled by default to reduce resource usage and startup time.
   # To re-enable: remove the 'replicas: 0' line below and restart.
@@ -56,9 +56,6 @@ services:
 
   # Override depends_on to remove analytics dependency (since it's disabled)
   studio:
-    depends_on: !reset
-      db:
-        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -66,19 +63,10 @@ services:
           memory: 512M
 
   auth:
-    depends_on: !reset
-      db:
-        condition: service_healthy
 
   meta:
-    depends_on: !reset
-      db:
-        condition: service_healthy
 
   functions:
-    depends_on: !reset
-      db:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9000'"]
       interval: 30s
@@ -100,9 +88,6 @@ services:
       # Added prometheus plugin for metrics and rate-limiting
       KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus
       KONG_STATUS_LISTEN: "0.0.0.0:8100"
-    depends_on: !reset
-      db:
-        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -113,11 +98,8 @@ services:
           memory: 256M
 
   rest:
-    depends_on: !reset
-      db:
-        condition: service_healthy
     environment:
-      PGRST_DB_POOL: "120"
+      PGRST_DB_POOL: "20"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
       PGRST_DB_CONFIG: "false"
       PGRST_DB_PREPARED_STATEMENTS: "true"

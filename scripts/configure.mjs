@@ -3,7 +3,7 @@ import { randomBytes, createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export function configure(root) {
+export function configure(root, { demo = false } = {}) {
   const target = resolve(root, 'docker/.env');
   if (existsSync(target)) return false; // Never read, regenerate, or overwrite existing credentials.
   let template = readFileSync(resolve(root, '.env.example'), 'utf8');
@@ -14,6 +14,7 @@ export function configure(root) {
     return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
   };
   const values = {
+    AUTH_MODE: demo ? 'demo' : 'disabled',
     POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
     JWT_SECRET: secret,
     ANON_KEY: jwt('anon'),
@@ -37,6 +38,7 @@ export function configure(root) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const created = configure(fileURLToPath(new URL('..', import.meta.url)));
+  if (process.argv.slice(2).some(arg => arg !== '--demo')) throw new Error('Usage: node scripts/configure.mjs [--demo]');
+  const created = configure(fileURLToPath(new URL('..', import.meta.url)), { demo: process.argv.includes('--demo') });
   console.log(created ? 'Created fresh docker/.env; no credentials printed.' : 'Preserved existing docker/.env unchanged.');
 }

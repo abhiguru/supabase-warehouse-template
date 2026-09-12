@@ -108,9 +108,6 @@ services:
           allow:
             - admin
             - anon
-      - name: file-log
-        config:
-          path: /dev/stdout
 
   ## Secure GraphQL routes
   - name: graphql-v1

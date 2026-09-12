@@ -24,6 +24,10 @@ const calls = { rpc: new Set(), tables: new Set(), edge: new Set() };
 for (const path of ['src', 'app'].flatMap(dir => files(resolve(mobile, dir), /\.tsx?$/))) {
   const tree = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
   const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'executeRPC') {
+      const arg = node.arguments[1];
+      if (arg && ts.isStringLiteralLike(arg)) calls.rpc.add(arg.text);
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const method = node.expression.name.text;
       const arg = node.arguments[0];

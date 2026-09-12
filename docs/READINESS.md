@@ -1,106 +1,112 @@
-# Second-pass readiness review — 2026-09-10
+# Readiness — 2026-09-12
 
-## Decision: not ready for a working end-to-end release
+## Decision
 
-The v0.1.0 repositories contain a mobile application and an incomplete backend
-template, not a complete sanitized export of the original backend. Do not use
-this schema for a production installation or advertise a ten-minute working demo.
-Setup/start are deliberately gated before any environment or Docker mutation.
-This review did not change the original repositories, servers, or credentials.
+Current main is a tested **local-demo checkpoint**, not a production release or
+complete native-app acceptance. The v0.1.0 tag remains an incomplete historical
+export. Production setup stays gated; only explicit `setup.sh --demo` is enabled.
 
-## Reproduced blockers
+No original repository, service, data, or credential was changed.
 
-| Check | Result |
-| --- | --- |
-| Empty Supabase Postgres 15.8.1.060 schema restore | Fails: `type public.user_role does not exist` at `user_profiles` |
-| Literal mobile RPC coverage | 70 missing out of 76 called |
-| Literal mobile table coverage | Missing `dispatch_trl`, `goodsreceived_trl`, `grn_images`, `order_items` |
-| Mobile Edge Function coverage | Seven PDF/preprinted-print functions missing |
-| GitHub Actions | Definitions exist but are not installed as active workflows |
-| End-to-end login/GRN/dispatch/invoice | Blocked by the missing backend; not tested successfully |
+## Verified
 
-Reproduce using `npm run test:migrations` and
-`node scripts/check-mobile-contract.mjs ../rn-warehouse-template` after `npm ci`
-in the mobile checkout. [API_CONTRACT.md](API_CONTRACT.md) lists the missing names.
-Presence is only a first check: signatures, return shapes, dynamic calls, and
-database authorization must also be verified.
+- Full schema-only baseline restores into a fresh Supabase Postgres 15.8.1.060:
+  76 baseline tables and 351 non-test function definitions, plus starter migrations.
+  No production rows or original signing keys are seeded.
+- Transactional migration ledger, advisory lock, and checksums; an unchanged
+  second migration pass skips all files. Auth configuration and demo seeds rerun.
+  Existing environment files are byte-preserved.
+- Full Compose startup and health checks: database, REST, gateway, Studio,
+  storage, Edge Functions, image proxy and Gotenberg. Corrected required pg_net
+  preload, dependency ordering, and checks that assumed curl existed in Kong.
+- SQL tests execute as actual anonymous/authenticated roles: default-disabled
+  demo OTP, wrong/replayed OTP, active/inactive accounts, refresh rotation/replay,
+  secret/table/function grants, self-promotion denial, customer isolation,
+  logout/session revocation, and populated materialized views.
+- Live API tests: public bootstrap; admin/customer demo login; anonymous denial;
+  customer-only reads; cross-customer RPC/PDF denial; role-promotion denial;
+  GRN creation and customer lookup; dispatch with an exact stock decrement;
+  overselling denial; invoice saving; four PDFs downloaded and verified as PDFs;
+  refresh replay denial; revoked REST and Edge access after logout.
+- Mobile: custom-session renewal retained after access expiry; concurrent refresh
+  serialized; temporary network failures do not delete refresh credentials;
+  custom logout; GoTrue-free OTP authentication; paginated item lookup handling.
+  50 Jest tests and TypeScript/ESLint error checks pass. Public bootstrap against
+  this running demo passes.
+- A fresh Android JavaScript export passes (2,934 modules, 45 assets). This is
+  not a compiled APK or physical-device acceptance.
 
-Further static schema problems include unterminated `$function$` definitions,
-policies that reference absent helpers, absent `utils` functions and `http`/JWT
-dependencies, indexes/policies referencing nonexistent trailer tables, and seed
-columns that do not match the tables (`jwt_config.key/value`, `items.category/unit`).
-The JWT secret generated into `.env` is not synchronized into `jwt_config`.
-Adding the missing enum alone will not repair the export.
+These are specific assertions, not proof that all business calculations, 100 RPC
+names, concurrency paths, policies, native screens, or optional services work.
 
-## Changes made in the second pass
+## Reproduce
 
-- New configuration uses exclusive creation, private permissions, matching
-  signed anon/service tokens, and no secret output. Reruns preserve every byte.
-- Removed production-style container names, fixed IP addresses/subnet, and the
-  missing Vector config dependency. Source functions/Kong config mount directly.
-  Core ports are distinct and loopback-only; Compose wrapper checks ownership.
-- Setup/start refuse an incomplete release. SQL execution now fails fast;
-  migrations and their applied-file ledger entries are transactional. Health
-  checks return nonzero on failure and probe the intended project's network.
-- Edge handlers verify signatures, algorithm, issuer, expiry, and token kind
-  before trusting claims. Authenticated config uses active custom-auth profiles,
-  not the disabled GoTrue service. Public bootstrap remains separately public.
-- Public URLs come from explicit configuration instead of always returning
-  localhost. Configuration errors return failures, not fake successful defaults.
-- Sample PDF requires staff access and escapes user text. IPP imports Buffer
-  explicitly and validates printer names. Physical printing remains untested.
+From the backend checkout:
 
-Local checks passing: Node configuration/JWT/profile tests, shell syntax, and
-Compose rendering. The migration/contract checks correctly fail on the blockers
-above. Unit tests are not an independent security audit or a full-stack test.
+```bash
+npm ci
+npm test
+npm run test:migrations
+bash setup.sh --demo
+npm run test:api
+```
 
-## Required before removing the release gate
+The isolated migration test removes only its own disposable container. API tests
+write fictional records only after matching this demo's key; they leave those
+fixtures in place. Demo login rate limits apply to repeated API-test runs.
 
-1. Rebuild a **complete, schema-only, sanitized backend export** from the original
-   source/schema. Include enums, schemas/extensions, sequences, all domain and
-   assignment tables, functions, views, triggers, constraints, RLS, grants, and
-   Storage bucket definitions/policies. No customer rows, auth rows, OTPs, backups,
-   tokens, production URLs, private keys, remote history, or signing assets.
-2. Apply it with `ON_ERROR_STOP` to a genuinely empty isolated database. Fix seed
-   schemas, make seeds repeatable, add migration checksum/concurrency protection,
-   and synchronize freshly generated server JWT configuration without modifying
-   any existing deployment's credentials. Prove reruns retain configuration/data.
-3. Add a safe operator-only first-admin procedure and fictional demo customers,
-   items, prices, and assignments. Do not expose `create_first_admin` anonymously.
-4. Implement and test every required mobile RPC/Edge Function, parameter, and
-   response shape. Run login, wrong/replayed/expired OTP, logout, restart, expired
-   access-token refresh, disabled-user, and customer-assignment flows. The current
-   OTP code's production fallback to `123456`, permanent test-phone bypass,
-   attempt limits, concurrent verification, and refresh/session handling must be
-   replaced/reviewed before production use. Missing SMS config must fail closed.
-5. Replace blanket function/table grants with explicit least-privilege grants.
-   Audit SECURITY DEFINER functions and safe search paths. Prove anonymous users
-   cannot read/write business/config data or create admins; customers cannot
-   access another customer's data or change their own role/active/assignments;
-   inactive users cannot retain access. Test as real database roles, including
-   reads/writes through RPC and Storage, not just policy-text matching.
-6. On fresh data, test customer creation, GRN + image upload, stock balances,
-   dispatch without overselling, invoice calculations, payments, orders, reports,
-   image deletion, and PDF output. Explicitly gate optional sensor/printing
-   features until they have implementations and device tests.
-7. Review custom auth's compatibility with Storage and Realtime. The current
-   Compose tuning uses `wal_level=replica`; Realtime requires separate validation
-   and appropriate logical replication configuration. Do not claim it works.
-8. Audit Docker image dependencies, TLS/CORS, rate limits, PDF renderer network
-   access, log redaction, backup/restore, and optional privileged host/USB mounts.
-   Never expose Studio, Postgres, monitoring, or test OTP mode publicly. Optional
-   profiles and all older operational docs need a fresh validation pass.
-9. Address the mobile dependency audit and perform native Android/iOS builds and
-   device flows. Install CI with workflow permission, keep failing gates enabled,
-   and run a full secret/history scan plus rights/asset review before the next
-   release. Make the release reflect what is actually verified.
+From the installed mobile checkout:
 
-## External documentation used
+```bash
+npm test -- --silent
+npm run typecheck
+npx eslint . --quiet
+npm run test:setup
+npm run check:backend
+```
 
-Isolation follows [Compose project naming](https://docs.docker.com/compose/how-tos/project-name/)
-and [service DNS networking](https://docs.docker.com/compose/how-tos/networking/).
-JWT validation follows the signature-verification requirement described in
-[Supabase JWT documentation](https://supabase.com/docs/guides/auth/jwts).
+The API inventory command still intentionally fails on missing optional print
+endpoints. Do not suppress that full-contract/release failure.
 
-Completing this checklist is a backend-export/integration task, not credential
-rotation. Existing private deployments can stay unchanged throughout.
+## Publication scan
+
+Gitleaks 8.30.1 scans of the publishable source trees found no remaining secrets.
+The scan caught an embedded legacy SMS initializer in the unpublished schema;
+that entire function was removed before publication and the new demo rebuilt.
+The original credential was neither revoked nor rotated. Mobile history scans
+are clean. Backend history has five individually reviewed documentation/demo-key
+false positives, listed by exact historical fingerprints in `.gitleaksignore`;
+no broad rule exclusions were added.
+
+## Still required
+
+1. Implement and test a real SMS provider with no fixed-code fallback, provider
+   failures, delivery limits, registration controls, and operator-admin onboarding.
+   The local demo permits only impossible subscriber numbers 0000000001–9.
+2. Review and test all imported RPC signatures, return shapes, grants, and business
+   rules. Expand coverage to prices/invoice calculations, payments, cart/order
+   lifecycle, concurrent dispatch/idempotency, reports, soft deletion, and recovery.
+3. Verify image upload/confirmation/deletion and cross-customer Storage access.
+   Signed generated-document downloads have been tested; that does not cover all
+   image workflows. Set retention/cleanup for generated PDFs and auth/audit data.
+4. Export/review the three preprinted document endpoints and dynamic
+   `manage-print-jobs`. Test actual printer hardware, sensors, Realtime and
+   optional profiles before enabling them. Printing/sensor feature flags default
+   off; Realtime is an opt-in profile.
+5. Complete Android/iOS native builds, fresh-install/login/restart/offline/device
+   flows, camera/secure-storage/deep-link checks, and frontend role acceptance.
+   JS/Jest/API tests are not substitutes for this.
+6. Resolve mobile dependency findings (2026-09-10 audit: 9 high, 20 moderate),
+   with SDK-compatible updates and native regression tests.
+7. Perform deployment review: TLS/CORS, gateway/body limits, privileged optional
+   host mounts, renderer isolation, backups/restores, startup-failure recovery,
+   service image updates, rights/assets/legal/privacy text, and release artifacts.
+   Synchronous materialized-view refresh is intentionally for small demo installs;
+   larger deployments need a reviewed refresh-worker design.
+8. Activate CI with a workflow-capable maintainer authorization and get the full
+   contract/security/dependency/release gates green. Do not tag a production-ready
+   release from this checkpoint.
+
+A local failed-initialization directory may be kept under ignored
+`docker/volumes/db/data.failed-init-*/` for diagnosis. It is not public source.
+Do not delete or reset an existing deployment to follow this guide.

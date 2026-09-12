@@ -1,88 +1,105 @@
 # Supabase Warehouse Template
 
-Work-in-progress source release for a warehouse application. Companion:
+An open-source warehouse backend, paired with
 [rn-warehouse-template](https://github.com/abhiguru/rn-warehouse-template).
 
-**Not yet runnable end to end.** A fresh-database second pass found that the v0.1.0
-schema does not apply and the export omits APIs required by the mobile app.
-Read [READINESS.md](docs/READINESS.md) before trying to deploy. Setup/start
-deliberately fail before accessing Docker or generating credentials until the
-backend export is completed. Earlier "one-command setup" claims were incorrect.
+The current main branch supports a **local development demo**. Fresh schema
+restore, custom login, customer isolation, GRN, dispatch, invoice saving, and
+four PDF/download flows have passed integration tests. This is **not a
+production-ready release**. Production SMS, optional printing, native-device
+acceptance, and broader workflow/security review remain open. The older
+v0.1.0 tag contains an incomplete export; use current main for these changes.
 
-## What you can do now
+## Start the local demo
 
-Use Node.js 22.18+ to run the isolated configuration and authentication checks:
+Prerequisites: Node.js 22.18+, npm, Docker with Compose v2, and OpenSSL.
+Allow several GB of free memory/disk and internet access for image/module downloads.
 
 ```bash
 git clone https://github.com/abhiguru/supabase-warehouse-template.git
 cd supabase-warehouse-template
 npm ci
 npm test
-docker compose --env-file .env.example -f docker/docker-compose.yml -f docker/docker-compose.override.yml config --quiet
+bash setup.sh --demo
 ```
 
-Reproduce the database blocker with Docker Compose v2, Docker, and OpenSSL:
+Setup generates credentials **only if** `docker/.env` does not exist. Existing
+configuration bytes are preserved. Demo startup requires `AUTH_MODE=demo`,
+`APP_ENV=development`, and `BIND_ADDRESS=127.0.0.1`; an incompatible existing
+configuration fails rather than being overwritten.
+
+- API: `http://localhost:18000`
+- Studio: `http://localhost:54325` (local access only)
+- Demo admin: **0000000001**
+- Assigned demo customer: **0000000002**
+- Demo OTP: **123456** — no SMS is sent.
+
+Demo authentication accepts only numbers 0000000001 through 0000000009.
+OTP expiry, attempt limits, replay protection, and five-per-hour/twenty-per-day
+request limits still apply. Never expose this demo to the internet.
 
 ```bash
+bash health-check.sh
 npm run test:migrations
+npm run test:api
+bash start.sh --demo
+bash stop.sh
 ```
 
-This creates a disposable, network-isolated database, publishes no ports, mounts
-no production data, stops on the first SQL error, and removes its own container.
-It currently **fails**, as expected for the incomplete export.
+Migration tests use and remove their own network-isolated disposable database.
+API tests require the running demo, verify its generated key before writes,
+and leave fictional GRN/dispatch/invoice fixtures for exploration. Each API-test
+run consumes a demo OTP request per account. Stop preserves database/files.
 
-With the mobile repository installed alongside this one:
+## Connect the mobile application
 
-```bash
-node scripts/check-mobile-contract.mjs ../rn-warehouse-template
-```
+Install the companion repository and set its `EXPO_PUBLIC_CONFIG_API_URL` to
+`http://localhost:18000`. Run `npm run check:backend` there.
 
-This reports missing literal RPC/table/function names from TypeScript syntax,
-ignores comments/tests, and exits nonzero on gaps. Name coverage is not proof of
-matching parameters, return shapes, SQL validity, security, or runtime behavior.
+For Android connected to the backend host, run `adb reverse tcp:18000 tcp:18000`
+so the device can use the same localhost origin. If Metro runs on that host,
+also use `adb reverse tcp:8081 tcp:8081`. iOS simulator access assumes the backend
+is reachable on the Mac; a remote backend requires an appropriate local tunnel.
+Native app builds and physical-device flows are still acceptance tasks.
 
-## Configuration and isolation
+No private key is copied into the mobile app. It retrieves the public anon key
+from bootstrap configuration.
 
-Only newly created `docker/.env` files receive fresh secrets. Existing files are
-never read or overwritten by the configuration generator. No credentials from
-another installation are needed. Automatic rotation is disabled.
+## Isolation and migration safety
 
-The planned local ports are API **18000**, Studio **54325**, database **15433**,
-and PDF service **13100**, bound to loopback. These are not the original Supabase
-deployment's ports. Compose uses service DNS, not fixed container names or a
-fixed subnet. Use `bash scripts/compose.sh ...` for project ownership checks;
-`WAREHOUSE_PROJECT_NAME` must start with `warehouse-`.
+All scripts operate on this checkout's Compose project and verify container
+ownership. The project name defaults to `warehouse-template` and must begin
+with `warehouse-`. Database/storage mounts live inside this new checkout.
+The database host port is 15433; the PDF-service host port is 13100.
 
-Once the release gate is satisfied, `setup.sh` will create configuration,
-start services, apply migrations transactionally, and run failing health checks.
-The migration runner records applied filenames; checksum/concurrent-run
-protection and JWT database synchronization still need completion.
+Startup brings up only the database first, then applies the complete schema,
+permissions, and custom-auth configuration before starting APIs. Migrations use
+checksums, a database advisory lock, and a transactional ledger. Changed applied
+files and untracked existing warehouse databases are refused. Add new migrations
+for later changes; do not transplant this baseline into an existing installation.
 
-For a physical phone on an isolated development LAN, both the backend
-`SUPABASE_PUBLIC_URL` and mobile `EXPO_PUBLIC_CONFIG_API_URL` must use the
-same phone-reachable address, for example `http://192.0.2.10:18000` (replace
-with your actual LAN IP). Binding beyond loopback requires an explicit
-`BIND_ADDRESS` change. Do not expose test OTP mode to the internet.
+Original repositories, production data, credentials, and Git history are not
+needed. Setup never revokes or rotates another installation's credentials.
+Account refresh-token renewal affects only that new demo login session.
 
-Only `hello` and `get-public-config` are public functions. Other functions
-verify JWT signatures; configuration checks active profiles, and PDF/print
-operations require an admin/supervisor. The service-role key is server-only.
+## Features and limits
 
-## Scope and release requirements
+The schema includes the warehouse business definitions; imported administrative,
+legacy SMS, and debugging functions are not generally executable by API users.
+Authenticated access uses explicit RPC grants, active sessions and customer RLS.
+Generated PDFs use a generic, escaped starter layout, private storage, and
+one-hour signed links. Configure business details and document terms before use.
 
-The tree contains schema fragments, OTP/custom-JWT code, configuration functions,
-sample PDF/IPP code, and Compose definitions. It is **not a complete export of
-the original application**. The detailed completion and deployment-security
-checklist is in [READINESS.md](docs/READINESS.md). Older architecture/operations
-guides describe intended behavior, not tested guarantees.
+Printing, sensors, Realtime, monitoring and other optional integrations are not
+validated by the default demo. In particular, the three preprinted document
+functions and dynamic print-job management are not yet exported.
+See [READINESS.md](docs/READINESS.md) and [API_CONTRACT.md](docs/API_CONTRACT.md)
+for the exact boundary of testing. Older operational documents are not deployment
+guarantees.
 
-MIT covers this project's code. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-and [LICENSES](LICENSES/) cover bundled upstream material.
+GitHub Actions definitions in `docs/github-workflows/` are **inactive**.
+A maintainer with workflow permission must install them in `.github/workflows/`.
+This does not require revoking or rotating any existing credential.
 
-## CI status
-
-Definitions in `docs/github-workflows/` are **inactive**. The GitHub credential
-used for the initial publication cannot manage workflows. A maintainer with
-workflow permission must install them in `.github/workflows/`; no existing
-credential needs to be revoked or rotated. The migration, contract, and release
-gates must pass before advertising a working release.
+MIT covers project code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [LICENSES](LICENSES/) for bundled upstream material.

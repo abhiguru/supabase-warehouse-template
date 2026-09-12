@@ -1,71 +1,34 @@
-# PDF Generation
+# PDF generation
 
-## Overview
+Current main implements four mobile endpoints:
 
-PDFs are generated using [Gotenberg](https://gotenberg.dev/), a Chromium-based HTML-to-PDF conversion service. This gives full CSS support (Flexbox, Grid, @page rules) for pixel-perfect documents.
+| Endpoint | POST body |
+| --- | --- |
+| generate-grn-pdf | `{ "gr_no": "..." }` |
+| generate-dispatch-pdf | `{ "disp_no": "..." }` |
+| generate-invoice-pdf | `{ "inv_no": 1, "fin_year": 2026 }` |
+| generate-customer-stock-pdf | `{ "customer_id": "<uuid>" }` |
 
-## How It Works
+Each requires a valid, active custom user session and returns
+`{ success, pdf_url, expires_in, document }`. Customer access follows assignment
+RLS. A document outside the caller's scope returns 404. The business reads use
+the caller JWT; the server key is used only for the subsequent private upload.
 
-```
-Edge Function → Build HTML → POST to Gotenberg → PDF bytes → Response
-```
+Gotenberg renders escaped HTML with a restrictive content policy. The generic
+starter layout omits company-specific branding, private addresses, original
+terms and preprinted-paper positioning. The default name is Warehouse Manager.
+To customize it, supply COMPANY_NAME in the functions service environment and
+review the document terms/layout for your organization.
 
-## Quick Test
+Generated PDFs live in the private documents bucket. Links expire after one hour;
+there is no direct client-read policy. Signed links are bearer capabilities:
+do not log, share publicly, or send them to unrelated services. Expiration does
+not delete the PDF; add a retention policy before sustained use.
 
-```bash
-curl -X POST http://localhost:8000/functions/v1/generate-sample-pdf \
-  -H "Authorization: Bearer YOUR_ANON_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Monthly Report"}' \
-  --output report.pdf
-```
+After `bash setup.sh --demo`, run `npm run test:api` to create fictional documents
+and verify all four PDF downloads. The smoke test leaves its fixtures in the
+new demo. Demo OTP rate limits apply.
 
-## Gotenberg Client
-
-The shared library `_shared/gotenberg-client.ts` provides:
-
-```typescript
-import { htmlToPdf, createFooterHtml } from '../_shared/gotenberg-client.ts'
-
-// Convert HTML to PDF
-const pdfBytes = await htmlToPdf(htmlString, {
-  paperWidth: 8.27,    // A4
-  paperHeight: 11.69,
-  marginTop: 0.39,
-  landscape: false,
-  printBackground: true,
-  footerHtml: createFooterHtml('Company', 'Invoice', 'INV-001'),
-});
-```
-
-## Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `paperWidth` | 8.27 (A4) | Width in inches |
-| `paperHeight` | 11.69 (A4) | Height in inches |
-| `marginTop/Right/Bottom/Left` | Corporate defaults | Margins in inches |
-| `landscape` | false | Page orientation |
-| `printBackground` | true | Render background colors |
-| `scale` | 1.0 | Content scale (0.1-2.0) |
-| `waitDelay` | - | Wait before converting (e.g., '1s') |
-| `headerHtml` | - | HTML for page header |
-| `footerHtml` | - | HTML for page footer |
-
-## Footer with Page Numbers
-
-Gotenberg supports special CSS classes for page numbers:
-- `<span class="pageNumber"></span>` — Current page
-- `<span class="totalPages"></span>` — Total pages
-
-The `createFooterHtml()` helper uses these automatically.
-
-## Health Check
-
-```bash
-curl http://localhost:3100/health
-```
-
-## Resource Limits
-
-Gotenberg runs Chromium, which can consume significant memory. The default limit is 1GB with 256MB reserved. Adjust in `docker-compose.yml` if needed.
+The authenticated `generate-sample-pdf` endpoint remains a staff-only renderer
+example. Printer-specific/preprinted endpoints are separate incomplete optional
+integrations; see [READINESS.md](READINESS.md).

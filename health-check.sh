@@ -16,7 +16,15 @@ for service in db kong rest studio storage functions gotenberg; do
 done
 compose exec -T db pg_isready -U postgres || failed=1
 # Probe the intended project internally, never an unrelated server on a fixed host port.
-compose exec -T kong bash -c 'curl --fail --silent --show-error --max-time 15 http://localhost:8000/rest/v1/ -H "apikey: $SUPABASE_ANON_KEY" -o /dev/null' || failed=1
-compose exec -T kong curl --fail --silent --show-error --max-time 30 http://localhost:8000/functions/v1/get-public-config -o /dev/null || failed=1
-compose exec -T gotenberg curl --fail --silent --show-error --max-time 15 http://localhost:3000/health -o /dev/null || failed=1
+compose exec -T studio node --input-type=module <<'JS' || failed=1
+for (const [name,url,headers] of [
+  ['REST','http://kong:8000/rest/v1/',{apikey:process.env.SUPABASE_ANON_KEY}],
+  ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
+  ['PDF renderer','http://gotenberg:3000/health',{}],
+]) {
+  const response=await fetch(url,{headers,signal:AbortSignal.timeout(30000)});
+  if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+  console.log(`${name}: available`);
+}
+JS
 exit "$failed"

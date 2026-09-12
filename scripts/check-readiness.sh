@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Remove this release gate only after full migration and API contract tests pass.
-echo "NOT READY: the v0.1.0 backend export is incomplete. No setup changes were made." >&2
-echo "See docs/READINESS.md for reproduced schema errors and the completion checklist." >&2
+# Production stays gated until provider, full API, and deployment checks are complete.
+if [[ "${1:-}" == '--demo' && "$#" == 1 ]]; then
+  echo 'LOCAL DEMO ONLY: production SMS, native-device acceptance and optional printing are not release-ready.' >&2
+  exit 0
+fi
+echo 'Production setup is not ready. Use ./setup.sh --demo for an isolated, loopback-only demonstration.' >&2
+echo 'See docs/READINESS.md for remaining acceptance checks.' >&2
 exit 1

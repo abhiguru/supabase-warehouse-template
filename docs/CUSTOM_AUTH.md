@@ -1,5 +1,9 @@
 # Custom Phone OTP Authentication
 
+> Historical design notes. Current main uses opt-in demo-only OTP and private
+> session tables; the provider/configuration examples below are not a working
+> production setup. Follow [README](../README.md) and [READINESS](READINESS.md).
+
 This template implements phone-based OTP authentication without GoTrue, using PostgreSQL RPC functions and custom JWT generation.
 
 ## Why Not GoTrue?
