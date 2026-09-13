@@ -8,6 +8,11 @@ This is the ordered work tracker for **both** public repositories:
 They are already public. Current main is a local-demo checkpoint, not a
 production-ready release. The historical backend `v0.1.0` tag is incomplete.
 
+Matching `v0.2.0-demo` source-only prereleases were published on 2026-09-13:
+[backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.0-demo)
+and [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.0-demo).
+Use that tag in both repositories for the recorded checkpoint; `main` can advance.
+
 ## Boundaries
 
 - Change only the new open-source repositories and isolated test environments.
@@ -128,7 +133,10 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 
 - [ ] Obtain maintainer confirmation of ownership/redistribution rights and complete
       bundled license texts/attributions where required; a notice list alone is not approval.
-- [ ] Inspect tags, release attachments and native artifacts for secrets/customer data.
+- [x] Inspect source trees/history at the published tags and verify no uploaded
+      release attachments. Published releases contain GitHub-generated source only.
+- [ ] Review native artifacts for secrets/customer data before any future binary
+      distribution; the local debug APK is not a published release attachment.
 - [ ] Validate actual telemetry payloads/native crashes, privacy declarations and
       server retention/cleanup configuration. Documentation does not enforce server retention.
 
@@ -155,9 +163,13 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
       Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
       and WebSocket Realtime remain unverified and default-disabled.
-- [ ] Publish matching `v0.2.0-demo` source-only prereleases after protected PR/main
+- [x] Publish matching `v0.2.0-demo` source-only prereleases after protected PR/main
       CI, exact-tag validation and final source/history scans pass. Record both
       final commit IDs and limitations in the release notes; attach no native binaries.
+      Mobile: `31c2d67bb9070e8d1bd80f1c95f9168eb097c290`.
+      Backend: `d349b14a4241aa4998382100b2ba54497f665e4a`.
+      Main CI runs `34759059888` / `34759062815` and tag validation runs
+      `34759204107` / `34759206029` passed (mobile / backend respectively).
 
 ## Separate production gate
 
@@ -171,6 +183,13 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-13: Published both matching `v0.2.0-demo` prereleases after required
+  PR/main CI and exact-tag validation passed. Remote annotated tags resolve to
+  the commit pair above, and release readback confirms prerelease status with
+  zero uploaded assets. Historical `v0.1.0` tags remain unchanged. Only the nine
+  isolated test containers and their network were removed; scratch data/config
+  are preserved, with `docker/.env` still mode 0600 and Git-ignored. Original
+  repositories, deployments and credentials remain untouched.
 - 2026-09-13: Mobile SDK-aligned commit `96d92a2` compiles an ARM64 debug APK
   successfully on Linux (594 Gradle tasks, 6m 57s). No Android device is attached;
   iOS and physical acceptance remain unrun. Backend `73627e6` passes a fresh
