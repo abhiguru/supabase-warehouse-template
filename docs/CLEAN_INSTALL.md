@@ -32,6 +32,22 @@ rules. Reporting smoke checks verify selected response fields, not all financial
 calculations. Native/device acceptance is tracked separately in the mobile repo's
 `docs/NATIVE_ACCEPTANCE.md`.
 
+### Follow-up — 2026-09-13
+
+Publicly fetched mobile `96d92a287f2ce8a27b2587fcebe482eb4fe988b2` passes a
+fresh `npm ci`, Expo SDK compatibility validation and eight bootstrap/dependency
+tests. Its ARM64 debug APK compiles successfully after explicitly aligning Expo
+Font and NetInfo with SDK 54. The APK is local-only; no device or iOS acceptance
+is claimed. SDK files were copied into scratch from installed public tools, not
+from a private project; existing SDK files and signing assets were not changed.
+
+Backend `73627e6b213fc0a1ca311f96a927024402e3c73e` passes public fetch, fresh
+`npm ci`, ten Node tests (including three release-gate tests), and the expanded
+API suite against the existing isolated scratch demo. This follow-up reuses only
+that newly generated demo environment; the initial fresh-database evidence above
+remains at its explicitly recorded baseline. Final tag commits and validation
+results must be recorded in each GitHub release's notes.
+
 ## Reproduce without touching another installation
 
 1. Make a fresh scratch directory. Clone only the two public repositories as

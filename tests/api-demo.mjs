@@ -192,7 +192,7 @@ assert.ok(dashboard.kpis && Number.isFinite(dashboard.kpis.total_stock_qty), 'da
 
 const aging = await rpc('get_stock_aging_report', adminToken);
 success(aging, 'stock aging report');
-console.log('Concurrent dispatch race condition, invalid invoice rejection, and reporting calculations passed.');
+console.log('Concurrent dispatch race condition, invalid invoice rejection, and reporting response smoke checks passed.');
 
 for(const [name,body] of [
   ['generate-grn-pdf',{gr_no:number}],['generate-dispatch-pdf',{disp_no:number}],

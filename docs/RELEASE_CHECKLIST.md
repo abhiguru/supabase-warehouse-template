@@ -1,6 +1,6 @@
 # Open-source release checklist
 
-Last updated: 2026-09-12.
+Last updated: 2026-09-13.
 
 This is the ordered work tracker for **both** public repositories:
 [backend](https://github.com/abhiguru/supabase-warehouse-template) and
@@ -40,6 +40,7 @@ production-ready release. The historical backend `v0.1.0` tag is incomplete.
       compatibility change; 8 moderate / 0 high / 0 critical findings remain.
 - [ ] Assess container and Edge/native dependencies beyond npm.
 - [ ] Validate native builds after native dependency changes (see item 4).
+      Android ARM64 debug compilation passes after SDK alignment; iOS remains open.
 
 ### 3. Continuous integration and repository protection — completed
 
@@ -63,7 +64,11 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       Fresh public clones at backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`
       and mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf` passed setup,
       75 mobile tests, API tests and migration reruns. See [CLEAN_INSTALL.md](CLEAN_INSTALL.md).
-- [ ] Build native Android and iOS applications and test fresh install, login,
+- [x] Compile an Android ARM64 debug APK from public source after SDK alignment
+      at mobile `96d92a287f2ce8a27b2587fcebe482eb4fe988b2`. This is not a device test
+      or signed release build; see the mobile `docs/NATIVE_ACCEPTANCE.md` evidence.
+- [ ] Compile the iOS app on a Mac with Xcode.
+- [ ] On physical Android and iOS devices, test fresh install, login,
       restart, refresh, logout, offline/retry, camera, secure storage, deep links and
       role-dependent screens.
 - [ ] Record platform/device/build evidence. JavaScript export is not an APK,
@@ -104,7 +109,11 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 
 ### 6. Distribution, privacy and rights — source/redaction checks done; approval and artifacts open
 
-- [x] Scan source and Git history for secrets/customer data (Gitleaks verified 0 leaks in publishable files and history).
+- [x] Run secret scanning on publishable source and Git history. Gitleaks reports
+      no unreviewed findings after exact historical exceptions for reviewed demo
+      and synthetic JWT examples. Current mobile test fixtures construct explicitly
+      invalid-signature JWTs; no deployment credential was substituted or rotated.
+      Automated secret scanning does not prove the absence of all customer data.
 - [x] Add third-party notice summaries for code, fonts and images.
       Both repositories now include `THIRD_PARTY_NOTICES.md` documenting upstream Apache 2.0, SIL OFL 1.1,
       and MIT licenses for icons, SDKs, and Supabase bootstrap files.
@@ -134,7 +143,11 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       Clean-install-tested source pair: mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf`,
       backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`. Release tags must record
       exact final commits, not the moving label "current main".
-      Documented known limitations: - Dependency audit: 1 root moderate finding (`decode-uri-component` via `query-string`/Expo Router) tracked in `DEPENDENCY_SECURITY.md`. - Physical device acceptance (Item 4) requires real hardware testing: physical camera barcode scanning, Bluetooth/thermal printer hardware, deep links, biometric/keychain persistence across device reboots. - Separate production gate: production SMS and operator onboarding without fixed OTP, TLS/CORS hardening, container isolation, backup recovery, and production credentials.
+      Known limitations: one root moderate URL-decoder advisory (eight affected
+      packages); physical camera, deep-link, secure-storage/reboot and offline/retry
+      testing; unverified iOS build; broader business/privacy/rights review; and the
+      separate production gate. Barcode scanning and automatic SQLite sync are not
+      established features, and printer/sensor hardware remains unsupported.
 - [x] Prepare an explicitly scoped demo/prerelease; do not repoint historical
       tags or claim production readiness.
       Both repositories define `main` as a verified local development and integration demo (`v0.2.0-demo checkpoint`).
@@ -142,6 +155,9 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
       Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
       and WebSocket Realtime remain unverified and default-disabled.
+- [ ] Publish matching `v0.2.0-demo` source-only prereleases after protected PR/main
+      CI, exact-tag validation and final source/history scans pass. Record both
+      final commit IDs and limitations in the release notes; attach no native binaries.
 
 ## Separate production gate
 
@@ -155,6 +171,15 @@ input or access where unavailable.
 
 ## Evidence log
 
+- 2026-09-13: Mobile SDK-aligned commit `96d92a2` compiles an ARM64 debug APK
+  successfully on Linux (594 Gradle tasks, 6m 57s). No Android device is attached;
+  iOS and physical acceptance remain unrun. Backend `73627e6` passes a fresh
+  public-fetch install, all 10 Node tests and the expanded API suite in the same
+  isolated scratch demo. No existing configuration or production credentials changed.
+- 2026-09-13: Both release-preparation PRs pass required checks (mobile run
+  `34695665141`, backend run `34695668197`). Full Git-history scans pass with
+  narrowly reviewed historical demo/synthetic-token exceptions. Mobile audit
+  remains eight moderate / zero high / zero critical; backend npm audit is zero.
 - 2026-09-12 follow-up: corrected earlier completion overstatements. Static inventory
   proves names, not all RPC signatures/results. Concurrent oversell and malformed
   invoices do not establish idempotency, payments/orders or invoice calculations.
