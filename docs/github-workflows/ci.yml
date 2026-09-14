@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: abhiguru/rn-warehouse-template
+          ref: ${{ github.head_ref || github.ref_name }}
           path: mobile
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -49,4 +50,62 @@ jobs:
       - run: npm ci
         working-directory: mobile
       - run: node scripts/check-mobile-contract.mjs ../mobile
+        working-directory: backend
+
+  secrets:
+    name: Redacted source and history scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash scripts/scan-secrets.sh
+
+  demo-api:
+    name: Isolated demo API
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: validate
+    env:
+      WAREHOUSE_PROJECT_NAME: warehouse-ci-demo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: abhiguru/rn-warehouse-template
+          ref: ${{ github.head_ref || github.ref_name }}
+          path: mobile
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: mobile
+      - name: Fresh loopback demo
+        run: bash setup.sh --demo
+        working-directory: backend
+      - run: npm run doctor
+        working-directory: backend
+      - name: Effective RPC signatures and grants
+        run: node scripts/check-mobile-contract.mjs ../mobile --live
+        working-directory: backend
+      - run: npm run test:api
+        working-directory: backend
+      - name: Preserve config and rerun setup
+        run: |
+          sha256sum docker/.env > /tmp/warehouse-config.sha256
+          stat -c %a docker/.env > /tmp/warehouse-config.mode
+          bash setup.sh --demo
+          sha256sum -c /tmp/warehouse-config.sha256
+          test "$(stat -c %a docker/.env)" = "$(cat /tmp/warehouse-config.mode)"
+        working-directory: backend
+      - name: Stop only this checkout's demo
+        if: always()
+        run: test ! -f docker/.env || bash stop.sh
         working-directory: backend

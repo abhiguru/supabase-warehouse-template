@@ -29,7 +29,8 @@ DO $$ DECLARE login jsonb; refreshed jsonb; BEGIN
   PERFORM pg_temp.assert_true((refreshed->>'success')::boolean,'opaque refresh accepted');
   PERFORM pg_temp.assert_true(refreshed->>'refresh_token'<>login#>>'{data,session,refresh_token}','refresh rotates its own session token');
   PERFORM pg_temp.assert_true(NOT (public.refresh_jwt_token(login#>>'{data,session,refresh_token}')->>'success')::boolean,'old refresh replay denied');
-  PERFORM set_config('test.refresh',refreshed->>'refresh_token',true);
+  -- Logout may have captured the old token immediately before refresh won the race.
+  PERFORM set_config('test.refresh',login#>>'{data,session,refresh_token}',true);
   PERFORM pg_temp.assert_true(NOT (public.refresh_jwt_token(repeat('0',64))->>'success')::boolean,'forged refresh denied');
   PERFORM public.send_otp('0000000003');
   PERFORM pg_temp.assert_true(NOT (public.verify_otp_or_register('0000000003','123456')->>'success')::boolean,'inactive account denied');

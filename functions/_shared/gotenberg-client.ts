@@ -87,11 +87,12 @@ export async function htmlToPdf(
   const response = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
     method: 'POST',
     body: formData,
+    signal: AbortSignal.timeout(30000),
+    redirect: 'error',
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`Gotenberg error: ${response.status} - ${errorText}`);
+    console.error(`PDF renderer returned HTTP ${response.status}`);
     throw new Error(`PDF generation failed: ${response.status}`);
   }
 

@@ -3,11 +3,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$ROOT/scripts/check-readiness.sh" "$@"
-for command in docker node; do
+for command in docker node npm openssl; do
   command -v "$command" >/dev/null || { echo "Missing prerequisite: $command" >&2; exit 1; }
 done
+node "$ROOT/scripts/doctor.mjs" --preflight
 node "$ROOT/scripts/configure.mjs" "$@"
 node "$ROOT/scripts/check-demo-config.mjs"
+node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
 # Apply permissions and signing configuration before any API or Studio service starts.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db

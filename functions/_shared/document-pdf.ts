@@ -1,3 +1,4 @@
+import { documentRequestBody } from './request-body.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
@@ -14,10 +15,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
   try {
     if (req.method !== 'POST') throw { status: 405, message: 'POST required' };
     await validateUserAccess(req);
-    const text = await req.text();
-    if (text.length > 4096) throw { status: 400, message: 'Request too large' };
-    let body;
-    try { body = JSON.parse(text); } catch { throw { status: 400, message: 'Invalid JSON' }; }
+    const body = await documentRequestBody(req) as Record<string, unknown>;
     if (!body || Array.isArray(body)) throw { status: 400, message: 'Invalid document request' };
     const internal = Deno.env.get('SUPABASE_URL')!;
     const publicUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
