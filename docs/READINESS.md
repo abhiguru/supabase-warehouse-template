@@ -101,16 +101,17 @@ no broad rule exclusions were added.
 5. Complete Android/iOS native builds, fresh-install/login/restart/offline/device
    flows, camera/secure-storage/deep-link checks, and frontend role acceptance.
    JS/Jest/API tests are not substitutes for this.
-6. Resolve remaining mobile dependency findings (2026-09-12 follow-up audit:
-   0 high, 8 moderate, 0 critical), with navigation-compatible fixes and native
-   regression tests. See the [ordered release tracker](RELEASE_CHECKLIST.md).
+6. Decoder remediation and checked navigation/Metro adapters are included in
+   v0.2.1-demo. Keep dependency audits and native regression checks current.
+   See the [release tracker](RELEASE_CHECKLIST.md) for version-specific evidence.
 7. Perform deployment review: TLS/CORS, gateway/body limits, privileged optional
    host mounts, renderer isolation, backups/restores, startup-failure recovery,
    service image updates, rights/assets/legal/privacy text, and release artifacts.
    Synchronous materialized-view refresh is intentionally for small demo installs;
    larger deployments need a reviewed refresh-worker design.
 8. CI workflows are activated under `.github/workflows/` (validation, migrations,
-   and mobile contract checks pass in CI). The 3 preprinted document endpoints
+   live demo API, redacted scans and mobile contract checks). The released backend
+   main run failed after selecting an old mobile commit; see the release tracker. The 3 preprinted document endpoints
    are exported, closing the static contract gate. Do not tag a production-ready
    release from this checkpoint.
 

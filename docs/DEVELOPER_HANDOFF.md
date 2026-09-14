@@ -4,7 +4,8 @@ This pair is a local warehouse development demo, Android first. Production setup
 remains blocked. Release notes identify the exact commit pair and verification:
 [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.1-demo),
 [backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.1-demo).
-Before publication, these instructions describe the release candidate.
+The tags were published on 2026-09-14. See [release verification](RELEASE_CHECKLIST.md)
+for the backend CI checkout failure and subsequent follow-up evidence.
 
 ## Prerequisites and paired checkout
 
@@ -77,7 +78,9 @@ For 100 units dispatched after 31 days in legacy duration mode, preview asserts
 1.5 periods, storage 750, labour 200, subtotal 950, rounded tax 48 and total 998.
 Existing invoice save accepts client-supplied totals and rounds total/tax upward
 to whole units; it does not independently recalculate all supplied business values.
-These are preserved demo rules, not a statement about legally correct taxation.
+These are preserved demo rules. See the backend
+[formula reference](https://github.com/abhiguru/supabase-warehouse-template/blob/main/docs/INVOICE_RULES.md)
+for duration boundaries, row/header rounding and unsupported contracts.
 
 ## Architecture and contribution workflow
 

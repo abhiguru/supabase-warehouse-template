@@ -27,7 +27,7 @@ for pass in 1 2; do
   node "$ROOT/scripts/migration-plan.mjs" |
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 done
-for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql"; do
+for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql" "$ROOT/tests/invoice_duration.sql"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 for pass in 1 2; do

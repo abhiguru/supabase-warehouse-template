@@ -1,25 +1,39 @@
 # Open-source release checklist
 
-## v0.2.1-demo external-developer review (in progress)
+## v0.2.1-demo release and verification follow-up — 2026-09-14
 
-Baseline: `26bede440481a6b24d9a17a58fe009b36ae72772`; public-only clean checkout. Node 22.23.2 / npm 10.9.8.
-Mobile baseline: Expo 54 / React Native 0.81.5, 75 Jest tests across 6 suites.
-Backend baseline: 10 Node tests, disposable migration/security SQL, demo API suite.
-Main CI passed: mobile run 34759514266; backend run 34759516147.
-Release acceptance is pending the fixes and fresh verification below. Historical
-entries describe older releases; they do not establish acceptance of this version.
+Published source-only prerelease pair (no native assets): mobile
+`8f22fbd14ee93816e42c120eef91a689a2da98c7`, backend
+`35cfa90f41cc25fb91cae6d966551d9774faf3d5`. Historical tags stay unchanged.
+Node 22.23.2 / npm 10.9.8; Expo SDK 54 / React Native 0.81.5.
+Mobile main [CI 34825877719](https://github.com/abhiguru/rn-warehouse-template/actions/runs/34825877719)
+passed. Backend main [CI 34825847890](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/34825847890)
+failed live contracts because its mobile checkout was the older `48e804c`.
+The subsequent API/setup-rerun steps were skipped. Publication alone therefore
+does not establish the full release acceptance gate.
 
 | ID | Severity | Reproduction / finding | Fix / regression evidence | Remaining limitation |
 | --- | --- | --- | --- | --- |
-| R01 | High | Authenticated config survives logout/account switch; expired memory cache never revalidates | Pending: scoped TTL caches, rejection and late-response tests | Server authorization remains authoritative |
-| R02 | High | Refresh can finish after logout; Redux deletes refresh credential before server logout | Pending: serialized mutations, session generation and race tests | Offline revocation cannot reach server |
-| R03 | Moderate | Navigation uses vulnerable decode-uri-component <=0.4.2 | Pending: upstream 0.5.0 with checked query-string adapter and navigation tests | Preserve Expo SDK 54 |
-| R04 | High | Contributor guide targets generic supabase-db container | Pending: ownership wrappers, disposable tests, doctor and handoff | Demo stays loopback-only |
-| R05 | Review | Business contracts, images, orders, invoice/report values and role changes need stronger coverage | Pending: independent fixture and authorization tests | Unspecified rules must be recorded |
-| R06 | Acceptance | Fresh setup, native build and isolated Android emulator workflow | Pending | Physical device and iOS untested |
+| R01 | High, fixed | Auth config survived logout/account changes and expired memory caches | Origin/session scoped TTL caches; rejection, expiry and late-response tests in released mobile | Server authorization remains authoritative |
+| R02 | High, fixed | Refresh completion could restore a logged-out session | Serialized credential writes, session generation, Redux request guards; migration 07 and refresh/logout API race | Offline server revocation must wait for connectivity |
+| R03 | Moderate, fixed | Navigation pulled vulnerable decoder <=0.4.2 | Upstream 0.5.0, checked CommonJS adapter and actual navigation/malformed-input tests; SDK 54 retained | Version/content checks deliberately fail on unexpected dependency changes |
+| R04 | High, fixed | Contributor command targeted a generic database container | Checkout ownership wrappers, disposable migration tests, read-only doctors, exclusive config creation | Demo remains loopback-only |
+| R05 | Review, covered API cases | Images, orders, invoice/report values, role changes and retries lacked coverage | Full demo API passes locally; confirmed GRN/dispatch customer isolation, staff-only customer-images, explicit 950/48/998 invoice fixture, duration boundaries, concurrent stock mutations and rollback | See INVOICE_RULES.md; legacy dual-rate overload unsupported; payments not comprehensively accepted |
+| R06 | Acceptance, open | Native build and actual Android UI workflow require separate evidence | See mobile NATIVE_ACCEPTANCE.md for recorded build/UI results | Physical Android, iOS and hardware camera remain untested |
+| R07 | High onboarding/CI, follow-up | Backend branch inference selected old or nonexistent mobile branch | Both CI companion checkouts pinned to released mobile SHA; both tested SHAs printed | Follow-up CI must pass before merge; tags are not moved |
+
+Local review services use API 28000, HTTPS 28443, Studio 55325, database 25433,
+and renderer 23100, all on 127.0.0.1 under project `warehouse-v021-review`.
+These differ from quickstart defaults (API 18000, Studio 54325, database 15433,
+renderer 13100). No pooler was started for the review. These test services do
+not establish production readiness.
 
 
-Last updated: 2026-09-13.
+
+
+## Historical v0.2.0-demo review (2026-09-13)
+
+The entries below are historical evidence, not the current release status.
 
 This is the ordered work tracker for **both** public repositories:
 [backend](https://github.com/abhiguru/supabase-warehouse-template) and
@@ -30,7 +44,7 @@ production-ready release. The historical backend `v0.1.0` tag is incomplete.
 Matching `v0.2.0-demo` source-only prereleases were published on 2026-09-13:
 [backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.0-demo)
 and [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.0-demo).
-Use that tag in both repositories for the recorded checkpoint; `main` can advance.
+Use `v0.2.1-demo` for current onboarding; the following older checkpoint remains preserved.
 
 ## Boundaries
 

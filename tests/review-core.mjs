@@ -12,10 +12,36 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   const otherId = otherCustomer.data.customer_id;
   assert.equal(await rpc('assign_customer_to_user', adminToken, { target_user_mobile: '910000000003', target_customer_id: otherId }), true);
 
+  // Customer images are staff-only, including for the customer named in the path.
+  // Exercise Storage itself: metadata RPC success does not prove object isolation.
+  const attachment = `${otherId}/review-${Date.now()}.jpg`;
+  const attachmentPath = `/storage/v1/object/customer-images/${attachment}`;
+  const uploadAttachment = token => fetch(base + attachmentPath, {
+    method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg' },
+    body: Buffer.alloc(128), signal: AbortSignal.timeout(15000),
+  });
+  for (const token of [anon, customerToken, outsiderToken]) {
+    assert.ok([400, 401, 403].includes((await uploadAttachment(token)).status), 'non-staff customer-image upload denied');
+  }
+  assert.equal((await uploadAttachment(adminToken)).status, 200, 'admin customer-image upload');
+  assert.equal((await api(attachmentPath, adminToken)).status, 200, 'admin customer-image read');
+  for (const token of [anon, customerToken, outsiderToken]) {
+    assert.ok([400, 401, 403, 404].includes((await api(attachmentPath, token)).status), 'customer-image read denied even to assigned customer');
+    await api('/storage/v1/object/customer-images', token, { prefixes: [attachment] }, 'DELETE');
+    assert.equal((await api(attachmentPath, adminToken)).status, 200, 'denied deletion preserves stored bytes');
+  }
+
   // Active-session role changes must use the current database role, not old JWT claims.
   success(await rpc('update_user_role', adminToken, { p_user_id: outsiderProfile, p_new_role: 'supervisor' }), 'promote active session');
   assert.ok((await api('/rest/v1/customers?select=id', outsiderToken)).data.length > 1);
+  assert.equal((await api(attachmentPath, outsiderToken)).status, 200, 'promoted supervisor reads staff image');
+  assert.ok((await api('/storage/v1/object/customer-images', outsiderToken, { prefixes: [attachment] }, 'DELETE')).ok, 'supervisor deletes staff image');
+  assert.ok(!(await api(attachmentPath, adminToken)).ok, 'supervisor deletion removes bytes');
+  assert.equal((await uploadAttachment(outsiderToken)).status, 200, 'supervisor customer-image upload');
   success(await rpc('update_user_role', adminToken, { p_user_id: outsiderProfile, p_new_role: 'customer' }), 'demote active session');
+  assert.ok([400, 401, 403, 404].includes((await api(attachmentPath, outsiderToken)).status), 'demotion immediately revokes staff image read');
+  assert.ok((await api('/storage/v1/object/customer-images', adminToken, { prefixes: [attachment] }, 'DELETE')).ok, 'admin deletes staff image');
+  assert.ok(!(await api(attachmentPath, adminToken)).ok, 'admin deletion removes bytes');
   assert.equal((await api('/rest/v1/customers?select=id', outsiderToken)).data.length, 1);
   assert.ok(!(await api('/rest/v1/rpc/save_grn', outsiderToken, { p_gr_no: 'DENIED', p_date: '2026-04-01', p_customer_id: otherId, p_customer_name: 'Review', p_pricing_mode: 'MONTHLY', p_items: [] })).ok);
   assert.equal((await api('/functions/v1/get-config', outsiderToken)).status, 200, 'demoted active session still gets its own configuration');
@@ -41,7 +67,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
     assert.ok(!(await api(path, adminToken)).ok, 'stored object removed');
     assert.equal((await rpc(`register_${kind}_image_upload`, adminToken, { ...args, p_file_name: 'large.jpg', p_file_size: 10485761, p_mime_type: 'image/jpeg' })).success, false);
   }
-  console.log('Confirmed GRN/dispatch images isolate customers; metadata and stored-byte deletion, upload limits and active role changes passed.');
+  console.log('Confirmed GRN/dispatch images isolate customers; customer-images enforce staff-only access; deletion, upload limits and active role changes passed.');
 
   const cart = await rpc('get_or_create_cart', customerToken, { p_customer_id: customerId });
   assert.equal(typeof cart, 'string', 'cart response is a UUID scalar');
