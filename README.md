@@ -9,8 +9,8 @@ four PDF/download flows have passed integration tests. This is **not a
 production-ready release**. Production SMS, optional printing, native-device
 acceptance, and broader workflow/security review remain open. The older
 v0.1.0 tag contains an incomplete export. For a reproducible checkpoint, use
-**`v0.2.0-demo` in both repositories**; `main` may advance. See the
-[demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.0-demo)
+**`v0.2.1-demo` in both repositories**; `main` may advance. See the
+[demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.1-demo)
 for the exact tested commit pair and known limitations.
 
 ## Start the local demo
@@ -19,7 +19,7 @@ Prerequisites: Node.js 22.18+, npm, Docker with Compose v2, and OpenSSL.
 Allow several GB of free memory/disk and internet access for image/module downloads.
 
 ```bash
-git clone --branch v0.2.0-demo https://github.com/abhiguru/supabase-warehouse-template.git
+git clone --branch v0.2.1-demo https://github.com/abhiguru/supabase-warehouse-template.git
 cd supabase-warehouse-template
 npm ci
 npm test
