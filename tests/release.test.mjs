@@ -12,15 +12,15 @@ function gate(name, type = 'tag') {
   return result;
 }
 test('allows exactly the reviewed source-demo tag', () => {
-  const result = gate('v0.2.0-demo');
+  const result = gate('v0.2.1-demo');
   assert.equal(result.status, 0);
   assert.match(result.stdout + result.stderr, /Source-only prerelease/);
 });
 test('production and unreviewed demo tags remain gated', () => {
-  for (const name of ['v0.2.0', 'v1.0.0', 'v0.3.0-demo', '']) {
+  for (const name of ['v0.2.0-demo', 'v0.2.0', 'v1.0.0', 'v0.3.0-demo', '']) {
     assert.notEqual(gate(name).status, 0);
   }
 });
 test('a branch with the demo name cannot authorize a release', () => {
-  assert.notEqual(gate('v0.2.0-demo', 'branch').status, 0);
+  assert.notEqual(gate('v0.2.1-demo', 'branch').status, 0);
 });

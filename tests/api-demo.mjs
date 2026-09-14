@@ -1,5 +1,8 @@
 // Mutates only an explicitly configured local demo, after matching its generated anon key.
 import assert from 'node:assert/strict';
+import { reviewCore } from './review-core.mjs';
+import { probe, root } from '../scripts/doctor-common.mjs';
+assert.ok(probe('bash', [root + '/scripts/compose.sh', 'ps', '-q']).ok, 'Review demo ownership must be valid');
 import { readFileSync } from 'node:fs';
 const envText=readFileSync(new URL('../docker/.env',import.meta.url),'utf8');
 const env=key=>envText.match(new RegExp(`^${key}=([^#\\r\\n]*)`,'m'))?.[1].trim();
@@ -210,6 +213,7 @@ for(const [name,body] of [
   assert.ok(!privateRead.ok,'PDF bucket cannot be read directly without signed capability');
   console.log(`${name}: generated and downloaded valid PDF.`);
 }
+await reviewCore({ api, rpc, success, login, anon, adminToken, customerToken, customerId, grnId, grnItem, dispatchId, base });
 const renewed=await rpc('refresh_jwt_token',anon,{p_refresh_token:customer.refresh_token}); success(renewed,'refresh');
 assert.equal((await rpc('refresh_jwt_token',anon,{p_refresh_token:customer.refresh_token})).success,false,'refresh replay denied');
 await rpc('logout_session',anon,{p_refresh_token:renewed.refresh_token});

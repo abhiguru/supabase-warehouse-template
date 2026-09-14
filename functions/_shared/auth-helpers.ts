@@ -26,6 +26,8 @@ export async function validateUserAccess(req: Request): Promise<UserProfile> {
   const response = await fetch(`${url}/rest/v1/user_profiles?auth_user_id=eq.${encodeURIComponent(payload.sub)}&select=id,auth_user_id,name,display_name,mobile,role,active`, {
     // Preserve the caller JWT so PostgREST's session hook checks revocation too.
     headers: { apikey: key, Authorization: req.headers.get('Authorization')! },
+    signal: AbortSignal.timeout(15000),
+    redirect: 'error',
   });
   if (response.status === 401 || response.status === 403) throw { status: 403, message: 'Session expired or revoked' };
   if (!response.ok) throw { status: 503, message: 'Profile lookup unavailable' };

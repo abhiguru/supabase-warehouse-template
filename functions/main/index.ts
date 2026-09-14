@@ -11,6 +11,9 @@ serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
   const name = new URL(req.url).pathname.split('/')[1];
+  if (['print-grn-preprinted', 'print-dispatch-preprinted', 'print-invoice-preprinted', 'print-via-ipp', 'get-printer-status'].includes(name)) {
+    return new Response(JSON.stringify({ success: false, error: 'Printing is unavailable in the local demo' }), { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
   if (!allowed.has(name)) return new Response('Function not found', { status: 404, headers: corsHeaders });
   try {
     if (!publicFunctions.has(name)) await verifyRequest(req);

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Static lower-bound inventory: names only; not a substitute for live API/role tests.
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+
+import { details } from './contract-details.mjs';
 
 function files(root, extension) {
   return readdirSync(root, { withFileTypes: true }).flatMap(entry => {
@@ -65,5 +67,9 @@ for (const group of Object.values(groups)) {
   group.missing = group.called.filter(name => !group.defined.includes(name));
   missing += group.missing.length;
 }
-console.log(JSON.stringify({ note: 'Static name coverage only. Dynamic calls, signatures, SQL validity, RLS, and storage bucket policies require separate tests.', ...groups }, null, 2));
-process.exitCode = missing ? 1 : 0;
+const inventory = details(resolve(mobile), ['src', 'app'].flatMap(dir => files(resolve(mobile, dir), /\.tsx?$/)), root, process.argv.includes('--live'));
+const report = { note: 'Names, typed call arguments and explicit dynamic calls. --live compares overloads, SQL return types and effective grants; API tests validate response envelopes.', ...groups, ...inventory };
+const output = process.argv.indexOf('--output');
+if (output >= 0) writeFileSync(process.argv[output + 1], JSON.stringify(report, null, 2) + '\n');
+console.log(JSON.stringify({ rpcNames: groups.rpc.called.length, missingNames: missing, typedCalls: inventory.calls.length, dynamicCalls: inventory.dynamic, mismatches: inventory.mismatches }, null, 2));
+process.exitCode = missing || inventory.mismatches.length ? 1 : 0;
