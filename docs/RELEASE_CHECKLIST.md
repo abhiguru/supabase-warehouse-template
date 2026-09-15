@@ -1,6 +1,6 @@
 # Open-source release checklist
 
-## v0.2.1-demo release and verification follow-up — 2026-09-14
+## v0.2.1-demo release and verification follow-up — 2026-09-15
 
 Published source-only prerelease pair (no native assets): mobile
 `8f22fbd14ee93816e42c120eef91a689a2da98c7`, backend
@@ -9,8 +9,10 @@ Node 22.23.2 / npm 10.9.8; Expo SDK 54 / React Native 0.81.5.
 Mobile main [CI 34825877719](https://github.com/abhiguru/rn-warehouse-template/actions/runs/34825877719)
 passed. Backend main [CI 34825847890](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/34825847890)
 failed live contracts because its mobile checkout was the older `48e804c`.
-The subsequent API/setup-rerun steps were skipped. Publication alone therefore
-does not establish the full release acceptance gate.
+The subsequent API/setup-rerun steps were skipped. Backend PR #5 fixed this;
+merged commit `96d62a58895fe27e3a00f8a3b378fabeddbd4866` passed all five jobs
+in [main CI 34858238914](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/34858238914).
+Publication alone does not establish native or full release acceptance.
 
 | ID | Severity | Reproduction / finding | Fix / regression evidence | Remaining limitation |
 | --- | --- | --- | --- | --- |
@@ -20,7 +22,13 @@ does not establish the full release acceptance gate.
 | R04 | High, fixed | Contributor command targeted a generic database container | Checkout ownership wrappers, disposable migration tests, read-only doctors, exclusive config creation | Demo remains loopback-only |
 | R05 | Review, covered API cases | Images, orders, invoice/report values, role changes and retries lacked coverage | Full demo API passes locally; confirmed GRN/dispatch customer isolation, staff-only customer-images, explicit 950/48/998 invoice fixture, duration boundaries, concurrent stock mutations and rollback | See INVOICE_RULES.md; legacy dual-rate overload unsupported; payments not comprehensively accepted |
 | R06 | Acceptance, open | Native build and actual Android UI workflow require separate evidence | See mobile NATIVE_ACCEPTANCE.md for recorded build/UI results | Physical Android, iOS and hardware camera remain untested |
-| R07 | High onboarding/CI, follow-up | Backend branch inference selected old or nonexistent mobile branch | Both CI companion checkouts pinned to released mobile SHA; both tested SHAs printed | Follow-up CI must pass before merge; tags are not moved |
+| R07 | High onboarding/CI, fixed | Backend branch inference selected old or nonexistent mobile branch | Both CI companion checkouts pinned to released mobile SHA; both tested SHAs printed | PR #5 and merged main CI pass; tags are not moved |
+| R08 | High, mobile follow-up | Login/OTP screens logged inputs; PDF service logged private signed URLs | Inputs/raw errors removed, fixed auth diagnostics, CI lint guards and six PDF privacy regressions | Historical tag still contains these logs |
+| R09 | High workflow, backend follow-up | Default GRN sort and next-number helpers cast valid alphanumeric suffixes to integers | Additive migration 08 preserves authorization/grants, guards suffix casts, retains numeric sequence ordering; native reproduction and API/disposable SQL regressions | Existing number-series rollover/collision policy remains unchanged |
+
+The immutable v0.2.1-demo tags precede R08/R09 fixes. Use the verified follow-up
+commits on main for current onboarding; the tags are historical checkpoints,
+not an assertion that every advertised native flow has passed.
 
 Local review services use API 28000, HTTPS 28443, Studio 55325, database 25433,
 and renderer 23100, all on 127.0.0.1 under project `warehouse-v021-review`.

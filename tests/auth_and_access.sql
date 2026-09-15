@@ -67,6 +67,29 @@ DO $$ DECLARE result jsonb; BEGIN
 END $$;
 RESET ROLE;
 
+-- Number suggestions must tolerate custom IDs and compare numeric suffixes
+-- numerically. These explicit rows exist only inside this rolled-back test.
+DO $$ DECLARE login jsonb; claims jsonb; BEGIN
+  PERFORM public.send_otp('0000000001');
+  login := public.verify_otp_or_register('0000000001','123456');
+  PERFORM pg_temp.assert_true(login->>'success'='true','number fixture admin login');
+  SELECT jsonb_build_object('role','authenticated','sub',user_id,'session_id',id) INTO claims
+    FROM warehouse_security.refresh_sessions WHERE user_id='11111111-0000-4000-8000-000000000011';
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+END $$;
+INSERT INTO public.goodsreceived(gr_no,customer_id,created_at) VALUES
+  ('AZCUSTOM','22222222-0000-4000-8000-000000000001',now());
+SELECT pg_temp.assert_true(public.get_next_grn_number()='A0001','custom-only GRNs keep initial numeric suggestion');
+INSERT INTO public.goodsreceived(gr_no,customer_id,created_at) VALUES
+  ('A0009','22222222-0000-4000-8000-000000000001',now()-interval '2 days'),
+  ('A0010','22222222-0000-4000-8000-000000000001',now()-interval '1 day');
+SELECT pg_temp.assert_true(public.get_next_grn_number()='A0011','GRN suggestion ignores newer custom suffix and retains numeric sequence');
+INSERT INTO public.dispatch(disp_no,customer_id) VALUES
+  ('I9','22222222-0000-4000-8000-000000000001'),
+  ('I10','22222222-0000-4000-8000-000000000001'),
+  ('ZCUSTOM','22222222-0000-4000-8000-000000000001');
+SELECT pg_temp.assert_true(public.get_next_dispatch_number()='I11','dispatch suggestion uses numeric maximum and ignores custom IDs');
+
 -- Effective grants include PUBLIC inheritance, not merely explicit role grants.
 SELECT pg_temp.assert_true(NOT EXISTS (
   SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
