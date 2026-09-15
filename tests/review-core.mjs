@@ -96,10 +96,22 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   success(await rpc('update_customer', adminToken, { p_customer_id: otherId, p_image_urls: [] }), 'remove customer attachments');
   assert.deepEqual((await api(`/rest/v1/customers?id=eq.${otherId}&select=image_urls`, adminToken)).data[0].image_urls, []);
 
-  const number = `F${Date.now().toString(36).slice(-6).toUpperCase()}`;
+  const number = `FA${Date.now().toString(36).slice(-5).toUpperCase()}`;
   success(await rpc('save_grn', adminToken, { p_gr_no: number, p_date: '2026-04-01T12:00:00Z', p_customer_id: otherId, p_customer_name: 'Review', p_pricing_mode: 'MONTHLY', p_items: [{ item_id: '33333333-0000-4000-8000-000000000001', item_name: 'Example Potatoes', packaging: 'Bag', qty: 100, weight: 10, rack: 'REVIEW' }] }), 'financial GRN');
   const financialGrn = (await api(`/rest/v1/goodsreceived?gr_no=eq.${number}&select=id`, adminToken)).data[0].id;
   const stockItem = (await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${financialGrn}&select=id`, adminToken)).data[0].id;
+  // The native GRN tab defaults to document-number sorting. Valid alphanumeric
+  // fixtures must not break either list overload or subsequent form numbering.
+  for (const direction of ['asc', 'desc']) {
+    const rows = await rpc('get_all_grn_items', adminToken, { p_sort_by: 'gr_no', p_sort_order: direction, p_filters: { grn_ids: [financialGrn] } });
+    success(rows, 'alphanumeric GRN item sort');
+    assert.equal(rows.data[0].gr_no, number);
+    const headers = await rpc('get_grn_list', adminToken, { p_sort_by: 'gr_no', p_sort_order: direction, p_filters: { grn_ids: [financialGrn] } });
+    success(headers, 'alphanumeric GRN header sort');
+    assert.equal(headers.data.grns[0].gr_no, number);
+  }
+  assert.match(await rpc('get_next_grn_number', adminToken), /^[A-Z][0-9]{4}$/);
+  assert.match(await rpc('get_next_dispatch_number', adminToken), /^I[0-9]+$/);
   const dispatchArgs = { p_dispatch_data: { disp_no: number, disp_date: '2026-05-02T12:00:00Z', customer_id: otherId, customer_name: 'Review', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' }, p_dispatch_items: [{ gr_trl_id: stockItem, disp_qty: 20 }], p_generate_invoice: false, p_idempotency_key: `review-${number}` };
   success(await rpc('create_dispatch_with_stock_check', adminToken, dispatchArgs), 'financial dispatch');
   success(await rpc('create_dispatch_with_stock_check', adminToken, dispatchArgs), 'dispatch retry');
