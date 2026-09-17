@@ -120,6 +120,73 @@ EXCEPTION
 END $$;
 ROLLBACK TO SAVEPOINT dispatch_maximum;
 
+-- Detailed invoice items must return real joined fields, calculate monetary
+-- tax from the stored percentage, and retain per-customer authorization.
+DO $$ DECLARE claims jsonb; BEGIN
+  SELECT jsonb_build_object('role','authenticated','sub',user_id,'session_id',id) INTO claims
+    FROM warehouse_security.refresh_sessions
+    WHERE user_id='11111111-0000-4000-8000-000000000011'
+    ORDER BY created_at DESC LIMIT 1;
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+END $$;
+SAVEPOINT invoice_items_detail;
+INSERT INTO public.items(id,name,packaging) VALUES
+  ('33333333-0000-4000-8000-000000000010','Invoice detail item','Bag');
+INSERT INTO public.goodsreceived(id,gr_no,date,customer_id,customer_name) VALUES
+  ('44444444-0000-4000-8000-000000000010','A-DETAIL',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
+  ('44444444-0000-4000-8000-000000000020','B-DETAIL',current_date,'22222222-0000-4000-8000-000000000002','Example Customer B');
+INSERT INTO public.goodsreceived_trl(id,gr_id,item_id,item_name,packaging,qty,stock,weight,rack,package_mark) VALUES
+  ('55555555-0000-4000-8000-000000000010','44444444-0000-4000-8000-000000000010','33333333-0000-4000-8000-000000000010','Invoice detail item','Bag',100,0,10,'R1','DETAIL');
+INSERT INTO public.dispatch(id,disp_no,disp_date,customer_id,customer_name) VALUES
+  ('66666666-0000-4000-8000-000000000010','I0001',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
+  ('66666666-0000-4000-8000-000000000020','I0002',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
+  ('66666666-0000-4000-8000-000000000030','I0003',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A');
+INSERT INTO public.dispatch_trl(id,gr_id,gr_trl_id,disp_id,disp_qty) VALUES
+  ('77777777-0000-4000-8000-000000000010','44444444-0000-4000-8000-000000000010','55555555-0000-4000-8000-000000000010','66666666-0000-4000-8000-000000000010',20),
+  ('77777777-0000-4000-8000-000000000020','44444444-0000-4000-8000-000000000010','55555555-0000-4000-8000-000000000010','66666666-0000-4000-8000-000000000020',10),
+  ('77777777-0000-4000-8000-000000000030','44444444-0000-4000-8000-000000000010','55555555-0000-4000-8000-000000000010','66666666-0000-4000-8000-000000000030',70);
+INSERT INTO public.invoice(id,inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total) VALUES
+  ('88888888-0000-4000-8000-000000000010',2026,1001,'44444444-0000-4000-8000-000000000010','A-DETAIL','22222222-0000-4000-8000-000000000001','Example Customer A',current_date,200,35,735),
+  ('88888888-0000-4000-8000-000000000020',2026,1002,'44444444-0000-4000-8000-000000000020','B-DETAIL','22222222-0000-4000-8000-000000000002','Example Customer B',current_date,0,0,0);
+INSERT INTO public.invoice_trl(invoice_id,disp_trl_id,duration,no_of_days,charge,labour_rate,tax) VALUES
+  ('88888888-0000-4000-8000-000000000010','77777777-0000-4000-8000-000000000010',1,0,5,2,5),
+  ('88888888-0000-4000-8000-000000000010','77777777-0000-4000-8000-000000000020',1,0,5,2,5),
+  ('88888888-0000-4000-8000-000000000010','77777777-0000-4000-8000-000000000030',1,0,5,2,5);
+DO $$ DECLARE result jsonb; BEGIN
+  result := public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000010');
+  PERFORM pg_temp.assert_true(result->>'success'='true','admin reads detailed invoice items');
+  PERFORM pg_temp.assert_true(jsonb_array_length(result#>'{data,items}')=3,'detailed invoice returns three lines');
+  PERFORM pg_temp.assert_true((result#>>'{data,summary,total_items}')::int=3,'detailed invoice summary counts lines');
+  PERFORM pg_temp.assert_true((result#>>'{data,summary,total_quantity}')::numeric=100,'detailed invoice summary totals quantity');
+  PERFORM pg_temp.assert_true((result#>>'{data,summary,total_amount}')::numeric=735,'detailed invoice summary calculates total');
+  PERFORM pg_temp.assert_true((SELECT SUM((entry->>'tax_amount')::numeric)=35 FROM jsonb_array_elements(result#>'{data,items}') entry),'detailed invoice calculates monetary tax from percent');
+  PERFORM pg_temp.assert_true(result#>>'{data,items,0,item_name}'='Invoice detail item','detailed invoice joins item name');
+END $$;
+DO $$ DECLARE login jsonb; claims jsonb; BEGIN
+  PERFORM public.send_otp('0000000002');
+  login := public.verify_otp_or_register('0000000002','123456');
+  PERFORM pg_temp.assert_true(login->>'success'='true','customer obtains a fresh session for invoice authorization');
+  SELECT jsonb_build_object('role','authenticated','sub',user_id,'session_id',id) INTO claims
+    FROM warehouse_security.refresh_sessions
+    WHERE user_id='11111111-0000-4000-8000-000000000012'
+    ORDER BY created_at DESC LIMIT 1;
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+END $$;
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.assert_true(public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000010')->>'success'='true','assigned customer reads own detailed invoice');
+DO $$ BEGIN
+  BEGIN
+    PERFORM public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000020');
+    RAISE EXCEPTION 'customer read cross-customer detailed invoice';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT invoice_items_detail;
+
+DO $$ BEGIN
+  PERFORM set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub','11111111-0000-4000-8000-000000000011')::text,true);
+END $$;
+
 SELECT pg_temp.assert_true((SELECT r.rolname='supabase_admin' AND p.prosecdef AND p.provolatile='s'
   AND p.proconfig=ARRAY['search_path=pg_catalog, public, extensions, utils, pg_temp']
   FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
