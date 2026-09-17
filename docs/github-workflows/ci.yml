@@ -42,7 +42,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Reviewed source-demo companion; update deliberately with contract evidence.
-          ref: 9bde3c1dc97692055424c916cb9cfeeefc34a3bf
+          ref: 458662c8477b0ca45367a268fc6f20084cf21f3e
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -83,7 +83,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Do not infer a branch in a different repository.
-          ref: 9bde3c1dc97692055424c916cb9cfeeefc34a3bf
+          ref: 458662c8477b0ca45367a268fc6f20084cf21f3e
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
