@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — source-demo developer handoff (2026-09-18)
+## 0.2.2-demo — source-only prerelease (2026-09-18)
 
 - Added checksummed forward migrations for padded dispatch suggestions and
   protected invoice line-detail compatibility without changing stored document
@@ -12,6 +12,10 @@
   copies.
 - Verified the complete source-demo API matrix and paired Android onboarding;
   production and physical-device release gates remain separate.
+- Reconciled public onboarding, acceptance scope, maintainer redistribution
+  attestation, Supabase-derived configuration provenance, and included license text.
+- Restricted the release workflow to the exact `v0.2.2-demo` tag with positive
+  and negative regression coverage; publication contains source archives only.
 
 ## Unreleased — second-pass review
 

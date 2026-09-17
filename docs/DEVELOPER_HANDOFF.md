@@ -1,13 +1,12 @@
-# Developer handoff — v0.2.1-demo
+# Developer handoff — v0.2.2-demo
 
-## Active source-demo continuation — 2026-09-18
+## Active source-demo release — 2026-09-18
 
-This file retains the immutable `v0.2.1-demo` checkpoint below as history. For
-the active handoff, create sibling clones named `rn-warehouse-template` and
-`supabase-warehouse-template`, check out and fast-forward
-`handoff/source-demo-20260917` in both, and record the resolved full SHAs. Before
-setup, verify the active/documented CI workflow copies are byte-identical and
-that both jobs pin the mobile checkout SHA.
+Source-demo acceptance is complete. The matching `v0.2.2-demo` tags are
+forthcoming until exact-tag validation passes and both source-only prereleases
+are published. Before publication use matching current `main` branches; after
+publication use `v0.2.2-demo` in both sibling repositories. Verify the active
+and documented CI copies are byte-identical and pin the mobile checkout.
 
 Follow `CLEAN_INSTALL.md` with a unique Compose project and unused loopback
 ports. Run setup, doctor, health, rerun, stop, and restart with the same project
@@ -17,20 +16,24 @@ files from another checkout. Prove configuration and data preservation plus an
 Android debug login/connectivity smoke before treating onboarding as
 reproducible.
 
-This branch is a source-demo candidate, not a production or all-platform
-release. Physical camera/hardware, iOS, production SMS/TLS/operations,
+This is a source-demo release, not a production or all-platform release.
+Physical camera/hardware, iOS, production SMS/TLS/operations,
 distribution, printing, sensors, and unsupported integrations remain separate
-gates. The branch becomes delivered only after both PRs merge and required CI
-passes on the resulting default-branch commits.
+gates. Publication requires reviewed merges, passing default-branch CI, exact
+tag validation, and matching source-only prereleases.
 
 The 2026-09-18 fresh-clone rehearsal passes generated configuration, migrations,
 doctor/health, isolated API fixtures, setup rerun, owned stop/restart, preserved
 data/configuration, and the companion Android debug build/login/native smoke.
-Use the exact mobile SHA pinned in both workflow copies and repeat required checks
-on the merged default-branch pair.
+The durable result is summarized in [SOURCE_DEMO_ACCEPTANCE.md](SOURCE_DEMO_ACCEPTANCE.md),
+and ownership/attribution evidence is in [ATTRIBUTION_REVIEW.md](ATTRIBUTION_REVIEW.md).
 
 This pair is a local warehouse development demo, Android first. Production setup
-remains blocked. Release notes identify the exact commit pair and verification:
+remains blocked.
+
+## Historical `v0.2.1-demo` record
+
+The earlier release notes identify that historical commit pair and verification:
 [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.1-demo),
 [backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.1-demo).
 The tags were published on 2026-09-14. See [release verification](RELEASE_CHECKLIST.md)
@@ -45,8 +48,8 @@ native development needs a compatible JDK (17 or 21), SDK platform 36, build too
 the Android SDK/NDK, and Gradle caches. iOS requires macOS/Xcode and is untested.
 
 ```bash
-git clone --branch v0.2.1-demo https://github.com/abhiguru/supabase-warehouse-template.git
-git clone --branch v0.2.1-demo https://github.com/abhiguru/rn-warehouse-template.git
+git clone --branch v0.2.2-demo https://github.com/abhiguru/supabase-warehouse-template.git
+git clone --branch v0.2.2-demo https://github.com/abhiguru/rn-warehouse-template.git
 cd supabase-warehouse-template
 npm ci
 bash setup.sh --demo
@@ -166,6 +169,6 @@ review. Change-category filtering is unavailable; other change-log filters remai
 Payments/accounting integrations are not part of the documented demo workflow.
 
 Physical-device camera/USB acceptance, iOS, production scale/security, native
-telemetry delivery, retention enforcement, privacy declarations and maintainer
-ownership/redistribution rights remain separate checks. See RELEASE_CHECKLIST.md
-and NATIVE_ACCEPTANCE.md (mobile) for evidence; a successful bundle is not a device test.
+telemetry delivery, retention enforcement, and privacy declarations remain
+separate checks. The scoped ownership and attribution review is complete; see
+ATTRIBUTION_REVIEW.md. A successful bundle is not a physical-device test.

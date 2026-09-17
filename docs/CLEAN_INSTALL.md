@@ -1,10 +1,9 @@
 # Public-clone clean-install verification
 
-> The dated `v0.2.1-demo` evidence below is historical. For the active
-> source-demo handoff, check out and fast-forward
-> `handoff/source-demo-20260917` in both sibling repositories, record their full
-> SHAs, and verify both backend CI workflow copies pin the mobile SHA before
-> applying this isolation procedure.
+> The dated `v0.2.1-demo` evidence below is historical. For the current release,
+> use matching `v0.2.2-demo` tags after publication or matching current `main`
+> branches during preparation. Record both full SHAs and verify both backend CI
+> workflow copies pin the mobile SHA before applying this isolation procedure.
 
 ## Evidence — 2026-09-12
 
