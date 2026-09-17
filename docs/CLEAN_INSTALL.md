@@ -72,6 +72,7 @@ results must be recorded in each GitHub release's notes.
    DATABASE_HOST_PORT=25433
    GOTENBERG_HOST_PORT=23100
    SUPABASE_PUBLIC_URL=http://localhost:28000
+   API_EXTERNAL_URL=http://localhost:28000
    ```
 
    Keep `BIND_ADDRESS=127.0.0.1`. These are only collision-avoidance examples;
