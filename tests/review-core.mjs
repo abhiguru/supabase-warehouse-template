@@ -111,7 +111,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
     assert.equal(headers.data.grns[0].gr_no, number);
   }
   assert.match(await rpc('get_next_grn_number', adminToken), /^[A-Z][0-9]{4}$/);
-  assert.match(await rpc('get_next_dispatch_number', adminToken), /^I[0-9]+$/);
+  assert.match(await rpc('get_next_dispatch_number', adminToken), /^I[0-9]{4,}$/);
   const dispatchArgs = { p_dispatch_data: { disp_no: number, disp_date: '2026-05-02T12:00:00Z', customer_id: otherId, customer_name: 'Review', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' }, p_dispatch_items: [{ gr_trl_id: stockItem, disp_qty: 20 }], p_generate_invoice: false, p_idempotency_key: `review-${number}` };
   success(await rpc('create_dispatch_with_stock_check', adminToken, dispatchArgs), 'financial dispatch');
   success(await rpc('create_dispatch_with_stock_check', adminToken, dispatchArgs), 'dispatch retry');

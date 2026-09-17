@@ -84,11 +84,49 @@ INSERT INTO public.goodsreceived(gr_no,customer_id,created_at) VALUES
   ('A0009','22222222-0000-4000-8000-000000000001',now()-interval '2 days'),
   ('A0010','22222222-0000-4000-8000-000000000001',now()-interval '1 day');
 SELECT pg_temp.assert_true(public.get_next_grn_number()='A0011','GRN suggestion ignores newer custom suffix and retains numeric sequence');
+-- Each dispatch scenario starts from an empty business table. Savepoints keep
+-- the fixtures isolated while the enclosing test transaction still rolls back.
+SAVEPOINT dispatch_custom_only;
+INSERT INTO public.dispatch(disp_no,customer_id) VALUES
+  ('ZCUSTOM','22222222-0000-4000-8000-000000000001');
+SELECT pg_temp.assert_true(public.get_next_dispatch_number()='I0001','custom-only dispatch keeps padded initial suggestion');
+ROLLBACK TO SAVEPOINT dispatch_custom_only;
+
+SAVEPOINT dispatch_numeric_max;
 INSERT INTO public.dispatch(disp_no,customer_id) VALUES
   ('I9','22222222-0000-4000-8000-000000000001'),
   ('I10','22222222-0000-4000-8000-000000000001'),
   ('ZCUSTOM','22222222-0000-4000-8000-000000000001');
-SELECT pg_temp.assert_true(public.get_next_dispatch_number()='I11','dispatch suggestion uses numeric maximum and ignores custom IDs');
+SELECT pg_temp.assert_true(public.get_next_dispatch_number()='I0011','dispatch suggestion uses numeric maximum and ignores custom IDs');
+SELECT pg_temp.assert_true((SELECT array_agg(disp_no ORDER BY disp_no) FROM public.dispatch)=ARRAY['I10','I9','ZCUSTOM']::varchar[],'dispatch suggestions do not rewrite existing identifiers');
+ROLLBACK TO SAVEPOINT dispatch_numeric_max;
+
+SAVEPOINT dispatch_rollover;
+INSERT INTO public.dispatch(disp_no,customer_id) VALUES
+  ('I9999','22222222-0000-4000-8000-000000000001');
+SELECT pg_temp.assert_true(public.get_next_dispatch_number()='I10000','dispatch suggestion rolls over from the four-digit boundary');
+ROLLBACK TO SAVEPOINT dispatch_rollover;
+
+SAVEPOINT dispatch_maximum;
+INSERT INTO public.dispatch(disp_no,customer_id) VALUES
+  ('I9999999','22222222-0000-4000-8000-000000000001');
+DO $$
+BEGIN
+  PERFORM public.get_next_dispatch_number();
+  RAISE EXCEPTION 'dispatch number exhaustion did not fail';
+EXCEPTION
+  WHEN numeric_value_out_of_range THEN
+    PERFORM pg_temp.assert_true(SQLERRM='Dispatch number sequence exhausted at I9999999','dispatch exhaustion error is explicit');
+END $$;
+ROLLBACK TO SAVEPOINT dispatch_maximum;
+
+SELECT pg_temp.assert_true((SELECT r.rolname='supabase_admin' AND p.prosecdef AND p.provolatile='s'
+  AND p.proconfig=ARRAY['search_path=pg_catalog, public, extensions, utils, pg_temp']
+  FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+  WHERE p.oid='public.get_next_dispatch_number()'::regprocedure),'dispatch generator preserves owner, security, volatility, and search path');
+SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.get_next_dispatch_number()','EXECUTE')
+  AND has_function_privilege('authenticated','public.get_next_dispatch_number()','EXECUTE')
+  AND has_function_privilege('service_role','public.get_next_dispatch_number()','EXECUTE'),'dispatch generator preserves execution grants');
 
 -- Effective grants include PUBLIC inheritance, not merely explicit role grants.
 SELECT pg_temp.assert_true(NOT EXISTS (
