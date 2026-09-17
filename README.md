@@ -1,21 +1,19 @@
 # Supabase Warehouse Template
 
-## Current source-demo handoff candidate
+## Current source-demo release
 
-The immutable `v0.2.1-demo` instructions below describe the historical
-2026-09-14 checkpoint. For the active source-demo handoff, clone this repository
-and `rn-warehouse-template` as siblings, check out
-`handoff/source-demo-20260917` in both, and fast-forward both branches before
-setup. Record both resolved full SHAs. Verify `.github/workflows/ci.yml` and
-`docs/github-workflows/ci.yml` are byte-identical and that both jobs pin the
-mobile checkout SHA.
+The Android-first source-demo acceptance is complete. The matching
+`v0.2.2-demo` tag is forthcoming until exact-tag validation passes and both
+source-only GitHub prereleases are published. During preparation, use matching
+current `main` branches; after publication, use `v0.2.2-demo` in this repository
+and `rn-warehouse-template`. Existing tags remain immutable.
 
-Use `docs/CLEAN_INSTALL.md` with a unique `WAREHOUSE_PROJECT_NAME` and unused
-loopback ports. Generate configuration through repository scripts; do not copy
-`.env`, credentials, database files, or workspace-only plans from another
-installation. The active handoff remains a candidate until both PRs merge and
-CI passes on the resulting default-branch commits. Existing `v0.2.1-demo` tags
-will not move.
+The public acceptance summary is in
+[SOURCE_DEMO_ACCEPTANCE.md](docs/SOURCE_DEMO_ACCEPTANCE.md). Ownership and
+third-party review evidence is in
+[ATTRIBUTION_REVIEW.md](docs/ATTRIBUTION_REVIEW.md). Physical hardware, iOS,
+production operations, signed/native distribution, printing, sensors, and
+unsupported integrations remain separate gates.
 
 An open-source warehouse backend, paired with
 [rn-warehouse-template](https://github.com/abhiguru/rn-warehouse-template).
@@ -25,9 +23,9 @@ restore, custom login, customer isolation, GRN, dispatch, invoice saving, and
 four PDF/download flows have passed integration tests. This is **not a
 production-ready release**. Production SMS, optional printing, native-device
 acceptance, and broader workflow/security review remain open. The older
-v0.1.0 tag contains an incomplete export. For a reproducible checkpoint, use
-**`v0.2.1-demo` in both repositories**; `main` may advance. See the
-[demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.1-demo)
+v0.1.0 tag contains an incomplete export. For the reproducible release checkpoint,
+use **`v0.2.2-demo` in both repositories** after publication. See the
+[demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.2-demo)
 for the exact tested commit pair and known limitations.
 
 ## Start the local demo
@@ -36,7 +34,7 @@ Prerequisites: Node.js 22.18+, npm, Docker with Compose v2, and OpenSSL.
 Allow several GB of free memory/disk and internet access for image/module downloads.
 
 ```bash
-git clone --branch v0.2.1-demo https://github.com/abhiguru/supabase-warehouse-template.git
+git clone --branch v0.2.2-demo https://github.com/abhiguru/supabase-warehouse-template.git
 cd supabase-warehouse-template
 npm ci
 npm test

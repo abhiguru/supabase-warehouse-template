@@ -1,5 +1,31 @@
 # Open-source release checklist
 
+## v0.2.2-demo source-only prerelease — 2026-09-18
+
+- [x] Android-first source-demo acceptance summarized in
+      `SOURCE_DEMO_ACCEPTANCE.md`; physical hardware, iOS, production, printing,
+      sensors, payments, and unsupported integrations remain separate gates.
+- [x] Maintainer redistribution attestation and tracked-material/third-party
+      inventory reconciled in `ATTRIBUTION_REVIEW.md` and
+      `../THIRD_PARTY_NOTICES.md`; Apache-2.0 text is included and no unresolved
+      source-only provenance blocker remains.
+- [x] Exact `v0.2.2-demo` positive/negative gate tests and required local checks
+      pass: 16 Node tests, fresh/no-op migration suite, static 93/127/0/0
+      contract, zero-vulnerability audit, and source/history scan.
+- [ ] Required hosted PR/default-branch checks pass for the release-preparation
+      change.
+- [ ] Mobile change merges through review and resulting `main` CI passes.
+- [ ] Both backend CI jobs pin that exact mobile `main` SHA in byte-identical
+      active/documented workflow copies; backend merge and paired CI pass.
+- [ ] Matching immutable tags pass tag validation before either GitHub release is
+      published.
+- [ ] Both GitHub releases are prereleases with generated source archives only,
+      matching cross-links, and no uploaded binaries or latest-stable designation.
+
+The final tag SHAs and workflow/release URLs are recorded in GitHub release notes
+and the external delivery ledger to avoid circular commit-SHA documentation.
+Historical release records follow.
+
 ## v0.2.1-demo release and verification follow-up — 2026-09-15
 
 Published source-only prerelease pair (no native assets): mobile
@@ -52,7 +78,9 @@ production-ready release. The historical backend `v0.1.0` tag is incomplete.
 Matching `v0.2.0-demo` source-only prereleases were published on 2026-09-13:
 [backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.0-demo)
 and [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.0-demo).
-Use `v0.2.1-demo` for current onboarding; the following older checkpoint remains preserved.
+At that historical checkpoint, `v0.2.1-demo` was the onboarding tag. The current
+release instructions at the top of this file supersede it; older evidence remains
+preserved below.
 
 ## Boundaries
 
