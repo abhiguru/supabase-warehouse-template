@@ -1,5 +1,11 @@
 # Public-clone clean-install verification
 
+> The dated `v0.2.1-demo` evidence below is historical. For the active
+> source-demo handoff, check out and fast-forward
+> `handoff/source-demo-20260917` in both sibling repositories, record their full
+> SHAs, and verify both backend CI workflow copies pin the mobile SHA before
+> applying this isolation procedure.
+
 ## Evidence — 2026-09-12
 
 Fresh unauthenticated HTTPS clones were tested at these exact commits:

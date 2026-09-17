@@ -1,5 +1,22 @@
 # Supabase Warehouse Template
 
+## Current source-demo handoff candidate
+
+The immutable `v0.2.1-demo` instructions below describe the historical
+2026-09-14 checkpoint. For the active source-demo handoff, clone this repository
+and `rn-warehouse-template` as siblings, check out
+`handoff/source-demo-20260917` in both, and fast-forward both branches before
+setup. Record both resolved full SHAs. Verify `.github/workflows/ci.yml` and
+`docs/github-workflows/ci.yml` are byte-identical and that both jobs pin the
+mobile checkout SHA.
+
+Use `docs/CLEAN_INSTALL.md` with a unique `WAREHOUSE_PROJECT_NAME` and unused
+loopback ports. Generate configuration through repository scripts; do not copy
+`.env`, credentials, database files, or workspace-only plans from another
+installation. The active handoff remains a candidate until both PRs merge and
+CI passes on the resulting default-branch commits. Existing `v0.2.1-demo` tags
+will not move.
+
 An open-source warehouse backend, paired with
 [rn-warehouse-template](https://github.com/abhiguru/rn-warehouse-template).
 

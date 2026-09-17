@@ -1,5 +1,28 @@
 # Developer handoff — v0.2.1-demo
 
+## Active source-demo continuation — 2026-09-18
+
+This file retains the immutable `v0.2.1-demo` checkpoint below as history. For
+the active handoff, create sibling clones named `rn-warehouse-template` and
+`supabase-warehouse-template`, check out and fast-forward
+`handoff/source-demo-20260917` in both, and record the resolved full SHAs. Before
+setup, verify the active/documented CI workflow copies are byte-identical and
+that both jobs pin the mobile checkout SHA.
+
+Follow `CLEAN_INSTALL.md` with a unique Compose project and unused loopback
+ports. Run setup, doctor, health, rerun, stop, and restart with the same project
+name. Generate the sibling mobile environment through its script and use the
+same localhost API origin. Do not copy configuration, credentials, or database
+files from another checkout. Prove configuration and data preservation plus an
+Android debug login/connectivity smoke before treating onboarding as
+reproducible.
+
+This branch is a source-demo candidate, not a production or all-platform
+release. Physical camera/hardware, iOS, production SMS/TLS/operations,
+distribution, printing, sensors, and unsupported integrations remain separate
+gates. The branch becomes delivered only after both PRs merge and required CI
+passes on the resulting default-branch commits.
+
 This pair is a local warehouse development demo, Android first. Production setup
 remains blocked. Release notes identify the exact commit pair and verification:
 [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.1-demo),
