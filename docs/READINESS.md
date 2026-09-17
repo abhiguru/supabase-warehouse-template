@@ -1,5 +1,22 @@
 # Readiness — 2026-09-12
 
+## Active source-demo handoff candidate — 2026-09-18
+
+PR #7 is the reviewed companion for mobile PR #10. Both CI workflow copies are
+byte-identical and pin the exact reviewed mobile commit. The candidate passes 16
+unit/setup tests, fresh and upgrade migration tests through migrations 00000–00010,
+no-op reruns, static/live mobile contract checks (93 RPC names, 127 typed calls,
+0 missing names, 0 mismatches), and isolated API coverage for auth/RLS,
+GRN/dispatch/stock, idempotency/oversell/concurrency, cart/orders, invoices,
+images/storage cleanup, reports, and all four PDF types. Fresh-clone onboarding
+also proves generated configuration, health, rerun, owned stop/restart, data
+preservation, and Android connectivity.
+
+This is a local source-demo handoff candidate until both PRs merge and required
+CI passes on the resulting default-branch pair. Production SMS/TLS/operations,
+physical hardware, iOS, distribution, printing, sensors, and unsupported
+integrations remain separate gates. Historical demo tags remain immutable.
+
 ## Decision
 
 Current main is a tested **local-demo checkpoint**, not a production release or

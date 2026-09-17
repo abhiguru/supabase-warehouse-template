@@ -23,6 +23,12 @@ distribution, printing, sensors, and unsupported integrations remain separate
 gates. The branch becomes delivered only after both PRs merge and required CI
 passes on the resulting default-branch commits.
 
+The 2026-09-18 fresh-clone rehearsal passes generated configuration, migrations,
+doctor/health, isolated API fixtures, setup rerun, owned stop/restart, preserved
+data/configuration, and the companion Android debug build/login/native smoke.
+Use the exact mobile SHA pinned in both workflow copies and repeat required checks
+on the merged default-branch pair.
+
 This pair is a local warehouse development demo, Android first. Production setup
 remains blocked. Release notes identify the exact commit pair and verification:
 [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.1-demo),

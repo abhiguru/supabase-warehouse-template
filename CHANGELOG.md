@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — source-demo developer handoff (2026-09-18)
+
+- Added checksummed forward migrations for padded dispatch suggestions and
+  protected invoice line-detail compatibility without changing stored document
+  identifiers.
+- Added numeric ordering, rollover/exhaustion, authorization, fresh/upgrade,
+  mobile-validator, and isolated API regression coverage.
+- Added ownership-aware clean onboarding, loopback isolation, configuration and
+  data-preservation checks, and exact mobile companion pinning in both workflow
+  copies.
+- Verified the complete source-demo API matrix and paired Android onboarding;
+  production and physical-device release gates remain separate.
+
 ## Unreleased — second-pass review
 
 - Corrected readiness claims: fresh migrations and mobile API coverage fail;
