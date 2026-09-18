@@ -2,11 +2,11 @@
 
 ## Current source-demo status — 2026-09-18
 
-The Android-first source-demo scope is accepted. Matching `v0.2.2-demo` tags
-remain forthcoming until both reviewed changes merge, default-branch CI passes,
-the exact tags pass release validation, and both source-only prereleases are
-published. Use matching current `main` branches during preparation and matching
-`v0.2.2-demo` tags after publication.
+The Android-first source-demo scope is accepted and published. Matching
+`v0.2.2-demo` source-only prereleases identify backend commit
+`2959881d0e46a8797a98d10da8c7139217477476` and mobile commit
+`6e6885786912fe9186285103e19de762e4ba88f8`. Use those matching tags for
+the verified release pair and current `main` branches for contribution work.
 
 The verified scope and separate gates are recorded in
 [SOURCE_DEMO_ACCEPTANCE.md](SOURCE_DEMO_ACCEPTANCE.md). The scoped maintainer
