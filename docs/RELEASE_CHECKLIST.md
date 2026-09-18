@@ -12,15 +12,20 @@
 - [x] Exact `v0.2.2-demo` positive/negative gate tests and required local checks
       pass: 16 Node tests, fresh/no-op migration suite, static 93/127/0/0
       contract, zero-vulnerability audit, and source/history scan.
-- [ ] Required hosted PR/default-branch checks pass for the release-preparation
-      change.
-- [ ] Mobile change merges through review and resulting `main` CI passes.
-- [ ] Both backend CI jobs pin that exact mobile `main` SHA in byte-identical
-      active/documented workflow copies; backend merge and paired CI pass.
-- [ ] Matching immutable tags pass tag validation before either GitHub release is
-      published.
-- [ ] Both GitHub releases are prereleases with generated source archives only,
-      matching cross-links, and no uploaded binaries or latest-stable designation.
+- [x] Required hosted PR/default-branch checks pass for the release-preparation
+      change: mobile PR #11 and backend PR #8 passed their required checks.
+- [x] Mobile change merged through review as
+      `6e6885786912fe9186285103e19de762e4ba88f8`; main CI run `35274817895`
+      passed.
+- [x] Both backend CI jobs pin that exact mobile `main` SHA in byte-identical
+      active/documented workflow copies; backend merged as
+      `2959881d0e46a8797a98d10da8c7139217477476` and paired main CI run
+      `35275536840` passed.
+- [x] Matching immutable tags passed tag validation before publication: mobile
+      run `35276024942` and backend run `35276027479`.
+- [x] Both GitHub releases are prereleases with generated source archives only,
+      matching cross-links, zero uploaded assets, and no latest-stable
+      designation.
 
 The final tag SHAs and workflow/release URLs are recorded in GitHub release notes
 and the external delivery ledger to avoid circular commit-SHA documentation.

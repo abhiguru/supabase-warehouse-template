@@ -2,11 +2,11 @@
 
 ## Active source-demo release — 2026-09-18
 
-Source-demo acceptance is complete. The matching `v0.2.2-demo` tags are
-forthcoming until exact-tag validation passes and both source-only prereleases
-are published. Before publication use matching current `main` branches; after
-publication use `v0.2.2-demo` in both sibling repositories. Verify the active
-and documented CI copies are byte-identical and pin the mobile checkout.
+Source-demo acceptance and publication are complete. Use `v0.2.2-demo` in
+both sibling repositories for the verified release pair. The backend tag targets
+`2959881d0e46a8797a98d10da8c7139217477476`; the mobile tag targets
+`6e6885786912fe9186285103e19de762e4ba88f8`. The active and documented CI
+copies are byte-identical and pin that mobile commit.
 
 Follow `CLEAN_INSTALL.md` with a unique Compose project and unused loopback
 ports. Run setup, doctor, health, rerun, stop, and restart with the same project
@@ -19,8 +19,8 @@ reproducible.
 This is a source-demo release, not a production or all-platform release.
 Physical camera/hardware, iOS, production SMS/TLS/operations,
 distribution, printing, sensors, and unsupported integrations remain separate
-gates. Publication requires reviewed merges, passing default-branch CI, exact
-tag validation, and matching source-only prereleases.
+gates. The reviewed merges, default-branch CI, exact-tag validation, and
+matching source-only prerelease publication completed on 2026-09-18.
 
 The 2026-09-18 fresh-clone rehearsal passes generated configuration, migrations,
 doctor/health, isolated API fixtures, setup rerun, owned stop/restart, preserved

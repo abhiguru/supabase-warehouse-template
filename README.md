@@ -2,11 +2,11 @@
 
 ## Current source-demo release
 
-The Android-first source-demo acceptance is complete. The matching
-`v0.2.2-demo` tag is forthcoming until exact-tag validation passes and both
-source-only GitHub prereleases are published. During preparation, use matching
-current `main` branches; after publication, use `v0.2.2-demo` in this repository
-and `rn-warehouse-template`. Existing tags remain immutable.
+The Android-first source-demo acceptance is complete. Matching
+`v0.2.2-demo` source-only GitHub prereleases were published on 2026-09-18.
+Use `v0.2.2-demo` in this repository and `rn-warehouse-template` for the
+verified release pair. Existing tags remain immutable; use current `main`
+branches for contribution work.
 
 The public acceptance summary is in
 [SOURCE_DEMO_ACCEPTANCE.md](docs/SOURCE_DEMO_ACCEPTANCE.md). Ownership and
@@ -24,7 +24,7 @@ four PDF/download flows have passed integration tests. This is **not a
 production-ready release**. Production SMS, optional printing, native-device
 acceptance, and broader workflow/security review remain open. The older
 v0.1.0 tag contains an incomplete export. For the reproducible release checkpoint,
-use **`v0.2.2-demo` in both repositories** after publication. See the
+use **`v0.2.2-demo` in both repositories**. See the
 [demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.2-demo)
 for the exact tested commit pair and known limitations.
 
