@@ -136,7 +136,8 @@ INSERT INTO public.goodsreceived(id,gr_no,date,customer_id,customer_name) VALUES
   ('44444444-0000-4000-8000-000000000010','A-DETAIL',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
   ('44444444-0000-4000-8000-000000000020','B-DETAIL',current_date,'22222222-0000-4000-8000-000000000002','Example Customer B');
 INSERT INTO public.goodsreceived_trl(id,gr_id,item_id,item_name,packaging,qty,stock,weight,rack,package_mark) VALUES
-  ('55555555-0000-4000-8000-000000000010','44444444-0000-4000-8000-000000000010','33333333-0000-4000-8000-000000000010','Invoice detail item','Bag',100,0,10,'R1','DETAIL');
+  ('55555555-0000-4000-8000-000000000010','44444444-0000-4000-8000-000000000010','33333333-0000-4000-8000-000000000010','Invoice detail item','Bag',100,0,10,'R1','DETAIL'),
+  ('55555555-0000-4000-8000-000000000020','44444444-0000-4000-8000-000000000020','33333333-0000-4000-8000-000000000010','Other customer item','Bag',1,1,10,'R2','OTHER');
 INSERT INTO public.dispatch(id,disp_no,disp_date,customer_id,customer_name) VALUES
   ('66666666-0000-4000-8000-000000000010','I0001',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
   ('66666666-0000-4000-8000-000000000020','I0002',current_date,'22222222-0000-4000-8000-000000000001','Example Customer A'),
@@ -172,12 +173,40 @@ DO $$ DECLARE login jsonb; claims jsonb; BEGIN
     ORDER BY created_at DESC LIMIT 1;
   PERFORM set_config('request.jwt.claims',claims::text,true);
 END $$;
+-- Customer carts must accept legacy/minimal GRNs whose optional snapshot
+-- labels are null. The order snapshot itself remains non-null and stable.
+INSERT INTO public.goodsreceived_trl(
+  id,gr_id,item_id,item_name,packaging,qty,stock,weight,rack,package_mark
+) VALUES (
+  '55555555-0000-4000-8000-000000000011',
+  '44444444-0000-4000-8000-000000000010',
+  '33333333-0000-4000-8000-000000000010',
+  'Minimal cart item',NULL,10,10,NULL,NULL,NULL
+);
+INSERT INTO public.orders(
+  id,order_date,requested_dispatch_date,status,priority,
+  customer_id,customer_name,created_by,updated_by
+) VALUES (
+  '99999999-0000-4000-8000-000000000010',now(),now()+interval '7 days','OPEN','normal',
+  '22222222-0000-4000-8000-000000000001','Example Customer A',
+  '11111111-0000-4000-8000-000000000002','11111111-0000-4000-8000-000000000002'
+);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.assert_true(public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000010')->>'success'='true','assigned customer reads own detailed invoice');
+SELECT pg_temp.assert_true(public.get_grn_item_dispatches('55555555-0000-4000-8000-000000000010')#>>'{data,summary,total_dispatched_qty}'='100','assigned customer reads per-item dispatch total');
+SELECT pg_temp.assert_true(jsonb_array_length(public.get_grn_item_dispatches('55555555-0000-4000-8000-000000000010')#>'{data,dispatches}')=3,'assigned customer reads per-item dispatch history');
+SELECT pg_temp.assert_true(public.get_customer_grn_items('22222222-0000-4000-8000-000000000001',NULL,NULL,'{}','date','desc',100,0)->>'success'='true','customer item catalog accepts documented maximum page size');
+SELECT pg_temp.assert_true(public.add_item_to_order('99999999-0000-4000-8000-000000000010','55555555-0000-4000-8000-000000000011',5)->>'success'='true','customer adds minimal GRN item to cart');
+SELECT pg_temp.assert_true((SELECT grn_items_package_mark='' AND grn_items_packaging='' AND grn_items_rack='' AND grn_items_weight=0
+  FROM public.order_items WHERE order_id='99999999-0000-4000-8000-000000000010'),'cart snapshot normalizes optional GRN labels');
 DO $$ BEGIN
   BEGIN
     PERFORM public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000020');
     RAISE EXCEPTION 'customer read cross-customer detailed invoice';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN
+    PERFORM public.get_grn_item_dispatches('55555555-0000-4000-8000-000000000020');
+    RAISE EXCEPTION 'customer read cross-customer GRN item dispatches';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
 RESET ROLE;

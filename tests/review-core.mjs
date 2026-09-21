@@ -1,5 +1,50 @@
 import assert from 'node:assert/strict';
 
+const REVIEW_CUSTOMER_NAME = 'Example Customer — Access Review';
+
+async function deleteRows(api, adminToken, path, label) {
+  const response = await api(path, adminToken, undefined, 'DELETE');
+  assert.ok(response.ok, `${label}: HTTP ${response.status}`);
+}
+
+async function cleanupReviewCustomerFixtures(api, adminToken) {
+  const customerPath = `/rest/v1/customers?name=eq.${encodeURIComponent(REVIEW_CUSTOMER_NAME)}&select=id`;
+  const customers = (await api(customerPath, adminToken)).data || [];
+
+  for (const { id: customerId } of customers) {
+    const invoices = (await api(`/rest/v1/invoice?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
+    for (const { id } of invoices) {
+      await deleteRows(api, adminToken, `/rest/v1/invoice_trl?invoice_id=eq.${id}`, 'delete review invoice lines');
+    }
+    await deleteRows(api, adminToken, `/rest/v1/invoice?customer_id=eq.${customerId}`, 'delete review invoices');
+
+    const dispatches = (await api(`/rest/v1/dispatch?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
+    for (const { id } of dispatches) {
+      await deleteRows(api, adminToken, `/rest/v1/dispatch_images?dispatch_id=eq.${id}`, 'delete review dispatch images');
+      await deleteRows(api, adminToken, `/rest/v1/dispatch_trl?disp_id=eq.${id}`, 'delete review dispatch lines');
+    }
+    await deleteRows(api, adminToken, `/rest/v1/dispatch?customer_id=eq.${customerId}`, 'delete review dispatches');
+
+    const orders = (await api(`/rest/v1/orders?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
+    for (const { id } of orders) {
+      await deleteRows(api, adminToken, `/rest/v1/order_items?order_id=eq.${id}`, 'delete review order lines');
+    }
+    await deleteRows(api, adminToken, `/rest/v1/orders?customer_id=eq.${customerId}`, 'delete review orders');
+
+    const grns = (await api(`/rest/v1/goodsreceived?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
+    for (const { id } of grns) {
+      const items = (await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${id}&select=id`, adminToken)).data || [];
+      for (const { id: itemId } of items) {
+        await deleteRows(api, adminToken, `/rest/v1/stock_movements?gr_trl_id=eq.${itemId}`, 'delete review stock movements');
+      }
+      await deleteRows(api, adminToken, `/rest/v1/grn_images?grn_id=eq.${id}`, 'delete review GRN images');
+      await deleteRows(api, adminToken, `/rest/v1/goodsreceived_trl?gr_id=eq.${id}`, 'delete review GRN lines');
+    }
+    await deleteRows(api, adminToken, `/rest/v1/goodsreceived?customer_id=eq.${customerId}`, 'delete review GRNs');
+    await deleteRows(api, adminToken, `/rest/v1/item_storage_prices?customer_id=eq.${customerId}`, 'delete review prices');
+  }
+}
+
 // Explicit fictional fixtures. Assertions below state expected values directly.
 export async function reviewCore({ api, rpc, success, login, anon, adminToken, customerToken, customerId, grnId, grnItem, dispatchId, base }) {
   const outsider = await login('0000000003');
@@ -7,10 +52,25 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   const outsiderProfile = (await api('/rest/v1/user_profiles?mobile=eq.910000000003&select=id', adminToken)).data[0].id;
   success(await rpc('update_user_role', adminToken, { p_user_id: outsiderProfile, p_new_role: 'customer' }), 'outsider role');
   for (const row of (await api('/rest/v1/customers?select=id', outsiderToken)).data) await rpc('remove_customer_assignment', adminToken, { target_user_mobile: '910000000003', target_customer_id: row.id });
-  const otherCustomer = await rpc('create_customer', adminToken, { p_name: 'Example Customer — Access Review', p_mobile: '0000000009' });
-  success(otherCustomer, 'create review customer');
-  const otherId = otherCustomer.data.customer_id;
-  assert.equal(await rpc('assign_customer_to_user', adminToken, { target_user_mobile: '910000000003', target_customer_id: otherId }), true);
+  const existingReviewCustomers = (
+    await api(`/rest/v1/customers?name=eq.${encodeURIComponent(REVIEW_CUSTOMER_NAME)}&select=id,deleted_at`, adminToken)
+  ).data || [];
+  assert.ok(existingReviewCustomers.length <= 1, 'review fixture customer name is unique');
+  await cleanupReviewCustomerFixtures(api, adminToken);
+
+  let otherId;
+  try {
+    if (existingReviewCustomers.length) {
+      otherId = existingReviewCustomers[0].id;
+      if (existingReviewCustomers[0].deleted_at) {
+        success(await rpc('restore_customer', adminToken, { p_customer_id: otherId }), 'restore review customer');
+      }
+    } else {
+      const otherCustomer = await rpc('create_customer', adminToken, { p_name: REVIEW_CUSTOMER_NAME, p_mobile: '0000000009' });
+      success(otherCustomer, 'create review customer');
+      otherId = otherCustomer.data.customer_id;
+    }
+    assert.equal(await rpc('assign_customer_to_user', adminToken, { target_user_mobile: '910000000003', target_customer_id: otherId }), true);
 
   // Customer images are staff-only, including for the customer named in the path.
   // Exercise Storage itself: metadata RPC success does not prove object isolation.
@@ -159,4 +219,19 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
     assert.ok(!(await api('/rest/v1/customers', refresh.access_token)).ok);
   }
   await rpc('logout_session', anon, { p_refresh_token: outsider.refresh_token });
+  } finally {
+    if (otherId) {
+      await rpc('remove_customer_assignment', adminToken, {
+        target_user_mobile: '910000000003',
+        target_customer_id: otherId,
+      });
+    }
+    await cleanupReviewCustomerFixtures(api, adminToken);
+    if (otherId) {
+      success(await rpc('safe_delete_customer', adminToken, {
+        p_customer_id: otherId,
+        p_permanent: false,
+      }), 'deactivate review customer fixture');
+    }
+  }
 }
