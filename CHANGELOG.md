@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — iOS acceptance handoff (2026-09-21)
+
+- Fixed configuration, doctor and migration-plan CLI execution through symlinked
+  checkout paths, including macOS temporary directories. Added regression coverage
+  and restored the setup-failure/configuration-preservation test.
+- Aligned the developer handoff with qualified physical-iOS evidence, open mobile
+  defects, reproducible USB-onboarding work and pricing/PDF customization contracts.
+- Pinned both CI workflow copies to the submitted mobile handoff commit.
+- Preserved published source-release tags; this follow-up requires paired review.
+
 ## 0.2.2-demo — source-only prerelease (2026-09-18)
 
 - Added checksummed forward migrations for padded dispatch suggestions and
