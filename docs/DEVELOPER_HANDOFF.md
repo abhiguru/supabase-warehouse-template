@@ -4,28 +4,31 @@
 
 Physical Android acceptance and the qualified physical-iOS matrix are recorded
 in the mobile repository's `docs/NATIVE_ACCEPTANCE.md`. For the latest fixes and
-prioritized open work, read its `docs/HANDOFF_REVIEW_2026-09-21.md` on the paired
-`handoff/ios-acceptance-review` branch. After review/merge, use the reviewed
-`main` revisions and record both SHAs. The release-tag clone commands below
-reproduce the immutable baseline and do not contain this follow-up.
+prioritized open work, read its `docs/HANDOFF_REVIEW_2026-09-21.md` on `main`.
+The release-tag clone commands below reproduce the immutable baseline and do not
+contain this post-release follow-up.
 
 The customer-history mobile repair merged through PR #15 as
-`09919ebfbce1f6e819363eca7711c23dd29b155f`. Both byte-identical backend CI
-workflow copies pin that exact verified mobile `main` commit. The backend PR
-and its hosted checks identify the other half of the submitted pair.
+`09919ebfbce1f6e819363eca7711c23dd29b155f`. The backend companion merged
+through PR #11 as `a1ad80741ddff97d4f9eb47a0066094f76ea476a`. Both
+byte-identical backend CI workflow copies pin that exact verified mobile
+implementation commit. Mobile main CI run `35605871279` and backend main CI run
+`35606744913` passed, including the pinned integration pair.
 
 The review fixed a macOS CLI-path defect: configuration, doctor and migration
 planning could silently skip execution when invoked through symlinks such as
 `/var` → `/private/var`. Entry checks now compare canonical paths. All 17 backend
 unit tests pass, including the formerly failing setup-preservation fixture and
-a symlink regression. Docker was unavailable for this final review, so a new
-fresh setup/migration/live API rehearsal remains a CI or isolated-host check.
+a symlink regression. The later checkout-owned Docker rehearsal applied the
+00000–00011 migration plan, passed health and the full API matrix, and completed
+the live companion check with zero missing RPCs or mismatches.
 
-The customer GRN/recent-dispatch gap is repaired locally with customer-authorized
-contracts and live API evidence; it remains subject to paired review/CI and a
-merged-pair Android smoke. Active-session revocation leaving the phone on an
-error screen remains open. Keep authorization intact while correcting logout
-behavior.
+The customer GRN/recent-dispatch gap is closed with customer-authorized contracts,
+live API evidence, paired review/CI, and a post-merge API-36 emulator smoke. The
+assigned fictional customer displayed two GRNs and three recent dispatches, and
+authenticated cold restoration passed. Active-session revocation leaving the
+phone on an error screen remains open. Keep authorization intact while correcting
+logout behavior.
 The successful iPhone run also relied on temporary USB relays that were removed;
 repeatable physical-iOS onboarding is still an open task. Ordered item 4 has not
 started. Enabled telemetry and production/distribution gates remain separate.

@@ -45,7 +45,8 @@ two byte-identical CI workflow copies pin the mobile commit checked out.
 
 Post-release physical Android evidence and a qualified physical-iOS matrix are
 recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`; see its dated 2026-09-21
-handoff review for remaining customer-view, revocation and onboarding gaps.
+handoff review for the closed customer-view gate and the remaining revocation
+and onboarding gaps.
 These later results do not change the immutable release tags.
 
 Production SMS/TLS/operations,
