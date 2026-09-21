@@ -7,7 +7,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   const outsiderProfile = (await api('/rest/v1/user_profiles?mobile=eq.910000000003&select=id', adminToken)).data[0].id;
   success(await rpc('update_user_role', adminToken, { p_user_id: outsiderProfile, p_new_role: 'customer' }), 'outsider role');
   for (const row of (await api('/rest/v1/customers?select=id', outsiderToken)).data) await rpc('remove_customer_assignment', adminToken, { target_user_mobile: '910000000003', target_customer_id: row.id });
-  const otherCustomer = await rpc('create_customer', adminToken, { p_name: `Review customer ${Date.now()}`, p_mobile: '0000000009' });
+  const otherCustomer = await rpc('create_customer', adminToken, { p_name: 'Example Customer — Access Review', p_mobile: '0000000009' });
   success(otherCustomer, 'create review customer');
   const otherId = otherCustomer.data.customer_id;
   assert.equal(await rpc('assign_customer_to_user', adminToken, { target_user_mobile: '910000000003', target_customer_id: otherId }), true);
