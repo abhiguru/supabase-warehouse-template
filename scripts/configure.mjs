@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes, createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export function configure(root, { demo = false } = {}) {
   const target = resolve(root, 'docker/.env');
@@ -37,7 +38,7 @@ export function configure(root, { demo = false } = {}) {
   return true;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   if (process.argv.slice(2).some(arg => arg !== '--demo')) throw new Error('Usage: node scripts/configure.mjs [--demo]');
   const created = configure(fileURLToPath(new URL('..', import.meta.url)), { demo: process.argv.includes('--demo') });
   console.log(created ? 'Created fresh docker/.env; no credentials printed.' : 'Preserved existing docker/.env unchanged.');

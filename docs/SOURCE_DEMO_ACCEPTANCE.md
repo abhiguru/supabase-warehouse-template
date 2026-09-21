@@ -43,7 +43,12 @@ two byte-identical CI workflow copies pin the mobile commit checked out.
 
 ## Separate gates
 
-Physical camera and other Android hardware, iOS, production SMS/TLS/operations,
+Post-release physical Android evidence and a qualified physical-iOS matrix are
+recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`; see its dated 2026-09-21
+handoff review for remaining customer-view, revocation and onboarding gaps.
+These later results do not change the immutable release tags.
+
+Production SMS/TLS/operations,
 app-store or signed-binary distribution, printing, sensors, Realtime, payments,
 and unsupported integrations remain separate gates. The source-demo acceptance
 does not claim production readiness or all-platform acceptance.

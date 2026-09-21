@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { isMain } from './is-main.mjs';
 
 export function validateDemoEnv(env) {
   if (env.AUTH_MODE !== 'demo' || env.APP_ENV !== 'development' || env.BIND_ADDRESS !== '127.0.0.1') {
@@ -58,7 +58,7 @@ export async function doctor({ preflight = false } = {}) {
   return 'Demo prerequisites, ownership, service health and public bootstrap passed. No configuration or services changed.';
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   try { console.log(await doctor({ preflight: process.argv.includes('--preflight') })); }
   catch (error) { console.error(`Doctor: ${error.message}`); process.exitCode = 1; }
 }

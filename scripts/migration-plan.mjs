@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export function migrationPlan(root) {
   const directory = resolve(root, 'migrations');
@@ -46,6 +47,6 @@ ${sql}
   return result.join('\n');
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   process.stdout.write(migrationPlan(fileURLToPath(new URL('..', import.meta.url))));
 }
