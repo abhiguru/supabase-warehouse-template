@@ -2,6 +2,13 @@
 
 ## Unreleased — iOS acceptance handoff (2026-09-21)
 
+- Added guarded customer-history RPCs for the post-release mobile repair:
+  customer GRN filtering/pagination now matches the exposed view controls, and
+  a paginated customer dispatch-header list returns only assigned-customer data.
+  The associated live API coverage verifies pagination and cross-customer denial.
+- Fresh isolated-demo migration and live companion-contract checks passed. The
+  repair remains pending paired PR review, CI and a merged mobile Android smoke;
+  published source-only tags are unchanged.
 - Fixed configuration, doctor and migration-plan CLI execution through symlinked
   checkout paths, including macOS temporary directories. Added regression coverage
   and restored the setup-failure/configuration-preservation test.
