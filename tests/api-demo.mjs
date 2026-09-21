@@ -78,13 +78,49 @@ assert.equal(oversell.success,false,'overselling denied');
 const dispatch=await api(`/rest/v1/dispatch?disp_no=eq.${number}&select=id`,adminToken);
 const dispatchId=dispatch.data[0].id;
 success(await rpc('get_dispatch_details',customerToken,{p_dispatch_id:dispatchId}),'customer dispatch details');
+const customerGrns=await rpc('get_customer_grn_items',customerToken,{
+  p_customer_id:customerId,p_filters:{gr_no:number},p_sort_by:'date',p_sort_order:'desc',p_limit:1,p_offset:0
+});
+success(customerGrns,'customer GRN list');
+assert.equal(customerGrns.data.items.length,1,'assigned customer GRN page');
+assert.equal(customerGrns.data.items[0].grn_id,grnId,'assigned customer GRN mapping');
+const deniedCustomerGrns=await api('/rest/v1/rpc/get_customer_grn_items',customerToken,{
+  p_customer_id:otherId,p_limit:1,p_offset:0
+});
+assert.ok(!deniedCustomerGrns.ok || deniedCustomerGrns.data?.success===false,'other-customer GRN list denied');
+
+const secondDispatchNumber='P'+Date.now().toString(36).slice(-7).toUpperCase();
+success(await rpc('create_dispatch_with_stock_check',adminToken,{
+  ...dispatchArgs,
+  p_dispatch_data:{...dispatchArgs.p_dispatch_data,disp_no:secondDispatchNumber,disp_date:new Date(Date.now()+1000).toISOString()},
+  p_dispatch_items:[{gr_trl_id:grnItem,disp_qty:1}]
+}),'create pagination dispatch');
+const dispatchPageOne=await rpc('get_customer_dispatch_list',customerToken,{
+  p_customer_id:customerId,p_limit:1,p_offset:0,p_include_items:true
+});
+const dispatchPageTwo=await rpc('get_customer_dispatch_list',customerToken,{
+  p_customer_id:customerId,p_limit:1,p_offset:1,p_include_items:true
+});
+success(dispatchPageOne,'customer dispatch page one');
+success(dispatchPageTwo,'customer dispatch page two');
+assert.equal(dispatchPageOne.data.dispatches.length,1,'customer dispatch page size');
+assert.equal(dispatchPageTwo.data.dispatches.length,1,'customer dispatch second page size');
+assert.notEqual(dispatchPageOne.data.dispatches[0].id,dispatchPageTwo.data.dispatches[0].id,'customer dispatch pages do not repeat');
+assert.equal(dispatchPageOne.data.dispatches[0].customer_id,customerId,'assigned customer dispatch mapping');
+assert.ok(dispatchPageOne.data.dispatches[0].items.length>0,'customer dispatch includes item rows');
+assert.ok(dispatchPageOne.data.pagination.total_count>=2,'customer dispatch total count');
+assert.equal(dispatchPageOne.data.pagination.has_more,true,'customer dispatch has-more pagination');
+const deniedCustomerDispatches=await api('/rest/v1/rpc/get_customer_dispatch_list',customerToken,{
+  p_customer_id:otherId,p_limit:1,p_offset:0,p_include_items:true
+});
+assert.ok(!deniedCustomerDispatches.ok || deniedCustomerDispatches.data?.success===false,'other-customer dispatch list denied');
 const dispatchItems=await api(`/rest/v1/dispatch_trl?disp_id=eq.${dispatchId}&select=id`,adminToken);
 const invoiceNumber=Date.now()%1000000000;
 const financialYear=new Date().getUTCFullYear();
 success(await rpc('save_invoice',adminToken,{p_invoice_data:{inv_no:invoiceNumber,inv_fin_year:financialYear,
   gr_id:grnId,gr_no:number,customer_id:customerId,customer_name:'Example Customer A',inv_date:new Date().toISOString(),total:100,
     items:[{disp_trl_id:dispatchItems.data[0].id,charge:5,tax:0,labour_rate:0}]}}),'save invoice');
-console.log('GRN, customer item lookup, dispatch stock update, oversell denial, and invoice save passed.');
+console.log('GRN and dispatch customer lists, pagination, denial, stock update, oversell denial, and invoice save passed.');
 
 // --- Item 5.1: Storage & Image Lifecycle ---
 assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/anon.jpg`, {

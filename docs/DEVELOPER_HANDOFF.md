@@ -9,11 +9,11 @@ prioritized open work, read its `docs/HANDOFF_REVIEW_2026-09-21.md` on the paire
 `main` revisions and record both SHAs. The release-tag clone commands below
 reproduce the immutable baseline and do not contain this follow-up.
 
-The paired mobile review commit is
-`ab0e8cb0e13bf6dc1c2fab580648d603b03c1073`. Both CI workflow copies pin it;
-publish the mobile branch before triggering backend CI. The backend commit is
-identified by its Git/PR revision. These pins describe the submitted review pair,
-not a claim that the new CI has already passed.
+The customer-history mobile repair is published as
+`be4c995e4f81ba813c751d95f9eb1dad06160f61` on
+`fix/customer-history-access`. Both byte-identical backend CI workflow copies
+pin that exact commit. These pins describe the submitted review pair, not a
+claim that the new CI has already passed.
 
 The review fixed a macOS CLI-path defect: configuration, doctor and migration
 planning could silently skip execution when invoked through symlinks such as
@@ -22,9 +22,11 @@ unit tests pass, including the formerly failing setup-preservation fixture and
 a symlink regression. Docker was unavailable for this final review, so a new
 fresh setup/migration/live API rehearsal remains a CI or isolated-host check.
 
-The main product gaps are customer GRN/recent-dispatch views using staff-only
-RPCs, and active-session revocation leaving the phone on an error screen. Keep
-authorization intact while correcting the mobile queries and logout behavior.
+The customer GRN/recent-dispatch gap is repaired locally with customer-authorized
+contracts and live API evidence; it remains subject to paired review/CI and a
+merged-pair Android smoke. Active-session revocation leaving the phone on an
+error screen remains open. Keep authorization intact while correcting logout
+behavior.
 The successful iPhone run also relied on temporary USB relays that were removed;
 repeatable physical-iOS onboarding is still an open task. Ordered item 4 has not
 started. Enabled telemetry and production/distribution gates remain separate.
