@@ -9,11 +9,10 @@ prioritized open work, read its `docs/HANDOFF_REVIEW_2026-09-21.md` on the paire
 `main` revisions and record both SHAs. The release-tag clone commands below
 reproduce the immutable baseline and do not contain this follow-up.
 
-The customer-history mobile repair is published as
-`be4c995e4f81ba813c751d95f9eb1dad06160f61` on
-`fix/customer-history-access`. Both byte-identical backend CI workflow copies
-pin that exact commit. These pins describe the submitted review pair, not a
-claim that the new CI has already passed.
+The customer-history mobile repair merged through PR #15 as
+`09919ebfbce1f6e819363eca7711c23dd29b155f`. Both byte-identical backend CI
+workflow copies pin that exact verified mobile `main` commit. The backend PR
+and its hosted checks identify the other half of the submitted pair.
 
 The review fixed a macOS CLI-path defect: configuration, doctor and migration
 planning could silently skip execution when invoked through symlinks such as
