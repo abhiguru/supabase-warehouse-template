@@ -134,7 +134,7 @@
     "tsx": "^4.23.1",
     "tus-js-client": "^4.3.1",
     "typescript": "5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "version": "1.11.2",
   "description": "Supabase Storage Service",
