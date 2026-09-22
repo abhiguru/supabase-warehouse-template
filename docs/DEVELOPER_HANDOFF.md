@@ -17,8 +17,11 @@ the mobile session/onboarding fixes. Backend gates passed the complete migration
 health/doctor, API, contract and scan matrix, including 94 RPC names / 129 typed
 calls with zero missing names or mismatches. The assigned fictional customer
 history and related flows passed on an iPhone 15 running iOS 26.6.2; shared
-runtime/navigation changes also passed a fresh Android API-36 emulator smoke.
-See the mobile repository's `docs/NATIVE_ACCEPTANCE.md` and closed dated review.
+runtime/navigation changes also have Android coverage. The earlier merged
+customer-history pair passed a fresh API-36 emulator smoke; the final pair
+passed Android JS export and shared regression tests. This Mac had no Android
+SDK, so the exact final pair was not rerun in an emulator. See the mobile
+repository's `docs/NATIVE_ACCEPTANCE.md` and closed dated review.
 
 The release-tag commands below reproduce the immutable baseline. Existing
 `v0.2.2-demo` tags remain unchanged. Enabled telemetry and production/distribution

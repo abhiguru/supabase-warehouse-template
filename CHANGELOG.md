@@ -15,8 +15,9 @@
   a paginated customer dispatch-header list returns only assigned-customer data.
   The associated live API coverage verifies pagination and cross-customer denial.
 - Fresh isolated-demo migration and live companion-contract checks passed. The
-  repair subsequently passed paired PR review, exact-main CI, Android smoke and
-  the final physical-iPhone rerun; published source-only tags are unchanged.
+  repair subsequently passed paired PR review, exact-main CI, the earlier
+  customer-history pair's Android smoke and the final physical-iPhone closure;
+  published source-only tags are unchanged.
 - Fixed configuration, doctor and migration-plan CLI execution through symlinked
   checkout paths, including macOS temporary directories. Added regression coverage
   and restored the setup-failure/configuration-preservation test.
