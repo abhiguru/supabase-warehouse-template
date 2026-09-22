@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — setup HTTP readiness (2026-09-23)
+
+- Wait up to 90 seconds per internal HTTP probe for transient gateway/transport
+  failures after service recreation. Authentication, route and application errors
+  still fail immediately; persistent outages fail at the deadline.
+- Cover transient recovery, permanent errors, deadline exhaustion and redacted
+  transport diagnostics. The exact-main follow-up caught a configuration HTTP 502
+  during setup rerun after all container health checks had passed.
+
 ## Unreleased — source dependency audit and pooler diagnostics (2026-09-22)
 
 - Audit container npm source manifests in CI, including metadata build/test
