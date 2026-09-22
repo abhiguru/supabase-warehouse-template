@@ -75,8 +75,8 @@ published, and a release-signed artifact requires a fresh audit.
 ## Container scan blocker
 
 Trivy 0.74.0 scanned fixed HIGH/CRITICAL OS and library findings with
-`--ignore-unfixed` on 2026-09-22. Kong 3.9.3-ubuntu and PostgREST v14.17 were
-clean at that threshold. Current upstream tags for the remaining core and
+`--ignore-unfixed` on 2026-09-22. Kong 3.9.3-ubuntu was clean at that
+threshold. PostgREST v14.17 returned no package results and lacks scan coverage. Current upstream tags for the remaining core and
 monitoring images still produced findings. Machine-readable reports stay in the
 private scan directory during review because they can contain detailed deployment inventory; temporary reports are removed after verification.
 No finding is suppressed or waived by this record. The table below records the
@@ -90,7 +90,7 @@ below and do not erase that baseline.
 | `gotenberg/gotenberg:8.37.0` | 17 | 78 |
 | `grafana/grafana:13.2.2` | 0 | 104 |
 | `kong:3.9.3-ubuntu` | 0 | 0 |
-| `postgrest/postgrest:v14.17` | 0 | 0 |
+| `postgrest/postgrest:v14.17` | not assessed | not assessed |
 | `prom/alertmanager:v0.34.1` | 0 | 2 |
 | `prom/node-exporter:v1.12.1` | 0 | 9 |
 | `prom/prometheus:v3.14.0` | 0 | 6 |
@@ -161,11 +161,36 @@ change is included. Source build recipes are tracked; binaries are not published
 The scanner now rejects missing, malformed, empty, mismatched, or vulnerable
 reports even if the scanner process returns success.
 
-The final Compose inventory scan contained 19 images: five passed at the fixed
-HIGH/CRITICAL threshold (Kong, PostgREST, CUPS, patched Edge Runtime and patched
-Realtime); 14 still failed. Backend unit tests passed 19/19; the mobile contract
+The historical PR #21 scan contained 19 images and initially reported five clean
+images. The coverage audit corrects that interpretation: four had valid passing
+reports (Kong, CUPS, patched Edge Runtime and patched Realtime), PostgREST lacked
+package results, and 14 had findings. Empty findings alone do not prove coverage. Backend unit tests passed 19/19; the mobile contract
 had zero missing RPCs or signature mismatches. Local API acceptance covered
 sessions, roles, images and all four PDF flows; the patched Realtime passed
 update delivery, customer isolation, reconnect and invalid-token denial.
 Owned-service restart also passed health recovery, configuration preservation
 and business-data preservation after the patch.
+
+## Orders/cart and additional image follow-up
+
+The user selected orders/cart only with refresh after reconnect. Mobile PR #24
+is merged and both companion jobs now pin its implementation main commit
+`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. Local API-36 emulator checks passed
+remote order refresh, cart quantity changes, missed-event refresh after Realtime
+restart, and empty-cart refresh. iPhone regression of this change remains open.
+
+New source image recipes and current acceptance boundaries are recorded in
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). The earlier 14-image failure
+count above is historical, not the latest candidate result. The PR #22 inventory passes 15/19 images; PostgREST is rejected for missing package
+results, while Grafana, Studio and postgres-meta
+remain failing. The all-profile release gate remains enforced.
+
+The Studio/postgres-meta follow-up uses the newer official Studio application and
+a source-tested metadata migration. Both candidates scan clean; all 197 upstream
+metadata tests and the deployed Studio/metadata/API smoke passed. See the current
+[container security record](CONTAINER_SECURITY.md) for final inventory and the
+remaining Grafana publisher-signature dependency.
+
+The final Studio/metadata follow-up inventory has 17 valid passing reports out
+of 19. Grafana retains 104 HIGH findings; PostgREST has no package results and
+fails coverage validation. The scanner remains fail-closed for both conditions.

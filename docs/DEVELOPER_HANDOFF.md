@@ -1,5 +1,14 @@
 # Developer handoff — v0.2.2-demo
 
+Current 2026-09-22 follow-up: the default demo starts authenticated Realtime for
+mobile orders/cart updates. Both companion jobs pin mobile
+`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. See
+[container patch evidence](CONTAINER_SECURITY.md) and
+[remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
+Existing release tags and historical native acceptance are unchanged; the new
+live-update feature still needs its physical-iPhone regression on the Mac.
+
+
 ## Current continuation point — local readiness 1–11
 
 The provider-independent work is implemented and recorded in

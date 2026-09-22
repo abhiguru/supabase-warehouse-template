@@ -25,3 +25,35 @@ The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
 image's upstream terms. See `docs/ATTRIBUTION_REVIEW.md` for the reviewed
 inventory, provenance boundary, and maintainer attestation.
+
+## Maintained container source recipes (2026-09-22)
+
+The dependency manifests under `docker/alertmanager`, `docker/node-exporter`,
+`docker/postgres-exporter`, `docker/cadvisor`, `docker/prometheus`,
+`docker/gotenberg`, `docker/auth`, `docker/storage`, `docker/imgproxy`, and `docker/postgres`
+are copied from the upstream versions listed in
+[CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) and modified to resolve
+security updates. Recipe URLs and SHA-256 checksums identify the source archives.
+No third-party executable or source archive is committed or published here.
+
+Upstream license files were read from those source archives (Storage's license
+from its matching release tag). Their complete texts and available NOTICE files
+are retained under `LICENSES/{alertmanager,node-exporter,postgres-exporter,
+cadvisor,prometheus,pdfcpu,auth,storage,imgproxy,gosu,wal-g}/`. GoTrue/Auth is MIT
+(Copyright 2021–2025 Supabase); imgproxy is MIT (Copyright 2017 Sergey
+Alexandrovich); the other listed projects use Apache-2.0.
+Each source-built runtime image also retains the corresponding upstream license
+and available NOTICE. Dependencies keep their own upstream terms; this inventory
+does not authorize redistribution of the resulting images or native binaries.
+
+
+### Postgres-meta source migration
+
+`docker/postgres-meta` contains modified v0.99.0 package manifests and an explicit
+source patch. Its source URL/checksum is in the Dockerfile. The repository's
+actual `LICENSE` is Apache-2.0 and is retained at
+`LICENSES/postgres-meta/LICENSE` and in the runtime image. The upstream
+`package.json` separately labels the package MIT; that metadata is preserved,
+not substituted for the checked repository license. The source patch retains
+upstream authorship and uses the included repository license text. Studio's
+recipe references the publisher image and vendors no additional source/assets.

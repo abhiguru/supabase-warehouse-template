@@ -153,7 +153,8 @@ services:
   # Start with: docker compose --profile monitoring up -d
 
   prometheus:
-    image: prom/prometheus:v3.14.0
+    build:
+      context: ./prometheus
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -183,7 +184,8 @@ services:
           memory: 512M
 
   alertmanager:
-    image: prom/alertmanager:v0.34.1
+    build:
+      context: ./alertmanager
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -204,7 +206,8 @@ services:
           memory: 128M
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.20.1
+    build:
+      context: ./postgres-exporter
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -226,7 +229,8 @@ services:
           memory: 128M
 
   node-exporter:
-    image: prom/node-exporter:v1.12.1
+    build:
+      context: ./node-exporter
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -282,7 +286,8 @@ services:
           memory: 512M
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    build:
+      context: ./cadvisor
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]

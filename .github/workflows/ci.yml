@@ -42,7 +42,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Reviewed source-demo companion; update deliberately with contract evidence.
-          ref: cbb021f6cd2e140dc14767575802039a438e1ce6
+          ref: 989ade8e86f313ae4b173ad1bb5b56607ecbe353
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -83,7 +83,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Do not infer a branch in a different repository.
-          ref: cbb021f6cd2e140dc14767575802039a438e1ce6
+          ref: 989ade8e86f313ae4b173ad1bb5b56607ecbe353
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -107,6 +107,9 @@ jobs:
         working-directory: backend
       - run: npm run test:api
         working-directory: backend
+      - name: Studio and metadata compatibility
+        run: npm run test:studio
+        working-directory: backend
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
         working-directory: backend
@@ -126,6 +129,9 @@ jobs:
         run: |
           npm run db:backup -- /tmp/warehouse-ci-backup
           npm run db:verify-restore -- /tmp/warehouse-ci-backup
+        working-directory: backend
+      - name: Pooler session and transaction authentication
+        run: npm run test:pooler
         working-directory: backend
       - name: CUPS startup without printer hardware
         run: npm run test:cups

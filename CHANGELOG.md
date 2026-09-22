@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — Studio and metadata security (2026-09-22)
+
+- Adopt the patched official September 21 Studio application and remove unused
+  package-manager tools from its runtime image.
+- Rebuild postgres-meta v0.99.0 against a compatible Fastify 5 plugin set, with
+  a reviewable source patch, locked dependencies and retained upstream license.
+- Verify Studio HTML/assets and metadata endpoints in CI; record 197 passing
+  upstream metadata tests and retain Grafana publisher signatures as a gate.
+
+## Unreleased — orders/cart companion and maintained image recipes (2026-09-22)
+
+- Start Realtime in the default demo and pin both mobile companion jobs to
+  `989ade8e86f313ae4b173ad1bb5b56607ecbe353` for orders/cart live updates.
+- Add digest/checksum-pinned source recipes and dependency locks for patched
+  monitoring, Auth, Storage, PDF, PostgreSQL helper, and pooler images; preserve
+  the PostgreSQL server version and production gates.
+- Verify pooler session/transaction queries and invalid-password denial in CI;
+  validate monitoring configuration using the actual maintained images.
+- Retain upstream license texts and notices for copied dependency manifests;
+  record patch/acceptance boundaries in `docs/CONTAINER_SECURITY.md`.
+
 ## Unreleased — image remediation and production dependencies (2026-09-22)
 
 - Build Edge Runtime and Realtime from digest-pinned upstream images with Debian

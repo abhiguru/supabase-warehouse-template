@@ -1,5 +1,14 @@
 # Readiness
 
+Current 2026-09-22 follow-up: the default demo starts authenticated Realtime for
+mobile orders/cart updates. Both companion jobs pin mobile
+`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. See
+[container patch evidence](CONTAINER_SECURITY.md) and
+[remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
+Existing release tags and historical native acceptance are unchanged; the new
+live-update feature still needs its physical-iPhone regression on the Mac.
+
+
 ## Provider-independent production-readiness pass — 2026-09-22
 
 The local portions of all eleven operational work areas have been exercised.

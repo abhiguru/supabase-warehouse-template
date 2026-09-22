@@ -133,13 +133,15 @@ assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/cust.jpg`, {
   body: Buffer.from('test')
 })).ok, 'customer role upload to grn-images denied');
 
+// Original 2x2 red PNG fixture; exercise decoding/resizing rather than opaque bytes.
+const imageFixture = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
 const imgReg = await rpc('register_grn_image_upload', adminToken, {
-  p_grn_id: grnId, p_image_type: 'header', p_file_name: 'grn-header.jpg', p_file_size: 1024, p_mime_type: 'image/jpeg'
+  p_grn_id: grnId, p_image_type: 'header', p_file_name: 'grn-header.png', p_file_size: imageFixture.length, p_mime_type: 'image/png'
 });
 success(imgReg, 'register GRN image upload');
 const imgUpload = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
-  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/jpeg' },
-  body: Buffer.alloc(1024, 0x5a)
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/png' },
+  body: imageFixture
 });
 assert.equal(imgUpload.status, 200, 'admin uploads GRN image');
 
@@ -157,6 +159,16 @@ const confRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.stor
   headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
 });
 assert.equal(confRead.status, 200, 'assigned customer reads confirmed image');
+const resized = await fetch(`${base}/storage/v1/render/image/authenticated/grn-images/${imgReg.storage_path}?width=1&height=1&resize=fill&format=origin`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` },
+  signal: AbortSignal.timeout(30000)
+});
+assert.equal(resized.status, 200, 'assigned customer transforms confirmed image');
+const resizedBytes = Buffer.from(await resized.arrayBuffer());
+assert.ok(resizedBytes.subarray(0, 8).equals(imageFixture.subarray(0, 8)), 'transformed image is PNG');
+assert.equal(resizedBytes.readUInt32BE(16), 1, 'transformed width');
+assert.equal(resizedBytes.readUInt32BE(20), 1, 'transformed height');
+
 
 const imgDel = await rpc('delete_grn_image', adminToken, { p_image_id: imgReg.image_id });
 success(imgDel, 'delete GRN image');
@@ -169,7 +181,7 @@ assert.ok(!delRead.ok, 'customer read denied after image record deleted');
 await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
   method: 'DELETE', headers: { apikey: anon, Authorization: `Bearer ${adminToken}` }
 });
-console.log('Image upload, confirmation, customer access, and deletion passed.');
+console.log('Image upload, confirmation, customer access, native resize, and deletion passed.');
 
 // --- Item 5.2: Role Boundaries & Dynamic Customer Assignment Lifecycle ---
 const staffRpcDenied = await api('/rest/v1/rpc/save_grn', customerToken, {
