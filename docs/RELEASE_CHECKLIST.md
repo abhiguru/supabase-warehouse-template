@@ -1,5 +1,21 @@
 # Open-source release checklist
 
+## Post-release local-readiness follow-up — 2026-09-22
+
+- [x] Complete provider-independent backup/restore, owned-service recovery,
+  auth/RLS, loopback gateway, approved database retention, business, local load,
+  monitoring, Realtime, and companion Android debug-artifact checks.
+- [x] Add reproducible commands and extend paired CI while keeping tracked
+  workflow copies byte-identical.
+- [ ] Clear the all-profile container HIGH/CRITICAL scan blocker and repeat the
+  exact scan; current upstream findings are not waived.
+- [ ] Complete external/provider gates: production SMS, public DNS/trusted TLS,
+  external alert delivery, operator policy/SLO/DR, signed store artifacts,
+  payments/telemetry, and printer/sensor hardware.
+
+This follow-up does not move or republish `v0.2.2-demo`. See
+[LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
+
 ## Post-release physical iPhone closure — 2026-09-22
 
 - [x] Backend PR #13 merged as

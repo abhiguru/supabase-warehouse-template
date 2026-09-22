@@ -27,7 +27,7 @@ for pass in 1 2; do
   node "$ROOT/scripts/migration-plan.mjs" |
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 done
-for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql" "$ROOT/tests/invoice_duration.sql"; do
+for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql" "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/retention.sql"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 for pass in 1 2; do
@@ -35,4 +35,18 @@ for pass in 1 2; do
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$configuration"
   done
 done
-echo 'Migration reruns, auth configuration, and demo seed reruns passed.'
+
+# Applied migration history is immutable: changing an old file must fail closed.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
+trap 'rm -rf "$scratch"; cleanup' EXIT
+cp -a "$ROOT/migrations" "$ROOT/scripts" "$scratch/"
+printf '\n-- deliberate checksum mismatch for test\n' >> "$scratch/migrations/00000000000001_seed_data.sql"
+if node "$scratch/scripts/migration-plan.mjs" | docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
+  psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
+  echo 'Changed applied migration was incorrectly accepted.' >&2
+  exit 1
+fi
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "15" ]] || {
+  echo 'Migration mismatch changed the ledger.' >&2; exit 1;
+}
+echo 'Migration reruns, checksum mismatch rejection, retention, auth configuration, and demo seed reruns passed.'

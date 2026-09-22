@@ -44,6 +44,7 @@ node_modules/
 *.sql.gz
 *.sql.bak
 database_backups/
+backups/
 
 # Generated configuration and copied runtime files
 .env.*

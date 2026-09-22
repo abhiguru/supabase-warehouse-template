@@ -1,5 +1,19 @@
 # Developer handoff — v0.2.2-demo
 
+## Current continuation point — local readiness 1–11
+
+The provider-independent work is implemented and recorded in
+[LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md). CI now rehearses
+gateway, Realtime, retention preview, load, monitoring, backup/isolated restore,
+and owned-service recovery in addition to the existing migration, API, contract,
+and secret checks. The companion mobile CI builds and audits a debug APK.
+
+Do not describe this as production acceptance. Container scanning remains a
+release blocker because current upstream images contain fixed HIGH/CRITICAL
+findings. External SMS, public DNS/TLS, alert delivery, operator policy/SLOs,
+release signing/stores, payments, telemetry, and physical integrations remain
+open. Existing source-demo tags are immutable.
+
 ## Final post-release closure — 2026-09-22
 
 The local physical-iPhone source-demo handoff is complete. Mobile PR
@@ -210,8 +224,11 @@ Stop preserves database/files. Remove only the reverse mappings you created:
 
 ## Unsupported and separately untested
 
-Physical printing, sensors, Realtime, customer document uploads, production SMS,
-barcode scanning and automatic offline/SQLite synchronization are unsupported.
+Physical printing, sensors, customer document uploads, production SMS, barcode
+scanning and automatic offline/SQLite synchronization are unsupported. Realtime
+remains optional and default-disabled; local startup and authenticated channel
+authorization pass, while application subscription behavior and target-deployment
+capacity/resilience remain separate acceptance.
 Printing/sensor UI explains unavailability; hardware Edge endpoints return 503.
 The imported dual-rate pricing overload is not the mobile contract and currently
 fails its legacy table constraints; combined-rate semantics require a separate

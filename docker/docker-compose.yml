@@ -9,7 +9,7 @@ name: warehouse-template
 services:
 
   studio:
-    image: supabase/studio:2025.06.30-sha-6f5982d
+    image: supabase/studio:2026.09.07-sha-7996410
     restart: unless-stopped
     healthcheck:
       test:
@@ -36,15 +36,12 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       AUTH_JWT_SECRET: ${JWT_SECRET}
-      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
-      LOGFLARE_URL: http://analytics:4000
       NEXT_PUBLIC_ENABLE_LOGS: false
-      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${STUDIO_PORT}:3000"
 
   kong:
-    image: kong:3.4-ubuntu
+    image: kong:3.9.3-ubuntu
     restart: unless-stopped
     ulimits:
       nofile:
@@ -72,7 +69,7 @@ services:
       KONG_DNS_STALE_TTL: "3600"
       KONG_DNS_ERROR_TTL: "1"
       KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       KONG_NGINX_HTTP2: "on"
@@ -84,14 +81,13 @@ services:
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
-      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
-      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
     entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   # GoTrue auth service DISABLED - using custom phone OTP authentication instead
   # To re-enable: remove the 'profiles' line and uncomment auth routes in kong.yml
   auth:
-    image: supabase/gotrue:v2.176.1
+    image: supabase/gotrue:v2.196.0
     profiles: ["disabled"]
     restart: unless-stopped
     healthcheck:
@@ -133,7 +129,7 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
-    image: postgrest/postgrest:v12.2.12
+    image: postgrest/postgrest:v14.17
     restart: unless-stopped
     depends_on:
       db:
@@ -150,9 +146,13 @@ services:
     command: ["postgrest"]
 
   realtime:
-    image: supabase/realtime:v2.34.47
+    image: supabase/realtime:v2.134.10
     profiles: ["realtime"]
     restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - realtime-dev
     depends_on:
       db:
         condition: service_healthy
@@ -176,6 +176,7 @@ services:
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
       DB_ENC_KEY: supabaserealtime
       API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
       ERL_AFLAGS: -proto_dist inet_tcp
       DNS_NODES: "''"
@@ -185,7 +186,7 @@ services:
       RUN_JANITOR: true
 
   storage:
-    image: supabase/storage-api:v1.24.7
+    image: supabase/storage-api:v1.74.0
     restart: unless-stopped
     volumes:
       - ./volumes/storage:/var/lib/storage:z
@@ -217,7 +218,7 @@ services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    image: darthsim/imgproxy:v3.8.0
+    image: darthsim/imgproxy:v3.31.4
     restart: unless-stopped
     volumes:
       - ./volumes/storage:/var/lib/storage:z
@@ -233,7 +234,7 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
 
   meta:
-    image: supabase/postgres-meta:v0.89.3
+    image: supabase/postgres-meta:v0.99.0
     restart: unless-stopped
     depends_on:
       db:
@@ -247,7 +248,7 @@ services:
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
 
   functions:
-    image: supabase/edge-runtime:v1.67.4
+    image: supabase/edge-runtime:v1.76.2
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
@@ -273,40 +274,8 @@ services:
     command:
       [
         "start",
-        "--main-service", "/home/deno/functions/main",
-        "--import-map", "/home/deno/functions/import_map.json",
-        "--request-wait-timeout", "60000"
+        "--main-service", "/home/deno/functions/main"
       ]
-
-  analytics:
-    image: supabase/logflare:1.14.2
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:14000:4000"
-    healthcheck:
-      test: ["CMD", "curl", "http://localhost:4000/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 10
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      LOGFLARE_NODE_HOST: 127.0.0.1
-      DB_USERNAME: supabase_admin
-      DB_DATABASE: _supabase
-      DB_HOSTNAME: ${POSTGRES_HOST}
-      DB_PORT: ${POSTGRES_PORT}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_SCHEMA: _analytics
-      LOGFLARE_PUBLIC_ACCESS_TOKEN: ${LOGFLARE_PUBLIC_ACCESS_TOKEN}
-      LOGFLARE_PRIVATE_ACCESS_TOKEN: ${LOGFLARE_PRIVATE_ACCESS_TOKEN}
-      LOGFLARE_SINGLE_TENANT: true
-      LOGFLARE_SUPABASE_MODE: true
-      LOGFLARE_MIN_CLUSTER_SIZE: 1
-      POSTGRES_BACKEND_URL: postgresql://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
-      POSTGRES_BACKEND_SCHEMA: _analytics
-      LOGFLARE_FEATURE_FLAG_OVERRIDE: multibackend=true
 
   db:
     image: supabase/postgres:15.8.1.060
@@ -349,7 +318,7 @@ services:
 
   # Connection pooler — start with: docker compose --profile pooler up -d
   supavisor:
-    image: supabase/supavisor:2.5.6
+    image: supabase/supavisor:2.9.12
     restart: unless-stopped
     profiles: ["pooler"]
     ports:
@@ -423,7 +392,7 @@ services:
 
   # Gotenberg - HTML to PDF conversion (Chromium-based)
   gotenberg:
-    image: gotenberg/gotenberg:8
+    image: gotenberg/gotenberg:8.37.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:${GOTENBERG_HOST_PORT:-13100}:3000"

@@ -70,7 +70,7 @@ jobs:
   demo-api:
     name: Isolated demo API
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     needs: validate
     env:
       WAREHOUSE_PROJECT_NAME: warehouse-ci-demo
@@ -107,6 +107,29 @@ jobs:
         working-directory: backend
       - run: npm run test:api
         working-directory: backend
+      - name: Gateway CORS, payload and local TLS
+        run: npm run test:gateway
+        working-directory: backend
+      - name: Authenticated Realtime
+        run: npm run test:realtime
+        working-directory: backend
+      - name: Retention dry run
+        run: npm run retention:preview
+        working-directory: backend
+      - name: API and database load smoke
+        run: npm run test:load
+        working-directory: backend
+      - name: Monitoring targets and local alert delivery
+        run: npm run test:monitoring
+        working-directory: backend
+      - name: Backup and isolated restore drill
+        run: |
+          npm run db:backup -- /tmp/warehouse-ci-backup
+          npm run db:verify-restore -- /tmp/warehouse-ci-backup
+        working-directory: backend
+      - name: Owned-service recovery
+        run: npm run test:recovery
+        working-directory: backend
       - name: Preserve config and rerun setup
         run: |
           sha256sum docker/.env > /tmp/warehouse-config.sha256
@@ -117,5 +140,5 @@ jobs:
         working-directory: backend
       - name: Stop only this checkout's demo
         if: always()
-        run: test ! -f docker/.env || bash stop.sh
+        run: test ! -f docker/.env || bash scripts/compose.sh --profile '*' down
         working-directory: backend

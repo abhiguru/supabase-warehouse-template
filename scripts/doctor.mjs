@@ -21,6 +21,12 @@ export function validateDemoEnv(env) {
     }
   }
   if (new URL(env.SUPABASE_PUBLIC_URL).origin !== new URL(env.API_EXTERNAL_URL).origin) throw new Error('Public API origins must match.');
+  let corsOrigin;
+  try { corsOrigin = new URL(env.CORS_ALLOWED_ORIGIN || 'http://localhost:5173'); }
+  catch { throw new Error('CORS_ALLOWED_ORIGIN must be one exact HTTP(S) origin.'); }
+  if (!['http:', 'https:'].includes(corsOrigin.protocol) || corsOrigin.username || corsOrigin.password || corsOrigin.pathname !== '/' || corsOrigin.search || corsOrigin.hash || env.CORS_ALLOWED_ORIGIN === '*') {
+    throw new Error('CORS_ALLOWED_ORIGIN must be one exact HTTP(S) origin without credentials or a path.');
+  }
   return ports;
 }
 
