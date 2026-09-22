@@ -6,9 +6,11 @@ Current `main` passed the complete local source-demo physical-iPhone gate at
 backend `cf18f1e43ab613310b1b13339ab97e8533861f9b` paired with mobile
 `9ba56ff122dc38dc57d6100de4c27599023d22b1`. Backend PR #13 and mobile PR #18
 merged after review; exact-main CI runs `35686198287` and `35686164009` passed.
-The complete iPhone 15 / iOS 26.6.2 matrix, plus the supporting Android API-36
-smoke, is recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`. Existing
-`v0.2.2-demo` tags remain immutable.
+The complete iPhone 15 / iOS 26.6.2 matrix is recorded in the mobile
+`docs/NATIVE_ACCEPTANCE.md`. Its earlier merged customer-history pair also
+passed Android API-36 emulator smoke; the final pair passed Android JS export
+and shared regression tests but was not rerun in an emulator on this Mac, which
+had no Android SDK. Existing `v0.2.2-demo` tags remain immutable.
 
 ## Current source-demo status — 2026-09-18
 
