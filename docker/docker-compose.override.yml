@@ -48,13 +48,6 @@ services:
           cpus: '0.5'
           memory: 256M
 
-  # Analytics disabled by default to reduce resource usage and startup time.
-  # To re-enable: remove the 'replicas: 0' line below and restart.
-  analytics:
-    deploy:
-      replicas: 0
-
-  # Override depends_on to remove analytics dependency (since it's disabled)
   studio:
     deploy:
       resources:
@@ -65,6 +58,32 @@ services:
   auth:
 
   meta:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  imgproxy:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  realtime:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  gotenberg:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
   functions:
     healthcheck:
@@ -86,7 +105,7 @@ services:
     logging: *default-logging
     environment:
       # Added prometheus plugin for metrics and rate-limiting
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
       KONG_STATUS_LISTEN: "0.0.0.0:8100"
     deploy:
       resources:
@@ -134,7 +153,7 @@ services:
   # Start with: docker compose --profile monitoring up -d
 
   prometheus:
-    image: prom/prometheus:v3.0.1
+    image: prom/prometheus:v3.14.0
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -164,7 +183,7 @@ services:
           memory: 512M
 
   alertmanager:
-    image: prom/alertmanager:v0.28.0
+    image: prom/alertmanager:v0.34.1
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -185,7 +204,7 @@ services:
           memory: 128M
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: prometheuscommunity/postgres-exporter:v0.20.1
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -207,7 +226,7 @@ services:
           memory: 128M
 
   node-exporter:
-    image: prom/node-exporter:v1.8.2
+    image: prom/node-exporter:v1.12.1
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -233,7 +252,7 @@ services:
           memory: 128M
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:13.2.2
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
@@ -242,7 +261,6 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASS:-changeme}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: http://localhost:13001
-      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-piechart-panel
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
@@ -264,10 +282,14 @@ services:
           memory: 512M
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
+    command:
+      - --docker_only=true
+      - --enable_metrics=cpu,memory,oom_event
+      - --housekeeping_interval=10s
     privileged: true
     volumes:
       - /:/rootfs:ro

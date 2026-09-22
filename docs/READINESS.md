@@ -1,5 +1,23 @@
 # Readiness
 
+## Provider-independent production-readiness pass — 2026-09-22
+
+The local portions of all eleven operational work areas have been exercised.
+Backup/isolated restore, owned-service recovery, custom auth/RLS, exact-origin
+gateway controls, approved database retention, business correctness, load smoke,
+local monitoring/alert ingestion, authenticated Realtime, and the companion
+Android debug-artifact audit pass. The durable matrix, reproduction commands,
+and limits are in
+[LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
+
+Production is still blocked. The all-profile Trivy scan reports fixed
+HIGH/CRITICAL findings in current upstream images; no findings were suppressed.
+Real SMS, public DNS/trusted TLS, external alert delivery, operator retention and
+business policy, production capacity/DR, final signed mobile artifacts/stores,
+payments, telemetry delivery, and printer/sensor hardware require their actual
+providers, credentials, infrastructure, or owner decisions. These results do
+not change the source-demo acceptance or existing `v0.2.2-demo` tags.
+
 ## Final physical-iPhone closure — 2026-09-22
 
 Current `main` passed the complete local source-demo physical-iPhone gate at
@@ -28,8 +46,9 @@ source-only attribution blocker.
 
 Post-release physical Android and physical-iPhone source-demo acceptance are
 complete. Production SMS/TLS/operations, app-store/native-binary distribution,
-enabled telemetry, printing, sensors, payments, Realtime and unsupported
-integrations remain separate gates.
+enabled telemetry, printing, sensors, payments, unsupported integrations, and
+production Realtime capacity/resilience remain separate gates. Local
+authenticated Realtime startup and authorization now pass.
 
 ## Historical readiness records
 
@@ -145,8 +164,9 @@ no broad rule exclusions were added.
 3. Review TLS/CORS, gateway/body limits, privileged optional host mounts,
    renderer isolation, backups/restores, startup recovery, service updates and
    scale. The synchronous materialized-view refresh is intended for small demos.
-4. Test optional printing, sensors, Realtime, payments and imported unsupported
-   integrations with their actual hardware, credentials and business rules.
+4. Test optional printing, sensors, payments and imported unsupported
+   integrations with their actual hardware, credentials and business rules;
+   test Realtime application delivery, capacity and resilience on the target.
 5. Complete production mobile signing/distribution and enabled telemetry delivery
    validation. Keep dependency audits and native regressions current.
 

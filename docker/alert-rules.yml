@@ -20,13 +20,13 @@ groups:
           description: "Memory usage above 85% for more than 5 minutes"
 
       - alert: DatabaseConnectionsHigh
-        expr: pg_stat_activity_count > 200
+        expr: pg_stat_activity_count > 80
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "High database connections"
-          description: "Database connections above 200"
+          description: "Database connections above 80% of the configured 100-connection ceiling"
 
       - alert: SlowQueries
         expr: pg_stat_activity_max_tx_duration > 60
@@ -95,7 +95,7 @@ groups:
           description: "Container OOM event detected"
 
       - alert: ContainerHighMemory
-        expr: (container_memory_usage_bytes{name=~"supabase.*"} / container_spec_memory_limit_bytes{name=~"supabase.*"}) > 0.9
+        expr: (container_memory_usage_bytes{name=~"warehouse-.*",container_label_com_docker_compose_service!=""} / container_spec_memory_limit_bytes{name=~"warehouse-.*",container_label_com_docker_compose_service!=""}) > 0.9
         for: 5m
         labels:
           severity: warning
@@ -104,7 +104,7 @@ groups:
           description: "Container {{ $labels.name }} using >90% memory"
 
       - alert: ContainerRestarting
-        expr: increase(container_start_time_seconds{name=~"supabase.*"}[1h]) > 3
+        expr: changes(container_start_time_seconds{name=~"warehouse-.*",container_label_com_docker_compose_service!=""}[1h]) > 3
         for: 5m
         labels:
           severity: warning

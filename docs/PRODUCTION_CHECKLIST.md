@@ -3,6 +3,9 @@
 Current source supports only an isolated local demo. Production setup remains
 blocked by `scripts/check-readiness.sh`. This document is an acceptance checklist,
 not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
+Provider-independent evidence from 2026-09-22 is linked in
+[LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md). Checked local
+items below do not clear their separately stated target-production gates.
 
 ## Credentials and deployment boundaries
 
@@ -14,10 +17,11 @@ not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
   release workflow. Do not use the legacy `rotate-keys.sh` as a setup prerequisite.
 - [ ] Implement real SMS, operator onboarding, delivery failures and abuse limits
   without any fixed-code fallback. A configuration flag alone is not implementation.
-- [ ] Review custom-session JWT verification, refresh/logout behavior, RLS and
+- [x] Review custom-session JWT verification, refresh/logout behavior, RLS and
   every exposed RPC/Storage/Edge permission. Do not assume GoTrue sessions.
 - [ ] Review all images/dependencies, renderer isolation, mounts, resource limits,
-  service privileges, network boundaries and secret/log handling.
+  service privileges, network boundaries and secret/log handling. The current
+  all-profile scan remains blocked by fixed HIGH/CRITICAL findings.
 
 ## Data correctness and operations
 
@@ -27,34 +31,44 @@ not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
 - [ ] Obtain operator approval for production prices, taxes and billing policy;
   implement and verify payments, reconciliation, soft deletion and recovery with
   production-specific expected values.
-- [ ] Restore backups into a separate isolated database and compare integrity;
+- [x] Restore backups into a separate isolated database and compare integrity;
   scheduling a backup alone is not a restore test.
-- [ ] Test startup failure, migration mismatch, service restart and recovery paths
+- [x] Test startup failure, migration mismatch, service restart and recovery paths
   without resetting an existing database.
-- [ ] Configure retention/deletion for documents, images, auth/audit data and
-  optional telemetry; verify the cleanup actually executes.
-- [ ] Set resource budgets, connection limits and monitor disk/memory growth.
+- [x] Configure and verify preview/apply retention for approved session, auth,
+  rate-limit, idempotency and audit/config data.
+- [ ] Approve and implement target-operator retention for business documents,
+  images, PDFs, backups, legal holds and optional telemetry.
+- [x] Set local resource budgets and connection thresholds; run API/database load
+  smoke and collect disk/memory/container metrics.
+- [ ] Define target-production SLOs, capacity/soak tests and growth budgets.
   Review synchronous materialized-view refresh before scaling beyond small demos.
 - [ ] Establish incident contacts, alert delivery, operator access and recovery
   runbooks. Optional monitoring integrations remain disabled until tested.
 
 ## Network and native acceptance
 
-- [ ] After the production auth gate is implemented and verified, review TLS,
-  CORS, request/body limits and an authenticated deployment's reverse proxy.
+- [x] Verify exact-origin CORS, request/body limits and self-signed HTTPS on the
+  loopback gateway.
+- [ ] After the production auth gate is implemented, configure and verify the
+  public domain, trusted TLS certificate and authenticated reverse proxy.
   **Do not tunnel or publicly expose the current fixed-OTP demo.**
-- [ ] Keep database, Studio and renderer off public interfaces.
+- [x] Keep database, Studio and renderer on explicit loopback host bindings in
+  the supported local configuration.
 - [x] Complete local source-demo physical Android and iOS acceptance with fictional
   data and development signing; see the mobile `docs/NATIVE_ACCEPTANCE.md`.
 - [ ] Complete production signing and App Store/TestFlight distribution review,
   final app permissions/privacy declarations and native artifact inspection using
   newly owned production credentials.
-- [ ] Verify printer/sensor/Realtime hardware and authorization before enabling
-  optional features. Presence of an exported endpoint is not hardware acceptance.
+- [x] Verify authenticated Realtime database-change join and invalid-token denial.
+- [ ] Verify printer/sensor hardware and authorization before enabling optional
+  features. Presence of an exported endpoint is not hardware acceptance.
 - [x] Record scoped ownership/redistribution confirmation and reconcile source-only
   license notices in both repositories.
-- [ ] Recheck the exact third-party material bundled into production artifacts and
-  verify deployed privacy/contact information and actual data collection.
+- [x] Recheck the development Android APK for forbidden files/text, permissions,
+  public certificates and applicable notices.
+- [ ] Recheck the exact release-signed artifacts and verify deployed privacy/contact
+  information and actual data collection.
 
 The default demo uses API `127.0.0.1:18000`, Studio `127.0.0.1:54325`,
 database `127.0.0.1:15433`, and renderer `127.0.0.1:13100`.

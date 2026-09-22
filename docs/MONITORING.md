@@ -1,61 +1,56 @@
-# Monitoring Stack
+# Local monitoring profile
 
-## Enable Monitoring
+The monitoring profile is loopback-only and optional. It validates local metric
+collection and Alertmanager ingestion without contacting an external provider.
 
 ```bash
-docker compose --profile monitoring up -d
+export WAREHOUSE_PROJECT_NAME=warehouse-local-readiness
+npm run test:monitoring
 ```
 
-## Services
+The check validates Prometheus and Alertmanager configuration, starts the owned
+profile, waits for all five scrape targets, submits a synthetic alert, and proves
+that Alertmanager retained it. The 2026-09-22 run validated 15 rules and these
+targets: Prometheus, PostgreSQL exporter, node exporter, cAdvisor, and Kong.
 
-| Service | URL | Purpose |
-|---------|-----|---------|
-| Grafana | http://localhost:3001 | Dashboards and visualization |
-| Prometheus | http://localhost:9095 | Metrics collection |
-| AlertManager | http://localhost:9093 | Alert routing |
-| Node Exporter | :9100 | Host system metrics |
-| Postgres Exporter | :9187 | Database metrics |
-| cAdvisor | :9998 | Container metrics |
+## Loopback endpoints
 
-## Grafana Login
+The generated `docker/.env` controls the host ports. Defaults are:
 
-Default credentials (change in `.env`):
-```
-Username: admin
-Password: (GRAFANA_ADMIN_PASS from .env)
-```
+| Service | Default endpoint | Purpose |
+|---|---|---|
+| Grafana | `http://127.0.0.1:13001` | Local dashboards |
+| Prometheus | `http://127.0.0.1:19095` | Metrics and rules |
+| Alertmanager | `http://127.0.0.1:19093` | Local alert ingestion |
+| cAdvisor | `http://127.0.0.1:19998` | Container CPU, memory, start-time and OOM metrics |
 
-## Metrics Collected
+Node and PostgreSQL exporters are available only inside the Compose network.
+Grafana credentials come from the private generated environment; do not place
+them in documentation or source.
 
-- **System**: CPU, memory, disk, network (node-exporter)
-- **Database**: connections, queries, cache hit ratio, dead tuples (postgres-exporter)
-- **Containers**: CPU, memory, restarts, OOM events (cAdvisor)
-- **API Gateway**: request latency, error rates, throughput (Kong prometheus plugin)
+## Collected signals
 
-## Alerts
+- Host CPU, memory, filesystems and network from node exporter.
+- Database availability, connections, transaction duration, cache and dead tuples
+  from PostgreSQL exporter.
+- Warehouse container CPU, memory, start time and OOM events from cAdvisor.
+- Gateway request latency, status and availability from Kong's Prometheus plugin.
 
-Configured in `docker/alert-rules.yml`:
+cAdvisor uses `--docker_only` and enables only CPU, memory and OOM metric groups.
+This keeps the local check responsive and avoids scanning unrelated container
+filesystems. It still requires privileged host mounts, so a target operator must
+review or replace that collector before production use.
 
-| Alert | Threshold | Severity |
-|-------|-----------|----------|
-| HighCPU | >80% for 5m | warning |
-| HighMemory | >85% for 5m | warning |
-| DiskSpaceLow | <20% free | critical |
-| PostgresDown | pg_up == 0 | critical |
-| DatabaseConnectionsHigh | >200 | warning |
-| SlowQueries | >60s | warning |
-| APIHighLatency | p95 >2s | warning |
-| APIHighErrorRate | 5xx >5% | warning |
-| ContainerOOM | any event | critical |
-| ContainerRestarting | >3/hour | warning |
+## Alert delivery boundary
 
-## Slack Integration
+The default `docker/alertmanager.yml` has a local receiver only. Fake webhooks are
+not supplied, and a green local test does not prove on-call delivery. To evaluate
+Slack separately, copy the structure in
+`docker/alertmanager.slack.example.yml` into private deployment configuration,
+provide an owned webhook through the deployment's secret manager, send a
+synthetic alert, and record receipt/escalation evidence. Email, paging, or another
+receiver requires the same provider-specific acceptance.
 
-Configure webhook URLs in `docker/.env`:
-```
-SLACK_WEBHOOK_CRITICAL=https://hooks.slack.com/services/...
-SLACK_WEBHOOK_DATABASE=https://hooks.slack.com/services/...
-SLACK_WEBHOOK_INFRASTRUCTURE=https://hooks.slack.com/services/...
-```
-
-Alerts are routed by type to different Slack channels via `docker/alertmanager.yml`.
+The profile does not establish public TLS, authentication for dashboards,
+off-host retention, incident ownership, or production SLOs. Keep all host ports
+on loopback until those controls are implemented and reviewed.

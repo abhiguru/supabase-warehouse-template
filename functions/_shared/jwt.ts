@@ -1,4 +1,4 @@
-import { jwtVerify } from 'jose';
+import { jwtVerify } from 'https://esm.sh/jose@5.10.0';
 
 // Verify the signature BEFORE trusting sub, role, or expiry. Decoding alone is not auth.
 export async function verifyToken(token: string, secret: string) {

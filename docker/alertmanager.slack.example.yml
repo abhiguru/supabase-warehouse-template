@@ -1,0 +1,11 @@
+# Optional example. Copy deliberately and supply a real secret outside Git.
+global:
+  resolve_timeout: 5m
+route:
+  receiver: slack
+receivers:
+  - name: slack
+    slack_configs:
+      - api_url_file: /run/secrets/slack_webhook
+        channel: '#warehouse-alerts'
+        send_resolved: true

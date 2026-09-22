@@ -8,13 +8,24 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --import ./tests/register-edge-imports.mjs --test tests/*.test.mjs",
     "test:migrations": "bash tests/migrations.sh",
     "test:api": "node tests/api-demo.mjs",
+    "test:recovery": "bash scripts/recovery-check.sh",
+    "db:backup": "bash scripts/backup.sh",
+    "db:verify-restore": "bash scripts/verify-restore.sh",
+    "test:gateway": "node scripts/gateway-smoke.mjs",
+    "test:monitoring": "bash scripts/monitoring-check.sh",
+    "test:load": "bash scripts/load-smoke.sh",
+    "test:realtime": "bash scripts/realtime-check.sh",
+    "scan:images": "bash scripts/scan-images.sh",
+    "retention:preview": "bash scripts/retention.sh preview",
+    "retention:apply": "bash scripts/retention.sh apply",
     "check:contract": "node scripts/check-mobile-contract.mjs",
     "doctor": "node scripts/doctor.mjs"
   },
   "devDependencies": {
-    "jose": "5.10.0"
+    "jose": "5.10.0",
+    "ws": "^8.18.3"
   }
 }

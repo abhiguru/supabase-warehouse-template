@@ -1,5 +1,20 @@
 # Supabase Warehouse Template
 
+## Local production-readiness work
+
+Provider-independent work across backup/restore, owned-service recovery,
+auth/RLS, loopback gateway controls, database retention, business regressions,
+load smoke, local monitoring, Realtime, and companion Android artifact review is
+implemented and reproducible. See
+[LOCAL_PRODUCTION_READINESS.md](docs/LOCAL_PRODUCTION_READINESS.md) for the
+eleven-area evidence and commands.
+
+Production remains gated by unresolved fixed HIGH/CRITICAL findings in current
+upstream container images, plus target-operator and external-service acceptance:
+real SMS, public DNS/TLS, external alert delivery, production data/retention and
+capacity policy, final mobile signing/stores, payments, telemetry, and hardware.
+The local fixed-OTP demo must remain on loopback.
+
 ## Current source-demo release
 
 The Android-first source-demo acceptance is complete. Matching

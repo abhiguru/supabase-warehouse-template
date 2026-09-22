@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — provider-independent local readiness (2026-09-22)
+
+- Added private backup plus isolated restore verification, owned-service recovery,
+  database retention preview/apply boundaries, gateway CORS/body/TLS checks,
+  local load smoke, monitoring validation, and authenticated Realtime smoke.
+- Updated current upstream service images and their required configuration,
+  constrained cAdvisor metrics, removed the unused analytics service, and kept
+  host ports on loopback with explicit resource budgets.
+- Added an all-profile Trivy scanner. Its unsuppressed fixed HIGH/CRITICAL
+  findings remain a production blocker, including optional service images.
+- Extended CI to exercise the new local operational checks and preserved
+  byte-identical tracked workflow copies.
+- Paired the backend evidence with a native Android debug build and artifact
+  contents/permissions/notices audit in the mobile repository. No binary or
+  signing credential is published.
+
 ## Unreleased — iOS acceptance handoff (2026-09-21)
 
 - Reconciled the release and production checklists after final acceptance: all
