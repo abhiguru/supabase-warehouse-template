@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — remaining local gates (2026-09-22)
+
+- Verified actual Realtime update delivery, customer isolation and reconnect;
+  restore fictional fixture notes after the probe.
+- Image scanning now rejects failed/empty Compose inventory and uses a fresh
+  private report directory per run.
+
+- Removed unused recommended CUPS packages, clearing its 56 fixed HIGH/CRITICAL
+  findings. Require an administrator password and preserve the spool on startup;
+  CI verifies the hardware-free startup path.
+
 ## Unreleased — provider-independent local readiness (2026-09-22)
 
 - Added private backup plus isolated restore verification, owned-service recovery,

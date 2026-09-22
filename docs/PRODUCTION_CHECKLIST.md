@@ -60,7 +60,9 @@ items below do not clear their separately stated target-production gates.
 - [ ] Complete production signing and App Store/TestFlight distribution review,
   final app permissions/privacy declarations and native artifact inspection using
   newly owned production credentials.
-- [x] Verify authenticated Realtime database-change join and invalid-token denial.
+- [x] Verify Realtime update delivery, customer isolation, reconnect, and invalid-token denial.
+- [x] Verify CUPS credential rejection, spool preservation and local HTTP startup
+  without hardware; rebuilt local image has zero fixed HIGH/CRITICAL findings.
 - [ ] Verify printer/sensor hardware and authorization before enabling optional
   features. Presence of an exported endpoint is not hardware acceptance.
 - [x] Record scoped ownership/redistribution confirmation and reconcile source-only

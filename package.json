@@ -17,6 +17,7 @@
     "test:gateway": "node scripts/gateway-smoke.mjs",
     "test:monitoring": "bash scripts/monitoring-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
+    "test:cups": "bash scripts/cups-check.sh",
     "test:realtime": "bash scripts/realtime-check.sh",
     "scan:images": "bash scripts/scan-images.sh",
     "retention:preview": "bash scripts/retention.sh preview",
