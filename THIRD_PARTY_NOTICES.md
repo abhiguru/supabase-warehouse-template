@@ -45,3 +45,15 @@ Alexandrovich); the other listed projects use Apache-2.0.
 Each source-built runtime image also retains the corresponding upstream license
 and available NOTICE. Dependencies keep their own upstream terms; this inventory
 does not authorize redistribution of the resulting images or native binaries.
+
+
+### Postgres-meta source migration
+
+`docker/postgres-meta` contains modified v0.99.0 package manifests and an explicit
+source patch. Its source URL/checksum is in the Dockerfile. The repository's
+actual `LICENSE` is Apache-2.0 and is retained at
+`LICENSES/postgres-meta/LICENSE` and in the runtime image. The upstream
+`package.json` separately labels the package MIT; that metadata is preserved,
+not substituted for the checked repository license. The source patch retains
+upstream authorship and uses the included repository license text. Studio's
+recipe references the publisher image and vendors no additional source/assets.

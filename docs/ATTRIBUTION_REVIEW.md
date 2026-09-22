@@ -46,3 +46,10 @@ matching source archives and included under `LICENSES/`. Modifications are
 identified in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). This follow-up
 covers the recipe/manifests source changes, not distribution of built images,
 container dependency relicensing, or a new ownership attestation.
+
+
+The postgres-meta v0.99.0 follow-up adds copied manifests and a source patch.
+Its repository license was read directly from the checksum-verified archive and
+retained under `LICENSES/postgres-meta/`; the upstream package metadata's differing
+MIT label is explicitly recorded in `THIRD_PARTY_NOTICES.md`. Studio adds only a
+recipe referencing its publisher image; no frontend assets are vendored.

@@ -107,6 +107,9 @@ jobs:
         working-directory: backend
       - run: npm run test:api
         working-directory: backend
+      - name: Studio and metadata compatibility
+        run: npm run test:studio
+        working-directory: backend
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
         working-directory: backend

@@ -37,7 +37,7 @@ legacy WAL-G backup compatibility, or operator RTO/RPO. Those require a separate
 recovery drill with approved storage and policies. GoTrue remains disabled and
 is not production SMS authentication acceptance.
 
-The final 19-image Compose inventory on 2026-09-22 passed 15 images at the fixed
+The PR #22 19-image Compose inventory on 2026-09-22 passed 15 images at the fixed
 HIGH/CRITICAL threshold (Trivy 0.74.0, `--ignore-unfixed`). All eleven new recipes
 above passed, as did Kong, CUPS, Edge Runtime and Realtime. PostgREST returned
 no package results and was rejected by the evidence validator; it is not a
@@ -74,11 +74,60 @@ preserves the fail-closed gate and distinguishes absence of findings from proof
 of coverage.
 
 Required GitHub CI must still pass the reviewed commit pair before merge.
-None of this closes the remaining three-image security gate or the external
+That PR #22 evidence did not close the three vulnerable images, the PostgREST
+coverage gap, or the external
 production/iPhone requirements.
 
-The remaining upstream Grafana, Studio, and postgres-meta images still
-have findings. Grafana includes several separately built plugins; Studio needs a
-coherent Next/sharp rebuild; postgres-meta requires a supported Fastify/router
-upgrade. Do not force major dependency overrides into prebuilt applications.
-These are unresolved engineering items, not missing SMS/provider credentials.
+## Studio / metadata follow-up
+
+The publisher released Studio `2026.09.21-sha-512201d`; its application fixes the
+previous Next/sharp findings. Its 13 remaining fixed findings were exclusively
+in global npm/pnpm tools. The maintained recipe pins that image by digest and
+removes those tools; its entrypoint continues to run Node directly.
+
+Postgres-meta remains based on source v0.99.0, rebuilt coherently against Fastify
+5.12.5 and compatible CORS/Swagger/type-provider/metrics plugins. The reviewed
+`fastify5.patch` passes the logger as `loggerInstance`, handles unknown thrown
+errors, and declares the existing error responses for the stricter type provider.
+Locked leaf updates, Debian security updates and removal of unused npm/pnpm tools
+complete the patch. No warehouse API or public database schema changes are made.
+
+The final follow-up inventory has 17 valid passing reports out of 19 images.
+Grafana has 104 HIGH findings; PostgREST lacks scannable package results and is
+rejected for insufficient evidence. Both new candidates scan with zero fixed
+HIGH/CRITICAL findings. The metadata source
+passed TypeScript/build and all 197 upstream tests against a disposable database
+using upstream fixtures, with no host ports. Each image build repeats the three
+upstream app/admin/helper test files; CI runs `npm run test:studio`, which checks
+Studio's project HTML, JavaScript asset, profile/project inventory, metadata table
+inventory and a read-only SQL query. The full warehouse API/PDF/image regression
+passed against the updated pair. Physical-iPhone and production gates remain open.
+
+For the full upstream suite, build the recipe's `build` target, run the source
+archive's `test/db` database fixture on an isolated Docker network without host
+ports, and run `PG_META_MAX_RESULT_SIZE_MB=20 PG_QUERY_TIMEOUT_SECS=5
+PG_CONN_TIMEOUT_SECS=30 npm exec -- vitest run --maxWorkers=1
+--no-file-parallelism` against it. Never target an existing warehouse database.
+
+## Remaining publisher dependency: Grafana
+
+Stable Grafana 13.2.2 still has 104 HIGH findings: two Alpine OpenSSL, one main
+binary Thrift, and 101 across bundled plugin executables. The affected plugins
+have PGP-signed `MANIFEST.txt` files. Local binary replacement would invalidate
+the publisher signatures; signature enforcement must not be bypassed or required
+plugins removed to make the scan green. A patched compatible publisher release
+(or publisher-signed replacement plugins plus a tested core rebuild) is required.
+Nightly images are not treated as accepted stable replacements. No findings are
+suppressed; the all-profile gate remains blocked until Grafana passes and the
+PostgREST coverage gap is resolved.
+
+## Remaining scan-coverage dependency: PostgREST
+
+Trivy detects no OS or language package results in the static PostgREST v14.17
+image. `docker buildx imagetools inspect --format '{{json .SBOM}}'
+postgrest/postgrest:v14.17` returned an empty object during this review. The
+validator correctly rejects that report. Closure needs trustworthy dependency
+inventory/SBOM tied to the published image and an applicable vulnerability
+assessment, or a separately reviewed reproducible source build with equivalent
+evidence. Do not fabricate scanner results or add dummy packages to manufacture
+a passing result. The earlier zero-finding count is explicitly corrected above.

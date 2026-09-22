@@ -9,7 +9,8 @@ name: warehouse-template
 services:
 
   studio:
-    image: supabase/studio:2026.09.07-sha-7996410
+    build:
+      context: ./studio
     restart: unless-stopped
     healthcheck:
       test:
@@ -238,7 +239,8 @@ services:
       IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
 
   meta:
-    image: supabase/postgres-meta:v0.99.0
+    build:
+      context: ./postgres-meta
     restart: unless-stopped
     depends_on:
       db:

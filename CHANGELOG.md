@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Studio and metadata security (2026-09-22)
+
+- Adopt the patched official September 21 Studio application and remove unused
+  package-manager tools from its runtime image.
+- Rebuild postgres-meta v0.99.0 against a compatible Fastify 5 plugin set, with
+  a reviewable source patch, locked dependencies and retained upstream license.
+- Verify Studio HTML/assets and metadata endpoints in CI; record 197 passing
+  upstream metadata tests and retain Grafana publisher signatures as a gate.
+
 ## Unreleased — orders/cart companion and maintained image recipes (2026-09-22)
 
 - Start Realtime in the default demo and pin both mobile companion jobs to
