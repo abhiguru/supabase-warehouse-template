@@ -161,9 +161,10 @@ change is included. Source build recipes are tracked; binaries are not published
 The scanner now rejects missing, malformed, empty, mismatched, or vulnerable
 reports even if the scanner process returns success.
 
-The historical PR #21 Compose inventory scan contained 19 images: five passed at the fixed
-HIGH/CRITICAL threshold (Kong, PostgREST, CUPS, patched Edge Runtime and patched
-Realtime); 14 still failed. Backend unit tests passed 19/19; the mobile contract
+The historical PR #21 scan contained 19 images and initially reported five clean
+images. The coverage audit corrects that interpretation: four had valid passing
+reports (Kong, CUPS, patched Edge Runtime and patched Realtime), PostgREST lacked
+package results, and 14 had findings. Empty findings alone do not prove coverage. Backend unit tests passed 19/19; the mobile contract
 had zero missing RPCs or signature mismatches. Local API acceptance covered
 sessions, roles, images and all four PDF flows; the patched Realtime passed
 update delivery, customer isolation, reconnect and invalid-token denial.
@@ -180,5 +181,6 @@ restart, and empty-cart refresh. iPhone regression of this change remains open.
 
 New source image recipes and current acceptance boundaries are recorded in
 [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). The earlier 14-image failure
-count above is historical, not the latest candidate result. The final inventory passes 16/19 images; Grafana, Studio and postgres-meta
+count above is historical, not the latest candidate result. The final inventory passes 15/19 images; PostgREST is rejected for missing package
+results, while Grafana, Studio and postgres-meta
 remain failing. The all-profile release gate remains enforced.

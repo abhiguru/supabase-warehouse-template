@@ -37,9 +37,12 @@ legacy WAL-G backup compatibility, or operator RTO/RPO. Those require a separate
 recovery drill with approved storage and policies. GoTrue remains disabled and
 is not production SMS authentication acceptance.
 
-The final 19-image Compose inventory on 2026-09-22 passed 16 images at the fixed
+The final 19-image Compose inventory on 2026-09-22 passed 15 images at the fixed
 HIGH/CRITICAL threshold (Trivy 0.74.0, `--ignore-unfixed`). All eleven new recipes
-above passed, as did Kong, PostgREST, CUPS, Edge Runtime and Realtime. The gate
+above passed, as did Kong, CUPS, Edge Runtime and Realtime. PostgREST returned
+no package results and was rejected by the evidence validator; it is not a
+passing vulnerability scan. Its static binary needs trusted package/SBOM
+evidence tied to the image before this coverage gap can close. The gate
 correctly failed for three unchanged upstream images:
 
 | Image | Critical | High |
@@ -64,6 +67,11 @@ The live contract against mobile `989ade8e86f313ae4b173ad1bb5b56607ecbe353`
 had no missing RPCs or signature mismatches. Realtime now has a 90-second
 initialization grace period because the first database-recreate rehearsal
 briefly marked it unhealthy before it recovered; corrected setup passed.
+
+The earlier report counted PostgREST as clean based only on an empty findings
+list; the strict validator correctly rejected that report. This correction
+preserves the fail-closed gate and distinguishes absence of findings from proof
+of coverage.
 
 Required GitHub CI must still pass the reviewed commit pair before merge.
 None of this closes the remaining three-image security gate or the external
