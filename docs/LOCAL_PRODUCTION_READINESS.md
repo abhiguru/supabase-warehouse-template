@@ -18,7 +18,7 @@ not authorize a public deployment or change the immutable `v0.2.2-demo` tags.
 | 7 | Business correctness | Passed for the documented fictional demo policy, including concurrency, stock, GRN/dispatch, order idempotency, invoice rounding, reports, private images, and four PDF types. | Approve operator-specific rates, taxes, reconciliation, payments, deletion, and document branding with independent expected values. |
 | 8 | Load and resources | Passed as a local smoke test: 100 API requests at concurrency 10 had 0 failures and 121.3 ms p95; a 10-client/10-second read-only `pgbench` run processed 342,889 transactions with 0 failures. | Define real SLOs, data volume, concurrent users, soak duration, storage growth, and production capacity. |
 | 9 | Monitoring and runbooks | Passed locally. Prometheus validated 15 rules and all five targets; Alertmanager accepted a synthetic local alert. cAdvisor collects only CPU, memory, and OOM metrics to avoid unrelated host filesystem scans. | Configure and test an owned external receiver, on-call contacts, escalation, access, and target-host recovery runbooks. |
-| 10 | Realtime | Passed locally. The current Realtime image started, an authenticated database-change channel joined, and an invalid JWT was rejected. | Define production volume/resilience objectives and test them on the target deployment. |
+| 10 | Realtime | Passed locally. Actual database updates reached the administrator and assigned customer; the unrelated customer update was excluded, reconnect restored delivery, and an invalid JWT was rejected. | Define production volume/resilience objectives and test them on the target deployment. |
 | 11 | Android artifact and notices | Passed for a development APK in the companion mobile repository. The audit checked archive paths, embedded text, permissions, notices, and the Expo public root certificate; blocked media/SMS permissions were absent. | Audit the final release-signed AAB/APK with owned signing credentials, privacy declarations, and store metadata. |
 
 ## Reproduce the provider-independent checks
@@ -47,7 +47,7 @@ WAREHOUSE_SCAN_REPORT_DIR=/tmp/warehouse-image-scan npm run scan:images
 
 The image scan is expected to remain nonzero until its recorded production
 blocker is cleared. It builds local profile images and scans every Compose
-profile; a missing image or scanner failure is also a failure.
+profile; failed or empty image enumeration, a missing image, or scanner failure is also a failure. Each invocation creates a fresh mode-0700 report directory.
 
 From the companion mobile checkout:
 
@@ -78,7 +78,7 @@ Trivy 0.74.0 scanned fixed HIGH/CRITICAL OS and library findings with
 `--ignore-unfixed` on 2026-09-22. Kong 3.9.3-ubuntu and PostgREST v14.17 were
 clean at that threshold. Current upstream tags for the remaining core and
 monitoring images still produced findings. Machine-readable reports stay in the
-private scan directory because they can contain detailed deployment inventory.
+private scan directory during review because they can contain detailed deployment inventory; temporary reports are removed after verification.
 No finding is suppressed or waived by this record.
 
 | Image | Critical | High |
@@ -117,3 +117,19 @@ telemetry, or printer/sensor hardware. Those services are needed only for their
 corresponding production acceptance gates. The image vulnerability blocker and
 operator retention/business-policy approvals also remain open independently of
 third-party service availability.
+
+## Follow-up verification
+
+The Realtime probe now verifies event delivery and isolation, rather than only
+channel join. It waits for the database subscription, updates fictional customer
+cart notes with unique markers, verifies administrator/customer delivery, reconnects
+the customer, verifies another update, and restores the notes in cleanup. New
+fixture carts are removed. Ownership and explicit loopback demo mode are checked
+before login or mutation. Target-volume soak and mobile UI subscription behavior
+remain outside this backend probe.
+
+The image enumeration failure regression and private report-directory checks pass.
+A repeat all-profile scan still reports the image findings above. These require
+patched upstream images or maintained replacement builds; the scan remains a
+production blocker. SMS, external notification delivery, public TLS, signing,
+hardware, and operator policy/capacity decisions retain their existing gates.

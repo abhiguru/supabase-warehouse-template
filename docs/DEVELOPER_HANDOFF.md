@@ -226,7 +226,7 @@ Stop preserves database/files. Remove only the reverse mappings you created:
 
 Physical printing, sensors, customer document uploads, production SMS, barcode
 scanning and automatic offline/SQLite synchronization are unsupported. Realtime
-remains optional and default-disabled; local startup and authenticated channel
+remains optional and default-disabled; local update delivery, customer isolation, reconnect, and authenticated channel
 authorization pass, while application subscription behavior and target-deployment
 capacity/resilience remain separate acceptance.
 Printing/sensor UI explains unavailability; hardware Edge endpoints return 503.

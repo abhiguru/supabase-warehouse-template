@@ -1,5 +1,10 @@
 # Changelog
 
+- Verified actual Realtime update delivery, customer isolation and reconnect;
+  restore fictional fixture notes after the probe.
+- Image scanning now rejects failed/empty Compose inventory and uses a fresh
+  private report directory per run.
+
 ## Unreleased — provider-independent local readiness (2026-09-22)
 
 - Added private backup plus isolated restore verification, owned-service recovery,
