@@ -1,37 +1,28 @@
 # Developer handoff — v0.2.2-demo
 
-## Post-release handoff — 2026-09-21
+## Final post-release closure — 2026-09-22
 
-Physical Android acceptance and the qualified physical-iOS matrix are recorded
-in the mobile repository's `docs/NATIVE_ACCEPTANCE.md`. For the latest fixes and
-prioritized open work, read its `docs/HANDOFF_REVIEW_2026-09-21.md` on `main`.
-The release-tag clone commands below reproduce the immutable baseline and do not
-contain this post-release follow-up.
+The local physical-iPhone source-demo handoff is complete. Mobile PR
+[#18](https://github.com/abhiguru/rn-warehouse-template/pull/18) merged as
+`9ba56ff122dc38dc57d6100de4c27599023d22b1`; backend PR
+[#13](https://github.com/abhiguru/supabase-warehouse-template/pull/13) merged as
+`cf18f1e43ab613310b1b13339ab97e8533861f9b`. Exact-main CI passed in mobile run
+[`35686164009`](https://github.com/abhiguru/rn-warehouse-template/actions/runs/35686164009)
+and backend run
+[`35686198287`](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35686198287).
 
-The customer-history mobile repair merged through PR #15 as
-`09919ebfbce1f6e819363eca7711c23dd29b155f`. The backend companion merged
-through PR #11 as `a1ad80741ddff97d4f9eb47a0066094f76ea476a`. Both
-byte-identical backend CI workflow copies pin that exact verified mobile
-implementation commit. Mobile main CI run `35605871279` and backend main CI run
-`35606744913` passed, including the pinned integration pair.
+The final pair closes customer-authorized GRN/dispatch history, stable readable
+fixtures and order snapshots, per-GRN dispatch history, invoice navigation and
+the mobile session/onboarding fixes. Backend gates passed the complete migration,
+health/doctor, API, contract and scan matrix, including 94 RPC names / 129 typed
+calls with zero missing names or mismatches. The assigned fictional customer
+history and related flows passed on an iPhone 15 running iOS 26.6.2; shared
+runtime/navigation changes also passed a fresh Android API-36 emulator smoke.
+See the mobile repository's `docs/NATIVE_ACCEPTANCE.md` and closed dated review.
 
-The review fixed a macOS CLI-path defect: configuration, doctor and migration
-planning could silently skip execution when invoked through symlinks such as
-`/var` → `/private/var`. Entry checks now compare canonical paths. All 17 backend
-unit tests pass, including the formerly failing setup-preservation fixture and
-a symlink regression. The later checkout-owned Docker rehearsal applied the
-00000–00011 migration plan, passed health and the full API matrix, and completed
-the live companion check with zero missing RPCs or mismatches.
-
-The customer GRN/recent-dispatch gap is closed with customer-authorized contracts,
-live API evidence, paired review/CI, and a post-merge API-36 emulator smoke. The
-assigned fictional customer displayed two GRNs and three recent dispatches, and
-authenticated cold restoration passed. Active-session revocation leaving the
-phone on an error screen remains open. Keep authorization intact while correcting
-logout behavior.
-The successful iPhone run also relied on temporary USB relays that were removed;
-repeatable physical-iOS onboarding is still an open task. Ordered item 4 has not
-started. Enabled telemetry and production/distribution gates remain separate.
+The release-tag commands below reproduce the immutable baseline. Existing
+`v0.2.2-demo` tags remain unchanged. Enabled telemetry and production/distribution
+gates remain separate.
 
 ## Active source-demo release — 2026-09-18
 
@@ -225,7 +216,7 @@ review. Change-category filtering is unavailable; other change-log filters remai
 Payments/accounting integrations are not part of the documented demo workflow.
 
 Production scale/security, native telemetry delivery, distribution signing,
-retention enforcement, and privacy declarations remain separate checks.
-Physical-device evidence and its unresolved defects are recorded in the mobile
-handoff. The scoped ownership and attribution review is complete; see
+retention enforcement, and privacy declarations remain separate checks. The
+complete source-demo physical-iPhone evidence is recorded in the mobile handoff.
+The scoped ownership and attribution review is complete; see
 ATTRIBUTION_REVIEW.md. A successful bundle is not a physical-device test.

@@ -1,5 +1,15 @@
 # Readiness
 
+## Final physical-iPhone closure — 2026-09-22
+
+Current `main` passed the complete local source-demo physical-iPhone gate at
+backend `cf18f1e43ab613310b1b13339ab97e8533861f9b` paired with mobile
+`9ba56ff122dc38dc57d6100de4c27599023d22b1`. Backend PR #13 and mobile PR #18
+merged after review; exact-main CI runs `35686198287` and `35686164009` passed.
+The complete iPhone 15 / iOS 26.6.2 matrix, plus the supporting Android API-36
+smoke, is recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`. Existing
+`v0.2.2-demo` tags remain immutable.
+
 ## Current source-demo status — 2026-09-18
 
 The Android-first source-demo scope is accepted and published. Matching
@@ -14,9 +24,10 @@ redistribution attestation and reconciled third-party inventory are recorded in
 [ATTRIBUTION_REVIEW.md](ATTRIBUTION_REVIEW.md). There is no unresolved
 source-only attribution blocker.
 
-Physical Android hardware/camera, iOS, production SMS/TLS/operations,
-app-store/native-binary distribution, printing, sensors, payments, Realtime, and
-unsupported integrations remain separate gates.
+Post-release physical Android and physical-iPhone source-demo acceptance are
+complete. Production SMS/TLS/operations, app-store/native-binary distribution,
+enabled telemetry, printing, sensors, payments, Realtime and unsupported
+integrations remain separate gates.
 
 ## Historical readiness records
 
@@ -120,37 +131,20 @@ are clean. Backend history has five individually reviewed documentation/demo-key
 false positives, listed by exact historical fingerprints in `.gitleaksignore`;
 no broad rule exclusions were added.
 
-## Still required
+## Still required for production
 
 1. Implement and test a real SMS provider with no fixed-code fallback, provider
-   failures, delivery limits, registration controls, and operator-admin onboarding.
-   The local demo permits only impossible subscriber numbers 0000000001–9.
-2. Review and test all imported RPC signatures, return shapes, grants, and business
-   rules. Expand coverage to prices/invoice calculations, payments, cart/order
-   lifecycle, concurrent dispatch/idempotency, reports, soft deletion, and recovery.
-3. Verify image upload/confirmation/deletion and cross-customer Storage access.
-   Signed generated-document downloads have been tested; that does not cover all
-   image workflows. Set retention/cleanup for generated PDFs and auth/audit data.
-4. Export/review the three preprinted document endpoints and dynamic
-   `manage-print-jobs`. Test actual printer hardware, sensors, Realtime and
-   optional profiles before enabling them. Printing/sensor feature flags default
-   off; Realtime is an opt-in profile.
-5. Complete Android/iOS native builds, fresh-install/login/restart/offline/device
-   flows, camera/secure-storage/deep-link checks, and frontend role acceptance.
-   JS/Jest/API tests are not substitutes for this.
-6. Decoder remediation and checked navigation/Metro adapters were included in
-   the historical `v0.2.1-demo`. Keep dependency audits and native regression checks current.
-   See the [release tracker](RELEASE_CHECKLIST.md) for version-specific evidence.
-7. Perform deployment review: TLS/CORS, gateway/body limits, privileged optional
-   host mounts, renderer isolation, backups/restores, startup-failure recovery,
-   service image updates, rights/assets/legal/privacy text, and release artifacts.
-   Synchronous materialized-view refresh is intentionally for small demo installs;
-   larger deployments need a reviewed refresh-worker design.
-8. CI workflows are activated under `.github/workflows/` (validation, migrations,
-   live demo API, redacted scans and mobile contract checks). The released backend
-   main run failed after selecting an old mobile commit; see the release tracker. The 3 preprinted document endpoints
-   are exported, closing the static contract gate. Do not tag a production-ready
-   release from this checkpoint.
+   failures, delivery limits, registration controls and operator onboarding. The
+   local demo permits only impossible subscriber numbers 0000000001–9.
+2. Define and deploy retention/cleanup for generated PDFs and auth/audit data;
+   complete legal/privacy and rights/assets review for the target operator.
+3. Review TLS/CORS, gateway/body limits, privileged optional host mounts,
+   renderer isolation, backups/restores, startup recovery, service updates and
+   scale. The synchronous materialized-view refresh is intended for small demos.
+4. Test optional printing, sensors, Realtime, payments and imported unsupported
+   integrations with their actual hardware, credentials and business rules.
+5. Complete production mobile signing/distribution and enabled telemetry delivery
+   validation. Keep dependency audits and native regressions current.
 
 A local failed-initialization directory may be kept under ignored
 `docker/volumes/db/data.failed-init-*/` for diagnosis. It is not public source.
