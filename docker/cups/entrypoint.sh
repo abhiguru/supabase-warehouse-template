@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+: "${CUPS_ADMIN_PASSWORD:?Provide an owned CUPS administrator password}"
 
 echo "========================================="
 echo "CUPS Print Server Initialization"
@@ -13,7 +14,7 @@ fi
 
 # Configurable printer settings via environment variables
 CUPS_ADMIN_USER="${CUPS_ADMIN_USER:-admin}"
-CUPS_ADMIN_PASSWORD="${CUPS_ADMIN_PASSWORD:-admin}"
+CUPS_ADMIN_PASSWORD="${CUPS_ADMIN_PASSWORD}"
 PRINTER_NAME="${PRINTER_NAME:-MyPrinter}"
 PRINTER_URI="${PRINTER_URI:-usb://Unknown/Printer}"
 PRINTER_DRIVER="${PRINTER_DRIVER:-raw}"
@@ -48,10 +49,7 @@ echo "========================================="
 /usr/sbin/cupsd
 sleep 2
 
-# Clear any stuck jobs from previous sessions
-echo "Clearing any stuck print jobs..."
-cancel -a 2>/dev/null || true
-rm -f /var/spool/cups/d* /var/spool/cups/c* 2>/dev/null || true
+# Existing spool and queued jobs survive a service restart.
 
 echo "Configuring printer: $PRINTER_NAME..."
 if ! lpstat -p "$PRINTER_NAME" &>/dev/null; then
@@ -82,7 +80,7 @@ echo ""
 echo "========================================="
 echo "CUPS Configuration Complete"
 echo "========================================="
-echo "Web UI: http://localhost:6310 (external)"
+echo "Web UI: http://localhost:16310 (external)"
 echo "IPP Endpoint: http://cups:631 (from containers)"
 echo "Printer: $PRINTER_NAME"
 echo "========================================="

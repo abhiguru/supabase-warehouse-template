@@ -127,6 +127,9 @@ jobs:
           npm run db:backup -- /tmp/warehouse-ci-backup
           npm run db:verify-restore -- /tmp/warehouse-ci-backup
         working-directory: backend
+      - name: CUPS startup without printer hardware
+        run: npm run test:cups
+        working-directory: backend
       - name: Owned-service recovery
         run: npm run test:recovery
         working-directory: backend

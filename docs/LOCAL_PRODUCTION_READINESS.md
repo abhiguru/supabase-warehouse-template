@@ -101,7 +101,7 @@ No finding is suppressed or waived by this record.
 | `supabase/storage-api:v1.74.0` | 1 | 37 |
 | `supabase/studio:2026.09.07-sha-7996410` | 3 | 90 |
 | `supabase/supavisor:2.9.12` | 0 | 1 |
-| locally built CUPS printing image | 4 | 52 |
+| locally built CUPS printing image (after follow-up) | 0 | 0 |
 
 The database remains on Supabase Postgres 15.8.1.060 because the current
 upstream stack uses a different PostgreSQL major version; that upgrade needs a
@@ -133,3 +133,13 @@ A repeat all-profile scan still reports the image findings above. These require
 patched upstream images or maintained replacement builds; the scan remains a
 production blocker. SMS, external notification delivery, public TLS, signing,
 hardware, and operator policy/capacity decisions retain their existing gates.
+
+The locally maintained CUPS image now installs explicit required packages without
+APT recommendations. This removes the unused `ipp-usb` daemon and all 56 of its
+fixed HIGH/CRITICAL findings; the rebuilt image reports zero at that threshold.
+The entrypoint requires a supplied administrator password and preserves queued
+spool files on restart. `npm run test:cups` verifies missing-password rejection,
+spool-marker preservation, configuration and HTTP service in network-isolated
+containers, without host USB access. CI repeats this check. IPP-over-USB discovery
+is not provided by this image; physical printer/driver acceptance still needs
+actual hardware. Other third-party image findings remain open.
