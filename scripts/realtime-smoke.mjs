@@ -24,7 +24,7 @@ async function login(phone) {
   return result.data.session.access_token;
 }
 
-function join(token, ref) {
+function joinOnce(token, ref) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(socketBase, {
       handshakeTimeout: 10000,
@@ -46,6 +46,21 @@ function join(token, ref) {
       },
     })));
   });
+}
+
+async function join(token, ref) {
+  let lastError;
+  for (let attempt = 1; attempt <= 15; attempt += 1) {
+    try {
+      return await joinOnce(token, ref);
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error);
+      if (!/Unexpected server response: 502|ECONNREFUSED|ECONNRESET/.test(message)) throw error;
+      if (attempt < 15) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  throw new Error(`Realtime gateway did not become ready: ${lastError?.message || lastError}`);
 }
 
 // Dedicated impossible demo number keeps this probe independent of API acceptance fixtures.

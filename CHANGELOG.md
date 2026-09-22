@@ -12,6 +12,9 @@
   findings remain a production blocker, including optional service images.
 - Extended CI to exercise the new local operational checks and preserved
   byte-identical tracked workflow copies.
+- Made the Realtime smoke tolerate only bounded transient Kong 502/connection
+  errors while the newly started upstream becomes routable; authentication and
+  protocol failures still fail immediately.
 - Paired the backend evidence with a native Android debug build and artifact
   contents/permissions/notices audit in the mobile repository. No binary or
   signing credential is published.
