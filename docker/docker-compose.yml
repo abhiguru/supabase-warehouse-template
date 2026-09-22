@@ -87,7 +87,8 @@ services:
   # GoTrue auth service DISABLED - using custom phone OTP authentication instead
   # To re-enable: remove the 'profiles' line and uncomment auth routes in kong.yml
   auth:
-    image: supabase/gotrue:v2.196.0
+    build:
+      context: ./auth
     profiles: ["disabled"]
     restart: unless-stopped
     healthcheck:
@@ -148,7 +149,6 @@ services:
   realtime:
     build:
       context: ./realtime
-    profiles: ["realtime"]
     restart: unless-stopped
     networks:
       default:
@@ -167,6 +167,7 @@ services:
       timeout: 5s
       interval: 5s
       retries: 3
+      start_period: 90s
     environment:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}
@@ -187,7 +188,8 @@ services:
       RUN_JANITOR: true
 
   storage:
-    image: supabase/storage-api:v1.74.0
+    build:
+      context: ./storage
     restart: unless-stopped
     volumes:
       - ./volumes/storage:/var/lib/storage:z
@@ -219,7 +221,8 @@ services:
       IMGPROXY_URL: http://imgproxy:5001
 
   imgproxy:
-    image: darthsim/imgproxy:v3.31.4
+    build:
+      context: ./imgproxy
     restart: unless-stopped
     volumes:
       - ./volumes/storage:/var/lib/storage:z
@@ -280,7 +283,8 @@ services:
       ]
 
   db:
-    image: supabase/postgres:15.8.1.060
+    build:
+      context: ./postgres
     restart: unless-stopped
     volumes:
       - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
@@ -320,7 +324,8 @@ services:
 
   # Connection pooler — start with: docker compose --profile pooler up -d
   supavisor:
-    image: supabase/supavisor:2.9.12
+    build:
+      context: ./supavisor
     restart: unless-stopped
     profiles: ["pooler"]
     ports:
@@ -394,7 +399,8 @@ services:
 
   # Gotenberg - HTML to PDF conversion (Chromium-based)
   gotenberg:
-    image: gotenberg/gotenberg:8.37.0
+    build:
+      context: ./gotenberg
     restart: unless-stopped
     ports:
       - "127.0.0.1:${GOTENBERG_HOST_PORT:-13100}:3000"

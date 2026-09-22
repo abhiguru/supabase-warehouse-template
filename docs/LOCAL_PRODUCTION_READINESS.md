@@ -161,7 +161,7 @@ change is included. Source build recipes are tracked; binaries are not published
 The scanner now rejects missing, malformed, empty, mismatched, or vulnerable
 reports even if the scanner process returns success.
 
-The final Compose inventory scan contained 19 images: five passed at the fixed
+The historical PR #21 Compose inventory scan contained 19 images: five passed at the fixed
 HIGH/CRITICAL threshold (Kong, PostgREST, CUPS, patched Edge Runtime and patched
 Realtime); 14 still failed. Backend unit tests passed 19/19; the mobile contract
 had zero missing RPCs or signature mismatches. Local API acceptance covered
@@ -169,3 +169,16 @@ sessions, roles, images and all four PDF flows; the patched Realtime passed
 update delivery, customer isolation, reconnect and invalid-token denial.
 Owned-service restart also passed health recovery, configuration preservation
 and business-data preservation after the patch.
+
+## Orders/cart and additional image follow-up
+
+The user selected orders/cart only with refresh after reconnect. Mobile PR #24
+is merged and both companion jobs now pin its implementation main commit
+`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. Local API-36 emulator checks passed
+remote order refresh, cart quantity changes, missed-event refresh after Realtime
+restart, and empty-cart refresh. iPhone regression of this change remains open.
+
+New source image recipes and current acceptance boundaries are recorded in
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). The earlier 14-image failure
+count above is historical, not the latest candidate result. The final inventory passes 16/19 images; Grafana, Studio and postgres-meta
+remain failing. The all-profile release gate remains enforced.

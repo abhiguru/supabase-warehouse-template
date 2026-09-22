@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — orders/cart companion and maintained image recipes (2026-09-22)
+
+- Start Realtime in the default demo and pin both mobile companion jobs to
+  `989ade8e86f313ae4b173ad1bb5b56607ecbe353` for orders/cart live updates.
+- Add digest/checksum-pinned source recipes and dependency locks for patched
+  monitoring, Auth, Storage, PDF, PostgreSQL helper, and pooler images; preserve
+  the PostgreSQL server version and production gates.
+- Verify pooler session/transaction queries and invalid-password denial in CI;
+  validate monitoring configuration using the actual maintained images.
+- Retain upstream license texts and notices for copied dependency manifests;
+  record patch/acceptance boundaries in `docs/CONTAINER_SECURITY.md`.
+
 ## Unreleased — image remediation and production dependencies (2026-09-22)
 
 - Build Edge Runtime and Realtime from digest-pinned upstream images with Debian

@@ -23,7 +23,8 @@
     "retention:preview": "bash scripts/retention.sh preview",
     "retention:apply": "bash scripts/retention.sh apply",
     "check:contract": "node scripts/check-mobile-contract.mjs",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "test:pooler": "bash scripts/pooler-check.sh"
   },
   "devDependencies": {
     "jose": "5.10.0",

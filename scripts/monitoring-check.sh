@@ -3,9 +3,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 
-docker run --rm -v "$ROOT/docker:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v3.14.0 \
+compose --profile monitoring build prometheus alertmanager
+compose --profile monitoring run --rm --no-deps --entrypoint promtool prometheus \
   check config /etc/prometheus/prometheus.yml
-docker run --rm -v "$ROOT/docker:/etc/alertmanager:ro" --entrypoint amtool prom/alertmanager:v0.34.1 \
+compose --profile monitoring run --rm --no-deps --entrypoint amtool alertmanager \
   check-config /etc/alertmanager/alertmanager.yml
 compose --profile monitoring up -d prometheus alertmanager postgres-exporter node-exporter cadvisor
 

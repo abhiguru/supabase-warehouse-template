@@ -36,3 +36,13 @@ and the original repository MIT license remains separate. No unresolved
 provenance item blocks this source-only prerelease. Future vendored code,
 container redistribution, assets, or binaries require a new review; this record
 must not be reused as blanket approval.
+
+## Source recipe follow-up — 2026-09-22
+
+New copied dependency manifests are inventoried in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#maintained-container-source-recipes-2026-09-22).
+Their upstream license texts and available notices were checked against the
+matching source archives and included under `LICENSES/`. Modifications are
+identified in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). This follow-up
+covers the recipe/manifests source changes, not distribution of built images,
+container dependency relicensing, or a new ownership attestation.

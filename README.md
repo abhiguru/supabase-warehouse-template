@@ -125,8 +125,8 @@ Authenticated access uses explicit RPC grants, active sessions and customer RLS.
 Generated PDFs use a generic, escaped starter layout, private storage, and
 one-hour signed links. Configure business details and document terms before use.
 
-Printing, sensors, Realtime, monitoring and other optional integrations are not
-validated by the default demo. The three preprinted document functions
+Realtime starts with the default demo to support order/cart live updates.
+Printing and sensors still require hardware acceptance; monitoring is optional. The three preprinted document functions
 (`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
 and print status monitoring are exported for contract parity, but physical
 printing hardware remains unverified.
