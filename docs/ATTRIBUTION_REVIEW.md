@@ -23,7 +23,7 @@ not a blanket legal certification and does not replace third-party license terms
 | Supabase JS/functions imports from esm.sh | Runtime URL imports; not vendored in the source archive | MIT | Upstream package license; recorded in `THIRD_PARTY_NOTICES.md` |
 | `jose` 5.10.0 | Locked npm development dependency; not vendored in the source archive | MIT, Filip Skokan | Installed `node_modules/jose/LICENSE.md`; package identity locked in `package-lock.json` |
 | `ipp` 2.0.1 | Optional runtime npm import used only by unsupported printing paths; not vendored | MIT | Upstream npm package license; identity pinned in source imports |
-| Referenced container images | Pulled at setup time; image contents are not redistributed in the source archive | Each image's upstream terms | Exact image names/tags are in `docker/docker-compose*.yml`; downstream operators must review image licenses before distribution |
+| Referenced container images | Pulled at setup time; image contents are not redistributed in the source archive | Each image's upstream terms | Exact image names/tags are in `docker/docker-compose*.yml` and digest-pinned local build recipes in `docker/*/Dockerfile`; downstream operators must review image licenses before distribution |
 
 No image, font, audio, video, or native binary asset is tracked in the backend
 source tree. Placeholder webhook URLs are configuration examples, not copied

@@ -6,6 +6,8 @@ not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
 Provider-independent evidence from 2026-09-22 is linked in
 [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md). Checked local
 items below do not clear their separately stated target-production gates.
+See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the current
+nine-item follow-up and its concrete dependencies.
 
 ## Credentials and deployment boundaries
 

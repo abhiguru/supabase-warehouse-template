@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — image remediation and production dependencies (2026-09-22)
+
+- Build Edge Runtime and Realtime from digest-pinned upstream images with Debian
+  security updates; preserve their upstream application versions.
+- Reject missing, invalid, mismatched and vulnerable image-scan reports even when
+  the scanner exits successfully; cover false-success regressions.
+- Record the nine remaining production areas with specific external inputs and
+  distinguish those blockers from unfinished image/mobile Realtime engineering.
+
 ## Unreleased — remaining local gates (2026-09-22)
 
 - Verified actual Realtime update delivery, customer isolation and reconnect;

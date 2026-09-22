@@ -3,6 +3,7 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+command -v node >/dev/null || { echo 'Node.js is required to validate scan evidence.' >&2; exit 1; }
 command -v trivy >/dev/null || { echo 'Trivy is required for container image scanning.' >&2; exit 1; }
 
 report_dir="${WAREHOUSE_SCAN_REPORT_DIR:-${TMPDIR:-/tmp}/warehouse-image-scan}"
@@ -24,6 +25,9 @@ while IFS= read -r image; do
     else
       echo "Image scan failed for $image; no report was produced." >&2
     fi
+    failed=1
+  fi
+  if ! node "$ROOT/scripts/validate-image-report.mjs" "$report" "$image"; then
     failed=1
   fi
 done <<< "$images"

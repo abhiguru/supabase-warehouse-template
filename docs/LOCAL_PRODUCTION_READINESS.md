@@ -79,7 +79,9 @@ Trivy 0.74.0 scanned fixed HIGH/CRITICAL OS and library findings with
 clean at that threshold. Current upstream tags for the remaining core and
 monitoring images still produced findings. Machine-readable reports stay in the
 private scan directory during review because they can contain detailed deployment inventory; temporary reports are removed after verification.
-No finding is suppressed or waived by this record.
+No finding is suppressed or waived by this record. The table below records the
+upstream-image baseline; follow-up locally patched image results are recorded
+below and do not erase that baseline.
 
 | Image | Critical | High |
 |---|---:|---:|
@@ -143,3 +145,27 @@ spool-marker preservation, configuration and HTTP service in network-isolated
 containers, without host USB access. CI repeats this check. IPP-over-USB discovery
 is not provided by this image; physical printer/driver acceptance still needs
 actual hardware. Other third-party image findings remain open.
+
+
+## Nine-item production follow-up
+
+[PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) records the current
+nine-item work list, distinguishing unfinished engineering from missing services
+and operator decisions. Production acceptance remains open.
+
+The Edge Runtime build now pins upstream v1.76.2 by digest and upgrades Debian
+PCRE2; Realtime pins v2.134.10 by digest and applies Debian updates. Trial images
+scanned with zero fixed HIGH/CRITICAL findings (previously 3 and 55 respectively
+in this follow-up scan). No application major-version upgrade or database schema
+change is included. Source build recipes are tracked; binaries are not published.
+The scanner now rejects missing, malformed, empty, mismatched, or vulnerable
+reports even if the scanner process returns success.
+
+The final Compose inventory scan contained 19 images: five passed at the fixed
+HIGH/CRITICAL threshold (Kong, PostgREST, CUPS, patched Edge Runtime and patched
+Realtime); 14 still failed. Backend unit tests passed 19/19; the mobile contract
+had zero missing RPCs or signature mismatches. Local API acceptance covered
+sessions, roles, images and all four PDF flows; the patched Realtime passed
+update delivery, customer isolation, reconnect and invalid-token denial.
+Owned-service restart also passed health recovery, configuration preservation
+and business-data preservation after the patch.
