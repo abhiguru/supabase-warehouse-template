@@ -43,10 +43,10 @@ two byte-identical CI workflow copies pin the mobile commit checked out.
 
 ## Separate gates
 
-Post-release physical Android evidence and a qualified physical-iOS matrix are
-recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`; see its dated 2026-09-21
-handoff review for the closed customer-view gate and the remaining revocation
-and onboarding gaps.
+Post-release physical Android evidence and the complete physical-iPhone matrix
+are recorded in the mobile `docs/NATIVE_ACCEPTANCE.md`. The final implementation
+pair is mobile `9ba56ff122dc38dc57d6100de4c27599023d22b1` and backend
+`cf18f1e43ab613310b1b13339ab97e8533861f9b`; see the closed dated review.
 These later results do not change the immutable release tags.
 
 Production SMS/TLS/operations,

@@ -1,5 +1,22 @@
 # Open-source release checklist
 
+## Post-release physical iPhone closure — 2026-09-22
+
+- [x] Backend PR #13 merged as
+      `cf18f1e43ab613310b1b13339ab97e8533861f9b`; mobile PR #18 merged as
+      `9ba56ff122dc38dc57d6100de4c27599023d22b1`.
+- [x] Exact-main backend CI `35686198287` and mobile CI `35686164009` passed.
+- [x] Migration, doctor/health, full API, contracts and scans passed, including
+      94 RPC names / 129 typed calls with zero missing names or mismatches.
+- [x] Customer-authorized GRN/per-item dispatch history, readable fixtures,
+      stable order snapshots, invoice arithmetic and all four private document
+      contracts passed the paired physical-iPhone matrix.
+- [x] Setup rerun and checkout-owned stop/restart preserved generated
+      configuration and fictional data; temporary local services were removed.
+- [x] Existing `v0.2.2-demo` tags remain unchanged. Production SMS/TLS,
+      distribution, enabled telemetry, retention/privacy, printing, sensors,
+      Realtime, payments and unsupported integrations remain separate gates.
+
 ## v0.2.2-demo source-only prerelease — 2026-09-18
 
 - [x] Android-first source-demo acceptance summarized in
@@ -52,7 +69,7 @@ Publication alone does not establish native or full release acceptance.
 | R03 | Moderate, fixed | Navigation pulled vulnerable decoder <=0.4.2 | Upstream 0.5.0, checked CommonJS adapter and actual navigation/malformed-input tests; SDK 54 retained | Version/content checks deliberately fail on unexpected dependency changes |
 | R04 | High, fixed | Contributor command targeted a generic database container | Checkout ownership wrappers, disposable migration tests, read-only doctors, exclusive config creation | Demo remains loopback-only |
 | R05 | Review, covered API cases | Images, orders, invoice/report values, role changes and retries lacked coverage | Full demo API passes locally; confirmed GRN/dispatch customer isolation, staff-only customer-images, explicit 950/48/998 invoice fixture, duration boundaries, concurrent stock mutations and rollback | See INVOICE_RULES.md; legacy dual-rate overload unsupported; payments not comprehensively accepted |
-| R06 | Acceptance, open | Native build and actual Android UI workflow require separate evidence | See mobile NATIVE_ACCEPTANCE.md for recorded build/UI results | Physical Android, iOS and hardware camera remain untested |
+| R06 | Acceptance, later closed | Native build and actual Android UI workflow required separate evidence at this historical checkpoint | See mobile NATIVE_ACCEPTANCE.md for the later Android and complete iPhone records | Production distribution and optional hardware remain separate |
 | R07 | High onboarding/CI, fixed | Backend branch inference selected old or nonexistent mobile branch | Both CI companion checkouts pinned to released mobile SHA; both tested SHAs printed | PR #5 and merged main CI pass; tags are not moved |
 | R08 | High, mobile follow-up | Login/OTP screens logged inputs; PDF service logged private signed URLs | Inputs/raw errors removed, fixed auth diagnostics, CI lint guards and six PDF privacy regressions | Historical tag still contains these logs |
 | R09 | High workflow, backend follow-up | Default GRN sort and next-number helpers cast valid alphanumeric suffixes to integers | Additive migration 08 preserves authorization/grants, guards suffix casts, retains numeric sequence ordering; native reproduction and API/disposable SQL regressions | Existing number-series rollover/collision policy remains unchanged |
@@ -118,8 +135,9 @@ preserved below.
 - [ ] Resolve remaining URL-decoder/navigation advisory through a tested
       compatibility change; 8 moderate / 0 high / 0 critical findings remain.
 - [ ] Assess container and Edge/native dependencies beyond npm.
-- [ ] Validate native builds after native dependency changes (see item 4).
-      Android ARM64 debug compilation passes after SDK alignment; iOS remains open.
+- [x] Validate native builds after native dependency changes (see item 4).
+      Android and the complete physical-iPhone source-demo evidence are recorded
+      in the mobile `NATIVE_ACCEPTANCE.md`.
 
 ### 3. Continuous integration and repository protection — completed
 
@@ -136,7 +154,7 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       `print-grn-preprinted`, `print-invoice-preprinted`) so mobile contract inventory has 0 missing endpoints.
 - [x] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
 
-### 4. Clean-install verified; native/device acceptance pending
+### 4. Clean-install and later native/device acceptance completed
 
 - [x] Reproduce setup from public-only source in a clean, isolated environment,
       including prerequisite documentation, generated credentials, and safe reruns.
@@ -146,12 +164,14 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Compile an Android ARM64 debug APK from public source after SDK alignment
       at mobile `96d92a287f2ce8a27b2587fcebe482eb4fe988b2`. This is not a device test
       or signed release build; see the mobile `docs/NATIVE_ACCEPTANCE.md` evidence.
-- [ ] Compile the iOS app on a Mac with Xcode.
-- [ ] On physical Android and iOS devices, test fresh install, login,
+- [x] Compile the iOS app on a Mac with Xcode; the final physical run used
+      Xcode 26.3 and Personal Team development signing.
+- [x] On physical Android and iOS devices, test fresh install, login,
       restart, refresh, logout, offline/retry, camera, secure storage, deep links and
       role-dependent screens.
-- [ ] Record platform/device/build evidence. JavaScript export is not an APK,
-      an iOS build, or a physical-device test.
+- [x] Record platform/device/build evidence in the mobile
+      `docs/NATIVE_ACCEPTANCE.md`; JavaScript export alone was not used as device
+      evidence.
 
 ### 5. Authorization and business-flow coverage — selected flows verified; broader acceptance open
 
@@ -283,7 +303,8 @@ input or access where unavailable.
   all five migrations/full stack startup, API tests, byte-preserving setup rerun,
   data preservation and disposable SQL security tests. Mobile fresh install passed
   75 Jest tests, 7 bootstrap/dependency tests, typecheck, lint and public bootstrap.
-  Android native generation passed; physical-device and iOS acceptance are not run.
+  Android native generation passed at that historical checkpoint; later physical
+  Android and complete physical-iPhone acceptance are recorded in the mobile repo.
 - 2026-09-12: Completed Item 7 (Documentation and release integrity). Reconciled `README.md` and setup
   instructions across both repositories to reflect active CI workflows, loopback demo ports (`127.0.0.1:18000`,
   `127.0.0.1:54325`, `127.0.0.1:15433`), and preprinted printing status. Documented the verified commit pair,

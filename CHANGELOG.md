@@ -2,18 +2,26 @@
 
 ## Unreleased — iOS acceptance handoff (2026-09-21)
 
+- Closed the complete physical-iPhone source-demo matrix on the final merged pair:
+  backend PR #13 / `cf18f1e43ab613310b1b13339ab97e8533861f9b` with mobile PR #18 /
+  `9ba56ff122dc38dc57d6100de4c27599023d22b1`; exact-main CI and affected
+  iPhone reruns passed.
+- Added customer-authorized per-GRN dispatch history, readable demo fixtures and
+  stable order-item snapshots supporting the final mobile acceptance fixes.
+- Recorded the end-user pricing, code-level billing-day and PDF/cold-storage
+  branding customization boundaries in the durable handoff.
 - Added guarded customer-history RPCs for the post-release mobile repair:
   customer GRN filtering/pagination now matches the exposed view controls, and
   a paginated customer dispatch-header list returns only assigned-customer data.
   The associated live API coverage verifies pagination and cross-customer denial.
 - Fresh isolated-demo migration and live companion-contract checks passed. The
-  repair remains pending paired PR review, CI and a merged mobile Android smoke;
-  published source-only tags are unchanged.
+  repair subsequently passed paired PR review, exact-main CI, Android smoke and
+  the final physical-iPhone rerun; published source-only tags are unchanged.
 - Fixed configuration, doctor and migration-plan CLI execution through symlinked
   checkout paths, including macOS temporary directories. Added regression coverage
   and restored the setup-failure/configuration-preservation test.
-- Aligned the developer handoff with qualified physical-iOS evidence, open mobile
-  defects, reproducible USB-onboarding work and pricing/PDF customization contracts.
+- Aligned the developer handoff with complete physical-iOS evidence, closed mobile
+  defects, reproducible USB onboarding and pricing/PDF customization contracts.
 - Pinned both CI workflow copies to the submitted mobile handoff commit.
 - Preserved published source-release tags; this follow-up requires paired review.
 
