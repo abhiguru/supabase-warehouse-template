@@ -6,7 +6,9 @@
   tooling; update vulnerable dependencies while preserving generated-type output.
 - Remove unused Storage development scripts/dependencies from its runtime
   manifest and apply compatible Fastify/protobuf patches.
-- Allow pooler initialization time, bound probe connections, and report redacted
+- Declare the pooler entrypoint's required open-file limit so CI/container host
+  defaults cannot prevent startup. Allow initialization time, bound probe
+  connections, and report redacted
   failure diagnostics; cover credential-redaction regressions.
 - Explicitly retain moderate and unfixed upstream advisory boundaries.
 

@@ -159,7 +159,12 @@ Auth service, plus lower-severity upstream findings. These are not erased by
 necessary. GoTrue is still disabled and production authentication is not accepted.
 
 The first GitHub integration runs failed during pooler startup although a fresh
-local database/pooler passed. The follow-up gives migration/tenant/server startup
-a 60-second health grace period, bounds probe connection time, and emits
-credential-redacted diagnostics on failure. CI confirmation remains required;
-local success alone does not close that failure.
+local database/pooler passed. Redacted diagnostics identified the cause: the
+upstream entrypoint raises `RLIMIT_NOFILE` to 100000, which fails when the
+container inherits CI's lower hard limit. Compose now declares both soft and
+hard `nofile` limits as 100000. The failure is reproducible with Docker's
+`--ulimit nofile=65536:65536`; the declared 100000 limit permits startup without
+adding privileges. Migration/tenant/server startup also has a 60-second health
+grace period, probe connections are bounded, and failures produce redacted
+diagnostics. CI confirmation remains required; local success alone does not
+close that failure.
