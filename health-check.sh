@@ -16,15 +16,17 @@ for service in db kong rest studio storage functions gotenberg; do
 done
 compose exec -T db pg_isready -U postgres || failed=1
 # Probe the intended project internally, never an unrelated server on a fixed host port.
-compose exec -T studio node --input-type=module <<'JS' || failed=1
+{
+cat "$ROOT/scripts/http-readiness.mjs"
+cat <<'JS'
 for (const [name,url,headers] of [
   ['REST','http://kong:8000/rest/v1/',{apikey:process.env.SUPABASE_ANON_KEY}],
   ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
   ['PDF renderer','http://gotenberg:3000/health',{}],
 ]) {
-  const response=await fetch(url,{headers,signal:AbortSignal.timeout(30000)});
-  if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+  await waitForHttp(name,url,headers);
   console.log(`${name}: available`);
 }
 JS
+} | compose exec -T studio node --input-type=module || failed=1
 exit "$failed"

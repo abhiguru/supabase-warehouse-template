@@ -166,5 +166,10 @@ hard `nofile` limits as 100000. The failure is reproducible with Docker's
 `--ulimit nofile=65536:65536`; the declared 100000 limit permits startup without
 adding privileges. Migration/tenant/server startup also has a 60-second health
 grace period, probe connections are bounded, and failures produce redacted
-diagnostics. CI confirmation remains required; local success alone does not
-close that failure.
+diagnostics. All five PR #29 checks passed, and the resulting-main pooler check
+also passed. That main run exposed a separate setup-rerun readiness race: the
+gateway returned HTTP 502 for configuration immediately after function-container
+recreation despite green container health. Internal HTTP probes now wait up to
+90 seconds for transport failures and HTTP 502/503/504; other HTTP errors fail
+immediately and persistent outages still fail. Final paired CI evidence is
+recorded in the corrective PR rather than claiming closure from local checks.
