@@ -2,6 +2,10 @@
 
 ## Unreleased — iOS acceptance handoff (2026-09-21)
 
+- Reconciled the release and production checklists after final acceptance: all
+  evidenced source-demo dependency, device, authorization, business-flow and
+  ownership items are closed; only production deployment and future-binary gates
+  remain open.
 - Closed the complete physical-iPhone source-demo matrix on the final merged pair:
   backend PR #13 / `cf18f1e43ab613310b1b13339ab97e8533861f9b` with mobile PR #18 /
   `9ba56ff122dc38dc57d6100de4c27599023d22b1`; exact-main CI and affected
@@ -24,7 +28,8 @@
 - Aligned the developer handoff with complete physical-iOS evidence, closed mobile
   defects, reproducible USB onboarding and pricing/PDF customization contracts.
 - Pinned both CI workflow copies to the submitted mobile handoff commit.
-- Preserved published source-release tags; this follow-up requires paired review.
+- Preserved published source-release tags; the follow-up passed paired review and
+  exact-main CI.
 
 ## 0.2.2-demo — source-only prerelease (2026-09-18)
 

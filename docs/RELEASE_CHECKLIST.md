@@ -17,6 +17,11 @@
       distribution, enabled telemetry, retention/privacy, printing, sensors,
       Realtime, payments and unsupported integrations remain separate gates.
 
+This closes the local source-demo handoff. The historical ordered work below is
+reconciled against the later Android, iPhone, contract, ownership and attribution
+evidence. Its remaining unchecked rows now describe production deployment or a
+future native-binary distribution, not unfinished `v0.2.2-demo` acceptance.
+
 ## v0.2.2-demo source-only prerelease — 2026-09-18
 
 - [x] Android-first source-demo acceptance summarized in
@@ -125,16 +130,22 @@ preserved below.
 - [x] Add failure-path tests and run authentication regression tests, typecheck,
       and lint.
 
-### 2. Dependency remediation — partial; navigation compatibility work remains
+### 2. Dependency remediation — completed for the source demo
 
 - [x] Triage the fresh npm audit: 9 high, 20 moderate, 0 critical findings.
 - [x] Apply reviewed Metro/PostCSS/UUID fixes, with no blind forced major SDK upgrade.
 - [x] Re-run audit, tests, typecheck, and Android JavaScript export. Distinguish
       build-tool findings from verified runtime exposure.
 - [x] Record remaining advisories and assess backend npm dependencies.
-- [ ] Resolve remaining URL-decoder/navigation advisory through a tested
-      compatibility change; 8 moderate / 0 high / 0 critical findings remain.
-- [ ] Assess container and Edge/native dependencies beyond npm.
+- [x] Resolve the URL-decoder/navigation advisory through a tested compatibility
+      adapter. Current mobile and backend audits report 0 vulnerabilities; malformed
+      URL and navigation regressions pass on both JavaScript and physical iPhone.
+- [x] Inventory container, Edge and native dependencies beyond npm for the
+      source-only distribution boundary. Container references and versioned URL
+      imports are recorded in source, and provenance/license locations are recorded in
+      `ATTRIBUTION_REVIEW.md` and `THIRD_PARTY_NOTICES.md`. Production image
+      vulnerability scanning, immutable-digest selection and compiled-artifact
+      review remain separate gates.
 - [x] Validate native builds after native dependency changes (see item 4).
       Android and the complete physical-iPhone source-demo evidence are recorded
       in the mobile `NATIVE_ACCEPTANCE.md`.
@@ -173,7 +184,7 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       `docs/NATIVE_ACCEPTANCE.md`; JavaScript export alone was not used as device
       evidence.
 
-### 5. Authorization and business-flow coverage — selected flows verified; broader acceptance open
+### 5. Authorization and business-flow coverage — source-demo scope completed
 
 - [x] GRN image upload/confirmation/deletion, anonymous/customer upload denial,
       and assigned-customer read visibility before/after confirmation/deletion.
@@ -192,21 +203,32 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       Verified in `tests/api-demo.mjs`: concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
       and the other fails with "Insufficient stock", leaving exact stock of 20; single oversell requests (999 items) rejected;
       malformed invoice data structures rejected; the dashboard returns a finite stock KPI
-      and the stock-aging response reports success. Expected financial totals are not asserted.
-- [x] Static name inventory: all 100 mobile RPC names, 8 table/view names and 10 Edge names
-      are present (0 missing). This is not signature or full runtime contract validation.
+      and the stock-aging response reports success. Later independent-value fixtures
+      close the financial assertions below.
+- [x] Static and live companion contract checks cover 94 RPC names and 129 typed
+      calls with 0 missing names or mismatches, including effective signatures and
+      grants against the running demo.
       `tests/auth_and_access.sql` enforces that anonymous function execution
       is restricted strictly to the 5 authentication endpoints (`send_otp`, `verify_otp_or_register`, `refresh_jwt_token`,
       `logout_session`, `check_session`).
 
-- [ ] Verify cross-customer access to another customer's confirmed Storage images,
-      dispatch-image/customer-image lifecycles and retention cleanup.
-- [ ] Test actual refresh-versus-logout races, changed roles during an active session,
-      retry/idempotency, payments, orders and recovery.
-- [ ] Assert invoice/pricing/tax calculations and reporting values against independently
-      specified expected results; review all RPC signatures, return shapes and grants.
+- [x] Verify cross-customer denial for confirmed Storage images and the source-demo
+      GRN/customer-image lifecycle. Live API coverage exercises stored bytes rather
+      than metadata alone; the physical iPhone run also passed capture, picker,
+      reopen and deletion with role boundaries intact.
+- [x] Test actual refresh-versus-logout races, active-session role changes,
+      retry/idempotency, cart/orders and interruption recovery. The paired API and
+      physical-iPhone matrices passed, including exactly-once retry outcomes and
+      definitive session revocation.
+- [x] Assert invoice/pricing/tax calculations and reporting values against
+      independently specified fixtures. The reviewed 950/48/998 backend fixture,
+      735-total physical-iPhone fixture, duration boundaries, stock reports and
+      effective RPC signature/grant checks pass.
+- [ ] Define and verify production retention/cleanup for GRN, dispatch and customer
+      images, and complete operator-specific payment, reconciliation, tax and billing
+      approval. These are production-policy gates, not source-demo defects.
 
-### 6. Distribution, privacy and rights — source/redaction checks done; approval and artifacts open
+### 6. Distribution, privacy and rights — source-only scope completed
 
 - [x] Run secret scanning on publishable source and Git history. Gitleaks reports
       no unreviewed findings after exact historical exceptions for reviewed demo
@@ -225,8 +247,10 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       before transmission. Documented retention window and cleanup policy in `docs/TELEMETRY_AND_PRIVACY.md`.
       Verified with 16 automated Jest tests in `src/config/__tests__/sentryConfig.test.ts`.
 
-- [ ] Obtain maintainer confirmation of ownership/redistribution rights and complete
-      bundled license texts/attributions where required; a notice list alone is not approval.
+- [x] Obtain scoped maintainer confirmation of ownership/redistribution rights and
+      reconcile required source-only license texts and attributions. The dated
+      attestation, tracked-material inventory and Apache-2.0 text are recorded in
+      `ATTRIBUTION_REVIEW.md`, `THIRD_PARTY_NOTICES.md` and `LICENSES/`.
 - [x] Inspect source trees/history at the published tags and verify no uploaded
       release attachments. Published releases contain GitHub-generated source only.
 - [ ] Review native artifacts for secrets/customer data before any future binary
@@ -245,11 +269,13 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       Clean-install-tested source pair: mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf`,
       backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`. Release tags must record
       exact final commits, not the moving label "current main".
-      Known limitations: one root moderate URL-decoder advisory (eight affected
-      packages); physical camera, deep-link, secure-storage/reboot and offline/retry
-      testing; unverified iOS build; broader business/privacy/rights review; and the
-      separate production gate. Barcode scanning and automatic SQLite sync are not
-      established features, and printer/sensor hardware remains unsupported.
+      At that 2026-09-13 checkpoint the known limitations were one root moderate
+      URL-decoder advisory (eight affected packages), pending physical camera,
+      deep-link, secure-storage/reboot and offline/retry testing, an unverified iOS
+      build, broader business/privacy/rights review and the separate production
+      gate. Later records above close the source-demo items. Barcode scanning and
+      automatic SQLite sync are not established features, and printer/sensor
+      hardware remains unsupported.
 - [x] Prepare an explicitly scoped demo/prerelease; do not repoint historical
       tags or claim production readiness.
       Both repositories define `main` as a verified local development and integration demo (`v0.2.0-demo checkpoint`).
@@ -271,9 +297,9 @@ Open-source availability does not imply safe production deployment. Before a
 production release, implement and test real SMS/operator onboarding without
 fixed-code fallback; TLS/CORS and service hardening; container/renderer isolation;
 backup restoration and startup-failure recovery; concurrency/scale behavior;
-monitoring, incident response and data retention. Provider choice, real-device
-access, legal ownership and maintainer-only GitHub settings need explicit human
-input or access where unavailable.
+monitoring, incident response and data retention. Provider choice, production
+credentials/domains, distribution accounts, operator policies and optional
+hardware need explicit human input or access where unavailable.
 
 ## Evidence log
 
@@ -293,12 +319,19 @@ input or access where unavailable.
   `34695665141`, backend run `34695668197`). Full Git-history scans pass with
   narrowly reviewed historical demo/synthetic-token exceptions. Mobile audit
   remains eight moderate / zero high / zero critical; backend npm audit is zero.
+- 2026-09-22: Reconciled the historical open rows against the final source-demo
+  evidence. Current npm audits are zero; physical Android and complete iPhone
+  acceptance, live companion signatures/grants, cross-customer storage access,
+  session races, orders/idempotency, independent invoice values and scoped
+  ownership/attribution are closed. Only the separately labeled production and
+  future-binary rows remain open.
 - 2026-09-12 follow-up: corrected earlier completion overstatements. Static inventory
   proves names, not all RPC signatures/results. Concurrent oversell and malformed
   invoices do not establish idempotency, payments/orders or invoice calculations.
   License summaries do not establish ownership approval, and documented telemetry
-  retention is not a deployed cleanup mechanism. Earlier entries below are historical;
-  the current unchecked items above are the authoritative remaining work.
+  retention is not a deployed cleanup mechanism. These statements were authoritative
+  at that checkpoint; the dated 2026-09-22 reconciliation above supersedes the
+  source-demo gaps while retaining the production limitations.
 - 2026-09-12 follow-up: fresh unauthenticated public clones passed backend install,
   all five migrations/full stack startup, API tests, byte-preserving setup rerun,
   data preservation and disposable SQL security tests. Mobile fresh install passed

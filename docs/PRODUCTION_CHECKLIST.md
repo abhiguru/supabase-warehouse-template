@@ -21,8 +21,12 @@ not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
 
 ## Data correctness and operations
 
-- [ ] Verify concurrent mutations, idempotency, prices/taxes/invoice calculations,
-  payments, orders, reconciliation, soft deletion and recovery with expected values.
+- [x] Verify the source-demo baseline for concurrent mutations, idempotency,
+  prices/taxes/invoice calculations and orders with independent expected values.
+  The API and physical-device evidence remains a fixture-level acceptance result.
+- [ ] Obtain operator approval for production prices, taxes and billing policy;
+  implement and verify payments, reconciliation, soft deletion and recovery with
+  production-specific expected values.
 - [ ] Restore backups into a separate isolated database and compare integrity;
   scheduling a backup alone is not a restore test.
 - [ ] Test startup failure, migration mismatch, service restart and recovery paths
@@ -40,12 +44,17 @@ not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
   CORS, request/body limits and an authenticated deployment's reverse proxy.
   **Do not tunnel or publicly expose the current fixed-OTP demo.**
 - [ ] Keep database, Studio and renderer off public interfaces.
-- [ ] Complete native Android/iOS and physical-device acceptance, app permissions,
-  privacy declarations and artifact/signing review using newly owned credentials.
+- [x] Complete local source-demo physical Android and iOS acceptance with fictional
+  data and development signing; see the mobile `docs/NATIVE_ACCEPTANCE.md`.
+- [ ] Complete production signing and App Store/TestFlight distribution review,
+  final app permissions/privacy declarations and native artifact inspection using
+  newly owned production credentials.
 - [ ] Verify printer/sensor/Realtime hardware and authorization before enabling
   optional features. Presence of an exported endpoint is not hardware acceptance.
-- [ ] Obtain ownership/redistribution approval and complete applicable license
-  notices; verify privacy/contact information and actual data collection.
+- [x] Record scoped ownership/redistribution confirmation and reconcile source-only
+  license notices in both repositories.
+- [ ] Recheck the exact third-party material bundled into production artifacts and
+  verify deployed privacy/contact information and actual data collection.
 
 The default demo uses API `127.0.0.1:18000`, Studio `127.0.0.1:54325`,
 database `127.0.0.1:15433`, and renderer `127.0.0.1:13100`.

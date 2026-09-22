@@ -52,9 +52,11 @@ integrations remain separate gates. Historical demo tags remain immutable.
 
 ## Decision
 
-Current main is a tested **local-demo checkpoint**, not a production release or
-complete native-app acceptance. The v0.1.0 tag remains an incomplete historical
-export. Production setup stays gated; only explicit `setup.sh --demo` is enabled.
+Current main is a tested **local-demo checkpoint** with completed source-demo
+physical Android and iPhone acceptance. It is not a production release or a
+production-signed/app-store distribution. The v0.1.0 tag remains an incomplete
+historical export. Production setup stays gated; only explicit
+`setup.sh --demo` is enabled.
 
 No original repository, service, data, or credential was changed.
 
