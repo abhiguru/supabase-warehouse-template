@@ -330,6 +330,11 @@ services:
       context: ./supavisor
     restart: unless-stopped
     profiles: ["pooler"]
+    # The upstream entrypoint requires this limit; Docker defaults vary by host.
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     ports:
       - "127.0.0.1:14001:4000"
       - "127.0.0.1:15432:5432"
@@ -341,6 +346,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # Migration, tenant initialization and server startup each boot the VM.
+      start_period: 60s
     depends_on:
       db:
         condition: service_healthy

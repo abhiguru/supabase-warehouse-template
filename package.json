@@ -25,7 +25,8 @@
     "check:contract": "node scripts/check-mobile-contract.mjs",
     "doctor": "node scripts/doctor.mjs",
     "test:pooler": "bash scripts/pooler-check.sh",
-    "test:studio": "bash scripts/studio-check.sh"
+    "test:studio": "bash scripts/studio-check.sh",
+    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "jose": "5.10.0",
