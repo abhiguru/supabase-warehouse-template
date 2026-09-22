@@ -131,3 +131,35 @@ inventory/SBOM tied to the published image and an applicable vulnerability
 assessment, or a separately reviewed reproducible source build with equivalent
 evidence. Do not fabricate scanner results or add dummy packages to manufacture
 a passing result. The earlier zero-finding count is explicitly corrected above.
+
+
+## Source dependency audit follow-up
+
+The image gate scans runtime packages at the fixed HIGH/CRITICAL threshold; it
+is not a complete audit of source/build dependencies or unfixed advisories.
+GitHub's manifest analysis exposed vulnerable metadata build/test tooling after
+the manifests were published. The follow-up updates compatible Vitest/Vite,
+Rollup, shell-quote, PostCSS, nanoid and glob dependencies. The previously tested
+PostgreSQL type definitions and type generator are pinned to preserve compilation
+and the original generated-type snapshots. No snapshot is rewritten to hide a
+behavior change. Storage's manifest now contains only the runtime dependencies
+used by its precompiled Node entrypoint, with current Fastify/protobuf fixes.
+
+`npm run check:container-dependencies` audits both complete tracked npm graphs in
+CI at HIGH/CRITICAL severity. Metadata passes that threshold with 20 moderate
+findings remaining; Storage reports zero findings. The metadata source passed all
+197 upstream tests on a fresh isolated fixture database, and the deployed
+Studio/API/image/PDF checks passed. Test databases must be recreated between full
+upstream runs: upstream fixtures retain a helper function after completion.
+
+The manifest inventory also reports an unfixed HIGH advisory
+`GHSA-jqcq-xjh3-6g23` for `github.com/jackc/pgproto3/v2` in the optional disabled
+Auth service, plus lower-severity upstream findings. These are not erased by
+`--ignore-unfixed`; an upstream fix or separately tested driver migration remains
+necessary. GoTrue is still disabled and production authentication is not accepted.
+
+The first GitHub integration runs failed during pooler startup although a fresh
+local database/pooler passed. The follow-up gives migration/tenant/server startup
+a 60-second health grace period, bounds probe connection time, and emits
+credential-redacted diagnostics on failure. CI confirmation remains required;
+local success alone does not close that failure.

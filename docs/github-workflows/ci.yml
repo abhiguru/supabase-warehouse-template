@@ -19,6 +19,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Container source dependency audit
+        run: npm run check:container-dependencies
       - run: docker compose --env-file .env.example -f docker/docker-compose.yml -f docker/docker-compose.override.yml config --quiet
       - name: Shell syntax
         run: |

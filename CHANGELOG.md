@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — source dependency audit and pooler diagnostics (2026-09-22)
+
+- Audit container npm source manifests in CI, including metadata build/test
+  tooling; update vulnerable dependencies while preserving generated-type output.
+- Remove unused Storage development scripts/dependencies from its runtime
+  manifest and apply compatible Fastify/protobuf patches.
+- Allow pooler initialization time, bound probe connections, and report redacted
+  failure diagnostics; cover credential-redaction regressions.
+- Explicitly retain moderate and unfixed upstream advisory boundaries.
+
 ## Unreleased — Studio and metadata security (2026-09-22)
 
 - Adopt the patched official September 21 Studio application and remove unused
