@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — setup failure diagnostics (2026-09-23)
+
+- On a failed health check, collect bounded, redacted gateway/function/REST logs
+  from ownership-validated containers. Preserve the failing exit status and all
+  readiness checks. This diagnoses post-merge CI bootstrap HTTP 500/502 failures;
+  it does not claim to fix their cause or change the completed iPhone evidence.
+
 ## Unreleased — physical-iPhone orders/cart evidence (2026-09-23)
 
 - Record the completed final merged-pair source-demo iPhone live-update matrix
