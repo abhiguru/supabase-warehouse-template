@@ -6,6 +6,15 @@ This record uses the nine-item follow-up numbering, which differs from the
 eleven local work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 Production remains gated; existing demo release tags are unchanged.
 
+The item 9 closure below applies to the explicitly tested merged pair only. A
+later gateway DNS fix in [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+passed an affected physical-iPhone retest at mobile `c943de56` / backend
+`53b983d` on 2026-09-23, with case limits in the
+[current readiness note](READINESS.md#later-gateway-regression--physical-retest-complete-ci-open).
+That PR's CI still fails its forced-IP regression, so the newer pair is not a
+green merged replacement. Do not carry the older physical pass to a different
+runtime implementation without affected-case testing.
+
 | # | Work | Available evidence / local work | What prevents final acceptance |
 |---|---|---|---|
 | 1 | Container vulnerabilities | All-profile scan; locally built Edge Runtime and Realtime apply Debian updates to digest-pinned upstream applications. CUPS was already patched. Grafana's local OS-only rebuild removes two Alpine OpenSSL findings while preserving all signed plugin files. Scan reports must exist, match the image, and contain valid results. | The current inventory has 17/19 valid passing reports. The patched Grafana still has 102 HIGH findings in its core and signed plugins; PostgREST lacks package scan results and fails evidence validation. Its image binary now has verified publisher-release provenance, but this does not supply a vulnerability-assessable component inventory. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). Grafana plugin signatures must remain enforced; await a compatible patched publisher release/signed artifacts. PostgREST needs trusted package/SBOM evidence tied to its static image. Local core/OS patches alone do not close these gates. The database major version is preserved. Source audits additionally retain an unfixed HIGH pgproto3/v2 advisory in disabled Auth and lower-severity upstream findings; see the security record. |

@@ -1,5 +1,53 @@
 # Readiness
 
+## Later gateway regression — physical retest complete, CI open
+
+Post-closure main CI [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994)
+failed setup-rerun bootstrap with HTTP 502; one retry returned HTTP 500 during
+fresh setup. [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+adds redacted diagnostics and fixes the reproduced 502 cause: Kong retained an
+upstream's old IP for an hour after container replacement. A controlled local
+reproduction returned direct HTTP 200 but gateway HTTP 502 before the fix; the
+forced-IP-change regression, setup rerun, API/gateway smoke and Realtime checks
+passed after the DNS-cache fix. The separate HTTP 500 cause is not established.
+
+The affected physical-iPhone retest completed on 2026-09-23: iPhone 15/iOS
+26.6.2, Xcode 26.3, mobile runtime
+`c943de56b460852e8bca71fbe481b40d0c5265e6`, backend runtime
+`53b983d3916dd44ec22c6ac2db05136ca81f3875`, local build `20260923.3`.
+Customer Orders/cart, Realtime and USB reconnect, manual fallback, cold
+restoration, admin Queue and logout isolation passed as recorded in the
+[mobile case table](https://github.com/abhiguru/rn-warehouse-template/blob/docs/iphone-gateway-retest-handoff/docs/NATIVE_ACCEPTANCE.md#later-gateway-fix-iphone-retest--2026-09-23-pre-merge-pair).
+This is a pre-merge pair. The earlier full matrix below remains evidence for its
+own exact merged pair. Both [runtime-head CI 35859569984](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35859569984)
+and [documentation-head CI 35860093972](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35860093972)
+failed `Isolated demo API` → `Gateway upstream IP replacement` despite the
+local forced-IP regression passing. PR #42 remains open. Diagnose the CI-only
+failure, obtain reviewed green PR and exact-main CI, and rerun any device case
+affected by a runtime change before declaring a newer final pair. The separate
+HTTP 500 cause is not established. Owned phone-test services and fixtures were
+stopped/removed; unrelated services and volumes were preserved. The user
+requested a Git-pushed handoff after this physical test. No release was created.
+
+Follow-up diagnosis on 2026-09-23: run
+[35863552478](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35863552478)
+failed before probing Kong because GitHub's Docker daemon rejected the test
+holder's explicit `--ip` on the Compose network without a user-configured
+subnet. A fresh GitHub clone on Linux also exposed an inherited Compose project
+label on that holder, which made the ownership guard reject the later probe.
+The CI demo now adds an explicit subnet only to its working-copy Compose
+override, allowing the regression to reserve the old IP on GitHub's daemon.
+The holder gets its own project label, and failure cleanup reconnects the owned
+functions service even if holder removal fails. A fresh-clone setup and forced
+IP change passed locally with the short TTLs on the revised CI network. An
+old-TTL control on a different Linux auto-subnet also passed, so that environment
+did not reproduce the earlier Mac stale-cache failure; the configuration test
+still requires the shortened TTLs. CI on the revised head must pass before PR
+#42 can merge.
+These harness and CI changes do not alter backend runtime behavior from the
+physically tested `53b983d` commit. The separate HTTP 500 cause remains
+unestablished.
+
 Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Active workflows and documented

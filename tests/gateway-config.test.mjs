@@ -12,3 +12,9 @@ test('gateway uses an exact configured browser origin and payload limits', () =>
   assert.ok(compose.includes('request-size-limiting'));
   assert.ok(compose.includes('CORS_ALLOWED_ORIGIN:'));
 });
+
+test('gateway refreshes replaced Compose upstream addresses within readiness budget', () => {
+  assert.ok(compose.includes('KONG_DNS_VALID_TTL: "5"'));
+  assert.ok(compose.includes('KONG_DNS_STALE_TTL: "1"'));
+  assert.ok(compose.includes('KONG_DNS_NOT_FOUND_TTL: "1"'));
+});

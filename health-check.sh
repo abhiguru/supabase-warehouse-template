@@ -29,4 +29,7 @@ for (const [name,url,headers] of [
 }
 JS
 } | compose exec -T studio node --input-type=module || failed=1
+if [[ "$failed" != 0 ]]; then
+  node "$ROOT/scripts/service-diagnostics.mjs" kong functions rest
+fi
 exit "$failed"

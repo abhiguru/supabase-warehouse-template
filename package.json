@@ -15,6 +15,7 @@
     "db:backup": "bash scripts/backup.sh",
     "db:verify-restore": "bash scripts/verify-restore.sh",
     "test:gateway": "node scripts/gateway-smoke.mjs",
+    "test:gateway-dns": "bash scripts/gateway-dns-check.sh",
     "test:monitoring": "bash scripts/monitoring-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
     "test:cups": "bash scripts/cups-check.sh",
