@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — iPhone USB Realtime companion (2026-09-23)
+
+- Pin both companion checks to the mobile USB WebSocket relay fix and its
+  regression tests. Active and documented workflows remain identical.
+- This changes no backend runtime and does not by itself close physical-device
+  acceptance or any production/security gate.
+- Make the pooler acceptance probe wait for a successful authenticated SQL query
+  after HTTP health: CI observed a healthy endpoint before port 5432 accepted
+  connections. Both pool modes still require SELECT 1 and invalid-password
+  rejection. Twelve bounded attempts fail closed; regression tests cover startup
+  recovery, permanent failures, empty results and wrong results.
+
 ## Unreleased — Grafana OS patch and PostgREST provenance (2026-09-23)
 
 - Rebuild digest-pinned Grafana 13.2.2 with Alpine OpenSSL 3.5.8 while preserving
