@@ -6,6 +6,11 @@
   regression tests. Active and documented workflows remain identical.
 - This changes no backend runtime and does not by itself close physical-device
   acceptance or any production/security gate.
+- Make the pooler acceptance probe wait for a successful authenticated SQL query
+  after HTTP health: CI observed a healthy endpoint before port 5432 accepted
+  connections. Both pool modes still require SELECT 1 and invalid-password
+  rejection. Twelve bounded attempts fail closed; regression tests cover startup
+  recovery, permanent failures, empty results and wrong results.
 
 ## Unreleased — Grafana OS patch and PostgREST provenance (2026-09-23)
 
