@@ -99,6 +99,17 @@ jobs:
         working-directory: backend
       - run: npm ci
         working-directory: mobile
+      - name: Configure isolated gateway regression network
+        run: |
+          cat >> docker/docker-compose.override.yml <<'YAML'
+
+          networks:
+            default:
+              ipam:
+                config:
+                  - subnet: 10.233.245.0/24
+          YAML
+        working-directory: backend
       - name: Fresh loopback demo
         run: bash setup.sh --demo
         working-directory: backend

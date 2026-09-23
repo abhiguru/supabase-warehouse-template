@@ -17,8 +17,10 @@ holder_id=''
 disconnected=false
 cleanup() {
   # The holder ID came from this invocation only. Never remove by a broad label.
-  if [[ "$holder_id" =~ ^[a-f0-9]{12,64}$ ]]; then docker rm -f "$holder_id" >/dev/null; fi
-  if [[ "$disconnected" == true ]]; then docker network connect --alias functions "$network" "$id"; fi
+  local result=0
+  if [[ "$holder_id" =~ ^[a-f0-9]{12,64}$ ]]; then docker rm -f "$holder_id" >/dev/null || result=1; fi
+  if [[ "$disconnected" == true ]]; then docker network connect --alias functions "$network" "$id" || result=1; fi
+  return "$result"
 }
 trap cleanup EXIT
 probe() {
@@ -31,8 +33,12 @@ probe() {
 probe # warms the gateway cache and checks the direct upstream
 docker network disconnect "$network" "$id"
 disconnected=true
-holder_id=$(docker run -d --name "$holder_name" --label "warehouse.test.owner=$project" \
+# The CI demo configures an isolated subnet so Docker can reserve this exact IP.
+# Holding the old address proves the reconnected service has to move.
+holder_id=$(docker create --name "$holder_name" --label "warehouse.test.owner=$project" \
+  --label "com.docker.compose.project=warehouse-dns-holder-$project" \
   --network "$network" --ip "$old_ip" --entrypoint /bin/sh "$image" -c 'sleep 300')
+docker start "$holder_id" >/dev/null
 docker network connect --alias functions "$network" "$id"
 disconnected=false
 new_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$id")

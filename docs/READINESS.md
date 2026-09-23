@@ -29,6 +29,25 @@ HTTP 500 cause is not established. Owned phone-test services and fixtures were
 stopped/removed; unrelated services and volumes were preserved. The user
 requested a Git-pushed handoff after this physical test. No release was created.
 
+Follow-up diagnosis on 2026-09-23: run
+[35863552478](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35863552478)
+failed before probing Kong because GitHub's Docker daemon rejected the test
+holder's explicit `--ip` on the Compose network without a user-configured
+subnet. A fresh GitHub clone on Linux also exposed an inherited Compose project
+label on that holder, which made the ownership guard reject the later probe.
+The CI demo now adds an explicit subnet only to its working-copy Compose
+override, allowing the regression to reserve the old IP on GitHub's daemon.
+The holder gets its own project label, and failure cleanup reconnects the owned
+functions service even if holder removal fails. A fresh-clone setup and forced
+IP change passed locally with the short TTLs on the revised CI network. An
+old-TTL control on a different Linux auto-subnet also passed, so that environment
+did not reproduce the earlier Mac stale-cache failure; the configuration test
+still requires the shortened TTLs. CI on the revised head must pass before PR
+#42 can merge.
+These harness and CI changes do not alter backend runtime behavior from the
+physically tested `53b983d` commit. The separate HTTP 500 cause remains
+unestablished.
+
 Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Active workflows and documented
