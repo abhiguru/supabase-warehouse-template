@@ -256,7 +256,10 @@ services:
           memory: 128M
 
   grafana:
-    image: grafana/grafana:13.2.2
+    image: warehouse-grafana:local
+    build:
+      context: .
+      dockerfile: grafana/Dockerfile
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]

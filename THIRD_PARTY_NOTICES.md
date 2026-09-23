@@ -36,6 +36,13 @@ are copied from the upstream versions listed in
 security updates. Recipe URLs and SHA-256 checksums identify the source archives.
 No third-party executable or source archive is committed or published here.
 
+The Grafana OS-only recipe uses the publisher's digest-pinned 13.2.2 image and
+copies no application or plugin files into the source repository. Its bundled
+plugin files, manifests and publisher notices remain unchanged in the rebuilt
+image. The PostgREST image remains the publisher's static v14.17 image; its
+verified release-binary identity and unresolved component inventory are
+recorded in [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md).
+
 Upstream license files were read from those source archives (Storage's license
 from its matching release tag). Their complete texts and available NOTICE files
 are retained under `LICENSES/{alertmanager,node-exporter,postgres-exporter,
