@@ -2,10 +2,15 @@
 
 ## Unreleased — setup failure diagnostics (2026-09-23)
 
+- Reduce Kong's Compose DNS cache to five seconds (one second stale/negative)
+  after reproducing direct bootstrap HTTP200 versus gateway HTTP502 following
+  a functions-container IP change. Add an owned-network regression that forces
+  an upstream address change and requires gateway recovery without restarting it.
 - On a failed health check, collect bounded, redacted gateway/function/REST logs
   from ownership-validated containers. Preserve the failing exit status and all
   readiness checks. This diagnoses post-merge CI bootstrap HTTP 500/502 failures;
-  it does not claim to fix their cause or change the completed iPhone evidence.
+  the IP-cache fix addresses the reproduced502 cause, not the separate500 attempt.
+  The earlier completed iPhone evidence is not a device run of this later change.
 
 ## Unreleased — physical-iPhone orders/cart evidence (2026-09-23)
 

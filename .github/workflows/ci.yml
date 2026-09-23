@@ -115,6 +115,9 @@ jobs:
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
         working-directory: backend
+      - name: Gateway upstream IP replacement
+        run: npm run test:gateway-dns
+        working-directory: backend
       - name: Authenticated Realtime
         run: npm run test:realtime
         working-directory: backend

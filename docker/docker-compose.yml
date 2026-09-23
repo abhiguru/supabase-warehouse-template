@@ -66,8 +66,11 @@ services:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
       KONG_DNS_ORDER: "LAST,A"
-      KONG_DNS_VALID_TTL: "3600"
-      KONG_DNS_STALE_TTL: "3600"
+      # Compose can replace upstream IPs during setup/recovery. Do not retain
+      # a dead address for an hour after a healthy replacement is available.
+      KONG_DNS_VALID_TTL: "5"
+      KONG_DNS_STALE_TTL: "1"
+      KONG_DNS_NOT_FOUND_TTL: "1"
       KONG_DNS_ERROR_TTL: "1"
       KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
       KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
