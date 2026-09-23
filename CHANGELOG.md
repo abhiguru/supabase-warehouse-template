@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — gateway merge and evidence closure (2026-09-23)
+
+- Record reviewed PR #42 and mobile PR #28 merges with passing PR and exact-main
+  CI. Preserve the earlier full iPhone matrix and later gateway-affected retest
+  at their exact tested commits; the merged source pair is runtime-equivalent,
+  without claiming a new physical-device run.
+- Close the stale gateway CI and iPhone retest handoff claims. The CI-only subnet,
+  isolated holder label and cleanup fix precede the green regression; the Linux
+  old-TTL control did not reproduce the Mac stale cache. The separate setup HTTP
+  500 cause remains unknown, and production operator and container security
+  gates remain open. No runtime, workflow, companion pin, tag or release changes.
+
 ## Unreleased — setup failure diagnostics (2026-09-23)
 
 - Reduce Kong's Compose DNS cache to five seconds (one second stale/negative)

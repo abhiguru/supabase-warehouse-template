@@ -26,8 +26,10 @@ branches for contribution work.
 The public acceptance summary is in
 [SOURCE_DEMO_ACCEPTANCE.md](docs/SOURCE_DEMO_ACCEPTANCE.md). Ownership and
 third-party review evidence is in
-[ATTRIBUTION_REVIEW.md](docs/ATTRIBUTION_REVIEW.md). Physical hardware, iOS,
-production operations, signed/native distribution, printing, sensors, and
+[ATTRIBUTION_REVIEW.md](docs/ATTRIBUTION_REVIEW.md). The source-demo iPhone
+orders/cart matrix and later gateway-affected retest are complete; the reviewed
+merged pair and exact-main CI are recorded in [READINESS.md](docs/READINESS.md).
+Production operations, signed/native distribution, printing, sensors, and
 unsupported integrations remain separate gates.
 
 An open-source warehouse backend, paired with
@@ -36,8 +38,8 @@ An open-source warehouse backend, paired with
 The current main branch supports a **local development demo**. Fresh schema
 restore, custom login, customer isolation, GRN, dispatch, invoice saving, and
 four PDF/download flows have passed integration tests. This is **not a
-production-ready release**. Production SMS, optional printing, native-device
-acceptance, and broader workflow/security review remain open. The older
+production-ready release**. Production SMS, optional printing, other native
+hardware acceptance, and broader workflow/security review remain open. The older
 v0.1.0 tag contains an incomplete export. For the reproducible release checkpoint,
 use **`v0.2.2-demo` in both repositories**. See the
 [demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.2-demo)
@@ -93,7 +95,9 @@ For Android connected to the backend host, run `adb reverse tcp:18000 tcp:18000`
 so the device can use the same localhost origin. If Metro runs on that host,
 also use `adb reverse tcp:8081 tcp:8081`. iOS simulator access assumes the backend
 is reachable on the Mac; a remote backend requires an appropriate local tunnel.
-Native app builds and physical-device flows are still acceptance tasks.
+Recorded native-build and physical-device acceptance is scoped to the exact
+pairs in [READINESS.md](docs/READINESS.md); production signing and distribution
+remain separate gates.
 Fresh public-clone setup and safe reruns are documented in
 [CLEAN_INSTALL.md](docs/CLEAN_INSTALL.md), including isolated ports for a second checkout.
 

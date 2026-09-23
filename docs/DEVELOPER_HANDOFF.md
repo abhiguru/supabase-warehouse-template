@@ -1,12 +1,21 @@
 # Developer handoff — v0.2.2-demo
 
-Current 2026-09-22 follow-up: the default demo starts authenticated Realtime for
-mobile orders/cart updates. Both companion jobs pin mobile
-`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. See
+Current 2026-09-23 checkpoint: the default demo starts authenticated Realtime
+for mobile orders/cart updates. Both companion jobs pin mobile
+`c127ef622d84f50ba15eb2fb41609e703b82bfcc`. See
 [container patch evidence](CONTAINER_SECURITY.md) and
 [remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
-Existing release tags and historical native acceptance are unchanged; the new
-live-update feature still needs its physical-iPhone regression on the Mac.
+The complete orders/cart physical-iPhone matrix passed at mobile
+`c943de56b460852e8bca71fbe481b40d0c5265e6` / backend
+`8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`, and the later gateway-affected
+cases passed at the same mobile commit / backend
+`53b983d3916dd44ec22c6ac2db05136ca81f3875`. Backend PR #42 merged as
+`f96f49f94e61bd7a57d7758c93b07c1324728d89` and mobile PR #28 merged as
+`f818c325b4d314b308187e3d12fd8d2e16d59db1`, with reviewed PR and
+exact-main CI passing for both. The merged pair is runtime-equivalent to the
+affected phone-tested pair; no phone ran the merge commits. See
+[READINESS.md](READINESS.md#gateway-regression--reviewed-merges-and-ci-complete-2026-09-23)
+for exact CI links and evidence limits. Existing release tags remain unchanged.
 
 
 ## Current continuation point — local readiness 1–11
