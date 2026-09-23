@@ -1,5 +1,25 @@
 # Readiness
 
+## Later gateway regression — physical retest pending
+
+Post-closure main CI [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994)
+failed setup-rerun bootstrap with HTTP 502; one retry returned HTTP 500 during
+fresh setup. [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+adds redacted diagnostics and fixes the reproduced 502 cause: Kong retained an
+upstream's old IP for an hour after container replacement. A controlled local
+reproduction returned direct HTTP 200 but gateway HTTP 502 before the fix; the
+forced-IP-change regression, setup rerun, API/gateway smoke and Realtime checks
+passed after the DNS-cache fix. The separate HTTP 500 cause is not established.
+
+The user reports the physical iPhone is unavailable. The earlier full matrix
+below remains evidence for its exact pair, **not** for this later gateway change.
+Final acceptance of the newer pair requires successful PR/exact-main CI and an
+affected physical-iPhone bootstrap/login, orders/cart live-update and reconnect
+retest. Reconnect and unlock the test iPhone to remove that external dependency.
+CI/merge SHAs and results belong in PR #42 rather than in the commits they name.
+Owned diagnostic services were stopped again; unrelated services and volumes
+were preserved. No new continuation handoff or release was created.
+
 Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Active workflows and documented
