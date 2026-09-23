@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — remaining handoff checklist (2026-09-24)
+
+- Record the [backend production checklist](docs/PRODUCTION_DEPENDENCIES.md#remaining-production-work)
+  with owner inputs, next actions and acceptance evidence. The 17/19 image
+  inventory and Grafana 102 HIGH count remain dated evidence, not a new scan.
+  Track the unexplained historical CI setup HTTP 500 separately from the
+  closed gateway iPhone retest and source-demo orders/cart acceptance.
+
 ## Unreleased — gateway merge and evidence closure (2026-09-23)
 
 - Record reviewed PR #42 and mobile PR #28 merges with passing PR and exact-main

@@ -1,10 +1,12 @@
 # Developer handoff — v0.2.2-demo
 
-Current 2026-09-23 checkpoint: the default demo starts authenticated Realtime
+Current 2026-09-24 handoff checkpoint: the default demo starts authenticated Realtime
 for mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. See
 [container patch evidence](CONTAINER_SECURITY.md) and
-[remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
+[remaining production work](PRODUCTION_DEPENDENCIES.md#remaining-production-work)
+for the owned-input and acceptance checklist. The historical CI fresh-setup
+HTTP 500 still needs diagnosis; it was not observed on the phone.
 The complete orders/cart physical-iPhone matrix passed at mobile
 `c943de56b460852e8bca71fbe481b40d0c5265e6` / backend
 `8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`, and the later gateway-affected
@@ -26,11 +28,14 @@ gateway, Realtime, retention preview, load, monitoring, backup/isolated restore,
 and owned-service recovery in addition to the existing migration, API, contract,
 and secret checks. The companion mobile CI builds and audits a debug APK.
 
-Do not describe this as production acceptance. Container scanning remains a
-release blocker because current upstream images contain fixed HIGH/CRITICAL
-findings. External SMS, public DNS/TLS, alert delivery, operator policy/SLOs,
-release signing/stores, payments, telemetry, and physical integrations remain
-open. Existing source-demo tags are immutable.
+Do not describe this as production acceptance. The dated image inventory has
+17/19 valid passing reports; Grafana findings and PostgREST scan coverage keep
+the gate open. External SMS, public DNS/TLS, alert delivery, operator
+policy/SLOs, and release signing/stores remain open. Payments, enabled
+telemetry delivery, and printer/sensor hardware need acceptance if included
+in the operator's scope. The [checklist](PRODUCTION_DEPENDENCIES.md#remaining-production-work)
+records the next owner input and acceptance evidence for each. Existing
+source-demo tags are immutable.
 
 ## Final post-release closure — 2026-09-22
 

@@ -2,6 +2,12 @@
 
 ## Gateway regression — reviewed merges and CI complete (2026-09-23)
 
+For the 2026-09-24 open-task inventory, see
+[remaining production work](PRODUCTION_DEPENDENCIES.md#remaining-production-work).
+The separate HTTP 500 below was a historical backend-main CI fresh-loopback
+setup/config bootstrap observation, not a physical-phone observation or a
+reopened source-demo gate.
+
 Post-closure main CI [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994)
 failed setup-rerun bootstrap with HTTP 502; one retry returned HTTP 500 during
 fresh setup. Merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
@@ -65,7 +71,8 @@ mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Active workflows and documented
 copies match; documentation-only successors do not require new pins. See
 [container patch evidence](CONTAINER_SECURITY.md) and
-[remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
+[remaining production work](PRODUCTION_DEPENDENCIES.md#remaining-production-work)
+for current closure status.
 Existing release tags and historical native acceptance are unchanged. Physical
 iPhone orders/cart acceptance passed on 2026-09-23 at mobile
 `c943de56b460852e8bca71fbe481b40d0c5265e6` / backend

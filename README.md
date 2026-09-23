@@ -9,11 +9,17 @@ implemented and reproducible. See
 [LOCAL_PRODUCTION_READINESS.md](docs/LOCAL_PRODUCTION_READINESS.md) for the
 eleven-area evidence and commands.
 
-Production remains gated by unresolved fixed HIGH/CRITICAL findings in current
-upstream container images, plus target-operator and external-service acceptance:
-real SMS, public DNS/TLS, external alert delivery, production data/retention and
-capacity policy, final mobile signing/stores, payments, telemetry, and hardware.
+Production remains gated by the dated all-profile image scan: Grafana retained
+HIGH findings and PostgREST lacked assessable package results. Target-operator
+and external-service acceptance also remains open: real SMS, public DNS/TLS,
+external alert delivery, production data/retention and capacity policy, and
+final mobile signing/stores. Payments, enabled telemetry delivery, and
+printer/sensor hardware need acceptance if included in the operator's scope.
 The local fixed-OTP demo must remain on loopback.
+See the [remaining production work checklist](docs/PRODUCTION_DEPENDENCIES.md#remaining-production-work)
+for the required inputs, next actions and acceptance evidence. The historical
+CI setup HTTP 500 follow-up is tracked there separately from the completed
+source-demo phone acceptance.
 
 ## Current source-demo release
 
