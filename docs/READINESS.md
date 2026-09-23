@@ -1,6 +1,6 @@
 # Readiness
 
-## Later gateway regression — physical retest pending
+## Later gateway regression — physical retest complete, CI open
 
 Post-closure main CI [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994)
 failed setup-rerun bootstrap with HTTP 502; one retry returned HTTP 500 during
@@ -11,14 +11,23 @@ reproduction returned direct HTTP 200 but gateway HTTP 502 before the fix; the
 forced-IP-change regression, setup rerun, API/gateway smoke and Realtime checks
 passed after the DNS-cache fix. The separate HTTP 500 cause is not established.
 
-The user reports the physical iPhone is unavailable. The earlier full matrix
-below remains evidence for its exact pair, **not** for this later gateway change.
-Final acceptance of the newer pair requires successful PR/exact-main CI and an
-affected physical-iPhone bootstrap/login, orders/cart live-update and reconnect
-retest. Reconnect and unlock the test iPhone to remove that external dependency.
-CI/merge SHAs and results belong in PR #42 rather than in the commits they name.
-Owned diagnostic services were stopped again; unrelated services and volumes
-were preserved. No new continuation handoff or release was created.
+The affected physical-iPhone retest completed on 2026-09-23: iPhone 15/iOS
+26.6.2, Xcode 26.3, mobile runtime
+`c943de56b460852e8bca71fbe481b40d0c5265e6`, backend runtime
+`53b983d3916dd44ec22c6ac2db05136ca81f3875`, local build `20260923.3`.
+Customer Orders/cart, Realtime and USB reconnect, manual fallback, cold
+restoration, admin Queue and logout isolation passed as recorded in the
+[mobile case table](https://github.com/abhiguru/rn-warehouse-template/blob/docs/iphone-gateway-retest-handoff/docs/NATIVE_ACCEPTANCE.md#later-gateway-fix-iphone-retest--2026-09-23-pre-merge-pair).
+This is a pre-merge pair. The earlier full matrix below remains evidence for its
+own exact merged pair. Both [runtime-head CI 35859569984](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35859569984)
+and [documentation-head CI 35860093972](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35860093972)
+failed `Isolated demo API` → `Gateway upstream IP replacement` despite the
+local forced-IP regression passing. PR #42 remains open. Diagnose the CI-only
+failure, obtain reviewed green PR and exact-main CI, and rerun any device case
+affected by a runtime change before declaring a newer final pair. The separate
+HTTP 500 cause is not established. Owned phone-test services and fixtures were
+stopped/removed; unrelated services and volumes were preserved. The user
+requested a Git-pushed handoff after this physical test. No release was created.
 
 Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile

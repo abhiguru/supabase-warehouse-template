@@ -6,11 +6,14 @@ This record uses the nine-item follow-up numbering, which differs from the
 eleven local work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 Production remains gated; existing demo release tags are unchanged.
 
-The item 9 closure below applies to the explicitly tested pair only. A later
-gateway DNS fix in [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
-requires an affected physical-iPhone retest, currently blocked because the phone
-is unavailable. See [the current readiness note](READINESS.md#later-gateway-regression--physical-retest-pending).
-Do not carry the older physical pass forward to that newer pair without testing.
+The item 9 closure below applies to the explicitly tested merged pair only. A
+later gateway DNS fix in [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+passed an affected physical-iPhone retest at mobile `c943de56` / backend
+`53b983d` on 2026-09-23, with case limits in the
+[current readiness note](READINESS.md#later-gateway-regression--physical-retest-complete-ci-open).
+That PR's CI still fails its forced-IP regression, so the newer pair is not a
+green merged replacement. Do not carry the older physical pass to a different
+runtime implementation without affected-case testing.
 
 | # | Work | Available evidence / local work | What prevents final acceptance |
 |---|---|---|---|
