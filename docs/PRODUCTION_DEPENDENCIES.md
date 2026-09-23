@@ -6,14 +6,18 @@ This record uses the nine-item follow-up numbering, which differs from the
 eleven local work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 Production remains gated; existing demo release tags are unchanged.
 
-The item 9 closure below applies to the explicitly tested merged pair only. A
-later gateway DNS fix in [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
-passed an affected physical-iPhone retest at mobile `c943de56` / backend
-`53b983d` on 2026-09-23, with case limits in the
-[current readiness note](READINESS.md#later-gateway-regression--physical-retest-complete-ci-open).
-That PR's CI still fails its forced-IP regression, so the newer pair is not a
-green merged replacement. Do not carry the older physical pass to a different
-runtime implementation without affected-case testing.
+The item 9 closure below applies to its explicitly tested merged pair. A later
+gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+passed an affected physical-iPhone retest at mobile
+`c943de56b460852e8bca71fbe481b40d0c5265e6` / backend
+`53b983d3916dd44ec22c6ac2db05136ca81f3875` on 2026-09-23. Reviewed PR CI
+and exact-main CI subsequently passed
+for backend `f96f49f94e61bd7a57d7758c93b07c1324728d89` and mobile
+`f818c325b4d314b308187e3d12fd8d2e16d59db1`. The later merge pair is
+runtime-equivalent to the affected phone-tested pair; the phone did not run
+those merge commits. See the [current readiness note](READINESS.md#gateway-regression--reviewed-merges-and-ci-complete-2026-09-23)
+for exact runs and the separate historical HTTP 500 limit. Future runtime
+changes need affected-case testing before inheriting physical acceptance.
 
 | # | Work | Available evidence / local work | What prevents final acceptance |
 |---|---|---|---|

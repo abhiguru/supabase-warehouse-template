@@ -1,10 +1,10 @@
 # Readiness
 
-## Later gateway regression — physical retest complete, CI open
+## Gateway regression — reviewed merges and CI complete (2026-09-23)
 
 Post-closure main CI [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994)
 failed setup-rerun bootstrap with HTTP 502; one retry returned HTTP 500 during
-fresh setup. [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
+fresh setup. Merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
 adds redacted diagnostics and fixes the reproduced 502 cause: Kong retained an
 upstream's old IP for an hour after container replacement. A controlled local
 reproduction returned direct HTTP 200 but gateway HTTP 502 before the fix; the
@@ -17,17 +17,15 @@ The affected physical-iPhone retest completed on 2026-09-23: iPhone 15/iOS
 `53b983d3916dd44ec22c6ac2db05136ca81f3875`, local build `20260923.3`.
 Customer Orders/cart, Realtime and USB reconnect, manual fallback, cold
 restoration, admin Queue and logout isolation passed as recorded in the
-[mobile case table](https://github.com/abhiguru/rn-warehouse-template/blob/docs/iphone-gateway-retest-handoff/docs/NATIVE_ACCEPTANCE.md#later-gateway-fix-iphone-retest--2026-09-23-pre-merge-pair).
-This is a pre-merge pair. The earlier full matrix below remains evidence for its
-own exact merged pair. Both [runtime-head CI 35859569984](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35859569984)
+[mobile case table](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/NATIVE_ACCEPTANCE.md#later-gateway-fix-iphone-retest--2026-09-23-pre-merge-pair).
+This was the affected pre-merge runtime pair; the phone did not run either later
+merge commit. The earlier full matrix below remains evidence for its own exact
+merged pair. Both [runtime-head CI 35859569984](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35859569984)
 and [documentation-head CI 35860093972](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35860093972)
 failed `Isolated demo API` → `Gateway upstream IP replacement` despite the
-local forced-IP regression passing. PR #42 remains open. Diagnose the CI-only
-failure, obtain reviewed green PR and exact-main CI, and rerun any device case
-affected by a runtime change before declaring a newer final pair. The separate
-HTTP 500 cause is not established. Owned phone-test services and fixtures were
-stopped/removed; unrelated services and volumes were preserved. The user
-requested a Git-pushed handoff after this physical test. No release was created.
+local forced-IP regression passing. Those failures are historical. Owned
+phone-test services and fixtures were stopped/removed; unrelated services and
+volumes were preserved. No release was created.
 
 Follow-up diagnosis on 2026-09-23: run
 [35863552478](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35863552478)
@@ -40,13 +38,27 @@ override, allowing the regression to reserve the old IP on GitHub's daemon.
 The holder gets its own project label, and failure cleanup reconnects the owned
 functions service even if holder removal fails. A fresh-clone setup and forced
 IP change passed locally with the short TTLs on the revised CI network. An
-old-TTL control on a different Linux auto-subnet also passed, so that environment
-did not reproduce the earlier Mac stale-cache failure; the configuration test
-still requires the shortened TTLs. CI on the revised head must pass before PR
-#42 can merge.
-These harness and CI changes do not alter backend runtime behavior from the
-physically tested `53b983d` commit. The separate HTTP 500 cause remains
-unestablished.
+old-TTL control on a different Linux auto-subnet also passed. That control is
+only IP-change recovery smoke: this Linux environment did not reproduce the
+earlier Mac stale-cache failure, so it cannot independently demonstrate the
+shortened TTLs are required. The Mac failure-before/fix-after evidence remains
+separately attributed. These harness and CI changes do not alter backend
+runtime behavior from the physically tested `53b983d` commit. The separate
+HTTP 500 cause remains unestablished.
+
+The reviewed backend head `3cde600933c6f3f5b0a257432987305b9dc06d4b`
+passed [PR CI 35866264363](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35866264363).
+PR #42 merged as backend `f96f49f94e61bd7a57d7758c93b07c1324728d89`,
+and [exact-main CI 35868837880](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35868837880)
+passed all five jobs, including gateway replacement, Realtime, backup/restore,
+owned-service recovery, and setup rerun. Mobile [PR #28](https://github.com/abhiguru/rn-warehouse-template/pull/28)
+merged as `f818c325b4d314b308187e3d12fd8d2e16d59db1`, and its
+[exact-main CI 35866779110](https://github.com/abhiguru/rn-warehouse-template/actions/runs/35866779110)
+passed all four jobs. Git comparison shows the mobile merge adds documentation
+only after the phone-tested runtime; the backend merge adds documentation, CI,
+and the standalone gateway test harness only after its phone-tested runtime.
+This supports the merged source pair as a runtime-equivalent handoff checkpoint,
+without claiming a later physical-device run. Existing demo tags remain unchanged.
 
 Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile
