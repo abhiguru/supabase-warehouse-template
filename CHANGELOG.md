@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — physical-iPhone orders/cart evidence (2026-09-23)
+
+- Record the completed final merged-pair source-demo iPhone live-update matrix
+  and owned cleanup. Close dependency item 9 only; production operator choices,
+  capacity, Grafana findings and PostgREST inventory/scan coverage remain open.
+- Documentation only: no runtime, companion pin, tag or release changes.
+
 ## Unreleased — iPhone USB Realtime companion (2026-09-23)
 
 - Pin both companion checks to the mobile USB WebSocket relay fix and its
