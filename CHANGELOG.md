@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — Grafana OS patch and PostgREST provenance (2026-09-23)
+
+- Rebuild digest-pinned Grafana 13.2.2 with Alpine OpenSSL 3.5.8 while preserving
+  every publisher-signed bundled plugin file; local startup and health pass.
+- Record byte-for-byte publisher release provenance for the PostgREST v14.17
+  static binary. Its bundled dependency inventory and vulnerability assessment
+  remain a release gate; the publisher evidence is not a substitute for them.
+
 ## Unreleased — setup HTTP readiness (2026-09-23)
 
 - Wait up to 90 seconds per internal HTTP probe for transient gateway/transport

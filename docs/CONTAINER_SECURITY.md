@@ -109,7 +109,7 @@ ports, and run `PG_META_MAX_RESULT_SIZE_MB=20 PG_QUERY_TIMEOUT_SECS=5
 PG_CONN_TIMEOUT_SECS=30 npm exec -- vitest run --maxWorkers=1
 --no-file-parallelism` against it. Never target an existing warehouse database.
 
-## Remaining publisher dependency: Grafana
+## Grafana OS patch and remaining publisher dependency
 
 Stable Grafana 13.2.2 still has 104 HIGH findings: two Alpine OpenSSL, one main
 binary Thrift, and 101 across bundled plugin executables. The affected plugins
@@ -121,6 +121,19 @@ Nightly images are not treated as accepted stable replacements. No findings are
 suppressed; the all-profile gate remains blocked until Grafana passes and the
 PostgREST coverage gap is resolved.
 
+The subsequent `docker/grafana/Dockerfile` rebuild pins the same publisher image
+digest and upgrades only Alpine `libcrypto3` and `libssl3` from 3.5.7-r0 to
+3.5.8-r0. A fresh local Trivy 0.74.0 scan with the same fixed HIGH/CRITICAL
+threshold reports 102 HIGH findings: one main binary Thrift and 101 in signed
+plugin executables. Checksums of all 681 bundled plugin files match the original
+image byte for byte; no signature policy changed. The rebuilt image reports
+Grafana 13.2.2 and a healthy local database on `/api/health`. The 102 findings
+remain a hard gate. Rebuild from live Alpine repositories and rescan at deployment
+time; this local scan is dated evidence, not a future patch guarantee.
+The subsequent full 19-image inventory again had 17 valid passing reports,
+Grafana's 102 findings, and an empty PostgREST package result. The strict gate
+remained nonzero for exactly those two images.
+
 ## Remaining scan-coverage dependency: PostgREST
 
 Trivy detects no OS or language package results in the static PostgREST v14.17
@@ -131,6 +144,23 @@ inventory/SBOM tied to the published image and an applicable vulnerability
 assessment, or a separately reviewed reproducible source build with equivalent
 evidence. Do not fabricate scanner results or add dummy packages to manufacture
 a passing result. The earlier zero-finding count is explicitly corrected above.
+
+On 2026-09-23, the Linux amd64 image at
+`postgrest/postgrest@sha256:c9dc201e555f5d8e37e7f39cdd4df0229774996e213bfd7de8d10ac609030f2c`
+was compared with the publisher's v14.17
+`postgrest-v14.17-linux-static-x86-64.tar.xz` release asset. The downloaded
+archive matched its publisher SHA-256
+`d6e13926457487c99b77366d795dcfa32700554d08d418131d9a4ea3f6ca25e3`;
+the image's `/bin/postgrest` and extracted release executable both matched
+SHA-256 `74a3ca24413d50071abc50d70ba77064c228c6dd7213d25c024e72b1ae167744`.
+The [tagged build workflow](https://github.com/PostgREST/postgrest/blob/v14.17/.github/workflows/build.yaml)
+uses Nix to produce the static executable and image from one source checkout;
+its [release workflow](https://github.com/PostgREST/postgrest/blob/v14.17/.github/workflows/release.yaml)
+publishes them. The tagged `flake.lock` pins Nix inputs. This establishes exact
+publisher binary identity for amd64, but neither the image nor the release
+contains an image-bound inventory of the bundled Haskell/native components.
+Trivy still has no assessable package results, and the validator must continue
+to reject this image. The amd64 hash does not attest the arm64 variant.
 
 
 ## Source dependency audit follow-up
