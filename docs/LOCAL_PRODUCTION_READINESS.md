@@ -174,10 +174,19 @@ and business-data preservation after the patch.
 ## Orders/cart and additional image follow-up
 
 The user selected orders/cart only with refresh after reconnect. Mobile PR #24
-is merged and both companion jobs now pin its implementation main commit
-`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. Local API-36 emulator checks passed
+introduced the feature; after physical-device fixes in PR #26, both companion
+jobs and documented copies pin runtime commit
+`c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Local API-36 emulator checks passed
 remote order refresh, cart quantity changes, missed-event refresh after Realtime
-restart, and empty-cart refresh. iPhone regression of this change remains open.
+restart, and empty-cart refresh on 2026-09-22; no Android device rerun occurred
+on the Mac. The full physical-iPhone regression passed on 2026-09-23, with final
+merged mobile `c943de56b460852e8bca71fbe481b40d0c5265e6` and backend
+`8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`. Exact-main CI passed in mobile
+run 35828897266/backend run 35829262796. See [READINESS.md](READINESS.md) and the
+mobile `docs/NATIVE_ACCEPTANCE.md` for case-by-case evidence, local USB/Mirroring
+limitations and cleanup. Owned demo fixtures were removed, token lifetime
+restored to 3,600 seconds and test services stopped; unrelated stacks/volumes and
+existing release tags were preserved. This closes source-demo item 9 only.
 
 New source image recipes and current acceptance boundaries are recorded in
 [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). The earlier 14-image failure

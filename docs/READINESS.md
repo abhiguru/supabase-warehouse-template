@@ -1,12 +1,22 @@
 # Readiness
 
-Current 2026-09-22 follow-up: the default demo starts authenticated Realtime for
+Current 2026-09-23 follow-up: the default demo starts authenticated Realtime for
 mobile orders/cart updates. Both companion jobs pin mobile
-`989ade8e86f313ae4b173ad1bb5b56607ecbe353`. See
+`c127ef622d84f50ba15eb2fb41609e703b82bfcc`. Active workflows and documented
+copies match; documentation-only successors do not require new pins. See
 [container patch evidence](CONTAINER_SECURITY.md) and
 [remaining dependencies](PRODUCTION_DEPENDENCIES.md) for current closure status.
-Existing release tags and historical native acceptance are unchanged; the new
-live-update feature still needs its physical-iPhone regression on the Mac.
+Existing release tags and historical native acceptance are unchanged. Physical
+iPhone orders/cart acceptance passed on 2026-09-23 at mobile
+`c943de56b460852e8bca71fbe481b40d0c5265e6` / backend
+`8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`, after reviewed PRs #26 / #40.
+Exact-main CI passed: [mobile35828897266](https://github.com/abhiguru/rn-warehouse-template/actions/runs/35828897266)
+and [backend35829262796](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35829262796).
+The [PR case record](https://github.com/abhiguru/rn-warehouse-template/pull/26#issuecomment-5790383356)
+contains pre-merge observations; the mobile
+[native acceptance closure](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/NATIVE_ACCEPTANCE.md#physical-iphone-orderscart-live-update-closure--2026-09-23)
+records the separate final merged-pair rerun. This closes dependency item 9's
+source-demo iPhone scope only, not production scale or container security.
 
 
 ## Provider-independent production-readiness pass — 2026-09-22
