@@ -1,6 +1,6 @@
 # Remaining production work and dependencies
 
-Updated 2026-09-22. The operator requested continued local work and recording
+Updated 2026-09-23. The operator requested continued local work and recording
 external blockers. No production services or operating policies were supplied.
 This record uses the nine-item follow-up numbering, which differs from the
 eleven local work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).

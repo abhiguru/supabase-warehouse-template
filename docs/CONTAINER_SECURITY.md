@@ -162,6 +162,16 @@ contains an image-bound inventory of the bundled Haskell/native components.
 Trivy still has no assessable package results, and the validator must continue
 to reject this image. The amd64 hash does not attest the arm64 variant.
 
+Publisher follow-up on 2026-09-23: [PostgREST v14.18](https://github.com/PostgREST/postgrest/releases/tag/v14.18)
+has no SBOM release asset, and its container reports an empty SBOM. The attached
+arm64 attestation records build provenance and the base-image digest, not an
+inventory of statically linked components. GitHub's repository dependency-graph
+SBOM lists documentation packages and CI actions, not the runtime Haskell/native
+closure. None of these supplies the required image-bound vulnerability evidence;
+updating the image to v14.18 solely for that purpose would not close the gate.
+The [latest stable Grafana release](https://github.com/grafana/grafana/releases/tag/v13.2.2)
+was still 13.2.2 on the same date, so no publisher-signed replacement is yet
+available through a newer stable release.
 
 ## Source dependency audit follow-up
 
