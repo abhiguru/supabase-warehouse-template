@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — iPhone USB Realtime companion (2026-09-23)
+
+- Pin both companion checks to the mobile USB WebSocket relay fix and its
+  regression tests. Active and documented workflows remain identical.
+- This changes no backend runtime and does not by itself close physical-device
+  acceptance or any production/security gate.
+
 ## Unreleased — Grafana OS patch and PostgREST provenance (2026-09-23)
 
 - Rebuild digest-pinned Grafana 13.2.2 with Alpine OpenSSL 3.5.8 while preserving
