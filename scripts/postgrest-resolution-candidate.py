@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Apply the two verified Hackage pins to a disposable PostgREST v14.17 checkout.
+
+This is an evaluation experiment. It deliberately leaves upstream's lockfile
+untouched until Stack resolves the proposed extra dependencies.
+"""
+
+import argparse
+import pathlib
+import subprocess
+
+SOURCE_SHA = "064e5fea7bde63b0424fab53a0109c6f6016e95c"
+# callHackageDirect uses fetchzip, so these hash the unpacked source trees.
+AESON_SRI = "sha256-f1XeeVxXxoIVqHGNGUlbSL4LpF0jxjPlnC4XUpEf7C4="
+TEXT_SRI = "sha256-4Azo1F6qDFNNRKWLpBJUGl7nspnCOoQM0C8H9vkFIMs="
+
+
+def replace_once(path: pathlib.Path, before: str, after: str) -> None:
+    source = path.read_text()
+    if source.count(before) != 1:
+        raise SystemExit(f"expected exactly one anchor in {path}: {before!r}")
+    path.write_text(source.replace(before, after, 1))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source", type=pathlib.Path)
+    parser.add_argument("--stack-hashable", action="store_true")
+    args = parser.parse_args()
+    source = args.source.resolve()
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    if actual != SOURCE_SHA:
+        raise SystemExit(f"wrong PostgREST source: {actual}")
+
+    overlay = source / "nix/overlays/haskell-packages.nix"
+    pins = f'''      aeson = prev.callHackageDirect {{
+        pkg = "aeson";
+        ver = "2.2.5.1";
+        sha256 = "{AESON_SRI}";
+      }} {{ }};
+      text-iso8601 = prev.callHackageDirect {{
+        pkg = "text-iso8601";
+        ver = "0.1.1.2";
+        sha256 = "{TEXT_SRI}";
+      }} {{ }};
+
+'''
+    replace_once(
+        overlay,
+        "      # TODO: Remove once available in nixpkgs\n      auto-update =\n",
+        pins + "      # TODO: Remove once available in nixpkgs\n      auto-update =\n",
+    )
+
+    stack = source / "stack.yaml"
+    deps = "  - aeson-2.2.5.1\n  - text-iso8601-0.1.1.2\n"
+    if args.stack_hashable:
+        deps += "  - hashable-1.4.7.0\n"
+        deps += "  - character-ps-0.1@sha256:b38ed1c07ae49e7461e44ca1d00c9ca24d1dcb008424ccd919916f92fd48d9fe,1315\n"
+        deps += "  - attoparsec-aeson-2.2.2.0@sha256:08948f45b892c5758d2c42e22fe2fbd41a4f6dc395fb0a43c2bf458a1f295736,1664\n"
+    replace_once(stack, "extra-deps:\n", "extra-deps:\n" + deps)
+
+
+if __name__ == "__main__":
+    main()
