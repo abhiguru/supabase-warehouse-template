@@ -109,10 +109,12 @@ changes need affected-case testing before inheriting physical acceptance.
   resolve the site. An earlier parallel API run caused shared-schema test
   collisions; serial execution removed those failures. The built Auth service
   also returned HTTP 200 for health, signup and password grant against the
-  disposable database, with a confirmed user row persisted. No production
-  code or test assertions changed. The complete upstream `./...` suite,
-  production authentication acceptance, an image scan, and GitHub alert
-  closure remain unverified. Auth stays disabled.
+  disposable database, with a confirmed user row persisted. A targeted Trivy
+  0.74.0 scan of the built candidate image passed the repository's strict
+  HIGH/CRITICAL report validator with zero findings. No production code or
+  test assertions changed. The complete upstream `./...` suite, production
+  authentication acceptance, the full 19-image scan, and GitHub alert closure
+  remain unverified. Auth stays disabled.
 - **Metadata dependency candidates:** The tracked postgres-meta graph now pins
   Vitest and its coverage package to 4.1.11, resolving the patched
   `@vitest/mocker` 4.1.11 for
