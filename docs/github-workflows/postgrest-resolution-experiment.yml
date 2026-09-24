@@ -1,0 +1,68 @@
+name: PostgREST patched dependency resolution experiment
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/postgrest-resolution-experiment.yml
+      - docs/github-workflows/postgrest-resolution-experiment.yml
+      - scripts/postgrest-resolution-candidate.py
+      - scripts/check-postgrest-nix-graph.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+      - name: Evaluate and inspect patched amd64 derivations without building
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v14.17 --single-branch https://github.com/PostgREST/postgrest.git upstream
+          python3 scripts/postgrest-resolution-candidate.py upstream
+          nix --version
+          cd upstream
+          timeout 20m nix-instantiate -A postgrestStatic > "$RUNNER_TEMP/postgrest-static.drv-path"
+          drv_path="$(cat "$RUNNER_TEMP/postgrest-static.drv-path")"
+          nix --extra-experimental-features nix-command derivation show --recursive "$drv_path" > "$RUNNER_TEMP/postgrest-build-derivations.json"
+          python3 ../scripts/check-postgrest-nix-graph.py "$RUNNER_TEMP/postgrest-build-derivations.json"
+          cat "$RUNNER_TEMP/postgrest-static.drv-path"
+      - name: Save recursive derivation graph
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgrest-nix-evaluation
+          path: |
+            ${{ runner.temp }}/postgrest-static.drv-path
+            ${{ runner.temp }}/postgrest-build-derivations.json
+          if-no-files-found: ignore
+
+  stack-plan:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: 9.6.7
+          cabal-update: false
+          enable-stack: true
+          stack-version: 3.7.1
+      - name: Resolve patched arm64 dependency proposal without building
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v14.17 --single-branch https://github.com/PostgREST/postgrest.git upstream
+          python3 scripts/postgrest-resolution-candidate.py --stack-hashable upstream
+          stack --version
+          cd upstream
+          timeout 20m stack --no-nix build --dry-run --system-ghc
+          git diff -- stack.yaml stack.yaml.lock
