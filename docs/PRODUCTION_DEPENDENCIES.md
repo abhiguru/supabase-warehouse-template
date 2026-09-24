@@ -60,15 +60,41 @@ changes need affected-case testing before inheriting physical acceptance.
   **NOT RUN, deferred** because no suitable native arm64 machine or VM is
   available. Its dependency-resolution dry run is separate evidence; no patched
   binary or image has been built or installed, and this gate remains open.
-- **Disabled Auth source advisory:** Security/build maintainers should track
-  the unfixed HIGH `GHSA-jqcq-xjh3-6g23` in `pgproto3/v2` and assess an
-  upstream fix or separately tested driver migration before enabling Auth.
-  Acceptance is a source dependency audit at the stated threshold and
-  compatible Auth tests, with the optional service's status recorded. This is
-  separate from the current image-scan gate and does not make demo Auth enabled.
-  Lower-severity upstream source findings also remain recorded in
-  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md); they are not cleared by this
-  handoff.
+- **Disabled Auth source advisory:** A reviewed candidate locally replaces
+  `pgproto3/v2` v2.3.3 with the same tagged source plus a negative DataRow field
+  length guard. Its [source provenance and regression tests](../docker/auth/internal/forks/pgproto3/PATCH.md)
+  cover invalid `-2` and minimum-int32 lengths and the valid `-1` null marker;
+  the Auth Docker build runs them with `go mod verify` for downloaded modules,
+  selected upstream tests and compilation. The [HIGH advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
+  still has no patched publisher version. The final image includes the fork's
+  MIT notice; its targeted Trivy 0.74.0 scan passed the strict validator at the
+  fixed HIGH/CRITICAL threshold. A scanner may retain the published v2.3.3
+  finding or lack a version for the local replacement. This scan cannot prove
+  the decoder patch, so source review and build evidence remain necessary with
+  Auth runtime/database integration checks before enabling the service. GoTrue
+  remains disabled; the full 19-image gate and production authentication remain
+  open. Track a maintained upstream driver and the lower-severity findings recorded
+  in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md).
+- **Metadata dependency candidates:** The tracked postgres-meta graph now pins
+  Vitest and its coverage package to 4.1.11, resolving the patched
+  `@vitest/mocker` 4.1.11 for
+  [GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9).
+  Paired Sentry Node/profiling 10.75.2 resolves `@opentelemetry/core` 2.11.0,
+  above the [2.8.0 fix](https://github.com/advisories/GHSA-8988-4f7v-96qf).
+  The combined image passed TypeScript, compilation and 12 selected upstream
+  tests; `npm ci` and full npm audit reported zero vulnerabilities. Its targeted
+  Trivy 0.74.0 scan passed the strict validator at the fixed HIGH/CRITICAL
+  threshold. The earlier Sentry-only candidate passed isolated initialization,
+  sensitive span redaction and health checks. A separate in-memory transport
+  probe captured a synthetic Sentry event and completed `flush`; external
+  delivery and production DSN behavior were not tested. The first full upstream
+  run failed during collection because one test used the older timeout argument
+  position. A [test-only Vitest 4 patch](../docker/postgres-meta/vitest4.patch)
+  corrected that signature without changing production code; the combined
+  candidate then passed **13/13 files and 197/197 tests** against a fresh
+  disposable database. CI, applicable runtime checks, the full 19-image gate
+  and GitHub alert verification after merge remain. These targeted candidate
+  checks do not establish alert auto-closure or production readiness.
 - **Separate historical CI HTTP 500 investigation:** Backend maintainers should
   capture redacted diagnostics for the fresh loopback demo/config bootstrap
   HTTP 500 on attempt 2 of backend-main CI

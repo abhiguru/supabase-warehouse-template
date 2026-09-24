@@ -17,7 +17,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | Postgres exporter | 0.20.1 | Patched Go/crypto and required net/text versions; collector/config/exporter tests |
 | cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
 | Prometheus | 3.14.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
-| Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; unchanged auth application and migrations |
+| Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
 | Storage | 1.79.14 | Upgrade from 1.74.0; same-major runtime leaf fixes in locked npm manifest; remove unused npm CLI |
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
@@ -280,31 +280,71 @@ behavior change. Storage's manifest now contains only the runtime dependencies
 used by its precompiled Node entrypoint, with current Fastify/protobuf fixes.
 
 `npm run check:container-dependencies` audits both complete tracked npm graphs in
-CI at HIGH/CRITICAL severity. Metadata passes that threshold with 20 moderate
-findings remaining; Storage reports zero findings. The metadata source passed all
-197 upstream tests on a fresh isolated fixture database, and the deployed
-Studio/API/image/PDF checks passed. Test databases must be recreated between full
-upstream runs: upstream fixtures retain a helper function after completion.
+CI at HIGH/CRITICAL severity. At the earlier source follow-up, metadata passed
+that threshold with 20 moderate findings remaining, while Storage reported zero
+findings. At that earlier revision, the metadata source passed all 197 upstream
+tests on a fresh isolated fixture database, and the deployed Studio/API/image/PDF
+checks passed. Test databases must be recreated between full upstream runs:
+upstream fixtures retain a helper function after completion.
 
-The manifest inventory also reports an unfixed HIGH advisory
+**2026-09-24 metadata dependency candidate:** The tracked postgres-meta manifest
+now pins `vitest` and `@vitest/coverage-v8` to 4.1.11, which resolves
+`@vitest/mocker` 4.1.11. That is the patched 4.x version for
+[GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9).
+It also pins `@sentry/node` and `@sentry/profiling-node` together at 10.75.2;
+the locked runtime graph resolves `@opentelemetry/core` 2.11.0, above the 2.8.0
+fix for [GHSA-8988-4f7v-96qf](https://github.com/advisories/GHSA-8988-4f7v-96qf).
+The combined postgres-meta image build passed TypeScript checking, compilation,
+all 12 tests in the three selected upstream app/admin/helper files, production
+pruning and `npm ls --omit=dev`. `npm ci` and the full npm audit reported zero
+vulnerabilities for its locked graph. A targeted Trivy 0.74.0 fixed
+HIGH/CRITICAL scan of that combined image passed the strict image-report
+validator. The earlier Sentry-only candidate also passed a network-disabled
+container probe with a dummy DSN: initialization, `pg` and
+`x-connection-encrypted` span redaction, and `/health` HTTP 200. A separate
+in-memory Sentry transport probe captured a synthetic event and completed
+`flush`; it did not test delivery to an external Sentry endpoint or production
+DSN.
+
+The first full upstream run with Vitest 4 failed during test collection because
+one existing test passed its timeout options after the callback. The
+test-only [`vitest4.patch`](../docker/postgres-meta/vitest4.patch) moves the
+timeout options before the callback for Vitest 4; production source is
+unchanged. With that patch and a fresh disposable database, the combined
+candidate passed **13/13 test files and 197/197 tests**. These local checks do
+not establish GitHub alert state or production acceptance; CI and the full
+19-image/runtime gates still apply.
+
+The earlier manifest inventory also reported a HIGH advisory
 `GHSA-jqcq-xjh3-6g23` for `github.com/jackc/pgproto3/v2` in the optional disabled
 Auth service, plus lower-severity upstream findings. These are not erased by
-`--ignore-unfixed`; an upstream fix or separately tested driver migration remains
-necessary. GoTrue is still disabled and production authentication is not accepted.
+`--ignore-unfixed`. The local source candidate below addresses the reported
+decoder behavior while upstream v2 has no patched release. GoTrue is still
+disabled and production authentication is not accepted.
 
-**Recheck on 2026-09-24:** The [GitHub advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
-and [Go vulnerability record](https://pkg.go.dev/vuln/GO-2026-4518) still list no
-fixed `pgproto3/v2` version. The tracked Auth manifest pins `v2.3.3`, and its
-direct `pgconn v1.14.3` dependency also [requires that version](https://github.com/jackc/pgconn/blob/v1.14.3/go.mod).
-Current [upstream Auth source](https://github.com/supabase/auth/blob/master/go.mod)
-retains both dependencies. The upstream [pgx v5 migration](https://github.com/jackc/pgx/blob/master/CHANGELOG.md#v500-september-17-2022)
-merges `pgconn` and `pgproto3` into a different module with API changes; adding
-v5 alongside v4 or merely removing the indirect manifest line would leave the
-old dependency in place. Revisit when a patched compatible v2 release or an
-upstream Auth driver migration is available. A local migration would need its
-own compile, Auth test and database integration evidence before the source
-finding could be closed. No Auth manifest, image, or disabled-profile setting
-changed in this recheck.
+**2026-09-24 Auth source candidate:** The [advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
+and [Go vulnerability record](https://pkg.go.dev/vuln/GO-2026-4518) list no
+patched publisher version of `pgproto3/v2`. Auth still requires v2.3.3 through
+`pgconn v1.14.3`, so its build now uses a local v2.3.3 source replacement.
+[PATCH.md](../docker/auth/internal/forks/pgproto3/PATCH.md) records the upstream
+tag commit `945c2126f6db8f3bea7eeebe307c01fe92bca007`, archive SHA-256,
+license and one production change: `DataRow.Decode` rejects negative field
+lengths other than the valid `-1` null sentinel before slicing. The local
+regression tests exercise `-2`, minimum int32 and `-1`; the Auth Docker build
+runs those tests, selected upstream Auth crypto tests, `go mod verify` for
+downloaded modules and compilation. The final image copies the fork's MIT
+license notice to `/usr/share/doc/warehouse-auth/pgproto3-LICENSE`. A targeted Trivy 0.74.0
+fixed HIGH/CRITICAL scan of the Auth candidate passed the strict image-report
+validator. The local `replace` makes the compiled source differ from the
+published v2.3.3 module even though the requirement retains that version.
+Scanners that identify dependencies only by published module versions cannot
+attribute the patch to this unversioned local replacement; a remaining version
+finding or a missing finding alone does not establish its source status. The
+targeted scan's PASS therefore does not prove the patched decoder behavior;
+that conclusion rests on source, regression and build review. GoTrue remains
+disabled. The full 19-image gate, Auth runtime/database acceptance and GitHub
+alert verification remain open. A maintained upstream driver remains the
+long-term replacement.
 
 The first GitHub integration runs failed during pooler startup although a fresh
 local database/pooler passed. Redacted diagnostics identified the cause: the
