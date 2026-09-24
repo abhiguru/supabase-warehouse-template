@@ -38,10 +38,14 @@ changes need affected-case testing before inheriting physical acceptance.
   locally patched Grafana had **102 HIGH** findings and PostgREST had no package
   results. Publisher binary provenance for PostgREST is established for amd64,
   but it is not a component inventory; arm64 was not attested by that hash.
-  A 2026-09-24 targeted Grafana candidate scan reduced its count to **9 HIGH**
-  while preserving publisher signatures; it is not a full 19-image rescan or a
-  passing gate. Exact PostgREST binaries on both platforms contain affected
-  `aeson` versions under HIGH advisory HSEC-2026-0007; inspected v14.18 and
+  A fresh 2026-09-24 targeted **amd64** rebuild and Trivy 0.74.0 scan of the
+  current signed-plugin recipe confirmed **9 HIGH, 0 CRITICAL**: one Grafana
+  core Thrift finding and eight in six plugin executables (gRPC and Tempo).
+  The image-report validator rejected it. Grafana 13.2.2 remained the latest
+  stable publisher release, and no patched compatible signed plugin release
+  was verified. This is not an arm64 vulnerability scan, a full 19-image
+  rescan, or a passing gate. Exact PostgREST binaries on both platforms contain
+  affected `aeson` versions under HIGH advisory HSEC-2026-0007; inspected v14.18 and
   v16.3 images also remain affected, and no complete image-bound Haskell/native
   inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
   the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
