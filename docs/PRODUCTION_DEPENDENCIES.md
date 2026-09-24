@@ -87,9 +87,34 @@ changes need affected-case testing before inheriting physical acceptance.
   `pgproto3` and crypto tests. Imgproxy's build has no test stage. These are
   candidate build checks, not runtime telemetry delivery tests, a new
   all-profile image scan, or confirmation that GitHub alerts closed. Auth
-  remains disabled. Its separate `pgx/v4` LOW alert has no v4 fix and is not
-  changed by this update. The full 19-image gate and production telemetry
-  acceptance remain open.
+  remains disabled. Its separate `pgx/v4` LOW alert has no v4 fix and is
+  addressed by the following candidate. The full 19-image gate and production
+  telemetry acceptance remain open.
+- **Disabled Auth PostgreSQL driver LOW advisory candidate:** The Auth build
+  manifest now selects Buffalo Pop v6.1.2, the earliest Pop v6 release using
+  `pgx/v5/stdlib`, and pins `github.com/jackc/pgx/v5` v5.9.2, the fixed release
+  for [GHSA-j88v-2chj-qfwx](https://github.com/advisories/GHSA-j88v-2chj-qfwx).
+  The pinned Go 1.27.1 module graph and compiled image binary contain Pop
+  v6.1.2 and pgx/v5 v5.9.2 with no pgx/v4; `pgconn` v1.14.3 and the local
+  `pgproto3/v2` replacement remain. The isolated Docker build passed module
+  verification, local decoder tests, crypto tests and compilation. Against a
+  disposable Postgres 15 database, the candidate binary completed migrations
+  (23 `auth` tables), upstream storage and model packages passed, and the
+  complete `go test -p 1 -count=1 ./internal/api/...` tree passed (11 tested
+  packages; one package had no tests). The serial run used deterministic
+  `example.com` resolution and a test-only proxy that rejected that site's
+  outbound HTTPS connection promptly; other HTTPS connections were tunneled.
+  This was necessary because the upstream custom OAuth test expects a failed
+  discovery fetch, while the isolated network otherwise timed out or could not
+  resolve the site. An earlier parallel API run caused shared-schema test
+  collisions; serial execution removed those failures. The built Auth service
+  also returned HTTP 200 for health, signup and password grant against the
+  disposable database, with a confirmed user row persisted. A targeted Trivy
+  0.74.0 scan of the built candidate image passed the repository's strict
+  HIGH/CRITICAL report validator with zero findings. No production code or
+  test assertions changed. The complete upstream `./...` suite, production
+  authentication acceptance, the full 19-image scan, and GitHub alert closure
+  remain unverified. Auth stays disabled.
 - **Metadata dependency candidates:** The tracked postgres-meta graph now pins
   Vitest and its coverage package to 4.1.11, resolving the patched
   `@vitest/mocker` 4.1.11 for
