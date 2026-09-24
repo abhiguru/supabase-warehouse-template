@@ -177,10 +177,25 @@ plugin catalog pages linked above did not provide a verified patched,
 compatible signed release. A fixed dependency version in an advisory does not
 establish that an installable publisher plugin contains it. No safe publisher
 replacement candidate is identified yet. This was a targeted **amd64** image
-scan, not an arm64 vulnerability scan or a new full 19-image inventory. The
-last complete inventory remains at 17/19 valid passing reports, with the older
-102-HIGH Grafana result and the PostgREST package-evidence gap. The strict full
-gate remains open and must be rerun after a publisher fix.
+scan, not a new full 19-image inventory. The last complete inventory remains
+at 17/19 valid passing reports, with the older 102-HIGH Grafana result and the
+PostgREST package-evidence gap. The strict full gate remains open and must be
+rerun after a publisher fix.
+
+**2026-09-24 targeted arm64 recheck:** The [native arm64 workflow run
+35987888412](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35987888412)
+passed at backend `80869391f2c8dfb7e700ffa99a68382ba7e769c4`. Its
+`grafana-arm64-targeted-scan-35987888412-1` artifact records image
+`warehouse-grafana-scan:35987888412-1`, image ID
+`sha256:d7053286489f4c3d9f0f7e09c6bba3e00434c24f5984a31b05d2e2fc4e97eb24`,
+and `linux/arm64`. The Trivy 0.74.0 JSON has **9 HIGH, 0 CRITICAL** at the same
+fixed threshold. Its core Thrift finding and eight findings in the six arm64
+plugin executables have the same CVEs, embedded versions and fix thresholds as
+the amd64 table above. The workflow passes when it produces valid evidence; its
+success does not mean the nine findings pass the strict image gate. This was a
+targeted Grafana arm64 scan, not a new full 19-image inventory or a PostgREST
+native build. The Grafana findings and PostgREST dependency evidence gap remain
+open.
 
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.
