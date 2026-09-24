@@ -209,6 +209,9 @@ image-bound Haskell/native component inventory and vulnerability assessment,
 then warehouse API regressions and affected physical-iPhone retesting before a
 PostgREST runtime change can inherit the accepted orders/cart evidence.
 
+The [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md) records the
+separate platform builds and evidence needed before proposing a replacement.
+
 ## Source dependency audit follow-up
 
 The image gate scans runtime packages at the fixed HIGH/CRITICAL threshold; it
