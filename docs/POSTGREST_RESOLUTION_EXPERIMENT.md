@@ -45,8 +45,19 @@ without a binary build. Once Hackage metadata recovered, the Stack plan found
 that `character-ps` 0.1 is absent from the snapshot. The experiment now also
 pins `character-ps-0.1@sha256:b38ed1c07ae49e7461e44ca1d00c9ca24d1dcb008424ccd919916f92fd48d9fe,1315`.
 That is the SHA-256 and byte length of the Cabal metadata file, independently
-checked against Hackage; it is not the source archive hash. Any further
-transitive conflicts must be resolved before a build recipe is claimed.
+checked against Hackage; it is not the source archive hash. The next Stack
+dry run found another bound conflict: snapshot `attoparsec-aeson` 2.1.0.0
+requires `aeson < 2.2`. The candidate now pins `attoparsec-aeson` 2.2.2.0,
+whose current revision allows `aeson >= 2.2.2.0 && < 2.4`. Its Cabal metadata
+pin `sha256:08948f45b892c5758d2c42e22fe2fbd41a4f6dc395fb0a43c2bf458a1f295736,1664`
+selects Cabal revision 1 and was checked against Hackage and the Hackage
+index mirror. The distinct source archive has SHA-256
+`fe9b2c23a16fe1ff8f41c329940cccc80aca7ac6a9ea314f7a77cf142d8f9edd`
+and size 8081 bytes, both matching index metadata. Its embedded revision 0
+Cabal file has SHA-256
+`02dc3cc4d217a364471da7ce0f47be39e5b1449e7768134e5f2926d87a21448d`
+and size 1590 bytes. Any further transitive conflicts must be resolved before
+a build recipe is claimed.
 The first PR #49 Stack run stopped before planning: Hackage Security rejected
 `snapshot.json` with an invalid hash while updating the package index. A fresh
 run should retain repository verification; a repeated failure needs the served

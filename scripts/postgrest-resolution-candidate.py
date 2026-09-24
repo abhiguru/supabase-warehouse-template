@@ -56,6 +56,7 @@ def main() -> None:
     if args.stack_hashable:
         deps += "  - hashable-1.4.7.0\n"
         deps += "  - character-ps-0.1@sha256:b38ed1c07ae49e7461e44ca1d00c9ca24d1dcb008424ccd919916f92fd48d9fe,1315\n"
+        deps += "  - attoparsec-aeson-2.2.2.0@sha256:08948f45b892c5758d2c42e22fe2fbd41a4f6dc395fb0a43c2bf458a1f295736,1664\n"
     replace_once(stack, "extra-deps:\n", "extra-deps:\n" + deps)
 
 
