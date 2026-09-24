@@ -45,7 +45,11 @@ changes need affected-case testing before inheriting physical acceptance.
   v16.3 images also remain affected, and no complete image-bound Haskell/native
   inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
   the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
-  the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md).
+  the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md). The manual
+  [arm64 native build evidence](POSTGREST_NATIVE_BUILD_EVIDENCE.md) workflow is
+  **NOT RUN, deferred** because no suitable native arm64 machine or VM is
+  available. Its dependency-resolution dry run is separate evidence; no patched
+  binary or image has been built or installed, and this gate remains open.
 - **Disabled Auth source advisory:** Security/build maintainers should track
   the unfixed HIGH `GHSA-jqcq-xjh3-6g23` in `pgproto3/v2` and assess an
   upstream fix or separately tested driver migration before enabling Auth.

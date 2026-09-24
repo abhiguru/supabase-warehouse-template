@@ -211,6 +211,12 @@ PostgREST runtime change can inherit the accepted orders/cart evidence.
 
 The [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md) records the
 separate platform builds and evidence needed before proposing a replacement.
+The [manual arm64 native build](POSTGREST_NATIVE_BUILD_EVIDENCE.md) is
+**NOT RUN, deferred** as of 2026-09-24 because no suitable native arm64 machine
+or VM is available. The passed
+[dependency-resolution experiment](POSTGREST_RESOLUTION_EXPERIMENT.md) does not
+supply a compiled binary, image-bound inventory, or runtime evidence; the
+PostgREST security gate remains open.
 
 ## Source dependency audit follow-up
 
