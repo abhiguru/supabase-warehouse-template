@@ -10,7 +10,8 @@ implemented and reproducible. See
 eleven-area evidence and commands.
 
 Production remains gated by the dated all-profile image scan: Grafana retained
-HIGH findings and PostgREST lacked assessable package results. Target-operator
+HIGH findings, while PostgREST has a known affected `aeson` component and lacks
+a complete, assessable image-bound inventory. Target-operator
 and external-service acceptance also remains open: real SMS, public DNS/TLS,
 external alert delivery, production data/retention and capacity policy, and
 final mobile signing/stores. Payments, enabled telemetry delivery, and
