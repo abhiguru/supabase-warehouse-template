@@ -18,7 +18,7 @@ while IFS= read -r image; do
   [[ -n "$image" ]] || continue
   report="$report_dir/$(printf '%s' "$image" | tr '/:@' '___').json"
   echo "Scanning $image"
-  if ! trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+  if ! trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --list-all-pkgs \
     --exit-code 1 --format json --output "$report" "$image"; then
     if [[ -s "$report" ]]; then
       echo "Fixed HIGH/CRITICAL vulnerability remains in $image (report: $report)" >&2

@@ -198,6 +198,20 @@ Auth service, plus lower-severity upstream findings. These are not erased by
 `--ignore-unfixed`; an upstream fix or separately tested driver migration remains
 necessary. GoTrue is still disabled and production authentication is not accepted.
 
+**Recheck on 2026-09-24:** The [GitHub advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
+and [Go vulnerability record](https://pkg.go.dev/vuln/GO-2026-4518) still list no
+fixed `pgproto3/v2` version. The tracked Auth manifest pins `v2.3.3`, and its
+direct `pgconn v1.14.3` dependency also [requires that version](https://github.com/jackc/pgconn/blob/v1.14.3/go.mod).
+Current [upstream Auth source](https://github.com/supabase/auth/blob/master/go.mod)
+retains both dependencies. The upstream [pgx v5 migration](https://github.com/jackc/pgx/blob/master/CHANGELOG.md#v500-september-17-2022)
+merges `pgconn` and `pgproto3` into a different module with API changes; adding
+v5 alongside v4 or merely removing the indirect manifest line would leave the
+old dependency in place. Revisit when a patched compatible v2 release or an
+upstream Auth driver migration is available. A local migration would need its
+own compile, Auth test and database integration evidence before the source
+finding could be closed. No Auth manifest, image, or disabled-profile setting
+changed in this recheck.
+
 The first GitHub integration runs failed during pooler startup although a fresh
 local database/pooler passed. Redacted diagnostics identified the cause: the
 upstream entrypoint raises `RLIMIT_NOFILE` to 100000, which fails when the
