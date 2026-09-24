@@ -331,9 +331,9 @@ tag commit `945c2126f6db8f3bea7eeebe307c01fe92bca007`, archive SHA-256,
 license and one production change: `DataRow.Decode` rejects negative field
 lengths other than the valid `-1` null sentinel before slicing. The local
 regression tests exercise `-2`, minimum int32 and `-1`; the Auth Docker build
-runs those tests, selected upstream Auth crypto tests, module verification and
-compilation. The final image copies the fork's MIT license notice to
-`/usr/share/doc/warehouse-auth/pgproto3-LICENSE`. A targeted Trivy 0.74.0
+runs those tests, selected upstream Auth crypto tests, `go mod verify` for
+downloaded modules and compilation. The final image copies the fork's MIT
+license notice to `/usr/share/doc/warehouse-auth/pgproto3-LICENSE`. A targeted Trivy 0.74.0
 fixed HIGH/CRITICAL scan of the Auth candidate passed the strict image-report
 validator. The local `replace` makes the compiled source differ from the
 published v2.3.3 module even though the requirement retains that version.

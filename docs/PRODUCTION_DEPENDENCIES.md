@@ -64,8 +64,8 @@ changes need affected-case testing before inheriting physical acceptance.
   `pgproto3/v2` v2.3.3 with the same tagged source plus a negative DataRow field
   length guard. Its [source provenance and regression tests](../docker/auth/internal/forks/pgproto3/PATCH.md)
   cover invalid `-2` and minimum-int32 lengths and the valid `-1` null marker;
-  the Auth Docker build runs them with module verification, selected upstream
-  tests and compilation. The [HIGH advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
+  the Auth Docker build runs them with `go mod verify` for downloaded modules,
+  selected upstream tests and compilation. The [HIGH advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
   still has no patched publisher version. The final image includes the fork's
   MIT notice; its targeted Trivy 0.74.0 scan passed the strict validator at the
   fixed HIGH/CRITICAL threshold. A scanner may retain the published v2.3.3
