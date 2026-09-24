@@ -75,6 +75,21 @@ changes need affected-case testing before inheriting physical acceptance.
   remains disabled; the full 19-image gate and production authentication remain
   open. Track a maintained upstream driver and the lower-severity findings recorded
   in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md).
+- **OpenTelemetry-Go LOW advisory candidate:** The Prometheus, imgproxy,
+  Alertmanager and disabled Auth build manifests now align their
+  `go.opentelemetry.io/otel` module family at v1.45.0, the fixed release for
+  [GHSA-8wmf-6v46-5gfg](https://github.com/advisories/GHSA-8wmf-6v46-5gfg).
+  This covers the 16 LOW alerts for `otel/sdk` and the OTLP trace exporters
+  across those four images. The corresponding `go.sum` files record the new
+  modules and required transitive updates. All four isolated Docker image
+  builds passed `go mod verify` and compilation; Alertmanager additionally
+  passed its config/API tests, Prometheus its config test, and Auth its local
+  `pgproto3` and crypto tests. Imgproxy's build has no test stage. These are
+  candidate build checks, not runtime telemetry delivery tests, a new
+  all-profile image scan, or confirmation that GitHub alerts closed. Auth
+  remains disabled. Its separate `pgx/v4` LOW alert has no v4 fix and is not
+  changed by this update. The full 19-image gate and production telemetry
+  acceptance remain open.
 - **Metadata dependency candidates:** The tracked postgres-meta graph now pins
   Vitest and its coverage package to 4.1.11, resolving the patched
   `@vitest/mocker` 4.1.11 for
