@@ -148,6 +148,15 @@ disable automatic catalog updates of preinstalled plugins, including the seven
 pinned bundles; Grafana's separate first-install behavior remains unchanged.
 See [Grafana's signing rules](https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin).
 
+A follow-up isolated query check found that the provisioned datasource hostnames
+did not match the Compose service names. They now use `prometheus` and `db`.
+With disposable Prometheus and PostgreSQL fixtures on a private Docker network,
+Grafana returned the expected live metric and SQL row through `/api/ds/query`
+on amd64. The CI smoke is configured to build and run the same signed-plugin,
+provisioning, and query checks on native amd64 and arm64 runners. These checks
+cover the two provisioned datasource paths; they do not clear the remaining
+image findings or replace a full monitoring acceptance test.
+
 ## Remaining scan-coverage dependency: PostgREST
 
 Trivy detects no OS or language package results in the static PostgREST v14.17

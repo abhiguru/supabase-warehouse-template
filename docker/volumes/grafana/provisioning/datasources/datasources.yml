@@ -5,14 +5,14 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://supabase-prometheus:9090
+    url: http://prometheus:9090
     isDefault: true
     editable: false
 
   - name: PostgreSQL-Sec
     type: postgres
     uid: PG_SEC_001
-    url: supabase-db:5432
+    url: db:5432
     database: postgres
     user: postgres
     secureJsonData:
