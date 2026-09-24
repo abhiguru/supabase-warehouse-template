@@ -40,9 +40,13 @@ packages, or prove which packages will be linked into an executable.
 The upstream `lts-22.44` snapshot includes `hashable` 1.4.4.0. Since
 `aeson` 2.2.5.1 requires at least 1.4.6.0, the two proposed Stack extra-deps
 alone cannot resolve against that snapshot. The CI Stack experiment adds
-`hashable-1.4.7.0` as a third extra-dep on a native arm64 runner and runs
-`stack build --dry-run` without a binary build. Its result, including any
-further transitive conflicts, must be checked before a build recipe is claimed.
+`hashable-1.4.7.0` on a native arm64 runner and runs `stack build --dry-run`
+without a binary build. Once Hackage metadata recovered, the Stack plan found
+that `character-ps` 0.1 is absent from the snapshot. The experiment now also
+pins `character-ps-0.1@sha256:b38ed1c07ae49e7461e44ca1d00c9ca24d1dcb008424ccd919916f92fd48d9fe,1315`.
+That is the SHA-256 and byte length of the Cabal metadata file, independently
+checked against Hackage; it is not the source archive hash. Any further
+transitive conflicts must be resolved before a build recipe is claimed.
 The first PR #49 Stack run stopped before planning: Hackage Security rejected
 `snapshot.json` with an invalid hash while updating the package index. A fresh
 run should retain repository verification; a repeated failure needs the served

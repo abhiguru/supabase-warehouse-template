@@ -55,6 +55,7 @@ def main() -> None:
     deps = "  - aeson-2.2.5.1\n  - text-iso8601-0.1.1.2\n"
     if args.stack_hashable:
         deps += "  - hashable-1.4.7.0\n"
+        deps += "  - character-ps-0.1@sha256:b38ed1c07ae49e7461e44ca1d00c9ca24d1dcb008424ccd919916f92fd48d9fe,1315\n"
     replace_once(stack, "extra-deps:\n", "extra-deps:\n" + deps)
 
 
