@@ -7,8 +7,10 @@ on:
       - .github/workflows/postgrest-resolution-experiment.yml
       - docs/github-workflows/postgrest-resolution-experiment.yml
       - docs/POSTGREST_RESOLUTION_EXPERIMENT.md
+      - docs/research/postgrest-v14.17-stack.yaml.lock
       - scripts/postgrest-resolution-candidate.py
       - scripts/check-postgrest-nix-graph.py
+      - scripts/check-postgrest-stack-plan.py
   workflow_dispatch:
 
 permissions:
@@ -63,7 +65,29 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch v14.17 --single-branch https://github.com/PostgREST/postgrest.git upstream
           python3 scripts/postgrest-resolution-candidate.py --stack-hashable upstream
-          stack --version
+          stack --version > "$RUNNER_TEMP/stack-toolchain.txt"
+          ghc --numeric-version >> "$RUNNER_TEMP/stack-toolchain.txt"
+          test "$(ghc --numeric-version)" = 9.6.7
           cd upstream
-          timeout 20m stack --no-nix build --dry-run --system-ghc
-          git diff -- stack.yaml stack.yaml.lock
+          timeout 20m stack --no-nix build --dry-run --system-ghc 2>&1 | tee "$RUNNER_TEMP/postgrest-stack-plan.log"
+          python3 ../scripts/check-postgrest-stack-plan.py stack.yaml.lock ../docs/research/postgrest-v14.17-stack.yaml.lock "$RUNNER_TEMP/postgrest-stack-plan.log"
+          cp stack.yaml.lock "$RUNNER_TEMP/postgrest-stack.yaml.lock"
+          git rev-parse HEAD > "$RUNNER_TEMP/upstream-source.sha"
+          git add nix/overlays/haskell-packages.nix stack.yaml stack.yaml.lock
+          git diff --cached --check
+          git diff --cached --binary > "$RUNNER_TEMP/patched-upstream.diff"
+          git write-tree > "$RUNNER_TEMP/patched-upstream.tree"
+          test "$(cat "$RUNNER_TEMP/patched-upstream.tree")" = 7e6d822e4754f3ac5d40869d64788ed03f806349
+          (cd "$RUNNER_TEMP" && sha256sum postgrest-stack.yaml.lock patched-upstream.diff > evidence.sha256)
+      - name: Save arm64 Stack resolution evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgrest-arm64-stack-resolution
+          path: |
+            ${{ runner.temp }}/postgrest-stack.yaml.lock
+            ${{ runner.temp }}/postgrest-stack-plan.log
+            ${{ runner.temp }}/stack-toolchain.txt
+            ${{ runner.temp }}/upstream-source.sha
+            ${{ runner.temp }}/patched-upstream.diff
+            ${{ runner.temp }}/patched-upstream.tree
+            ${{ runner.temp }}/evidence.sha256
