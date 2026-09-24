@@ -1,7 +1,7 @@
 module github.com/supabase/auth
 
 require (
-	github.com/Masterminds/semver/v3 v3.1.1
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/aaronarduino/goqrsvg v0.0.0-20220419053939-17e843f1dd40
 	github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b
 	github.com/badoux/checkmail v0.0.0-20170203135005-d0a759655d62
@@ -10,14 +10,14 @@ require (
 	github.com/didip/tollbooth/v5 v5.1.1
 	github.com/gobuffalo/validate/v3 v3.3.3 // indirect
 	github.com/gobwas/glob v0.2.3
-	github.com/gofrs/uuid v4.3.1+incompatible
+	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/jackc/pgconn v1.14.3
 	github.com/jackc/pgerrcode v0.0.0-20201024163028-a0d42d470451
 	github.com/jackc/pgproto3/v2 v2.3.3 // indirect
-	github.com/jmoiron/sqlx v1.3.5
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/microcosm-cc/bluemonday v1.0.26 // indirect
+	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/mrjones/oauth v0.0.0-20190623134757-126b35219450
 	github.com/pkg/errors v0.9.1
@@ -25,8 +25,8 @@ require (
 	github.com/rs/cors v1.11.0
 	github.com/sebest/xff v0.0.0-20160910043805-6c115e0ffa35
 	github.com/sethvargo/go-password v0.2.0
-	github.com/sirupsen/logrus v1.9.3
-	github.com/spf13/cobra v1.8.1
+	github.com/sirupsen/logrus v1.9.4
+	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0
@@ -34,6 +34,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.17 // indirect
@@ -58,16 +59,18 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.2.3 // indirect
 	github.com/gobuffalo/nulls v0.4.2 // indirect
+	github.com/gobuffalo/plush/v5 v5.0.4 // indirect
 	github.com/goccy/go-json v0.10.4 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/jackc/pgx/v4 v4.18.2 // indirect
+	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.2 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
 	github.com/lestrrat-go/httprc v1.0.5 // indirect
 	github.com/lestrrat-go/iter v1.0.2 // indirect
 	github.com/lestrrat-go/option v1.0.1 // indirect
-	github.com/lib/pq v1.10.7 // indirect
+	github.com/lib/pq v1.12.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/supranational/blst v0.3.16-0.20250831170142-f48500c1fdbe // indirect
@@ -107,7 +110,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.1
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-webauthn/webauthn v0.16.5
-	github.com/gobuffalo/pop/v6 v6.1.1
+	github.com/gobuffalo/pop/v6 v6.1.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/lestrrat-go/jwx/v2 v2.1.0
 	github.com/oapi-codegen/runtime v1.1.1
@@ -129,34 +132,33 @@ require (
 	github.com/crewjam/httperr v0.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/ethereum/go-ethereum v1.17.0
-	github.com/fatih/color v1.16.0 // indirect
+	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-sql-driver/mysql v1.7.0 // indirect
+	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/gobuffalo/envy v1.10.2 // indirect
 	github.com/gobuffalo/fizz v1.14.4 // indirect
-	github.com/gobuffalo/flect v1.0.2 // indirect
-	github.com/gobuffalo/github_flavored_markdown v1.1.3 // indirect
-	github.com/gobuffalo/helpers v0.6.7 // indirect
-	github.com/gobuffalo/plush/v4 v4.1.18 // indirect
+	github.com/gobuffalo/flect v1.0.3 // indirect
+	github.com/gobuffalo/github_flavored_markdown v1.1.4 // indirect
+	github.com/gobuffalo/helpers v0.6.10 // indirect
+	github.com/gobuffalo/plush/v4 v4.1.22 // indirect
 	github.com/gobuffalo/tags/v3 v3.1.4 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/css v1.0.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/h2non/parth v0.0.0-20190131123155-b4df798d6542 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/chunkreader/v2 v2.0.1 // indirect
 	github.com/jackc/pgio v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
-	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
-	github.com/jackc/pgtype v1.14.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/luna-duclos/instrumentedsql v1.1.3 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v2.0.3+incompatible // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
@@ -167,10 +169,10 @@ require (
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/russellhaering/goxmldsig v1.6.0 // indirect
-	github.com/sergi/go-diff v1.2.0 // indirect
+	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/sourcegraph/annotate v0.0.0-20160123013949-f4cad6c6324d // indirect
 	github.com/sourcegraph/syntaxhighlight v0.0.0-20170531221838-bd320f5d308e // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20230811145659-89c5cff77bcb

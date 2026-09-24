@@ -87,9 +87,25 @@ changes need affected-case testing before inheriting physical acceptance.
   `pgproto3` and crypto tests. Imgproxy's build has no test stage. These are
   candidate build checks, not runtime telemetry delivery tests, a new
   all-profile image scan, or confirmation that GitHub alerts closed. Auth
-  remains disabled. Its separate `pgx/v4` LOW alert has no v4 fix and is not
-  changed by this update. The full 19-image gate and production telemetry
-  acceptance remain open.
+  remains disabled. Its separate `pgx/v4` LOW alert has no v4 fix and is
+  addressed by the following candidate. The full 19-image gate and production
+  telemetry acceptance remain open.
+- **Disabled Auth PostgreSQL driver LOW advisory candidate:** The Auth build
+  manifest now selects Buffalo Pop v6.1.2, the earliest Pop v6 release using
+  `pgx/v5/stdlib`, and pins `github.com/jackc/pgx/v5` v5.9.2, the fixed release
+  for [GHSA-j88v-2chj-qfwx](https://github.com/advisories/GHSA-j88v-2chj-qfwx).
+  The pinned Go 1.27.1 module graph and compiled image binary contain Pop
+  v6.1.2 and pgx/v5 v5.9.2 with no pgx/v4; `pgconn` v1.14.3 and the local
+  `pgproto3/v2` replacement remain. The isolated Docker build passed module
+  verification, local decoder tests, crypto tests and compilation. Against a
+  disposable Postgres 15 database, the candidate binary completed migrations
+  (23 `auth` tables), upstream storage and model packages passed, and serial
+  admin and OAuth authorization tests passed. A broader parallel API package
+  run failed because packages shared one test schema and custom OAuth tests
+  could not resolve external `example.com` in the test network; the admin
+  update that failed in that run passed when isolated. Full upstream API and
+  runtime authentication acceptance, an image scan, and GitHub alert closure
+  remain unverified. Auth stays disabled.
 - **Metadata dependency candidates:** The tracked postgres-meta graph now pins
   Vitest and its coverage package to 4.1.11, resolving the patched
   `@vitest/mocker` 4.1.11 for
