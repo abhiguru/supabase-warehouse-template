@@ -16,4 +16,5 @@ USER root
 RUN apk upgrade --no-cache libcrypto3 libssl3
 COPY --from=build /out/auth /usr/local/bin/auth
 COPY --from=build /src/LICENSE /usr/share/doc/warehouse-auth/LICENSE
+COPY --from=build /src/internal/forks/pgproto3/LICENSE /usr/share/doc/warehouse-auth/pgproto3-LICENSE
 USER supabase
