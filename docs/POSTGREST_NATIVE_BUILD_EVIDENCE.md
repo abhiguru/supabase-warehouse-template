@@ -1,11 +1,22 @@
 # Manual PostgREST v14.17 arm64 build evidence
 
+Status (2026-09-24): **NOT RUN — deferred.** No suitable dedicated native
+Linux arm64 machine or VM is available for this experiment. The manual workflow
+has not been dispatched, so there is no compiled executable, link-closure or
+linker-map evidence, native build artifact, candidate image, or runtime test
+result.
+No PostgREST runtime replacement has been made. The passing
+[dependency-resolution experiment](POSTGREST_RESOLUTION_EXPERIMENT.md) is
+separate dry-run and Nix evaluation evidence; it does not satisfy this native
+build gate or close the [container security gate](CONTAINER_SECURITY.md#remaining-scan-coverage-dependency-postgrest).
+Resume only when a suitable isolated runner is available and review the
+resulting evidence before proposing an image build.
+
 This workflow is a bounded native-build experiment for the patched dependency
 proposal. It is **manual only** and runs only when dispatched on `main`. It does
 not build an image, change Compose, deploy a service, or upload the executable.
-It has not been run as part of this proposal. The earlier [resolution
-experiment](POSTGREST_RESOLUTION_EXPERIMENT.md) establishes a dry-run plan, not
-compilation or executable linkage.
+It has not been run as part of this proposal. The earlier resolution experiment
+establishes a dry-run plan, not compilation or executable linkage.
 
 Before dispatch, provide a dedicated **ephemeral** self-hosted Linux arm64
 runner with labels `self-hosted`, `Linux`, `ARM64` and
