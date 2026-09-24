@@ -56,8 +56,17 @@ index mirror. The distinct source archive has SHA-256
 and size 8081 bytes, both matching index metadata. Its embedded revision 0
 Cabal file has SHA-256
 `02dc3cc4d217a364471da7ce0f47be39e5b1449e7768134e5f2926d87a21448d`
-and size 1590 bytes. Any further transitive conflicts must be resolved before
-a build recipe is claimed.
+and size 1590 bytes.
+
+PR #49 evaluation run
+[`35953262296`](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35953262296)
+at source commit `c2a0a031d751c55571deb4303532576c82d7f52d` passed both jobs.
+The native arm64 Stack dry run selected `aeson` 2.2.5.1,
+`text-iso8601` 0.1.1.2, `hashable` 1.4.7.0, `character-ps` 0.1 and
+`attoparsec-aeson` 2.2.2.0. Its generated `stack.yaml.lock` diff is in the job
+log. The Nix job passed recursive derivation evaluation and graph checks.
+Neither job compiled a package, built an executable or image, or verified
+runtime behavior.
 The first PR #49 Stack run stopped before planning: Hackage Security rejected
 `snapshot.json` with an invalid hash while updating the package index. A fresh
 run should retain repository verification; a repeated failure needs the served
@@ -65,4 +74,5 @@ timestamp and snapshot response hashes investigated before trusting a plan.
 
 The workflow runs on a PR that changes its workflow or script, and can be
 dispatched manually after the workflow exists on the default branch. The job
-timeouts are 25 minutes. No successful resolution has been claimed here.
+timeouts are 25 minutes. Dependency resolution has passed; build and runtime
+evidence remain outstanding.

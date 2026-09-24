@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/postgrest-resolution-experiment.yml
       - docs/github-workflows/postgrest-resolution-experiment.yml
+      - docs/POSTGREST_RESOLUTION_EXPERIMENT.md
       - scripts/postgrest-resolution-candidate.py
       - scripts/check-postgrest-nix-graph.py
   workflow_dispatch:
