@@ -4,7 +4,6 @@
 import argparse
 import json
 import pathlib
-import re
 import sys
 
 
@@ -17,10 +16,35 @@ PACKAGES = {
 
 def selected(drv: dict, package: str, version: str) -> bool:
     env = drv.get("env", {})
-    name = drv.get("name") or env.get("name", "")
-    return (env.get("pname") == package and env.get("version") == version) or bool(
-        re.fullmatch(re.escape(package + "-" + version) + r"(?:-[^/]*)?", name)
-    )
+    return env.get("pname") == package and env.get("version") == version
+
+
+def closure(graph: dict, root: str) -> set[str]:
+    seen = set()
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        if path not in graph:
+            raise SystemExit(f"recursive graph omits input derivation: {path}")
+        seen.add(path)
+        pending.extend(graph[path].get("inputDrvs", {}))
+    return seen
+
+
+def direct_package(graph: dict, parent: str, package: str, version: str, errors: list[str]) -> str | None:
+    matches = [
+        path
+        for path in graph[parent].get("inputDrvs", {})
+        if graph[path].get("env", {}).get("pname") == package
+    ]
+    if len(matches) != 1 or not selected(graph[matches[0]], package, version):
+        found = [graph[path].get("name", path) for path in matches]
+        errors.append(f"{graph[parent].get('name', parent)} must directly select {package}-{version}; found {found}")
+        return None
+    print(f"direct dependency: {graph[parent].get('name')} -> {graph[matches[0]].get('name')}")
+    return matches[0]
 
 
 def source_fetches(graph: dict, package: str, version: str) -> list[tuple[str, str, str]]:
@@ -39,14 +63,32 @@ def source_fetches(graph: dict, package: str, version: str) -> list[tuple[str, s
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("graph", type=pathlib.Path)
+    parser.add_argument("root_drv_file", type=pathlib.Path)
     args = parser.parse_args()
     graph = json.loads(args.graph.read_text())
     if not isinstance(graph, dict) or not graph:
         raise SystemExit("empty or invalid recursive derivation graph")
+    root = args.root_drv_file.read_text().strip()
+    if root not in graph or not selected(graph[root], "postgrest", "14.17"):
+        raise SystemExit(f"root is not the selected PostgREST 14.17 derivation: {root}")
+    rooted_paths = closure(graph, root)
 
     errors = []
+    aeson_path = direct_package(graph, root, "aeson", "2.2.5.1", errors)
+    if aeson_path:
+        direct_package(graph, aeson_path, "text-iso8601", "0.1.1.2", errors)
+        direct_package(graph, aeson_path, "hashable", "1.4.7.0", errors)
+        conflicting_hashable = [
+            graph[path].get("name", path)
+            for path in closure(graph, aeson_path)
+            if graph[path].get("env", {}).get("pname") == "hashable"
+            and not selected(graph[path], "hashable", "1.4.7.0")
+        ]
+        if conflicting_hashable:
+            errors.append(f"conflicting hashable derivations below aeson: {conflicting_hashable}")
+
     for package, (version, expected_hash) in PACKAGES.items():
-        selected_paths = [path for path, drv in graph.items() if selected(drv, package, version)]
+        selected_paths = [path for path in rooted_paths if selected(graph[path], package, version)]
         if not selected_paths:
             errors.append(f"missing {package}-{version} derivation")
             continue

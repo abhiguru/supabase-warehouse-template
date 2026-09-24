@@ -33,7 +33,7 @@ jobs:
           timeout 20m nix-instantiate -A postgrestStatic > "$RUNNER_TEMP/postgrest-static.drv-path"
           drv_path="$(cat "$RUNNER_TEMP/postgrest-static.drv-path")"
           nix --extra-experimental-features nix-command derivation show --recursive "$drv_path" > "$RUNNER_TEMP/postgrest-build-derivations.json"
-          python3 ../scripts/check-postgrest-nix-graph.py "$RUNNER_TEMP/postgrest-build-derivations.json"
+          python3 ../scripts/check-postgrest-nix-graph.py "$RUNNER_TEMP/postgrest-build-derivations.json" "$RUNNER_TEMP/postgrest-static.drv-path"
           cat "$RUNNER_TEMP/postgrest-static.drv-path"
       - name: Save recursive derivation graph
         if: always()

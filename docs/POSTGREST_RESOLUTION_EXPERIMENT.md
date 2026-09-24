@@ -19,20 +19,23 @@ unpacked source tree recursively rather than the `.tar.gz` bytes. Nix 2.31.2
 `nix-prefetch-url --unpack` produced the two Nix values above from the
 archive-verified files. The aeson value matches the expected hash reported by
 the first PR #49 Nix run; that run failed because it had used the archive hash
-as the `fetchzip` hash. The text-iso8601 value has not yet been confirmed by CI.
+as the `fetchzip` hash. The subsequent Nix evaluation at `a916b51` passed and
+saved a recursive derivation graph containing both declared unpacked hashes.
 
 PostgREST's `aeson >= 2.0.3 && < 2.3` accepts 2.2.5.1. The locked Nixpkgs
 revision `c80edd02003fe3d8af527215a3ac069be9cfd47f` has `hashable`
 1.4.7.0, which satisfies the new `aeson` source's `hashable >= 1.4.6.0`
 bound. Nix evaluation itself remains unverified on this host because Nix is
 unavailable. The CI experiment evaluates `postgrestStatic`, exports its recursive
-derivation graph, and fails unless it selects `aeson` 2.2.5.1,
-`text-iso8601` 0.1.1.2 and `hashable` 1.4.7.0. It also checks that the two
-Hackage fetch derivations are inputs of their selected package derivations and
-declare the expected recursive SHA-256 unpacked-source hashes. The graph and
-top-level derivation path are saved as a CI artifact. These are declaration checks:
-evaluation does not download or verify archive bytes, build packages, or prove
-which packages will be linked into an executable.
+derivation graph, and fails unless the selected PostgREST 14.17 derivation
+directly depends on `aeson` 2.2.5.1, and that aeson derivation directly depends
+on `text-iso8601` 0.1.1.2 and `hashable` 1.4.7.0. It rejects another hashable
+version anywhere below the selected aeson derivation. It also checks that the
+two Hackage fetch derivations are inputs of their selected package derivations
+and declare the expected recursive SHA-256 unpacked-source hashes. The graph
+and top-level derivation path are saved as a CI artifact. These are build-input
+declaration checks: evaluation does not download or verify archive bytes, build
+packages, or prove which packages will be linked into an executable.
 
 The upstream `lts-22.44` snapshot includes `hashable` 1.4.4.0. Since
 `aeson` 2.2.5.1 requires at least 1.4.6.0, the two proposed Stack extra-deps
