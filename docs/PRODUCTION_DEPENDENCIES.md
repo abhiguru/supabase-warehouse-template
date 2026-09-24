@@ -43,11 +43,17 @@ changes need affected-case testing before inheriting physical acceptance.
   core Thrift finding and eight in six plugin executables (gRPC and Tempo).
   The image-report validator rejected it. Grafana 13.2.2 remained the latest
   stable publisher release, and no patched compatible signed plugin release
-  was verified. This is not an arm64 vulnerability scan, a full 19-image
-  rescan, or a passing gate. Exact PostgREST binaries on both platforms contain
-  affected `aeson` versions under HIGH advisory HSEC-2026-0007; inspected v14.18 and
-  v16.3 images also remain affected, and no complete image-bound Haskell/native
-  inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
+  was verified. The [native arm64 Grafana run
+  35987888412](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35987888412)
+  passed at backend `80869391f2c8dfb7e700ffa99a68382ba7e769c4` and
+  reported the same **9 HIGH, 0 CRITICAL** and the same CVEs and embedded
+  versions in its targeted image scan. Workflow success records valid scan
+  evidence; these findings still fail the strict image gate. Neither targeted
+  scan is a full 19-image rescan. Exact PostgREST binaries on both platforms
+  contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
+  inspected v14.18 and v16.3 images also remain affected. No complete
+  image-bound Haskell/native inventory is available. See
+  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
   the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
   the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md). The manual
   [arm64 native build evidence](POSTGREST_NATIVE_BUILD_EVIDENCE.md) workflow is
