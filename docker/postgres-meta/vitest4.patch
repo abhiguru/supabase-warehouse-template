@@ -1,7 +1,6 @@
 --- a/test/server/result-size-limit.ts
 +++ b/test/server/result-size-limit.ts
-@@ -93,6 +93,7 @@
- 
+@@ -94,5 +94,6 @@
    test(
      'should not kill the server on underlying parser error',
 +    { timeout: 20000 },
