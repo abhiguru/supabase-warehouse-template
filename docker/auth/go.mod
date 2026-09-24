@@ -189,3 +189,5 @@ require (
 go 1.26.5
 
 replace github.com/joho/godotenv => ./internal/forks/godotenv
+
+replace github.com/jackc/pgproto3/v2 => ./internal/forks/pgproto3
