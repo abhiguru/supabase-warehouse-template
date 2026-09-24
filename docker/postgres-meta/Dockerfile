@@ -5,8 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/supabase/postgres-meta/tar.gz/refs/tags/v0.99.0 -o /tmp/source.tar.gz \
     && echo '8d3974ac52eaa4ddd7d0462ac1bd30f9e0e50b511fa96a537d6f3f9cc28e726e  /tmp/source.tar.gz' | sha256sum -c - \
     && tar -xzf /tmp/source.tar.gz --strip-components=1
-COPY package.json package-lock.json fastify5.patch ./
+COPY package.json package-lock.json fastify5.patch vitest4.patch ./
 RUN patch -p1 < fastify5.patch \
+    && patch -p1 < vitest4.patch \
     && npm ci --ignore-scripts --no-audit --no-fund \
     && npm run check && npm run build \
     && npm exec -- vitest run test/app.test.ts test/admin-app.test.ts test/utils.test.ts --maxWorkers=1 --no-file-parallelism \
