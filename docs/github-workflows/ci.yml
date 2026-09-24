@@ -33,6 +33,18 @@ jobs:
         with:
           persist-credentials: false
       - run: bash tests/migrations.sh
+  grafana:
+    name: Signed Grafana plugin smoke
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run test:grafana
   contract:
     runs-on: ubuntu-latest
     steps:

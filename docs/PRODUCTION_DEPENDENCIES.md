@@ -30,13 +30,21 @@ changes need affected-case testing before inheriting physical acceptance.
   a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
   image, or review a reproducible source build with equivalent evidence, and
   assess its components. Acceptance requires 19 valid image-matched reports
-  passing the fixed HIGH/CRITICAL gate, including assessable PostgREST package
-  results and zero remaining Grafana findings at that threshold. The last
-  recorded all-profile inventory had **17/19** valid passing reports: the
+  passing the fixed HIGH/CRITICAL gate, zero remaining Grafana findings at that
+  threshold, and a complete PostgREST Haskell/native inventory tied to the
+  exact per-platform binaries with an applicable vulnerability assessment.
+  Trivy's empty Haskell result cannot satisfy it. The last recorded all-profile
+  inventory had **17/19** valid passing reports: the
   locally patched Grafana had **102 HIGH** findings and PostgREST had no package
   results. Publisher binary provenance for PostgREST is established for amd64,
   but it is not a component inventory; arm64 was not attested by that hash.
-  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md) contains the dated evidence.
+  A 2026-09-24 targeted Grafana candidate scan reduced its count to **9 HIGH**
+  while preserving publisher signatures; it is not a full 19-image rescan or a
+  passing gate. Exact PostgREST binaries on both platforms contain affected
+  `aeson` versions under HIGH advisory HSEC-2026-0007; inspected v14.18 and
+  v16.3 images also remain affected, and no complete image-bound Haskell/native
+  inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md)
+  and the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md).
 - **Disabled Auth source advisory:** Security/build maintainers should track
   the unfixed HIGH `GHSA-jqcq-xjh3-6g23` in `pgproto3/v2` and assess an
   upstream fix or separately tested driver migration before enabling Auth.

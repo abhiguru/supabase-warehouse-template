@@ -134,6 +134,20 @@ The subsequent full 19-image inventory again had 17 valid passing reports,
 Grafana's 102 findings, and an empty PostgREST package result. The strict gate
 remained nonzero for exactly those two images.
 
+On 2026-09-24, seven newer publisher-signed, Grafana-compatible bundled plugins
+were pinned by version and publisher archive SHA-256, then installed into the
+same Grafana 13.2.2 image. A fresh candidate-image Trivy 0.74.0 scan at the
+fixed HIGH/CRITICAL threshold found **9 HIGH, 0 CRITICAL**: one in the core
+binary and eight across the remaining bundled plugin executables. The candidate
+passed an isolated startup check: all 13 bundled plugins retained valid Grafana
+signatures, and the Prometheus/PostgreSQL datasource provisioning loaded. This
+is a targeted candidate scan, not a new complete 19-image inventory or a passing
+production image gate. The remaining findings and the PostgREST evidence gap
+still require remediation and a complete strict rescan. The image and Compose
+disable automatic catalog updates of preinstalled plugins, including the seven
+pinned bundles; Grafana's separate first-install behavior remains unchanged.
+See [Grafana's signing rules](https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin).
+
 ## Remaining scan-coverage dependency: PostgREST
 
 Trivy detects no OS or language package results in the static PostgREST v14.17
@@ -172,6 +186,19 @@ updating the image to v14.18 solely for that purpose would not close the gate.
 The [latest stable Grafana release](https://github.com/grafana/grafana/releases/tag/v13.2.2)
 was still 13.2.2 on the same date, so no publisher-signed replacement is yet
 available through a newer stable release.
+
+The [2026-09-24 platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md)
+found embedded `aeson` GHC unit IDs in the exact v14.17 publisher binaries:
+2.2.3.0 on amd64 and 2.1.2.1 on arm64. Both are below the fixed 2.2.5.1 version
+in [HSEC-2026-0007](https://github.com/haskell/security-advisories/blob/main/advisories/published/2026/HSEC-2026-0007.md),
+a HIGH memory-exhaustion advisory. The inspected v14.18 and v16.3 publisher
+images also contain affected `aeson` versions. Binary strings are partial and
+cannot prove a complete inventory or absence of the separately affected
+`text-iso8601` package. The current image therefore has both a known HIGH
+component finding and an unresolved coverage gap. A remedial image needs an
+image-bound Haskell/native component inventory and vulnerability assessment,
+then warehouse API regressions and affected physical-iPhone retesting before a
+PostgREST runtime change can inherit the accepted orders/cart evidence.
 
 ## Source dependency audit follow-up
 

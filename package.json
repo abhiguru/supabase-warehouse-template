@@ -17,6 +17,7 @@
     "test:gateway": "node scripts/gateway-smoke.mjs",
     "test:gateway-dns": "bash scripts/gateway-dns-check.sh",
     "test:monitoring": "bash scripts/monitoring-check.sh",
+    "test:grafana": "bash scripts/grafana-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
     "test:cups": "bash scripts/cups-check.sh",
     "test:realtime": "bash scripts/realtime-check.sh",
