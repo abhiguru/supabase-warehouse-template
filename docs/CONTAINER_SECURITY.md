@@ -148,6 +148,40 @@ disable automatic catalog updates of preinstalled plugins, including the seven
 pinned bundles; Grafana's separate first-install behavior remains unchanged.
 See [Grafana's signing rules](https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin).
 
+**2026-09-24 targeted amd64 recheck:** The current recipe was built on an amd64
+host with `docker build --no-cache --pull=false -t
+warehouse-grafana-review:20260924 -f docker/grafana/Dockerfile docker` from the
+repository root. The resulting image ID was
+`sha256:aa734a12badf82363db1cee53333339e5c1d6cbb52864c89c7ddba3a784c3abd`.
+Trivy 0.74.0 ran `trivy image --quiet --scanners vuln --severity HIGH,CRITICAL
+--ignore-unfixed --list-all-pkgs --exit-code 0 --format json --output <report>
+warehouse-grafana-review:20260924`.
+The image-specific report was rejected by
+`node scripts/validate-image-report.mjs <report> <image>`: **9 HIGH, 0
+CRITICAL**. The disposable image was removed. These are the exact fixed findings
+in that Linux amd64 report (versions below are embedded dependency versions,
+not plugin release numbers):
+
+| Executable | Advisory | Embedded version | Fixed dependency version |
+|---|---|---|---|
+| Grafana core | [CVE-2026-43871](https://www.openwall.com/lists/oss-security/2026/07/24/33), Apache Thrift | `v0.23.1-0.20260429145742-d2acd3c49e58` | `0.24.0` |
+| [PostgreSQL](https://grafana.com/grafana/plugins/grafana-postgresql-datasource/), [InfluxDB](https://grafana.com/grafana/plugins/influxdb/), [Jaeger](https://grafana.com/grafana/plugins/jaeger/), [Prometheus](https://grafana.com/grafana/plugins/prometheus/) plugin executables | [CVE-2026-84445](https://github.com/advisories/GHSA-2v4p-qf9q-27wj), gRPC | `v1.83.1` in each | `1.83.2` on the 1.83 line |
+| [Google Cloud Monitoring](https://grafana.com/grafana/plugins/stackdriver/) plugin executable | [CVE-2026-84304](https://github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc), gRPC | `v1.83.0` | `1.83.1` |
+| Google Cloud Monitoring plugin executable | [CVE-2026-84445](https://github.com/advisories/GHSA-2v4p-qf9q-27wj), gRPC | `v1.83.0` | `1.83.2` on the 1.83 line |
+| [Tempo](https://grafana.com/grafana/plugins/tempo/) plugin executable | [CVE-2026-21728](https://grafana.com/security/security-advisories/cve-2026-21728/), Tempo | `v1.5.1-0.20250529124718-87c2dc380cec` | `2.8.4`, `2.9.2`, or `2.10.2` on the respective release lines |
+| Tempo plugin executable | [CVE-2026-28377](https://grafana.com/security/security-advisories/cve-2026-28377/), Tempo | Same `v1.5.1` pseudo-version | `2.10.3` |
+
+The [Grafana publisher release list](https://github.com/grafana/grafana/releases)
+still identified 13.2.2 as latest stable on 2026-09-24. The six affected
+plugin catalog pages linked above did not provide a verified patched,
+compatible signed release. A fixed dependency version in an advisory does not
+establish that an installable publisher plugin contains it. No safe publisher
+replacement candidate is identified yet. This was a targeted **amd64** image
+scan, not an arm64 vulnerability scan or a new full 19-image inventory. The
+last complete inventory remains at 17/19 valid passing reports, with the older
+102-HIGH Grafana result and the PostgREST package-evidence gap. The strict full
+gate remains open and must be rerun after a publisher fix.
+
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.
 With disposable Prometheus and PostgreSQL fixtures on a private Docker network,

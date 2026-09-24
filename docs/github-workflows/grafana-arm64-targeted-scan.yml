@@ -1,0 +1,107 @@
+name: Grafana targeted arm64 vulnerability scan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      SCAN_IMAGE: warehouse-grafana-scan:${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify native arm64 runner and prepare private scan directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          umask 077
+          scan_dir="$RUNNER_TEMP/grafana-scan-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$scan_dir"
+          printf 'SCAN_DIR=%s\n' "$scan_dir" >> "$GITHUB_ENV"
+      - name: Install pinned Trivy 0.74.0 for arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 \
+            https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-ARM64.tar.gz \
+            -o "$SCAN_DIR/trivy.tar.gz"
+          # Published on https://github.com/aquasecurity/trivy/releases/expanded_assets/v0.74.0
+          printf '%s  %s\n' b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5 "$SCAN_DIR/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$SCAN_DIR/trivy.tar.gz" -C "$SCAN_DIR" trivy
+          test "$("$SCAN_DIR/trivy" --version)" = 'Version: 0.74.0'
+      - name: Build the checked-out Grafana recipe natively
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          docker build --pull --no-cache --platform linux/arm64 --build-arg TARGETARCH=arm64 \
+            --file docker/grafana/Dockerfile --tag "$SCAN_IMAGE" docker
+          df -h "$RUNNER_TEMP"
+          test "$(docker image inspect "$SCAN_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+          printf 'image=%s\nimage_id=%s\nrepository_sha=%s\narchitecture=linux/arm64\n' \
+            "$SCAN_IMAGE" "$(docker image inspect "$SCAN_IMAGE" --format '{{.Id}}')" "$GITHUB_SHA" > "$SCAN_DIR/build.txt"
+      - name: Scan and validate the JSON report
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/grafana-trivy-cache-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          "$SCAN_DIR/trivy" image --quiet --scanners vuln --severity HIGH,CRITICAL \
+            --ignore-unfixed --list-all-pkgs --exit-code 0 --format json \
+            --output "$SCAN_DIR/report.json" "$SCAN_IMAGE"
+          node - "$SCAN_DIR/report.json" "$SCAN_IMAGE" "$SCAN_DIR/summary.txt" "$GITHUB_STEP_SUMMARY" <<'NODE'
+          const fs = require('node:fs');
+          const [path, image, summaryPath, stepSummaryPath] = process.argv.slice(2);
+          const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (report.SchemaVersion !== 2 || report.ArtifactName !== image ||
+              report.ArtifactType !== 'container_image' ||
+              !Array.isArray(report.Results) || report.Results.length === 0) {
+            throw new Error('missing or mismatched container scan evidence');
+          }
+          const counts = { HIGH: 0, CRITICAL: 0 };
+          for (const result of report.Results) {
+            if (!result.Target || !['os-pkgs', 'lang-pkgs'].includes(result.Class) ||
+                !Array.isArray(result.Packages) ||
+                !result.Packages.some(pkg => typeof pkg?.Name === 'string' && pkg.Name.length > 0 &&
+                  typeof pkg.Version === 'string' && pkg.Version.length > 0) ||
+                (result.Vulnerabilities !== undefined && !Array.isArray(result.Vulnerabilities))) {
+              throw new Error('invalid result or missing versioned package inventory');
+            }
+            for (const vulnerability of result.Vulnerabilities ?? []) {
+              if (!Object.hasOwn(counts, vulnerability.Severity)) {
+                throw new Error(`unexpected vulnerability severity: ${vulnerability.Severity}`);
+              }
+              counts[vulnerability.Severity]++;
+            }
+          }
+          const summary = `Grafana arm64: ${counts.HIGH} HIGH, ${counts.CRITICAL} CRITICAL\n`;
+          fs.writeFileSync(summaryPath, summary);
+          fs.appendFileSync(stepSummaryPath, `### Targeted Grafana arm64 scan\n\n${summary}\n`);
+          process.stdout.write(summary);
+          NODE
+      - name: Upload targeted scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafana-arm64-targeted-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/grafana-scan-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+            ${{ runner.temp }}/grafana-scan-${{ github.run_id }}-${{ github.run_attempt }}/summary.txt
+            ${{ runner.temp }}/grafana-scan-${{ github.run_id }}-${{ github.run_attempt }}/build.txt
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Remove only this run's image and temporary files
+        if: always()
+        shell: bash
+        run: |
+          docker image rm "$SCAN_IMAGE" || true
+          rm -rf -- "$RUNNER_TEMP/grafana-scan-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            "$RUNNER_TEMP/grafana-trivy-cache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
