@@ -1,0 +1,119 @@
+name: PostgREST native arm64 build evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-build-evidence:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, ARM64, postgrest-build-isolated]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check dedicated runner capacity and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(ghc --numeric-version)" = 9.6.7
+          stack --numeric-version | grep -Fx 3.7.1
+          command -v git
+          command -v file
+          command -v readelf
+          command -v timeout
+          min_bytes=$((100 * 1024 * 1024 * 1024))
+          test "$(df -PB1 "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')" -ge "$min_bytes"
+          test "$(df -PB1 "$GITHUB_WORKSPACE" | awk 'NR == 2 {print $4}')" -ge "$min_bytes"
+          test "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge "$((16 * 1024 * 1024))"
+      - name: Build pinned source and collect evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/postgrest-build.XXXXXX")"
+          build_pid=''
+          monitor_pid=''
+          trap 'test -z "$monitor_pid" || kill "$monitor_pid" 2>/dev/null || true; test -z "$build_pid" || kill "$build_pid" 2>/dev/null || true; rm -rf -- "$work_dir"' EXIT
+          evidence_dir="$RUNNER_TEMP/postgrest-native-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$evidence_dir" "$work_dir/tmp"
+          export STACK_ROOT="$work_dir/stack-root" TMPDIR="$work_dir/tmp"
+          ulimit -v $((14 * 1024 * 1024))
+          git clone --depth 1 --branch v14.17 --single-branch https://github.com/PostgREST/postgrest.git "$work_dir/upstream"
+          python3 scripts/postgrest-resolution-candidate.py --stack-hashable "$work_dir/upstream"
+          cp docs/research/postgrest-v14.17-stack.yaml.lock "$work_dir/upstream/stack.yaml.lock"
+          cd "$work_dir/upstream"
+          test "$(git rev-parse HEAD)" = 064e5fea7bde63b0424fab53a0109c6f6016e95c
+          test "$(sha256sum stack.yaml.lock | cut -d ' ' -f 1)" = 2b2a9695a986da7d6f150beb5f1facbfc948d387c8c5d3f4202f51f0e5b6ee11
+          git add nix/overlays/haskell-packages.nix stack.yaml stack.yaml.lock
+          git diff --cached --check
+          git diff --cached --binary > "$evidence_dir/patched-upstream.diff"
+          test "$(git write-tree)" = 7e6d822e4754f3ac5d40869d64788ed03f806349
+          printf '%s\n' 7e6d822e4754f3ac5d40869d64788ed03f806349 > "$evidence_dir/patched-upstream.tree"
+          printf '%s\n' 064e5fea7bde63b0424fab53a0109c6f6016e95c > "$evidence_dir/upstream-source.sha"
+          cp stack.yaml.lock "$evidence_dir/stack.yaml.lock"
+          {
+            printf 'workflow_repository_sha=%s\n' "$GITHUB_SHA"
+            printf 'runner_arch=%s\n' "$(uname -m)"
+            printf 'ghc=%s\n' "$(ghc --numeric-version)"
+            printf 'ghc_executable_sha256=%s\n' "$(sha256sum "$(readlink -f "$(command -v ghc)")" | cut -d ' ' -f 1)"
+            printf 'stack=%s\n' "$(stack --numeric-version)"
+            printf 'stack_executable_sha256=%s\n' "$(sha256sum "$(readlink -f "$(command -v stack)")" | cut -d ' ' -f 1)"
+          } > "$evidence_dir/toolchain.txt"
+          timeout --signal=TERM --kill-after=2m 20m stack --no-nix build --dry-run --system-ghc --jobs=1 > "$evidence_dir/stack-plan.log" 2>&1
+          python3 "$GITHUB_WORKSPACE/scripts/check-postgrest-stack-plan.py" stack.yaml.lock "$GITHUB_WORKSPACE/docs/research/postgrest-v14.17-stack.yaml.lock" "$evidence_dir/stack-plan.log"
+          link_map="$work_dir/postgrest-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.link.map"
+          timeout --signal=TERM --kill-after=5m 150m stack --no-nix build postgrest:exe:postgrest --system-ghc --jobs=1 --cabal-verbosity=3 --ghc-options="-v -optl=-Wl,-Map=$link_map -optl=-Wl,--build-id=sha1" > "$work_dir/build.log" 2>&1 &
+          build_pid=$!
+          (
+            while kill -0 "$build_pid" 2>/dev/null; do
+              if test "$(du -sk "$work_dir" | cut -f 1)" -ge "$((80 * 1024 * 1024))"; then
+                touch "$work_dir/disk-limit-exceeded"
+                kill -TERM "$build_pid" 2>/dev/null || true
+                exit 0
+              fi
+              sleep 30
+            done
+          ) &
+          monitor_pid=$!
+          if ! wait "$build_pid"; then tail -100 "$work_dir/build.log"; exit 1; fi
+          build_pid=''
+          kill "$monitor_pid" 2>/dev/null || true
+          wait "$monitor_pid" 2>/dev/null || true
+          monitor_pid=''
+          test ! -e "$work_dir/disk-limit-exceeded"
+          test "$(du -sk "$work_dir" | cut -f 1)" -lt "$((80 * 1024 * 1024))"
+          cmp stack.yaml.lock "$GITHUB_WORKSPACE/docs/research/postgrest-v14.17-stack.yaml.lock"
+          install_root="$(stack --no-nix path --local-install-root)"
+          binary="$install_root/bin/postgrest"
+          test -s "$binary"
+          file "$binary" > "$evidence_dir/binary.file"
+          readelf -h "$binary" > "$evidence_dir/binary.elf-header"
+          readelf -d "$binary" > "$evidence_dir/binary.dynamic"
+          grep -Eq 'Machine:.*AArch64' "$evidence_dir/binary.elf-header"
+          timeout 10s "$binary" --version > "$evidence_dir/binary.version"
+          sha256sum "$binary" | awk '{print $1 "  postgrest"}' > "$evidence_dir/binary.sha256"
+          stack --no-nix path --ghc-package-path > "$evidence_dir/ghc-package-path.txt"
+          stack --no-nix exec -- ghc-pkg dump > "$evidence_dir/ghc-pkg.dump"
+          for package in aeson text-iso8601 hashable character-ps attoparsec-aeson; do
+            stack --no-nix exec -- ghc-pkg field "$package" id version > "$evidence_dir/unit-$package.txt"
+          done
+          test -s "$link_map"
+          gzip -c "$link_map" > "$evidence_dir/postgrest.link.map.gz"
+          python3 "$GITHUB_WORKSPACE/scripts/check-postgrest-build-evidence.py" "$evidence_dir" "$work_dir/build.log" "$link_map" "$binary" "$PWD"
+          (cd "$evidence_dir" && sha256sum -- * > evidence.sha256)
+      - name: Save metadata evidence without the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgrest-native-arm64-build-evidence
+          path: ${{ runner.temp }}/postgrest-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Remove job-owned evidence files
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/postgrest-native-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
