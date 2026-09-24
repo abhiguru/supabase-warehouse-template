@@ -9,8 +9,8 @@ import sys
 
 
 PACKAGES = {
-    "aeson": ("2.2.5.1", "ea82d650c0bbd8877dbf13a03b9baae3be7ed4a65f4e8cfe5b4eacb4f5beae75"),
-    "text-iso8601": ("0.1.1.2", "ddbb13aec70a2fd54c7a25bf85e38a467d0d5599980d21f4925b3c706f8f7398"),
+    "aeson": ("2.2.5.1", "7f55de795c57c68215a8718d19495b48be0ba45d23c633e59c2e1752911fec2e"),
+    "text-iso8601": ("0.1.1.2", "e00ce8d45eaa0c534d44a58ba412541a5ee7b299c23a840cd02f07f6f90520cb"),
     "hashable": ("1.4.7.0", None),
 }
 
@@ -31,7 +31,7 @@ def source_fetches(graph: dict, package: str, version: str) -> list[tuple[str, s
         if archive not in str(urls):
             continue
         for output in drv.get("outputs", {}).values():
-            if output.get("hashAlgo") == "sha256" and output.get("method") == "flat":
+            if output.get("hashAlgo") == "sha256" and output.get("method") == "nar":
                 found.append((path, output.get("path", ""), output.get("hash", "")))
     return found
 
@@ -55,7 +55,7 @@ def main() -> int:
             continue
         fetches = source_fetches(graph, package, version)
         if not fetches:
-            errors.append(f"missing flat SHA-256 Hackage source derivation for {package}-{version}")
+            errors.append(f"missing recursive SHA-256 Hackage fetchzip derivation for {package}-{version}")
         for path, output_path, actual_hash in fetches:
             if not any(
                 path in graph[selected_path].get("inputDrvs", {})
@@ -66,7 +66,7 @@ def main() -> int:
             if actual_hash.lower() != expected_hash:
                 errors.append(f"unexpected {package}-{version} source hash in {path}: {actual_hash}")
             else:
-                print(f"declared {package}-{version} archive SHA-256: {actual_hash}")
+                print(f"declared {package}-{version} unpacked source SHA-256: {actual_hash}")
 
     if errors:
         print("\n".join(errors), file=sys.stderr)

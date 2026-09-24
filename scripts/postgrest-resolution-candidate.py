@@ -10,8 +10,9 @@ import pathlib
 import subprocess
 
 SOURCE_SHA = "064e5fea7bde63b0424fab53a0109c6f6016e95c"
-AESON_SRI = "sha256-6oLWUMC72Id9vxOgO5uq475+1KZfToz+W06stPW+rnU="
-TEXT_SRI = "sha256-3bsTrscKL9VMeiW/heOKRn0NVZmYDSH0kls8cG+Pc5g="
+# callHackageDirect uses fetchzip, so these hash the unpacked source trees.
+AESON_SRI = "sha256-f1XeeVxXxoIVqHGNGUlbSL4LpF0jxjPlnC4XUpEf7C4="
+TEXT_SRI = "sha256-4Azo1F6qDFNNRKWLpBJUGl7nspnCOoQM0C8H9vkFIMs="
 
 
 def replace_once(path: pathlib.Path, before: str, after: str) -> None:
