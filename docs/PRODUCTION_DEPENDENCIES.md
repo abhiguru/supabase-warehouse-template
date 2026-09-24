@@ -99,13 +99,20 @@ changes need affected-case testing before inheriting physical acceptance.
   `pgproto3/v2` replacement remain. The isolated Docker build passed module
   verification, local decoder tests, crypto tests and compilation. Against a
   disposable Postgres 15 database, the candidate binary completed migrations
-  (23 `auth` tables), upstream storage and model packages passed, and serial
-  admin and OAuth authorization tests passed. A broader parallel API package
-  run failed because packages shared one test schema and custom OAuth tests
-  could not resolve external `example.com` in the test network; the admin
-  update that failed in that run passed when isolated. Full upstream API and
-  runtime authentication acceptance, an image scan, and GitHub alert closure
-  remain unverified. Auth stays disabled.
+  (23 `auth` tables), upstream storage and model packages passed, and the
+  complete `go test -p 1 -count=1 ./internal/api/...` tree passed (11 tested
+  packages; one package had no tests). The serial run used deterministic
+  `example.com` resolution and a test-only proxy that rejected that site's
+  outbound HTTPS connection promptly; other HTTPS connections were tunneled.
+  This was necessary because the upstream custom OAuth test expects a failed
+  discovery fetch, while the isolated network otherwise timed out or could not
+  resolve the site. An earlier parallel API run caused shared-schema test
+  collisions; serial execution removed those failures. The built Auth service
+  also returned HTTP 200 for health, signup and password grant against the
+  disposable database, with a confirmed user row persisted. No production
+  code or test assertions changed. The complete upstream `./...` suite,
+  production authentication acceptance, an image scan, and GitHub alert
+  closure remain unverified. Auth stays disabled.
 - **Metadata dependency candidates:** The tracked postgres-meta graph now pins
   Vitest and its coverage package to 4.1.11, resolving the patched
   `@vitest/mocker` 4.1.11 for
