@@ -43,8 +43,9 @@ changes need affected-case testing before inheriting physical acceptance.
   passing gate. Exact PostgREST binaries on both platforms contain affected
   `aeson` versions under HIGH advisory HSEC-2026-0007; inspected v14.18 and
   v16.3 images also remain affected, and no complete image-bound Haskell/native
-  inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md)
-  and the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md).
+  inventory is available. See [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
+  the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
+  the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md).
 - **Disabled Auth source advisory:** Security/build maintainers should track
   the unfixed HIGH `GHSA-jqcq-xjh3-6g23` in `pgproto3/v2` and assess an
   upstream fix or separately tested driver migration before enabling Auth.
