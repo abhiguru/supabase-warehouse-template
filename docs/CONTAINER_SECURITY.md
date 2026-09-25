@@ -241,6 +241,22 @@ change was reverted.
 This was an amd64 candidate scan; neither the arm64 candidate nor the complete
 19-image inventory was rerun. The Grafana and PostgREST gates remain open.
 
+**2026-09-25 core-build research:** [PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
+merged a manual Grafana 13.2.2 core-build recipe and its
+[reproduction record](GRAFANA_CORE_CANDIDATE.md). A native amd64 build from the
+pinned release source with Apache Thrift 0.24.0 removed the core Thrift finding.
+Trivy 0.74.0 reported **8 HIGH, 0 CRITICAL** on that candidate image; all eight
+findings remain in publisher-signed plugin executables, so the strict validator
+rejected it. Startup, all 13 plugin signatures, provisioning, and live
+Prometheus/PostgreSQL queries passed. The candidate build was not activated in
+the ordinary Grafana recipe, and its native arm64 build has **not been run**.
+The merged research commit is `3eda9686f71b48860464d74e9b42c3e3490fb239`;
+[CI on that exact main commit](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
+passed all seven jobs. Those CI Grafana jobs exercise the ordinary signed-plugin
+recipe on native amd64 and arm64 runners, not the manual core-build candidate.
+The active Grafana image remains at **9 HIGH, 0 CRITICAL**, and the complete
+19-image gate remains blocked by Grafana findings and PostgREST inventory.
+
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.
 With disposable Prometheus and PostgreSQL fixtures on a private Docker network,

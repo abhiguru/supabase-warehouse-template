@@ -86,18 +86,27 @@ existing Go caches; it reproduced the same binary and image IDs. The raw
 Trivy JSON SHA-256 is
 `85efd53a7cfbd0758ce1d751f22535e3f737eae37842f7da5623596676043bb9`.
 
-## Proposed native CI validation
+## Proposed native candidate validation
 
-Before integrating this prototype, run a PR matrix on **native** amd64 and
-arm64 Linux runners with at least 16 GiB RAM and 25 GiB free disk. Each job
-should verify `uname -m`, build from the pinned tag with this script, save
-the source commit, builder digest, `go version -m`, binary SHA-256, image ID,
+Before activating this prototype in the ordinary image recipe, run a matrix
+on **native** amd64 and arm64 Linux runners with at least 16 GiB RAM and 25 GiB
+free disk. Each job should verify `uname -m`, build from the pinned tag with
+this script, and save the source commit, builder digest, `go version -m`,
+binary SHA-256, image ID,
 and architecture, run the existing Grafana smoke check, and produce a Trivy
 0.74.0 JSON report. Validate report schema and image identity, assert that
 the core Thrift finding is absent, and show every remaining HIGH finding in
 the job summary and artifact. Findings must continue to fail the separate
 strict production image gate. Once arm64 has matching evidence, the complete
 19-image strict inventory can be rerun after the plugin fixes.
+
+The manual research recipe merged through
+[PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63) at
+`3eda9686f71b48860464d74e9b42c3e3490fb239`; its
+[exact-main CI](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
+passed. That CI tested the ordinary Grafana recipe on native amd64 and arm64
+runners. It did **not** build this candidate on arm64 or run this proposed
+candidate matrix.
 
 [Standard GitHub-hosted Linux runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 currently have 14 GB storage, which is tight against the measured cold

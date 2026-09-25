@@ -1,5 +1,26 @@
 # Readiness
 
+## Current production handoff — 2026-09-25
+
+Backend `main` includes the signed-plugin security recheck in
+[PR #62](https://github.com/abhiguru/supabase-warehouse-template/pull/62)
+(`c869e2a`) and the Grafana core build prototype in
+[PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
+(`3eda968`). [Exact-main CI 36128411899](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
+passed at `3eda968`. Production remains gated. The active Grafana recipe has
+**9 HIGH, 0 CRITICAL** findings on the recorded amd64 and native arm64 targeted
+scans. A separate native amd64 core rebuild candidate removes the core Thrift
+finding and passes startup, signed-plugin and live-query smoke, but still has
+**8 HIGH, 0 CRITICAL** findings in publisher-signed plugins. The core candidate
+has not been built or scanned on native arm64; neither candidate closes the
+strict 19-image gate. See [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md)
+and [remaining production work](PRODUCTION_DEPENDENCIES.md).
+
+PostgREST's native arm64 build evidence remains deferred. Production also
+awaits operator choices for hosting, SMS/onboarding, DNS/TLS, external alerts,
+off-host backups, retention, billing and capacity, with acceptance steps in
+[remaining production work](PRODUCTION_DEPENDENCIES.md#operator-inputs-and-later-acceptance).
+
 ## Gateway regression — reviewed merges and CI complete (2026-09-23)
 
 For the 2026-09-24 open-task inventory, see
