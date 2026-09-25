@@ -244,9 +244,11 @@ This was an amd64 candidate scan; neither the arm64 candidate nor the complete
 **2026-09-25 core-build research:** [PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
 merged a manual Grafana 13.2.2 core-build recipe and its
 [reproduction record](GRAFANA_CORE_CANDIDATE.md). A native amd64 build from the
-pinned release source with Apache Thrift 0.24.0 removed the core Thrift finding.
-Trivy 0.74.0 reported **8 HIGH, 0 CRITICAL** on that candidate image; all eight
-findings remain in publisher-signed plugin executables, so the strict validator
+pinned release source with Apache Thrift 0.24.0 yielded a candidate whose Trivy
+0.74.0 scan at the fixed HIGH/CRITICAL threshold no longer reports the single
+Apache Thrift HIGH finding in Grafana's main executable. That scan reported
+**8 HIGH, 0 CRITICAL** on the candidate image; all eight findings remain in
+publisher-signed plugin executables, so the strict validator
 rejected it. Startup, all 13 plugin signatures, provisioning, and live
 Prometheus/PostgreSQL queries passed. The candidate build was not activated in
 the ordinary Grafana recipe, and its native arm64 build has **not been run**.

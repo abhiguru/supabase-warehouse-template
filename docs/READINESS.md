@@ -9,9 +9,11 @@ Backend `main` includes the signed-plugin security recheck in
 (`3eda968`). [Exact-main CI 36128411899](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
 passed at `3eda968`. Production remains gated. The active Grafana recipe has
 **9 HIGH, 0 CRITICAL** findings on the recorded amd64 and native arm64 targeted
-scans. A separate native amd64 core rebuild candidate removes the core Thrift
-finding and passes startup, signed-plugin and live-query smoke, but still has
-**8 HIGH, 0 CRITICAL** findings in publisher-signed plugins. The core candidate
+scans. At the same Trivy HIGH/CRITICAL threshold, a separate native amd64 core
+rebuild candidate no longer reports the single Apache Thrift HIGH finding in
+Grafana's main executable. It passes startup, signed-plugin and live-query
+smoke, but still has **8 HIGH, 0 CRITICAL** findings in publisher-signed
+plugins. The core candidate
 has not been built or scanned on native arm64; neither candidate closes the
 strict 19-image gate. See [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md)
 and [remaining production work](PRODUCTION_DEPENDENCIES.md).

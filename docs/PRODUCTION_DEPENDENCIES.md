@@ -67,9 +67,11 @@ changes need affected-case testing before inheriting physical acceptance.
   13.2.2 remained the latest stable publisher application release. The separate
   native amd64 core rebuild prototype from merged PR #63 selected Thrift
   0.24.0 and passed startup, signed-plugin and live-query smoke. Its exact-image
-  Trivy 0.74.0 report has **8 HIGH, 0 CRITICAL**: the core Thrift finding is
-  gone, but all eight publisher-signed plugin findings remain. The validator
-  rejected that candidate; its native arm64 build and scan are untested. See
+  Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold has **8 HIGH,
+  0 CRITICAL**: it no longer reports the single Apache Thrift HIGH finding in
+  Grafana's main executable, while all eight publisher-signed plugin findings
+  remain. The validator rejected that candidate; its native arm64 build and
+  scan are untested. See
   [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md) for the pinned inputs and
   evidence. Exact PostgREST binaries on both platforms
   contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;

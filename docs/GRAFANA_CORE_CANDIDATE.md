@@ -69,8 +69,9 @@ The image reports Grafana 13.2.2.
 
 Trivy 0.74.0 scanned that exact image with `--scanners vuln --severity
 HIGH,CRITICAL --ignore-unfixed --list-all-pkgs`. The report contains **8 HIGH,
-0 CRITICAL**. The core Thrift finding is gone; all eight remaining findings
-are in six publisher-signed plugin executables. The image report validator
+0 CRITICAL**. This scan no longer reports the single Apache Thrift HIGH
+finding in Grafana's main executable; all eight reported HIGH findings are
+in six publisher-signed plugin executables. The image report validator
 correctly rejects the image because findings remain. The existing Grafana
 smoke check passed: healthy startup, 13 valid publisher-signed plugins,
 provisioning, and live Prometheus/PostgreSQL queries.
@@ -95,7 +96,8 @@ this script, and save the source commit, builder digest, `go version -m`,
 binary SHA-256, image ID,
 and architecture, run the existing Grafana smoke check, and produce a Trivy
 0.74.0 JSON report. Validate report schema and image identity, assert that
-the core Thrift finding is absent, and show every remaining HIGH finding in
+the single Apache Thrift HIGH finding in Grafana's main executable is absent
+at this scan threshold, and show every remaining HIGH finding in
 the job summary and artifact. Findings must continue to fail the separate
 strict production image gate. Once arm64 has matching evidence, the complete
 19-image strict inventory can be rerun after the plugin fixes.
