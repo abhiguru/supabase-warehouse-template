@@ -218,8 +218,9 @@ a `github.com/grafana/tempo` `v1.5.1-0.20260910130453-bcfe9f230c1d`
 pseudo-version that Trivy still flags for CVE-2026-21728 and CVE-2026-28377.
 An isolated Tempo-only lockfile candidate built on amd64 as image
 `sha256:254f29240623a089f6dfb82852f57814de2973b259fe44548c7f4c06e37ed98e`.
-Trivy 0.74.0 and the strict image-report validator still found **9 HIGH, 0
-CRITICAL**: the same core Thrift and plugin findings as the prior candidate.
+Trivy 0.74.0 reported **9 HIGH, 0 CRITICAL**, and the strict image-report
+validator rejected the candidate: the same core Thrift and plugin findings as
+the prior candidate.
 The isolated amd64 runtime check passed Grafana health, cryptographic validation
 of all 13 publisher signatures, provisioning and live Prometheus/PostgreSQL
 queries. The arm64 and arm archives were checked for signed-manifest presence

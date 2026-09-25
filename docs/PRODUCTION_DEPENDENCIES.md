@@ -1,6 +1,6 @@
 # Remaining production work
 
-Updated 2026-09-24. This is the current handoff checklist. It uses the existing
+Updated 2026-09-25. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 The operator has not supplied production services or operating policies.
