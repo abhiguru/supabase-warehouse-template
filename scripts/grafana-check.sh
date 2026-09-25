@@ -3,7 +3,8 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 check_id="$$-$RANDOM"
-image="warehouse-grafana-smoke:$check_id"
+image="${GRAFANA_SMOKE_IMAGE:-warehouse-grafana-smoke:$check_id}"
+built_image=false
 container="warehouse-grafana-smoke-$check_id"
 network="warehouse-grafana-smoke-$check_id"
 prometheus="warehouse-prometheus-smoke-$check_id"
@@ -13,12 +14,15 @@ cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker rm -f "$prometheus" "$postgres" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
-  docker image rm "$image" >/dev/null 2>&1 || true
+  if [[ "$built_image" == true ]]; then docker image rm "$image" >/dev/null 2>&1 || true; fi
   rm -rf "$report_dir"
 }
 trap cleanup EXIT
 
-docker build --no-cache --pull=false -t "$image" -f "$root/docker/grafana/Dockerfile" "$root/docker"
+if [[ -z ${GRAFANA_SMOKE_IMAGE:-} ]]; then
+  docker build --no-cache --pull=false -t "$image" -f "$root/docker/grafana/Dockerfile" "$root/docker"
+  built_image=true
+fi
 arch=$(docker image inspect --format '{{.Architecture}}' "$image")
 if [[ -n ${EXPECTED_ARCH:-} && "$arch" != "$EXPECTED_ARCH" ]]; then
   echo "Expected Grafana architecture $EXPECTED_ARCH, found $arch." >&2

@@ -1,0 +1,16 @@
+# Experimental core rebuild from Grafana v13.2.2 with Apache Thrift 0.24.0.
+# The `core` named build context must contain the architecture-matched grafana binary.
+# Keep the publisher image, frontend, and signed plugin replacement recipe unchanged.
+FROM grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+
+ARG TARGETARCH
+USER root
+COPY grafana/plugins.lock grafana/install-plugins.sh /tmp/
+RUN apk add --no-cache --upgrade 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
+    && TARGETARCH="$TARGETARCH" sh /tmp/install-plugins.sh \
+    && rm /tmp/plugins.lock /tmp/install-plugins.sh
+COPY --from=core --chmod=0755 grafana /usr/share/grafana/bin/grafana
+LABEL org.opencontainers.image.revision="3db12332b66497c31f8ad2a5fb0eb0fe0ca05a7e" \
+      org.opencontainers.image.description="Local Grafana 13.2.2 core rebuild with Apache Thrift 0.24.0"
+ENV GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false
+USER 472
