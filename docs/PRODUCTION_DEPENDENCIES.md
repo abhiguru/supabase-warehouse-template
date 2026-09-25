@@ -8,6 +8,13 @@ Production remains gated; existing demo release tags are unchanged. Counts and
 versions below describe dated scan evidence, not a new scan or verification of
 currently patched publisher versions.
 
+Backend `main` includes the signed-plugin recheck in
+[PR #62](https://github.com/abhiguru/supabase-warehouse-template/pull/62)
+(`c869e2a`) and the Grafana core build prototype in
+[PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
+(`3eda968`). [Exact-main CI 36128411899](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
+passed at `3eda968`. These merges do not close the production image gate.
+
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
 passed an affected physical-iPhone retest at mobile
@@ -25,8 +32,10 @@ changes need affected-case testing before inheriting physical acceptance.
 
 - **Item 1 — image security gate:** Security/build maintainers should obtain a
   compatible patched Grafana publisher release or publisher-signed replacement
-  plugins, preserve signature enforcement, rebuild from current package
-  repositories, and repeat the complete 19-image scan. They should also obtain
+  plugins, validate the [Grafana core rebuild
+  candidate](GRAFANA_CORE_CANDIDATE.md) on native arm64, preserve signature
+  enforcement, rebuild from current package repositories, and repeat the
+  complete 19-image scan. They should also obtain
   a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
   image, or review a reproducible source build with equivalent evidence, and
   assess its components. Acceptance requires 19 valid image-matched reports
@@ -55,8 +64,14 @@ changes need affected-case testing before inheriting physical acceptance.
   two fixed HIGH Tempo advisories in a targeted amd64 candidate scan. The
   candidate remained at **9 HIGH, 0 CRITICAL** after its signed-plugin and
   live-query smoke passed, so the experimental update was reverted. Grafana
-  13.2.2 remained the latest stable publisher application release. Exact
-  PostgREST binaries on both platforms
+  13.2.2 remained the latest stable publisher application release. The separate
+  native amd64 core rebuild prototype from merged PR #63 selected Thrift
+  0.24.0 and passed startup, signed-plugin and live-query smoke. Its exact-image
+  Trivy 0.74.0 report has **8 HIGH, 0 CRITICAL**: the core Thrift finding is
+  gone, but all eight publisher-signed plugin findings remain. The validator
+  rejected that candidate; its native arm64 build and scan are untested. See
+  [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md) for the pinned inputs and
+  evidence. Exact PostgREST binaries on both platforms
   contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
   inspected v14.18 and v16.3 images also remain affected. No complete
   image-bound Haskell/native inventory is available. See
