@@ -1,6 +1,6 @@
 # Remaining production work
 
-Updated 2026-09-24. This is the current handoff checklist. It uses the existing
+Updated 2026-09-25. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 The operator has not supplied production services or operating policies.
@@ -49,7 +49,14 @@ changes need affected-case testing before inheriting physical acceptance.
   reported the same **9 HIGH, 0 CRITICAL** and the same CVEs and embedded
   versions in its targeted image scan. Workflow success records valid scan
   evidence; these findings still fail the strict image gate. Neither targeted
-  scan is a full 19-image rescan. Exact PostgREST binaries on both platforms
+  scan is a full 19-image rescan. On 2026-09-25, publisher Tempo 13.2.2 and
+  InfluxDB 13.1.5 archives were checked for amd64, arm64 and arm. InfluxDB
+  still embeds gRPC v1.83.1; Tempo embeds patched gRPC v1.83.2 but still has
+  two fixed HIGH Tempo advisories in a targeted amd64 candidate scan. The
+  candidate remained at **9 HIGH, 0 CRITICAL** after its signed-plugin and
+  live-query smoke passed, so the experimental update was reverted. Grafana
+  13.2.2 remained the latest stable publisher application release. Exact
+  PostgREST binaries on both platforms
   contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
   inspected v14.18 and v16.3 images also remain affected. No complete
   image-bound Haskell/native inventory is available. See
