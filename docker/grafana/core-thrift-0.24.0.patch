@@ -1,0 +1,14 @@
+diff --git a/go.mod b/go.mod
+index ca65ee63..97f53532 100644
+--- a/go.mod
++++ b/go.mod
+@@ -348 +348 @@ require (
+-	github.com/apache/thrift v0.23.1-0.20260429145742-d2acd3c49e58 // indirect
++	github.com/apache/thrift v0.24.0 // indirect
+diff --git a/go.sum b/go.sum
+index 6e82f171..b22252a0 100644
+--- a/go.sum
++++ b/go.sum
+@@ -811,0 +812,2 @@ github.com/apache/thrift v0.23.1-0.20260429145742-d2acd3c49e58/go.mod h1:zPt6Wxg
++github.com/apache/thrift v0.24.0 h1:zy31L1a49QTNB2bG1BBfMXol3yJrTH975G3pPubQVLQ=
++github.com/apache/thrift v0.24.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
