@@ -197,6 +197,49 @@ targeted Grafana arm64 scan, not a new full 19-image inventory or a PostgREST
 native build. The Grafana findings and PostgREST dependency evidence gap remain
 open.
 
+**2026-09-25 publisher-plugin recheck:** The [Grafana download page](https://grafana.com/grafana/download?edition=oss&pg=get)
+still listed 13.2.2 as the stable application release. The publisher catalog
+offered [Tempo 13.2.2](https://grafana.com/grafana/plugins/tempo/changelog/) and
+[InfluxDB 13.1.5](https://grafana.com/grafana/plugins/influxdb/), both declaring
+Grafana `>=12.3.0-0` compatibility. Their Linux amd64, arm64 and arm archives
+were downloaded from
+`https://grafana.com/api/plugins/<plugin>/versions/<version>/download?os=linux&arch=<arch>`.
+Each archive contained a Grafana Labs PGP-signed `MANIFEST.txt`, and every
+manifest-listed file matched its SHA-256. The archive SHA-256 values were:
+
+| Plugin | amd64 | arm64 | arm |
+|---|---|---|---|
+| Tempo 13.2.2 | `36d53fdc7d0900b38f89e3e6da0babb7da99a2351caad6d19b736edda6deee8c` | `e174e7f0bb1fff4a729cec74290aaf848628ac7ac2d27c2fa5693092def69ecb` | `ad2dd2fc5c5f9ce04f81899f3083a9eb8caac9e408efe05846ae84f47fc39aa5` |
+| InfluxDB 13.1.5 | `ef2234efde30055b51a1364f182ae20089b8f5cf712d93cefc3bc214e2bda38f` | `6d323f50a6c876a578be95c6f095516628ada410723b55e421a2796090beeb1d` | `8e30c1af7026524e180855a5facf144a6d998020280c3b4f00192bee79c05d02` |
+
+All three InfluxDB executables still embed vulnerable gRPC
+`v1.83.1`. All three Tempo executables embed patched gRPC `v1.83.2`, but retain
+a `github.com/grafana/tempo` `v1.5.1-0.20260910130453-bcfe9f230c1d`
+pseudo-version that Trivy still flags for CVE-2026-21728 and CVE-2026-28377.
+An isolated Tempo-only lockfile candidate built on amd64 as image
+`sha256:254f29240623a089f6dfb82852f57814de2973b259fe44548c7f4c06e37ed98e`.
+Trivy 0.74.0 and the strict image-report validator still found **9 HIGH, 0
+CRITICAL**: the same core Thrift and plugin findings as the prior candidate.
+The isolated amd64 runtime check passed Grafana health, cryptographic validation
+of all 13 publisher signatures, provisioning and live Prometheus/PostgreSQL
+queries. The arm64 and arm archives were checked for signed-manifest presence
+and manifest-listed file hashes only; they were not run. To reproduce the amd64
+candidate, temporarily replace the three Tempo rows in `plugins.lock` with the
+Tempo versions and checksums above, then run from the repository root:
+
+```sh
+docker build --no-cache --pull=false --platform linux/amd64 --build-arg TARGETARCH=amd64 -t warehouse-grafana-candidate:20260925 -f docker/grafana/Dockerfile docker
+trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --list-all-pkgs --exit-code 0 --format json --output /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
+node scripts/validate-image-report.mjs /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
+bash scripts/grafana-check.sh
+```
+
+The validator is expected to reject the candidate's remaining findings. Because
+the update did not reduce the fixed HIGH findings, the experimental lockfile
+change was reverted.
+This was an amd64 candidate scan; neither the arm64 candidate nor the complete
+19-image inventory was rerun. The Grafana and PostgREST gates remain open.
+
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.
 With disposable Prometheus and PostgreSQL fixtures on a private Docker network,
