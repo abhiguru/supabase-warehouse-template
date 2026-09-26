@@ -94,8 +94,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: validate
-    env:
-      WAREHOUSE_STATE_DIR: /tmp/warehouse-ci-state
     steps:
       - uses: actions/checkout@v4
         with:
@@ -119,6 +117,10 @@ jobs:
         working-directory: backend
       - run: npm ci
         working-directory: mobile
+      - name: Prepare private operator state
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/warehouse-ci-state"
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/warehouse-ci-state" >> "$GITHUB_ENV"
       - name: Configure isolated gateway regression network
         run: |
           cat >> docker/docker-compose.override.yml <<'YAML'
