@@ -7,6 +7,9 @@ case "${TARGETARCH:-}" in
 esac
 
 base=/usr/share/grafana/data/plugins-bundled
+for plugin in influxdb jaeger stackdriver tempo; do
+  rm -rf "$base/$plugin"
+done
 installed=0
 while read -r plugin version arch checksum; do
   [ "$arch" = "$TARGETARCH" ] || continue
@@ -23,4 +26,4 @@ while read -r plugin version arch checksum; do
   rm -rf "$staging" "$archive"
   installed=$((installed + 1))
 done < /tmp/plugins.lock
-[ "$installed" -eq 7 ]
+[ "$installed" -eq 4 ]

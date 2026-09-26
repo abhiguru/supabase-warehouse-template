@@ -1,5 +1,21 @@
 # Readiness
 
+## Grafana plugin-prune candidate — 2026-09-26
+
+The candidate Grafana recipe removes unused InfluxDB, Jaeger, Google Cloud
+Monitoring and Tempo plugins. The owned local Grafana volume contains only
+`postgres` and `prometheus` data source types, with zero dashboards and zero
+alert rules. A production Grafana database has not been audited; its saved
+references must be checked and migrated before deploying this image. Native
+amd64 startup, nine publisher signatures, provisioning and live queries passed.
+The [native targeted run
+36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
+passed at exact branch commit `d71f094`. Both amd64 and arm64 image reports
+have **3 HIGH, 0 CRITICAL**: core Thrift plus gRPC in Prometheus and PostgreSQL
+plugins.
+The strict 19-image production gate remains open; the historical results below
+describe the prior recipe and core-build prototype.
+
 ## Current production handoff — 2026-09-25
 
 Backend `main` includes the signed-plugin security recheck in

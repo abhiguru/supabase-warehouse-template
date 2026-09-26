@@ -1,6 +1,6 @@
 # Remaining production work
 
-Updated 2026-09-25. This is the current handoff checklist. It uses the existing
+Updated 2026-09-26. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
 The operator has not supplied production services or operating policies.
@@ -14,6 +14,19 @@ Backend `main` includes the signed-plugin recheck in
 [PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
 (`3eda968`). [Exact-main CI 36128411899](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
 passed at `3eda968`. These merges do not close the production image gate.
+
+The 2026-09-26 Grafana plugin-prune candidate removes InfluxDB,
+Jaeger, Google Cloud Monitoring and Tempo. The owned local Grafana volume has
+only `postgres` and `prometheus` data source types, with no dashboards or alert
+rules; a production Grafana database has not been audited. Native amd64 startup,
+nine retained publisher signatures and live Prometheus/PostgreSQL queries pass.
+The [native targeted run
+36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
+passed on exact branch commit `d71f094`: both amd64 and arm64 image reports
+record **3 HIGH, 0 CRITICAL** (core Thrift and gRPC in the two required plugins).
+These findings still fail the strict production gate. A full 19-image rescan
+remains pending. Before deployment, inspect and migrate any production
+references to removed plugins.
 
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
@@ -30,11 +43,12 @@ changes need affected-case testing before inheriting physical acceptance.
 
 ## Technical follow-ups that can start now
 
-- **Item 1 — image security gate:** Security/build maintainers should obtain a
-  compatible patched Grafana publisher release or publisher-signed replacement
-  plugins, validate the [Grafana core rebuild
-  candidate](GRAFANA_CORE_CANDIDATE.md) on native arm64, preserve signature
-  enforcement, rebuild from current package repositories, and repeat the
+- **Item 1 — image security gate:** Security/build maintainers should obtain
+  compatible patched, publisher-signed Prometheus and PostgreSQL plugins,
+  validate the [Grafana core rebuild
+  candidate](GRAFANA_CORE_CANDIDATE.md) with the pruned recipe on both native
+  architectures, preserve signature enforcement, rebuild from current package
+  repositories, and repeat the
   complete 19-image scan. They should also obtain
   a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
   image, or review a reproducible source build with equivalent evidence, and
