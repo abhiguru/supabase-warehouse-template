@@ -39,7 +39,7 @@ cleanup() {
 trap cleanup EXIT
 tar -xzf "$backup/storage.tar.gz" -C "$scratch"
 
-docker run -d --pull never --name "$container" --label purpose=warehouse-restore-test \
+docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test \
   --network none --memory 1g --cpus 1 \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
