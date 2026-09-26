@@ -259,6 +259,28 @@ recipe on native amd64 and arm64 runners, not the manual core-build candidate.
 The active Grafana image remains at **9 HIGH, 0 CRITICAL**, and the complete
 19-image gate remains blocked by Grafana findings and PostgREST inventory.
 
+**2026-09-26 unused-plugin prune candidate:** The candidate recipe
+removes the InfluxDB, Jaeger, Google Cloud Monitoring (`stackdriver`) and Tempo
+bundled plugin directories and their lockfile entries. The repository provisions
+only Prometheus and PostgreSQL. A read-only audit of the owned local Grafana
+volume found two data source types (`postgres` and `prometheus`), zero saved
+dashboards and zero alert rules. This is local demo evidence, not an audit of
+any production Grafana database. Before deployment, inspect each production
+organization's saved data sources, dashboards and alert rules for references to
+the four removed plugin IDs, and migrate any references before replacing the
+image. Preserve a recoverable copy of that Grafana database.
+
+The pruned recipe passed isolated native amd64 Grafana startup, validation of
+the nine retained publisher signatures, provisioning and live
+Prometheus/PostgreSQL queries. Its targeted Trivy 0.74.0 image scan at the
+fixed HIGH/CRITICAL threshold reported **3 HIGH, 0 CRITICAL**: one Apache
+Thrift finding in Grafana core and one gRPC finding each in the retained
+Prometheus and PostgreSQL plugins. The strict image-report validator still
+rejects it. A native arm64 build and scan of this pruned candidate are pending;
+the separate 2026-09-25 core-build result above has not been combined with it.
+Neither the strict full 19-image inventory nor PostgREST coverage has been
+rerun. These candidate results do not change production readiness.
+
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.
 With disposable Prometheus and PostgreSQL fixtures on a private Docker network,

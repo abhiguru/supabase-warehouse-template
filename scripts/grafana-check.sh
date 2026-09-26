@@ -56,6 +56,15 @@ if [[ $(docker exec "$container" printenv GF_PLUGINS_PREINSTALL_AUTO_UPDATE) != 
   echo 'Grafana image did not retain its pinned plugin update policy.' >&2
   exit 1
 fi
+docker exec "$container" sh -c '
+  base=/usr/share/grafana/data/plugins-bundled
+  for plugin in influxdb jaeger stackdriver tempo; do
+    if [ -e "$base/$plugin" ] || [ -L "$base/$plugin" ]; then
+      echo "Unused plugin directory remains: $plugin" >&2
+      exit 1
+    fi
+  done
+'
 
 ready=false
 for ((attempt=0; attempt<45; attempt++)); do
@@ -152,8 +161,12 @@ if (health.database !== 'ok' || health.version !== '13.2.2') {
   throw new Error('Grafana health or version mismatch');
 }
 
-const bundled = 'elasticsearch grafana-postgresql-datasource grafana-pyroscope-datasource influxdb jaeger loki mssql mysql opentsdb prometheus stackdriver tempo zipkin'.split(' ');
+const bundled = 'elasticsearch grafana-postgresql-datasource grafana-pyroscope-datasource loki mssql mysql opentsdb prometheus zipkin'.split(' ');
+const removed = 'influxdb jaeger stackdriver tempo'.split(' ');
 const plugins = read('plugins.json');
+for (const id of removed) {
+  if (plugins.some(item => item.id === id)) throw new Error(`Unused plugin remains registered: ${id}`);
+}
 for (const id of bundled) {
   const plugin = plugins.find(item => item.id === id);
   if (!plugin || plugin.signature !== 'valid' || plugin.signatureType !== 'grafana' || plugin.signatureOrg !== 'Grafana Labs') {
@@ -170,7 +183,7 @@ for (const line of readFileSync(lockfile, 'utf8').split('\n')) {
   if (plugin?.info?.version !== version) throw new Error(`Wrong installed version for ${id}`);
   updated++;
 }
-if (updated !== 7) throw new Error(`Expected seven updated plugins, found ${updated}`);
+if (updated !== 4) throw new Error(`Expected four updated plugins, found ${updated}`);
 
 const datasources = read('datasources.json');
 if (!datasources.some(item => item.name === 'Prometheus' && item.type === 'prometheus' && item.uid === 'PBFA97CFB590B2093') ||

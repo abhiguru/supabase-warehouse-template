@@ -6,7 +6,10 @@ The current Grafana 13.2.2 image has a fixed HIGH finding for Apache Thrift
 includes the Go binding and identifies 0.24.0 as the fix. This prototype
 rebuilds only the Grafana core executable; the image remains based on the
 publisher's pinned 13.2.2 digest and keeps the frontend and signed plugin
-archives from the existing image recipe.
+archives from the image recipe checked out when the script runs. The 2026-09-25
+result below used the earlier recipe with 13 plugins. A build from the
+2026-09-26 pruned recipe should contain nine; that combined candidate has not
+been built or scanned.
 
 Source and build inputs:
 
@@ -54,9 +57,10 @@ trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
 ```
 
 This candidate changes the provenance of the **core binary** to a local
-build. It does not fix the remaining eight findings in publisher-signed
-plugin executables. Keep the strict image gate open until the image passes
-without ignoring findings.
+build. Its 2026-09-25 scan still found eight HIGH plugin findings. The pruned
+plugin recipe is a separate change, and its combination with the core build
+needs a fresh native build, smoke check and image scan on each architecture.
+Keep the strict image gate open until that image passes without ignoring findings.
 
 ## Local amd64 result, 2026-09-25
 
@@ -73,8 +77,8 @@ HIGH,CRITICAL --ignore-unfixed --list-all-pkgs`. The report contains **8 HIGH,
 finding in Grafana's main executable; all eight reported HIGH findings are
 in six publisher-signed plugin executables. The image report validator
 correctly rejects the image because findings remain. The existing Grafana
-smoke check passed: healthy startup, 13 valid publisher-signed plugins,
-provisioning, and live Prometheus/PostgreSQL queries.
+smoke check passed: healthy startup, 13 valid publisher-signed plugins under
+the recipe at that date, provisioning, and live Prometheus/PostgreSQL queries.
 
 The first cold compile took about six minutes with a four-CPU, 10 GiB
 container limit. The Go module and build caches reached about 3.7 and
