@@ -1,0 +1,214 @@
+name: Grafana core and pruned plugins candidate evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      amd64_runner:
+        description: Larger GitHub-hosted native amd64 label; 4 CPUs, 16 GiB RAM, 25 GiB free disk
+        required: true
+        type: string
+      arm64_runner:
+        description: Larger GitHub-hosted native arm64 label; 4 CPUs, 16 GiB RAM, 25 GiB free disk
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Native ${{ matrix.arch }} core and pruned plugins
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: ${{ inputs.amd64_runner }}
+            trivy_asset: trivy_0.74.0_Linux-64bit.tar.gz
+          - arch: arm64
+            machine: aarch64
+            runner: ${{ inputs.arm64_runner }}
+            trivy_asset: trivy_0.74.0_Linux-ARM64.tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+      TRIVY_ASSET: ${{ matrix.trivy_asset }}
+      CANDIDATE_IMAGE: warehouse-grafana-core:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+      BUILDER_REF: golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
+      RUNTIME_REF: grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify native runner and resource capacity
+        shell: bash
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence_dir="$RUNNER_TEMP/grafana-core-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$EXPECTED_ARCH"
+          mkdir -m 700 "$evidence_dir"
+          printf 'EVIDENCE_DIR=%s\nTRIVY_CACHE_DIR=%s\n' "$evidence_dir" \
+            "$RUNNER_TEMP/grafana-core-trivy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$EXPECTED_ARCH" >> "$GITHUB_ENV"
+          {
+            printf 'repository_sha=%s\nrunner_name=%s\nrunner_kind=%s\narchitecture=%s\n' \
+              "$GITHUB_SHA" "$RUNNER_NAME" "$RUNNER_KIND" "$(uname -m)"
+            printf 'cpu_count=%s\n' "$(nproc)"
+            awk '/^MemTotal:|^MemAvailable:/ {print $1 " " $2 " KiB"}' /proc/meminfo
+          } | tee "$evidence_dir/runner.txt"
+          if [[ "$RUNNER_KIND" != github-hosted ]]; then
+            echo 'This workflow requires an ephemeral larger GitHub-hosted runner; shared self-hosted Docker state is not isolated.' | tee -a "$evidence_dir/runner.txt" >&2
+            exit 1
+          fi
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$(nproc)" -ge 4
+          # A nominal 16 GiB VM reports less MemTotal after kernel reservations.
+          test "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)" -ge "$((15 * 1024 * 1024))"
+          test "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge "$((12 * 1024 * 1024))"
+          command -v docker
+          command -v node
+          command -v git
+          command -v rg
+          docker info --format 'Docker root: {{.DockerRootDir}}' | tee -a "$evidence_dir/runner.txt"
+          docker_root=$(docker info --format '{{.DockerRootDir}}')
+          # Use a conservative 25 GiB margin; standard hosted runners' 14 GB total is below it.
+          # Check every filesystem used by the script, Docker, and evidence output.
+          for path in "$RUNNER_TEMP" "${TMPDIR:-/tmp}" "$GITHUB_WORKSPACE" "$docker_root"; do
+            df -h "$path" | tee -a "$evidence_dir/runner.txt"
+            available=$(df -PB1 "$path" | awk 'NR == 2 {print $4}')
+            if (( available < 25 * 1024 * 1024 * 1024 )); then
+              echo "Need at least 25 GiB free on $path; found $available bytes. Select larger native runner labels for both matrix jobs." | tee -a "$evidence_dir/runner.txt" >&2
+              exit 1
+            fi
+          done
+          rg -Fq "builder_image=$BUILDER_REF" scripts/build-grafana-core-candidate.sh
+          rg -Fq "runtime_image=$RUNTIME_REF" scripts/build-grafana-core-candidate.sh
+          rg -Fq "FROM $RUNTIME_REF" docker/grafana/Dockerfile.core-candidate
+      - name: Build pinned Grafana core and current pruned plugin image
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GRAFANA_CORE_EVIDENCE_DIR="$EVIDENCE_DIR" GRAFANA_CORE_IMAGE="$CANDIDATE_IMAGE"
+          docker pull --platform "linux/$EXPECTED_ARCH" "$BUILDER_REF" 2>&1 | tee "$EVIDENCE_DIR/builder-pull.log"
+          docker pull --platform "linux/$EXPECTED_ARCH" "$RUNTIME_REF" 2>&1 | tee "$EVIDENCE_DIR/runtime-pull.log"
+          docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$BUILDER_REF" > "$EVIDENCE_DIR/builder-image.txt"
+          docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$RUNTIME_REF" > "$EVIDENCE_DIR/runtime-image.txt"
+          test "$(awk '{print $2}' "$EVIDENCE_DIR/builder-image.txt")" = "linux/$EXPECTED_ARCH"
+          test "$(awk '{print $2}' "$EVIDENCE_DIR/runtime-image.txt")" = "linux/$EXPECTED_ARCH"
+          bash scripts/build-grafana-core-candidate.sh
+          test "$(docker image inspect "$CANDIDATE_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/$EXPECTED_ARCH"
+          printf 'repository_sha=%s\ncandidate_image=%s\nimage_id=%s\narchitecture=linux/%s\n' \
+            "$GITHUB_SHA" "$CANDIDATE_IMAGE" "$(docker image inspect "$CANDIDATE_IMAGE" --format '{{.Id}}')" \
+            "$EXPECTED_ARCH" > "$EVIDENCE_DIR/build.txt"
+      - name: Smoke test the exact candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GRAFANA_SMOKE_IMAGE="$CANDIDATE_IMAGE"
+          bash scripts/grafana-check.sh 2>&1 | tee "$EVIDENCE_DIR/smoke.log"
+      - name: Install checksum-verified Trivy 0.74.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=https://github.com/aquasecurity/trivy/releases/download/v0.74.0
+          curl -fsSL --retry 3 "$release/trivy_0.74.0_checksums.txt" -o "$EVIDENCE_DIR/checksums.txt"
+          printf '%s  %s\n' bc701c3c3ee8b9acbea2c23257e41381e3854888f51281616a6ba5dc96963821 "$EVIDENCE_DIR/checksums.txt" | sha256sum -c -
+          archive_sha=$(awk -v asset="$TRIVY_ASSET" '$2 == asset {print $1}' "$EVIDENCE_DIR/checksums.txt")
+          test -n "$archive_sha"
+          curl -fsSL --retry 3 "$release/$TRIVY_ASSET" -o "$EVIDENCE_DIR/trivy.tar.gz"
+          printf '%s  %s\n' "$archive_sha" "$EVIDENCE_DIR/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$EVIDENCE_DIR/trivy.tar.gz" -C "$EVIDENCE_DIR" trivy
+          test "$("$EVIDENCE_DIR/trivy" --version)" = 'Version: 0.74.0'
+      - name: Scan image and enumerate every fixed HIGH or CRITICAL finding
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$EVIDENCE_DIR/trivy" image --quiet --scanners vuln --severity HIGH,CRITICAL \
+            --ignore-unfixed --list-all-pkgs --exit-code 0 --format json \
+            --output "$EVIDENCE_DIR/report.json" "$CANDIDATE_IMAGE"
+          image_id=$(docker image inspect "$CANDIDATE_IMAGE" --format '{{.Id}}')
+          node - "$EVIDENCE_DIR/report.json" "$CANDIDATE_IMAGE" "$image_id" "$EXPECTED_ARCH" "$EVIDENCE_DIR" <<'NODE'
+          const fs = require('node:fs');
+          const [path, image, imageId, arch, evidenceDir] = process.argv.slice(2);
+          const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (report.SchemaVersion !== 2 || report.ArtifactName !== image ||
+              report.ArtifactType !== 'container_image' || report.Metadata?.ImageID !== imageId ||
+              report.Metadata?.ImageConfig?.os !== 'linux' ||
+              report.Metadata?.ImageConfig?.architecture !== arch ||
+              !Array.isArray(report.Results) || report.Results.length === 0) {
+            throw new Error('missing or mismatched container scan evidence');
+          }
+          const findings = [];
+          const counts = { HIGH: 0, CRITICAL: 0 };
+          for (const result of report.Results) {
+            if (typeof result.Target !== 'string' || !result.Target ||
+                !['os-pkgs', 'lang-pkgs'].includes(result.Class) ||
+                !Array.isArray(result.Packages) ||
+                !result.Packages.some(pkg => typeof pkg?.Name === 'string' && pkg.Name &&
+                  typeof pkg.Version === 'string' && pkg.Version) ||
+                (result.Vulnerabilities !== undefined && !Array.isArray(result.Vulnerabilities))) {
+              throw new Error('invalid result or missing versioned package inventory');
+            }
+            for (const vulnerability of result.Vulnerabilities ?? []) {
+              if (!Object.hasOwn(counts, vulnerability.Severity) ||
+                  typeof vulnerability.VulnerabilityID !== 'string' ||
+                  typeof vulnerability.PkgName !== 'string') {
+                throw new Error('invalid HIGH/CRITICAL vulnerability entry');
+              }
+              counts[vulnerability.Severity]++;
+              findings.push({ target: result.Target, severity: vulnerability.Severity,
+                id: vulnerability.VulnerabilityID, package: vulnerability.PkgName,
+                installed: vulnerability.InstalledVersion ?? '', fixed: vulnerability.FixedVersion ?? '' });
+            }
+          }
+          const core = report.Results.filter(result =>
+            result.Target.includes('usr/share/grafana/bin/grafana'));
+          if (!core.some(result => result.Packages.some(pkg =>
+              pkg.Name === 'github.com/apache/thrift' && pkg.Version === 'v0.24.0'))) {
+            throw new Error('scan did not inventory Thrift 0.24.0 in the Grafana core executable');
+          }
+          if (findings.some(item => item.id === 'CVE-2026-43871' ||
+              (item.package === 'github.com/apache/thrift' &&
+                core.some(result => result.Target === item.target)))) {
+            throw new Error('Apache Thrift HIGH/CRITICAL finding remains in the candidate image');
+          }
+          findings.sort((a, b) =>
+            [a.target, a.id, a.package].join('\0').localeCompare([b.target, b.id, b.package].join('\0')));
+          const cell = value => String(value).replace(/[|`\r\n]/g, ' ');
+          let summary = `### Grafana core and pruned plugins: ${arch}\n\n` +
+            `Image: \`${image}\`  \nImage ID: \`${imageId}\`  \n` +
+            `Repository: \`${process.env.GITHUB_SHA}\`  \n` +
+            `Apache Thrift 0.24.0 inventoried in core; CVE-2026-43871 absent.  \n` +
+            `${counts.HIGH} HIGH, ${counts.CRITICAL} CRITICAL remaining.\n\n`;
+          if (findings.length) {
+            summary += '| Target | Severity | ID | Package | Installed | Fixed |\n' +
+              '| --- | --- | --- | --- | --- | --- |\n' +
+              findings.map(item => `| ${[item.target, item.severity, item.id,
+                item.package, item.installed, item.fixed].map(cell).join(' | ')} |`).join('\n') + '\n\n';
+          } else {
+            summary += 'No remaining fixed HIGH/CRITICAL findings.\n\n';
+          }
+          summary += 'The separate strict production gate remains `npm run scan:images` over the full image inventory.\n';
+          fs.writeFileSync(`${evidenceDir}/findings.json`, JSON.stringify(findings, null, 2) + '\n');
+          fs.writeFileSync(`${evidenceDir}/summary.md`, summary);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          process.stdout.write(summary);
+          NODE
+      - name: Upload architecture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafana-core-pruned-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/grafana-core-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Remove only this run's image and temporary evidence
+        if: always()
+        shell: bash
+        run: |
+          docker image rm "$CANDIDATE_IMAGE" || true
+          rm -rf -- "$EVIDENCE_DIR" "$TRIVY_CACHE_DIR"

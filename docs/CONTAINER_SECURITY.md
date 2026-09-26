@@ -283,9 +283,30 @@ records **3 HIGH, 0 CRITICAL**: core Thrift CVE-2026-43871 and gRPC
 CVE-2026-84445 in each of the retained Prometheus and PostgreSQL plugins.
 Workflow success means both reports passed evidence validation; the findings
 still fail the strict production image gate. The separate 2026-09-25 core-build
-result above has not been combined with the prune. Neither the strict full
+result above used the earlier 13-plugin recipe. Neither the strict full
 19-image inventory nor PostgREST coverage has been rerun. These candidate
 results do not change production readiness.
+
+**2026-09-26 combined core and prune candidate, native amd64:** At repository
+commit `f8fd060`, the pinned Grafana 13.2.2 source was rebuilt with Apache
+Thrift 0.24.0 and packaged with the nine-plugin pruned recipe. The core binary
+SHA-256 is
+`232812b972f3a532faaed837a1389328785afa6ffa1a548cdf48c0d827c9dda9`;
+the image contains that binary and has ID
+`sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`.
+Its exact-image Trivy 0.74.0 report has **2 HIGH, 0 CRITICAL**, both
+CVE-2026-84445 in gRPC v1.83.1 in the publisher-signed Prometheus and
+PostgreSQL plugin executables. Grafana core's Thrift HIGH is absent. The smoke
+check passed health, all nine publisher signatures, provisioning and live
+Prometheus/PostgreSQL queries; the strict report validator rejected the two
+remaining findings. The [core candidate record](GRAFANA_CORE_CANDIDATE.md)
+documents the reproduction recipe and raw local evidence path. There is no combined
+arm64 result or full 19-image rescan, and the production gate remains open.
+The manual matrix requires explicit labels for larger, ephemeral
+GitHub-hosted native runners with a conservative 25 GiB free-disk preflight
+margin; it does not use a self-hosted Docker daemon. Standard hosted runners
+have 14 GB total storage and fail that preflight. A qualified larger native
+arm64 runner is not currently available.
 
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.

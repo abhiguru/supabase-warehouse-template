@@ -24,9 +24,13 @@ The [native targeted run
 36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
 passed on exact branch commit `d71f094`: both amd64 and arm64 image reports
 record **3 HIGH, 0 CRITICAL** (core Thrift and gRPC in the two required plugins).
-These findings still fail the strict production gate. A full 19-image rescan
-remains pending. Before deployment, inspect and migrate any production
-references to removed plugins.
+The subsequent combined core rebuild and pruned-plugin candidate at `f8fd060`
+has a native **amd64** image scan with **2 HIGH, 0 CRITICAL**, both gRPC in the
+signed Prometheus and PostgreSQL plugins; Thrift is fixed in its core binary.
+Its nine-plugin, provisioning and live-query smoke passed, but the strict
+validator rejected the two findings. Combined **arm64** validation and a full
+19-image rescan remain pending. Before deployment, inspect and migrate any
+production references to removed plugins.
 
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
@@ -46,9 +50,9 @@ changes need affected-case testing before inheriting physical acceptance.
 - **Item 1 — image security gate:** Security/build maintainers should obtain
   compatible patched, publisher-signed Prometheus and PostgreSQL plugins,
   validate the [Grafana core rebuild
-  candidate](GRAFANA_CORE_CANDIDATE.md) with the pruned recipe on both native
-  architectures, preserve signature enforcement, rebuild from current package
-  repositories, and repeat the
+  candidate](GRAFANA_CORE_CANDIDATE.md) with the pruned recipe on native arm64
+  after its completed amd64 smoke and scan, preserve signature enforcement,
+  rebuild from current package repositories, and repeat the
   complete 19-image scan. They should also obtain
   a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
   image, or review a reproducible source build with equivalent evidence, and
@@ -84,8 +88,19 @@ changes need affected-case testing before inheriting physical acceptance.
   Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold has **8 HIGH,
   0 CRITICAL**: it no longer reports the single Apache Thrift HIGH finding in
   Grafana's main executable, while all eight publisher-signed plugin findings
-  remain. The validator rejected that candidate; its native arm64 build and
-  scan are untested. See
+  remain. The validator rejected that historical candidate. The later combined
+  core and prune **amd64** candidate at `f8fd060` has image ID
+  `sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`
+  and **2 HIGH, 0 CRITICAL**, both CVE-2026-84445 in signed Prometheus and
+  PostgreSQL plugins. Its core binary selected Thrift 0.24.0 and the smoke
+  check passed nine signatures, provisioning and live queries; the strict
+  validator still rejected the image. Compatible patched publisher-signed
+  releases have not been verified. Its combined arm64 build and scan are
+  untested: the manual workflow needs explicit labels for larger, ephemeral
+  GitHub-hosted native runners and a conservative 25 GiB free-disk preflight
+  margin. It does not use a self-hosted Docker daemon. Standard hosted runners
+  have 14 GB total storage and fail that preflight; no qualified larger native
+  arm64 runner is currently available. See
   [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md) for the pinned inputs and
   evidence. Exact PostgREST binaries on both platforms
   contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
