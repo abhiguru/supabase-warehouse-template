@@ -17,7 +17,15 @@ case $(uname -m) in
 esac
 
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
+cleanup() {
+  local status=$?
+  # Go downloads read-only module directories. Restore owner write access so
+  # removing this run's scratch directory cannot leave a multi-GB cache behind.
+  find "$scratch" -type d -exec chmod u+w {} + || status=1
+  rm -rf -- "$scratch" || status=1
+  exit "$status"
+}
+trap cleanup EXIT
 gopath_cache=${GRAFANA_CORE_GOPATH:-$scratch/gopath}
 build_cache=${GRAFANA_CORE_GOCACHE:-$scratch/gocache}
 [[ $gopath_cache = /* && $build_cache = /* ]] || {

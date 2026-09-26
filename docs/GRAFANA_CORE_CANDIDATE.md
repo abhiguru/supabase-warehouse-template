@@ -7,9 +7,9 @@ includes the Go binding and identifies 0.24.0 as the fix. This prototype
 rebuilds only the Grafana core executable; the image remains based on the
 publisher's pinned 13.2.2 digest and keeps the frontend and signed plugin
 archives from the image recipe checked out when the script runs. The 2026-09-25
-result below used the earlier recipe with 13 plugins. A build from the
-2026-09-26 pruned recipe should contain nine; that combined candidate has not
-been built or scanned.
+result below used the earlier recipe with 13 plugins. The 2026-09-26 combined
+core and nine-plugin recipe has native amd64 build, smoke and scan evidence;
+its combined arm64 validation remains pending.
 
 Source and build inputs:
 
@@ -58,9 +58,45 @@ trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
 
 This candidate changes the provenance of the **core binary** to a local
 build. Its 2026-09-25 scan still found eight HIGH plugin findings. The pruned
-plugin recipe is a separate change, and its combination with the core build
-needs a fresh native build, smoke check and image scan on each architecture.
+plugin recipe is a separate change; their combined amd64 result is below, and
+their combined arm64 build, smoke check and image scan remain pending.
 Keep the strict image gate open until that image passes without ignoring findings.
+
+## Combined core and pruned-plugin amd64 result, 2026-09-26
+
+At repository commit `f8fd060e4aada22a6bcc8c1a945f9c182e8bb7b1`, an isolated
+native amd64 build used the pinned Grafana 13.2.2 source, Thrift patch, builder
+and runtime images with the nine-plugin pruned recipe. The core binary SHA-256
+is `232812b972f3a532faaed837a1389328785afa6ffa1a548cdf48c0d827c9dda9`,
+and the image contains that same binary. The candidate image
+`warehouse-grafana-core:20260926-amd64-core-prune` has ID
+`sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`.
+Its build metadata and exact-image scan inventory show Apache Thrift 0.24.0 in
+Grafana core; the core Thrift HIGH finding is absent.
+
+The exact-image Trivy 0.74.0 scan at the fixed HIGH/CRITICAL threshold reports
+**2 HIGH, 0 CRITICAL**: CVE-2026-84445 in `google.golang.org/grpc` v1.83.1 in
+each of the publisher-signed Prometheus and PostgreSQL plugin executables.
+The image-report validator correctly rejects the image. The existing smoke
+check passed Grafana health, all nine publisher signatures, provisioning and
+live Prometheus/PostgreSQL queries. The build artifacts succeeded; automatic
+cleanup of a read-only Go module cache failed, and the task's scratch cleanup
+subsequently passed. Raw evidence is retained in
+`/home/gcswebserver/ws/grafana-core-prune-evidence-20260926-amd64`.
+The exact-image Trivy JSON SHA-256 is
+`557e47f411d90cbc712e781efa29998291475c56c6209b4deef52675ec858c18`.
+
+The [Prometheus](https://grafana.com/grafana/plugins/prometheus/) and
+[PostgreSQL](https://grafana.com/grafana/plugins/grafana-postgresql-datasource/)
+catalog pages still offered versions 13.2.1 and 13.0.3 respectively on this
+date; no compatible signed release with the [gRPC
+fix](https://github.com/grpc/grpc-go/security/advisories/GHSA-2v4p-qf9q-27wj)
+was verified. When Grafana publishes one, inspect the signed archive's Go
+build metadata, pin its version and per-architecture checksums, then repeat
+native smoke and image scans. PostgreSQL is still supplied by the pinned base
+image, outside `plugins.lock`, so a fixed signed release must explicitly replace
+that bundled directory. The combined arm64 candidate and the full 19-image
+strict inventory have not been run; production readiness is unchanged.
 
 ## Local amd64 result, 2026-09-25
 
@@ -91,7 +127,7 @@ existing Go caches; it reproduced the same binary and image IDs. The raw
 Trivy JSON SHA-256 is
 `85efd53a7cfbd0758ce1d751f22535e3f737eae37842f7da5623596676043bb9`.
 
-## Proposed native candidate validation
+## Remaining native candidate validation
 
 Before activating this prototype in the ordinary image recipe, run a matrix
 on **native** amd64 and arm64 Linux runners with at least 16 GiB RAM and 25 GiB
@@ -114,7 +150,13 @@ passed. That CI tested the ordinary Grafana recipe on native amd64 and arm64
 runners. It did **not** build this candidate on arm64 or run this proposed
 candidate matrix.
 
+The [manual combined-candidate workflow](../.github/workflows/grafana-core-pruned-candidate.yml)
+requires explicit labels for larger, ephemeral GitHub-hosted native amd64 and
+arm64 runners; it does not use a self-hosted Docker daemon. Each selected runner
+must have at least four CPUs, 16 GiB RAM and 25 GiB free on the work, temporary,
+Docker and evidence filesystems. The 25 GiB preflight threshold is a
+conservative margin for the build, image layers and scan data.
 [Standard GitHub-hosted Linux runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-currently have 14 GB storage, which is tight against the measured cold
-compile and image footprint. Use an available larger runner with at least
-25 GB free disk or an isolated native self-hosted runner for this matrix.
+have 14 GB total storage and fail this preflight. No qualified larger native
+arm64 runner is currently available, so the combined arm64 matrix has not run.
+Supply qualified hosted runner labels before dispatching the workflow.
