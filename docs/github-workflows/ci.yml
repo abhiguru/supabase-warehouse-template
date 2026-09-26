@@ -95,7 +95,7 @@ jobs:
     timeout-minutes: 45
     needs: validate
     env:
-      WAREHOUSE_STATE_DIR: ${{ runner.temp }}/warehouse-ci-state
+      WAREHOUSE_STATE_DIR: /tmp/warehouse-ci-state
     steps:
       - uses: actions/checkout@v4
         with:
