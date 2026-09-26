@@ -13,7 +13,7 @@ docker run -d --name "$container" --label purpose=warehouse-migration-test \
   --network none --memory 1g --cpus 1 \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
-  -e AUTH_MODE=demo -e APP_ENV=development \
+  -e AUTH_MODE=operator -e APP_ENV=production \
   -e POSTGRES_PASSWORD=disposable-test-database-only supabase/postgres:15.8.1.060 >/dev/null
 created=true
 ready=false
@@ -27,11 +27,11 @@ for pass in 1 2; do
   node "$ROOT/scripts/migration-plan.mjs" |
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
 done
-for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/auth_and_access.sql" "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/retention.sql"; do
+for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql" "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/retention.sql"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 for pass in 1 2; do
-  for configuration in "$ROOT/scripts/configure-auth.sql" "$ROOT/scripts/demo-seed.sql"; do
+  for configuration in "$ROOT/scripts/configure-auth.sql"; do
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$configuration"
   done
 done
@@ -46,7 +46,7 @@ if node "$scratch/scripts/migration-plan.mjs" | docker exec -i -e PGPASSWORD=dis
   echo 'Changed applied migration was incorrectly accepted.' >&2
   exit 1
 fi
-[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "15" ]] || {
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "16" ]] || {
   echo 'Migration mismatch changed the ledger.' >&2; exit 1;
 }
-echo 'Migration reruns, checksum mismatch rejection, retention, auth configuration, and demo seed reruns passed.'
+echo 'Migration reruns, checksum mismatch rejection, retention, and operator auth configuration passed.'

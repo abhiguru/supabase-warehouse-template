@@ -110,3 +110,4 @@ MSG91_SENDER_ID=WHOUSE
 - Failed attempts logged in `auth_logs`
 - Expired OTPs cleaned up by `pg_cron`
 - JWT tokens signed with `JWT_SECRET` (HS256)
+> Historical authentication reference. Current operator installations use [MSG91 and approval](OPERATOR_INSTALL.md); fixed OTP and direct demo RPCs are disabled.

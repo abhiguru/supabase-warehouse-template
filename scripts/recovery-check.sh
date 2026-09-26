@@ -3,7 +3,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-before_env=$(sha256sum "$ROOT/docker/.env")
+state="${WAREHOUSE_STATE_DIR:-}"
+[[ "$state" == /* && -f "$state/config/compose.env" && -f "$state/public/instance.json" ]] || { echo 'Set WAREHOUSE_STATE_DIR to operator state.' >&2; exit 1; }
+before_env=$(sha256sum "$state/config/compose.env" "$state/public/instance.json")
 before_data=$(compose exec -T db psql -X -qAt -U supabase_admin -d postgres \
   -c "SELECT count(*)||':'||COALESCE(max(gr_no),'') FROM public.goodsreceived")
 
@@ -14,7 +16,7 @@ for ((i=0; i<60; i++)); do
   sleep 2
 done
 [[ "$healthy" == true ]] || { bash "$ROOT/health-check.sh"; exit 1; }
-after_env=$(sha256sum "$ROOT/docker/.env")
+after_env=$(sha256sum "$state/config/compose.env" "$state/public/instance.json")
 after_data=$(compose exec -T db psql -X -qAt -U supabase_admin -d postgres \
   -c "SELECT count(*)||':'||COALESCE(max(gr_no),'') FROM public.goodsreceived")
 [[ "$before_env" == "$after_env" ]] || { echo 'Configuration changed during restart.' >&2; exit 1; }

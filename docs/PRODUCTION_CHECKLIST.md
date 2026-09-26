@@ -1,8 +1,9 @@
 # Production acceptance gate
 
-Current source supports only an isolated local demo. Production setup remains
-blocked by `scripts/check-readiness.sh`. This document is an acceptance checklist,
-not instructions to expose the fixed-OTP demo or upgrade an existing deployment.
+Current development source has an operator installer and real SMS code, but
+operator acceptance remains open. Use the [independent operator ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
+for current status. This historical checklist records the earlier local-demo
+readiness pass and is not an installation procedure.
 Provider-independent evidence from 2026-09-22 is linked in
 [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md). Checked local
 items below do not clear their separately stated target-production gates.

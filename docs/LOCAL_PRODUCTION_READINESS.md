@@ -203,3 +203,4 @@ remaining Grafana publisher-signature dependency.
 The final Studio/metadata follow-up inventory has 17 valid passing reports out
 of 19. Grafana retains 104 HIGH findings; PostgREST has no package results and
 fails coverage validation. The scanner remains fail-closed for both conditions.
+> Historical source-demo evidence. Current checkout accepts `setup.sh --operator` only; see [operator installation](OPERATOR_INSTALL.md).

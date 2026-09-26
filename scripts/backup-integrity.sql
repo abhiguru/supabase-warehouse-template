@@ -14,3 +14,21 @@ SELECT 'dispatch_count=' || count(*) FROM public.dispatch;
 SELECT 'invoice_count=' || count(*) FROM public.invoice;
 SELECT 'order_count=' || count(*) FROM public.orders;
 SELECT 'storage_object_count=' || count(*) FROM storage.objects;
+SELECT 'acl_anon_feature_flags_select=' || has_table_privilege('anon','public.feature_flags','SELECT');
+SELECT 'acl_anon_orders_select=' || has_table_privilege('anon','public.orders','SELECT');
+SELECT 'acl_authenticated_orders_select=' || has_table_privilege('authenticated','public.orders','SELECT');
+SELECT 'acl_service_operator_prepare=' || has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE');
+SELECT 'acl_anon_operator_prepare=' || has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE');
+SELECT 'acl_anon_legacy_send_otp=' || has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE');
+SELECT 'acl_authenticated_enrollment_review=' || has_function_privilege('authenticated','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE');
+DO $$ BEGIN
+  IF NOT has_table_privilege('anon','public.feature_flags','SELECT')
+    OR has_table_privilege('anon','public.orders','SELECT')
+    OR NOT has_table_privilege('authenticated','public.orders','SELECT')
+    OR NOT has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE')
+    OR has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
+    OR has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE')
+    OR NOT has_function_privilege('authenticated','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE')
+  THEN RAISE EXCEPTION 'Representative operator access grants are missing or too broad';
+  END IF;
+END $$;

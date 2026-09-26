@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Production stays gated until provider, full API, and deployment checks are complete.
-if [[ "${1:-}" == '--demo' && "$#" == 1 ]]; then
-  echo 'LOCAL DEMO ONLY: production SMS, native-device acceptance and optional printing are not release-ready.' >&2
-  exit 0
+if [[ "${1:-}" != --operator ]]; then
+  echo 'Use ./setup.sh --operator with an explicitly selected state directory. Demo installation is no longer supported.' >&2
+  exit 1
 fi
-echo 'Production setup is not ready. Use ./setup.sh --demo for an isolated, loopback-only demonstration.' >&2
-echo 'See docs/READINESS.md for remaining acceptance checks.' >&2
-exit 1
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+  echo 'Operator installation requires Linux x86-64.' >&2
+  exit 1
+fi
+for command in docker node npm openssl; do
+  command -v "$command" >/dev/null || { echo "Missing prerequisite: $command" >&2; exit 1; }
+done

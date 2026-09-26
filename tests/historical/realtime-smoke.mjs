@@ -1,7 +1,8 @@
+// Historical fixed-OTP realtime fixture. Not part of operator acceptance.
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
-import { readEnv, root, probe } from './doctor-common.mjs';
+import { readEnv, root, probe } from '../../scripts/doctor-common.mjs';
 
 const env = readEnv(`${root}/docker/.env`);
 assert.equal(env.AUTH_MODE, 'demo');

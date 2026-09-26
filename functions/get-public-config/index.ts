@@ -3,12 +3,41 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 
+type InstanceManifest = {
+  schemaVersion: number;
+  instanceId: string;
+  displayName: string;
+  companyName: string;
+  canonicalOrigin: string;
+  capabilities: Record<string, boolean>;
+  supportedApiVersions: string[];
+  minimumClientVersion: string;
+};
+
+async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
+  const value = Deno.env.get('INSTANCE_MANIFEST_JSON');
+  if (!value) throw new Error('Instance manifest missing');
+  const manifest = JSON.parse(value) as InstanceManifest;
+  if (manifest.schemaVersion !== 1 ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(manifest.instanceId) ||
+      !manifest.displayName?.trim() || !manifest.companyName?.trim() ||
+      manifest.canonicalOrigin !== origin ||
+      !Array.isArray(manifest.supportedApiVersions) || !manifest.supportedApiVersions.includes('1') ||
+      !/^\d+\.\d+\.\d+$/.test(manifest.minimumClientVersion) ||
+      !manifest.capabilities || typeof manifest.capabilities !== 'object' ||
+      Object.values(manifest.capabilities).some(value => typeof value !== 'boolean')) {
+    throw new Error('Invalid instance manifest');
+  }
+  return manifest;
+}
+
 serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
   try {
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
+    const instance = await readInstanceManifest(baseUrl);
     const environment = Deno.env.get('APP_ENV') || 'development';
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     if (!anonKey) throw new Error('Missing anon key');
@@ -22,13 +51,18 @@ serve(async (req: Request) => {
     if (flags.error) throw new Error('Features unavailable');
     return new Response(JSON.stringify({ success: true, data: {
       supabaseUrl: baseUrl, anonKey, environment, version: config.app_version,
+      instanceId: instance.instanceId, displayName: instance.displayName,
+      companyName: instance.companyName, canonicalOrigin: instance.canonicalOrigin,
+      capabilities: instance.capabilities, supportedApiVersions: instance.supportedApiVersions,
+      minimumClientVersion: instance.minimumClientVersion,
       maintenanceMode: config.maintenance_mode,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
       featureFlags: Object.fromEntries((flags.data || []).map(flag => [flag.name, flag.enabled])),
     }, timestamp: new Date().toISOString() }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
-  } catch {
+  } catch (error) {
+    console.error('Public configuration failed:', error instanceof Error ? error.message : 'unknown error');
     return new Response(JSON.stringify({ success: false, error: 'Backend configuration unavailable; finish migrations and seed first' }), {
       status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });

@@ -3,9 +3,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-project="${WAREHOUSE_PROJECT_NAME:-warehouse-template}"
 id=$(compose ps -q functions) # validates checkout ownership first
 [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || { echo 'Owned functions container unavailable.' >&2; exit 1; }
+project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$id")
+[[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || { echo 'Unexpected Compose project label.' >&2; exit 1; }
 read -r network old_ip <<< "$(docker inspect --format '{{range $name, $value := .NetworkSettings.Networks}}{{$name}} {{$value.IPAddress}}{{println}}{{end}}' "$id")"
 [[ "$network" == "${project}_default" && "$old_ip" =~ ^[0-9.]+$ ]] || { echo 'Unexpected service network.' >&2; exit 1; }
 holder_name="${project}-dns-test-holder"
@@ -33,7 +34,7 @@ probe() {
 probe # warms the gateway cache and checks the direct upstream
 docker network disconnect "$network" "$id"
 disconnected=true
-# The CI demo configures an isolated subnet so Docker can reserve this exact IP.
+# The dedicated test network must reserve this exact IP.
 # Holding the old address proves the reconnected service has to move.
 holder_id=$(docker create --name "$holder_name" --label "warehouse.test.owner=$project" \
   --label "com.docker.compose.project=warehouse-dns-holder-$project" \

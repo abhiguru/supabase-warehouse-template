@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readEnv, root } from './doctor-common.mjs';
+import { readEnv, root, operatorEnvPath } from './doctor-common.mjs';
 import { isMain } from './is-main.mjs';
 
 export function redactServiceLog(text, env) {
@@ -16,7 +16,7 @@ export function redactServiceLog(text, env) {
 
 export function diagnoseService(service, {
   run = (command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 15000 }),
-  env = () => readEnv(root + '/docker/.env'),
+  env = () => readEnv(operatorEnvPath()),
   report = message => console.error(message),
 } = {}) {
   try {

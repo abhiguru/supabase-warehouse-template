@@ -1,0 +1,5 @@
+# Replace this hostname with the instance's canonical HTTPS domain.
+# The backend gateway listens on loopback port 18000 inside the Linux host/VM.
+warehouse.example.com {
+    reverse_proxy 127.0.0.1:18000
+}
