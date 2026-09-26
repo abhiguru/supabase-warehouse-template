@@ -1,5 +1,16 @@
 # Supabase Warehouse Template
 
+## Current operator installation work
+
+The current development branch uses `setup.sh --operator` for a warehouse-owned
+Linux x86-64 installation. It requires private MSG91 credentials, a canonical
+HTTPS origin, an external state directory and a locally bootstrapped first
+administrator. See [the installation guide](docs/OPERATOR_INSTALL.md) and the
+[authoritative acceptance ledger](docs/PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work).
+The historical `v0.2.2-demo` tag remains available for its recorded source-demo
+evidence. Operator hardware, external services and final mobile builds require
+their own acceptance results.
+
 ## Local production-readiness work
 
 Provider-independent work across backup/restore, owned-service recovery,
@@ -16,92 +27,23 @@ and external-service acceptance also remains open: real SMS, public DNS/TLS,
 external alert delivery, production data/retention and capacity policy, and
 final mobile signing/stores. Payments, enabled telemetry delivery, and
 printer/sensor hardware need acceptance if included in the operator's scope.
-The local fixed-OTP demo must remain on loopback.
+The historical fixed-OTP demo is confined to its immutable source tag.
 See the [remaining production work checklist](docs/PRODUCTION_DEPENDENCIES.md#remaining-production-work)
 for the required inputs, next actions and acceptance evidence. The historical
 CI setup HTTP 500 follow-up is tracked there separately from the completed
 source-demo phone acceptance.
 
-## Current source-demo release
+## Historical release evidence
 
-The Android-first source-demo acceptance is complete. Matching
-`v0.2.2-demo` source-only GitHub prereleases were published on 2026-09-18.
-Use `v0.2.2-demo` in this repository and `rn-warehouse-template` for the
-verified release pair. Existing tags remain immutable; use current `main`
-branches for contribution work.
-
-The public acceptance summary is in
-[SOURCE_DEMO_ACCEPTANCE.md](docs/SOURCE_DEMO_ACCEPTANCE.md). Ownership and
-third-party review evidence is in
-[ATTRIBUTION_REVIEW.md](docs/ATTRIBUTION_REVIEW.md). The source-demo iPhone
-orders/cart matrix and later gateway-affected retest are complete; the reviewed
-merged pair and exact-main CI are recorded in [READINESS.md](docs/READINESS.md).
-Production operations, signed/native distribution, printing, sensors, and
-unsupported integrations remain separate gates.
-
-An open-source warehouse backend, paired with
-[rn-warehouse-template](https://github.com/abhiguru/rn-warehouse-template).
-
-The current main branch supports a **local development demo**. Fresh schema
-restore, custom login, customer isolation, GRN, dispatch, invoice saving, and
-four PDF/download flows have passed integration tests. This is **not a
-production-ready release**. Production SMS, optional printing, other native
-hardware acceptance, and broader workflow/security review remain open. The older
-v0.1.0 tag contains an incomplete export. For the reproducible release checkpoint,
-use **`v0.2.2-demo` in both repositories**. See the
-[demo prerelease](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.2-demo)
-for the exact tested commit pair and known limitations.
-
-## Start the local demo
-
-Prerequisites: Node.js 22.18+, npm, Docker with Compose v2, and OpenSSL.
-Allow several GB of free memory/disk and internet access for image/module downloads.
-
-```bash
-git clone --branch v0.2.2-demo https://github.com/abhiguru/supabase-warehouse-template.git
-cd supabase-warehouse-template
-npm ci
-npm test
-bash setup.sh --demo
-```
-
-Setup generates credentials **only if** `docker/.env` does not exist. Existing
-configuration bytes are preserved. Demo startup requires `AUTH_MODE=demo`,
-`APP_ENV=development`, and `BIND_ADDRESS=127.0.0.1`; an incompatible existing
-configuration fails rather than being overwritten.
-
-- API: `http://localhost:18000`
-- Studio: `http://localhost:54325` (local access only)
-- Demo admin: **0000000001**
-- Assigned demo customer: **0000000002**
-- Demo OTP: **123456** — no SMS is sent.
-
-Demo authentication accepts only numbers 0000000001 through 0000000009.
-OTP expiry, attempt limits, replay protection, and five-per-hour/twenty-per-day
-request limits still apply. Never expose this demo to the internet.
-
-```bash
-bash health-check.sh
-npm run test:migrations
-npm run test:api
-bash start.sh --demo
-bash stop.sh
-```
-
-Migration tests use and remove their own network-isolated disposable database.
-API tests require the running demo, verify its generated key before writes,
-and leave fictional GRN/dispatch/invoice fixtures for exploration. Each API-test
-run consumes a demo OTP request per account. Stop preserves database/files.
+The immutable `v0.2.2-demo` source release and its dated device results remain
+documented in [SOURCE_DEMO_ACCEPTANCE.md](docs/SOURCE_DEMO_ACCEPTANCE.md) and
+[READINESS.md](docs/READINESS.md). Current installation accepts operator mode
+only; those historical results do not validate this runtime.
 
 ## Connect the mobile application
 
-Install the companion repository and set its `EXPO_PUBLIC_CONFIG_API_URL` to
-`http://localhost:18000`. Run `npm run check:backend` there.
-
-For Android connected to the backend host, run `adb reverse tcp:18000 tcp:18000`
-so the device can use the same localhost origin. If Metro runs on that host,
-also use `adb reverse tcp:8081 tcp:8081`. iOS simulator access assumes the backend
-is reachable on the Mac; a remote backend requires an appropriate local tunnel.
+Install the companion repository and select the operator's canonical HTTPS
+origin in the app. Run `npm run check:backend` there for read-only discovery.
 Recorded native-build and physical-device acceptance is scoped to the exact
 pairs in [READINESS.md](docs/READINESS.md); production signing and distribution
 remain separate gates.
@@ -113,10 +55,9 @@ from bootstrap configuration.
 
 ## Isolation and migration safety
 
-All scripts operate on this checkout's Compose project and verify container
-ownership. The project name defaults to `warehouse-template` and must begin
-with `warehouse-`. Database/storage mounts live inside this new checkout.
-The database host port is 15433; the PDF-service host port is 13100.
+Operator scripts use a unique Compose project and state directory outside the
+checkout. The database, Studio and PDF service are private to the project; the
+gateway binds to loopback for the HTTPS proxy.
 
 Startup brings up only the database first, then applies the complete schema,
 permissions, and custom-auth configuration before starting APIs. Migrations use
@@ -124,9 +65,7 @@ checksums, a database advisory lock, and a transactional ledger. Changed applied
 files and untracked existing warehouse databases are refused. Add new migrations
 for later changes; do not transplant this baseline into an existing installation.
 
-Original repositories, production data, credentials, and Git history are not
-needed. Setup never revokes or rotates another installation's credentials.
-Account refresh-token renewal affects only that new demo login session.
+Setup never revokes or rotates another installation's credentials.
 
 ## Features and limits
 
@@ -136,7 +75,7 @@ Authenticated access uses explicit RPC grants, active sessions and customer RLS.
 Generated PDFs use a generic, escaped starter layout, private storage, and
 one-hour signed links. Configure business details and document terms before use.
 
-Realtime starts with the default demo to support order/cart live updates.
+Realtime supports order/cart live updates.
 Printing and sensors still require hardware acceptance; monitoring is optional. The three preprinted document functions
 (`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
 and print status monitoring are exported for contract parity, but physical

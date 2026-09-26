@@ -17,12 +17,13 @@ SELECT value=:'starter_secret' AS secret_matches FROM warehouse_security.auth_co
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Existing database signing key differs; no key was changed'; END $$;
 \endif
-SELECT :'starter_mode' IN ('demo','disabled') AND (:'starter_mode'<>'demo' OR :'starter_environment'='development') AS valid_mode \gset
+SELECT :'starter_mode'='operator' AND :'starter_environment'='production' AS valid_mode \gset
 \if :valid_mode
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'Demo authentication is allowed only in development'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'Operator authentication requires production mode'; END $$;
 \endif
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
-  ('demo_auth_enabled',(:'starter_mode'='demo')::text),('access_seconds',(:'starter_expiry')::integer::text)
+  ('demo_auth_enabled','false'),('auth_mode',:'starter_mode'),
+  ('access_seconds',(:'starter_expiry')::integer::text)
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 COMMIT;

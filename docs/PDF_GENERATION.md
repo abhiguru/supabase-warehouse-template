@@ -32,3 +32,4 @@ new demo. Demo OTP rate limits apply.
 The authenticated `generate-sample-pdf` endpoint remains a staff-only renderer
 example. Printer-specific/preprinted endpoints are separate incomplete optional
 integrations; see [READINESS.md](READINESS.md).
+> The demo setup command below applies only to the immutable `v0.2.2-demo` tag. Current checkout accepts `setup.sh --operator` only.

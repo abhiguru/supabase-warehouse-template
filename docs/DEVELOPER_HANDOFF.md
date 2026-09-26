@@ -1,5 +1,11 @@
 # Developer handoff — v0.2.2-demo
 
+> Current operator development is described in the [installation guide](OPERATOR_INSTALL.md)
+> and [authoritative acceptance ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work).
+> The source-demo commands and physical device results below apply to the
+> immutable `v0.2.2-demo` tag and its recorded commit pairs. They do not validate
+> a new operator instance or the changed runtime on this branch.
+
 Current 2026-09-24 handoff checkpoint: the default demo starts authenticated Realtime
 for mobile orders/cart updates. Both companion jobs pin mobile
 `c127ef622d84f50ba15eb2fb41609e703b82bfcc`. See
@@ -263,3 +269,4 @@ retention enforcement, and privacy declarations remain separate checks. The
 complete source-demo physical-iPhone evidence is recorded in the mobile handoff.
 The scoped ownership and attribution review is complete; see
 ATTRIBUTION_REVIEW.md. A successful bundle is not a physical-device test.
+> Historical source-demo handoff. Current checkout accepts `setup.sh --operator` only; see [operator installation](OPERATOR_INSTALL.md) and the [current ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work).

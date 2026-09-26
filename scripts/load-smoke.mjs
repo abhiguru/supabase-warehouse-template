@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
-import { readEnv, root } from './doctor-common.mjs';
+import { readEnv, operatorEnvPath } from './doctor-common.mjs';
 
-const env = readEnv(`${root}/docker/.env`);
+const env = readEnv(operatorEnvPath());
 const url = `http://127.0.0.1:${env.KONG_HTTP_PORT}/rest/v1/feature_flags?select=id&limit=1`;
 const total = Number(process.env.LOAD_REQUESTS || 100);
 const concurrency = Number(process.env.LOAD_CONCURRENCY || 10);

@@ -18,3 +18,8 @@ test('gateway refreshes replaced Compose upstream addresses within readiness bud
   assert.ok(compose.includes('KONG_DNS_STALE_TTL: "1"'));
   assert.ok(compose.includes('KONG_DNS_NOT_FOUND_TTL: "1"'));
 });
+
+test('operator gateway cannot route Studio or postgres-meta', () => {
+  assert.doesNotMatch(kong, /url: http:\/\/(?:studio|meta):/);
+  assert.equal((compose.match(/^\s+ports:/gm) || []).length, 1);
+});

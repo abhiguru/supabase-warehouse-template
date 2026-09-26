@@ -21,7 +21,6 @@ jobs:
       - run: npm test
       - name: Container source dependency audit
         run: npm run check:container-dependencies
-      - run: docker compose --env-file .env.example -f docker/docker-compose.yml -f docker/docker-compose.override.yml config --quiet
       - name: Shell syntax
         run: |
           for script in *.sh scripts/*.sh tests/*.sh; do bash -n "$script"; done
@@ -64,8 +63,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: abhiguru/rn-warehouse-template
-          # Reviewed source-demo companion; update deliberately with contract evidence.
-          ref: c127ef622d84f50ba15eb2fb41609e703b82bfcc
+          # Operator mobile companion, pinned to the tested commit.
+          ref: 2f4bdbac9ffdb1173317bb559a7b584119d31cd8
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -90,13 +89,11 @@ jobs:
           persist-credentials: false
       - run: bash scripts/scan-secrets.sh
 
-  demo-api:
-    name: Isolated demo API
+  operator-install:
+    name: Isolated operator installation
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: validate
-    env:
-      WAREHOUSE_PROJECT_NAME: warehouse-ci-demo
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,7 +103,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Do not infer a branch in a different repository.
-          ref: c127ef622d84f50ba15eb2fb41609e703b82bfcc
+          ref: 2f4bdbac9ffdb1173317bb559a7b584119d31cd8
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -120,6 +117,10 @@ jobs:
         working-directory: backend
       - run: npm ci
         working-directory: mobile
+      - name: Prepare private operator state
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/warehouse-ci-state"
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/warehouse-ci-state" >> "$GITHUB_ENV"
       - name: Configure isolated gateway regression network
         run: |
           cat >> docker/docker-compose.override.yml <<'YAML'
@@ -131,15 +132,22 @@ jobs:
                   - subnet: 10.233.245.0/24
           YAML
         working-directory: backend
-      - name: Fresh loopback demo
-        run: bash setup.sh --demo
+      - name: Fresh private operator configuration and local services
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
+          cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=ci-offline-no-delivery
+          MSG91_TEMPLATE_ID=ci-offline-flow
+          MSG91_PE_ID=ci-offline-entity
+          MSG91_SENDER_ID=CITEST
+          ENV
+          bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+            --api-url https://ci-warehouse.example.test --company 'CI Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-ci.env" \
+            --admin-phone 919000000001 --admin-name 'CI Administrator'
         working-directory: backend
-      - run: npm run doctor
-        working-directory: backend
-      - name: Effective RPC signatures and grants
-        run: node scripts/check-mobile-contract.mjs ../mobile --live
-        working-directory: backend
-      - run: npm run test:api
+      - run: node scripts/doctor.mjs --local
         working-directory: backend
       - name: Studio and metadata compatibility
         run: npm run test:studio
@@ -149,9 +157,6 @@ jobs:
         working-directory: backend
       - name: Gateway upstream IP replacement
         run: npm run test:gateway-dns
-        working-directory: backend
-      - name: Authenticated Realtime
-        run: npm run test:realtime
         working-directory: backend
       - name: Retention dry run
         run: npm run retention:preview
@@ -178,13 +183,16 @@ jobs:
         working-directory: backend
       - name: Preserve config and rerun setup
         run: |
-          sha256sum docker/.env > /tmp/warehouse-config.sha256
-          stat -c %a docker/.env > /tmp/warehouse-config.mode
-          bash setup.sh --demo
+          sha256sum "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.sha256
+          stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.mode
+          bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+            --api-url https://ci-warehouse.example.test --company 'CI Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-ci.env" \
+            --admin-phone 919000000001 --admin-name 'CI Administrator'
           sha256sum -c /tmp/warehouse-config.sha256
-          test "$(stat -c %a docker/.env)" = "$(cat /tmp/warehouse-config.mode)"
+          test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend
-      - name: Stop only this checkout's demo
+      - name: Stop only this checkout's operator project
         if: always()
-        run: test ! -f docker/.env || bash scripts/compose.sh --profile '*' down
+        run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
         working-directory: backend

@@ -8,6 +8,37 @@ Production remains gated; existing demo release tags are unchanged. Counts and
 versions below describe dated scan evidence, not a new scan or verification of
 currently patched publisher versions.
 
+## Independent operator installation work
+
+The target is one backend and database per cold-storage business, with one native
+app selecting an instance by its canonical HTTPS origin. Linux x86-64 is the
+server baseline. On Windows, unattended operation uses an automatically started
+Linux VM; WSL2/Docker Desktop remains a development option. ARM64 and native
+store publication are deferred from the initial pilot. Developers install the
+service; warehouse administrators manage their instance afterward. Credentials
+remain private to each installation, outside the source checkout. The immutable
+`v0.2.2-demo` tags retain their historical acceptance evidence; current operator
+work must not inherit those device results after runtime changes.
+This table is the authoritative status ledger for the independent operator
+handoff. The numbered material below retains the earlier production dependency
+evidence and owner inputs.
+
+| Work package | Status | Evidence required to close |
+| --- | --- | --- |
+| Operator installer, versioned manifest, persistent storage, first-admin bootstrap, safe rerun, preflight and doctor | Implemented; local isolated install and rerun verified | Fresh Linux and Windows VM installs and unattended reboot remain. No demo users or fixed OTP. |
+| Canonical HTTPS origin and private network boundary | Pending | Trusted certificate, Wi-Fi and cellular access, DNS/gateway/upstream recovery; database, Studio, CUPS and Home Assistant private. Historical stale-IP 502 and HTTP 500 are separate findings. |
+| MSG91 OTP and customer approval | Implemented; database and request-body tests verified | Real SMS receipt and provider failure, delayed delivery, expiry, replay, attempts, resend and abuse acceptance; unknown phones pending until admin customer assignment; disabled/rejected access revoked. |
+| Mobile server selection and isolation | Implemented; automated tests verified | Manual HTTPS and QR origin, discovery identity/version, atomic switch with cancelled old work and cleared credentials/cache; same URL replacement and cold restart tested on Android and iPhone. |
+| Warehouse onboarding and business flow | Pending | Editable warehouse identity/branding/customer/pricing configuration; approval, receipt, inventory, orders, queue, dispatch, invoices and cart accepted against existing billing semantics. |
+| Epson LQ-1310 printing | Pending | Authorized durable jobs with queue/state/duplicate handling; actual continuous forms, alignment and fault recovery on Linux USB and Windows shared-queue VM paths. Disappeared jobs remain uncertain, not proof of paper output. |
+| Tapo T310/H100/H200 and Home Assistant monitoring | Pending | Sanitized integration assets, narrow ingestion credential, device mapping, source timestamps, idempotent five-minute uploads/fifteen-minute replay, missing values and stale/offline state; real-device acceptance before enabling mobile capability. Cooling control excluded. |
+| Recovery, upgrades, diagnostics and alerts | Pending | Encrypted off-host backup and replacement-host restore, explicit schedule/retention, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test. |
+| Final handoff | Pending | Both repositories' checks, reviewed PRs/CI, exact main commits and native build IDs, plus physical results and exceptions recorded. Hardware-dependent cases stay **not tested** until performed. |
+
+The image security findings below remain **won't fix in current scope**, not
+patched or passed. This work does not claim unconditional production security
+readiness. Any operator-specific billing change requires a separate requirement.
+
 Backend `main` includes the signed-plugin recheck in
 [PR #62](https://github.com/abhiguru/supabase-warehouse-template/pull/62)
 (`c869e2a`) and the Grafana core build prototype in
@@ -29,8 +60,7 @@ has a native **amd64** image scan with **2 HIGH, 0 CRITICAL**, both gRPC in the
 signed Prometheus and PostgreSQL plugins; Thrift is fixed in its core binary.
 Its nine-plugin, provisioning and live-query smoke passed, but the strict
 validator rejected the two findings. Combined **arm64** validation and a full
-19-image rescan remain pending. Before deployment, inspect and migrate any
-production references to removed plugins.
+19-image rescan were not completed.
 
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
@@ -45,74 +75,19 @@ those merge commits. See the [current readiness note](READINESS.md#gateway-regre
 for exact runs and the separate historical HTTP 500 limit. Future runtime
 changes need affected-case testing before inheriting physical acceptance.
 
-## Technical follow-ups that can start now
+## Technical follow-ups and dispositions
 
-- **Item 1 — image security gate:** Security/build maintainers should obtain
-  compatible patched, publisher-signed Prometheus and PostgreSQL plugins,
-  validate the [Grafana core rebuild
-  candidate](GRAFANA_CORE_CANDIDATE.md) with the pruned recipe on native arm64
-  after its completed amd64 smoke and scan, preserve signature enforcement,
-  rebuild from current package repositories, and repeat the
-  complete 19-image scan. They should also obtain
-  a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
-  image, or review a reproducible source build with equivalent evidence, and
-  assess its components. Acceptance requires 19 valid image-matched reports
-  passing the fixed HIGH/CRITICAL gate, zero remaining Grafana findings at that
-  threshold, and a complete PostgREST Haskell/native inventory tied to the
-  exact per-platform binaries with an applicable vulnerability assessment.
-  Trivy's empty Haskell result cannot satisfy it. The last recorded all-profile
-  inventory had **17/19** valid passing reports: the
-  locally patched Grafana had **102 HIGH** findings and PostgREST had no package
-  results. Publisher binary provenance for PostgREST is established for amd64,
-  but it is not a component inventory; arm64 was not attested by that hash.
-  A fresh 2026-09-24 targeted **amd64** rebuild and Trivy 0.74.0 scan of the
-  current signed-plugin recipe confirmed **9 HIGH, 0 CRITICAL**: one Grafana
-  core Thrift finding and eight in six plugin executables (gRPC and Tempo).
-  The image-report validator rejected it. Grafana 13.2.2 remained the latest
-  stable publisher release, and no patched compatible signed plugin release
-  was verified. The [native arm64 Grafana run
-  35987888412](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35987888412)
-  passed at backend `80869391f2c8dfb7e700ffa99a68382ba7e769c4` and
-  reported the same **9 HIGH, 0 CRITICAL** and the same CVEs and embedded
-  versions in its targeted image scan. Workflow success records valid scan
-  evidence; these findings still fail the strict image gate. Neither targeted
-  scan is a full 19-image rescan. On 2026-09-25, publisher Tempo 13.2.2 and
-  InfluxDB 13.1.5 archives were checked for amd64, arm64 and arm. InfluxDB
-  still embeds gRPC v1.83.1; Tempo embeds patched gRPC v1.83.2 but still has
-  two fixed HIGH Tempo advisories in a targeted amd64 candidate scan. The
-  candidate remained at **9 HIGH, 0 CRITICAL** after its signed-plugin and
-  live-query smoke passed, so the experimental update was reverted. Grafana
-  13.2.2 remained the latest stable publisher application release. The separate
-  native amd64 core rebuild prototype from merged PR #63 selected Thrift
-  0.24.0 and passed startup, signed-plugin and live-query smoke. Its exact-image
-  Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold has **8 HIGH,
-  0 CRITICAL**: it no longer reports the single Apache Thrift HIGH finding in
-  Grafana's main executable, while all eight publisher-signed plugin findings
-  remain. The validator rejected that historical candidate. The later combined
-  core and prune **amd64** candidate at `f8fd060` has image ID
-  `sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`
-  and **2 HIGH, 0 CRITICAL**, both CVE-2026-84445 in signed Prometheus and
-  PostgreSQL plugins. Its core binary selected Thrift 0.24.0 and the smoke
-  check passed nine signatures, provisioning and live queries; the strict
-  validator still rejected the image. Compatible patched publisher-signed
-  releases have not been verified. Its combined arm64 build and scan are
-  untested: the manual workflow needs explicit labels for larger, ephemeral
-  GitHub-hosted native runners and a conservative 25 GiB free-disk preflight
-  margin. It does not use a self-hosted Docker daemon. Standard hosted runners
-  have 14 GB total storage and fail that preflight; no qualified larger native
-  arm64 runner is currently available. See
-  [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md) for the pinned inputs and
-  evidence. Exact PostgREST binaries on both platforms
-  contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
-  inspected v14.18 and v16.3 images also remain affected. No complete
-  image-bound Haskell/native inventory is available. See
-  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
-  the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
-  the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md). The manual
-  [arm64 native build evidence](POSTGREST_NATIVE_BUILD_EVIDENCE.md) workflow is
-  **NOT RUN, deferred** because no suitable native arm64 machine or VM is
-  available. Its dependency-resolution dry run is separate evidence; no patched
-  binary or image has been built or installed, and this gate remains open.
+- **Item 1 — image security gate: Won’t fix in current scope — user disposition.**
+  The active Grafana recipe's recorded scan has **3 HIGH** findings: core Thrift and
+  gRPC in the required Prometheus and PostgreSQL plugins. The separate combined
+  core rebuild/prune **amd64** candidate removes Thrift but retains the two
+  plugin gRPC HIGH findings. PostgREST's platform binaries contain affected
+  `aeson` versions under HIGH advisory HSEC-2026-0007, and a complete image-bound
+  Haskell/native inventory is unavailable. These remaining findings are unresolved;
+  this disposition grants no production risk acceptance, and the strict
+  19-image gate still fails. Stop scheduling research, rebuilds and scans for
+  this item unless the user reopens it. See the [security evidence](CONTAINER_SECURITY.md),
+  [Grafana candidate](GRAFANA_CORE_CANDIDATE.md), and [PostgREST investigation](POSTGREST_IMAGE_INVESTIGATION.md).
 - **Disabled Auth source advisory:** A reviewed candidate locally replaces
   `pgproto3/v2` v2.3.3 with the same tagged source plus a negative DataRow field
   length guard. Its [source provenance and regression tests](../docker/auth/internal/forks/pgproto3/PATCH.md)
