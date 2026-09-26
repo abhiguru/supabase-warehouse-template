@@ -52,6 +52,7 @@ case "$1" in
       *' ps -q storage') printf 'cccccccccccc\\n' ;;
       *' ps -q '*) : ;;
       *'exec -T db pg_dump'*) if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
+      *'exec -T db psql'*' -c SELECT rolname'*) printf 'postgres\\nsupabase_functions_admin\\n' ;;
       *'exec -T db psql'*) printf 'fake integrity\\n' ;;
     esac ;;
 esac
@@ -62,7 +63,8 @@ esac
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(destination, 'database.dump'), 'utf8'), 'fake database dump\n');
     assert.equal(readFileSync(join(destination, 'compose.env'), 'utf8').includes('WAREHOUSE_PROJECT_NAME='), true);
-    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v2/);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v3/);
+    assert.match(readFileSync(join(destination, 'roles.txt'), 'utf8'), /supabase_functions_admin/);
     const calls = readFileSync(log, 'utf8');
     assert.ok(calls.indexOf('stop kong') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('pg_dump') < calls.indexOf('start kong'));

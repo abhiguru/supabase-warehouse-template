@@ -12,11 +12,15 @@ done
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
 case "$format" in
   warehouse-backup-v1) ;;
-  warehouse-backup-v2)
+  warehouse-backup-v2|warehouse-backup-v3)
     for file in compose.env instance.json; do
       [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
       grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
     done
+    if [[ "$format" == warehouse-backup-v3 ]]; then
+      [[ -f "$backup/roles.txt" && ! -L "$backup/roles.txt" ]] || { echo 'Incomplete backup: missing roles.txt' >&2; exit 1; }
+      grep -Fq '  roles.txt' "$backup/SHA256SUMS" || { echo 'Backup checksum missing for roles.txt' >&2; exit 1; }
+    fi
     ;;
   *) echo 'Unsupported backup format.' >&2; exit 1 ;;
 esac
@@ -53,23 +57,56 @@ for ((i=0; i<60; i++)); do
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Restore database did not start.' >&2; exit 1; }
-# The live Compose initialization adds this grant target through webhooks.sql.
-# A bare pinned Postgres image does not have it, but the logical dump retains
-# its ACLs; create the role before restoring so those ACLs are actually checked.
-docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
-  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+# The logical dump preserves ACLs, while Compose init scripts may add grant
+# targets that the bare pinned image lacks. Recreate absent names in this
+# disposable database so pg_restore verifies the original ACLs.
+if [[ "$format" == warehouse-backup-v3 ]]; then
+  docker cp "$backup/roles.txt" "$container:/tmp/roles.txt"
+  docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
+    psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+CREATE TEMP TABLE restore_roles (role_name name NOT NULL);
+\copy restore_roles(role_name) FROM '/tmp/roles.txt'
 DO $$
+DECLARE missing_role name;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_functions_admin') THEN
-    CREATE ROLE supabase_functions_admin NOLOGIN;
-  END IF;
+  FOR missing_role IN SELECT role_name FROM restore_roles LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = missing_role) THEN
+      EXECUTE format('CREATE ROLE %I NOLOGIN', missing_role);
+    END IF;
+  END LOOP;
 END $$;
 SQL
+fi
 docker cp "$backup/database.dump" "$container:/tmp/database.dump"
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
-  -U supabase_admin -T template0 warehouse_restore
+  -U supabase_admin -T template1 warehouse_restore
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
-  -U supabase_admin -d warehouse_restore --no-owner \
+  -U supabase_admin -d warehouse_restore --no-owner --clean --if-exists \
+  --no-acl --section=pre-data --exit-on-error /tmp/database.dump
+docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
+  -U supabase_admin -d warehouse_restore --no-owner --no-acl \
+  --section=data --exit-on-error /tmp/database.dump
+docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
+  -U supabase_admin -d warehouse_restore --no-owner --no-acl \
+  --section=post-data --exit-on-error /tmp/database.dump
+# pg_graphql registers this wrapper only when graphql_public exists during
+# extension initialization. Logical replay may create that schema afterward.
+docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
+  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore <<'SQL'
+CREATE OR REPLACE FUNCTION graphql_public.graphql(
+  "operationName" text DEFAULT NULL, query text DEFAULT NULL,
+  variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL
+) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT graphql.resolve(
+    query := query, variables := coalesce(variables, '{}'::jsonb),
+    "operationName" := "operationName", extensions := extensions
+  );
+$$;
+SQL
+# Replay ACLs only after all objects, including extension-owned wrappers, exist.
+docker exec "$container" sh -c "pg_restore -l /tmp/database.dump | awk '/^[0-9]+; .* ACL / { print }' > /tmp/acl.list"
+docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
+  -U supabase_admin -d warehouse_restore --no-owner -L /tmp/acl.list \
   --exit-on-error /tmp/database.dump
 docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
   psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
