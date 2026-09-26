@@ -53,6 +53,18 @@ for ((i=0; i<60; i++)); do
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Restore database did not start.' >&2; exit 1; }
+# The live Compose initialization adds this grant target through webhooks.sql.
+# A bare pinned Postgres image does not have it, but the logical dump retains
+# its ACLs; create the role before restoring so those ACLs are actually checked.
+docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
+  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_functions_admin') THEN
+    CREATE ROLE supabase_functions_admin NOLOGIN;
+  END IF;
+END $$;
+SQL
 docker cp "$backup/database.dump" "$container:/tmp/database.dump"
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
   -U supabase_admin -T template0 warehouse_restore
