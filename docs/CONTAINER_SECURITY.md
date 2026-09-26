@@ -272,14 +272,20 @@ image. Preserve a recoverable copy of that Grafana database.
 
 The pruned recipe passed isolated native amd64 Grafana startup, validation of
 the nine retained publisher signatures, provisioning and live
-Prometheus/PostgreSQL queries. Its targeted Trivy 0.74.0 image scan at the
-fixed HIGH/CRITICAL threshold reported **3 HIGH, 0 CRITICAL**: one Apache
-Thrift finding in Grafana core and one gRPC finding each in the retained
-Prometheus and PostgreSQL plugins. The strict image-report validator still
-rejects it. A native arm64 build and scan of this pruned candidate are pending;
-the separate 2026-09-25 core-build result above has not been combined with it.
-Neither the strict full 19-image inventory nor PostgREST coverage has been
-rerun. These candidate results do not change production readiness.
+Prometheus/PostgreSQL queries. The [native targeted workflow run
+36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
+passed on exact branch commit `d71f094`. It built image
+`sha256:a3e89ab77dcee9b7e27334660f0ae2c648b5dfb6cf01df9181a312b924166ab3`
+on amd64 and image
+`sha256:8a9c4af83e68e93ebd9724b4d5ded8ccafa2aa9d4c76390c1971897b12fc2a62`
+on arm64. Each targeted Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold
+records **3 HIGH, 0 CRITICAL**: core Thrift CVE-2026-43871 and gRPC
+CVE-2026-84445 in each of the retained Prometheus and PostgreSQL plugins.
+Workflow success means both reports passed evidence validation; the findings
+still fail the strict production image gate. The separate 2026-09-25 core-build
+result above has not been combined with the prune. Neither the strict full
+19-image inventory nor PostgREST coverage has been rerun. These candidate
+results do not change production readiness.
 
 A follow-up isolated query check found that the provisioned datasource hostnames
 did not match the Compose service names. They now use `prometheus` and `db`.

@@ -20,10 +20,13 @@ Jaeger, Google Cloud Monitoring and Tempo. The owned local Grafana volume has
 only `postgres` and `prometheus` data source types, with no dashboards or alert
 rules; a production Grafana database has not been audited. Native amd64 startup,
 nine retained publisher signatures and live Prometheus/PostgreSQL queries pass.
-Its targeted image scan reports **3 HIGH, 0 CRITICAL** (core Thrift and gRPC in
-the two required plugins), so the strict validator still rejects it. Native
-arm64 candidate evidence and a full 19-image rescan remain pending. Before
-deployment, inspect and migrate any production references to removed plugins.
+The [native targeted run
+36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
+passed on exact branch commit `d71f094`: both amd64 and arm64 image reports
+record **3 HIGH, 0 CRITICAL** (core Thrift and gRPC in the two required plugins).
+These findings still fail the strict production gate. A full 19-image rescan
+remains pending. Before deployment, inspect and migrate any production
+references to removed plugins.
 
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)

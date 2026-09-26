@@ -8,8 +8,11 @@ Monitoring and Tempo plugins. The owned local Grafana volume contains only
 alert rules. A production Grafana database has not been audited; its saved
 references must be checked and migrated before deploying this image. Native
 amd64 startup, nine publisher signatures, provisioning and live queries passed.
-The targeted image scan has **3 HIGH, 0 CRITICAL**: core Thrift plus gRPC in
-Prometheus and PostgreSQL plugins. Native arm64 candidate evidence is pending.
+The [native targeted run
+36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
+passed at exact branch commit `d71f094`. Both amd64 and arm64 image reports
+have **3 HIGH, 0 CRITICAL**: core Thrift plus gRPC in Prometheus and PostgreSQL
+plugins.
 The strict 19-image production gate remains open; the historical results below
 describe the prior recipe and core-build prototype.
 
