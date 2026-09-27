@@ -13,6 +13,15 @@ SELECT pg_temp.assert_true(NOT (public.verify_otp_or_register('919888888801','12
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE'),'anon cannot call historical demo send');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.verify_otp_or_register(varchar,varchar,varchar,varchar)','EXECUTE'),'anon cannot call historical demo verify');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE'),'anon cannot prepare OTP');
+SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_sms_config()','EXECUTE'),'anon cannot read provider credentials');
+SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_sms_config()','EXECUTE'),'users cannot read provider credentials');
+SELECT pg_temp.assert_true(NOT has_table_privilege('anon','public.sms_config','SELECT'),'anon cannot read SMS config');
+SELECT pg_temp.assert_true(NOT has_table_privilege('authenticated','public.sms_config','SELECT'),'users cannot read SMS config');
+UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_key='isolated-test-key',
+  msg91_template_id='694a8ea0cd30ae1f432f445a',msg91_pe_id='1101817660000088076',msg91_sender_id='GCSAMD'
+  WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
+SELECT pg_temp.assert_true((public.operator_sms_config()#>>'{data,flow_id}')='694a8ea0cd30ae1f432f445a',
+  'worker reads the latest protected Flow ID');
 SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_verify_otp(text,text,text,text)','EXECUTE'),'authenticated cannot bypass provider');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE'),'anon cannot approve');
 
@@ -32,6 +41,11 @@ SELECT pg_temp.assert_true(:'challenge'::jsonb->>'success'='true','admin OTP pre
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888801')->>'code')='resend_cooldown',
   'in-flight delivery blocks a second SMS challenge');
 SELECT public.operator_finish_otp((:'challenge'::jsonb#>>'{data,request_id}')::uuid,true,'provider-accepted');
+SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='success'
+  AND msg91_request_id='provider-accepted' AND otp_code IS NULL AND otp_hash IS NULL
+  AND otp_code_hash ~ '^[0-9a-f]{64}$' FROM public.otp_verifications
+  WHERE id=(:'challenge'::jsonb#>>'{data,request_id}')::uuid),
+  'accepted delivery stores a provider ID and hash only');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888801')->>'code')='resend_cooldown','resend is bounded');
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888801','000000')->>'code')='invalid_otp'
   OR (:'challenge'::jsonb#>>'{data,otp_code}')='000000','wrong OTP denied');
@@ -43,7 +57,11 @@ SELECT pg_temp.assert_true(:'admin_refresh'::jsonb->>'success'='true','operator 
 SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_login'::jsonb#>>'{data,session,refresh_token}')->>'success')='false','refresh token rotates and cannot replay');
 
 SELECT public.operator_prepare_otp('9888888804') AS failed_delivery \gset
-SELECT public.operator_finish_otp((:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid,false);
+SELECT public.operator_finish_otp((:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid,false,'provider_auth');
+SELECT pg_temp.assert_true((SELECT delivery_status='failed' AND msg91_status='provider_auth'
+  AND msg91_request_id IS NULL AND otp_code_hash IS NULL FROM public.otp_verifications
+  WHERE id=(:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid),
+  'rejected delivery records a safe code without retaining OTP material');
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888804',:'failed_delivery'::jsonb#>>'{data,otp_code}')->>'success')='false','provider failure seals challenge');
 SELECT public.operator_prepare_otp('9888888806') AS late_delivery \gset
 UPDATE public.otp_verifications SET expires_at=now()-interval '1 second'
@@ -53,6 +71,14 @@ SELECT pg_temp.assert_true((public.operator_finish_otp((:'late_delivery'::jsonb#
 SELECT pg_temp.assert_true((SELECT delivery_status='failed' AND verified AND otp_code_hash IS NULL
   FROM public.otp_verifications WHERE id=(:'late_delivery'::jsonb#>>'{data,request_id}')::uuid),
   'expired challenge is sealed');
+DO $$ DECLARE n integer; outcome jsonb; BEGIN
+  FOR n IN 1..30 LOOP
+    outcome:=public.operator_prepare_otp('988899'||lpad(n::text,4,'0'),'203.0.113.10');
+    IF outcome->>'success'<>'true' THEN RAISE EXCEPTION 'IP rate test failed before threshold'; END IF;
+  END LOOP;
+  outcome:=public.operator_prepare_otp('9888990031','203.0.113.10');
+  IF outcome->>'code'<>'rate_limited' THEN RAISE EXCEPTION 'IP rate threshold not enforced'; END IF;
+END $$;
 SELECT public.operator_prepare_otp('9888888805') AS attempt_limit \gset
 SELECT public.operator_finish_otp((:'attempt_limit'::jsonb#>>'{data,request_id}')::uuid,true,'provider-accepted');
 DO $$ DECLARE attempt integer; BEGIN

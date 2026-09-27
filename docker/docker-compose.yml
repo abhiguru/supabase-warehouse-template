@@ -280,8 +280,6 @@ services:
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
       APP_ENV: ${APP_ENV:?Operator environment required}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
-      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:?MSG91 auth key required}
-      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow template required}
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
     command:
       [
@@ -320,6 +318,12 @@ services:
       JWT_EXP: ${JWT_EXPIRY}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
       APP_ENV: ${APP_ENV:?Operator environment required}
+      SMS_PROVIDER: ${SMS_PROVIDER:?MSG91 provider required}
+      SMS_PRODUCTION_MODE: ${SMS_PRODUCTION_MODE:?Production SMS mode required}
+      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:?MSG91 auth key required}
+      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow ID required}
+      MSG91_PE_ID: ${MSG91_PE_ID:?MSG91 PE ID required}
+      MSG91_SENDER_ID: ${MSG91_SENDER_ID:?MSG91 sender ID required}
     command:
       [
         "postgres",

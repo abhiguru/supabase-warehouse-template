@@ -13,6 +13,14 @@ until it has been reviewed and merged; do not assume the changes are on `main`.
 
 ## Linux host preparation
 
+Before starting, the developer must give the AI installation agent noninteractive
+`sudo` access on this isolated VM. Configure the agent's installation account in
+`sudoers` with `sudo visudo`, then verify from the agent's session that
+`sudo -n true` succeeds. A later matching group rule can override an earlier
+user rule, so check the effective result rather than relying on the file's
+appearance. Remove the installation grant after the handoff if it is no longer
+needed; never give the agent the sudo password in chat.
+
 Install Node.js 22.18 or newer, npm, Git, OpenSSL, util-linux (`flock`), Docker
 Engine and Compose v2.
 Choose a persistent filesystem with at least 10 GiB free for this initial
@@ -43,12 +51,39 @@ MSG91_PE_ID=replace-with-owned-entity-id
 MSG91_SENDER_ID=replace-with-owned-sender-id
 ```
 
-The MSG91 template must be an approved Flow SMS template using `VAR1` for the
-six-digit code. [MSG91's Send SMS documentation](https://docs.msg91.com/sms/send-sms)
-notes that an accepted API response does not confirm delivery to the handset;
-test receipt with an owned phone. Keep the provider file and
-the generated `config/compose.env` private and include them in the encrypted
-off-host backup. Never commit either file.
+`MSG91_TEMPLATE_ID` holds the MSG91 **Flow ID**, not the separate DLT Template
+ID. For the current Guru Cold Storage flow, use Flow ID
+`694a8ea0cd30ae1f432f445a`, PE ID `1101817660000088076`, sender/header
+`GCSAMD`, and DLT Template ID `1107176638369238844`. Its approved message is
+`{OTP} is your OTP code for Guru Cold Storage Private Limited, Ahmedabad. Valid for 5 mins. Please do not share this with anyone.`
+The Flow variable is exactly `OTP`, including capitalization. The operator OTP
+worker sends this variable through MSG91's Flow endpoint and reads the active
+provider settings from the latest protected `public.sms_config` row. It accepts
+the request only after MSG91 confirms success. [MSG91's Send SMS
+documentation](https://docs.msg91.com/sms/send-sms) notes that an accepted API
+response does not confirm delivery to the handset; test receipt with an owned
+phone.
+
+The installer copies the private generated `config/compose.env` values into
+that protected row after migrations, including on setup reruns. The provider
+file seeds a new instance; changing it later does not rotate a running
+instance. For an authorized credential rotation, update this instance's
+mode-0600 `config/compose.env`, rerun the same setup command to synchronize the
+database, and verify a real OTP. Keep both private files outside Git and
+include them in the encrypted off-host backup. Never commit either file.
+
+For an AI-led installation, ask the operator for missing setup inputs **one at a
+time**, only when the next step needs them. After host preflight, request the
+**complete API hostname** (for example, `pilot-api.example.com`), not merely
+the parent domain, and wait for the answer. If Cloudflare Tunnel is used,
+check whether the selected hostname and tunnel are already in use, then request
+each missing tunnel input separately when configuring that route. Next request
+the warehouse company name, the `91`-prefixed administrator phone, the
+administrator display name, and the path to the existing mode-0600 MSG91
+provider file, waiting for each answer before asking the next question. Do not
+combine these into one questionnaire. Ask the operator to create the provider
+file in a VM terminal if it is missing; never ask for its credential values in
+chat. Continue independent checks while waiting for an answer.
 
 Run this from a reviewed backend checkout, replacing the example domain and
 administrator details with the warehouse's values:
@@ -80,7 +115,119 @@ Studio, CUPS and Home Assistant stay private. Configure DNS and a trusted
 certificate for the canonical origin supplied at installation. A minimal Caddy
 reference is [Caddyfile.example](../deploy/Caddyfile.example); replace its
 hostname and adjust its upstream port only if the private Compose configuration
-uses a different gateway port. After the proxy is live, run:
+uses a different gateway port.
+
+### Cloudflare Tunnel for an operator-selected hostname
+
+If the operator chooses Cloudflare Tunnel, install `cloudflared` from
+[Cloudflare's signed Debian/Ubuntu package repository](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/#1-download-and-install-cloudflared).
+The provided Windows configuration was a **sample**, not an approved hostname,
+tunnel, credential path, or authorization to change Cloudflare DNS. Ask the
+operator for these details **one question at a time**, at the step that needs
+each answer:
+
+1. Ask which complete API subdomain this VM should use. Do not infer one from
+   the parent's website domain or a sample configuration. Check its current DNS
+   and whether it serves another application before using it as `--api-url`.
+2. Ask whether the operator has access to the hostname's Cloudflare zone and
+   whether a tunnel is already dedicated to this VM. If one is offered, ask
+   whether it is locally or remotely managed and check whether other connectors
+   use it. [Cloudflare can send requests to any replica of a shared
+   tunnel](https://developers.cloudflare.com/tunnel/configuration/#replicas-and-high-availability),
+   so an occupied tunnel does not isolate this VM.
+3. If a new tunnel is needed, ask whether the operator wants a
+   [dashboard-managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
+   or a [locally managed tunnel](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/).
+   For dashboard management, ask the operator to create the tunnel and route
+   there, then put its connector **token** in a private mode-0600 file on the
+   VM. Run the connector with `cloudflared tunnel run --token-file <path>`;
+   neither `cert.pem` nor a tunnel JSON credentials file is needed. For local
+   management, ask whether the operator can complete `cloudflared tunnel
+   login` on this VM; that login creates `cert.pem`. Ask for a path to an
+   existing account certificate only if login is not used. Create the new
+   tunnel with the CLI and use its generated JSON credentials file. Never ask
+   the operator to paste a certificate, JSON credential or token in chat.
+4. Check the hostname's Cloudflare DNS route. For a dashboard-managed tunnel,
+   have the operator create the route in the dashboard. For a locally managed
+   tunnel, use `cloudflared tunnel route dns` only after the selected hostname
+   is confirmed and CLI authentication is available. Verify the resulting DNS
+   record before enabling the connector.
+5. Ask about nondefault tunnel and origin settings only when applying them;
+   the sample values are not automatically approved for this installation.
+
+The Cloudflare login may be shared with another machine. Treat its existing
+tunnels, DNS records and connectors as in-use state. For a new VM installation,
+create a new named tunnel and credentials file; do not reuse or delete an
+existing tunnel, stop another connector, run tunnel cleanup on another
+connector, or use `route dns --overwrite-dns`. Before creating the new DNS
+route, confirm the exact hostname has no existing record. Limit the CLI changes
+to the new tunnel and that hostname, then record the new UUID and route.
+
+For CLI management, `cloudflared tunnel login` opens a browser authorization
+flow and writes a new `cert.pem` for the selected zone. Move that file into the
+private directory before continuing. Use the confirmed private path to create
+a **new** named tunnel and its own credentials file, then route only the
+confirmed hostname. For example, after replacing every placeholder:
+
+```bash
+cloudflared tunnel --origincert /private/path/cert.pem create \
+  --credentials-file /private/path/new-tunnel.json NEW_TUNNEL_NAME
+cloudflared tunnel --origincert /private/path/cert.pem route dns \
+  NEW_TUNNEL_UUID CONFIRMED_API_HOSTNAME
+```
+
+The `route dns` command must be run without `--overwrite-dns`; if it reports a
+record conflict, inspect that record and ask the operator before changing it.
+
+Keep any JSON credential, token and account certificate in a mode-0700 private
+directory outside the checkout, with each file mode 0600. Do not print their
+contents in logs. A Windows path such as `C:\Users\admin\.cloudflared\`
+cannot be used as a Linux credentials path. A locally managed tunnel uses its
+JSON credentials to run; a remotely managed tunnel uses its token file.
+
+The sample's `http://localhost:8000` referred to its original host. This Linux
+operator Compose stack publishes container port 8000 at **`127.0.0.1:18000`**.
+Check the generated `KONG_HTTP_PORT` and use the actual loopback port.
+
+For a **locally managed** tunnel, write a private Linux `config.yml` outside
+the checkout using its generated JSON credential path. Replace all placeholders
+below with confirmed values before enabling the service:
+
+```yaml
+tunnel: <confirmed-tunnel-uuid>
+credentials-file: /private/path/<confirmed-tunnel-uuid>.json
+ingress:
+  - hostname: <confirmed-hostname>
+    service: http://127.0.0.1:18000
+    originRequest:
+      noTLSVerify: false
+      httpHostHeader: <confirmed-hostname>
+  - service: http_status:404
+```
+
+The supplied `http2-origin: true` is omitted because [HTTP/2 to an origin
+requires HTTPS](https://developers.cloudflare.com/tunnel/reference/origin-parameters/),
+while this gateway is private HTTP. Keep TLS verification enabled for any future
+HTTPS origin. The other sample settings (`protocol`, `max-fetch-size`,
+`retries`, `grace-period`, `edge-ip-version`, `connection-per-region` and
+`originRequest` tuning) require operator confirmation and support checks against
+the installed `cloudflared` version before use; do not assume an unrecognized
+key takes effect.
+For a remotely managed tunnel, configure the hostname and loopback origin in
+the Cloudflare dashboard and run with the private token file instead of this
+YAML. For a locally managed tunnel, validate the file with `cloudflared
+--config /private/path/config.yml tunnel ingress validate` and test the
+hostname rule. Verify that the Cloudflare DNS record for the confirmed hostname
+points to `<confirmed-tunnel-uuid>.cfargotunnel.com`. Install and enable a
+`cloudflared` system service so the tunnel survives a reboot. For local
+management, use [Cloudflare's Linux service procedure](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/linux/)
+with the explicit config path. For remote management, configure the service to
+read the private `--token-file` without placing its contents on a command line
+or in the service unit. Check that only the gateway is exposed through the
+tunnel, then run the local and external doctor checks and test from warehouse
+Wi-Fi and cellular data.
+
+After the proxy or tunnel is live, run:
 
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme

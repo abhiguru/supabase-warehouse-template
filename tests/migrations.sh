@@ -31,6 +31,16 @@ for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.s
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 for pass in 1 2; do
+  docker exec -i -e PGPASSWORD=disposable-test-database-only \
+    -e SMS_PROVIDER=msg91 -e SMS_PRODUCTION_MODE=true \
+    -e MSG91_AUTH_KEY=isolated-test-key -e MSG91_TEMPLATE_ID=694a8ea0cd30ae1f432f445a \
+    -e MSG91_PE_ID=1101817660000088076 -e MSG91_SENDER_ID=GCSAMD \
+    "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
+done
+sms_synced=$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" \
+  psql -X -qAt -U supabase_admin -d postgres -c "SELECT count(*)=1 AND bool_and(provider='msg91' AND production_mode AND msg91_auth_key='isolated-test-key' AND msg91_template_id='694a8ea0cd30ae1f432f445a' AND msg91_pe_id='1101817660000088076' AND msg91_sender_id='GCSAMD') FROM public.sms_config")
+[[ "$sms_synced" = t ]] || { echo 'Private MSG91 configuration did not synchronize idempotently.' >&2; exit 1; }
+for pass in 1 2; do
   if [[ "$pass" = 1 ]]; then
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
 SELECT warehouse_security.bootstrap_first_admin('9888888899','Configuration Test');

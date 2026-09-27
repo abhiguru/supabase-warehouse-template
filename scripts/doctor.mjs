@@ -80,7 +80,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     if (!owned.output.trim() && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
     return 'Operator configuration, private paths and gateway port preflight passed.';
   }
-  if (!probe('bash', [resolve(root, 'health-check.sh')]).ok) throw new Error('Local service health check failed.');
+  // The script probes seven containers plus three HTTP endpoints. Its own
+  // bounded readiness retries can exceed the short CLI-preflight deadline.
+  if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   if (local) return 'Local operator services and gateway are healthy.';
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);

@@ -3,8 +3,8 @@ import { existsSync, readFileSync, lstatSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, isAbsolute } from 'node:path';
 
-export function probe(command, args = []) {
-  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+export function probe(command, args = [], timeoutMs = 15000) {
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   return { ok: result.status === 0, output: result.status === 0 ? result.stdout : '' };
 }
 export function readEnv(path) {

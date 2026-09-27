@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { readBoundedJson } from './body.ts';
-import { deliverOtp } from './provider.ts';
+import { deliverOtp, Msg91DeliveryError } from './provider.ts';
 
 type RpcResult = { success: boolean; code?: string; data?: Record<string, unknown> };
 const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -57,23 +57,35 @@ serve(async (req: Request) => {
       if (typeof body.phone_number !== 'string') return failure('invalid_request');
       const phone = body.phone_number.replace(/\D/g, '');
       if (!/^(?:91)?[0-9]{10}$/.test(phone)) return failure('invalid_request');
-      // Database serialization covers concurrent requests and enforces phone limits.
-      const prepared = await rpc('operator_prepare_otp', { p_phone_number: phone });
+      // The gateway is loopback-only; Cloudflare supplies the client IP at its
+      // tunnel boundary. Phone and global limits still apply if it is absent.
+      const clientIp = req.headers.get('CF-Connecting-IP');
+      const prepared = await rpc('operator_prepare_otp', {
+        p_phone_number: phone,
+        p_ip_address: clientIp && /^[0-9a-fA-F:.]{3,45}$/.test(clientIp) ? clientIp : null,
+      });
       if (!prepared.success) return failure(prepared.code || 'invalid_request');
       const data = prepared.data!;
-      let providerId: string;
+      let providerId: string | null;
       try {
+        const config = await rpc('operator_sms_config', {});
+        if (!config.success || !config.data) throw new Msg91DeliveryError('provider_configuration');
         providerId = await deliverOtp(String(data.phone_number), String(data.otp_code),
-          Deno.env.get('MSG91_AUTH_KEY'), Deno.env.get('MSG91_TEMPLATE_ID'));
-      } catch {
-        await rpc('operator_finish_otp', { p_request_id: data.request_id, p_delivered: false });
+          String(config.data.auth_key || ''), String(config.data.flow_id || ''));
+      } catch (error) {
+        await rpc('operator_finish_otp', {
+          p_request_id: data.request_id,
+          p_delivered: false,
+          p_provider_id: error instanceof Msg91DeliveryError ? error.code : 'provider_unavailable',
+        });
         return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
       }
       const finalized = await rpc('operator_finish_otp', {
         p_request_id: data.request_id, p_delivered: true, p_provider_id: providerId,
       });
       if (!finalized.success) return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
-      return respond({ success: true, data: { request_id: data.request_id, expires_at: data.expires_at } });
+      return respond({ success: true, data: { request_id: `OTP_${data.request_id}`, expires_at: data.expires_at },
+        message: 'OTP sent successfully' });
     }
     if (operation === 'verify') {
       if (typeof body.phone_number !== 'string' || typeof body.otp_code !== 'string') return failure('invalid_request');

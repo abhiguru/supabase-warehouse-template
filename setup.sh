@@ -40,6 +40,7 @@ bash "$ROOT/scripts/compose.sh" config --quiet
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage
