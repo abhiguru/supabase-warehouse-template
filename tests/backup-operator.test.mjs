@@ -69,8 +69,8 @@ esac
     assert.ok(calls.indexOf('stop kong') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('stop auth') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('stop supavisor') < calls.indexOf('pg_dump'));
-    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('start --wait --wait-timeout 180 kong'));
-    assert.match(calls, /start --wait --wait-timeout 180 kong/);
+    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
+    assert.match(calls, /up -d --no-recreate --wait --wait-timeout 180 kong/);
     assert.equal(existsSync(join(destination, 'storage.tar.gz')), true);
     writeFileSync(log, '');
     const failed = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'failed-backup')], {
@@ -79,6 +79,6 @@ esac
     assert.notEqual(failed.status, 0);
     assert.equal(existsSync(join(scratch, 'failed-backup')), false);
     const failureCalls = readFileSync(log, 'utf8');
-    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('start --wait --wait-timeout 180 kong'));
+    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

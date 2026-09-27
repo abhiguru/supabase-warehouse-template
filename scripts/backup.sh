@@ -27,7 +27,7 @@ cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
-    if ! compose start --wait --wait-timeout 180 "${restart[@]}"; then
+    if ! compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
     fi
@@ -78,6 +78,6 @@ EOF
 (cd "$stage" && sha256sum database.dump storage.tar.gz integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
 chmod 600 "$stage"/*
 mv "$stage" "$destination"
-if ((${#restart[@]})); then compose start --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
+if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
 echo "Backup created at $destination"
 echo 'Treat this directory as sensitive and test every retained backup with db:verify-restore.'
