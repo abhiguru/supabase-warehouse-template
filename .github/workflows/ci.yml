@@ -138,8 +138,8 @@ jobs:
           cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
           SMS_PROVIDER=msg91
           MSG91_AUTH_KEY=ci-offline-no-delivery
-          MSG91_TEMPLATE_ID=ci-offline-flow
-          MSG91_PE_ID=ci-offline-entity
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
           MSG91_SENDER_ID=CITEST
           ENV
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
