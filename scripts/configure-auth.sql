@@ -17,6 +17,11 @@ SELECT value=:'starter_secret' AS secret_matches FROM warehouse_security.auth_co
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Existing database signing key differs; no key was changed'; END $$;
 \endif
+-- Switching an existing local demo database to operator mode must invalidate
+-- sessions minted while demo authentication was enabled. Repeated configuration
+-- of an already configured operator instance leaves its sessions intact.
+DELETE FROM warehouse_security.refresh_sessions
+WHERE COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='auth_mode'),'') <> 'operator';
 SELECT :'starter_mode'='operator' AND :'starter_environment'='production' AS valid_mode \gset
 \if :valid_mode
 \else

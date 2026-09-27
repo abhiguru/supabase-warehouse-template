@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { readBoundedJson } from './body.ts';
+import { deliverOtp } from './provider.ts';
 
 type RpcResult = { success: boolean; code?: string; data?: Record<string, unknown> };
 const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -37,25 +38,6 @@ function failure(code: string): Response {
   return respond({ success: false, error }, status);
 }
 
-async function deliver(phone: string, code: string): Promise<string | null> {
-  const authKey = Deno.env.get('MSG91_AUTH_KEY');
-  const templateId = Deno.env.get('MSG91_TEMPLATE_ID');
-  if (!authKey || !templateId || authKey.startsWith('your-') || templateId.startsWith('your-')) {
-    throw new Error('MSG91 credentials missing');
-  }
-  const response = await fetch('https://control.msg91.com/api/v5/flow', {
-    method: 'POST',
-    headers: { authkey: authKey, accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ template_id: templateId, recipients: [{ mobiles: phone, VAR1: code }] }),
-    signal: AbortSignal.timeout(10000),
-    redirect: 'error',
-  });
-  if (!response.ok) throw new Error(`MSG91 request failed (${response.status})`);
-  const result = await response.json();
-  if (result?.type !== 'success' && result?.status !== 'success') throw new Error('MSG91 declined request');
-  return typeof result.message === 'string' ? result.message : null;
-}
-
 serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
@@ -79,9 +61,10 @@ serve(async (req: Request) => {
       const prepared = await rpc('operator_prepare_otp', { p_phone_number: phone });
       if (!prepared.success) return failure(prepared.code || 'invalid_request');
       const data = prepared.data!;
-      let providerId: string | null = null;
+      let providerId: string;
       try {
-        providerId = await deliver(String(data.phone_number), String(data.otp_code));
+        providerId = await deliverOtp(String(data.phone_number), String(data.otp_code),
+          Deno.env.get('MSG91_AUTH_KEY'), Deno.env.get('MSG91_TEMPLATE_ID'));
       } catch {
         await rpc('operator_finish_otp', { p_request_id: data.request_id, p_delivered: false });
         return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);

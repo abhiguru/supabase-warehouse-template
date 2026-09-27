@@ -4,10 +4,7 @@ For a new warehouse installation on the current development branch, follow
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md). The commands and evidence below
 reproduce historical source-demo tags only.
 
-> The dated `v0.2.1-demo` evidence below is historical. For the current release,
-> use matching `v0.2.2-demo` tags after publication or matching current `main`
-> branches during preparation. Record both full SHAs and verify both backend CI
-> workflow copies pin the mobile SHA before applying this isolation procedure.
+> The dated evidence below is historical and does not verify the operator branch.
 
 ## Evidence — 2026-09-12
 

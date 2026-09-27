@@ -45,6 +45,14 @@ SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_login'::jsonb#>>'{d
 SELECT public.operator_prepare_otp('9888888804') AS failed_delivery \gset
 SELECT public.operator_finish_otp((:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid,false);
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888804',:'failed_delivery'::jsonb#>>'{data,otp_code}')->>'success')='false','provider failure seals challenge');
+SELECT public.operator_prepare_otp('9888888806') AS late_delivery \gset
+UPDATE public.otp_verifications SET expires_at=now()-interval '1 second'
+  WHERE id=(:'late_delivery'::jsonb#>>'{data,request_id}')::uuid;
+SELECT pg_temp.assert_true((public.operator_finish_otp((:'late_delivery'::jsonb#>>'{data,request_id}')::uuid,true,'late-provider-id')->>'success')='false',
+  'late provider acceptance cannot activate expired OTP');
+SELECT pg_temp.assert_true((SELECT delivery_status='failed' AND verified AND otp_code_hash IS NULL
+  FROM public.otp_verifications WHERE id=(:'late_delivery'::jsonb#>>'{data,request_id}')::uuid),
+  'expired challenge is sealed');
 SELECT public.operator_prepare_otp('9888888805') AS attempt_limit \gset
 SELECT public.operator_finish_otp((:'attempt_limit'::jsonb#>>'{data,request_id}')::uuid,true,'provider-accepted');
 DO $$ DECLARE attempt integer; BEGIN

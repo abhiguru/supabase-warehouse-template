@@ -8,6 +8,6 @@ if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
   echo 'Operator installation requires Linux x86-64.' >&2
   exit 1
 fi
-for command in docker node npm openssl; do
+for command in docker node npm openssl flock; do
   command -v "$command" >/dev/null || { echo "Missing prerequisite: $command" >&2; exit 1; }
 done

@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, statSync, writeFileSync, rmSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { configure } from '../scripts/configure.mjs';
 import { validateOperatorEnv } from '../scripts/doctor.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
@@ -33,6 +34,10 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     assert.equal(readFileSync(manifestPath, 'utf8').includes('real-provider-key'), false);
     const env = readEnv(envPath);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+    assert.throws(() => validateOperatorEnv({ ...env, ANON_KEY: env.SERVICE_ROLE_KEY }, stateDir), /Invalid ANON_KEY/);
+    assert.throws(() => validateOperatorEnv({ ...env, JWT_SECRET: '0'.repeat(96) }, stateDir), /Invalid ANON_KEY/);
+    assert.throws(() => validateOperatorEnv({ ...env, WAREHOUSE_PROJECT_NAME: 'warehouse-other' }, stateDir), /project differs/);
+    assert.throws(() => validateOperatorEnv({ ...env, CORS_ALLOWED_ORIGIN: 'https://wrong.example.com' }, stateDir), /browser origins differ/);
     for (const [key, role] of [['ANON_KEY', 'anon'], ['SERVICE_ROLE_KEY', 'service_role']]) {
       const [header, payload, signature] = env[key].split('.');
       assert.equal(signature, createHmac('sha256', env.JWT_SECRET).update(`${header}.${payload}`).digest('base64url'));
@@ -54,6 +59,31 @@ test('fresh setup rejects checkout state and unprotected provider credentials', 
     const options = { stateDir: join(scratch, 'state'), apiUrl: 'https://api.example.com', appUrl: 'https://app.example.com', company: 'Acme', providerEnv };
     assert.throws(() => configure(root, { ...options, stateDir: join(root, 'state') }), /outside the checkout/);
     assert.throws(() => configure(root, options), /mode 0600/);
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY="quoted"\nMSG91_TEMPLATE_ID=id\nMSG91_PE_ID=pe\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    chmodSync(providerEnv, 0o600);
+    assert.throws(() => configure(root, options), /without quotes/);
+    const alias = join(scratch, 'alias');
+    symlinkSync(scratch, alias, 'dir');
+    assert.throws(() => configure(root, { ...options, stateDir: join(alias, 'state') }), /symlink/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('compose strips inherited values before loading private config', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-compose-env-'));
+  const root = new URL('..', import.meta.url).pathname;
+  const stateDir = join(scratch, 'state');
+  const providerEnv = join(scratch, 'provider.env');
+  const bin = join(scratch, 'bin');
+  try {
+    mkdirSync(bin);
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=key\nMSG91_TEMPLATE_ID=id\nMSG91_PE_ID=pe\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    configure(root, { stateDir, apiUrl: 'https://api.example.com', company: 'Acme', providerEnv });
+    writeFileSync(join(bin, 'docker'), '#!/bin/sh\nif [ "$1" = ps ]; then exit 0; fi\nprintf "%s\\n" "${POSTGRES_PASSWORD-unset}"\n', { mode: 0o700 });
+    const result = spawnSync('bash', [join(root, 'scripts/compose.sh'), 'config', '--quiet'], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: stateDir, POSTGRES_PASSWORD: 'ambient-secret' },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'unset');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

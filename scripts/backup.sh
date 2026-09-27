@@ -10,9 +10,12 @@ state="${WAREHOUSE_STATE_DIR:-}"
 [[ "$state" == /* && -f "$state/config/compose.env" && -f "$state/public/instance.json" && -d "$state/data/storage" ]] || {
   echo 'Set WAREHOUSE_STATE_DIR to the installed operator state.' >&2; exit 1;
 }
+compose config --quiet
+exec 9>"$state/config/operator.lock"
+if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
 mkdir -p "$state/backups"
 destination="${1:-${WAREHOUSE_BACKUP_DIR:-$state/backups/warehouse-$timestamp}}"
-if [[ -e "$destination" || -L "$destination" || "$destination" == "$state/data"/* ]]; then
+if [[ "$destination" != /* || -e "$destination" || -L "$destination" || "$(realpath -m "$destination")" == "$state/data"/* ]]; then
   echo "Refusing to overwrite existing backup path: $destination" >&2
   exit 1
 fi
@@ -24,7 +27,7 @@ cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
-    if ! compose start "${restart[@]}"; then
+    if ! compose start --wait --wait-timeout 180 "${restart[@]}"; then
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
     fi
@@ -44,7 +47,7 @@ fi
 # Stop ingress first, then all services that can write the database or object
 # storage. Capture only running services so the cleanup never starts an optional
 # service the operator had intentionally stopped.
-for service in kong functions rest storage realtime studio meta imgproxy gotenberg; do
+for service in kong functions rest storage realtime studio meta imgproxy gotenberg auth supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then restart+=("$service"); fi
 done
@@ -75,6 +78,6 @@ EOF
 (cd "$stage" && sha256sum database.dump storage.tar.gz integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
 chmod 600 "$stage"/*
 mv "$stage" "$destination"
-if ((${#restart[@]})); then compose start "${restart[@]}"; restart=(); fi
+if ((${#restart[@]})); then compose start --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
 echo "Backup created at $destination"
 echo 'Treat this directory as sensitive and test every retained backup with db:verify-restore.'

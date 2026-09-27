@@ -1,5 +1,7 @@
 # Readiness
 
+Current operator installation status is recorded in the [authoritative ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work). The dated source-demo and image evidence below retains its original scope.
+
 ## Grafana plugin-prune candidate — 2026-09-26
 
 The candidate Grafana recipe removes unused InfluxDB, Jaeger, Google Cloud

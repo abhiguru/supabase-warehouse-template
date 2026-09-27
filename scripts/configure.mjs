@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync } from 'node:fs';
 import { randomBytes, randomUUID, createHmac } from 'node:crypto';
 import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,7 @@ function providerValues(path, checkout) {
   const values = {};
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     if (!line.trim() || line.startsWith('#')) continue;
-    const match = line.match(/^([A-Z][A-Z0-9_]*)=([^\r\n#]*)$/);
+    const match = line.match(/^([A-Z][A-Z0-9_]*)=([^\s'"`\\$#\r\n]+)$/);
     if (!match) throw new Error('Provider file must contain KEY=value lines without quotes or comments.');
     values[match[1]] = match[2];
   }
@@ -36,13 +36,24 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));
   if (parent === checkout || parent.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
+  if (parent !== resolve(state, '..')) throw new Error('State directory parent must not use a symlink.');
   const envPath = join(state, 'config', 'compose.env');
   const manifestPath = join(state, 'public', 'instance.json');
-  if (existsSync(state)) {
-    const st = lstatSync(state);
-    if (!st.isDirectory() || realpathSync(state).startsWith(checkout + sep) || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('State directory must be owned by this user and mode 0700.');
+  const stateStat = lstatSync(state, { throwIfNoEntry: false });
+  if (stateStat) {
+    const st = stateStat;
+    if (!st.isDirectory() || realpathSync(state) !== state || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('State directory must be owned by this user, mode 0700, and not use a symlink.');
     if (existsSync(envPath) && existsSync(manifestPath)) {
-      if (!lstatSync(envPath).isFile() || !lstatSync(manifestPath).isFile()) throw new Error('Operator configuration files must be regular files.');
+      for (const path of [join(state, 'config'), join(state, 'public'), join(state, 'data')]) {
+        const part = lstatSync(path, { throwIfNoEntry: false });
+        if (!part?.isDirectory() || part.uid !== process.getuid() || (part.mode & 0o077)) throw new Error('Operator state directories must be owned by this user and private.');
+      }
+      for (const path of [join(state, 'data/db'), join(state, 'data/storage')]) {
+        if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) throw new Error('Operator data paths must be regular directories.');
+      }
+      const configStat = lstatSync(envPath);
+      const manifestStat = lstatSync(manifestPath);
+      if (!configStat.isFile() || configStat.uid !== process.getuid() || (configStat.mode & 0o077) || !manifestStat.isFile() || manifestStat.uid !== process.getuid()) throw new Error('Operator configuration files must be owned regular files; credentials must be private.');
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
       if (apiUrl && canonicalOrigin(apiUrl, '--api-url') !== manifest.canonicalOrigin) throw new Error('Existing canonical origin differs; refusing to replace instance identity.');
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');

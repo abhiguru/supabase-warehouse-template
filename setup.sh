@@ -25,10 +25,16 @@ if [[ "$STATE" != /* || ! "$ADMIN_PHONE" =~ ^91[0-9]{10}$ || -z "$ADMIN_NAME" ]]
   echo 'Required: --state-dir ABSOLUTE --admin-phone 91XXXXXXXXXX --admin-name NAME.' >&2
   exit 1
 fi
-STATE="$(realpath -m "$STATE")"
+if [[ "$(realpath -m "$STATE")" != "$(realpath -ms "$STATE")" ]]; then
+  echo 'State directory path must not use a symlink.' >&2
+  exit 1
+fi
+STATE="$(realpath -ms "$STATE")"
 export WAREHOUSE_STATE_DIR="$STATE"
 node "$ROOT/scripts/doctor.mjs" --host-preflight
 node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
+exec 9>"$STATE/config/operator.lock"
+if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
 node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
@@ -38,10 +44,10 @@ bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postg
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-storage.sql"
-EXISTING_ADMIN="$(bash "$ROOT/scripts/compose.sh" exec -T db psql -X -A -t -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT COALESCE((SELECT mobile FROM public.user_profiles WHERE role='admin' LIMIT 1), '')")"
-if [[ -z "$EXISTING_ADMIN" ]]; then
+EXISTING_ADMIN="$(bash "$ROOT/scripts/compose.sh" exec -T db psql -X -A -t -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND mobile='$ADMIN_PHONE') THEN 'match' WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin') THEN 'different' ELSE 'none' END")"
+if [[ "$EXISTING_ADMIN" == none ]]; then
   bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v phone="$ADMIN_PHONE" -v name="$ADMIN_NAME" < "$ROOT/scripts/bootstrap-admin.sql"
-elif [[ "$EXISTING_ADMIN" != "$ADMIN_PHONE" ]]; then
+elif [[ "$EXISTING_ADMIN" != match ]]; then
   echo 'An admin already exists with a different phone; setup cannot replace it.' >&2
   exit 1
 fi

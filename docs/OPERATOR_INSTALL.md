@@ -6,9 +6,15 @@ origin. The installer writes private state outside the Git checkout. The
 [operator acceptance ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
 records which integrations and physical tests remain open.
 
+This is the pilot installation path. A successful setup does not enable the
+unfinished printer/sensor integrations or complete replacement-host recovery.
+Use the operator PR pair linked by [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)
+until it has been reviewed and merged; do not assume the changes are on `main`.
+
 ## Linux host preparation
 
-Install Node.js 22.18 or newer, npm, Git, OpenSSL, Docker Engine and Compose v2.
+Install Node.js 22.18 or newer, npm, Git, OpenSSL, util-linux (`flock`), Docker
+Engine and Compose v2.
 Choose a persistent filesystem with at least 10 GiB free for this initial
 installation check, plus capacity for the operator's actual data. Start Docker
 at boot with `sudo systemctl enable --now docker`. The installer checks its
@@ -16,7 +22,18 @@ availability and Linux x86-64 architecture before creating state.
 
 Choose an empty state path outside the checkout, such as
 `/srv/warehouse/acme`. Its existing parent must be owned by the installation
-user. Create a private provider file elsewhere outside the checkout, mode 0600:
+user. Keep the provider file elsewhere outside the checkout, mode 0600.
+
+For example, prepare the state directory as the non-root installation user:
+
+```bash
+sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" /srv/warehouse/acme
+```
+
+Write the following settings to the private provider file, then set its mode to
+0600 before setup. Use unquoted, nonempty `KEY=value` entries without whitespace,
+quotes, backticks, backslashes, `$` or `#` in values. Keep the values out of shell
+history and version control:
 
 ```dotenv
 SMS_PROVIDER=msg91
@@ -75,6 +92,10 @@ certificate, gateway and upstream container recovery are separate acceptance
 checks. An HTTP 500 needs its own diagnosis even when DNS and stale-IP recovery
 pass.
 
+Enable the reverse proxy's system service at boot as well as Docker. If the
+router cannot send LAN clients back through its public address, configure local
+DNS for the same canonical domain; the app must still use the same HTTPS origin.
+
 ## Windows host with Linux VM
 
 Install the same Linux stack inside an x86-64 VM and keep its state on a durable
@@ -94,8 +115,17 @@ documented by [Microsoft's Set-VM reference](https://learn.microsoft.com/en-us/p
 
 ## Recovery and test boundary
 
-Back up the database, stored documents, public manifest and private
-configuration together to an operator-provided encrypted off-host destination.
+The manual `db:backup` command produces a private **unencrypted** archive
+directory containing the database, stored documents, public manifest and private
+configuration. Store it only on protected storage. `db:verify-restore` checks a
+disposable database and archived objects; it does not install the backup as a
+replacement operator instance. Optional CUPS and monitoring volumes are not in
+this core backup. CUPS spools are project-scoped and persist independently of
+the source checkout.
+
+Encrypted off-host transfer, scheduled retention, optional-service recovery and
+the replacement-host restore procedure remain open in the acceptance ledger.
+Back up to an operator-provided encrypted off-host destination before production.
 Define schedule, retention and key custody before enabling automation. Restore
 onto a replacement host and verify credentials, document access and mobile
 reconnection before declaring recovery complete. Physical MSG91 receipt,

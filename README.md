@@ -11,12 +11,12 @@ The historical `v0.2.2-demo` tag remains available for its recorded source-demo
 evidence. Operator hardware, external services and final mobile builds require
 their own acceptance results.
 
-## Local production-readiness work
+## Earlier local verification
 
-Provider-independent work across backup/restore, owned-service recovery,
+Earlier source-demo work across backup/restore, owned-service recovery,
 auth/RLS, loopback gateway controls, database retention, business regressions,
 load smoke, local monitoring, Realtime, and companion Android artifact review is
-implemented and reproducible. See
+has dated evidence. See
 [LOCAL_PRODUCTION_READINESS.md](docs/LOCAL_PRODUCTION_READINESS.md) for the
 eleven-area evidence and commands.
 
@@ -47,8 +47,9 @@ origin in the app. Run `npm run check:backend` there for read-only discovery.
 Recorded native-build and physical-device acceptance is scoped to the exact
 pairs in [READINESS.md](docs/READINESS.md); production signing and distribution
 remain separate gates.
-Fresh public-clone setup and safe reruns are documented in
-[CLEAN_INSTALL.md](docs/CLEAN_INSTALL.md), including isolated ports for a second checkout.
+Current installation and safe reruns are documented in
+[OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md). [CLEAN_INSTALL.md](docs/CLEAN_INSTALL.md)
+contains historical source-demo evidence.
 
 No private key is copied into the mobile app. It retrieves the public anon key
 from bootstrap configuration.

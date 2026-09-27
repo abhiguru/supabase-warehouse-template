@@ -2,7 +2,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${WAREHOUSE_STATE_DIR:-}"
-if [[ "$STATE" == /* ]]; then STATE="$(realpath -m "$STATE")"; fi
+if [[ "$STATE" == /* ]]; then
+  if [[ "$(realpath -m "$STATE")" != "$(realpath -ms "$STATE")" ]]; then
+    echo 'Operator state path must not use a symlink.' >&2
+    exit 1
+  fi
+  STATE="$(realpath -ms "$STATE")"
+fi
 if [[ -z "$STATE" || "$STATE" != /* || ! -d "$STATE" || -L "$STATE" || "$STATE" == "$ROOT" || "$STATE" == "$ROOT"/* ]]; then
   echo 'Set WAREHOUSE_STATE_DIR to the absolute operator state path outside this checkout.' >&2
   exit 1
@@ -12,8 +18,12 @@ if [[ "$STATE_REAL" == "$ROOT" || "$STATE_REAL" == "$ROOT"/* || "$(stat -c %u "$
   echo 'Operator state must be owned by this user, mode 0700, and outside the checkout.' >&2
   exit 1
 fi
+if [[ "$STATE_REAL" != "$STATE" ]]; then
+  echo 'Operator state path must not use a symlink.' >&2
+  exit 1
+fi
 ENV_FILE="$STATE/config/compose.env"
-if [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" || "$(stat -c %a "$ENV_FILE")" != 600 ]]; then
+if [[ ! -d "$STATE/config" || -L "$STATE/config" || ! -f "$ENV_FILE" || -L "$ENV_FILE" || "$(stat -c %u "$ENV_FILE")" != "$(id -u)" || "$(stat -c %a "$ENV_FILE")" != 600 ]]; then
   echo "Missing private operator configuration: $ENV_FILE" >&2
   exit 1
 fi
@@ -24,7 +34,7 @@ if [[ ! "$PROJECT" =~ ^warehouse-[a-z0-9-]+$ ]]; then
   echo 'Invalid private WAREHOUSE_PROJECT_NAME.' >&2
   exit 1
 fi
-if [[ "$DB_PATH" != "$STATE/data/db" || "$STORAGE_PATH" != "$STATE/data/storage" || ! -d "$DB_PATH" || ! -d "$STORAGE_PATH" || -L "$DB_PATH" || -L "$STORAGE_PATH" ]]; then
+if [[ "$DB_PATH" != "$STATE/data/db" || "$STORAGE_PATH" != "$STATE/data/storage" || ! -d "$STATE/data" || -L "$STATE/data" || ! -d "$DB_PATH" || ! -d "$STORAGE_PATH" || -L "$DB_PATH" || -L "$STORAGE_PATH" ]]; then
   echo 'Private database/storage paths differ from this state directory.' >&2
   exit 1
 fi
@@ -47,6 +57,10 @@ for id in $ids; do
     exit 1
   fi
 done
-exec docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+unset_args=()
+while IFS= read -r line; do
+  if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then unset_args+=(-u "${BASH_REMATCH[1]}"); fi
+done < "$ENV_FILE"
+exec env "${unset_args[@]}" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" \
   -f "$ROOT/docker/docker-compose.override.yml" "$@"

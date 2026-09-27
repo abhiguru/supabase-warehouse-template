@@ -31,9 +31,26 @@ for test_sql in "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.s
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 for pass in 1 2; do
+  if [[ "$pass" = 1 ]]; then
+    docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+SELECT warehouse_security.bootstrap_first_admin('9888888899','Configuration Test');
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('auth_mode','demo')
+ON CONFLICT(key) DO UPDATE SET value='demo';
+SQL
+  fi
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+INSERT INTO warehouse_security.refresh_sessions(user_id,token_hash,expires_at)
+SELECT auth_user_id,'configuration-transition-test',now()+interval '1 hour'
+FROM public.user_profiles WHERE mobile='919888888899';
+SQL
   for configuration in "$ROOT/scripts/configure-auth.sql"; do
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$configuration"
   done
+  expected_sessions=$((pass - 1))
+  actual_sessions=$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c "SELECT count(*) FROM warehouse_security.refresh_sessions WHERE token_hash='configuration-transition-test'")
+  [[ "$actual_sessions" = "$expected_sessions" ]] || {
+    echo 'Auth transition must revoke earlier sessions and preserve operator sessions on rerun.' >&2; exit 1;
+  }
 done
 
 # Applied migration history is immutable: changing an old file must fail closed.
@@ -46,7 +63,8 @@ if node "$scratch/scripts/migration-plan.mjs" | docker exec -i -e PGPASSWORD=dis
   echo 'Changed applied migration was incorrectly accepted.' >&2
   exit 1
 fi
-[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "16" ]] || {
+migration_files=("$ROOT"/migrations/*.sql)
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "${#migration_files[@]}" ]] || {
   echo 'Migration mismatch changed the ledger.' >&2; exit 1;
 }
 echo 'Migration reruns, checksum mismatch rejection, retention, and operator auth configuration passed.'

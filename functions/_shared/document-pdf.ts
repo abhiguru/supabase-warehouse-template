@@ -73,10 +73,16 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     if (rows.length > 1000 || (details.count || 0) > 1000) throw { status: 400, message: 'Document exceeds the starter limit of 1000 rows' };
     const metadata: Record<string,unknown> = { Number: number, Date: date, Customer: header.customer_name };
     if (kind === 'invoice') Object.assign(metadata, { 'Financial year': header.inv_fin_year, Labour: header.labour, Tax: header.tax_amount, Discount: header.discount, Total: header.total });
-    const html = documentHtml(kind.toUpperCase(),Deno.env.get('COMPANY_NAME') || 'Warehouse Manager',metadata,columns,rows);
-    const pdf = await htmlToPdf(html);
-    // Only the upload uses server authority, after all document reads were authorized.
+    // Installation and supported administration use the same company setting.
+    // Keep warehouse record reads on the caller's RLS-protected client above.
     const writer = createClient(internal,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { autoRefreshToken:false,persistSession:false } });
+    const company = await writer.from('system_settings').select('value').eq('key','app_name').single();
+    if (company.error || typeof company.data?.value !== 'string' || !company.data.value.trim()) {
+      throw { status:503,message:'Warehouse branding unavailable' };
+    }
+    const html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows);
+    const pdf = await htmlToPdf(html);
+    // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;
     const upload = await writer.storage.from('documents').upload(path,pdf,{ contentType:'application/pdf',upsert:false });
     if (upload.error) throw { status:503,message:'Document storage unavailable' };

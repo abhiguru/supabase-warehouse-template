@@ -389,7 +389,7 @@ services:
     privileged: true
     volumes:
       - ./cups/config/cupsd.conf:/etc/cups/cupsd.conf.custom:ro,z
-      - ./cups/spool:/var/spool/cups:rw,z
+      - cups-spool:/var/spool/cups
       - /dev/usb:/dev/usb:rw
     devices:
       - /dev/bus/usb:/dev/bus/usb
@@ -428,5 +428,6 @@ services:
 
 volumes:
   db-config:
+  cups-spool:
 
 # Compose allocates a project-scoped network; services resolve by DNS name.

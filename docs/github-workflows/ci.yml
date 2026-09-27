@@ -64,7 +64,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Operator mobile companion, pinned to the tested commit.
-          ref: 2f4bdbac9ffdb1173317bb559a7b584119d31cd8
+          ref: 8240cce9121a797fd0cf2e00e568a61985814ddb
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
@@ -103,7 +103,7 @@ jobs:
         with:
           repository: abhiguru/rn-warehouse-template
           # Do not infer a branch in a different repository.
-          ref: 2f4bdbac9ffdb1173317bb559a7b584119d31cd8
+          ref: 8240cce9121a797fd0cf2e00e568a61985814ddb
           path: mobile
           persist-credentials: false
       - name: Record tested commit pair
