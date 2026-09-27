@@ -26,6 +26,10 @@ bootstrapped administrator, pending customer enrollment and approval, and the
 business flows. Reboot without an interactive login and verify reconnection.
 Run the backup and isolated restore drill before loading real warehouse data;
 replacement-host restoration remains a separate acceptance test.
+The [2026-09-27 replacement-host restore drill](REPLACEMENT_HOST_RESTORE_DRILL.md)
+records a successful isolated logical restore on a fresh VM, its failed attempts,
+and the remaining off-host recovery and cutover gates. The original pilot stayed
+live; that drill is not production recovery approval.
 
 Printing and sensor capabilities stay disabled until their software and hardware
 acceptance is recorded in the ledger. The existing image security findings remain
