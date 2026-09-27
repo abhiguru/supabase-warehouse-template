@@ -3,7 +3,8 @@
 Updated 2026-09-27. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
-The operator has not supplied production services or operating policies.
+The pilot operator supplied a dedicated HTTPS route and real MSG91 service;
+the remaining operating policies and integrations are listed below.
 Production remains gated; existing demo release tags are unchanged. Counts and
 versions below describe dated scan evidence, not a new scan or verification of
 currently patched publisher versions.
@@ -25,17 +26,54 @@ evidence and owner inputs.
 
 | Work package | Status | Evidence required to close |
 | --- | --- | --- |
-| Operator installer, versioned manifest, persistent storage, first-admin bootstrap, safe rerun, preflight and doctor | Implemented; local isolated install and rerun verified | Fresh Linux and Windows VM installs and unattended reboot remain. No demo users or fixed OTP. |
-| Canonical HTTPS origin and private network boundary | Pending | Trusted certificate, Wi-Fi and cellular access, DNS/gateway/upstream recovery; database, Studio, CUPS and Home Assistant private. Historical stale-IP 502 and HTTP 500 are separate findings. |
-| MSG91 OTP and customer approval | Implemented; database, request-body and provider-adapter tests verified | Real MSG91 delivery and device acceptance remain; automated cases cover provider failures, delayed completion, expiry, replay, attempts and resend controls; unknown phones pending until admin customer assignment; disabled/rejected access revoked. |
-| Mobile server selection and isolation | Implemented; automated tests verified | Manual HTTPS and QR origin, discovery identity/version, atomic switch with cancelled old work and cleared credentials/cache; same URL replacement and cold restart tested on Android and iPhone. |
+| Operator installer, versioned manifest, persistent storage, first-admin bootstrap, safe rerun, preflight and doctor | Implemented; isolated tests and Linux VMware pilot setup/rerun/guest reboot PASS | Physical-host unattended VM startup/shutdown and host reboot remain. No demo users or fixed OTP. |
+| Canonical HTTPS origin and private network boundary | Partial pilot acceptance | Dedicated Cloudflare route, local/public doctor, Android Wi-Fi discovery and gateway upstream recovery passed. Cellular remains untested; keep database, Studio, CUPS and Home Assistant private. Historical stale-IP 502 and HTTP 500 are separate findings. |
+| MSG91 OTP and customer approval | Implemented; automated tests and live pilot API enrollment/login PASS | Handset receipt, administrator login, pending customer, approval and post-approval login passed through hidden-input helpers. Native UI and live provider-outage/account-lifecycle acceptance remain; credential rotation is deferred by the operator. |
+| Mobile server selection and isolation | Implemented; automated tests and partial physical Android acceptance | Android Wi-Fi HTTPS discovery/selection and cold-launch selected-server persistence passed. QR, two-server/replacement-instance isolation, authenticated restoration and iPhone acceptance remain. |
 | Warehouse onboarding and business flow | Pending | Editable warehouse identity/branding/customer/pricing configuration; approval, receipt, inventory, orders, queue, dispatch, invoices and cart accepted against existing billing semantics. |
 | Epson LQ-1310 printing | Pending | Authorized durable jobs with queue/state/duplicate handling; actual continuous forms, alignment and fault recovery on Linux USB and Windows shared-queue VM paths. Disappeared jobs remain uncertain, not proof of paper output. |
 | Tapo T310/H100/H200 and Home Assistant monitoring | Pending | Sanitized integration assets, narrow ingestion credential, device mapping, source timestamps, idempotent five-minute uploads/fifteen-minute replay, missing values and stale/offline state; real-device acceptance before enabling mobile capability. Cooling control excluded. |
-| Recovery, upgrades, diagnostics and alerts | Partially implemented; remaining work pending | Local database/storage/configuration backups and disposable restore checks exist.  Encrypted off-host backup and replacement-host restore, explicit schedule/retention, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test. |
+| Recovery, upgrades, diagnostics and alerts | Partially implemented; VM local backup/disposable restore and owned-service recovery PASS | Encrypted off-host backup and replacement-host restore, explicit schedule/retention, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test remain. Local monitoring/CI acceptance does not establish external delivery. |
 | Final handoff | Pending | Both repositories' checks, reviewed PRs/CI, exact main commits and native build IDs, plus physical results and exceptions recorded. Hardware-dependent cases stay **not tested** until performed. |
 
-### Second pass before VM provisioning — 2026-09-27
+### VM pilot findings — 2026-09-27
+
+[OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) records the detailed observed
+shortcomings, remedies and untested edge cases. The VM required effective sudo
+and Docker-session access, one-at-a-time operator inputs, a distinct Cloudflare
+tunnel/API subdomain, correct Linux origin/credential paths, MSG91 Flow versus
+DLT identifier handling and runtime database synchronization. The MSG91 adapter
+now checks provider acceptance and uses bounded retries; the local doctor's
+deadline was corrected. OTP coordination exposed expired attempts and stale
+helper results, so each attempt must retain its own result and timestamp.
+
+At runtime acceptance, the installed backend started at
+`4f1efb8dd4f8c748961a0f250c5af4fc202fb38a` with twelve changed files matching review commit
+`831678619e175eeb3c1b656ea932d290da705c5b`. Backend PR #68/review head
+`9c891f4f4b1b480e8d545454efbfd323e7c9d1c2` adds the offline CI identifier
+fixture correction; [run 36313952647](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36313952647)
+passed all jobs. This notes update adds documentation changes. Mobile remains
+`8240cce9121a797fd0cf2e00e568a61985814ddb`.
+Record local build overrides as well as HEAD; no merged-main or production
+release is claimed. Exact build/device details and attempt history are in the
+private VM acceptance ledger; the public notes contain sanitized evidence.
+
+Real SMS/API login, approval, local restore and guest reboot passed. Android
+build/audit/install plus Wi-Fi discovery and selected-server persistence passed
+on a physical phone; it has no cellular data. The APK is a Metro-dependent debug
+build. Native authenticated business workflows, iPhone, host reboot, encrypted
+off-host/replacement-host recovery and physical printer/sensor acceptance remain
+open. Pooler session/transaction and invalid-password checks also passed on the
+VM. The monitoring run subsequently passed image/configuration checks, live
+scrape targets and local synthetic Alertmanager ingestion on the VM. External
+delivery, Grafana and reboot recovery of these newly enabled optional services
+remain untested.
+The operator requested no more OTP-delivery retests and deferred key rotation.
+
+### Second pass before VM provisioning — 2026-09-27 (historical)
+
+This subsection describes the earlier pre-VM checkpoint. Its "untested" wording
+is superseded only by the specific pilot results above, not by blanket acceptance.
 
 The second pass found and corrected configuration override/path-validation gaps,
 concurrent installer/backup execution, first-admin rerun selection, legacy session
@@ -215,8 +253,8 @@ changes need affected-case testing before inheriting physical acceptance.
 
 | # | Work and required owner input | Next action and acceptance evidence |
 |---|---|---|
-| 2 | **SMS authentication and onboarding.** Operator supplies MSG91 credentials and approved template/sender/PE identifiers, and approves registration, account activation and abuse rules. Automated operator session/RLS/refresh/revocation checks pass. | Backend delivery and pending-enrollment approval are implemented with no fixed-OTP fallback. Accept after live provider-outage, account lifecycle and real-device receipt tests with owned credentials. |
-| 3 | **Public domain and HTTPS.** Operator supplies target host, DNS control and trusted certificate provisioning, after production authentication in item 2. Loopback CORS, body limits and local TLS checks already pass. | Deployment owner configures the real origin, proxy, certificate and network boundaries. Accept after authenticated end-to-end access, TLS/CORS/body-limit and firewall/mount/privilege checks on the target host. Current installation has no demo mode. |
+| 2 | **SMS authentication and onboarding.** Pilot credentials and approved Flow/sender/PE identifiers were supplied; actual receipt and terminal/API enrollment/approval/login passed. Automated operator session/RLS/refresh/revocation checks pass. | Native login, live provider-outage and account-lifecycle acceptance remain. Honor the operator's deferred key rotation and no-more-delivery-tests instruction; no fixed-OTP fallback. A new operator supplies their own configuration and abuse policy. |
+| 3 | **Public domain and HTTPS.** The pilot has a dedicated Cloudflare hostname/tunnel with local/public doctor and Android Wi-Fi discovery passing. Gateway CORS/body limits and upstream recovery also passed. | Cellular and native authenticated end-to-end acceptance remain. Preserve the private boundary and other machines' routes. Current installation has no demo mode; new deployments require their own domain/ingress checks. |
 | 4 | **External alerts.** Operator supplies an owned receiver, credentials, incident contacts and escalation policy. Local targets, rules and synthetic ingestion already pass. | Operations owner wires the receiver and runbook. Accept after a delivered test alert, acknowledgement/escalation and recovery notification reach the intended contacts. |
 | 5 | **Off-host backups and disaster recovery.** Operator chooses encrypted off-host destination, key custody, schedule, retention and RTO/RPO. Private logical/storage backup and isolated restore integrity checks already pass. | Operations owner exercises host loss using only off-host copies. Accept after data and object integrity, access controls, measured recovery time and point, and runbook evidence meet the approved objectives. Local copies do not close this gate. |
 | 6 | **Production retention.** Operator/legal owner approves retention, deletion and legal-hold rules for business documents, invoices, PDFs, images and backups. Ephemeral/audit database retention supports preview/apply. | Backend/operations owner maps approved policy to preview, deletion and hold behavior. Accept after representative records prove retention and hold boundaries, with reviewed deletion evidence. No business-data deletion is inferred from the demo. |

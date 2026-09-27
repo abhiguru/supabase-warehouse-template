@@ -4,6 +4,10 @@ Use [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) for the fresh Linux x86-64 host o
 Windows/Linux VM installation. Current setup accepts `--operator` only. Keep
 credentials and persistent state outside the checkout; obtain real MSG91 and
 HTTPS settings for the selected warehouse before its integration test.
+Read [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) for the dated VM findings,
+resolved setup shortcomings, safe operator-question sequence and remaining edge
+cases. The installation guide incorporates the prerequisites and configuration
+traps discovered during that pilot.
 
 [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
 is the authoritative work and acceptance ledger. It distinguishes implemented

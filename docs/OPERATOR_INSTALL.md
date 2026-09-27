@@ -5,6 +5,9 @@ instance owns its database, document storage, credentials and canonical HTTPS
 origin. The installer writes private state outside the Git checkout. The
 [operator acceptance ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
 records which integrations and physical tests remain open.
+Read [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) before provisioning for
+the pilot's observed failures, remedies, configuration traps and detailed
+remaining edge-case acceptance matrix.
 
 This is the pilot installation path. A successful setup does not enable the
 unfinished printer/sensor integrations or complete replacement-host recovery.
@@ -51,6 +54,12 @@ MSG91_PE_ID=replace-with-owned-entity-id
 MSG91_SENDER_ID=replace-with-owned-sender-id
 ```
 
+This provider input accepts only those five keys. Do not copy a complete legacy
+`.env` into it: `SMS_PRODUCTION_MODE` is set to `true` by the installer and is not
+an accepted input-file key. The separate DLT Template ID is not an input-file key
+either. The database synchronizer validates a 24-character lowercase hex Flow
+ID, a numeric PE ID and six uppercase alphanumeric sender characters.
+
 `MSG91_TEMPLATE_ID` holds the MSG91 **Flow ID**, not the separate DLT Template
 ID. For the current Guru Cold Storage flow, use Flow ID
 `694a8ea0cd30ae1f432f445a`, PE ID `1101817660000088076`, sender/header
@@ -84,6 +93,13 @@ provider file, waiting for each answer before asking the next question. Do not
 combine these into one questionnaire. Ask the operator to create the provider
 file in a VM terminal if it is missing; never ask for its credential values in
 chat. Continue independent checks while waiting for an answer.
+
+If the operator supplies ten Indian digits, prepend `91` once before invoking
+setup; the CLI requires the final 12-digit number. A required missing input stops
+its dependent stage. State the blocker and next action, respect an operator's
+request to stop, and do not repeat a deferred OTP test. Ask whether the operator
+is ready at the phone and hidden-input VM terminal before sending a five-minute
+code. Record each attempt separately; stale helper results are not a new pass.
 
 Run this from a reviewed backend checkout, replacing the example domain and
 administrator details with the warehouse's values:
@@ -260,6 +276,11 @@ CUPS through Samba is a separate physical acceptance path; its presence must
 be checked after the same unattended reboot. The start and stop settings are
 documented by [Microsoft's Set-VM reference](https://learn.microsoft.com/en-us/powershell/module/hyper-v/set-vm).
 
+For VMware or another hypervisor, obtain the host's actual product/version and
+use its own startup/shutdown procedure; the Hyper-V command does not apply.
+A successful guest reboot does not prove host autostart, USB reattachment or
+operation without a host login. Arrange the host test with its operator.
+
 ## Recovery and test boundary
 
 The manual `db:backup` command produces a private **unencrypted** archive
@@ -275,6 +296,9 @@ the replacement-host restore procedure remain open in the acceptance ledger.
 Back up to an operator-provided encrypted off-host destination before production.
 Define schedule, retention and key custody before enabling automation. Restore
 onto a replacement host and verify credentials, document access and mobile
-reconnection before declaring recovery complete. Physical MSG91 receipt,
-printer forms, Tapo uploads and both phone platforms remain **not tested** for
-this operator until their results are recorded against exact code and build IDs.
+reconnection before declaring recovery complete. Record physical MSG91 receipt,
+printer forms, Tapo uploads and each phone-platform case independently against
+exact code and build IDs. The dated [pilot notes](OPERATOR_SETUP_NOTES.md) record
+real SMS/API login and partial Android Wi-Fi acceptance; printing, sensors and
+the remaining native cases are still open. These pilot results do not carry over
+to a fresh operator instance without its own checks.
