@@ -201,8 +201,8 @@ was 19 minutes 21.68 seconds. These results advance the replacement-data
 rehearsal; they do not establish the approved **one-hour RPO** without a
 recurring, monitored copy for the chosen failure scope. The same-host backup
 disk was subsequently supplied, as recorded below. The **one-hour RTO**
-remains unproven because
-the full host-loss-to-usable-service interval was not measured. Retention,
+remains unproven because the failure-to-usable-service interval was not
+measured. Retention,
 physical-host restart, optional volumes and separately authorized cutover
 remain open.
 
@@ -218,12 +218,12 @@ minutes or its archive hash changes. One direct run, one run through the
 systemd service and the first automatic timer run passed; all three produced
 private archives, and local operator health passed after each backup pause.
 The unit tests cover stale backup,
-missing mount, and safe pruning. A real 48-hour prune, unattended reboot,
+missing mount, and safe pruning. A real 48-hour prune, physical-host restart,
 media failure, and delivered external failure alert remain untested. The
 second virtual disk is still on the original physical host. The operator has
 excluded full-host loss from this pilot's recovery acceptance. The destination
 decision for the narrower VM/system-disk-loss scope is **accepted**; the
-one-hour RPO/RTO results, delivered failure alert, unattended reboot and an
+one-hour RPO/RTO results, delivered failure alert, physical-host restart and an
 end-to-end timed recovery remain open. Do not label the scoped decision as
 full-host disaster recovery.
 
@@ -233,3 +233,13 @@ failed unit has no delivered receiver. A failed or stale backup may therefore
 go unnoticed until someone checks this VM. Record this as an explicit pilot
 operations exception; do not treat the one-hour RPO as demonstrated by the
 timer configuration alone.
+
+On 2026-09-29 the live pilot completed a controlled **guest reboot**. The
+boot ID changed; the UUID-pinned backup disk, Docker, dedicated tunnel and
+both backup timers became active without an operator login. A private
+post-boot check passed archive permissions, backup freshness, local service
+health and public HTTPS identity by 00:51:08 IST. This establishes guest
+restart behavior for the tested configuration, not recovery after physical-
+host loss or a measured failure-to-usable replacement-host RTO. The subsequent
+timer backup should be checked separately; timer activation alone does not
+prove a post-reboot run.
