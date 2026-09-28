@@ -202,3 +202,19 @@ partition is not yet supplied. The **one-hour RTO** remains unproven because
 the full host-loss-to-usable-service interval was not measured. Retention,
 physical-host restart, optional volumes and separately authorized cutover
 remain open.
+
+On 2026-09-29 the operator supplied a new 10 GiB virtual disk and chose
+`/mnt/warehouse-backups/archives` with **48-hour retention**. The disk is
+mounted by filesystem UUID with private permissions and a protected empty
+mount point underneath. A local job now takes a new v4 backup every 30
+minutes, verifies a disposable restore, exports a new unencrypted archive,
+checks safe intake and archive hash, and keeps at least two verified
+generations while pruning its own archives older than 48 hours. A separate
+10-minute job fails locally if the latest source snapshot is older than 50
+minutes or its archive hash changes. One direct run and one run through the
+systemd service passed; both produced private archives, and local operator
+health passed after each backup pause. The unit tests cover stale backup,
+missing mount, and safe pruning. A real 48-hour prune, unattended reboot,
+media failure, and delivered external failure alert remain untested. The
+second virtual disk is still on the original physical host, so the approved
+one-hour RPO for full-host loss and independent custody remain open.
