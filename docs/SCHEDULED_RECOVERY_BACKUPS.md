@@ -44,7 +44,10 @@ alert behavior have been observed. `db:backup` briefly stops write-facing
 services, so measure the pause and schedule it with the operator.
 
 This is a **local second disk** tier when its virtual disk lives on the same
-physical host. It cannot close the independent host-loss recovery gate. The
-core v4 backup also excludes optional monitoring and CUPS volumes. Keep a
-separately controlled off-host copy and exercise a timed replacement-host
-recovery before claiming the one-hour RPO/RTO or cutover acceptance.
+physical host. The operator accepts it as the pilot destination for a VM or
+system-disk failure while the host and backup disk survive. Physical-host
+loss, theft, fire and shared-storage failure are excluded; covering those
+would require an independent copy. The core v4 backup also excludes optional
+monitoring and CUPS volumes. Exercise a timed recovery, sustained backups,
+delivered alerts and retention before claiming the one-hour RPO/RTO or cutover
+acceptance.

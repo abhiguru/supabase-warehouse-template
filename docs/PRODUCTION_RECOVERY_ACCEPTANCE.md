@@ -5,32 +5,34 @@ established that one local backup can restore in isolation. It did not test
 off-host custody, a protected backup, a backup with existing objects, full
 host loss, or cutover. Keep those results separate.
 
-On 2026-09-28 the operator chose an **unencrypted off-host backup with an
-explicit risk exception** for this pilot. This does not make the archive
+On 2026-09-28 the operator chose an **unencrypted backup with an explicit
+risk exception** for this pilot. It was first carried on a detached USB and
+later configured on the accepted same-host disk. This does not make the archive
 confidential: anyone who obtains it can read warehouse data, role password
 hashes and live service credentials. The exception does not waive access
 control, physical custody, inventory, retrieval, retention or restore tests.
 Record the exception in the final acceptance evidence; do not describe the
 backup as encrypted or close a separate confidentiality requirement with it.
 
-The operator has set a **one-hour RPO and one-hour RTO** and plans a backup
-partition on another drive in the **same physical machine**. It has not been
-supplied or identified yet. It can protect against failure of the warehouse
-system disk only if the backup drive survives; it does not provide an independent copy for
-host theft, fire, power damage, or physical-host loss. The detached USB copies
-proved retrieval and restore for the rehearsals, but they cannot by themselves
-meet an unattended one-hour RPO. The prior restore intervals did not start at
-host loss or end at externally usable service, so they do not prove the RTO.
-Do not mark either target or full-host recovery accepted until the complete
-path is timed and an independent destination is tested.
+The operator has set a **one-hour RPO and one-hour RTO** and supplied a new
+backup virtual disk on the **same physical machine**. On 2026-09-29 the
+operator explicitly accepted this disk as sufficient for the **pilot's scoped
+recovery destination**, with the condition that the host and backup disk
+survive a VM or system-disk failure. Independent off-host custody is waived
+for that scope. Physical-host loss, theft, fire and shared-storage failure are
+excluded from the accepted scenario; the local disk cannot recover them.
+This is a scope and risk decision, not proof of the one-hour targets. The
+prior restore intervals did not run from failure detection to externally
+usable service, so they do not prove the RTO.
 
 ## Backup and custody gate
 
 1. Agree on maximum acceptable data loss (RPO), maximum time to usable service
    (RTO), backup frequency, retention, custodian, and which optional volumes
    (monitoring, pooler, CUPS and other integrations) must be recoverable. Record
-   the decision before claiming production recovery. Choose an off-host
-   destination independent of the warehouse VM.
+   the decision before claiming production recovery. A full-host-loss scope
+   requires a destination independent of the warehouse host. For this pilot,
+   record the operator's explicit same-host exception and excluded failures.
 2. Put a representative, authorized document in private storage and nontrivial
    business data in the pilot, then record safe hashes/counts for the later
    comparison. Do not use a synthetic upload to claim recovery of an existing
@@ -197,8 +199,9 @@ raw evidence is private on the recovery VM and has not been independently
 reviewed in this checkout. The second backup's observed age at verification
 was 19 minutes 21.68 seconds. These results advance the replacement-data
 rehearsal; they do not establish the approved **one-hour RPO** without a
-recurring, monitored, independent off-host copy. The planned same-host backup
-partition is not yet supplied. The **one-hour RTO** remains unproven because
+recurring, monitored copy for the chosen failure scope. The same-host backup
+disk was subsequently supplied, as recorded below. The **one-hour RTO**
+remains unproven because
 the full host-loss-to-usable-service interval was not measured. Retention,
 physical-host restart, optional volumes and separately authorized cutover
 remain open.
@@ -217,5 +220,9 @@ private archives, and local operator health passed after each backup pause.
 The unit tests cover stale backup,
 missing mount, and safe pruning. A real 48-hour prune, unattended reboot,
 media failure, and delivered external failure alert remain untested. The
-second virtual disk is still on the original physical host, so the approved
-one-hour RPO for full-host loss and independent custody remain open.
+second virtual disk is still on the original physical host. The operator has
+excluded full-host loss from this pilot's recovery acceptance. The destination
+decision for the narrower VM/system-disk-loss scope is **accepted**; the
+one-hour RPO/RTO results, delivered failure alert, unattended reboot and an
+end-to-end timed recovery remain open. Do not label the scoped decision as
+full-host disaster recovery.

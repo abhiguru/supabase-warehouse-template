@@ -34,7 +34,7 @@ This notes update adds documentation changes to that installed source record.
 | Dedicated Cloudflare tunnel and HTTPS | PASS; existing host's API remained reachable | Shared account resources must remain separate; cellular not tested |
 | MSG91 and enrollment | Owned handsets received SMS; hidden-input administrator login, customer pending enrollment, approval and post-approval login passed | Provider acceptance is not delivery proof; native login and live provider-outage acceptance remain open |
 | Gateway, metadata and load | CORS/body limits, upstream IP recovery and read-only Studio/meta checks passed; 100 HTTP requests had zero failures and p95 approximately 4.1 s | Smoke observations, no approved production SLO or sustained-load acceptance |
-| Local backup and restore | Checksum, archived objects, database integrity and ACL comparison passed in an isolated disposable restore | Unencrypted local archive; no encrypted off-host or replacement-host recovery |
+| Local backup and restore | Checksum, archived objects, database integrity and ACL comparison passed in an isolated disposable restore; later clean-host and representative-data rehearsals passed, and the operator accepted the same-host disk as the pilot destination | Archives are unencrypted; physical-host loss is excluded and one-hour RPO/RTO remain unproven |
 | VM reboot | Boot ID changed; Docker, tunnel and local/public health recovered | Host reboot, guest autostart without host login and USB reattachment remain untested |
 | Android | Build/audit/install, Wi-Fi HTTPS discovery, selection and cold-launch server persistence passed | Debug build on Samsung SM-A346E / Android 15; no cellular, native authenticated workflow or iPhone acceptance |
 | Pooler | VM session/transaction SQL queries and invalid-password rejection passed | Optional service; health alone is insufficient and restart/load behavior needs its own evidence |
@@ -350,23 +350,24 @@ does not cover optional monitoring/CUPS volumes or automatically capture every
 separately stored tunnel, provider, signing or sensor credential. Inventory them
 explicitly in the recovery plan and protect key custody separately.
 
-Before enabling recurring backups, ask the operator for the exact destination
-partition and backup directory only when that step is ready. Inventory UUIDs,
-mounts, capacity and existing files first; never select or format a drive by
-guessing its `/dev/sdX` name. Ask separately which older backup files may be
-pruned and how long to retain verified generations. Until answered, write new
-timestamped archives without overwriting existing files and do not enable a
-prune job. The operator's planned second drive is in the **same physical
-machine**: it can serve as a local disk-failure tier, but a separate physical
-copy remains necessary for full-host loss. The approved one-hour RPO also needs
-a tested recurring schedule, transfer, and stale-backup alert; the planned
-partition is not present yet. The approved one-hour RTO needs a timed
-host-loss-to-usable-service exercise, including replacement startup and
-reconciliation. The unencrypted-backup exception remains in force
-for this pilot, so restrict permissions and physical custody.
+For a new installation, ask the operator for the exact destination partition,
+directory and retention policy only when configuring recurring backups.
+Inventory UUIDs, mounts, capacity and existing files first; never select or
+format a drive by guessing its `/dev/sdX` name. The pilot now has a 10 GiB
+virtual backup disk on the **same physical host**, mounted by UUID at
+`/mnt/warehouse-backups`, with verified timestamped archives in `archives/`.
+The operator approved 48-hour retention, keeping at least two verified
+generations; real pruning after 48 hours has not yet been observed. Backups
+run every 30 minutes and a local freshness check every 10 minutes. The
+operator explicitly accepts this disk for the pilot's VM/system-disk-failure
+scope when the host and backup disk survive. Physical-host loss, theft, fire
+and shared-storage failure are excluded; an independent copy would be needed
+if that scope changes. The one-hour RPO still needs sustained schedule and
+delivered-alert evidence; the one-hour RTO needs a timed failure-to-usable-
+service exercise. The unencrypted-backup exception remains in force, so
+restrict permissions and physical custody.
 
-Before production, obtain the independent off-host destination and remaining
-schedule, retention and recovery inputs as each step needs them. Test a replacement host using only those copies, including document
+Test a replacement host using the accepted backup copies, including document
 access, instance identity, tunnel routing and mobile reconnection. Disable the
 old writer during an authorized cutover; do not accidentally leave two restored
 instances writing independently behind one hostname/tunnel. Do not prune backups
@@ -403,7 +404,7 @@ real-instance, physical-device or business sign-off named here.
 | Business calculations | Owner-approved rates, units, dates, taxes, rounding, partial dispatch, credits and reconciliation examples; compare independently expected values. Fictional calculation tests do not approve the warehouse's accounting policy. |
 | Data isolation | Customer A/B and staff boundaries for lists, mutations, Realtime, images and private PDFs; expired/revoked links and sessions, no stale previous-instance data after a switch. |
 | Capacity | Representative data/concurrency, declared latency/error thresholds, sustained load, memory/disk growth and bounded recovery. Existing smoke numbers are not an SLO pass. |
-| Recovery | Scheduled encrypted off-host copy, failure alert, retention/legal hold, independent decryption/key custody, replacement-host restoration, restored permissions/documents and measured RPO/RTO. |
+| Recovery | Operator-accepted same-host backup disk for VM/system-disk failure, delivered failure alert, verified 48-hour retention, replacement-host restoration, restored permissions/documents and measured one-hour RPO/RTO. Full physical-host loss is excluded from this pilot's accepted scope. |
 | Host lifecycle | Guest and physical-host unattended reboot, correct start order, graceful shutdown, tunnel recovery and any required USB reattachment. |
 | Alerts | Real recipient delivery, acknowledgement, escalation, outage/recovery notification and behavior when the VM itself cannot send. |
 | Physical integrations | Epson continuous forms/alignment/jams/offline/retry/duplicate outcomes; actual Tapo/Home Assistant ingestion, stale/offline indicators, clock/timestamp boundaries and replay. Cooling control remains excluded. |
