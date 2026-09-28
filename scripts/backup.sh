@@ -60,6 +60,11 @@ compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   < "$ROOT/scripts/backup-integrity.sql" > "$stage/integrity.txt"
 compose exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   -c "SELECT rolname FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY rolname" > "$stage/roles.txt"
+# A logical database dump does not contain cluster-global roles, memberships,
+# password hashes or tablespace definitions. Keep this sensitive SQL with the
+# protected backup so a replacement host can reproduce and compare them.
+compose exec -T db pg_dumpall -U supabase_admin --globals-only > "$stage/globals.sql"
+[[ -s "$stage/globals.sql" ]] || { echo 'Cluster-global backup is empty.' >&2; exit 1; }
 
 storage="$state/data/storage"
 tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
@@ -69,13 +74,13 @@ cp "$state/public/instance.json" "$stage/instance.json"
 chmod 600 "$stage/compose.env" "$stage/instance.json"
 
 cat > "$stage/metadata.txt" <<EOF
-format=warehouse-backup-v3
+format=warehouse-backup-v4
 created_at_utc=$timestamp
 source_commit=$(git -C "$ROOT" rev-parse HEAD)
 database_image=supabase/postgres:15.8.1.060
 consistency=write-facing services stopped during database/storage capture
 EOF
-(cd "$stage" && sha256sum database.dump storage.tar.gz integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+(cd "$stage" && sha256sum database.dump storage.tar.gz integrity.txt metadata.txt compose.env instance.json roles.txt globals.sql > SHA256SUMS)
 chmod 600 "$stage"/*
 mv "$stage" "$destination"
 if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
