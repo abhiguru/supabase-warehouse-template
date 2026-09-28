@@ -12,14 +12,18 @@ done
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
 case "$format" in
   warehouse-backup-v1) ;;
-  warehouse-backup-v2|warehouse-backup-v3)
+  warehouse-backup-v2|warehouse-backup-v3|warehouse-backup-v4)
     for file in compose.env instance.json; do
       [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
       grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
     done
-    if [[ "$format" == warehouse-backup-v3 ]]; then
+    if [[ "$format" == warehouse-backup-v3 || "$format" == warehouse-backup-v4 ]]; then
       [[ -f "$backup/roles.txt" && ! -L "$backup/roles.txt" ]] || { echo 'Incomplete backup: missing roles.txt' >&2; exit 1; }
       grep -Fq '  roles.txt' "$backup/SHA256SUMS" || { echo 'Backup checksum missing for roles.txt' >&2; exit 1; }
+    fi
+    if [[ "$format" == warehouse-backup-v4 ]]; then
+      [[ -s "$backup/globals.sql" && ! -L "$backup/globals.sql" ]] || { echo 'Incomplete backup: missing globals.sql' >&2; exit 1; }
+      grep -Fq '  globals.sql' "$backup/SHA256SUMS" || { echo 'Backup checksum missing for globals.sql' >&2; exit 1; }
     fi
     ;;
   *) echo 'Unsupported backup format.' >&2; exit 1 ;;
@@ -60,7 +64,7 @@ done
 # The logical dump preserves ACLs, while Compose init scripts may add grant
 # targets that the bare pinned image lacks. Recreate absent names in this
 # disposable database so pg_restore verifies the original ACLs.
-if [[ "$format" == warehouse-backup-v3 ]]; then
+if [[ "$format" == warehouse-backup-v3 || "$format" == warehouse-backup-v4 ]]; then
   docker cp "$backup/roles.txt" "$container:/tmp/roles.txt"
   docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
     psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'

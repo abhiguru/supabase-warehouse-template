@@ -79,7 +79,8 @@ file seeds a new instance; changing it later does not rotate a running
 instance. For an authorized credential rotation, update this instance's
 mode-0600 `config/compose.env`, rerun the same setup command to synchronize the
 database, and verify a real OTP. Keep both private files outside Git and
-include them in the encrypted off-host backup. Never commit either file.
+include them in the protected off-host recovery bundle under the custody
+policy below. Never commit either file.
 
 For an AI-led installation, ask the operator for missing setup inputs **one at a
 time**, only when the next step needs them. After host preflight, request the
@@ -283,6 +284,13 @@ operation without a host login. Arrange the host test with its operator.
 
 ## Recovery and test boundary
 
+The [production recovery acceptance plan](PRODUCTION_RECOVERY_ACCEPTANCE.md)
+lists the off-host, replacement-host and separate cutover gates, including the
+operator's explicit unencrypted-backup risk exception for this pilot. New
+v4 backups also include a sensitive cluster-globals SQL export containing role
+definitions and password hashes. Protect it with the same permissions as the
+private configuration and database dump.
+
 The manual `db:backup` command produces a private **unencrypted** archive
 directory containing the database, stored documents, public manifest and private
 configuration. Store it only on protected storage. `db:verify-restore` checks a
@@ -291,9 +299,11 @@ replacement operator instance. Optional CUPS and monitoring volumes are not in
 this core backup. CUPS spools are project-scoped and persist independently of
 the source checkout.
 
-Encrypted off-host transfer, scheduled retention, optional-service recovery and
+Protected off-host transfer, scheduled retention, optional-service recovery and
 the replacement-host restore procedure remain open in the acceptance ledger.
-Back up to an operator-provided encrypted off-host destination before production.
+The default is an encrypted off-host destination; the pilot operator has chosen
+an explicit unencrypted exception, which requires restricted physical custody
+and must remain visible in acceptance evidence.
 Define schedule, retention and key custody before enabling automation. Restore
 onto a replacement host and verify credentials, document access and mobile
 reconnection before declaring recovery complete. Record physical MSG91 receipt,
