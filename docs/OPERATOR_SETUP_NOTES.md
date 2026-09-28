@@ -350,9 +350,21 @@ does not cover optional monitoring/CUPS volumes or automatically capture every
 separately stored tunnel, provider, signing or sensor credential. Inventory them
 explicitly in the recovery plan and protect key custody separately.
 
-Before production, obtain the encrypted off-host destination first, then the
-missing key-custody, schedule, retention and recovery objectives as each step
-needs them. Test a replacement host using only those copies, including document
+Before enabling recurring backups, ask the operator for the exact destination
+partition and backup directory only when that step is ready. Inventory UUIDs,
+mounts, capacity and existing files first; never select or format a drive by
+guessing its `/dev/sdX` name. Ask separately which older backup files may be
+pruned and how long to retain verified generations. Until answered, write new
+timestamped archives without overwriting existing files and do not enable a
+prune job. The operator's planned second drive is in the **same physical
+machine**: it can serve as a local disk-failure tier, but a separate physical
+copy remains necessary for full-host loss. The approved one-hour RPO also needs
+a tested recurring schedule, transfer, and stale-backup alert; the planned
+partition is not present yet. The unencrypted-backup exception remains in force
+for this pilot, so restrict permissions and physical custody.
+
+Before production, obtain the independent off-host destination and remaining
+schedule, retention and recovery inputs as each step needs them. Test a replacement host using only those copies, including document
 access, instance identity, tunnel routing and mobile reconnection. Disable the
 old writer during an authorized cutover; do not accidentally leave two restored
 instances writing independently behind one hostname/tunnel. Do not prune backups

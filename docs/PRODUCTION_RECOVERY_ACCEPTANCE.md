@@ -13,6 +13,15 @@ control, physical custody, inventory, retrieval, retention or restore tests.
 Record the exception in the final acceptance evidence; do not describe the
 backup as encrypted or close a separate confidentiality requirement with it.
 
+The operator has set a **one-hour RPO** and plans a backup partition on another
+drive in the **same physical machine**. The partition has not been supplied or
+identified yet. It can protect against failure of the warehouse system disk
+only if the backup drive survives; it does not provide an independent copy for
+host theft, fire, power damage, or physical-host loss. The detached USB copies
+proved retrieval and restore for the rehearsals, but they cannot by themselves
+meet an unattended one-hour RPO. Do not mark either the hourly RPO or full-host
+recovery accepted until scheduling and an independent destination are tested.
+
 ## Backup and custody gate
 
 1. Agree on maximum acceptable data loss (RPO), maximum time to usable service
@@ -65,6 +74,41 @@ backup as encrypted or close a separate confidentiality requirement with it.
    the other host after disconnecting the original VM. Do not copy an
    unencrypted archive to public or shared storage. The local unencrypted
    staging backup also needs a restricted retention and deletion policy.
+
+### Operator choice of destination and overwrite policy
+
+Ask for these inputs **one at a time, when each is needed**. Do not infer a
+destination from an available disk, partition, automount, or example path.
+
+1. Inventory disks, filesystem UUIDs, mounts, free space, ownership and existing
+   files without changing them. Ask: “Which exact partition should hold the
+   backups?” Show the operator its UUID, size, filesystem and current mount
+   point. Confirm whether the partition is on the warehouse host or a separate
+   physical machine, and whether any existing files must be preserved. Never
+   format, repartition or erase a candidate as part of discovery.
+2. Once the partition is identified, ask: “What exact directory on that
+   partition should receive warehouse backups?” Require an absolute mounted
+   path outside every Git checkout and database/storage data directory. Confirm
+   it resolves to the selected filesystem UUID, has enough capacity, and can
+   present owner-only 0700 directories and 0600 files. Do not use a permissive
+   desktop automount for an unencrypted archive. Mount by UUID with restrictive
+   options and verify the effective mount before writing.
+3. Before deleting or replacing anything, ask separately: “May older warehouse
+   backups in this directory be pruned, and what retention rule applies?” Record
+   the exact scope, minimum number of verified generations, age limit, and any
+   protected/manual copies. The safe default is **append-only unique timestamped
+   filenames**. The exporter refuses an existing output file. Do not overwrite
+   the latest good archive in place; create, checksum, restore-check and record
+   the new one first. Apply an approved prune rule only to matching warehouse
+   archives on the selected partition after a newer verified generation exists.
+   Never overwrite unrelated files or infer permission to delete from the word
+   “backup.”
+4. A same-host second drive is a local recovery tier, not the independent
+   off-host copy required for full-host recovery. Ask for a separate physical
+   destination and custody plan before accepting that gate. For the approved
+   one-hour RPO, design a schedule with margin for backup/transfer duration and
+   missed runs, an alert for failed or stale backups, and a tested retrieval
+   path. Do not claim the target from one manually observed backup age.
 
 ## Replacement-host gate
 
@@ -140,3 +184,17 @@ private-object bytes, local credentials/access controls, network isolation and
 owned database restart recovery on the **previously used** replacement VM. It
 does not close the clean-host, representative business-data, RPO/RTO, optional
 volume, custody, confidentiality or separately authorized cutover gates above.
+
+Subsequently, the operator reported that a clean Ubuntu host restored the
+first USB archive with exact globals, 274 rows, nine sequences and the private
+PDF, and that a second isolated restore on the now-used recovery VM restored a
+new USB archive containing GRN `T2609281` and its single test-stock line with
+matching IDs and values. Both reports say the drill services were stopped,
+the USB unmounted and the original pilot left as the only connector. Detailed
+raw evidence is private on the recovery VM and has not been independently
+reviewed in this checkout. The second backup's observed age at verification
+was 19 minutes 21.68 seconds. These results advance the replacement-data
+rehearsal; they do not establish the approved **one-hour RPO** without a
+recurring, monitored, independent off-host copy. The planned same-host backup
+partition is not yet supplied. RTO, retention, physical-host restart, optional
+volumes and separately authorized cutover remain open.

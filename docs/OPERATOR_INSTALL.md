@@ -299,8 +299,26 @@ replacement operator instance. Optional CUPS and monitoring volumes are not in
 this core backup. CUPS spools are project-scoped and persist independently of
 the source checkout.
 
-Protected off-host transfer, scheduled retention, optional-service recovery and
-the replacement-host restore procedure remain open in the acceptance ledger.
+Before configuring a recurring destination, inventory disks and mounts, then
+ask the operator **which exact partition** to use and **which absolute
+directory on it** should receive backups. Verify its filesystem UUID, physical
+host, capacity, effective file permissions and existing contents; do not infer
+these from a device name or desktop automount. If the partition has not been
+provided, leave scheduled export disabled and record the missing input. Ask
+separately whether older warehouse backups in that directory may be pruned and
+the precise retention rule. Use new timestamped filenames by default; never
+overwrite an existing or last-known-good archive in place. The detailed
+one-at-a-time questions and checks are in
+[production recovery acceptance](PRODUCTION_RECOVERY_ACCEPTANCE.md).
+
+The pilot operator chose a one-hour RPO and plans another drive in the same
+physical machine. That drive can help with a system-disk failure, but it is
+not an independent full-host-loss copy. The partition, schedule, stale-backup
+alert, retention rule and separate physical destination are still pending;
+the earlier detached USB restores do not establish ongoing one-hour coverage.
+
+Continuous off-host transfer, scheduled retention, optional-service recovery and
+full-host-loss acceptance remain open in the acceptance ledger.
 The default is an encrypted off-host destination; the pilot operator has chosen
 an explicit unencrypted exception, which requires restricted physical custody
 and must remain visible in acceptance evidence.
