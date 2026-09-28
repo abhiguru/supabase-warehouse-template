@@ -226,3 +226,10 @@ decision for the narrower VM/system-disk-loss scope is **accepted**; the
 one-hour RPO/RTO results, delivered failure alert, unattended reboot and an
 end-to-end timed recovery remain open. Do not label the scoped decision as
 full-host disaster recovery.
+
+The operator deferred external backup-failure alerts on 2026-09-29 and may
+choose Slack later. The ten-minute local health timer remains enabled, but its
+failed unit has no delivered receiver. A failed or stale backup may therefore
+go unnoticed until someone checks this VM. Record this as an explicit pilot
+operations exception; do not treat the one-hour RPO as demonstrated by the
+timer configuration alone.

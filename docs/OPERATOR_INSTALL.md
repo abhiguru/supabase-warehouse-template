@@ -324,7 +324,9 @@ and backup disk survive**. Physical-host loss, theft, fire and shared-storage
 failure are outside that accepted scope. No separate physical destination is
 required for this scoped pilot decision. A delivered failure alert, actual
 48-hour prune, reboot with the new disk, and measured one-hour RPO/RTO remain
-open. The unencrypted-backup exception requires restricted physical custody.
+open. The operator deferred external failure alerts for now; local health
+checks do not notify an operator and cannot prove the RPO. Slack may be added
+later. The unencrypted-backup exception requires restricted physical custody.
 Restore
 onto a replacement host and verify credentials, document access and mobile
 reconnection before declaring recovery complete. Record physical MSG91 receipt,
