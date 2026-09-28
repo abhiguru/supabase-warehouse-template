@@ -211,9 +211,10 @@ minutes, verifies a disposable restore, exports a new unencrypted archive,
 checks safe intake and archive hash, and keeps at least two verified
 generations while pruning its own archives older than 48 hours. A separate
 10-minute job fails locally if the latest source snapshot is older than 50
-minutes or its archive hash changes. One direct run and one run through the
-systemd service passed; both produced private archives, and local operator
-health passed after each backup pause. The unit tests cover stale backup,
+minutes or its archive hash changes. One direct run, one run through the
+systemd service and the first automatic timer run passed; all three produced
+private archives, and local operator health passed after each backup pause.
+The unit tests cover stale backup,
 missing mount, and safe pruning. A real 48-hour prune, unattended reboot,
 media failure, and delivered external failure alert remain untested. The
 second virtual disk is still on the original physical host, so the approved
