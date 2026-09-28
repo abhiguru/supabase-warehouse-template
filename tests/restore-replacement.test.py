@@ -12,6 +12,31 @@ restore = SourceFileLoader("restore_replacement", str(ROOT / "scripts/restore-re
 
 
 class RestoreFailureGates(unittest.TestCase):
+    def test_storage_catalog_matches_multiple_versions_and_rejects_strays(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(restore.match_storage_catalog(Path(empty), []), [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rows = [
+                {"bucket_id": "documents", "name": "a/first.pdf", "version": "version-1"},
+                {"bucket_id": "documents", "name": "b/second.pdf", "version": "version-2"},
+            ]
+            for row in rows:
+                path = root / "tenant" / "stub" / row["bucket_id"] / row["name"] / row["version"]
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"private document")
+            self.assertEqual(len(restore.match_storage_catalog(root, rows)), 2)
+            stray = root / "tenant" / "stub" / "documents" / "stray"
+            stray.write_bytes(b"unaccounted")
+            with self.assertRaises(ValueError):
+                restore.match_storage_catalog(root, rows)
+            with self.assertRaises(ValueError):
+                restore.match_storage_catalog(root, [{"bucket_id": "documents", "name": "../escape", "version": "v"}])
+            stray.unlink()
+            stray.symlink_to("/etc/passwd")
+            with self.assertRaises(ValueError):
+                restore.match_storage_catalog(root, rows)
+
     def test_saved_environment_rejects_duplicates_and_interpolation(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "compose.env"

@@ -483,6 +483,35 @@ def local_http(origin, path, key=None, bearer=None):
         return error.code, error.read()
 
 
+def match_storage_catalog(storage_root, rows):
+    """Match every catalog version to one restored file, with no stray files."""
+    files = []
+    for path in storage_root.rglob("*"):
+        require(not path.is_symlink() and (path.is_dir() or path.is_file()), "Unsafe restored storage entry")
+        if path.is_file():
+            files.append(path)
+    by_version = {}
+    for path in files:
+        by_version.setdefault(path.name, []).append(path)
+    matches = []
+    used = set()
+    for row in rows:
+        bucket, name, version = (row.get(key) for key in ("bucket_id", "name", "version"))
+        require(isinstance(bucket, str) and re.fullmatch(r"[A-Za-z0-9._-]+", bucket) and bucket not in (".", ".."),
+                "Unsafe storage bucket in catalog")
+        require(isinstance(name, str) and name and not name.startswith("/") and "\\" not in name and
+                all(part not in ("", ".", "..") for part in name.split("/")), "Unsafe storage object name in catalog")
+        require(isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9._-]+", version) and version not in (".", ".."),
+                "Unsafe storage version in catalog")
+        suffix = (bucket, *name.split("/"), version)
+        candidates = [path for path in by_version.get(version, ()) if path.relative_to(storage_root).parts[-len(suffix):] == suffix]
+        require(len(candidates) == 1 and candidates[0] not in used, "Storage catalog version has no unique file")
+        used.add(candidates[0])
+        matches.append((bucket, name, candidates[0]))
+    require(len(used) == len(files), "Restored storage has unaccounted files")
+    return matches
+
+
 def local_checks(state, services):
     env = read_env(state / "config/compose.env")
     backup = Path((state / "config/backup.path").read_text().strip())
@@ -516,19 +545,22 @@ def local_checks(state, services):
         require(status in (401, 403), "Nonexistent or expired authenticated session was accepted")
     status, body = local_http(origin, "/storage/v1/bucket", env["SERVICE_ROLE_KEY"])
     require(status == 200 and all(not row["public"] for row in json.loads(body)), "Restored buckets are not private")
-    # Source catalog contains one PDF. Never log its name, bytes, URL or response.
-    metadata = db_capture(state, "psql", "-X", "-qAt", "-F", "\t", "-U", "supabase_admin", "-d", "postgres", "-c",
-                          "SELECT bucket_id,name FROM storage.objects ORDER BY bucket_id,name").decode().splitlines()
-    files = [path for path in (state / "data/storage").rglob("*") if path.is_file()]
-    require(len(metadata) == len(files) == 1, "Object catalog or file count changed")
-    bucket, name = metadata[0].split("\t", 1)
-    route = "/storage/v1/object/authenticated/" + urllib.parse.quote(bucket, safe="") + "/" + urllib.parse.quote(name, safe="/")
-    status, body = local_http(origin, route, env["SERVICE_ROLE_KEY"])
-    require(status == 200 and hashlib.sha256(body).digest() == hashlib.sha256(files[0].read_bytes()).digest(), "Restored private object bytes differ")
-    status, _ = local_http(origin, route, env["ANON_KEY"])
-    require(status in (400, 401, 403, 404), "Anonymous private object read allowed")
+    # Match the complete catalog to restored files; sample API access without
+    # logging names, bytes, URLs or responses. restore_storage already checked
+    # every file against the checksummed archive before service startup.
+    catalog = [json.loads(line) for line in db_capture(state, "psql", "-X", "-qAt", "-U", "supabase_admin", "-d", "postgres", "-c",
+                                                  "SELECT row_to_json(o) FROM (SELECT bucket_id,name,version FROM storage.objects ORDER BY bucket_id,name) o").decode().splitlines()]
+    objects = match_storage_catalog(state / "data/storage", catalog)
+    sampled = sorted({0, len(objects) // 2, len(objects) - 1}) if objects else []
+    for index in sampled:
+        bucket, name, path = objects[index]
+        route = "/storage/v1/object/authenticated/" + urllib.parse.quote(bucket, safe="") + "/" + urllib.parse.quote(name, safe="/")
+        status, body = local_http(origin, route, env["SERVICE_ROLE_KEY"])
+        require(status == 200 and hashlib.sha256(body).digest() == hashlib.sha256(path.read_bytes()).digest(), "Restored private object bytes differ")
+        status, _ = local_http(origin, route, env["ANON_KEY"])
+        require(status in (400, 401, 403, 404), "Anonymous private object read allowed")
     return {"identity": True, "saved_credentials": True, "anonymous_boundary": True, "invalid_and_expired_sessions_denied": True,
-            "private_bucket": True, "original_object_bytes": True}
+            "private_bucket": True, "object_catalog_files_matched": len(objects), "private_object_access_samples": len(sampled)}
 
 
 def cache_edge(state):
