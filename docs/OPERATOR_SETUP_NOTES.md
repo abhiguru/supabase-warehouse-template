@@ -360,7 +360,9 @@ prune job. The operator's planned second drive is in the **same physical
 machine**: it can serve as a local disk-failure tier, but a separate physical
 copy remains necessary for full-host loss. The approved one-hour RPO also needs
 a tested recurring schedule, transfer, and stale-backup alert; the planned
-partition is not present yet. The unencrypted-backup exception remains in force
+partition is not present yet. The approved one-hour RTO needs a timed
+host-loss-to-usable-service exercise, including replacement startup and
+reconciliation. The unencrypted-backup exception remains in force
 for this pilot, so restrict permissions and physical custody.
 
 Before production, obtain the independent off-host destination and remaining

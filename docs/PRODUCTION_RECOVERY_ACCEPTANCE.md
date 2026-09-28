@@ -13,14 +13,16 @@ control, physical custody, inventory, retrieval, retention or restore tests.
 Record the exception in the final acceptance evidence; do not describe the
 backup as encrypted or close a separate confidentiality requirement with it.
 
-The operator has set a **one-hour RPO** and plans a backup partition on another
-drive in the **same physical machine**. The partition has not been supplied or
-identified yet. It can protect against failure of the warehouse system disk
-only if the backup drive survives; it does not provide an independent copy for
+The operator has set a **one-hour RPO and one-hour RTO** and plans a backup
+partition on another drive in the **same physical machine**. It has not been
+supplied or identified yet. It can protect against failure of the warehouse
+system disk only if the backup drive survives; it does not provide an independent copy for
 host theft, fire, power damage, or physical-host loss. The detached USB copies
 proved retrieval and restore for the rehearsals, but they cannot by themselves
-meet an unattended one-hour RPO. Do not mark either the hourly RPO or full-host
-recovery accepted until scheduling and an independent destination are tested.
+meet an unattended one-hour RPO. The prior restore intervals did not start at
+host loss or end at externally usable service, so they do not prove the RTO.
+Do not mark either target or full-host recovery accepted until the complete
+path is timed and an independent destination is tested.
 
 ## Backup and custody gate
 
@@ -196,5 +198,7 @@ reviewed in this checkout. The second backup's observed age at verification
 was 19 minutes 21.68 seconds. These results advance the replacement-data
 rehearsal; they do not establish the approved **one-hour RPO** without a
 recurring, monitored, independent off-host copy. The planned same-host backup
-partition is not yet supplied. RTO, retention, physical-host restart, optional
-volumes and separately authorized cutover remain open.
+partition is not yet supplied. The **one-hour RTO** remains unproven because
+the full host-loss-to-usable-service interval was not measured. Retention,
+physical-host restart, optional volumes and separately authorized cutover
+remain open.

@@ -311,11 +311,12 @@ overwrite an existing or last-known-good archive in place. The detailed
 one-at-a-time questions and checks are in
 [production recovery acceptance](PRODUCTION_RECOVERY_ACCEPTANCE.md).
 
-The pilot operator chose a one-hour RPO and plans another drive in the same
+The pilot operator chose a one-hour RPO and one-hour RTO and plans another drive in the same
 physical machine. That drive can help with a system-disk failure, but it is
 not an independent full-host-loss copy. The partition, schedule, stale-backup
 alert, retention rule and separate physical destination are still pending;
-the earlier detached USB restores do not establish ongoing one-hour coverage.
+the earlier detached USB restores do not establish ongoing one-hour backup
+coverage or a full host-loss-to-usable-service recovery time.
 
 Continuous off-host transfer, scheduled retention, optional-service recovery and
 full-host-loss acceptance remain open in the acceptance ledger.
