@@ -48,6 +48,7 @@ physical host. The operator accepts it as the pilot destination for a VM or
 system-disk failure while the host and backup disk survive. Physical-host
 loss, theft, fire and shared-storage failure are excluded; covering those
 would require an independent copy. The core v4 backup also excludes optional
-monitoring and CUPS volumes. Exercise a timed recovery, sustained backups,
-delivered alerts and retention before claiming the one-hour RPO/RTO or cutover
-acceptance.
+monitoring and CUPS volumes. A single timed local rehearsal met the one-hour
+simulated RPO and local RTO, but sustained backups, actual retention and public
+recovery remain separate evidence. The operator deferred delivered alerts;
+do not infer unattended RPO protection or cutover acceptance from this drill.

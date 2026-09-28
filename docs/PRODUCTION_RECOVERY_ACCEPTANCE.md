@@ -200,9 +200,9 @@ reviewed in this checkout. The second backup's observed age at verification
 was 19 minutes 21.68 seconds. These results advance the replacement-data
 rehearsal; they do not establish the approved **one-hour RPO** without a
 recurring, monitored copy for the chosen failure scope. The same-host backup
-disk was subsequently supplied, as recorded below. The **one-hour RTO**
-remains unproven because the failure-to-usable-service interval was not
-measured. Retention,
+disk was subsequently supplied, as recorded below. The **one-hour RTO** was
+unproven at that checkpoint because the failure-to-usable-service interval
+was not measured. Retention,
 physical-host restart, optional volumes and separately authorized cutover
 remain open.
 
@@ -222,10 +222,10 @@ missing mount, and safe pruning. A real 48-hour prune, physical-host restart,
 media failure, and delivered external failure alert remain untested. The
 second virtual disk is still on the original physical host. The operator has
 excluded full-host loss from this pilot's recovery acceptance. The destination
-decision for the narrower VM/system-disk-loss scope is **accepted**; the
-one-hour RPO/RTO results, delivered failure alert, physical-host restart and an
-end-to-end timed recovery remain open. Do not label the scoped decision as
-full-host disaster recovery.
+decision for the narrower VM/system-disk-loss scope is **accepted**. At this
+checkpoint, the one-hour RPO/RTO measurement, delivered failure alert,
+physical-host restart and end-to-end timed recovery remained open. Do not
+label the scoped decision as full-host disaster recovery.
 
 The operator deferred external backup-failure alerts on 2026-09-29 and may
 choose Slack later. The ten-minute local health timer remains enabled, but its
@@ -245,3 +245,26 @@ post-reboot backup timer fired at 01:00:15 IST, completed successfully at
 01:01:19, and produced a new mode-0600 archive and receipt. Its SHA-256 matched
 the receipt; local and HTTPS health passed again after backup. This proves one
 post-reboot scheduled run, not sustained one-hour RPO or 48-hour pruning.
+
+On 2026-09-29 the operator reported a **timed, isolated local recovery
+rehearsal** on the previously used host. The selected backup's source snapshot
+and verification both preceded the simulated failure declaration. The archive
+matched its receipt's size and SHA-256 before intake. The measured simulated
+RPO and declaration-to-completed-local-verification RTO, including retrieval
+and transfer, both met the one-hour targets for this single local rehearsal.
+Exact clocks and archive identity remain in the private handoff.
+
+The first restore state failed verification when Storage was briefly
+unhealthy. The agent stopped it, retained evidence, and ran the unchanged
+installer sequence in a new private state. That attempt passed archived rows
+and IDs including test GRN `T2609281`, private PDF bytes, identity and access
+controls, network isolation, ten-service health, and recovery after an owned
+database restart at detached commit
+`d8766b6a29c95c8a0952eed4e5880139b0d0bd34`. The operator reports all
+drill containers and the temporary SSH listener stopped, with temporary
+Docker group access removed. Detailed commands, clocks, failure and results
+are in the private `TIMED_RECOVERY_HANDOFF.md` on that host; this checkout has
+not independently reviewed that raw evidence. This result does **not** prove
+public-service RTO, sustained one-hour RPO under missed backups, actual
+48-hour pruning, or a cutover. The external failure alert remains explicitly
+deferred; routing and single-writer reconciliation require separate approval.

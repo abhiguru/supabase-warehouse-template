@@ -323,17 +323,20 @@ the pilot recovery destination for a VM or system-disk failure **if the host
 and backup disk survive**. Physical-host loss, theft, fire and shared-storage
 failure are outside that accepted scope. No separate physical destination is
 required for this scoped pilot decision. A delivered failure alert, actual
-48-hour prune, physical-host restart, and measured one-hour RPO/RTO remain
-open. The operator deferred external failure alerts for now; local health
-checks do not notify an operator and cannot prove the RPO. Slack may be added
-later. A controlled guest reboot on 2026-09-29 did remount the UUID-pinned
+48-hour prune and physical-host restart remain open. A timed, isolated local
+rehearsal using a pre-failure backup met the one-hour simulated RPO and local
+RTO targets; exact clocks remain private. That single result
+does not prove sustained RPO under missed backups or public-service RTO. The
+operator deferred external failure alerts for now; local health checks do not
+notify an operator. Slack may be added later. A controlled guest reboot on
+2026-09-29 did remount the UUID-pinned
 disk and recover local/public health, tunnel and timers. The unencrypted-backup
 exception requires restricted physical custody. The first post-reboot timer
 backup completed and its archive hash, private permissions and service health
 passed; sustained RPO and actual retention remain open.
-Restore
-onto a replacement host and verify credentials, document access and mobile
-reconnection before declaring recovery complete. Record physical MSG91 receipt,
+Restore onto a replacement host and verify credentials, document access and
+mobile reconnection before declaring public recovery complete. Record physical
+MSG91 receipt,
 printer forms, Tapo uploads and each phone-platform case independently against
 exact code and build IDs. The dated [pilot notes](OPERATOR_SETUP_NOTES.md) record
 real SMS/API login and partial Android Wi-Fi acceptance; printing, sensors and
