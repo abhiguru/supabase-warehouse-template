@@ -23,11 +23,24 @@ parent="$(dirname "$destination")"
 [[ -d "$parent" ]] || { echo "Backup parent does not exist: $parent" >&2; exit 1; }
 stage="$(mktemp -d "$parent/.warehouse-backup-staging.XXXXXXXX")"
 restart=()
+restart_owned_services() {
+  local attempt
+  for attempt in 1 2 3; do
+    if compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
+      return 0
+    fi
+    if ((attempt < 3)); then
+      echo "Backup restart health check failed; retrying owned services ($attempt/3)." >&2
+      sleep 5
+    fi
+  done
+  return 1
+}
 cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
-    if ! compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
+    if ! restart_owned_services; then
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
     fi
@@ -83,6 +96,6 @@ EOF
 (cd "$stage" && sha256sum database.dump storage.tar.gz integrity.txt metadata.txt compose.env instance.json roles.txt globals.sql > SHA256SUMS)
 chmod 600 "$stage"/*
 mv "$stage" "$destination"
-if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
+if ((${#restart[@]})); then restart_owned_services; restart=(); fi
 echo "Backup created at $destination"
 echo 'Treat this directory as sensitive and test every retained backup with db:verify-restore.'

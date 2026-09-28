@@ -64,6 +64,11 @@ case "$1" in
     esac ;;
   compose)
     case "$*" in
+      *'up -d --no-recreate --wait --wait-timeout 180'*)
+        if [ "$FAKE_RESTART_FAIL_ONCE" = yes ] && [ ! -e "$FAKE_RESTART_MARK" ]; then
+          : > "$FAKE_RESTART_MARK"
+          exit 42
+        fi ;;
       *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
       *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
       *' ps -q storage') printf 'cccccccccccc\\n' ;;
@@ -107,5 +112,12 @@ esac
     assert.notEqual(globalsFailure.status, 0);
     assert.equal(existsSync(join(scratch, 'failed-globals')), false);
     assert.match(readFileSync(log, 'utf8'), /up -d --no-recreate --wait --wait-timeout 180 kong/);
+    writeFileSync(log, '');
+    const retry = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'retry-backup')], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
+        FAKE_DOCKER_LOG: log, FAKE_RESTART_FAIL_ONCE: 'yes', FAKE_RESTART_MARK: join(scratch, 'restart-failed-once') },
+    });
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal((readFileSync(log, 'utf8').match(/up -d --no-recreate --wait --wait-timeout 180 kong/g) ?? []).length, 2);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
