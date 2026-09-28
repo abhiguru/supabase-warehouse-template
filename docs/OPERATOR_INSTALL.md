@@ -285,7 +285,7 @@ operation without a host login. Arrange the host test with its operator.
 ## Recovery and test boundary
 
 The [production recovery acceptance plan](PRODUCTION_RECOVERY_ACCEPTANCE.md)
-lists the off-host, replacement-host and separate cutover gates, including the
+lists the scoped destination, replacement-host and separate cutover gates, including the
 operator's explicit unencrypted-backup risk exception for this pilot. New
 v4 backups also include a sensitive cluster-globals SQL export containing role
 definitions and password hashes. Protect it with the same permissions as the
@@ -314,21 +314,29 @@ The reviewed [scheduled local backup job](SCHEDULED_RECOVERY_BACKUPS.md) shows
 the private configuration, verified export, 48-hour retention and 50-minute
 stale-backup check used for the pilot's one-hour RPO target.
 
-The pilot operator chose a one-hour RPO and one-hour RTO and plans another drive in the same
-physical machine. That drive can help with a system-disk failure, but it is
-not an independent full-host-loss copy. The partition, schedule, stale-backup
-alert, retention rule and separate physical destination are still pending;
-the earlier detached USB restores do not establish ongoing one-hour backup
-coverage or a full host-loss-to-usable-service recovery time.
-
-Continuous off-host transfer, scheduled retention, optional-service recovery and
-full-host-loss acceptance remain open in the acceptance ledger.
-The default is an encrypted off-host destination; the pilot operator has chosen
-an explicit unencrypted exception, which requires restricted physical custody
-and must remain visible in acceptance evidence.
-Define schedule, retention and key custody before enabling automation. Restore
-onto a replacement host and verify credentials, document access and mobile
-reconnection before declaring recovery complete. Record physical MSG91 receipt,
+The pilot operator chose a one-hour RPO, one-hour RTO and 48-hour backup
+retention. A 10 GiB virtual backup disk is mounted by UUID at
+`/mnt/warehouse-backups`; verified, unencrypted archives are written under
+`/mnt/warehouse-backups/archives` every 30 minutes, with a local freshness
+check every 10 minutes. The operator explicitly accepts this same-host disk as
+the pilot recovery destination for a VM or system-disk failure **if the host
+and backup disk survive**. Physical-host loss, theft, fire and shared-storage
+failure are outside that accepted scope. No separate physical destination is
+required for this scoped pilot decision. A delivered failure alert, actual
+48-hour prune and physical-host restart remain open. A timed, isolated local
+rehearsal using a pre-failure backup met the one-hour simulated RPO and local
+RTO targets; exact clocks remain private. That single result
+does not prove sustained RPO under missed backups or public-service RTO. The
+operator deferred external failure alerts for now; local health checks do not
+notify an operator. Slack may be added later. A controlled guest reboot on
+2026-09-29 did remount the UUID-pinned
+disk and recover local/public health, tunnel and timers. The unencrypted-backup
+exception requires restricted physical custody. The first post-reboot timer
+backup completed and its archive hash, private permissions and service health
+passed; sustained RPO and actual retention remain open.
+Restore onto a replacement host and verify credentials, document access and
+mobile reconnection before declaring public recovery complete. Record physical
+MSG91 receipt,
 printer forms, Tapo uploads and each phone-platform case independently against
 exact code and build IDs. The dated [pilot notes](OPERATOR_SETUP_NOTES.md) record
 real SMS/API login and partial Android Wi-Fi acceptance; printing, sensors and
