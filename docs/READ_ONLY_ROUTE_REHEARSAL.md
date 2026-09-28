@@ -24,9 +24,16 @@ ports; inventory the target first and choose its actual local values:
 ```
 
 Add an exact `/storage/v1/object/authenticated/...` path only for an approved
-test object whose access has been verified. Never use a wildcard or allow a
-write endpoint. Query strings are forwarded for exact allowed paths, so keep
-signed links and tokens out of logs and screenshots. The proxy forwards only
+test object whose access has been verified. For a private document without a
+direct client-read policy, use an exact `/storage/v1/object/sign/...` path for
+that one object and a short-lived signed link created privately on the isolated
+restore. The signed path accepts only one nonempty `token` query parameter and
+rejects Authorization and apikey headers; the proxy sets `Cache-Control:
+private, no-store` and `Cloudflare-CDN-Cache-Control: no-store` on its response.
+Inspect the separate hostname's Cloudflare Cache Rules before exposing it:
+an Edge TTL that ignores origin cache headers can still cache private bytes.
+Never use a wildcard or allow a write endpoint. Keep signed links and tokens
+out of logs and screenshots. The proxy forwards only
 the request headers needed for authenticated reads and rejects duplicate or
 control-character-bearing forwarded headers. Responses over 8 MiB fail. The
 proxy admits at most 32 concurrent connections and rejects excess connections
@@ -49,7 +56,7 @@ candidate. Then, on an **isolated restored instance**, inventory local ports
 and launch the proxy against its loopback gateway or verified private Docker
 address without starting its tunnel.
 With the configured Host header, prove the allowed identity GET and any
-approved authenticated object GET work through the proxy. Prove POST, PUT,
+approved authenticated or signed object GET work through the proxy. Prove POST, PUT,
 PATCH, DELETE, OPTIONS, unlisted paths, wrong Host, upgrades and request
 bodies are denied without reaching the gateway. Confirm the gateway has no
 other public ingress, and compare business rows and objects before and after

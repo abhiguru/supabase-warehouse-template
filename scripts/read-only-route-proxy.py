@@ -16,7 +16,7 @@ import re
 import stat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import BoundedSemaphore
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_CONCURRENT_REQUESTS = 32
@@ -66,8 +66,8 @@ def load_config(path):
                 "//" in item or any(part in (".", "..") for part in item.split("/"))):
             raise ValueError("Allowed paths must be exact, decoded HTTP paths")
         if item != "/functions/v1/get-public-config" and not re.fullmatch(
-                r"/storage/v1/object/authenticated/[^/]+/.+", item):
-            raise ValueError("Only public identity and authenticated object reads may be allowed")
+                r"/storage/v1/object/(?:authenticated|sign)/[^/]+/.+", item):
+            raise ValueError("Only public identity and exact private object reads may be allowed")
     return config
 
 
@@ -113,6 +113,16 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if parsed.scheme or parsed.netloc or parsed.fragment or parsed.path not in config["allowed_paths"]:
             return self.send_safe(403)
+        signed_object = parsed.path.startswith("/storage/v1/object/sign/")
+        if signed_object:
+            try:
+                query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                return self.send_safe(403)
+            if set(query) != {"token"} or len(query["token"]) != 1 or not query["token"][0]:
+                return self.send_safe(403)
+            if self.headers.get_all("Authorization") or self.headers.get_all("apikey"):
+                return self.send_safe(403)
         if (self.headers.get_all("Upgrade") or self.headers.get_all("Transfer-Encoding") or
                 self.headers.get_all("Expect") or self.headers.get_all("Content-Length") or
                 any("upgrade" in value.lower() for value in self.headers.get_all("Connection", []))):
@@ -135,8 +145,11 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
                 return self.send_safe(502)
             self.send_response_only(response.status)
             for name, value in response.getheaders():
-                if name.lower() in FORWARD_RESPONSE_HEADERS:
+                if name.lower() in FORWARD_RESPONSE_HEADERS and not (signed_object and name.lower() == "cache-control"):
                     self.send_header(name, value)
+            if signed_object:
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("Cloudflare-CDN-Cache-Control", "no-store")
             if self.command == "HEAD":
                 length = response.getheader("Content-Length", "0")
                 if not length.isdecimal():

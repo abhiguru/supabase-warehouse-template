@@ -33,6 +33,8 @@ class Upstream(BaseHTTPRequestHandler):
         body = b"known-read-only-response"
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
+        if self.path.startswith("/storage/v1/object/sign/"):
+            self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
         self.wfile.write(body)
 
@@ -60,6 +62,7 @@ class ReadOnlyProxyTests(unittest.TestCase):
             "allowed_paths": [
                 "/functions/v1/get-public-config",
                 "/storage/v1/object/authenticated/pilot/test.pdf",
+                "/storage/v1/object/sign/documents/known.pdf",
             ],
         })
         cls.threads = [
@@ -107,6 +110,26 @@ class ReadOnlyProxyTests(unittest.TestCase):
             status, _ = self.request("GET", path)
             self.assertEqual(status, 403)
         self.assertEqual(Upstream.seen, [])
+
+    def test_exact_signed_object_requires_token_and_disables_caching(self):
+        path = "/storage/v1/object/sign/documents/known.pdf?token=short-lived"
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        connection.request("GET", path, headers={"Host": "api.example.test"})
+        response = connection.getresponse()
+        self.assertEqual((response.status, response.read()), (200, b"known-read-only-response"))
+        self.assertEqual(response.getheader("Cache-Control"), "private, no-store")
+        self.assertEqual(response.getheader("Cloudflare-CDN-Cache-Control"), "no-store")
+        connection.close()
+        self.assertEqual(Upstream.seen, [("GET", path, None)])
+        for unsafe in ("/storage/v1/object/sign/documents/known.pdf",
+                       path + "&token=second", path + "&download=1",
+                       "/storage/v1/object/sign/documents/other.pdf?token=short-lived"):
+            status, _ = self.request("GET", unsafe)
+            self.assertEqual(status, 403)
+        for header in ({"Authorization": "Bearer service-role"}, {"apikey": "service-role"}):
+            status, _ = self.request("GET", path, header)
+            self.assertEqual(status, 403)
+        self.assertEqual(Upstream.seen, [("GET", path, None)])
 
     def test_wrong_host_upgrade_and_body_are_denied(self):
         for headers in ({"Host": "elsewhere.example"}, {"Upgrade": "websocket"},
