@@ -44,7 +44,11 @@ backup as encrypted or close a separate confidentiality requirement with it.
    Keep the resulting archive mode 0600, on physically controlled storage with
    no public or shared-network access. The exporter refuses weak input
    permissions, symlinks, incomplete v4 backups, existing output files and
-   checkout destinations. With the destination already mounted:
+   checkout destinations. On exFAT, mount with `uid`/`gid` set to the
+   installation user, `fmask=0177` and `dmask=0077`; `fmask=0077` presents
+   files as 0700 and is rejected. Identify the device by filesystem UUID and
+   verify the effective mount options before writing. With the destination
+   already mounted:
 
    ```bash
    bash scripts/export-recovery-backup.sh --plain \
@@ -105,3 +109,27 @@ start the copied connector, alter DNS, or send an OTP as part of an isolated
 restore rehearsal. Only close the production recovery ledger after the
 off-host rehearsal meets its targets and the separately authorized cutover
 checks pass.
+
+## Pilot execution checkpoint — 2026-09-28
+
+The first v4 backup published valid files and passed a disposable restore, but
+the command exited nonzero after Storage's first post-backup health check was
+transiently unhealthy. Cleanup recovered the services. Review commit `5bae4e9`
+adds a bounded retry for owned-service restart checks. A second v4 backup at
+`2026-09-28T06:50:55Z` exited cleanly, passed local doctor and disposable
+restore, and contained a private PDF already stored on the original pilot. Its
+archived bytes matched SHA-256
+`2219425cb01f43b44b541b24508b6bb45ea0d5f433c50b3004876e5d0832c789`;
+anonymous download was denied and authorized download matched the source.
+
+The operator-approved **unencrypted** USB copy on SanDisk filesystem UUID
+`6A38-179A` is `warehouse-pilot-backups/warehouse-20260928T065055Z.tar`,
+2,140,160 bytes, SHA-256
+`f527d7fdf85b802d18f2e39f0083c4aef8b70276b1470232e2e53cc2e5e3d602`.
+The exact USB copy passed hash verification, private safe extraction, nested
+checksums and a disposable database/storage restore. The drive was unmounted
+after the final hash check. The original pilot remained the only active
+connector; no DNS, tunnel, OTP or cutover action occurred. These results close
+the **backup-copy preparation** check only. The pilot still has no goods-receipt
+rows, so representative business-data restoration and the full replacement-host
+rehearsal remain open.
