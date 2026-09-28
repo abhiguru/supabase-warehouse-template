@@ -328,7 +328,9 @@ open. The operator deferred external failure alerts for now; local health
 checks do not notify an operator and cannot prove the RPO. Slack may be added
 later. A controlled guest reboot on 2026-09-29 did remount the UUID-pinned
 disk and recover local/public health, tunnel and timers. The unencrypted-backup
-exception requires restricted physical custody.
+exception requires restricted physical custody. The first post-reboot timer
+backup completed and its archive hash, private permissions and service health
+passed; sustained RPO and actual retention remain open.
 Restore
 onto a replacement host and verify credentials, document access and mobile
 reconnection before declaring recovery complete. Record physical MSG91 receipt,

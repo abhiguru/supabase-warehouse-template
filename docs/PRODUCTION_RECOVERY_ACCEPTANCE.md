@@ -240,6 +240,8 @@ both backup timers became active without an operator login. A private
 post-boot check passed archive permissions, backup freshness, local service
 health and public HTTPS identity by 00:51:08 IST. This establishes guest
 restart behavior for the tested configuration, not recovery after physical-
-host loss or a measured failure-to-usable replacement-host RTO. The subsequent
-timer backup should be checked separately; timer activation alone does not
-prove a post-reboot run.
+host loss or a measured failure-to-usable replacement-host RTO. The first
+post-reboot backup timer fired at 01:00:15 IST, completed successfully at
+01:01:19, and produced a new mode-0600 archive and receipt. Its SHA-256 matched
+the receipt; local and HTTPS health passed again after backup. This proves one
+post-reboot scheduled run, not sustained one-hour RPO or 48-hour pruning.
