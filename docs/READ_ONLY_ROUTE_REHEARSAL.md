@@ -27,7 +27,21 @@ test object whose access has been verified. Never use a wildcard or allow a
 write endpoint. Query strings are forwarded for exact allowed paths, so keep
 signed links and tokens out of logs and screenshots. The proxy forwards only
 the request headers needed for authenticated reads and rejects duplicate or
-control-character-bearing forwarded headers. Responses over 8 MiB fail.
+control-character-bearing forwarded headers. Responses over 8 MiB fail. The
+proxy admits at most 32 concurrent connections and rejects excess connections
+with 503; accepted sockets have a 10-second inactivity timeout.
+
+When an internal Docker network leaves the gateway without a working host
+loopback publication, add an exact `"upstream_host"` private IPv4 literal to
+the private config and set `upstream_port` to Kong's container port. The proxy
+still listens only on host loopback. First inspect Docker to prove that the
+address belongs to the isolated Kong container on the expected internal
+network, that **no** gateway port is published on the host, and that the host
+can reach the container address. Recreate and recheck this configuration after
+any container restart or replacement because container IPs can change. The
+config loader rejects public, loopback, link-local, DNS and IPv6 values for an
+explicit `upstream_host`. Do not expose Kong directly to compensate for an
+unreachable upstream.
 
 Run `python3 -B tests/read-only-route-proxy.test.py` before considering this
 candidate. Then, on an **isolated restored instance**, inventory local ports
