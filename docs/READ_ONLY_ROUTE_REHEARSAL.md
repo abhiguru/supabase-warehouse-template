@@ -3,7 +3,8 @@
 `scripts/read-only-route-proxy.py` is a review-only tool for a temporary
 **read-only** public-route rehearsal. It is not part of operator installation
 and does not activate a tunnel or change DNS. It binds only to `127.0.0.1`,
-forwards GET/HEAD for exact configured paths to a fixed loopback upstream,
+forwards GET/HEAD for exact configured paths to a fixed configured upstream
+(loopback by default, or an explicitly validated private Docker address),
 and rejects other methods, paths, hosts, upgrades and request bodies. It never
 logs request paths, headers or content. Its purpose is to prevent accidental
 public mutations while testing identity and approved document reads; it does
@@ -45,7 +46,8 @@ unreachable upstream.
 
 Run `python3 -B tests/read-only-route-proxy.test.py` before considering this
 candidate. Then, on an **isolated restored instance**, inventory local ports
-and launch the proxy against its loopback gateway without starting its tunnel.
+and launch the proxy against its loopback gateway or verified private Docker
+address without starting its tunnel.
 With the configured Host header, prove the allowed identity GET and any
 approved authenticated object GET work through the proxy. Prove POST, PUT,
 PATCH, DELETE, OPTIONS, unlisted paths, wrong Host, upgrades and request
