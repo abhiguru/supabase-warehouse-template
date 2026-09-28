@@ -30,6 +30,11 @@ The [2026-09-27 replacement-host restore drill](REPLACEMENT_HOST_RESTORE_DRILL.m
 records a successful isolated logical restore on a fresh VM, its failed attempts,
 and the remaining off-host recovery and cutover gates. The original pilot stayed
 live; that drill is not production recovery approval.
+The [2026-09-28 v4 installer drill](REPLACEMENT_HOST_RESTORE_INSTALLER.md)
+adds tested cluster-global replay, staged promotion, the pre-existing private
+PDF, local access checks and owned restart recovery on the previously used
+replacement VM. Its candidate branch still needs review and a clean-host test;
+the original remains the only live connector.
 
 Printing and sensor capabilities stay disabled until their software and hardware
 acceptance is recorded in the ledger. The existing image security findings remain

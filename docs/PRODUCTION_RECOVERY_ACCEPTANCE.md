@@ -133,3 +133,10 @@ connector; no DNS, tunnel, OTP or cutover action occurred. These results close
 the **backup-copy preparation** check only. The pilot still has no goods-receipt
 rows, so representative business-data restoration and the full replacement-host
 rehearsal remain open.
+
+The [candidate v4 replacement installer and 2026-09-28 isolated VM drill](REPLACEMENT_HOST_RESTORE_INSTALLER.md)
+subsequently passed cluster-global replay, staged database promotion, original
+private-object bytes, local credentials/access controls, network isolation and
+owned database restart recovery on the **previously used** replacement VM. It
+does not close the clean-host, representative business-data, RPO/RTO, optional
+volume, custody, confidentiality or separately authorized cutover gates above.
