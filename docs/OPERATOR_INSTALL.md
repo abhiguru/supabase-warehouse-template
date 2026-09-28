@@ -310,6 +310,9 @@ the precise retention rule. Use new timestamped filenames by default; never
 overwrite an existing or last-known-good archive in place. The detailed
 one-at-a-time questions and checks are in
 [production recovery acceptance](PRODUCTION_RECOVERY_ACCEPTANCE.md).
+The reviewed [scheduled local backup job](SCHEDULED_RECOVERY_BACKUPS.md) shows
+the private configuration, verified export, 48-hour retention and 50-minute
+stale-backup check used for the pilot's one-hour RPO target.
 
 The pilot operator chose a one-hour RPO and one-hour RTO and plans another drive in the same
 physical machine. That drive can help with a system-disk failure, but it is
