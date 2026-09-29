@@ -699,18 +699,17 @@ def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_pa
     owner = next(iter(archived_peers.values()))
     security_fields = ("kind", "is_partition", "parent_schema", "parent_name",
                        "row_security", "force_row_security", "persistence", "replica_identity", "options")
-    peer_security = None
+    expected_security = ("r", True, "realtime", "messages", False, False, "p", "d", None)
     for name in archived_peers:
         row = live_partitions.get(name)
         require(row is not None and row["owner"] == owner,
                 "Archived Realtime partition owner differs from verified archive")
-        security = tuple(row[field] for field in security_fields)
-        require(row["kind"] == "r" and row["is_partition"] is True and
-                row["parent_schema"] == "realtime" and row["parent_name"] == "messages",
-                "Archived Realtime partition relationship differs")
-        if peer_security is None:
-            peer_security = security
-        require(security == peer_security, "Archived Realtime partition security properties differ")
+        require(tuple(row[field] for field in security_fields) == expected_security,
+                "Archived Realtime partition security properties differ")
+        peer_day = date.fromisoformat(name.removeprefix("messages_").replace("_", "-"))
+        peer_bound = ("FOR VALUES FROM ('" + peer_day.isoformat() + " 00:00:00')" +
+                      " TO ('" + (peer_day + timedelta(days=1)).isoformat() + " 00:00:00')")
+        require(row["bound"] == peer_bound, "Archived Realtime partition bounds differ")
     if not extra:
         return 0
     new = {}
@@ -728,7 +727,7 @@ def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_pa
         row = live_partitions.get(table.removeprefix("realtime."))
         require(row is not None and row["owner"] == owner,
                 "New Realtime partition owner differs from verified archive")
-        require(tuple(row[field] for field in security_fields) == peer_security,
+        require(tuple(row[field] for field in security_fields) == expected_security,
                 "New Realtime partition security properties differ")
         expected_bound = ("FOR VALUES FROM ('" + partition_day.isoformat() + " 00:00:00')" +
                           " TO ('" + following_day + " 00:00:00')")

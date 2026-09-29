@@ -57,6 +57,9 @@ class RestoreFailureGates(unittest.TestCase):
                   catalog | {name: row(name, partition_day, owner="anon")})
         with self.assertRaises(ValueError):
             check(archived, archived + extra, peers,
+                  catalog | {name: row(name, partition_day) | {"row_security": True}})
+        with self.assertRaises(ValueError):
+            check(archived, archived + extra, peers,
                   catalog | {name: row(name, partition_day) | {"bound": "FOR VALUES IN ('wrong')"}})
         one_peer = next(iter(peers))
         with self.assertRaises(ValueError):
