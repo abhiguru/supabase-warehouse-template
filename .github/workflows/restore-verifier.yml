@@ -1,0 +1,25 @@
+name: Restore verifier
+
+on:
+  pull_request:
+    branches:
+      - main
+      - codex/replacement-restore-review
+    paths:
+      - .github/workflows/restore-verifier.yml
+      - scripts/restore-replacement.py
+      - scripts/prepare-recovery-bundle.py
+      - tests/restore-replacement.test.py
+
+permissions:
+  contents: read
+
+jobs:
+  failure-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore failure gates
+        run: python3 -B tests/restore-replacement.test.py

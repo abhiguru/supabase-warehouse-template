@@ -16,6 +16,83 @@ Do not pull these documentation changes into a running checkout with uncommitted
 pilot changes, replace its installed runtime, or rerun setup as part of reading
 the handoff.
 
+## Later rehearsal evidence — scope update, 2026-09-29
+
+The September 27 results below are historical. Their empty-storage and missing
+globals limitations must not be applied to every later archive, and later passes
+must not be reassigned to this original attempt. Follow the
+[installer procedure](REPLACEMENT_HOST_RESTORE_INSTALLER.md) and
+[consolidated setup lessons](OPERATOR_SETUP_NOTES.md#replacement-host-recovery-lessons-2026-09-29)
+for another attempt.
+
+- The later clean-host rehearsal at detached `d8766b6` passed private intake,
+  disposable restore and prepare/restore/build/cache/verify/stop. It matched
+  globals, 274 rows across 113 exports, nine sequences and one private PDF,
+  plus identity, access controls, internal isolation, ten services and owned
+  database-restart recovery. The approximately 15-minute-10-second interval
+  from disposable check through stop was not an approved RTO measurement.
+- Later representative data included fictional receipt `T2609281`, one
+  RECOVERY TEST line (quantity 2, stock 2, weight 10, rack TEST, package mark
+  PILOT-NOT-PHYSICAL), zero dispatches/invoices/orders and one private object.
+  Compare exact values and IDs against the selected archive, not this summary.
+- The September 28 19:30:15 UTC archive used for candidate verification was
+  2,150,400 bytes, SHA-256
+  `0cfe1f2d029bc39bab2bbf2409b83f3aee9eb6fbe8e73074e26508780d5ee069`.
+  Candidate author validation at full commit
+  `2c8346b670953c0b91f796a703d18f4f31c1f9f4` matched 278 rows, 113 exports,
+  nine sequences and the PDF. A reused VM and this retained archive do not
+  establish a new clean-host or fresh one-hour RPO result.
+- The September 29 public attempt passed disposable, prepare, restore, build,
+  cache and verify, and its local exact-path PDF/denial checks. Public identity
+  readiness failed, so that attempt did not prove public PDF delivery or expiry.
+  The temporary connector, DNS record and tunnel were removed; proxy and drill
+  containers stopped. The temporary object was removed, business rows and
+  original object remained unchanged, and pilot DNS/identity comparisons passed.
+  No pilot cutover occurred. Raw outputs and stage times remain private.
+
+- Public attempt 02 reached matching identity using public DNS but stopped when
+  a subsequent DNS lookup returned a negative answer. Its cleanup passed.
+- Public attempt 03 passed after the diagnostic client used normal positive DNS
+  caching bounded by the returned TTL. Public identity, signed PDF GET/HEAD,
+  identical bytes, Cloudflare BYPASS/no-store, denied writes/alternate paths and
+  expired-link denial (400, no PDF bytes) passed. The client retained TLS hostname
+  verification and ran on the recovery VM; independent remote/mobile access and
+  the default VM resolver remain unaccepted. The unique isolated-only test object
+  was removed, original business/storage data remained unchanged, and all temporary
+  route/tunnel/proxy/container resources were stopped or removed. Pilot DNS and
+  identity were unchanged. Disposable through completed stop took about 5 minutes
+  31 seconds on a reused VM with cached images, excluding prior failed attempts
+  and retrieval; this is not an RPO/RTO measurement.
+
+The verifier's author review found an additional quoted/non-ALL peer-ACL gap
+beyond the initial owner/attachment/ACL findings. The candidate fix passed seven
+failure-gate tests and a fresh isolated restore. This is author validation, not
+independent approval. Keep the pinned installer and candidate review results
+separate. Public/mobile reconnection, approved recovery objectives, independent
+custody and single-writer cutover remain separate acceptance work.
+
+## Partition review closure — 2026-09-29
+
+The separate agent's three PR #77 findings (ownership, actual attachment and
+complete peer ACLs) were reproduced and fixed. Author review then found a quoted
+peer-grant bypass at `2c8346b`. A final check found another case: a new
+Realtime-named standalone table owned by `anon`, with no grants, returned zero
+reviewed grants and escaped inspection. Commit
+`e91622a019d2cf5403ffe81e5fdaf1affd373c7a` checks every new daily table in
+the live PostgreSQL catalog and requires its complete peer grant pattern,
+including when the actual grant list is empty.
+
+Seven focused failure-gate tests passed. A fresh private attempt using the retained
+verified archive then passed disposable, prepare, restore, build, cache, verify
+and stop in order. The full verifier again matched the original globals, rows,
+sequences, storage bytes and role/access gates, with ten healthy services and
+owned database-restart recovery; the drill project was stopped. Exact commands
+and elapsed times remain in private evidence. This is an author review and local
+runtime validation of the final candidate. The separate agent did not review the
+later commits. Its original findings are closed as fixed, while independent
+signoff of the final commit and promotion of the pinned installer remain separate
+PR decisions. No new RPO/RTO or cutover claim follows from this check.
+
 ## Exact inputs and measured results
 
 | Item | Result |

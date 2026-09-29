@@ -374,6 +374,202 @@ use private external files/mounts. Real hardware, narrow ingestion credentials,
 mapping, stale/missing timestamps and replay/idempotency still require work.
 Printing and sensor capabilities remain disabled until their own acceptance.
 
+## Replacement-host recovery lessons — 2026-09-29
+
+These lessons supplement the historical installation results above. They cover
+recovery setup on Ubuntu x86-64, subsequent restores on the same recovery VM,
+and the separately authorized read-only route experiment. Use the executable
+sequence in [REPLACEMENT_HOST_RESTORE_INSTALLER.md](REPLACEMENT_HOST_RESTORE_INSTALLER.md),
+and distinguish the dated outcomes in [REPLACEMENT_HOST_RESTORE_DRILL.md](REPLACEMENT_HOST_RESTORE_DRILL.md).
+A candidate verifier or proxy is not an accepted replacement for the pinned
+installer merely because an author test passed.
+
+### Decide the recovery scope before provisioning
+
+- A new warehouse uses setup; an existing warehouse uses restore. Never run
+  `setup.sh`, regenerate keys, change the saved canonical origin, or substitute
+  the older commit named in archive metadata to get a restore past a check.
+- Preserve the clean accepted checkout detached at the explicitly selected
+  commit. For this rehearsal that was
+  `d8766b6a29c95c8a0952eed4e5880139b0d0bd34`. Review fixes in separate worktrees;
+  record their exact commits and uncommitted changes. Draft PR status, author
+  review, independent review and runtime acceptance are different facts.
+- An isolated restore must not start the copied connector, contact the OTP
+  provider, alter the pilot's DNS/services/data, or create another live writer.
+  A temporary public test requires its own explicit scope and unused hostname;
+  approval for that test does not authorize a pilot cutover.
+- An agent interruption does not necessarily terminate shell children. Inspect
+  the runner, owned containers, proxy, connector and DNS before restarting work.
+  Complete owned cleanup and retain the interrupted attempt's evidence.
+
+### Prepare the host and backup without trial-and-error exposure
+
+| Observed problem or boundary | Repeatable handling |
+| --- | --- |
+| Sudo works in another terminal but not the agent | First run `sudo -n true`. If it fails, have the operator fix effective sudoers through `visudo`; never collect a password in chat. |
+| Docker access remains denied after a group change | Docker group access is root-equivalent. Use an authorized temporary grant and a fresh session or `sg docker`; remove the grant after cleanup. Never chmod the socket. |
+| Recovery collides with an earlier attempt | Inventory disks, mounts, free space, ports, Docker projects and running services first. Use a new private state path each time; never resume failed installer state or prune old evidence. |
+| The system Node is too old | Validate Node 22.18+ in the actual `sg` execution environment; explicitly prepend the verified private Node path if needed. Check Python 3, Git, OpenSSL, filesystem tools, Docker Engine and Compose v2 as well. |
+| A USB is visible but incorrectly mounted | Resolve its filesystem UUID, inspect all mounts, and use read-only `nosuid,nodev,noexec` with the actual installation UID/GID and restrictive exFAT modes (`fmask=0177,dmask=0077`). Do not guess a device name or touch unrelated archives. |
+| A fresh timed recovery needs the original VM's backup disk | Keep that disk mounted on the original VM. Have the operator transfer the newest completed archive and matching receipt privately. Never attach one writable filesystem to two VMs. Re-select the newest verified pair at retrieval time. |
+| Private clone permissions make source binds unreadable in containers | Keep the checkout parent private but restore tracked source files to their Git-readable modes. Do not relax archive, credential, state or evidence permissions. |
+| A Node test creates fixtures that need group/other readability | Run source tests with their expected source umask, with logs precreated privately. Keep recovery commands under `umask 077`; do not apply permissive modes recursively to private state. |
+
+Archives are unencrypted and contain live credentials. Keep archive, receipt,
+extraction, state, SQL exports and raw logs outside Git in installation-user-owned
+0700 directories, with sensitive files 0600. Verify size and SHA-256 against the
+receipt/operator-approved digest **before** safe intake. The intake helper checks
+paths, types, duplicate names, nested checksums and storage members; do not replace
+it with unrestricted `tar` extraction. Preserve failed attempts and older backups.
+A conventional storage archive `.` root entry required a reviewed verifier fix;
+that does not authorize accepting traversal, links or unsupported members.
+
+### Follow the restore gates and diagnose the failed stage
+
+Run safe intake, disposable `db:verify-restore`, then `prepare`, `restore`,
+`build`, `cache`, `verify`, `stop` in that order. The disposable database check
+does not establish complete cluster-global recovery. The installer must also
+match globals (including password hashes/settings/memberships), archived rows,
+sequences, catalog owners/ACLs, storage catalog and object bytes.
+
+- A successful image build is not a healthy restore. Functions need a
+  credential-free dependency-cache preparation and a network-disabled startup
+  check before credentials are used on the isolated runtime.
+- Realtime can add daily message partitions after services start. Do not waive
+  an unexpected ACL failure. The reviewed exception must prove live PostgreSQL
+  parentage and bounds, owner/security flags and the complete peer ACL pattern.
+  SQL text inside a function body is not evidence of attachment; quoted or
+  multi-table grants must not silently disappear from comparison. Negative
+  tests must reject wrong ownership, decoy attachment and non-ALL/unsupported
+  privileges. A separate agent found the original owner, attachment and peer-ACL
+  gaps. The author fixed them at `8394ebc`, then found and fixed quoted peer
+  grants at `2c8346b`. Final review found that an ungranted new table escaped
+  all new-partition checks; `e91622a` now checks every new Realtime daily table
+  and requires its complete reviewed grants. Negative tests and a fresh full
+  isolated restore passed. The separate agent did not review this latest commit;
+  its original findings are resolved, while final independent signoff remains
+  a distinct PR decision.
+- Inspect effective Docker networking as well as Compose configuration. On this
+  VM an internal network retained a loopback binding in config without a working
+  host listener. A test proxy may use only the inspected isolated Kong private
+  address, while listening on host loopback. Recheck the address after container
+  replacement. Never publish Kong on all interfaces as a workaround.
+- Prove original identity and keys, denied anonymous/invalid-session access,
+  representative receipt values and IDs, document bytes, ten-service health,
+  outbound isolation and stable recovery after an owned database restart.
+  Health alone cannot prove business recovery. Do not send OTPs to test keys.
+
+### Optional public read-only validation and Cloudflare setup
+
+Tunnel login and API-token authorization are different mechanisms. Confirm the
+actual login command completed and locate its output; in this VM the login wrote
+`~/.cloudflared/cert.pem` despite a requested private path, so the certificate was
+moved into private storage before use. Never print the certificate, token or a
+signed URL. Do not repeatedly ask for broader account permissions when a required
+read-only configuration inspection can be completed in the authenticated dashboard.
+A tunnel login does not itself prove permission to inspect every cache setting.
+Use the current API/documentation and the intended account/zone; do not confuse
+API Gateway permissions, R2 credentials or an account-wide read template with a
+specific cache-policy permission.
+
+Before a private PDF test, inspect Cache Rules, Cache Response Rules, Page Rules,
+Workers routes and response-header transforms affecting the exact hostname.
+Empty rule lists do not mean PDFs are uncacheable. The proxy must send
+`Cache-Control: private, no-store` and `Cloudflare-CDN-Cache-Control: no-store`.
+Cloudflare consumes its CDN-specific header, so verify it locally; at the public
+edge verify no-store, DYNAMIC/BYPASS behavior, no cached age, repeat reads and
+rejection after signed-link expiry. See [Cloudflare CDN cache-control behavior](https://developers.cloudflare.com/cache/concepts/cdn-cache-control/).
+
+Use a distinct named tunnel and exact unused hostname with a 404 catchall. Never
+reuse the pilot tunnel, overwrite an occupied record, or route directly to Kong.
+Allow only the reviewed identity endpoint and one exact document path. The
+restored signing key is shared with the pilot: copy verified PDF bytes to a
+random isolated-only object path before signing, so a test link cannot identify
+the archived object on the pilot. This proves identical-byte delivery, not the
+archived object's public URL. Remove the temporary object and compare business
+rows, storage catalog and original PDF bytes afterward.
+
+Disable signed-request logging before issuing links. For the private test state,
+Kong used `KONG_PROXY_ACCESS_LOG=off`, `KONG_PROXY_ERROR_LOG=/dev/null`, and Storage
+used `LOG_LEVEL=silent`; confirm effective container settings. This is a scoped
+test override, not a recommendation to disable production diagnostics. Keep
+proxy/connector output private and signed links out of command arguments,
+screenshots, chat and test reports. Bounded proxy concurrency means a maximum of
+32 accepted connections, excess requests rejected with 503, and socket inactivity
+timeouts; it is neither a standby-VM requirement nor a capacity acceptance result.
+
+Public readiness may fail even after local health passes. The September 29 public
+attempt did not reach a ready public identity endpoint; the PDF/expiry checks
+therefore did not run in that attempt. The later third attempt passed as recorded
+below. Do not weaken readiness or cache assertions. Preserve raw
+errors privately and separately diagnose DNS, connector and upstream reachability
+before a new attempt. A subsequent non-sensitive diagnostic found the connector
+ready and public DNS returning addresses while the VMware-provided DNS forwarder
+still returned NXDOMAIN. Clearing the guest resolver cache did not resolve it.
+Compare local and public DNS separately from tunnel readiness; DNS propagation
+and negative caching are not database failures. A diagnostic client may use
+fresh public DNS answers for the exact test hostname while preserving HTTPS
+Host, SNI and certificate validation, without changing system DNS. Record that
+client limitation; it does not prove ordinary clients using the failing resolver
+can connect. Never disable TLS validation or silently substitute a different
+hostname. Repeated lookups against recursive resolvers can disagree immediately
+after rapid record deletion/recreation. The test client first resolved every
+request; identity passed but a subsequent negative answer stopped the PDF test.
+Use ordinary positive-answer caching bounded by the returned DNS TTL, record the
+resolver and expiry, and fail if no valid answer is available. Do not pin an old
+address indefinitely or treat a diagnostic resolver as proof that all client
+networks have converged. Stop the owned connector, remove only its exact DNS record
+and tunnel, stop the proxy and drill services, and verify the pilot is unchanged.
+
+### Completed separate public PDF check
+
+The third September 29 attempt passed at restore candidate
+`2c8346b670953c0b91f796a703d18f4f31c1f9f4` and proxy
+`11189f76712124e09786dc81878ff8e21a491b64`. Public identity matched; repeated
+signed GET and HEAD succeeded; PDF bytes matched the archive's verified digest.
+Cloudflare returned BYPASS and browser no-store with no Age header. Writes,
+alternate paths and prohibited authentication headers were denied. After the
+120-second link expired, the same URL returned 400 with no PDF bytes and no-store
+behavior. The public test used a unique isolated-only copy of the original PDF,
+not the archived object's own public URL.
+
+The test client ran on the recovery VM through public HTTPS, used Cloudflare DNS
+over HTTPS with positive answers cached only within their TTL, and retained
+hostname/SNI/certificate validation. This is not independent remote/mobile-client
+acceptance. The default VM DNS forwarder's failure remains an environmental
+limitation, not a silently repaired deployment setting.
+
+The internal network, inspected Kong address, loopback-only host bindings and
+non-loopback port probes showed no alternate host gateway listener. The dedicated
+tunnel allowed only the proxy and had a 404 catchall. Original business data dumps
+were byte-identical; the temporary object was removed and original storage catalog
+and PDF bytes matched afterward. The test connector, DNS record and tunnel were
+removed, proxy and all drill containers stopped, and temporary Docker membership
+removed. Pilot DNS and identity matched before/after; no pilot mutation or OTP was
+performed. Local restore and author review results remain separate from independent
+review, production cutover, a fresh RPO/RTO drill and writer reconciliation.
+
+### Record recovery time and close the attempt honestly
+
+Start the simulated failure/RTO clock **before** archive retrieval and transfer.
+Compute simulated RPO as declaration time minus receipt source-snapshot time,
+not receipt verification, file modification or transfer completion time. Stop
+local RTO only when the declared local API, identity, credentials, ACLs,
+representative business data, PDF and ten-service verification gates pass.
+Record transfer, intake, restore, build, cache and verification separately, plus
+cleanup. An older cached archive used for a proxy regression cannot establish a
+fresh one-hour RPO rehearsal; warm images and a reused host are material limits.
+
+Record exact commits, archive digest/size, timestamps, failure details, review
+status, untested scope and cleanup. Keep raw evidence private and sanitized
+lessons in these documents. Stop every owned drill container/proxy/connector,
+unmount removable media, remove temporary Docker access and retain state.
+A passing clean-host restore, a repeat restore with representative data, and an
+HTTPS read-only test are separate results. None alone approves a public-service
+RTO, retention/key custody, unattended physical-host recovery, or cutover.
+Single-writer reconciliation, route changes, rollback and any OTP/mobile test
+still need their own authorization and evidence.
+
 ## Remaining edge-case acceptance matrix
 
 These are outstanding operator acceptance cases, not assertions that every case

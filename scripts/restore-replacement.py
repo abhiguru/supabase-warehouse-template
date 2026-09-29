@@ -8,6 +8,7 @@ All subprocess output, including PostgreSQL diagnostics, stays in STATE/evidence
 import argparse
 import base64
 from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -633,6 +634,120 @@ def build_core(state):
     print("PASS: seven isolated core images built; raw build output remains private.")
 
 
+def realtime_partition_catalog(state):
+    """Read actual partition links and security flags, not dump text."""
+    query = """
+SELECT row_to_json(partition)
+FROM (
+    SELECT c.relname AS name, c.relkind AS kind, c.relispartition AS is_partition,
+           pg_get_userbyid(c.relowner) AS owner,
+           parent_ns.nspname AS parent_schema, parent.relname AS parent_name,
+           pg_get_expr(c.relpartbound, c.oid) AS bound,
+           c.relrowsecurity AS row_security, c.relforcerowsecurity AS force_row_security,
+           c.relpersistence AS persistence, c.relreplident AS replica_identity,
+           c.reloptions AS options
+    FROM pg_class c
+    JOIN pg_namespace ns ON ns.oid = c.relnamespace
+    LEFT JOIN pg_inherits inheritance ON inheritance.inhrelid = c.oid
+    LEFT JOIN pg_class parent ON parent.oid = inheritance.inhparent
+    LEFT JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+    WHERE ns.nspname = 'realtime' AND c.relname ~ '^messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
+) partition ORDER BY partition.name;
+"""
+    raw = db_capture(state, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1",
+                     "-U", "supabase_admin", "-d", "postgres", "-c", query)
+    (state / "evidence/realtime-partitions.private.jsonl").write_bytes(raw)
+    rows = [json.loads(line) for line in raw.splitlines()]
+    require(len({row["name"] for row in rows}) == len(rows), "Duplicate Realtime partition catalog row")
+    return {row["name"]: row for row in rows}
+
+
+def archived_realtime_partitions(toc):
+    """Get the peer partition owners from the verified archive TOC."""
+    peers = {}
+    for line in toc.splitlines():
+        candidate = re.match(r"^\d+; \d+ \d+ TABLE realtime (messages_\d{4}_\d{2}_\d{2})(?=\s|$)", line)
+        if candidate:
+            match = re.fullmatch(r"\d+; \d+ \d+ TABLE realtime (messages_\d{4}_\d{2}_\d{2}) ([A-Za-z_][A-Za-z0-9_]*)", line)
+            require(match is not None, "Archived Realtime partition owner has unsupported syntax")
+            require(match[1] not in peers, "Duplicate archived Realtime partition")
+            peers[match[1]] = match[2]
+    require(len(peers) >= 2 and len(set(peers.values())) == 1,
+            "Archived Realtime partition owners are missing or inconsistent")
+    return peers
+
+
+def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_partitions):
+    """Accept only the archived grant pattern on a new daily Realtime partition.
+
+    Realtime can create the next messages partition while the ten services start.
+    Every archived privilege remains mandatory; a new privilege on any other
+    object, or a different privilege on the partition, still fails closed.
+    """
+    extra = actual - archived
+    pattern = re.compile(
+        r"^GRANT (ALL) ON TABLE realtime\.messages_(\d{4})_(\d{2})_(\d{2}) TO ([A-Za-z_][A-Za-z0-9_]*);$")
+    templates = {name: Counter() for name in archived_peers}
+    for statement, count in archived.items():
+        # Any mention of a peer in an ACL statement must use the one reviewed
+        # form. This also catches quoted identifiers and multi-table grants.
+        mentioned = set(re.findall(r"(messages_\d{4}_\d{2}_\d{2})(?![A-Za-z0-9_])", statement))
+        if mentioned.intersection(templates):
+            match = pattern.fullmatch(statement)
+            require(match is not None and mentioned == {"messages_" + "_".join(match.group(2, 3, 4))},
+                    "Archived Realtime partition has unsupported privileges")
+            templates[next(iter(mentioned))][(match[1], match[5])] += count
+    reference = next(iter(templates.values()))
+    require(len(reference) == 2 and all(grants == reference for grants in templates.values()),
+            "Archived Realtime partition ACLs are missing or inconsistent")
+    owner = next(iter(archived_peers.values()))
+    security_fields = ("kind", "is_partition", "parent_schema", "parent_name",
+                       "row_security", "force_row_security", "persistence", "replica_identity", "options")
+    expected_security = ("r", True, "realtime", "messages", False, False, "p", "d", None)
+    for name in archived_peers:
+        row = live_partitions.get(name)
+        require(row is not None and row["owner"] == owner,
+                "Archived Realtime partition owner differs from verified archive")
+        require(tuple(row[field] for field in security_fields) == expected_security,
+                "Archived Realtime partition security properties differ")
+        peer_day = date.fromisoformat(name.removeprefix("messages_").replace("_", "-"))
+        peer_bound = ("FOR VALUES FROM ('" + peer_day.isoformat() + " 00:00:00')" +
+                      " TO ('" + (peer_day + timedelta(days=1)).isoformat() + " 00:00:00')")
+        require(row["bound"] == peer_bound, "Archived Realtime partition bounds differ")
+    new = {}
+    today = datetime.now(timezone.utc).date()
+    new_partitions = set(live_partitions) - set(archived_peers)
+    for name in new_partitions:
+        match = re.fullmatch(r"messages_(\d{4})_(\d{2})_(\d{2})", name)
+        require(match is not None, "Unexpected new Realtime partition name")
+        partition_day = date(*(int(part) for part in match.groups()))
+        require(0 <= (partition_day - today).days <= 7,
+                "New Realtime partition date is outside the reviewed window")
+        row = live_partitions[name]
+        require(row["owner"] == owner and tuple(row[field] for field in security_fields) == expected_security,
+                "New Realtime partition owner or security properties differ")
+        expected_bound = ("FOR VALUES FROM ('" + partition_day.isoformat() + " 00:00:00')" +
+                          " TO ('" + (partition_day + timedelta(days=1)).isoformat() + " 00:00:00')")
+        require(row["bound"] == expected_bound, "New Realtime partition bounds differ")
+    for statement, count in extra.items():
+        match = pattern.fullmatch(statement)
+        require(match is not None, "Restored catalog has extra privilege statements")
+        partition_day = date(*(int(part) for part in match.group(2, 3, 4)))
+        require(0 <= (partition_day - today).days <= 7,
+                "New Realtime partition date is outside the reviewed window")
+        table = "realtime.messages_" + "_".join(match.group(2, 3, 4))
+        require(table.removeprefix("realtime.") not in archived_peers,
+                "New Realtime partition was present in the archive")
+        require(table.removeprefix("realtime.") in new_partitions,
+                "New Realtime partition grant has no matching catalog partition")
+        new.setdefault(table, Counter())[(match[1], match[5])] += count
+    require({table.removeprefix("realtime.") for table in new} == new_partitions,
+            "New Realtime partition is missing reviewed grants")
+    require(all(grants == reference for grants in new.values()),
+            "New Realtime partition grants differ from archived partitions")
+    return sum(extra.values())
+
+
 def catalog_checks(state):
     """Compare archived object owners and normalized ACL statements privately."""
     source_toc = state / "evidence/source-toc.private.txt"
@@ -660,12 +775,15 @@ def catalog_checks(state):
         return Counter(line.strip() for line in path.read_text().splitlines()
                        if line.startswith(("GRANT ", "REVOKE ", "ALTER DEFAULT PRIVILEGES ")))
     archived, actual = privileges(source_sql), privileges(restored_sql)
-    require(not (actual - archived), "Restored catalog has extra privilege statements")
+    runtime_grants = reviewed_realtime_partition_grants(
+        archived, actual, archived_realtime_partitions(source_toc.read_text()),
+        realtime_partition_catalog(state))
     omitted = archived - actual
     require(all(line.startswith("REVOKE ") and " ON FUNCTION " in line and " FROM postgres;" in line for line in omitted.elements()),
             "Archived privilege grant or deny missing")
     return {"object_owners_and_definitions": True, "archived_grants_match": True,
-            "redundant_postgres_function_revokes_normalized": sum(omitted.values())}
+            "redundant_postgres_function_revokes_normalized": sum(omitted.values()),
+            "reviewed_realtime_partition_grants": runtime_grants}
 
 
 def verify(state):
