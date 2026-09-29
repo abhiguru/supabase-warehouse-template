@@ -8,15 +8,21 @@ methods and paths fail closed; no request headers or bodies are logged.
 
 import argparse
 import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import stat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from threading import BoundedSemaphore
+from urllib.parse import parse_qs, urlsplit
 
 MAX_RESPONSE = 8 * 1024 * 1024
+MAX_CONCURRENT_REQUESTS = 32
+REQUEST_TIMEOUT_SECONDS = 10
+PRIVATE_UPSTREAM_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 FORWARD_REQUEST_HEADERS = frozenset({"authorization", "apikey", "accept", "range", "origin"})
 FORWARD_RESPONSE_HEADERS = frozenset({
     "content-type", "content-disposition", "etag", "last-modified", "content-range",
@@ -32,8 +38,16 @@ def load_config(path):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ValueError("Config must be an owned mode-0600 regular file")
         config = json.load(handle)
-    if set(config) != {"canonical_host", "listen_port", "upstream_port", "allowed_paths"}:
+    required = {"canonical_host", "listen_port", "upstream_port", "allowed_paths"}
+    if set(config) not in (required, required | {"upstream_host"}):
         raise ValueError("Unexpected or missing configuration keys")
+    if "upstream_host" in config:
+        try:
+            address = ipaddress.IPv4Address(config["upstream_host"])
+        except (ipaddress.AddressValueError, TypeError) as error:
+            raise ValueError("Upstream host must be a private IPv4 literal") from error
+        if not any(address in network for network in PRIVATE_UPSTREAM_NETWORKS):
+            raise ValueError("Upstream host must be RFC1918 private IPv4")
     host = config["canonical_host"]
     if not isinstance(host, str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{2,252}", host):
         raise ValueError("Invalid canonical host")
@@ -52,8 +66,8 @@ def load_config(path):
                 "//" in item or any(part in (".", "..") for part in item.split("/"))):
             raise ValueError("Allowed paths must be exact, decoded HTTP paths")
         if item != "/functions/v1/get-public-config" and not re.fullmatch(
-                r"/storage/v1/object/authenticated/[^/]+/.+", item):
-            raise ValueError("Only public identity and authenticated object reads may be allowed")
+                r"/storage/v1/object/(?:authenticated|sign)/[^/]+/.+", item):
+            raise ValueError("Only public identity and exact private object reads may be allowed")
     return config
 
 
@@ -99,6 +113,16 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if parsed.scheme or parsed.netloc or parsed.fragment or parsed.path not in config["allowed_paths"]:
             return self.send_safe(403)
+        signed_object = parsed.path.startswith("/storage/v1/object/sign/")
+        if signed_object:
+            try:
+                query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                return self.send_safe(403)
+            if set(query) != {"token"} or len(query["token"]) != 1 or not query["token"][0]:
+                return self.send_safe(403)
+            if self.headers.get_all("Authorization") or self.headers.get_all("apikey"):
+                return self.send_safe(403)
         if (self.headers.get_all("Upgrade") or self.headers.get_all("Transfer-Encoding") or
                 self.headers.get_all("Expect") or self.headers.get_all("Content-Length") or
                 any("upgrade" in value.lower() for value in self.headers.get_all("Connection", []))):
@@ -111,7 +135,8 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
                 return self.send_safe(403)
             if values:
                 request_headers[name] = values[0]
-        upstream = http.client.HTTPConnection("127.0.0.1", config["upstream_port"], timeout=10)
+        upstream = http.client.HTTPConnection(config.get("upstream_host", "127.0.0.1"),
+                                              config["upstream_port"], timeout=REQUEST_TIMEOUT_SECONDS)
         try:
             upstream.request(self.command, self.path, headers=request_headers)
             response = upstream.getresponse()
@@ -120,8 +145,11 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
                 return self.send_safe(502)
             self.send_response_only(response.status)
             for name, value in response.getheaders():
-                if name.lower() in FORWARD_RESPONSE_HEADERS:
+                if name.lower() in FORWARD_RESPONSE_HEADERS and not (signed_object and name.lower() == "cache-control"):
                     self.send_header(name, value)
+            if signed_object:
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("Cloudflare-CDN-Cache-Control", "no-store")
             if self.command == "HEAD":
                 length = response.getheader("Content-Length", "0")
                 if not length.isdecimal():
@@ -143,12 +171,41 @@ class ReadOnlyHandler(BaseHTTPRequestHandler):
 class LoopbackServer(ThreadingHTTPServer):
     daemon_threads = True
 
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(REQUEST_TIMEOUT_SECONDS)
+        return request, client_address
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                                b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
     def handle_error(self, _request, _client_address):
         # Do not emit request paths or authentication headers into a journal.
         pass
 
     def __init__(self, config):
         self.config = config
+        self.slots = BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
         super().__init__(("127.0.0.1", config["listen_port"]), ReadOnlyHandler)
 
 
