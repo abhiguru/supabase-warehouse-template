@@ -68,6 +68,24 @@ class RestoreFailureGates(unittest.TestCase):
             check(archived + Counter({f"GRANT SELECT ON TABLE realtime.{one_peer} TO anon;": 1}),
                   archived + extra + Counter({f"GRANT SELECT ON TABLE realtime.{one_peer} TO anon;": 1}),
                   peers, catalog)
+        for quoted in (f'realtime."{one_peer}"', f'"realtime"."{one_peer}"'):
+            unexpected = Counter({f"GRANT SELECT ON TABLE {quoted} TO anon;": 1})
+            with self.subTest(quoted=quoted), self.assertRaises(ValueError):
+                check(archived + unexpected, archived + unexpected + extra, peers, catalog)
+        combined = Counter({f"GRANT SELECT ON TABLE public.messages_2000_01_01, realtime.{one_peer} TO anon;": 1})
+        with self.assertRaises(ValueError):
+            check(archived + combined, archived + combined + extra, peers, catalog)
+
+    def test_archived_partition_toc_rejects_unparsed_owner(self):
+        today = datetime.now(timezone.utc).date()
+        names = ["messages_" + (today - timedelta(days=offset)).strftime("%Y_%m_%d")
+                 for offset in (2, 1, 0)]
+        toc = "".join(f"{index}; 1259 {index} TABLE realtime {name} realtime_admin\n"
+                      for index, name in enumerate(names[:2], 1))
+        self.assertEqual(len(restore.archived_realtime_partitions(toc)), 2)
+        with self.assertRaises(ValueError):
+            restore.archived_realtime_partitions(
+                toc + f'3; 1259 3 TABLE realtime {names[2]} "unexpected-owner"\n')
 
     def test_catalog_rejects_function_body_attach_decoy_for_standalone_table(self):
         day = datetime.now(timezone.utc).date()

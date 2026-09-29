@@ -68,7 +68,8 @@ and midnight-to-midnight bounds match `realtime.messages`, and whose owner and
 security flags match every verified archived daily partition. It compares
 every privilege statement on those peer partitions and rejects unsupported or
 inconsistent peer ACLs before comparing the new partition's complete grant
-pattern. It still rejects an added grant on an archived
+pattern, including quoted identifiers and multi-table grant syntax. It still
+rejects an added grant on an archived
 object, a different grantee or privilege on the new partition, an altered
 partition bound, and any other extra privilege statement. Archived grants and
 the existing narrow normalization of redundant `postgres` function revokes

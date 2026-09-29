@@ -666,8 +666,10 @@ def archived_realtime_partitions(toc):
     """Get the peer partition owners from the verified archive TOC."""
     peers = {}
     for line in toc.splitlines():
-        match = re.search(r"; \d+ \d+ TABLE realtime (messages_\d{4}_\d{2}_\d{2}) ([A-Za-z_][A-Za-z0-9_]*)$", line)
-        if match:
+        candidate = re.match(r"^\d+; \d+ \d+ TABLE realtime (messages_\d{4}_\d{2}_\d{2})(?=\s|$)", line)
+        if candidate:
+            match = re.fullmatch(r"\d+; \d+ \d+ TABLE realtime (messages_\d{4}_\d{2}_\d{2}) ([A-Za-z_][A-Za-z0-9_]*)", line)
+            require(match is not None, "Archived Realtime partition owner has unsupported syntax")
             require(match[1] not in peers, "Duplicate archived Realtime partition")
             peers[match[1]] = match[2]
     require(len(peers) >= 2 and len(set(peers.values())) == 1,
@@ -687,12 +689,14 @@ def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_pa
         r"^GRANT (ALL) ON TABLE realtime\.messages_(\d{4})_(\d{2})_(\d{2}) TO ([A-Za-z_][A-Za-z0-9_]*);$")
     templates = {name: Counter() for name in archived_peers}
     for statement, count in archived.items():
-        peer = re.search(r"\brealtime\.(messages_\d{4}_\d{2}_\d{2})\b", statement)
-        if peer and peer[1] in templates:
+        # Any mention of a peer in an ACL statement must use the one reviewed
+        # form. This also catches quoted identifiers and multi-table grants.
+        mentioned = set(re.findall(r"(messages_\d{4}_\d{2}_\d{2})(?![A-Za-z0-9_])", statement))
+        if mentioned.intersection(templates):
             match = pattern.fullmatch(statement)
-            require(match is not None and peer[1] == "messages_" + "_".join(match.group(2, 3, 4)),
+            require(match is not None and mentioned == {"messages_" + "_".join(match.group(2, 3, 4))},
                     "Archived Realtime partition has unsupported privileges")
-            templates[peer[1]][(match[1], match[5])] += count
+            templates[next(iter(mentioned))][(match[1], match[5])] += count
     reference = next(iter(templates.values()))
     require(len(reference) == 2 and all(grants == reference for grants in templates.values()),
             "Archived Realtime partition ACLs are missing or inconsistent")
