@@ -248,6 +248,21 @@ uses a different gateway port.
 
 If the operator chooses Cloudflare Tunnel, install `cloudflared` from
 [Cloudflare's signed Debian/Ubuntu package repository](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/#1-download-and-install-cloudflared).
+The fresh Ubuntu run used the signed `any` package repository:
+
+```bash
+sudo -n install -m 0755 -d /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo -n tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+printf 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main\n' | sudo -n tee /etc/apt/sources.list.d/cloudflared.list
+sudo -n apt-get update
+sudo -n apt-get install -y cloudflared
+cloudflared --version
+```
+
+This installed cloudflared 2026.9.3. Inspect any existing package-repository files
+before replacing them on a reused host. Package installation does not create a
+route or start a connector.
+
 The provided Windows configuration was a **sample**, not an approved hostname,
 tunnel, credential path, or authorization to change Cloudflare DNS. Ask the
 operator for these details **one question at a time**, at the step that needs
@@ -289,6 +304,47 @@ existing tunnel, stop another connector, run tunnel cleanup on another
 connector, or use `route dns --overwrite-dns`. Before creating the new DNS
 route, confirm the exact hostname has no existing record. Limit the CLI changes
 to the new tunnel and that hostname, then record the new UUID and route.
+
+For account-side inspection after local login, keep the certificate private and
+save tunnel inventory in private evidence:
+
+```bash
+cloudflared tunnel --origincert /private/path/cert.pem list --output json > /private/path/tunnels-before.json
+```
+
+Inspect the exact hostname's DNS records in the authenticated Cloudflare zone,
+including all record types. This attempt used the following read-only API check
+with cloudflared 2026.9.3's login certificate. It prints only the vacancy result;
+the token stays in memory. Replace the certificate path and hostname. If access
+is denied or the certificate format differs, stop route creation and use an
+authenticated dashboard inspection; never infer vacancy from NXDOMAIN alone.
+
+```bash
+export WAREHOUSE_TUNNEL_CERT=/private/path/cert.pem
+export WAREHOUSE_API_HOSTNAME=confirmed-api.example.com
+python3 - <<'CHECK_DNS'
+import base64, json, os, urllib.parse, urllib.request
+from pathlib import Path
+pem = Path(os.environ['WAREHOUSE_TUNNEL_CERT']).read_text()
+body = ''.join(line for line in pem.splitlines() if not line.startswith('-----'))
+cert = {key.lower(): value for key, value in json.loads(base64.b64decode(body)).items()}
+url = 'https://api.cloudflare.com/client/v4/zones/' + cert['zoneid'] + '/dns_records?'
+url += urllib.parse.urlencode({'name': os.environ['WAREHOUSE_API_HOSTNAME'], 'per_page': 100})
+request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + cert['apitoken']})
+try:
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.load(response)
+except Exception:
+    raise SystemExit('Authenticated DNS inspection failed; stop before configuring ingress.')
+if not result.get('success') or result.get('result'):
+    raise SystemExit('Hostname occupied or inspection unsuccessful; stop before configuring ingress.')
+print('Authenticated exact-hostname DNS vacancy confirmed.')
+CHECK_DNS
+```
+
+Verify the proposed **new** tunnel name is absent from inventory. Recheck DNS
+immediately before routing, and route without overwrite. Do not inspect private
+warehouse endpoints on the existing pilot as part of this fresh test exercise.
 
 For CLI management, `cloudflared tunnel login` opens a browser authorization
 flow and writes a new `cert.pem` for the selected zone. Move that file into the

@@ -55,7 +55,13 @@ NOT TESTED. Backend npm ci PASS; baseline unit run FAIL (47/48), corrected revie
 enrollment and approval are BLOCKED by the no-SMS instruction. Installed
 warehouse business flows, permissions, retries, invalid quantity, concurrent
 stock, isolation, invoice and private PDFs are NOT TESTED; disposable fictional
-fixture coverage will be recorded separately. Android phase is BLOCKED until
+fixture coverage will be recorded separately. Review correction commit `60031d8e7603c42e5c698294243f909853741e18` contains
+documentation plus the unit-fixture chmod correction; it has not changed installed
+runtime source. A fresh checkout of that commit with source umask 022 has
+readable bind mounts. GitHub review push is currently BLOCKED by missing local
+authentication; the failed no-prompt push is retained privately.
+
+Android phase is BLOCKED until
 backend local/public checks pass. Wi-Fi/cellular/device/QR/lifecycle/standalone,
 Realtime, images and authenticated PDF acceptance are NOT TESTED. Cross-instance
 switching is BLOCKED until a second isolated running instance is available;
