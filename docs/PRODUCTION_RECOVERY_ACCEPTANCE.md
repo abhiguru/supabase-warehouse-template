@@ -1,5 +1,17 @@
 # Production recovery acceptance
 
+## Work ended by operator — 2026-09-29
+
+Recovery rehearsal work has ended. Pending archive transfers, SSH-key requests
+and further recovery-VM testing are cancelled. The recovery VM is being powered
+off under operator direction with private evidence retained; its final power
+state was not independently checked here. The pilot remains the designated
+sole live writer and connector, with scheduled backups preserved. Production
+cutover and all remaining acceptance items remain open. See the
+[operator closeout and read-only check](OPERATOR_SETUP_NOTES.md#recovery-rehearsal-ended--2026-09-29)
+for results, inventory limits and the explicit prohibition on resuming old
+rehearsal plans without a new operator request.
+
 The [2026-09-27 replacement-host drill](REPLACEMENT_HOST_RESTORE_DRILL.md)
 established that one local backup can restore in isolation. It did not test
 off-host custody, a protected backup, a backup with existing objects, full

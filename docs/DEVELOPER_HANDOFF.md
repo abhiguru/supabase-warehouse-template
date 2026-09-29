@@ -1,5 +1,16 @@
 # Independent operator developer handoff
 
+## Backend core review and recovery closeout — 2026-09-29
+
+Recovery rehearsal has ended. Earlier instructions to transfer archives, request
+SSH keys, test the recovery host or rehearse routing are historical and must not
+be executed. `172.16.194.128` remains the only live writer and connector; do not
+contact `172.16.194.130`. No OTP delivery, deployment, merge, route change,
+cutover or reboot is authorized by this review. See the [current backend
+ledger](BACKEND_CORE_ACCEPTANCE.md) for the version boundaries, evidence and blockers.
+Printing, sensors, iPhone, external alerts and credential rotation remain deferred.
+Image findings remain unresolved; this is not security approval.
+
 Use [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) for the fresh Linux x86-64 host or
 Windows/Linux VM installation. Current setup accepts `--operator` only. Keep
 credentials and persistent state outside the checkout; obtain real MSG91 and

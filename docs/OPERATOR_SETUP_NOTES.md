@@ -8,6 +8,53 @@ that every deployment or failure mode has been accepted. Keep instance-specific
 phones, credentials, device serials and raw authentication results in private
 evidence outside Git. A future operator must supply their own values.
 
+## Recovery rehearsal ended — 2026-09-29
+
+The operator ended recovery rehearsal work. Pending archive transfers,
+SSH-key requests and further tests involving the recovery VM are cancelled.
+Do not resume them automatically from earlier plans or prompts. The recovery
+VM is being powered off under the operator's direction with its private
+evidence retained. This closeout did not contact that VM and does not
+independently certify its final power state or evidence custody.
+
+The existing pilot is to remain the only live warehouse writer and connector.
+Preserve its services, data, DNS, dedicated Cloudflare tunnel, backup disk and
+scheduled backup/health jobs. No OTP, draft deployment, public-route switch or
+production cutover is authorized by this closeout. The candidate read-only
+proxy's five unit tests passed at
+`e7c287c2d34cf2aedcc8ed014d89a4258261dd74`; the actual isolated-restored-instance
+proxy checks were not performed from this host and remain open.
+
+The final read-only check found all 16 pilot containers running, with all 15
+configured container health checks healthy (REST has no container health check).
+Local identity and direct public HTTPS identity returned HTTP 200 and valid
+JSON. The terminal's default proxy path returned HTTP 403; the direct HTTPS
+check succeeded without changing service or network configuration. The one
+local Cloudflare process was active with four edge connections. Its configured
+ingress contained only the expected pilot hostname to the loopback gateway
+and the terminal 404 rule. No recovery proxy, transfer process, additional
+Docker project or recovery-specific listener was found locally. This is a
+local inventory, not an account-wide Cloudflare connector or DNS audit; no
+uncertain resources were deleted.
+
+Both scheduled timers remained enabled and active; their last completed jobs
+reported success. The newest verified backup at the check had a source age of
+about 28 minutes 25 seconds, within the configured 50-minute freshness limit.
+Its mounted filesystem UUID, archive/receipt names, ownership, mode 0600,
+regular-file types, byte size and SHA-256 matched. Forty receipt files were
+present; only the newest archive was hashed for this closeout. Exact backup
+identity and check time are retained in private closeout evidence outside Git.
+The backup disk and schedules were not changed or paused.
+
+Production cutover and the remaining acceptance matrix below remain open.
+The earlier timed local RPO/RTO result remains valid within its documented
+scope, but does not establish public-service RTO. Sustained backup freshness,
+actual 48-hour pruning, deferred external alert delivery, physical-host
+lifecycle, native/network acceptance, business sign-off, printing, sensors and
+release/security acceptance retain their existing status. Same-host custody
+and unencrypted-backup exceptions remain recorded; they do not cover loss of
+the physical host. Restarting recovery work requires a new operator request.
+
 ## Evidence and version boundaries
 
 The VM initially checked out backend
