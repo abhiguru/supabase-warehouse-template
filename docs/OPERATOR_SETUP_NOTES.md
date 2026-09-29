@@ -11,7 +11,73 @@ that every deployment or failure mode has been accepted. Keep instance-specific
 phones, credentials, device serials and raw authentication results in private
 evidence outside Git. A future operator must supply their own values.
 
-## Fresh independent VM attempt — 2026-09-30 (in progress)
+## Current independent installation — 2026-09-30
+
+This fresh VM installed **Test Warehouse 1** at its dedicated HTTPS origin.
+Backend installed content is exactly `f18f51d4625e7f8c0d977ac69645804e318a9d49`;
+tracked source permissions were corrected to public-readable 0644/0755 after the
+failed first attempt. No runtime source content was edited. Review changes live
+in [draft PR #79](https://github.com/abhiguru/supabase-warehouse-template/pull/79).
+Mobile baseline is `8240cce9121a797fd0cf2e00e568a61985814ddb`; the native test
+identity/build correction is a separate review commit, recorded in the mobile
+operator notes and [draft PR #34](https://github.com/abhiguru/rn-warehouse-template/pull/34).
+Nothing was merged or released.
+
+The operator explicitly lifted the no-SMS restriction **only for this new test
+warehouse**. Real administrator OTP delivery/verification/login, Customer A
+pending enrollment without a session, administrator approval and Customer A's
+new post-approval OTP login passed. Codes were entered hidden in local terminals;
+phones, sessions, provider credentials and raw responses remain outside Git.
+The earlier no-SMS checkpoint below remains historical evidence, not current
+permission. Neither protected host was contacted. Recovery and deferred gates
+remain closed.
+
+| Required case / environment and trigger | Status | Exact evidence and limitation |
+| --- | --- | --- |
+| Ubuntu 24.04.3 x86-64 VMware prerequisites, sudo, ownership, ports | PASS | Node 22.23.3/npm 10.9.9; Git 2.43.0; Docker 29.8.1/containerd 2.3.6; Compose 2.40.3; cloudflared 2026.9.3; effective noninteractive sudo and Docker group access |
+| First target installation, source umask 077 | FAIL, preserved | PostgreSQL initialization denied reading `98-webhooks.sql`; later pg_isready was misleading. Stopped this partial state without deleting data. Public source permissions corrected; private state permissions retained |
+| Second independent state `setup.sh --operator`, local doctor | PASS | Same backend content, new private state and identity; complete migrations/private Storage policies, loopback gateway |
+| Authenticated hostname/tunnel occupancy, dedicated HTTPS ingress | PASS | Initially zero selected-hostname DNS records; four preexisting tunnels untouched. Created new tunnel/credential JSON and proxied CNAME only after rechecking vacancy. Dedicated unprivileged enabled systemd unit active; no reboot tested |
+| Public doctor and warehouse identity discovery | PASS | Public company/origin/instance matched local manifest; Android-like okhttp and curl-like clients received HTTP 200 JSON |
+| Supplemental default Python urllib discovery | FAIL | HTTP 403 text/plain from Cloudflare; cause unestablished. Custom operator/Android-like clients succeeded; no edge bypass or WAF change applied. Actual app compatibility remains its own case |
+| Same-input setup rerun | PASS | Private comparisons preserved config/manifest hashes, administrator aggregate, database OID/migration count and stored sentinel PDF object/bytes. Sentinel upload used this instance's maintenance credential; not customer PDF permission evidence |
+| Backend dependency installation/unit checks | PASS with historical failure | npm ci; corrected review 48/48 tests under umasks 077 and 022. Baseline under 077 initially failed 1 permission fixture; only test fixture chmod changed in review |
+| Disposable migrations/auth/billing checks | PASS | Separate owned disposable database; original guards unchanged; no fixture issuer used against installed warehouse |
+| Current container dependency audit | FAIL | Storage undici 7.29.0 HIGH and ip-address MODERATE advisories; metadata clean. Historical seven-job green CI is retained but does not override current failure |
+| Review CI | FAIL overall | [Run 36644865092](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36644865092): contract and secret scan PASS, validation audit FAIL, dependent jobs SKIPPED. No skipped job counted as pass |
+| Clean corrected-guide reproduction | PASS, scoped | Clean checkout of review commit `8bca643230961e2c91ace9b5a1a2491dd89c5126`, readable public source, separate `core-backend-test` state, fictional guard identity/origin and port 18080. Setup and safe rerun preserved private config/object hashes; owned fixture services stopped and state retained. This is local reproduction, not a second public tunnel/device installation |
+| Guarded core-backend fixture APIs | PASS, disposable only | Identity/roles, A/B customer isolation, receipt/cart/order/queue, invalid quantity/retry/concurrent dispatch, partial/final stock, invoice 998, four private signed PDFs, refresh/replay/logout, Realtime/reconnect, image lifecycle/privacy/oversize and disabled-account revocation. No guards weakened |
+| Real installed administrator/customer authentication | PASS | Real SMS login, pending enrollment, authenticated approval and post-approval login; provider acceptance also confirmed by received/verified codes |
+| Real installed receipt/inventory/cart/order/staff queue | PASS | Fictional 100-bag receipt and retry produce one receipt; Customer A seven-bag cart; customer catalog mutation denied; administrator queue sees order |
+| Real installed partial/final dispatch and invalid quantities | PASS | 20 then 80 bags; balances 80 then 0; repeat dispatch does not subtract twice; negative/zero/81-of-80 dispatch rejected |
+| Real installed fictional billing/invoice | PASS | Existing documented Apr 1/May 2 legacy example: price 5, labour 2, tax 5%; subtotal 950, rounded tax 48, total 998. This validates the example, not an invented production billing policy |
+| Real installed PDFs/concurrent stock | PASS | Real Customer A generated/downloaded all four valid signed PDFs; anonymous/customer direct reads denied. Two simultaneous 7-of-10 dispatches produced exactly one success and balance 3 |
+| Real installed Customer A/B isolation | BLOCKED | Needs a second owned phone and approved real Customer B session. Disposable fixture passes are separate evidence |
+| Android native acceptance | IN PROGRESS | See mobile operator notes; JDK/SDK/static checks passed; standalone build underway; USB authorization/guest attachment unresolved |
+| Cross-instance native switching | BLOCKED | No suitable second isolated public instance; do not use the pilot |
+| Cellular, unattended restart | NOT TESTED | No evidence yet; enabled restart configuration does not prove host restart recovery |
+
+Private locations on this VM: `/home/jay/warehouse-install-private` (0700),
+provider file `test1-msg91.env` (0600), active state
+`/home/jay/warehouse-state/test1-install2`, failed retained state
+`/home/jay/warehouse-state/test1`, installed source
+`/home/jay/warehouse-src/backend`. Dedicated connector unit:
+`warehouse-test1-tunnel.service`; its private configuration is in the evidence
+root's `tunnel` directory. State config/credentials stay private. Raw evidence
+and private hashes are deliberately not committed.
+
+Current review fixes also integrate fresh prerequisites, source/state umask
+separation, Compose v2 selection, Node PATH/effective groups, authenticated DNS
+occupancy, Cloudflare installation and ordinary operation into the main guide.
+GitHub browser authorization completed locally; review commits were pushed.
+Earlier failed no-prompt push and all setup attempts remain in private evidence.
+
+Printing, sensors, iPhone, external alerts, credential rotation, image-security
+research, recovery rehearsal and reboot remain outside scope. Existing release
+gates stay open. This record does not claim flawless installation or production
+readiness.
+
+## Initial fresh-VM checkpoint — historical, superseded below
 
 This attempt preserves the existing pilot and closed recovery rehearsal. It
 contacts neither pilot nor recovery host, sends no SMS, and makes no release,

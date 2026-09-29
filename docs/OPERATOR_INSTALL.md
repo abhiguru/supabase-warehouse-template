@@ -217,6 +217,7 @@ administrator details with the warehouse's values:
 
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+export COMPOSE_PARALLEL_LIMIT=1 # Limit simultaneous startup on small VMs.
 export WAREHOUSE_ADMIN_PHONE=91XXXXXXXXXX
 bash setup.sh --operator \
   --state-dir "$WAREHOUSE_STATE_DIR" \
@@ -233,6 +234,13 @@ verification before receiving a session. Setup reruns preserve instance identity
 credentials, database and stored files. Run the same setup command a second time
 to verify that behavior before loading business data. Do not copy another
 instance's state directory or credentials.
+
+Keep before/after comparisons in private evidence: hash this instance's manifest
+and credential file without printing contents, compare the existing administrator
+record/database identity and migration count, and hash a fictional stored document.
+Rerun with exactly the same inputs, then compare those values and verify local
+health. Do not treat a maintenance Storage upload as customer authorization
+evidence; test signed documents separately using a real customer session.
 
 ## HTTPS and network
 
@@ -409,6 +417,34 @@ read the private `--token-file` without placing its contents on a command line
 or in the service unit. Check that only the gateway is exposed through the
 tunnel, then run the local and external doctor checks and test from warehouse
 Wi-Fi and cellular data.
+
+For this fresh VM, a dedicated local unit avoided changing an existing connector.
+Use a new **unoccupied unit name**, replacing the user, paths and unit name below
+with this instance's recorded values. Validate ingress and confirm file ownership
+before enabling it. The service user must be able to read its private directory;
+keep credentials/configuration mode 0600. Do not put tokens in the unit.
+
+```ini
+# /etc/systemd/system/warehouse-NEW-INSTANCE-tunnel.service
+[Unit]
+Description=Dedicated test warehouse HTTPS tunnel
+Wants=network-online.target
+After=network-online.target docker.service
+[Service]
+User=YOUR_INSTALL_USER
+Group=YOUR_INSTALL_USER
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /private/path/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+```
+
+Write that new unit using noninteractive sudo, then run `sudo systemctl
+daemon-reload`, `sudo systemctl enable --now warehouse-NEW-INSTANCE-tunnel.service`
+and `systemctl is-active warehouse-NEW-INSTANCE-tunnel.service`. Inspect its logs
+privately if inactive. An active/enabled service is not evidence of an unattended
+restart; do not reboot without separate authorization.
 
 After the proxy or tunnel is live, run:
 
