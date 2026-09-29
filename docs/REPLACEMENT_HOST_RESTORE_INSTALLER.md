@@ -56,3 +56,20 @@ Preparation of attempt 02 was recorded at 2026-09-28 07:53:08 UTC, the first pas
 ## Still open
 
 This VM already had Docker, Node, cached images and prior drill state. A final clean-host run using only off-host media is untested. The backup contains one real private document but no goods-receipt rows or other representative business transaction set. A second independent backup, physical-host and unattended guest restarts, approved RPO/RTO and retention, independent custody, optional monitoring/pooler/CUPS volumes, real handset/OTP behavior, external HTTPS/mobile routing, and a separately authorized single-connector cutover remain untested. The operator's explicit **unencrypted-backup risk exception** remains; confidentiality is not established. Keep the original pilot as the only live connector until a separate cutover plan and approval cover writer freeze, final backup or delta, route ownership, rollback and reconciliation.
+
+## Candidate Realtime partition ACL verifier follow-up
+
+After the ten services start, Realtime may create a future-dated daily
+`realtime.messages_YYYY_MM_DD` partition. A later isolated check saw two
+`GRANT ALL` statements on one such new partition and stopped at the strict
+catalog comparison. The candidate verifier accepts only a new partition whose
+date is within the next seven UTC days, whose parent and midnight-to-midnight
+bounds match `realtime.messages`, and whose complete grant pattern matches
+every archived daily partition. It still rejects an added grant on an archived
+object, a different grantee or privilege on the new partition, an altered
+partition bound, and any other extra privilege statement. Archived grants and
+the existing narrow normalization of redundant `postgres` function revokes
+remain mandatory. This change has passed local negative tests and comparison
+against both passing and failed private catalog evidence; a fresh full restore
+run and independent review are still required before it can replace the pinned
+installer commit.

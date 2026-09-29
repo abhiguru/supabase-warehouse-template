@@ -8,6 +8,7 @@ All subprocess output, including PostgreSQL diagnostics, stays in STATE/evidence
 import argparse
 import base64
 from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -633,6 +634,51 @@ def build_core(state):
     print("PASS: seven isolated core images built; raw build output remains private.")
 
 
+def reviewed_realtime_partition_grants(archived, actual, source_schema, restored_schema):
+    """Accept only the archived grant pattern on a new daily Realtime partition.
+
+    Realtime can create the next messages partition while the ten services start.
+    Every archived privilege remains mandatory; a new privilege on any other
+    object, or a different privilege on the partition, still fails closed.
+    """
+    extra = actual - archived
+    if not extra:
+        return 0
+    pattern = re.compile(
+        r"^GRANT (ALL) ON TABLE realtime\.messages_(\d{4})_(\d{2})_(\d{2}) TO ([A-Za-z_][A-Za-z0-9_]*);$")
+    templates = {}
+    for statement, count in archived.items():
+        match = pattern.fullmatch(statement)
+        if match:
+            partition = match.group(2, 3, 4)
+            templates.setdefault(partition, Counter())[(match[1], match[5])] += count
+    require(len(templates) >= 2, "Archived Realtime partition grant template is missing")
+    reference = next(iter(templates.values()))
+    require(len(reference) == 2 and all(grants == reference for grants in templates.values()),
+            "Archived Realtime partition grants are inconsistent")
+    new = {}
+    today = datetime.now(timezone.utc).date()
+    for statement, count in extra.items():
+        match = pattern.fullmatch(statement)
+        require(match is not None, "Restored catalog has extra privilege statements")
+        partition_day = date(*(int(part) for part in match.group(2, 3, 4)))
+        require(0 <= (partition_day - today).days <= 7,
+                "New Realtime partition date is outside the reviewed window")
+        table = "realtime.messages_" + "_".join(match.group(2, 3, 4))
+        require(table not in source_schema, "New Realtime partition was present in the archive")
+        require(re.search(r"CREATE TABLE " + re.escape(table) + r"\s*\(", restored_schema) is not None,
+                "New Realtime partition has no table definition")
+        following_day = (partition_day + timedelta(days=1)).isoformat()
+        attach = ("ALTER TABLE ONLY realtime.messages ATTACH PARTITION " + table +
+                  " FOR VALUES FROM ('" + partition_day.isoformat() + " 00:00:00')" +
+                  " TO ('" + following_day + " 00:00:00');")
+        require(attach in restored_schema, "New Realtime partition bounds or parent differ")
+        new.setdefault(table, Counter())[(match[1], match[5])] += count
+    require(all(grants == reference for grants in new.values()),
+            "New Realtime partition grants differ from archived partitions")
+    return sum(extra.values())
+
+
 def catalog_checks(state):
     """Compare archived object owners and normalized ACL statements privately."""
     source_toc = state / "evidence/source-toc.private.txt"
@@ -660,12 +706,14 @@ def catalog_checks(state):
         return Counter(line.strip() for line in path.read_text().splitlines()
                        if line.startswith(("GRANT ", "REVOKE ", "ALTER DEFAULT PRIVILEGES ")))
     archived, actual = privileges(source_sql), privileges(restored_sql)
-    require(not (actual - archived), "Restored catalog has extra privilege statements")
+    runtime_grants = reviewed_realtime_partition_grants(
+        archived, actual, source_sql.read_text(), restored_sql.read_text())
     omitted = archived - actual
     require(all(line.startswith("REVOKE ") and " ON FUNCTION " in line and " FROM postgres;" in line for line in omitted.elements()),
             "Archived privilege grant or deny missing")
     return {"object_owners_and_definitions": True, "archived_grants_match": True,
-            "redundant_postgres_function_revokes_normalized": sum(omitted.values())}
+            "redundant_postgres_function_revokes_normalized": sum(omitted.values()),
+            "reviewed_realtime_partition_grants": runtime_grants}
 
 
 def verify(state):

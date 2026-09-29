@@ -1,6 +1,8 @@
 """Failure gates for the v4 replacement-host restore helpers."""
 
 import io
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 import tarfile
@@ -12,6 +14,34 @@ restore = SourceFileLoader("restore_replacement", str(ROOT / "scripts/restore-re
 
 
 class RestoreFailureGates(unittest.TestCase):
+    def test_realtime_partition_grants_require_archived_pattern_and_daily_bounds(self):
+        today = datetime.now(timezone.utc).date()
+        archived = Counter()
+        for day in (today - timedelta(days=2), today - timedelta(days=1)):
+            table = "realtime.messages_" + day.strftime("%Y_%m_%d")
+            for role in ("postgres", "realtime_admin"):
+                archived[f"GRANT ALL ON TABLE {table} TO {role};"] += 1
+        partition_day = today + timedelta(days=3)
+        table = "realtime.messages_" + partition_day.strftime("%Y_%m_%d")
+        extra = Counter({f"GRANT ALL ON TABLE {table} TO {role};": 1
+                         for role in ("postgres", "realtime_admin")})
+        schema = (f"CREATE TABLE {table} (id bigint);\n"
+                  f"ALTER TABLE ONLY realtime.messages ATTACH PARTITION {table} "
+                  f"FOR VALUES FROM ('{partition_day.isoformat()} 00:00:00') "
+                  f"TO ('{(partition_day + timedelta(days=1)).isoformat()} 00:00:00');\n")
+        check = restore.reviewed_realtime_partition_grants
+        self.assertEqual(check(archived, archived + extra, "", schema), 2)
+        for unexpected in (
+                Counter({"GRANT ALL ON TABLE public.orders TO anon;": 1}),
+                Counter({"REVOKE ALL ON TABLE public.orders FROM anon;": 1}),
+                Counter({f"GRANT ALL ON TABLE {table} TO anon;": 1})):
+            with self.assertRaises(ValueError):
+                check(archived, archived + extra + unexpected, "", schema)
+        with self.assertRaises(ValueError):
+            check(archived, archived + extra, "", schema.replace("00:00:00", "01:00:00"))
+        with self.assertRaises(ValueError):
+            check(archived, archived + extra, table, schema)
+
     def test_storage_catalog_matches_multiple_versions_and_rejects_strays(self):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(restore.match_storage_catalog(Path(empty), []), [])
