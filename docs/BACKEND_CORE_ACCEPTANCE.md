@@ -29,6 +29,20 @@ that branch's recovery implementation is not a dependency of this candidate.
 | `80cc90b435d7fee6a13e0beb1e2931536e5d75cf` | [36318005179](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36318005179) | Passed |
 | `246c275787cfb05f3c58be62b3b2757496cc4e66` | [36337622464](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36337622464) | Passed; documentation-only successor |
 
+Consolidation attempt `08821102c629b56f608c01100cf74fcf4d39565c`
+installed from a clean checkout without source edits and passed 48 unit tests,
+migration tests and the isolated HTTP core probe. Its Realtime probe timed out
+while the service reported `InitializingProjectConnection`; this is a failed
+attempt, not acceptance. The probe now retries subscription initialization with
+a bounded reconnect loop and still requires successful event delivery.
+
+[CI run 36586481529](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36586481529)
+for that commit passed unit, contract and secret checks, but failed the dependency
+audit on high-severity fast-uri advisories. The candidate narrowly updates
+fast-uri overrides to patched 2.4.6, 3.1.7 and 4.1.4; the local high-severity audit
+passes. Remaining moderate dependency and existing image findings remain open.
+Updated runtime dependencies require a new candidate build and exact-commit CI.
+
 These results do not apply to a newer candidate automatically. New exact-commit
 results belong in PR #68 before merge. The existing contract CI pins companion
 mobile source `8240cce9121a797fd0cf2e00e568a61985814ddb`; native acceptance is deferred.

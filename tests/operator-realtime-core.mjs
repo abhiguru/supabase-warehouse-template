@@ -57,10 +57,18 @@ function join(token, ref) {
 async function joinReady(token, ref) {
   let last;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    try { return await join(token, ref); }
+    let channel;
+    try {
+      channel = await join(token, ref);
+      assert.equal(channel.status, 'ok', 'authenticated Realtime join');
+      await waitFor(() => channel.messages.some(m => m.event === 'system' && m.payload?.status === 'ok'),
+        'database subscription ready');
+      return channel;
+    }
     catch (error) {
+      channel?.socket.terminate();
       last = error;
-      if (!/502|ECONNREFUSED|ECONNRESET|timeout/i.test(String(error?.message))) throw error;
+      if (!/502|ECONNREFUSED|ECONNRESET|timeout|Timed out: database subscription ready/i.test(String(error?.message))) throw error;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
