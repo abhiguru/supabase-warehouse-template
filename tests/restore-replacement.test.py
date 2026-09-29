@@ -17,30 +17,52 @@ class RestoreFailureGates(unittest.TestCase):
     def test_realtime_partition_grants_require_archived_pattern_and_daily_bounds(self):
         today = datetime.now(timezone.utc).date()
         archived = Counter()
+        peers = {}
+        catalog = {}
+        def row(name, day, owner="realtime_admin", is_partition=True):
+            return {"name": name, "kind": "r", "is_partition": is_partition,
+                    "owner": owner, "parent_schema": "realtime" if is_partition else None,
+                    "parent_name": "messages" if is_partition else None,
+                    "bound": (f"FOR VALUES FROM ('{day.isoformat()} 00:00:00') "
+                              f"TO ('{(day + timedelta(days=1)).isoformat()} 00:00:00')") if is_partition else None,
+                    "row_security": False, "force_row_security": False,
+                    "persistence": "p", "replica_identity": "d", "options": None}
         for day in (today - timedelta(days=2), today - timedelta(days=1)):
-            table = "realtime.messages_" + day.strftime("%Y_%m_%d")
+            name = "messages_" + day.strftime("%Y_%m_%d")
+            table = "realtime." + name
+            peers[name] = "realtime_admin"
+            catalog[name] = row(name, day)
             for role in ("postgres", "realtime_admin"):
                 archived[f"GRANT ALL ON TABLE {table} TO {role};"] += 1
         partition_day = today + timedelta(days=3)
-        table = "realtime.messages_" + partition_day.strftime("%Y_%m_%d")
+        name = "messages_" + partition_day.strftime("%Y_%m_%d")
+        table = "realtime." + name
+        catalog[name] = row(name, partition_day)
         extra = Counter({f"GRANT ALL ON TABLE {table} TO {role};": 1
                          for role in ("postgres", "realtime_admin")})
-        schema = (f"CREATE TABLE {table} (id bigint);\n"
-                  f"ALTER TABLE ONLY realtime.messages ATTACH PARTITION {table} "
-                  f"FOR VALUES FROM ('{partition_day.isoformat()} 00:00:00') "
-                  f"TO ('{(partition_day + timedelta(days=1)).isoformat()} 00:00:00');\n")
         check = restore.reviewed_realtime_partition_grants
-        self.assertEqual(check(archived, archived + extra, "", schema), 2)
+        self.assertEqual(check(archived, archived + extra, peers, catalog), 2)
         for unexpected in (
                 Counter({"GRANT ALL ON TABLE public.orders TO anon;": 1}),
                 Counter({"REVOKE ALL ON TABLE public.orders FROM anon;": 1}),
                 Counter({f"GRANT ALL ON TABLE {table} TO anon;": 1})):
             with self.assertRaises(ValueError):
-                check(archived, archived + extra + unexpected, "", schema)
+                check(archived, archived + extra + unexpected, peers, catalog)
+        # An unexecuted function-body ATTACH string cannot supply a catalog link.
         with self.assertRaises(ValueError):
-            check(archived, archived + extra, "", schema.replace("00:00:00", "01:00:00"))
+            check(archived, archived + extra, peers,
+                  catalog | {name: row(name, partition_day, is_partition=False)})
         with self.assertRaises(ValueError):
-            check(archived, archived + extra, table, schema)
+            check(archived, archived + extra, peers,
+                  catalog | {name: row(name, partition_day, owner="anon")})
+        with self.assertRaises(ValueError):
+            check(archived, archived + extra, peers,
+                  catalog | {name: row(name, partition_day) | {"bound": "FOR VALUES IN ('wrong')"}})
+        one_peer = next(iter(peers))
+        with self.assertRaises(ValueError):
+            check(archived + Counter({f"GRANT SELECT ON TABLE realtime.{one_peer} TO anon;": 1}),
+                  archived + extra + Counter({f"GRANT SELECT ON TABLE realtime.{one_peer} TO anon;": 1}),
+                  peers, catalog)
 
     def test_storage_catalog_matches_multiple_versions_and_rejects_strays(self):
         with tempfile.TemporaryDirectory() as empty:
