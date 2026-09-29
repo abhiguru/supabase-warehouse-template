@@ -11,26 +11,44 @@ remaining edge-case acceptance matrix.
 
 This is the pilot installation path. A successful setup does not enable the
 unfinished printer/sensor integrations or complete replacement-host recovery.
-Use the operator PR pair linked by [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)
-until it has been reviewed and merged; do not assume the changes are on `main`.
+Backend PR #68 is merged; mobile PR #33 remains a draft. Use the exact source
+pair below. Historical pilot results do not validate this fresh installation.
 
 ## Select the reviewed repository version
 
-Until PR #68 is reviewed and merged, use its published operator branch. Check the
-PR's recorded full commit and passing CI before executing installation commands:
+Backend [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+merged on 2026-09-29 at `f18f51d4625e7f8c0d977ac69645804e318a9d49`.
+[Post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs. Verify availability and pin both repositories before setup:
 
 ```bash
-git clone --branch codex/operator-install --single-branch \
-  https://github.com/abhiguru/supabase-warehouse-template.git
-cd supabase-warehouse-template
-git rev-parse HEAD
-git status --porcelain
+git ls-remote https://github.com/abhiguru/supabase-warehouse-template.git HEAD refs/heads/main
+git ls-remote https://github.com/abhiguru/rn-warehouse-template.git refs/heads/codex/operator-mobile refs/pull/33/head
+(umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git backend)
+(umask 022; git clone https://github.com/abhiguru/rn-warehouse-template.git mobile)
+git -C backend switch --detach f18f51d4625e7f8c0d977ac69645804e318a9d49
+git -C mobile switch --detach 8240cce9121a797fd0cf2e00e568a61985814ddb
+git -C backend rev-parse HEAD
+git -C mobile rev-parse HEAD
+git -C backend status --porcelain
+git -C mobile status --porcelain
 ```
 
-Compare the printed commit with [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
-and require a clean status. Record that exact commit in the instance handoff.
-After merge, the reviewed merge commit may be checked out directly; do not use an
-unrelated moving branch or assume an operator release tag exists. The current
+Public source must be readable by container service users: clone in a subshell
+with `umask 022` as above. Keep `umask 077` for private state, provider files and
+raw evidence. Do not use a recursive permission change on the whole workspace:
+that could expose private configuration. A fresh-VM clone under 077 produced
+mode-0600 initialization SQL; PostgreSQL failed with `Permission denied`,
+restarted and became healthy despite incomplete initialization. Healthy process
+status alone was misleading. Inspect initialization failures before rerunning;
+retain and stop an incomplete owned attempt and use a separate empty state for
+an independently diagnosed reinstall. Never delete another instance or copy its
+state. Record the failed attempt and new instance identity.
+
+Require clean source status and record both full commits. Mobile `main` does not
+contain this draft candidate. If either checkout fails, stop and explain the
+missing baseline before selecting a substitute. Keep the installed checkout
+pinned and make corrections in a separate review branch/worktree. The current
 release gate still blocks publishing an operator release. See the
 [backend acceptance record](BACKEND_CORE_ACCEPTANCE.md) for test-only setup and
 remaining release gates. Instance configuration belongs outside the checkout;
@@ -52,6 +70,77 @@ Choose a persistent filesystem with at least 10 GiB free for this initial
 installation check, plus capacity for the operator's actual data. Start Docker
 at boot with `sudo systemctl enable --now docker`. The installer checks its
 availability and Linux x86-64 architecture before creating state.
+
+### Ubuntu 24.04 x86-64 prerequisite sequence
+
+Record the host before changing it: `cat /etc/os-release`, `uname -m`, `id`,
+`sudo -n true`, `command -v node npm git docker`, `node --version`,
+`npm --version`, `git --version`, `free -h`, `df -h`, `ss -lntup`, and
+`stat -c '%a %U:%G %n' "$HOME"`. If Docker exists, also record `docker version`,
+`docker compose version`, and `docker ps`. Inspect existing paths and projects;
+never delete them to resolve a collision. Keep raw output in a mode-0700 evidence
+directory outside Git, creating evidence files under `umask 077`.
+
+The fresh-VM run found Ubuntu's Node 18 inadequate. This installs a user-owned
+Node 22 binary without replacing the OS package. Start with these packages:
+
+```bash
+sudo -n apt-get update
+sudo -n apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils
+mkdir -p "$HOME/.local/opt" "$HOME/.cache/warehouse-node-download"
+cd "$HOME/.cache/warehouse-node-download"
+curl -fSLO https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
+curl -fSLO https://nodejs.org/dist/v22.23.3/SHASUMS256.txt
+rg ' node-v22.23.3-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -
+tar -xJf node-v22.23.3-linux-x64.tar.xz -C "$HOME/.local/opt"
+export PATH="$HOME/.local/opt/node-v22.23.3-linux-x64/bin:$PATH"
+node --version
+npm --version
+```
+
+If `rg` is unavailable, use `grep` for the checksum selection above. Checksum
+comparison uses Node's published HTTPS checksum file; this is not a claim that
+a release signature was verified. Repeat the PATH export in every installation,
+health-check and build shell; a change in a different terminal does not update
+the agent or a system service. Avoid overwriting an existing version directory.
+
+Install Docker using its [official Ubuntu repository procedure](https://docs.docker.com/engine/install/ubuntu/).
+Inspect conflicting packages first; do not remove an existing container runtime
+without assessing the services it owns. On this fresh host none were present:
+
+```bash
+sudo -n install -m 0755 -d /etc/apt/keyrings
+sudo -n curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo -n chmod a+r /etc/apt/keyrings/docker.asc
+printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo -n tee /etc/apt/sources.list.d/docker.sources
+sudo -n apt-get update
+apt-cache madison docker-compose-plugin
+sudo -n apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
+sudo -n systemctl enable --now docker
+sudo -n usermod -aG docker "$(id -un)"
+```
+
+The unversioned Compose package installed v5.5.1 on 2026-09-30; the guide calls
+for v2. This sequence explicitly selects available v2.40.3. If another Compose
+version is already installed, inspect its use before changing it. Do not call
+Compose v5 tested by these instructions. Open a new login session, or use
+`sg docker` to open a shell with effective Docker-group access. In that shell,
+repeat the Node PATH export and verify:
+
+```bash
+id
+docker version
+docker compose version
+docker buildx version
+docker info --format '{{.ServerVersion}}'
+docker ps --format '{{.Names}} {{.Status}} {{.Ports}}'
+```
+
+Do not run warehouse setup as root or make the Docker socket world-writable.
+Record actual package versions with `dpkg-query -W`; repository package versions
+can change. This run installed Engine 29.8.1, containerd 2.3.6, Buildx 0.37.1,
+Node 22.23.3 and npm 10.9.9. These prerequisite checks alone do not establish
+service or business acceptance.
 
 Choose an empty state path outside the checkout, such as
 `/srv/warehouse/acme`. Its existing parent must be owned by the installation
@@ -83,11 +172,11 @@ either. The database synchronizer validates a 24-character lowercase hex Flow
 ID, a numeric PE ID and six uppercase alphanumeric sender characters.
 
 `MSG91_TEMPLATE_ID` holds the MSG91 **Flow ID**, not the separate DLT Template
-ID. For the current Guru Cold Storage flow, use Flow ID
-`694a8ea0cd30ae1f432f445a`, PE ID `1101817660000088076`, sender/header
-`GCSAMD`, and DLT Template ID `1107176638369238844`. Its approved message is
-`{OTP} is your OTP code for Guru Cold Storage Private Limited, Ahmedabad. Valid for 5 mins. Please do not share this with anyone.`
-The Flow variable is exactly `OTP`, including capitalization. The operator OTP
+ID. Do not copy another warehouse's provider identifiers or credentials. Obtain a
+Flow, entity and sender owned and approved for this test instance from the
+operator's protected provider file. The historical pilot's Flow and DLT values
+remain dated evidence in [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md), not
+fresh-install defaults. The Flow variable is exactly `OTP`, including capitalization. The operator OTP
 worker sends this variable through MSG91's Flow endpoint and reads the active
 provider settings from the latest protected `public.sms_config` row. It accepts
 the request only after MSG91 confirms success. [MSG91's Send SMS
@@ -280,6 +369,30 @@ pass.
 Enable the reverse proxy's system service at boot as well as Docker. If the
 router cannot send LAN clients back through its public address, configure local
 DNS for the same canonical domain; the app must still use the same HTTPS origin.
+
+## Ordinary operation
+
+Use the **installed checkout**, the recorded state directory and a shell with
+Node 22 and effective Docker access. The Compose wrapper refuses a running
+project owned by another checkout; a review worktree is not its service owner.
+
+```bash
+cd /path/to/installed/backend
+export PATH="$HOME/.local/opt/node-v22.23.3-linux-x64/bin:$PATH"
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash start.sh
+node scripts/doctor.mjs --local
+node scripts/doctor.mjs
+bash scripts/compose.sh ps
+# Stop this instance while preserving its data:
+bash stop.sh
+```
+
+Start/stop the dedicated tunnel service separately using its recorded systemd
+unit name. Never stop a connector belonging to another instance. Do not run
+`down -v`, broad Docker prune, or delete state as a restart procedure. Docker
+restart policies and an enabled tunnel service are configuration evidence;
+unattended host restart remains untested until an authorized test occurs.
 
 ## Windows host with Linux VM
 

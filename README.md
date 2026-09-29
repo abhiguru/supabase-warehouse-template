@@ -2,7 +2,7 @@
 
 ## Current operator installation work
 
-The current development branch uses `setup.sh --operator` for a warehouse-owned
+The merged operator baseline uses `setup.sh --operator` for a warehouse-owned
 Linux x86-64 installation. It requires private MSG91 credentials, a canonical
 HTTPS origin, an external state directory and a locally bootstrapped first
 administrator. See [the installation guide](docs/OPERATOR_INSTALL.md) and the
@@ -15,8 +15,7 @@ their own acceptance results.
 
 Earlier source-demo work across backup/restore, owned-service recovery,
 auth/RLS, loopback gateway controls, database retention, business regressions,
-load smoke, local monitoring, Realtime, and companion Android artifact review is
-has dated evidence. See
+load smoke, local monitoring, Realtime, and companion Android artifact review has dated evidence. See
 [LOCAL_PRODUCTION_READINESS.md](docs/LOCAL_PRODUCTION_READINESS.md) for the
 eleven-area evidence and commands.
 

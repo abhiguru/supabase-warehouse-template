@@ -18,11 +18,15 @@ is the authoritative work and acceptance ledger. It distinguishes implemented
 software, automated verification, unfinished software, and external or physical
 acceptance. Green CI does not close the production handoff.
 
-The operator changes are under [backend PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+The backend operator changes merged in [backend PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
 and [mobile PR #33](https://github.com/abhiguru/rn-warehouse-template/pull/33).
 Use the exact companion commit pinned in the active backend CI workflow when
 reproducing a tested pair. Record both checked-out commits and the native build
-ID in the VM acceptance record. These draft PRs require review before merging.
+ID in the VM acceptance record. Backend merge baseline is
+`f18f51d4625e7f8c0d977ac69645804e318a9d49`;
+[post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs. Mobile PR #33 remains draft at
+`8240cce9121a797fd0cf2e00e568a61985814ddb`; do not substitute mobile `main`.
 
 For the new VM, first run local setup and doctor, then verify HTTPS discovery
 from warehouse Wi-Fi and cellular data. Verify real SMS login for the locally

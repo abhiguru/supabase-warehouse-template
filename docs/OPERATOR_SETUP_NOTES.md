@@ -11,6 +11,65 @@ that every deployment or failure mode has been accepted. Keep instance-specific
 phones, credentials, device serials and raw authentication results in private
 evidence outside Git. A future operator must supply their own values.
 
+## Fresh independent VM attempt — 2026-09-30 (in progress)
+
+This attempt preserves the existing pilot and closed recovery rehearsal. It
+contacts neither pilot nor recovery host, sends no SMS, and makes no release,
+cutover, reboot, credential-rotation or optional hardware changes. The operator
+must lift the no-SMS restriction before real authentication can be tested.
+
+Source checkouts are clean and detached: backend
+`f18f51d4625e7f8c0d977ac69645804e318a9d49`, mobile
+`8240cce9121a797fd0cf2e00e568a61985814ddb`. Corrections live in separate review
+worktrees. The independent warehouse setup has now started from the clean pinned checkout;
+service health and integration acceptance are still pending. Public GitHub API confirmed
+backend PR #68 merged at that SHA on September 29 and all seven jobs passed in
+[run 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357).
+Mobile PR #33 remains open/draft; mobile `main` is a different commit.
+
+Host inventory: Ubuntu 24.04.3 LTS / x86-64 VMware guest, kernel 7.0.0-34,
+Git 2.43.0, 5.7 GiB total RAM (about 3 GiB available), 4 GiB swap and 63 GiB free
+on the 79 GiB root filesystem. Home is owned by the installation user, mode 0750.
+`sudo -n true` passed. Warehouse gateway ports were unoccupied. Initially Node
+18.19.1/npm 9.2.0 were installed; Docker, curl, GitHub CLI and Android tooling
+were absent. No repository AGENTS.md was found at the pinned checkouts or their
+workspace parents. Private evidence is outside Git, under a mode-0700 directory.
+
+| Finding / triggering command | Expected versus actual / cause | Correction and verification | Remaining limit |
+| --- | --- | --- | --- |
+| Read `OPERATOR_INSTALL.md` at backend baseline | Guide said PR #68 was unmerged; GitHub reports merged | Pin merge SHA; update active guide/handoffs and clearly date historical evidence | Merge is not production acceptance |
+| Host `node --version` | Required >=22.18; actual 18.19.1 | Install official Node 22.23.3 tarball, compare published SHA-256, export PATH; Node 22.23.3/npm 10.9.9 verified | No signature verification claimed |
+| Fresh-host package sequence | Guide listed tools without install commands or an effective session sequence | Integrate Ubuntu package commands and Docker-group/Node PATH checks in the main guide | Clean-source service installation still pending |
+| `apt-get install ... docker-compose-plugin` | Guide requires v2; official repository selected v5.5.1 | Select repository v2.40.3 explicitly; retain initial package evidence privately | v5 runtime compatibility not tested |
+| `umask 077; npm test` on Node 22.23.3 | 48 expected passes; 47 passed / 1 failed in provider-permission rejection fixture | `writeFileSync(... mode: 0644)` is masked to 0600; explicitly chmod the disposable insecure fixture to 0644 in review source | 48/48 PASS under umasks 077 and 022; runtime guard unchanged |
+| `npm run check:container-dependencies` at clean backend baseline, npm 10.9.9 | Historical CI passed; current Storage audit exits 1 with HIGH `undici` 7.29.0 findings and MODERATE `ip-address` findings; metadata audit passes | Preserve failed audit and upstream advisory links in private evidence; no dependency/runtime security patch made in this exercise | Deferred image-security work remains open; do not claim all current checks pass |
+| Fixture `setup.sh --operator` in clean baseline checkout, Docker 29.8.1 / Compose 2.40.3 | Host/configuration preflights PASS; first database build FAIL while resolving `registry-1.docker.io` through 127.0.0.53 | Preserve exact first attempt; diagnose DNS and retry the same pinned image without changing source or deleting state | Subsequent DNS lookup and pinned-image pull PASS without DNS/source changes; warehouse health remains pending |
+| First target `setup.sh --operator`, source cloned under umask 077 | Database built, but setup exited 1 on unhealthy state; PostgreSQL then restarted and appeared healthy | Full startup log establishes `98-webhooks.sql: Permission denied`; tracked SQL was 0600. Correct public tracked files to 0644/executables 0755 and directories 0755; integrate clone `umask 022` in guide | First incomplete state stopped without deleting volumes/data; second separate state setup in progress, same source baseline |
+| Database full-log diagnostic in a new shell | Expected owned logs; wrapper refused unset WAREHOUSE_STATE_DIR | Repeat with explicit recorded-state export; retain refused attempt | Shell environment must be set for each command session |
+| Selected-hostname `dig` and HTTPS probe | New route expected; NXDOMAIN and curl exit 6 before provisioning | Retain occupancy results; require authenticated zone/tunnel check before configuring ingress | NXDOMAIN alone cannot prove account-side vacancy |
+| Agent shell execution | Sandbox failed before command with `bwrap: loopback: Failed RTM_NEWADDR` | Approved execution outside broken sandbox allowed host inspection | VM execution-environment issue; not an application defect |
+
+Current cases: prerequisite/version availability PASS; installed local/public
+doctor, discovery, safe rerun, persistent documents and clean-source reproduction
+NOT TESTED. Backend npm ci PASS; baseline unit run FAIL (47/48), corrected review unit runs PASS (48/48 under both umasks); disposable migration/auth/billing checks PASS; container dependency audit FAIL. Syntax and redacted baseline source/history secret checks PASS. Real administrator/customer login,
+enrollment and approval are BLOCKED by the no-SMS instruction. Installed
+warehouse business flows, permissions, retries, invalid quantity, concurrent
+stock, isolation, invoice and private PDFs are NOT TESTED; disposable fictional
+fixture coverage will be recorded separately. Android phase is BLOCKED until
+backend local/public checks pass. Wi-Fi/cellular/device/QR/lifecycle/standalone,
+Realtime, images and authenticated PDF acceptance are NOT TESTED. Cross-instance
+switching is BLOCKED until a second isolated running instance is available;
+the live pilot cannot serve as that instance. Printing, sensors, iPhone, alerts,
+rotation, image research and recovery rehearsal remain outside this exercise.
+
+The operator explicitly requested creation of the private provider file. It was
+created outside Git with mode 0600 and validated without printing credential
+values. Cloudflare browser authorization completed. Authenticated zone query found zero
+records for the selected hostname; four existing tunnels were inspected without
+modification. A new tunnel and credentials were created and its ingress validated
+with cloudflared 2026.9.3. DNS remains unrouted until local health passes. No reproducible
+installation or current end-to-end acceptance is claimed by this progress record.
+
 ## Evidence and version boundaries
 
 The VM initially checked out backend
@@ -21,7 +80,8 @@ files matched review commit `831678619e175eeb3c1b656ea932d290da705c5b`. Review h
 `9c891f4f4b1b480e8d545454efbfd323e7c9d1c2` adds a CI fixture correction.
 Backend [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
 and mobile [PR #33](https://github.com/abhiguru/rn-warehouse-template/pull/33)
-remain the operator review references; this record does not claim a merge.
+were the operator review references at that historical checkpoint; it did not
+claim a merge. The current merge status is recorded below.
 
 Backend [CI run 36313952647](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36313952647)
 passed all jobs at `9c891f4`. Mobile
