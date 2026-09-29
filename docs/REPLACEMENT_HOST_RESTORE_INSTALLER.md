@@ -74,5 +74,6 @@ partition bound, and any other extra privilege statement. Archived grants and
 the existing narrow normalization of redundant `postgres` function revokes
 remain mandatory. A prior version passed one local full restore, but independent
 review found owner, attachment-text, and incomplete peer-ACL gaps. The revised
-verifier must pass a fresh full restore and review before it can replace the
-pinned installer commit.
+verifier passed a fresh isolated full restore and six local failure-gate tests,
+including an unexecuted function-body attachment decoy. Independent review is
+still required before it can replace the pinned installer commit.
