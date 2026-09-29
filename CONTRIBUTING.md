@@ -5,18 +5,22 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 1. Fork and clone the repo
-2. Install locked checks with `npm ci`, then run `bash setup.sh --demo` to bootstrap locally
+2. Install locked checks with `npm ci`; follow [operator installation](docs/OPERATOR_INSTALL.md) for an isolated Linux x86-64 instance
 3. Make your changes
 4. Run `./health-check.sh` to verify everything works
-5. Run `npm test`, `npm run test:migrations` (disposable database), and `npm run test:api` (fictional demo fixtures)
+5. Run `npm test` and `npm run test:migrations` (disposable database)
 6. Submit a PR
 
-Use `npm run doctor` for read-only diagnostics. Stop with `bash stop.sh`; this preserves data. For multiple checkouts, set a unique `WAREHOUSE_PROJECT_NAME=warehouse-your-name` in every command and choose unused loopback ports. Never target a generic database container. Use `bash scripts/compose.sh exec -T db ...` only for this checkout; it checks ownership. Add new migrations instead of editing applied files. See [developer handoff](docs/DEVELOPER_HANDOFF.md).
+Set `WAREHOUSE_STATE_DIR` to the instance's private state path for doctor, start,
+stop and Compose commands. The installer generates a unique project name, and
+`bash stop.sh` preserves data. Never target a generic database container. Add
+new migrations instead of editing applied files. See the [developer
+handoff](docs/DEVELOPER_HANDOFF.md).
 
 ## Guidelines
 
 - **Keep it simple** - This is a template repo. Avoid over-engineering.
-- **Test your changes** - Run `bash setup.sh --demo` in an isolated checkout before submitting.
+- **Test your changes** - Run the operator installer in a fresh isolated VM before accepting installation changes.
 - **Document breaking changes** - Update `.env.example` if you add new env vars.
 - **Follow existing patterns** - Look at how existing edge functions and SQL are structured.
 

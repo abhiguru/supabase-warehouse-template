@@ -1,3 +1,4 @@
+// Historical fixed-OTP demo test. Not part of the operator test suite.
 // Mutates only an explicitly configured local demo, after matching its generated anon key.
 import assert from 'node:assert/strict';
 import { reviewCore } from './review-core.mjs';

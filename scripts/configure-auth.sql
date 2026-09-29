@@ -17,12 +17,18 @@ SELECT value=:'starter_secret' AS secret_matches FROM warehouse_security.auth_co
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Existing database signing key differs; no key was changed'; END $$;
 \endif
-SELECT :'starter_mode' IN ('demo','disabled') AND (:'starter_mode'<>'demo' OR :'starter_environment'='development') AS valid_mode \gset
+-- Switching an existing local demo database to operator mode must invalidate
+-- sessions minted while demo authentication was enabled. Repeated configuration
+-- of an already configured operator instance leaves its sessions intact.
+DELETE FROM warehouse_security.refresh_sessions
+WHERE COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='auth_mode'),'') <> 'operator';
+SELECT :'starter_mode'='operator' AND :'starter_environment'='production' AS valid_mode \gset
 \if :valid_mode
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'Demo authentication is allowed only in development'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'Operator authentication requires production mode'; END $$;
 \endif
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
-  ('demo_auth_enabled',(:'starter_mode'='demo')::text),('access_seconds',(:'starter_expiry')::integer::text)
+  ('demo_auth_enabled','false'),('auth_mode',:'starter_mode'),
+  ('access_seconds',(:'starter_expiry')::integer::text)
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 COMMIT;

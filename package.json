@@ -10,7 +10,6 @@
   "scripts": {
     "test": "node --import ./tests/register-edge-imports.mjs --test tests/*.test.mjs",
     "test:migrations": "bash tests/migrations.sh",
-    "test:api": "node tests/api-demo.mjs",
     "test:recovery": "bash scripts/recovery-check.sh",
     "db:backup": "bash scripts/backup.sh",
     "db:verify-restore": "bash scripts/verify-restore.sh",
@@ -20,7 +19,6 @@
     "test:grafana": "bash scripts/grafana-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
     "test:cups": "bash scripts/cups-check.sh",
-    "test:realtime": "bash scripts/realtime-check.sh",
     "scan:images": "bash scripts/scan-images.sh",
     "retention:preview": "bash scripts/retention.sh preview",
     "retention:apply": "bash scripts/retention.sh apply",

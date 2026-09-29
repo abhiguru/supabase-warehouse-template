@@ -1,9 +1,10 @@
 # Public-clone clean-install verification
 
-> The dated `v0.2.1-demo` evidence below is historical. For the current release,
-> use matching `v0.2.2-demo` tags after publication or matching current `main`
-> branches during preparation. Record both full SHAs and verify both backend CI
-> workflow copies pin the mobile SHA before applying this isolation procedure.
+For a new warehouse installation on the current development branch, follow
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md). The commands and evidence below
+reproduce historical source-demo tags only.
+
+> The dated evidence below is historical and does not verify the operator branch.
 
 ## Evidence — 2026-09-12
 
@@ -115,3 +116,4 @@ This evidence supports a **source-only local-demo prerelease**, not production,
 physical-device acceptance, ownership approval for all assets, a clean dependency
 audit, backup restoration, or complete RPC/business-flow correctness. The mobile
 audit still has eight moderate package findings from one URL-decoder advisory.
+> Historical source-demo installation record. Current checkout accepts `setup.sh --operator` only; see [operator installation](OPERATOR_INSTALL.md).

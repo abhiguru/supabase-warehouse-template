@@ -5,7 +5,6 @@ _transform: true
 ### Consumers / Users
 ###
 consumers:
-  - username: DASHBOARD
   - username: anon
     keyauth_credentials:
       - key: ${SUPABASE_ANON_KEY}
@@ -21,14 +20,6 @@ acls:
     group: anon
   - consumer: service_role
     group: admin
-
-###
-### Dashboard credentials
-###
-basicauth_credentials:
-  - consumer: DASHBOARD
-    username: ${DASHBOARD_USERNAME}
-    password: ${DASHBOARD_PASSWORD}
 
 ###
 ### API Routes
@@ -268,43 +259,3 @@ services:
           hour: 2000
           policy: local
           fault_tolerant: true
-
-  ## Secure Database routes
-  - name: meta
-    _comment: 'pg-meta: /pg/* -> http://pg-meta:8080/*'
-    url: http://meta:8080/
-    routes:
-      - name: meta-all
-        strip_path: true
-        paths:
-          - /pg/
-    plugins:
-      - name: key-auth
-        config:
-          hide_credentials: true
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-
-  ## Protected Dashboard - catch all remaining routes
-  - name: dashboard
-    _comment: 'Studio: /* -> http://studio:3000/*'
-    url: http://studio:3000/
-    routes:
-      - name: dashboard-all
-        strip_path: true
-        paths:
-          - /
-    plugins:
-      - name: cors
-        config:
-          origins: [${CORS_ALLOWED_ORIGIN}]
-          methods: [GET, POST, OPTIONS]
-          headers: [Authorization, Content-Type]
-          credentials: true
-          max_age: 86400
-      - name: basic-auth
-        config:
-          hide_credentials: true

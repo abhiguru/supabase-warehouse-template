@@ -1,12 +1,120 @@
 # Remaining production work
 
-Updated 2026-09-26. This is the current handoff checklist. It uses the existing
+See the [consolidated backend installation candidate](BACKEND_CORE_ACCEPTANCE.md)
+for exact version boundaries, backend verification and the closed recovery scope.
+The running pilot update is a separate operator action.
+
+Updated 2026-09-27. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).
-The operator has not supplied production services or operating policies.
+The pilot operator supplied a dedicated HTTPS route and real MSG91 service;
+the remaining operating policies and integrations are listed below.
 Production remains gated; existing demo release tags are unchanged. Counts and
 versions below describe dated scan evidence, not a new scan or verification of
 currently patched publisher versions.
+
+## Independent operator installation work
+
+The target is one backend and database per cold-storage business, with one native
+app selecting an instance by its canonical HTTPS origin. Linux x86-64 is the
+server baseline. On Windows, unattended operation uses an automatically started
+Linux VM; WSL2/Docker Desktop remains a development option. ARM64 and native
+store publication are deferred from the initial pilot. Developers install the
+service; warehouse administrators manage their instance afterward. Credentials
+remain private to each installation, outside the source checkout. The immutable
+`v0.2.2-demo` tags retain their historical acceptance evidence; current operator
+work must not inherit those device results after runtime changes.
+This table is the authoritative status ledger for the independent operator
+handoff. The numbered material below retains the earlier production dependency
+evidence and owner inputs.
+
+| Work package | Status | Evidence required to close |
+| --- | --- | --- |
+| Operator installer, versioned manifest, persistent storage, first-admin bootstrap, safe rerun, preflight and doctor | Implemented; isolated tests and Linux VMware pilot setup/rerun/guest reboot PASS | Physical-host unattended VM startup/shutdown and host reboot remain. No demo users or fixed OTP. |
+| Canonical HTTPS origin and private network boundary | Partial pilot acceptance | Dedicated Cloudflare route, local/public doctor, Android Wi-Fi discovery and gateway upstream recovery passed. Cellular remains untested; keep database, Studio, CUPS and Home Assistant private. Historical stale-IP 502 and HTTP 500 are separate findings. |
+| MSG91 OTP and customer approval | Implemented; automated tests and live pilot API enrollment/login PASS | Handset receipt, administrator login, pending customer, approval and post-approval login passed through hidden-input helpers. Native UI and live provider-outage/account-lifecycle acceptance remain; credential rotation is deferred by the operator. |
+| Mobile server selection and isolation | Implemented; automated tests and partial physical Android acceptance | Android Wi-Fi HTTPS discovery/selection and cold-launch selected-server persistence passed. QR, two-server/replacement-instance isolation, authenticated restoration and iPhone acceptance remain. |
+| Warehouse onboarding and business flow | Pending | Editable warehouse identity/branding/customer/pricing configuration; approval, receipt, inventory, orders, queue, dispatch, invoices and cart accepted against existing billing semantics. |
+| Epson LQ-1310 printing | Pending | Authorized durable jobs with queue/state/duplicate handling; actual continuous forms, alignment and fault recovery on Linux USB and Windows shared-queue VM paths. Disappeared jobs remain uncertain, not proof of paper output. |
+| Tapo T310/H100/H200 and Home Assistant monitoring | Pending | Sanitized integration assets, narrow ingestion credential, device mapping, source timestamps, idempotent five-minute uploads/fifteen-minute replay, missing values and stale/offline state; real-device acceptance before enabling mobile capability. Cooling control excluded. |
+| Recovery, upgrades, diagnostics and alerts | Partially implemented; VM local backup/disposable restore, [isolated replacement-host drill](REPLACEMENT_HOST_RESTORE_DRILL.md), and owned-service recovery PASS for their recorded scope | Encrypted off-host backup and full host-loss recovery with nonempty objects, explicit schedule/retention, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test remain. Local monitoring/CI acceptance does not establish external delivery. |
+| Final handoff | Pending | Both repositories' checks, reviewed PRs/CI, exact main commits and native build IDs, plus physical results and exceptions recorded. Hardware-dependent cases stay **not tested** until performed. |
+
+### VM pilot findings — 2026-09-27
+
+[OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) records the detailed observed
+shortcomings, remedies and untested edge cases. The VM required effective sudo
+and Docker-session access, one-at-a-time operator inputs, a distinct Cloudflare
+tunnel/API subdomain, correct Linux origin/credential paths, MSG91 Flow versus
+DLT identifier handling and runtime database synchronization. The MSG91 adapter
+now checks provider acceptance and uses bounded retries; the local doctor's
+deadline was corrected. OTP coordination exposed expired attempts and stale
+helper results, so each attempt must retain its own result and timestamp.
+
+At runtime acceptance, the installed backend started at
+`4f1efb8dd4f8c748961a0f250c5af4fc202fb38a` with twelve changed files matching review commit
+`831678619e175eeb3c1b656ea932d290da705c5b`. Backend PR #68/review head
+`9c891f4f4b1b480e8d545454efbfd323e7c9d1c2` adds the offline CI identifier
+fixture correction; [run 36313952647](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36313952647)
+passed all jobs. This notes update adds documentation changes. Mobile remains
+`8240cce9121a797fd0cf2e00e568a61985814ddb`.
+Record local build overrides as well as HEAD; no merged-main or production
+release is claimed. Exact build/device details and attempt history are in the
+private VM acceptance ledger; the public notes contain sanitized evidence.
+
+Real SMS/API login, approval, local restore and guest reboot passed. Android
+build/audit/install plus Wi-Fi discovery and selected-server persistence passed
+on a physical phone; it has no cellular data. The APK is a Metro-dependent debug
+build. Native authenticated business workflows, iPhone, host reboot, encrypted
+off-host/replacement-host recovery and physical printer/sensor acceptance remain
+open. Pooler session/transaction and invalid-password checks also passed on the
+VM. The monitoring run subsequently passed image/configuration checks, live
+scrape targets and local synthetic Alertmanager ingestion on the VM. External
+delivery, Grafana and reboot recovery of these newly enabled optional services
+remain untested.
+The operator requested no more OTP-delivery retests and deferred key rotation.
+
+### Second pass before VM provisioning — 2026-09-27 (historical)
+
+This subsection describes the earlier pre-VM checkpoint. Its "untested" wording
+is superseded only by the specific pilot results above, not by blanket acceptance.
+
+The second pass found and corrected configuration override/path-validation gaps,
+concurrent installer/backup execution, first-admin rerun selection, legacy session
+revocation, late OTP provider completion, and mobile discovery/image-workflow
+switch races. PDF output now uses the installed warehouse name. CUPS spools are
+scoped to each Compose project. Historical demo instructions are archived; the
+active developer handoffs point to the operator installation path.
+
+Backend automated tests (45 cases), append-only migration tests and the mobile
+API contract check pass. Mobile typecheck, lint (zero errors; existing warnings)
+and 217 tests in 33 suites pass at `8240cce9121a797fd0cf2e00e568a61985814ddb`. A fresh disposable Linux x86-64 instance passed setup,
+local doctor, configuration-preserving rerun, administrator/data/session
+preservation, and authenticated stock-PDF generation/download with the installed
+company name. A second generated configuration had distinct keys, data paths,
+project identity and CUPS spool volume. This configuration check is not the full
+two-running-instance acceptance test. Backup checksums, database/ACL integrity
+and archived storage passed disposable restoration; this is not replacement-host
+recovery. Backup now waits for stopped services to become healthy on restart;
+a repeated backup followed immediately by local doctor passed. Dummy provider
+credentials were used; no SMS was sent.
+
+Provider tests simulate accepted requests and failures; real MSG91 receipt is
+still untested. Per-phone and global OTP limits are active. The optional SQL
+per-IP limiter is not wired to forwarded headers because a trusted client-IP
+boundary has not been configured. Test abuse controls at the chosen gateway.
+
+The new VM is the next isolated integration environment, not a declaration that
+all plan items are finished. Printing, sensor packaging/ingestion, encrypted
+scheduled off-host recovery and replacement-host restoration still need software
+work as well as acceptance. The current operator branch has no physical Android,
+iPhone, printer, sensor or unattended Windows-host reboot acceptance. Review and
+exact-pair CI remain attached to backend PR #68/mobile PR #33; no new main commits
+or production release are claimed here.
+
+The image security findings below remain **won't fix in current scope**, not
+patched or passed. This work does not claim unconditional production security
+readiness. Any operator-specific billing change requires a separate requirement.
 
 Backend `main` includes the signed-plugin recheck in
 [PR #62](https://github.com/abhiguru/supabase-warehouse-template/pull/62)
@@ -29,8 +137,7 @@ has a native **amd64** image scan with **2 HIGH, 0 CRITICAL**, both gRPC in the
 signed Prometheus and PostgreSQL plugins; Thrift is fixed in its core binary.
 Its nine-plugin, provisioning and live-query smoke passed, but the strict
 validator rejected the two findings. Combined **arm64** validation and a full
-19-image rescan remain pending. Before deployment, inspect and migrate any
-production references to removed plugins.
+19-image rescan were not completed.
 
 The item 9 closure below applies to its explicitly tested merged pair. A later
 gateway DNS fix in merged [PR #42](https://github.com/abhiguru/supabase-warehouse-template/pull/42)
@@ -45,74 +152,19 @@ those merge commits. See the [current readiness note](READINESS.md#gateway-regre
 for exact runs and the separate historical HTTP 500 limit. Future runtime
 changes need affected-case testing before inheriting physical acceptance.
 
-## Technical follow-ups that can start now
+## Technical follow-ups and dispositions
 
-- **Item 1 — image security gate:** Security/build maintainers should obtain
-  compatible patched, publisher-signed Prometheus and PostgreSQL plugins,
-  validate the [Grafana core rebuild
-  candidate](GRAFANA_CORE_CANDIDATE.md) with the pruned recipe on native arm64
-  after its completed amd64 smoke and scan, preserve signature enforcement,
-  rebuild from current package repositories, and repeat the
-  complete 19-image scan. They should also obtain
-  a trustworthy image-bound dependency inventory/SBOM for the static PostgREST
-  image, or review a reproducible source build with equivalent evidence, and
-  assess its components. Acceptance requires 19 valid image-matched reports
-  passing the fixed HIGH/CRITICAL gate, zero remaining Grafana findings at that
-  threshold, and a complete PostgREST Haskell/native inventory tied to the
-  exact per-platform binaries with an applicable vulnerability assessment.
-  Trivy's empty Haskell result cannot satisfy it. The last recorded all-profile
-  inventory had **17/19** valid passing reports: the
-  locally patched Grafana had **102 HIGH** findings and PostgREST had no package
-  results. Publisher binary provenance for PostgREST is established for amd64,
-  but it is not a component inventory; arm64 was not attested by that hash.
-  A fresh 2026-09-24 targeted **amd64** rebuild and Trivy 0.74.0 scan of the
-  current signed-plugin recipe confirmed **9 HIGH, 0 CRITICAL**: one Grafana
-  core Thrift finding and eight in six plugin executables (gRPC and Tempo).
-  The image-report validator rejected it. Grafana 13.2.2 remained the latest
-  stable publisher release, and no patched compatible signed plugin release
-  was verified. The [native arm64 Grafana run
-  35987888412](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35987888412)
-  passed at backend `80869391f2c8dfb7e700ffa99a68382ba7e769c4` and
-  reported the same **9 HIGH, 0 CRITICAL** and the same CVEs and embedded
-  versions in its targeted image scan. Workflow success records valid scan
-  evidence; these findings still fail the strict image gate. Neither targeted
-  scan is a full 19-image rescan. On 2026-09-25, publisher Tempo 13.2.2 and
-  InfluxDB 13.1.5 archives were checked for amd64, arm64 and arm. InfluxDB
-  still embeds gRPC v1.83.1; Tempo embeds patched gRPC v1.83.2 but still has
-  two fixed HIGH Tempo advisories in a targeted amd64 candidate scan. The
-  candidate remained at **9 HIGH, 0 CRITICAL** after its signed-plugin and
-  live-query smoke passed, so the experimental update was reverted. Grafana
-  13.2.2 remained the latest stable publisher application release. The separate
-  native amd64 core rebuild prototype from merged PR #63 selected Thrift
-  0.24.0 and passed startup, signed-plugin and live-query smoke. Its exact-image
-  Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold has **8 HIGH,
-  0 CRITICAL**: it no longer reports the single Apache Thrift HIGH finding in
-  Grafana's main executable, while all eight publisher-signed plugin findings
-  remain. The validator rejected that historical candidate. The later combined
-  core and prune **amd64** candidate at `f8fd060` has image ID
-  `sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`
-  and **2 HIGH, 0 CRITICAL**, both CVE-2026-84445 in signed Prometheus and
-  PostgreSQL plugins. Its core binary selected Thrift 0.24.0 and the smoke
-  check passed nine signatures, provisioning and live queries; the strict
-  validator still rejected the image. Compatible patched publisher-signed
-  releases have not been verified. Its combined arm64 build and scan are
-  untested: the manual workflow needs explicit labels for larger, ephemeral
-  GitHub-hosted native runners and a conservative 25 GiB free-disk preflight
-  margin. It does not use a self-hosted Docker daemon. Standard hosted runners
-  have 14 GB total storage and fail that preflight; no qualified larger native
-  arm64 runner is currently available. See
-  [Grafana core candidate](GRAFANA_CORE_CANDIDATE.md) for the pinned inputs and
-  evidence. Exact PostgREST binaries on both platforms
-  contain affected `aeson` versions under HIGH advisory HSEC-2026-0007;
-  inspected v14.18 and v16.3 images also remain affected. No complete
-  image-bound Haskell/native inventory is available. See
-  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md),
-  the [platform-specific investigation](POSTGREST_IMAGE_INVESTIGATION.md), and
-  the [patched source build plan](POSTGREST_PATCHED_BUILD_PLAN.md). The manual
-  [arm64 native build evidence](POSTGREST_NATIVE_BUILD_EVIDENCE.md) workflow is
-  **NOT RUN, deferred** because no suitable native arm64 machine or VM is
-  available. Its dependency-resolution dry run is separate evidence; no patched
-  binary or image has been built or installed, and this gate remains open.
+- **Item 1 — image security gate: Won’t fix in current scope — user disposition.**
+  The active Grafana recipe's recorded scan has **3 HIGH** findings: core Thrift and
+  gRPC in the required Prometheus and PostgreSQL plugins. The separate combined
+  core rebuild/prune **amd64** candidate removes Thrift but retains the two
+  plugin gRPC HIGH findings. PostgREST's platform binaries contain affected
+  `aeson` versions under HIGH advisory HSEC-2026-0007, and a complete image-bound
+  Haskell/native inventory is unavailable. These remaining findings are unresolved;
+  this disposition grants no production risk acceptance, and the strict
+  19-image gate still fails. Stop scheduling research, rebuilds and scans for
+  this item unless the user reopens it. See the [security evidence](CONTAINER_SECURITY.md),
+  [Grafana candidate](GRAFANA_CORE_CANDIDATE.md), and [PostgREST investigation](POSTGREST_IMAGE_INVESTIGATION.md).
 - **Disabled Auth source advisory:** A reviewed candidate locally replaces
   `pgproto3/v2` v2.3.3 with the same tagged source plus a negative DataRow field
   length guard. Its [source provenance and regression tests](../docker/auth/internal/forks/pgproto3/PATCH.md)
@@ -205,8 +257,8 @@ changes need affected-case testing before inheriting physical acceptance.
 
 | # | Work and required owner input | Next action and acceptance evidence |
 |---|---|---|
-| 2 | **SMS authentication and onboarding.** Operator chooses an SMS provider, owns credentials, and approves registration, account activation and abuse rules. Demo session/RLS/refresh/revocation checks already pass. | Backend and mobile maintainers implement real delivery and failure handling with no fixed-OTP fallback. Accept after rate-limit/abuse, provider-outage, account lifecycle and real-device receipt tests with owned credentials. |
-| 3 | **Public domain and HTTPS.** Operator supplies target host, DNS control and trusted certificate provisioning, after production authentication in item 2. Loopback CORS, body limits and local TLS checks already pass. | Deployment owner configures the real origin, proxy, certificate and network boundaries. Accept after authenticated end-to-end access, TLS/CORS/body-limit and firewall/mount/privilege checks on the target host; demo mode stays private. |
+| 2 | **SMS authentication and onboarding.** Pilot credentials and approved Flow/sender/PE identifiers were supplied; actual receipt and terminal/API enrollment/approval/login passed. Automated operator session/RLS/refresh/revocation checks pass. | Native login, live provider-outage and account-lifecycle acceptance remain. Honor the operator's deferred key rotation and no-more-delivery-tests instruction; no fixed-OTP fallback. A new operator supplies their own configuration and abuse policy. |
+| 3 | **Public domain and HTTPS.** The pilot has a dedicated Cloudflare hostname/tunnel with local/public doctor and Android Wi-Fi discovery passing. Gateway CORS/body limits and upstream recovery also passed. | Cellular and native authenticated end-to-end acceptance remain. Preserve the private boundary and other machines' routes. Current installation has no demo mode; new deployments require their own domain/ingress checks. |
 | 4 | **External alerts.** Operator supplies an owned receiver, credentials, incident contacts and escalation policy. Local targets, rules and synthetic ingestion already pass. | Operations owner wires the receiver and runbook. Accept after a delivered test alert, acknowledgement/escalation and recovery notification reach the intended contacts. |
 | 5 | **Off-host backups and disaster recovery.** Operator chooses encrypted off-host destination, key custody, schedule, retention and RTO/RPO. Private logical/storage backup and isolated restore integrity checks already pass. | Operations owner exercises host loss using only off-host copies. Accept after data and object integrity, access controls, measured recovery time and point, and runbook evidence meet the approved objectives. Local copies do not close this gate. |
 | 6 | **Production retention.** Operator/legal owner approves retention, deletion and legal-hold rules for business documents, invoices, PDFs, images and backups. Ephemeral/audit database retention supports preview/apply. | Backend/operations owner maps approved policy to preview, deletion and hold behavior. Accept after representative records prove retention and hold boundaries, with reviewed deletion evidence. No business-data deletion is inferred from the demo. |

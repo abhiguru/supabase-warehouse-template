@@ -2,7 +2,7 @@
 # Read-only acceptance of this checkout's Studio and postgres-meta pair.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-node "$ROOT/scripts/check-demo-config.mjs"
+node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" exec -T studio node --input-type=module <<'NODE'
 import assert from 'node:assert/strict';
 const request = (url, options = {}) => fetch(url, { ...options, signal: AbortSignal.timeout(30000) });

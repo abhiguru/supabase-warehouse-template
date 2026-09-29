@@ -3,13 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 source "$ROOT/scripts/pooler-readiness.sh"
-node "$ROOT/scripts/check-demo-config.mjs"
+node "$ROOT/scripts/doctor.mjs" --preflight
 if ! compose --profile pooler up -d --wait --wait-timeout 120 supavisor; then
   node "$ROOT/scripts/service-diagnostics.mjs"
   exit 1
 fi
 # Read only the non-secret tenant identifier; the password stays inside the DB container.
-tenant=$(node --input-type=module -e 'const {readEnv,root}=await import(process.argv[1]); const tenant=readEnv(`${root}/docker/.env`).POOLER_TENANT_ID; if(!tenant || !/^[a-zA-Z0-9_-]+$/.test(tenant)) process.exit(1); console.log(tenant);' "$ROOT/scripts/doctor-common.mjs")
+tenant=$(node --input-type=module -e 'const {readEnv,operatorEnvPath}=await import(process.argv[1]); const tenant=readEnv(operatorEnvPath()).POOLER_TENANT_ID; if(!tenant || !/^[a-zA-Z0-9_-]+$/.test(tenant)) process.exit(1); console.log(tenant);' "$ROOT/scripts/doctor-common.mjs")
 for port in 5432 6543; do
   wait_for_pooler_query "$port" compose exec -T db sh -c 'export PGCONNECT_TIMEOUT=3; PGPASSWORD="$POSTGRES_PASSWORD" psql -X -h supavisor -p "$1" -U "$2" -d postgres -v ON_ERROR_STOP=1 -Atc "SELECT 1"' sh "$port" "postgres.$tenant"
   if compose exec -T db sh -c 'export PGCONNECT_TIMEOUT=10; PGPASSWORD=warehouse-invalid-probe psql -X -h supavisor -p "$1" -U "$2" -d postgres -v ON_ERROR_STOP=1 -Atc "SELECT 1"' sh "$port" "postgres.$tenant" >/dev/null 2>&1; then

@@ -5,7 +5,13 @@ compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 compose --profile printing build cups
 image=$(compose --profile printing images -q cups)
 # A profile need not have a running container to have a built image.
-if [[ -z "$image" ]]; then image="${WAREHOUSE_PROJECT_NAME:-warehouse-template}-cups"; fi
+if [[ -z "$image" ]]; then
+  state="${WAREHOUSE_STATE_DIR:-}"
+  [[ "$state" == /* && -f "$state/config/compose.env" ]] || { echo 'Set WAREHOUSE_STATE_DIR to the installed operator state.' >&2; exit 1; }
+  project=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$state/config/compose.env")
+  [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || { echo 'Invalid owned Compose project name.' >&2; exit 1; }
+  image="${project}-cups"
+fi
 if docker run --rm --network none "$image" true; then
   echo 'CUPS unexpectedly accepted a missing administrator password.' >&2
   exit 1

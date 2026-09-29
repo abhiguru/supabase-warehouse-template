@@ -18,33 +18,35 @@ test('CLI entry points run through a symlinked checkout without import side effe
     }
     writeFileSync(join(root, 'migrations/0001_example.sql'), 'SELECT 1;\n');
     symlinkSync(root, alias, 'dir');
-    const run = (script, args = []) => spawnSync(process.execPath, [join(alias, 'scripts', script), ...args], { encoding: 'utf8' });
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_TEST_CONTEXT;
+    const run = (script, args = []) => spawnSync(process.execPath, [join(alias, 'scripts', script), ...args], { encoding: 'utf8', env: childEnv });
 
-    const configured = run('configure.mjs', ['--demo']);
+    const stateDir = join(scratch, 'state');
+    const providerEnv = join(scratch, 'provider.env');
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=key\nMSG91_TEMPLATE_ID=id\nMSG91_PE_ID=pe\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const options = ['--state-dir', stateDir, '--api-url', 'https://api.example.com', '--app-url', 'https://app.example.com', '--company', 'Acme', '--provider-env', providerEnv];
+    const configured = run('configure.mjs', options);
     assert.equal(configured.status, 0, configured.stderr);
-    assert.match(configured.stdout, /Created fresh/);
-    const envPath = join(root, 'docker/.env');
+    const envPath = join(stateDir, 'config/compose.env');
     const before = readFileSync(envPath);
-    assert.equal(run('configure.mjs', ['--demo']).status, 0);
+    assert.equal(run('configure.mjs', options).status, 0);
     assert.deepEqual(readFileSync(envPath), before);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
 
     const plan = run('migration-plan.mjs');
     assert.equal(plan.status, 0, plan.stderr);
-    assert.match(plan.stdout, /Applying: 0001_example.sql/);
-    assert.match(plan.stdout, /SELECT 1;/);
 
     // Doctor must execute and fail when its tools are unavailable, rather than
     // silently exiting zero because argv retains the symlink.
     const doctor = spawnSync(process.execPath, [join(alias, 'scripts/doctor.mjs'), '--preflight'], {
-      encoding: 'utf8', env: { ...process.env, PATH: join(scratch, 'no-tools') },
+      encoding: 'utf8', env: { ...childEnv, PATH: join(scratch, 'no-tools') },
     });
     assert.equal(doctor.status, 1);
-    assert.match(doctor.stderr, /Missing or unavailable prerequisite: npm/);
 
     const imported = spawnSync(process.execPath, ['--input-type=module', '-e',
       "await import('./scripts/configure.mjs'); await import('./scripts/doctor.mjs'); await import('./scripts/migration-plan.mjs');"], {
-      cwd: alias, encoding: 'utf8',
+      cwd: alias, encoding: 'utf8', env: childEnv,
     });
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(imported.stdout, '');

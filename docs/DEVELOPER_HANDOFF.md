@@ -1,265 +1,45 @@
-# Developer handoff — v0.2.2-demo
+# Independent operator developer handoff
 
-Current 2026-09-24 handoff checkpoint: the default demo starts authenticated Realtime
-for mobile orders/cart updates. Both companion jobs pin mobile
-`c127ef622d84f50ba15eb2fb41609e703b82bfcc`. See
-[container patch evidence](CONTAINER_SECURITY.md) and
-[remaining production work](PRODUCTION_DEPENDENCIES.md#remaining-production-work)
-for the owned-input and acceptance checklist. The historical CI fresh-setup
-HTTP 500 still needs diagnosis; it was not observed on the phone.
-The complete orders/cart physical-iPhone matrix passed at mobile
-`c943de56b460852e8bca71fbe481b40d0c5265e6` / backend
-`8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`, and the later gateway-affected
-cases passed at the same mobile commit / backend
-`53b983d3916dd44ec22c6ac2db05136ca81f3875`. Backend PR #42 merged as
-`f96f49f94e61bd7a57d7758c93b07c1324728d89` and mobile PR #28 merged as
-`f818c325b4d314b308187e3d12fd8d2e16d59db1`, with reviewed PR and
-exact-main CI passing for both. The merged pair is runtime-equivalent to the
-affected phone-tested pair; no phone ran the merge commits. See
-[READINESS.md](READINESS.md#gateway-regression--reviewed-merges-and-ci-complete-2026-09-23)
-for exact CI links and evidence limits. Existing release tags remain unchanged.
+See the [consolidated backend installation candidate](BACKEND_CORE_ACCEPTANCE.md)
+for exact version boundaries, backend verification and the closed recovery scope.
+The running pilot update is a separate operator action.
 
+Use [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) for the fresh Linux x86-64 host or
+Windows/Linux VM installation. Current setup accepts `--operator` only. Keep
+credentials and persistent state outside the checkout; obtain real MSG91 and
+HTTPS settings for the selected warehouse before its integration test.
+Read [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) for the dated VM findings,
+resolved setup shortcomings, safe operator-question sequence and remaining edge
+cases. The installation guide incorporates the prerequisites and configuration
+traps discovered during that pilot.
 
-## Current continuation point — local readiness 1–11
+[PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
+is the authoritative work and acceptance ledger. It distinguishes implemented
+software, automated verification, unfinished software, and external or physical
+acceptance. Green CI does not close the production handoff.
 
-The provider-independent work is implemented and recorded in
-[LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md). CI now rehearses
-gateway, Realtime, retention preview, load, monitoring, backup/isolated restore,
-and owned-service recovery in addition to the existing migration, API, contract,
-and secret checks. The companion mobile CI builds and audits a debug APK.
+The operator changes are under [backend PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+and [mobile PR #33](https://github.com/abhiguru/rn-warehouse-template/pull/33).
+Use the exact companion commit pinned in the active backend CI workflow when
+reproducing a tested pair. Record both checked-out commits and the native build
+ID in the VM acceptance record. These draft PRs require review before merging.
 
-Do not describe this as production acceptance. The dated image inventory has
-17/19 valid passing reports; Grafana findings and PostgREST scan coverage keep
-the gate open. External SMS, public DNS/TLS, alert delivery, operator
-policy/SLOs, and release signing/stores remain open. Payments, enabled
-telemetry delivery, and printer/sensor hardware need acceptance if included
-in the operator's scope. The [checklist](PRODUCTION_DEPENDENCIES.md#remaining-production-work)
-records the next owner input and acceptance evidence for each. Existing
-source-demo tags are immutable.
+For the new VM, first run local setup and doctor, then verify HTTPS discovery
+from warehouse Wi-Fi and cellular data. Verify real SMS login for the locally
+bootstrapped administrator, pending customer enrollment and approval, and the
+business flows. Reboot without an interactive login and verify reconnection.
+Run the backup and isolated restore drill before loading real warehouse data;
+replacement-host restoration remains a separate acceptance test.
+The [2026-09-27 replacement-host restore drill](REPLACEMENT_HOST_RESTORE_DRILL.md)
+records a successful isolated logical restore on a fresh VM, its failed attempts,
+and the remaining off-host recovery and cutover gates. The original pilot stayed
+live; that drill is not production recovery approval.
 
-## Final post-release closure — 2026-09-22
+Printing and sensor capabilities stay disabled until their software and hardware
+acceptance is recorded in the ledger. The existing image security findings remain
+**won't fix in current scope**; they are not patched, passed, or an unconditional
+production security approval.
 
-The local physical-iPhone source-demo handoff is complete. Mobile PR
-[#18](https://github.com/abhiguru/rn-warehouse-template/pull/18) merged as
-`9ba56ff122dc38dc57d6100de4c27599023d22b1`; backend PR
-[#13](https://github.com/abhiguru/supabase-warehouse-template/pull/13) merged as
-`cf18f1e43ab613310b1b13339ab97e8533861f9b`. Exact-main CI passed in mobile run
-[`35686164009`](https://github.com/abhiguru/rn-warehouse-template/actions/runs/35686164009)
-and backend run
-[`35686198287`](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35686198287).
-
-The final pair closes customer-authorized GRN/dispatch history, stable readable
-fixtures and order snapshots, per-GRN dispatch history, invoice navigation and
-the mobile session/onboarding fixes. Backend gates passed the complete migration,
-health/doctor, API, contract and scan matrix, including 94 RPC names / 129 typed
-calls with zero missing names or mismatches. The assigned fictional customer
-history and related flows passed on an iPhone 15 running iOS 26.6.2; shared
-runtime/navigation changes also have Android coverage. The earlier merged
-customer-history pair passed a fresh API-36 emulator smoke; the final pair
-passed Android JS export and shared regression tests. This Mac had no Android
-SDK, so the exact final pair was not rerun in an emulator. See the mobile
-repository's `docs/NATIVE_ACCEPTANCE.md` and closed dated review.
-
-The release-tag commands below reproduce the immutable baseline. Existing
-`v0.2.2-demo` tags remain unchanged. Enabled telemetry and production/distribution
-gates remain separate.
-
-## Active source-demo release — 2026-09-18
-
-Source-demo acceptance and publication are complete. Use `v0.2.2-demo` in
-both sibling repositories for the verified release pair. The backend tag targets
-`2959881d0e46a8797a98d10da8c7139217477476`; the mobile tag targets
-`6e6885786912fe9186285103e19de762e4ba88f8`. At publication, the active and
-documented CI copies pinned that mobile commit. Current review pins are above.
-
-Follow `CLEAN_INSTALL.md` with a unique Compose project and unused loopback
-ports. Run setup, doctor, health, rerun, stop, and restart with the same project
-name. Generate the sibling mobile environment through its script and use the
-same localhost API origin. Do not copy configuration, credentials, or database
-files from another checkout. Prove configuration and data preservation plus an
-Android debug login/connectivity smoke before treating onboarding as
-reproducible.
-
-This is a source-demo release, not a production or all-platform release.
-Post-release physical Android and iOS evidence has its own qualified scope,
-described above. Production SMS/TLS/operations, distribution, enabled telemetry,
-printing, sensors, and unsupported integrations remain separate gates.
-The reviewed merges, default-branch CI, exact-tag validation, and
-matching source-only prerelease publication completed on 2026-09-18.
-
-The 2026-09-18 fresh-clone rehearsal passes generated configuration, migrations,
-doctor/health, isolated API fixtures, setup rerun, owned stop/restart, preserved
-data/configuration, and the companion Android debug build/login/native smoke.
-The durable result is summarized in [SOURCE_DEMO_ACCEPTANCE.md](SOURCE_DEMO_ACCEPTANCE.md),
-and ownership/attribution evidence is in [ATTRIBUTION_REVIEW.md](ATTRIBUTION_REVIEW.md).
-
-This pair is a local warehouse development demo, Android first. Production setup
-remains blocked.
-
-## Historical `v0.2.1-demo` record
-
-The earlier release notes identify that historical commit pair and verification:
-[mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.1-demo),
-[backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.1-demo).
-The tags were published on 2026-09-14. See [release verification](RELEASE_CHECKLIST.md)
-for the backend CI checkout failure and subsequent follow-up evidence.
-
-## Prerequisites and paired checkout
-
-Use Node.js 22.18+ with npm, Git, Docker with Compose v2, and OpenSSL. Android
-native development needs a compatible JDK (17 or 21), SDK platform 36, build tools
-36.0.0, platform tools, and an emulator or USB device. Expo SDK 54 / React Native
-0.81.5 remain selected by the lockfile. Allow space for Docker images, npm,
-the Android SDK/NDK, and Gradle caches. iOS requires macOS, full Xcode and
-CocoaPods; see the mobile native-acceptance record for device evidence.
-
-```bash
-git clone --branch v0.2.2-demo https://github.com/abhiguru/supabase-warehouse-template.git
-git clone --branch v0.2.2-demo https://github.com/abhiguru/rn-warehouse-template.git
-cd supabase-warehouse-template
-npm ci
-bash setup.sh --demo
-npm run doctor
-```
-
-Setup exclusively creates `docker/.env` with mode 0600. Reruns preserve its bytes
-and permissions. It starts the database, applies checksummed migrations and demo
-authorization, then starts the API. Do not copy keys from another installation.
-The scripts check both Compose project name and owning checkout before operating.
-
-```bash
-cd ../rn-warehouse-template
-npm ci
-node scripts/create-env.mjs
-npm run doctor
-adb reverse tcp:18000 tcp:18000
-adb reverse tcp:8081 tcp:8081
-npm run android
-```
-
-The app's `.env` must contain `EXPO_PUBLIC_CONFIG_API_URL=http://localhost:18000`.
-Both backend public URL settings must use that exact origin. Android USB devices
-and emulators use `adb reverse`; the supported demo does not use a LAN origin.
-Physical iOS requires its own USB connection procedure; `adb reverse` does not
-apply, and the acceptance-only relays are not supplied by this repository.
-With several attached devices, select one using `adb -s SERIAL reverse ...`.
-Run `npm start -- --localhost` for later Metro sessions. Doctor is read-only; it
-checks prerequisites/configuration/connectivity without starting services or
-printing credentials. It does not start ADB or prove device connectivity: inspect
-`adb devices` and `adb reverse --list` yourself. `doctor -- --backend-only` checks
-the mobile bootstrap without requiring the Android SDK.
-
-## First login and warehouse walkthrough
-
-Enter admin **0000000001**, then demo OTP **123456**. For the assigned customer,
-use **0000000002** and the same code. No SMS is sent. Only fictional numbers
-0000000001–0000000009 work in explicit demo mode. OTP limits still apply (five
-requests/hour, twenty/day); repeated automated runs consume those allowances.
-
-1. As admin, open the seeded customer and create a GRN with the example item,
-   100 bags at 10 kg each, a receipt date, and a rack. Note the GRN number.
-2. Dispatch 20 bags from that GRN. Stock should be 80 bags / 800 kg. Reopening
-   stock and customer reports should show the committed movement.
-3. Sign out, then sign in as the assigned customer. View that customer's stock,
-   add an item to a cart, change its quantity, and remove it. Customers cannot
-   create GRNs, dispatch stock, or access another customer's images.
-4. Sign back in as admin. Configure a monthly item price using `price_type` and
-   `unit_price`. Dispatch the remaining stock before generating an invoice
-   preview; preview requires a fully dispatched, uninvoiced GRN. Review rates,
-   duration, labour, tax and rounding before saving.
-5. Download a GRN, dispatch, invoice or customer-stock PDF. Documents use generic
-   starter layouts. GRN/dispatch images use register → upload → confirm;
-   deletion revokes metadata access and removes stored bytes. A storage cleanup
-   failure is reported, not treated as complete deletion.
-
-### Pricing and document customization
-
-This is a customizable source template. Authorized warehouse staff can maintain
-default or customer-specific item rates, pricing type, weight bands, labour,
-tax and effective dates through Item Pricing. The billing-day calculation is a
-code-level business-policy extension point, not a runtime end-user setting in
-this release: customize the backend `calculate_invoice_duration` contract and
-its invoice-preview/save consumers when onboarding a cold-storage operator that
-uses different day, fortnight or month boundaries. Update `docs/INVOICE_RULES.md`
-and the duration, preview and rounding fixtures with every policy change.
-
-Generated PDFs are also starter templates. `COMPANY_NAME` supplies the displayed
-cold-storage name, while `functions/_shared/document-html.ts` defines the shared
-header, styling, metadata, table and footer used by GRN, dispatch, invoice and
-stock PDFs. Customize that template for the operator's name, logo, address,
-registration/tax details, terms and document header, then redeploy the PDF Edge
-functions and verify all four private-document flows. This customization is
-source/deployment work; the current app does not provide a branding editor.
-
-`npm run test:api` in the backend creates fictional fixtures for these API flows.
-The test uses a customer-specific monthly rate of 5, labour rate 2 and tax 5%.
-For 100 units dispatched after 31 days in legacy duration mode, preview asserts
-1.5 periods, storage 750, labour 200, subtotal 950, rounded tax 48 and total 998.
-Existing invoice save accepts client-supplied totals and rounds total/tax upward
-to whole units; it does not independently recalculate all supplied business values.
-These are preserved demo rules. See the backend
-[formula reference](https://github.com/abhiguru/supabase-warehouse-template/blob/main/docs/INVOICE_RULES.md)
-for duration boundaries, row/header rounding and unsupported contracts.
-
-## Architecture and contribution workflow
-
-`app/` contains Expo Router screens. Mobile services call PostgREST RPCs and
-private Storage; Redux holds UI state. Public bootstrap discovers the anon key.
-Only SecureStore restores session identity. Public configuration is cached by
-origin for one hour; full configuration uses origin/user/session for 60 seconds.
-Logout/account changes invalidate pending work and authenticated configuration.
-Server session checks, current roles and RLS remain authoritative.
-
-The backend runs Kong, PostgREST, PostgreSQL, Storage, Edge functions and the PDF
-renderer in a checkout-owned Compose project. Custom OTP sessions use opaque,
-rotating refresh credentials; GoTrue is not the demo login path. PDF Edge
-functions authorize the caller before rendering and private signed download.
-
-For changes, branch from current main in both public repositories. Use `npm ci`;
-commit lockfile changes deliberately. Mobile checks: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:setup`, `npx expo install --check`,
-`npm audit`, and Android export/native validation when applicable. Backend
-checks: `npm test`, `npm run test:migrations`, `npm run test:api`, and
-`node scripts/check-mobile-contract.mjs ../rn-warehouse-template --live`.
-Migration tests create/remove their own disposable database. Add a migration;
-never edit an already applied migration or broaden grants to satisfy a screen.
-Submit PRs and wait for required checks. Source-only demo releases retain the
-separate production gate and preserve historical tags.
-
-## Troubleshooting and shutdown
-
-| Symptom | Action |
-| --- | --- |
-| Missing prerequisite | Run doctor; install prerequisites yourself, then retry. |
-| Project belongs to another checkout | Export a unique `WAREHOUSE_PROJECT_NAME=warehouse-your-name` for every backend command. |
-| Port conflict | Before starting a fresh checkout, select distinct unused API/HTTPS/Studio/DB/renderer ports in its generated env. Update both backend public URLs, the mobile origin and ADB reverse mapping. |
-| Phone cannot fetch bootstrap | Verify USB authorization, selected device, reverse mappings, API health, and matching localhost origins. |
-| Existing env rejected | Inspect only your checkout's settings; setup intentionally preserves them. Never overwrite another installation's credentials. |
-| OTP throttled | Wait for the limit window; do not disable auth protections or reset a production database. |
-| Session expired/offline | Restore connectivity and retry; definitive authorization rejection requires login. Logout clears local credentials even if server revocation cannot be reached. |
-| Image cleanup failed | Metadata access is revoked, but a maintainer must inspect remaining bytes in this demo's private bucket before claiming complete removal. |
-| Invoice preview unavailable | Fully dispatch the GRN, check its pricing configuration and ensure it is not already invoiced. |
-| Decoder installation refused | Dependency version/content changed. Review the adapter and consumer tests; do not bypass postinstall or suppress the advisory. |
-
-Stop Metro with Ctrl-C. In the backend checkout run `bash stop.sh`; restart with
-`bash start.sh --demo`. Keep the same `WAREHOUSE_PROJECT_NAME` when customized.
-Stop preserves database/files. Remove only the reverse mappings you created:
-`adb reverse --remove tcp:18000` and `adb reverse --remove tcp:8081`.
-
-## Unsupported and separately untested
-
-Physical printing, sensors, customer document uploads, production SMS, barcode
-scanning and automatic offline/SQLite synchronization are unsupported. Realtime
-remains optional and default-disabled; local update delivery, customer isolation, reconnect, and authenticated channel
-authorization pass, while application subscription behavior and target-deployment
-capacity/resilience remain separate acceptance.
-Printing/sensor UI explains unavailability; hardware Edge endpoints return 503.
-The imported dual-rate pricing overload is not the mobile contract and currently
-fails its legacy table constraints; combined-rate semantics require a separate
-review. Change-category filtering is unavailable; other change-log filters remain.
-Payments/accounting integrations are not part of the documented demo workflow.
-
-Production scale/security, native telemetry delivery, distribution signing,
-retention enforcement, and privacy declarations remain separate checks. The
-complete source-demo physical-iPhone evidence is recorded in the mobile handoff.
-The scoped ownership and attribution review is complete; see
-ATTRIBUTION_REVIEW.md. A successful bundle is not a physical-device test.
+[Historical source-demo handoff](SOURCE_DEMO_DEVELOPER_HANDOFF.md) preserves the
+original exact commits and device evidence. Its installation commands apply only
+to the historical code. Preserve the immutable `v0.2.2-demo` tag.
