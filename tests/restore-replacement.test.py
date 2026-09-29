@@ -44,6 +44,14 @@ class RestoreFailureGates(unittest.TestCase):
                          for role in ("postgres", "realtime_admin")})
         check = restore.reviewed_realtime_partition_grants
         self.assertEqual(check(archived, archived + extra, peers, catalog), 2)
+        with self.assertRaises(ValueError):
+            check(archived, archived, peers, catalog)
+        with self.assertRaises(ValueError):
+            check(archived, archived, peers,
+                  catalog | {name: row(name, partition_day, owner="anon")})
+        with self.assertRaises(ValueError):
+            check(archived, archived, peers,
+                  catalog | {name: row(name, partition_day, is_partition=False)})
         for unexpected in (
                 Counter({"GRANT ALL ON TABLE public.orders TO anon;": 1}),
                 Counter({"REVOKE ALL ON TABLE public.orders FROM anon;": 1}),

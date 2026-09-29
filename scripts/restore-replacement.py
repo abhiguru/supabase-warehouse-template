@@ -714,10 +714,21 @@ def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_pa
         peer_bound = ("FOR VALUES FROM ('" + peer_day.isoformat() + " 00:00:00')" +
                       " TO ('" + (peer_day + timedelta(days=1)).isoformat() + " 00:00:00')")
         require(row["bound"] == peer_bound, "Archived Realtime partition bounds differ")
-    if not extra:
-        return 0
     new = {}
     today = datetime.now(timezone.utc).date()
+    new_partitions = set(live_partitions) - set(archived_peers)
+    for name in new_partitions:
+        match = re.fullmatch(r"messages_(\d{4})_(\d{2})_(\d{2})", name)
+        require(match is not None, "Unexpected new Realtime partition name")
+        partition_day = date(*(int(part) for part in match.groups()))
+        require(0 <= (partition_day - today).days <= 7,
+                "New Realtime partition date is outside the reviewed window")
+        row = live_partitions[name]
+        require(row["owner"] == owner and tuple(row[field] for field in security_fields) == expected_security,
+                "New Realtime partition owner or security properties differ")
+        expected_bound = ("FOR VALUES FROM ('" + partition_day.isoformat() + " 00:00:00')" +
+                          " TO ('" + (partition_day + timedelta(days=1)).isoformat() + " 00:00:00')")
+        require(row["bound"] == expected_bound, "New Realtime partition bounds differ")
     for statement, count in extra.items():
         match = pattern.fullmatch(statement)
         require(match is not None, "Restored catalog has extra privilege statements")
@@ -727,16 +738,11 @@ def reviewed_realtime_partition_grants(archived, actual, archived_peers, live_pa
         table = "realtime.messages_" + "_".join(match.group(2, 3, 4))
         require(table.removeprefix("realtime.") not in archived_peers,
                 "New Realtime partition was present in the archive")
-        following_day = (partition_day + timedelta(days=1)).isoformat()
-        row = live_partitions.get(table.removeprefix("realtime."))
-        require(row is not None and row["owner"] == owner,
-                "New Realtime partition owner differs from verified archive")
-        require(tuple(row[field] for field in security_fields) == expected_security,
-                "New Realtime partition security properties differ")
-        expected_bound = ("FOR VALUES FROM ('" + partition_day.isoformat() + " 00:00:00')" +
-                          " TO ('" + following_day + " 00:00:00')")
-        require(row["bound"] == expected_bound, "New Realtime partition bounds differ")
+        require(table.removeprefix("realtime.") in new_partitions,
+                "New Realtime partition grant has no matching catalog partition")
         new.setdefault(table, Counter())[(match[1], match[5])] += count
+    require({table.removeprefix("realtime.") for table in new} == new_partitions,
+            "New Realtime partition is missing reviewed grants")
     require(all(grants == reference for grants in new.values()),
             "New Realtime partition grants differ from archived partitions")
     return sum(extra.values())
