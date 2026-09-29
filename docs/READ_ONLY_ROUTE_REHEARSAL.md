@@ -30,6 +30,15 @@ that one object and a short-lived signed link created privately on the isolated
 restore. The signed path accepts only one nonempty `token` query parameter and
 rejects Authorization and apikey headers; the proxy sets `Cache-Control:
 private, no-store` and `Cloudflare-CDN-Cache-Control: no-store` on its response.
+The restored signing secret is also live on the original pilot. A signed URL
+for an archived object may therefore work on the pilot hostname too. For a
+public rehearsal, use a unique test-only object path created solely on the
+isolated restore. If the goal is to compare document bytes, copy the verified
+restored PDF to that path privately, then state that the public result proves
+delivery of identical bytes, not the archived object's own URL. Confirm the
+test path is absent from the archive, remove it after the test, and compare
+business rows and original object bytes before and after. Never send a
+service-role credential through the public route.
 Inspect the separate hostname's Cloudflare Cache Rules before exposing it:
 an Edge TTL that ignores origin cache headers can still cache private bytes.
 Never use a wildcard or allow a write endpoint. Keep signed links and tokens
@@ -44,8 +53,11 @@ loopback publication, add an exact `"upstream_host"` private IPv4 literal to
 the private config and set `upstream_port` to Kong's container port. The proxy
 still listens only on host loopback. First inspect Docker to prove that the
 address belongs to the isolated Kong container on the expected internal
-network, that **no** gateway port is published on the host, and that the host
-can reach the container address. Recreate and recheck this configuration after
+network, that **no non-loopback** gateway port is published on the host, and
+that the host can reach the container address. Docker may retain a configured
+`127.0.0.1` port binding even when the internal network gives it no effective
+host listener; inspect effective ports and listeners as well as the binding.
+Recreate and recheck this configuration after
 any container restart or replacement because container IPs can change. The
 config loader rejects public, loopback, link-local, DNS and IPv6 values for an
 explicit `upstream_host`. Do not expose Kong directly to compensate for an
