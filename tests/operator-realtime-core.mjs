@@ -2,15 +2,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import WebSocket from 'ws';
-import { readEnv } from '../scripts/doctor-common.mjs';
+import { operatorFixture } from './operator-fixture.mjs';
 
-const state = process.env.WAREHOUSE_STATE_DIR;
-assert.match(state || '', /^\/home\/testvm\/warehouse-pilot\/state\/core-backend-test-[0-9]+$/);
-const env = readEnv(`${state}/config/compose.env`);
-assert.equal(env.KONG_HTTP_PORT, '18080');
-assert.equal(env.AUTH_MODE, 'operator');
-const base = 'http://127.0.0.1:18080';
-const anon = env.ANON_KEY;
+const { env, base, anon } = operatorFixture();
 const query = sql => {
   const p = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`,
     `${env.WAREHOUSE_PROJECT_NAME}-db-1`, 'psql', '-X', '-qAt', '-U', 'supabase_admin', '-d', 'postgres',
@@ -19,8 +13,13 @@ const query = sql => {
   return JSON.parse(p.stdout.trim());
 };
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
-function login(phone) {
-  const challenge = query(`public.operator_prepare_otp(${quote(phone)})`);
+async function login(phone) {
+  let challenge = query(`public.operator_prepare_otp(${quote(phone)})`);
+  if (challenge.code === 'resend_cooldown') {
+    const remaining = Math.max(1000, Math.min(65000, Date.parse(challenge.retry_at) - Date.now() + 1000));
+    await new Promise(resolve => setTimeout(resolve, remaining));
+    challenge = query(`public.operator_prepare_otp(${quote(phone)})`);
+  }
   assert.equal(challenge.success, true, 'fictional challenge prepared');
   assert.equal(query(`public.operator_finish_otp(${quote(challenge.data.request_id)}::uuid,true,'mock-provider-only')`).success, true);
   const verified = query(`public.operator_verify_otp(${quote(phone)},${quote(challenge.data.otp_code)})`);
@@ -35,7 +34,7 @@ async function api(path, token, body, method = body === undefined ? 'GET' : 'POS
   let data; try { data = JSON.parse(raw); } catch { data = null; }
   return { ok: response.ok, status: response.status, data };
 }
-const socketUrl = `ws://127.0.0.1:18080/realtime/v1/websocket?apikey=${encodeURIComponent(anon)}&vsn=1.0.0`;
+const socketUrl = `ws://127.0.0.1:${env.KONG_HTTP_PORT}/realtime/v1/websocket?apikey=${encodeURIComponent(anon)}&vsn=1.0.0`;
 function join(token, ref) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(socketUrl, { handshakeTimeout: 10000,
@@ -72,9 +71,9 @@ async function waitFor(check, label, timeout = 15000) {
   while (Date.now() < end) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 100)); }
   throw new Error(`Timed out: ${label}`);
 }
-const admin = login('919888888871');
-const customerA = login('919888888872');
-const customerB = login('919888888873');
+const admin = await login('919888888871');
+const customerA = await login('919888888872');
+const customerB = await login('919888888873');
 const rows = await api('/rest/v1/customers?select=id,name', admin);
 assert.ok(rows.ok && rows.data.filter(row => row.name.startsWith('Backend Test Customer ')).length === 2, 'fictional customers available');
 const a = rows.data.find(row => row.name.endsWith('A')).id;
@@ -99,7 +98,7 @@ try {
     const invalid = await join('invalid.jwt.value', 'invalid'); sockets.push(invalid.socket);
     assert.notEqual(invalid.status, 'ok', 'invalid JWT rejected');
   } catch (error) {
-    assert.match(String(error?.message), /401|403|timeout|socket hang up/i, 'invalid JWT handshake rejected');
+    assert.match(String(error?.message), /401|403/i, 'invalid JWT handshake rejected');
   }
   const marker = `Backend realtime ${Date.now()}`;
   for (const id of [cartA.data, cartB.data]) {

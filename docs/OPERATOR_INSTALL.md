@@ -14,6 +14,28 @@ unfinished printer/sensor integrations or complete replacement-host recovery.
 Use the operator PR pair linked by [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)
 until it has been reviewed and merged; do not assume the changes are on `main`.
 
+## Select the reviewed repository version
+
+Until PR #68 is reviewed and merged, use its published operator branch. Check the
+PR's recorded full commit and passing CI before executing installation commands:
+
+```bash
+git clone --branch codex/operator-install --single-branch \
+  https://github.com/abhiguru/supabase-warehouse-template.git
+cd supabase-warehouse-template
+git rev-parse HEAD
+git status --porcelain
+```
+
+Compare the printed commit with [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+and require a clean status. Record that exact commit in the instance handoff.
+After merge, the reviewed merge commit may be checked out directly; do not use an
+unrelated moving branch or assume an operator release tag exists. The current
+release gate still blocks publishing an operator release. See the
+[backend acceptance record](BACKEND_CORE_ACCEPTANCE.md) for test-only setup and
+remaining release gates. Instance configuration belongs outside the checkout;
+no source edits should be necessary for the documented installation.
+
 ## Linux host preparation
 
 Before starting, the developer must give the AI installation agent noninteractive

@@ -99,28 +99,15 @@ jobs:
         with:
           path: backend
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: abhiguru/rn-warehouse-template
-          # Do not infer a branch in a different repository.
-          ref: 8240cce9121a797fd0cf2e00e568a61985814ddb
-          path: mobile
-          persist-credentials: false
-      - name: Record tested commit pair
-        run: |
-          git -C backend log -1 --format='Backend %H'
-          git -C mobile log -1 --format='Mobile %H'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci
         working-directory: backend
-      - run: npm ci
-        working-directory: mobile
       - name: Prepare private operator state
         run: |
-          mkdir -m 700 "$RUNNER_TEMP/warehouse-ci-state"
-          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/warehouse-ci-state" >> "$GITHUB_ENV"
+          mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20260929"
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20260929" >> "$GITHUB_ENV"
       - name: Configure isolated gateway regression network
         run: |
           cat >> docker/docker-compose.override.yml <<'YAML'
@@ -137,17 +124,23 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
           cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
           SMS_PROVIDER=msg91
-          MSG91_AUTH_KEY=ci-offline-no-delivery
+          MSG91_AUTH_KEY=isolated-no-delivery-key
           MSG91_TEMPLATE_ID=000000000000000000000001
           MSG91_PE_ID=0000000000000000001
           MSG91_SENDER_ID=CITEST
           ENV
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
-            --api-url https://ci-warehouse.example.test --company 'CI Warehouse' \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919000000001 --admin-name 'CI Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
         working-directory: backend
       - run: node scripts/doctor.mjs --local
+        working-directory: backend
+      - name: Operator backend HTTP, documents, Realtime and account lifecycle
+        run: |
+          node tests/operator-api-core.mjs
+          node tests/operator-realtime-core.mjs
+          node tests/operator-api-final.mjs
         working-directory: backend
       - name: Studio and metadata compatibility
         run: npm run test:studio
@@ -186,9 +179,9 @@ jobs:
           sha256sum "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.sha256
           stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.mode
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
-            --api-url https://ci-warehouse.example.test --company 'CI Warehouse' \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919000000001 --admin-name 'CI Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
           sha256sum -c /tmp/warehouse-config.sha256
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend

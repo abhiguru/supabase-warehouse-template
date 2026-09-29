@@ -4,16 +4,9 @@
 // service-only database functions and their one-time codes never enter logs.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readEnv } from '../scripts/doctor-common.mjs';
+import { operatorFixture } from './operator-fixture.mjs';
 
-const state = process.env.WAREHOUSE_STATE_DIR;
-assert.match(state || '', /^\/home\/testvm\/warehouse-pilot\/state\/core-backend-test-[0-9]+$/);
-const env = readEnv(`${state}/config/compose.env`);
-assert.equal(env.KONG_HTTP_PORT, '18080');
-assert.match(env.WAREHOUSE_PROJECT_NAME, /^warehouse-[a-f0-9-]+$/);
-assert.equal(env.AUTH_MODE, 'operator');
-const base = 'http://127.0.0.1:18080';
-const anon = env.ANON_KEY;
+const { env, base, anon } = operatorFixture();
 const sql = query => {
   const result = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`,
     `${env.WAREHOUSE_PROJECT_NAME}-db-1`, 'psql', '-X', '-qAt', '-U', 'supabase_admin', '-d', 'postgres',

@@ -1,5 +1,8 @@
 # Operator pilot setup findings and edge cases
 
+Recovery rehearsal has ended. Do not resume historical recovery-host, archive
+transfer or routing instructions. See the [current backend acceptance record](BACKEND_CORE_ACCEPTANCE.md).
+
 Updated 2026-09-27 from the isolated Linux VM pilot. Read this alongside
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) and the
 [production acceptance ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work).

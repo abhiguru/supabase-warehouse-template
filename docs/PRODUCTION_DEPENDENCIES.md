@@ -1,5 +1,9 @@
 # Remaining production work
 
+See the [consolidated backend installation candidate](BACKEND_CORE_ACCEPTANCE.md)
+for exact version boundaries, backend verification and the closed recovery scope.
+The running pilot update is a separate operator action.
+
 Updated 2026-09-27. This is the current handoff checklist. It uses the existing
 nine-item production follow-up numbering, which differs from the eleven local
 work areas in [LOCAL_PRODUCTION_READINESS.md](LOCAL_PRODUCTION_READINESS.md).

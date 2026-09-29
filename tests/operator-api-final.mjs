@@ -1,13 +1,9 @@
 // Final backend-only checks against the disposable fictional operator stack.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readEnv } from '../scripts/doctor-common.mjs';
+import { operatorFixture } from './operator-fixture.mjs';
 
-const state = process.env.WAREHOUSE_STATE_DIR;
-assert.match(state || '', /^\/home\/testvm\/warehouse-pilot\/state\/core-backend-test-[0-9]+$/);
-const env = readEnv(`${state}/config/compose.env`);
-assert.equal(env.KONG_HTTP_PORT, '18080');
-const anon = env.ANON_KEY, base = 'http://127.0.0.1:18080';
+const { env, base, anon } = operatorFixture();
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 function sql(expression) {
   const p = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`,

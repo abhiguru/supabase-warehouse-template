@@ -1,5 +1,9 @@
 # Independent operator developer handoff
 
+See the [consolidated backend installation candidate](BACKEND_CORE_ACCEPTANCE.md)
+for exact version boundaries, backend verification and the closed recovery scope.
+The running pilot update is a separate operator action.
+
 Use [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) for the fresh Linux x86-64 host or
 Windows/Linux VM installation. Current setup accepts `--operator` only. Keep
 credentials and persistent state outside the checkout; obtain real MSG91 and
