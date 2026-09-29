@@ -8,6 +8,33 @@ The `restore` action builds only the pinned database image, creates and inspects
 
 The `build` and `cache` actions prepare the other seven core images and Functions dependencies. Cache preparation uses source files and a dummy manifest with no live credentials, then proves Functions starts with `network none`. `verify` starts the ten core services only on the internal network, checks identity, original anon/service credentials, private bucket and object bytes, anonymous denial, catalog owners and privileges, live-container outbound TCP failure, and 30 seconds of healthy recovery after an owned database restart. Raw Compose, PostgreSQL, Docker, HTTP and cache output stays under the private state's `evidence/` directory. `stop` stops only containers bearing this checkout's Compose ownership labels and retains private data and diagnostics.
 
+## Choosing current inputs and preserving evidence
+
+The command block below records a historical source/backup pair; do not copy its
+commit, username, UID/GID or archive filename into a new drill without checking
+that attempt's instructions. The later accepted clean-host rehearsal pinned
+`d8766b6a29c95c8a0952eed4e5880139b0d0bd34`. Keep that checkout detached and
+verify HEAD exactly. Candidate PR #77 at
+`e91622a019d2cf5403ffe81e5fdaf1affd373c7a` has additional runtime-partition
+checks and author validation; it does not silently replace the accepted pin.
+Read [the consolidated recovery lessons](OPERATOR_SETUP_NOTES.md#replacement-host-recovery-lessons-2026-09-29)
+before provisioning. No new-instance setup command belongs in this procedure.
+
+For a timed drill, record the failure declaration before retrieval, select a
+fresh verified archive/receipt pair from the operator's accepted source disk,
+and verify size/hash before safe intake. Transfer the files; do not mount the
+source filesystem writable on both VMs. If safe retrieval is unavailable, stop.
+Use the receipt's source snapshot timestamp to calculate RPO. Record local RTO
+only through the declared passing local verification gates; report cleanup and
+public-route work separately.
+
+Create only the private parent/evidence directory yourself; `prepare` creates
+the new state path. Failed or completed state cannot be reused. Preserve each
+attempt and use the installation user, correct private modes and explicit Node
+PATH for `sg docker`. Run `stop` on owned state on failure as well as success,
+inspect the outcome, and remove temporary Docker access. A tool interruption
+requires checking surviving processes before another run.
+
 ## Operator sequence for another isolated drill
 
 First run `sudo -n true` and inventory disks, mounts, free space, listening ports, containers, and running services. Stop if effective noninteractive sudo is unavailable; configure it with `visudo` outside chat. Use the filesystem UUID, not a guessed `/dev/sdX` name. Confirm the USB is not mounted elsewhere, then mount it read-only as the installation user, using `uid=$(id -u),gid=$(id -g),fmask=0177,dmask=0077,ro,nosuid,nodev,noexec`. Do not alter `Archive.zip` or any older backup. Keep the USB tar and every extracted file outside Git in private directories. Do not print their contents or raw logs.
@@ -75,6 +102,9 @@ partition bound, and any other extra privilege statement. Archived grants and
 the existing narrow normalization of redundant `postgres` function revokes
 remain mandatory. A prior version passed one local full restore, but independent
 review found owner, attachment-text, and incomplete peer-ACL gaps. The revised
-verifier passed a fresh isolated full restore and six local failure-gate tests,
-including an unexecuted function-body attachment decoy. Independent review is
-still required before it can replace the pinned installer commit.
+verifier later caught a quoted peer-grant bypass and an ungranted new-table
+bypass. At `e91622a`, seven failure-gate tests, including an unexecuted
+function-body attachment decoy, and a fresh isolated full restore passed. The
+separate agent's original three findings are addressed; that agent has not
+reviewed the final follow-up commits. Do not silently replace the pinned
+installer commit.

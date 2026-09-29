@@ -14,6 +14,16 @@ unfinished printer/sensor integrations or complete replacement-host recovery.
 Use the operator PR pair linked by [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)
 until it has been reviewed and merged; do not assume the changes are on `main`.
 
+## Restoring an existing warehouse
+
+Do not use this new-instance setup procedure or `setup.sh` to recover an existing
+warehouse. Start with the [replacement-host installer](REPLACEMENT_HOST_RESTORE_INSTALLER.md)
+and the [recovery setup lessons](OPERATOR_SETUP_NOTES.md#replacement-host-recovery-lessons-2026-09-29).
+Restore the original identity, credentials, data and access controls into a new
+private state directory. Keep the original writer and its route untouched during
+an isolated rehearsal. Local restore acceptance and public cutover are separate
+operations with separate evidence and authorization.
+
 ## Linux host preparation
 
 Before starting, the developer must give the AI installation agent noninteractive
