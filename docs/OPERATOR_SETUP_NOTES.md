@@ -1008,3 +1008,36 @@ no permission was granted or rejection bypassed. An explicit emulator-only
 approval question is pending. Existing PDF API authorization/content PASS is
 separate from external reader rendering. No overnight suite, production change,
 physical-phone change or real SMS was performed in this blocker-fix run.
+
+
+Final invoice follow-up checkpoint: mobile57add4456cf47465771e3962f041928f8d6029d7
+fixture version2026093010/x86_64 built7m32s, artifact audit/signature and installed
+readback PASS. SHA256 c642950d24922b89119b9dacf91e0565a04f75f47e83bb3d286af07d12457676.
+Native saved list/overview/breakdown PASS: net173+tax9=182, surcharge2.50 and
+labour20 shown as included, discount case net168+tax9=177. New IRH01 native
+review/confirmation/save invoice20261007 PASS: storage0.44, tax1, rounding0.56,
+total2. Guarded PostgreSQL numeric line calculation, saved header/duration and
+generated private PDF metadata PASS528. The PDF renders saved header and
+quantity/rate/duration fields; it does not separately print a storage subtotal.
+
+First final-artifact cold launch again encountered SystemUI ANR (private525),
+so overnight readiness remains FAIL. One recorded Wait recovery allowed only
+targeted invoice diagnostics. User explicitly approved Librera9.5.7/code7222
+manage-all-files permission on the disposable emulator; verified grant520.
+Native PDF rendering remains a separate check. Physical phone unchanged.
+Mobile runner correctionb22c3b5 fixes eight CI lint errors without weaker rules;
+local lint0errors/1468existingwarnings and six regression tests PASS. Full42setup
+checks and guarded read-only runner/resume smoke remain separately scoped.
+Backend CI36706798289 on9568421: contract/secrets PASS; Container source
+dependency audit FAIL (brace-expansion/fast-uri), downstream jobs SKIPPED.
+Deferred security findings and release gates remain open. No overnight run.
+
+Final native PDF prerequisite result: after the explicit emulator-only permission
+approval, final57/code3010 normal SharePDF -> verified Librera7222 -> Scroll mode
+rendered invoice20261007. Visible tax1/total2 and line fields matched; the actual
+reader-copy PDF number/header/line text reconciled529 PASS. Native rendering527
+and prior viewer failures remain preserved. This closes the reader prerequisite
+for this owned emulator only; cold readiness remains FAIL and the full overnight
+plan/fault controls/second-instance work remain incomplete. Mobile main install
+examples now pinb22c3b5 (same app/config/dependency files as built57, corrected
+safeguards); example3011/full clean new-pin build remains NOT TESTED.
