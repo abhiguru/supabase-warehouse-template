@@ -52,7 +52,46 @@ pinned and make corrections in a separate review branch/worktree. The current
 release gate still blocks publishing an operator release. See the
 [backend acceptance record](BACKEND_CORE_ACCEPTANCE.md) for test-only setup and
 remaining release gates. Instance configuration belongs outside the checkout;
-no source edits should be necessary for the documented installation.
+no hidden source edits should be necessary for the documented installation.
+The explicit reviewed correction below records why its source differs from the
+starting baseline.
+
+## Reviewed gateway correction before a new corrected installation
+
+The requested baseline above remains the starting record. On this VMware host,
+Kong3.9.3 inherited `search localdomain` from Docker. The gateway waited about
+four seconds on `rest.localdomain` SERVFAIL retries although Docker answered
+`rest` immediately. Two public-configuration reads took about eight seconds;
+one native server-return discovery timed out. Direct REST reads were15–39ms.
+Do not hide this by extending the client timeout or changing host DNS.
+
+For the corrected independent test sequence, fetch and pin the reviewed source
+before configuring new state, then record this second source commit explicitly:
+
+```bash
+git fetch origin codex/fresh-vm-operator-install
+git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
+git rev-parse HEAD
+git status --short
+```
+
+This is draft PR#79 source, not a merged release or the originalf18 runtime.
+Its Compose configuration sets `dns_search: "."` for Kong alone, using the
+[supported Compose search-domain setting](https://docs.docker.com/reference/compose-file/services/#dns_search).
+The fresh clean fixture06 installed this exact source with only the explicitly
+recorded private port/subnet overlay: setup/local doctor and functional unit,
+migration, gateway, changed-upstream-IP, core API, Realtime, final API, Studio
+and retention-preview checks PASS. REST proxy latency became0–2ms, public
+discovery84ms, and missing/invalid API keys remained401. These are local fixture
+measurements, not production capacity claims. The deferred container audit still
+fails; no release approval is implied.
+
+The already installed Test1 remains pinnedf18 with its earlier doctor evidence;
+this correction has not silently changed that runtime. Apply a correction to an
+existing instance only through its owning checkout/state, recording the source
+change and preservation/health results. Never replace host DNS, delete volumes
+or recreate another instance's gateway. See UNATTENDED_FIXTURE.md for clean
+separate state rather than borrowing an installed warehouse for regression tests.
 
 ## Linux host preparation
 

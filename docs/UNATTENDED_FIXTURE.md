@@ -14,9 +14,10 @@ postconditions and native retry evidence. Link-offline tests do not establish
 whether a write committed before its response was lost.
 
 Use a clean checkout of reviewed backend
-`d068d77872110ede3b2c5097ae1d04ad2a3b9876` (review PR #79), fetched from
+`2584496f20a86595be2cf1996e9b4e5f82164fd8` (review PR #79), fetched from
 `codex/fresh-vm-operator-install`. Record the full checked-out commit and any
-local configuration overlay. Clone public source with umask 022. Use absolute,
+local configuration overlay. This source includes Kong-only root DNS search to
+avoid an inherited VM LAN suffix; do not add hidden DNS/source edits. Clone public source with umask 022. Use absolute,
 unused paths outside Git for state and private evidence. The fixture guard
 requires the state basename `core-backend-test-` followed by digits, owned by
 the current user, mode 0700, without symlinks. Never rename another instance to
@@ -31,7 +32,7 @@ umask 022
 git clone --branch codex/fresh-vm-operator-install \
   https://github.com/abhiguru/supabase-warehouse-template.git "$FIXTURE_CHECKOUT"
 cd "$FIXTURE_CHECKOUT"
-git checkout --detach d068d77872110ede3b2c5097ae1d04ad2a3b9876
+git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
 git rev-parse HEAD
 git status --short
 ```

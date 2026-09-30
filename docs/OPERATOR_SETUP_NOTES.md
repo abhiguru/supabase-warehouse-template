@@ -1179,3 +1179,28 @@ install PASS592–594; no full overnight/physical/release claim. Remotea9 CIrun3
 is confirmed FAIL at Container source dependency audit. Contract and redacted
 source/history scan PASS; migrations, Isolated operator installation and Grafana
 jobs SKIPPED. Preserve deferred dependency and downstream release gates.
+
+### Inherited Kong DNS search suffix delays native discovery
+
+Ubuntu24.04.3/VMware, Docker29.8.1/Compose2.40.3/Kong3.9.3 on both owned
+fixtures: `GET /functions/v1/get-public-config` took8.09–8.14s; a native
+code3013 return/cold discovery timed out. Independent ownership-guarded direct
+REST reads15–39ms; gateway reads4014–4071ms with X-Kong-Proxy-Latency4001–4002
+and upstream10–33ms. Private namespace DNS-only trace showed SERVFAIL for
+rest.localdomain at0/2/4s while rest A answered immediately. Docker resolver
+inherited search localdomain despite ndots:0. This establishes the gateway
+search delay; the exact individual native timeout cause remains unproven.
+
+Review2584496f20a86595be2cf1996e9b4e5f82164fd8 sets Kong dns_search to the
+DNS root, preserving host/other-container resolvers, TTLs, credentials,
+authentication and upstream-IP refresh. Fresh clean fixture06 (new identity,
+state and credentials; loopback18780/subnet10.233.248/24 declared) setup and
+local doctor PASS599. Effective DnsSearch[.] confirmed; three REST reads4–40ms,
+proxy0–2ms, missing/invalidkeys401 and identity discovery84ms PASS.62units,
+migrations, gateway, upstream-IP replacement without Kong restart, full core API,
+A/B Realtime, final API/private images/PDFs, Studio and retention preview PASS
+once in the separately owned fixture. All raw results retained privately.
+The installed Test1 and emulator fixtures have not yet received this correction
+at this checkpoint; original latency/native failures remain preserved. The
+container audit remains an existing FAIL. Main installation and fixture sequences
+now pin the explicit reviewed correction before creating new state.
