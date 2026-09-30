@@ -44,7 +44,7 @@ remain closed.
 | Backend dependency installation/unit checks | PASS with historical failure | npm ci; corrected review 48/48 tests under umasks 077 and 022. Baseline under 077 initially failed 1 permission fixture; only test fixture chmod changed in review |
 | Disposable migrations/auth/billing checks | PASS | Separate owned disposable database; original guards unchanged; no fixture issuer used against installed warehouse |
 | Current container dependency audit | FAIL | Storage undici 7.29.0 HIGH and ip-address MODERATE advisories; metadata clean. Historical seven-job green CI is retained but does not override current failure |
-| Review CI | FAIL overall | Current [run 36647977248](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36647977248) at `11e8069aac8d81ce788800909c4ec58f411af0f5`: contract and secret scan PASS, validation audit FAIL, dependent jobs SKIPPED. Prior [run 36644865092](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36644865092) has the same recorded outcome. No skipped job counted as pass |
+| Review CI | FAIL overall | Current code-head [run 36659188131](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36659188131) at `ee5b4936e2aa644667fe617f79e2a48b2eb67bbb`: contract and secret scan PASS, validation audit FAIL, dependent jobs SKIPPED. Prior [run 36644865092](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36644865092) has the same recorded outcome. No skipped job counted as pass |
 | Clean corrected-guide reproduction | PASS, scoped | Clean checkout of review commit `8bca643230961e2c91ace9b5a1a2491dd89c5126`, readable public source, separate `core-backend-test` state, fictional guard identity/origin and port 18080. Setup and safe rerun preserved private config/object hashes; owned fixture services stopped and state retained. This is local reproduction, not a second public tunnel/device installation |
 | Guarded core-backend fixture APIs | PASS, disposable only | Identity/roles, A/B customer isolation, receipt/cart/order/queue, invalid quantity/retry/concurrent dispatch, partial/final stock, invoice 998, four private signed PDFs, refresh/replay/logout, Realtime/reconnect, image lifecycle/privacy/oversize and disabled-account revocation. No guards weakened |
 | Real installed administrator/customer authentication | PASS | Real SMS login, pending enrollment, authenticated approval and post-approval login; provider acceptance also confirmed by received/verified codes |
@@ -57,7 +57,7 @@ remain closed.
 | Real installed fictional billing/invoice | PASS | Existing documented Apr 1/May 2 legacy example: price 5, labour 2, tax 5%; subtotal 950, rounded tax 48, total 998. This validates the example, not an invented production billing policy |
 | Real installed PDFs/concurrent stock | PASS | Real Customer A generated/downloaded all four valid signed PDFs; anonymous/customer direct reads denied. Two simultaneous 7-of-10 dispatches produced exactly one success and balance 3 |
 | Real installed Customer A/B isolation | BLOCKED | Operator has no third owned phone. Real Customer A cannot read a separate fictional B record, create its cart or generate its stock PDF (PASS one-way); reciprocal real B authentication remains blocked. Disposable two-session fixture passes are separate evidence |
-| Android native acceptance | PASS for build/install/manual discovery only | Clean corrected 8d9da8e APK built, audited, installed and read back with matching hash on Samsung SM-A346E / Android 15. Manual dedicated-server identity and HTTP/path rejection passed. Other native cases remain open; libusb ADB trial passed 61 probes over five minutes without a restart/reset/disconnect; root cause of earlier native-backend read failures remains unresolved. See mobile notes for full source/artifact boundary |
+| Android native acceptance | PASS, scoped | Clean corrected 8d9da8e APK built, audited, installed and read back with matching hash on Samsung SM-A346E / Android 15. Manual/QR dedicated-server identity, HTTP/path rejection, real administrator SMS login, Wi-Fi and authenticated Home/launcher persistence passed. Customer native workflows, authenticated cold restore, cellular and disconnected operation remain open; libusb ADB trial passed 61 probes over five minutes without a restart/reset/disconnect; root cause of earlier native-backend read failures remains unresolved. See mobile notes for full source/artifact boundary |
 | Cross-instance native switching | BLOCKED | No suitable second isolated public instance; do not use the pilot |
 | Cellular, unattended restart | NOT TESTED | No evidence yet; enabled restart configuration does not prove host restart recovery |
 
@@ -577,3 +577,31 @@ code running and a new candidate refused the occupied socket. Correct exact
 process selection stopped only the owned bridge, its handler removed the IPC
 socket, and the restarted candidate passed the boundary smoke. No protected
 host was contacted; original attempts remain private.
+
+
+### Current unattended results and repeat instructions
+
+The fixture checkout subsequently advanced to
+`ee5b4936e2aa644667fe617f79e2a48b2eb67bbb` for the bridge boundary fix; the
+local CI network overlay remains recorded. [UNATTENDED_FIXTURE.md](UNATTENDED_FIXTURE.md)
+now gives the full disposable state, no-delivery provider, port, network,
+ordered checks, TLS/IPC bridge and cleanup sequence. The installed Test Warehouse
+1 runtime remains baseline f18f51d without source-content changes.
+
+Current review CI [36659188131](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36659188131)
+on ee5b493 completed with validation FAIL, contract PASS and redacted source/history
+scan PASS; dependent operator installation, migrations and Grafana jobs were
+SKIPPED. Preserve the merged baseline's seven passing jobs as historical evidence,
+not evidence for this review head. The current container-audit failure remains
+unresolved; no dependency upgrade/security disposition is implied.
+
+Android API 35 software emulation booted and the fixture APK installed with a
+matching read-back hash, but repeated System UI ANRs/crashes prevented reliable
+UI automation. Reduced rendering resolution, disabled animations and emulated
+Bluetooth did not establish stability. Crash-buffer inspection found system
+failures and no fixture-package crash entry; this does not establish an app
+root cause. The private UI driver initially used cached bounds; actions were
+corrected to require a fresh hierarchy and foreground ownership, and refused
+action when the app was no longer foreground. No stale-coordinate tap counts
+as native acceptance. A separate API 30 software-emulator trial is recorded in
+the mobile notes. No physical lock bypass, host change or host reboot occurred.

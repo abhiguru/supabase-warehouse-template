@@ -510,6 +510,15 @@ for business decisions before adopting production rules. Read the
 for repository fixtures: they require their own fictional identity, origin,
 state name and port. Preserve those guards and never point them at this warehouse.
 
+## Optional unattended fictional fixture checks
+
+For unattended backend/native checks, follow [the isolated fixture sequence](UNATTENDED_FIXTURE.md)
+in a **new disposable checkout and state**. It uses an explicit no-delivery
+provider and the repository's unchanged ownership/fictional-identity guards.
+Never point those scripts or the mock-delivery bridge at the installed warehouse.
+Mock delivery does not establish MSG91 acceptance. Emulator execution also needs
+its own resource checks; boot completion and compilation alone are insufficient.
+
 ## Ordinary operation
 
 Use the **installed checkout**, the recorded state directory and a shell with
