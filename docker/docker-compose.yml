@@ -42,6 +42,10 @@ services:
   kong:
     image: kong:3.9.3-ubuntu
     restart: unless-stopped
+    # Kong's resolver can wait on an inherited, unavailable search domain even
+    # when Docker has answered the bare service alias. Resolve Compose aliases
+    # at the DNS root; do not inherit a VM's LAN search suffix.
+    dns_search: "."
     ulimits:
       nofile:
         soft: 65535
