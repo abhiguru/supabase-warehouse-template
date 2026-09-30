@@ -1075,3 +1075,74 @@ pinned mobile build, bound executable plan, guarded fault controls and second
 authenticated fixture for dependent cases. Mobile docs/CPU_UPGRADE_RESUME.md
 provides the full ordered procedure. No overnight run is started by this pause;
 deferred security/hardware/provider/recovery/release gates remain unchanged.
+
+
+### Eight-CPU/KVM resume and guarded lost-response controls — 2026-09-30
+
+Operator resumed after reconfiguring this VM:8guest CPUs,17GiB RAM/78GiB free,
+VT-x and accessible KVM API12. Effective sudo, Node22.23.3/npm10.9.9, Docker29.8.1/
+Compose2.40.3 and Git2.43.0 verified. Installed f18 Test1 private config/input/
+identity/source preservation and local/public doctor PASS543. A comparison-helper
+octal-string formatting error caused one false refusal; correcting the helper,
+without touching state, passed. Dedicated Test1 tunnel stayed active. No pilot,
+recovery host, production credentials or ingress were used.
+
+One KVM emulator startup was interrupted at the operator's permission pause;
+its emulator-exited FAIL is preserved. Resumed API30/two-emulated-core startup
+boot25.2s plus120s OS observation PASS, followed by retained code3010 three cold
+launches and1804s/29cycles controlled native read/navigation/background rehearsal
+PASS550. This closes that resource/artifact-scoped bounded gate only; previous
+ANR failures and unsupported VMware acceleration limitation remain recorded.
+
+Review2bbc681 adds optional fixture-fault-relay.mjs and
+FIXTURE_FAULT_REHEARSAL.md. Normal start/setup never loads it. It keeps the
+original operatorFixture guard, dummy provider, private state and Compose ownership
+requirements; Test1 state was rejected before listeners571. Loopback18643/private
+0600 IPC can drop exactly one supported fictional write before forwarding or
+only after a complete successful upstream reply. Separate read-only database
+postconditions prove commit; transport success alone is insufficient. Size limits,
+absolute timeouts, exact-key/reserved-document matching and no overwrite of pending
+arms have12regressions; full60backend unit checks PASS560. Its source file is a
+declared overlay from2bbc681 in the existing c0a6 owning fixture checkout, alongside
+the prior bridge-boundary/subnet overlays. Original guard and schema unchanged.
+
+Four actual guarded API cases FXF101/102 receipts and FXF103/104 dispatches passed
+pre-forward/no-commit and post-success/commit observations, same-key retry, stock
+10->7 once and exactly one header/line/cache row566/572. Dispatches deliberately
+used generate_invoice:false. These are new fictional cases, not reruns of the
+completed core business scripts. Native lost-response/invoice effects remain
+separate. Mobileb03f197 corrects the new-key-per-submit issue for identical numbered
+RPC bodies; fresh246Jest/42setup/static/contract and clean code3012 standalone
+build/audit/install PASS, native gate still open. Backend CI36717964417 contract
+and secret/history scans PASS, validate FAIL at Container source dependency audit (unit step PASS), Shell syntax
+and downstream SKIPPED; do not count
+skipped checks or assume the explicitly deferred container audit gate closed.
+No overnight suite, release, merge or recovery activity started.
+
+
+### Native lost-response reconciliation and clean cache isolation — 2026-09-30
+
+Ubuntu24.04.3/Node22.23.3/Docker29.8.1; guarded fixture03 backendc0a6db1 plus
+declared bridge/relay overlays, standalone mobileb03f197/code2026093012/API30.
+Before-upstream FXF201 and after-success FXF202 each displayed the expected
+network error; private native-fault-state.mjs after-loss independently established
+no commit versus one commit before the unchanged-form retry. Both native retries
+showed Dispatch Created Successfully!; one dispatch header/line/cache and two
+units each, reserved FXF200 stock10→8→6, no invoice error. PASS582/cleanup584.
+
+The first after-retry verifier incorrectly required one persisted auto invoice
+and failed583 despite correct dispatch/stock. Reading the existing SQL established
+that p_generate_invoice calculates data, without calling save_invoice. Corrected
+the private assertion to zero invoices and rechecked read-only; preserve the
+initial FAIL. No business rule or installed warehouse data was changed. A read-only
+wait for an invented success label was interrupted; exact native label is now
+used. Native receipt fault acceptance and independent saved PDF acceptance remain
+open. See FIXTURE_FAULT_REHEARSAL.md for the permanent verification sequence.
+
+A fresh clean checkoutd068d77872110ede3b2c5097ae1d04ad2a3b9876 and separately
+owned fixture05 (new identity/credentials/state, loopback18580, declared subnet
+10.233.246/24) passed revised setup and full core API including known staff cache
+keys denied to fictional CustomersA/B577–581. State is retained stopped after
+the run; fixture03 successful writes were not repeated. Remote run36724067923:
+contract/redacted scan PASS; validate fails at the existing deferred container
+dependency audit; shell/downstream jobs SKIPPED. This is not all-green backend CI.

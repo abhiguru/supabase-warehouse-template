@@ -66,6 +66,13 @@ needed; never give the agent the sudo password in chat.
 
 Install Node.js 22.18 or newer, npm, Git, OpenSSL, util-linux (`flock`), Docker
 Engine and Compose v2.
+After an operator-approved VM resource change, recheck effective CPUs, RAM,
+disk, sudo/Docker access and pinned Node in the new session. Compare saved private
+configuration/identity fingerprints without printing values; then run the installed
+instance's local/public doctor before resuming optional fixtures. Resource changes
+do not authorize replacing state, credentials, DNS or another connector. See
+OPERATOR_SETUP_NOTES.md for the scoped eight-CPU/KVM post-reboot results.
+
 Choose a persistent filesystem with at least 10 GiB free for this initial
 installation check, plus capacity for the operator's actual data. Maintain that
 minimum at every setup/doctor invocation, including when adding SDKs, AVD images

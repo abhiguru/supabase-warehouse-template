@@ -75,12 +75,23 @@ Before a write, assert its reserved document is absent and save a private baseli
 of matching header/lines, affected stock and the operation key. After each fault,
 capture control status and independent read-only database results before retrying.
 After a lost response, do not edit the form or generate a new operation key while
-calling it a retry. Following interruption, inspect whether the write committed;
+calling it a retry. Match invoice postconditions to the actual RPC contract:
+create_dispatch_with_stock_check p_generate_invoice returns calculation data
+conditionally; it does not itself call save_invoice. Assert no persisted invoice
+for these reserved partial dispatches, then verify saved invoices/PDFs separately. Following interruption, inspect whether the write committed;
 the plan runner must never automatically repeat an unresolved write.
 
 Current source regressions exercise socket loss, one-shot forwarding, target/key/
 document guards, upstream rejection, size limits and absolute timeouts without a
-warehouse. They establish the control's transport behavior only. Current real
-database/native before/after cases remain NOT TESTED until their own ledgers and
-exact artifact evidence are recorded. Successful compilation or proxy tests do
-not close that gate.
+warehouse. They establish the control's transport behavior only. Four current guarded API/database before/after cases PASS566, with final
+read-only headers/lines/quantities/stock/cache/no-invoice reconciliation572.
+API dispatch used generate_invoice:false. Native code2026093012/b03f197 before
+(FXF201) and after-success (FXF202) same-form retries PASS582: expected native
+network error, independently proved no-commit/commit before retry, native success,
+one header/line/cache per dispatch, two units each, dedicated stock10→8→6.
+Native requested generate_invoice:true; zero persisted invoices/errors matches
+the calculation-only RPC path. Incorrect one-invoice verification FAIL583 is
+retained with the corrected read-only recheck. No invoice policy/source was
+changed. Normal443→18443 route restored and fault disarmed PASS584. Native receipt
+faults, saved-invoice effects, current PDF viewing and the full plan remain
+separate cases; compilation or proxy tests cannot close them.

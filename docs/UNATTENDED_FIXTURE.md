@@ -12,7 +12,7 @@ postconditions and native retry evidence. Link-offline tests do not establish
 whether a write committed before its response was lost.
 
 Use a clean checkout of reviewed backend
-`ee5b4936e2aa644667fe617f79e2a48b2eb67bbb` (review PR #79), fetched from
+`d068d77872110ede3b2c5097ae1d04ad2a3b9876` (review PR #79), fetched from
 `codex/fresh-vm-operator-install`. Record the full checked-out commit and any
 local configuration overlay. Clone public source with umask 022. Use absolute,
 unused paths outside Git for state and private evidence. The fixture guard
@@ -29,7 +29,7 @@ umask 022
 git clone --branch codex/fresh-vm-operator-install \
   https://github.com/abhiguru/supabase-warehouse-template.git "$FIXTURE_CHECKOUT"
 cd "$FIXTURE_CHECKOUT"
-git checkout --detach ee5b4936e2aa644667fe617f79e2a48b2eb67bbb
+git checkout --detach d068d77872110ede3b2c5097ae1d04ad2a3b9876
 git rev-parse HEAD
 git status --short
 ```
@@ -244,3 +244,19 @@ bash scripts/compose.sh --profile '*' down
 Do not use `down -v`, delete state, prune Docker globally or stop the installed
 warehouse. Retain failed attempts, private logs and state for review. A passed
 fixture case closes only its stated fictional scope.
+
+
+## Current clean permission regression repeat
+
+Reviewedd068d77 adds CustomerA/B known-staff-cache-key rejection to the core
+acceptance script. It preserves the original guard and existing authorizer.
+The same four HTTP probes already returned403 on fixture03 (private575);
+execute the changed complete core script only on a newly owned disposable state.
+A separate clean fixture05 attempt uses loopback18580/subnet10.233.246.0/24,
+with fresh identity/JWT/password/database/storage and canonical fictional origin.
+Its source/setup/core results are recorded in OPERATOR_SETUP_NOTES.md. These
+parallel-fixture choices are declared overlays, not reuse of another state or
+permission to run the gateway-IP regression expecting the original.245 subnet.
+A second backend at the same fictional origin does not establish different-origin
+mobile switching; that needs separate private TLS/routing and authenticated
+artifact-scoped evidence.
