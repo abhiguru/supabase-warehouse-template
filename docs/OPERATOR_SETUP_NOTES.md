@@ -1146,3 +1146,36 @@ keys denied to fictional CustomersA/B577–581. State is retained stopped after
 the run; fixture03 successful writes were not repeated. Remote run36724067923:
 contract/redacted scan PASS; validate fails at the existing deferred container
 dependency audit; shell/downstream jobs SKIPPED. This is not all-green backend CI.
+
+
+### Separate switching fixture backend prerequisite — 2026-09-30
+
+Revieweda9a49863600dbb33935b49a721f3d406ede9302f adds a separate optional exact
+fictional switching guard/bridge; original core validator and bridge remain unchanged.
+62backend units PASS587; installed Test1 startup refusal before listeners PASS.
+Fresh independent checkout/state/credentials/database/storage, loopback18590 and
+declared nonoverlapping10.233.247/24, company Fictional Switching Warehouse,
+canonical https://backend-switch.example.test. Supported setup PASS; first private
+wrapper doctor failed because it omitted the already documented state environment.
+Corrected export/local doctor PASS; failed log retained.
+
+Own72-hour TLS key/public certificate differs from primary. A private Python
+metadata accessor not_valid_after_utc was unavailable after generation; preserve
+the successful material and use documented Node22 X509Certificate, without new
+dependency or regeneration. Pinned TLS discovery on18444 and a dedicated VM
+loopback443 transient socket passthrough, real OTP verifier with fresh private
+crypto mock delivery, authenticated admin read and primary-phone refusal PASS.
+The pass-through runs as the operator, reads no private TLS key and alters no DNS,
+firewall, physical device, tunnel or production route. Native second-origin
+switching now has exact dual-CA APK3013/native secondary login/profile/cache/
+persistence evidence; one return discovery timeout remains a preserved FAIL,
+with explicit Retry/primary login/read PASS separately. No full clean trip claim.
+
+Use SWITCHING_FIXTURE.md for the full corrected setup/routing/start/stop sequence.
+Backend nondefault canonical ports/replacing identity remain prohibited; do not
+patch configure or reuse another instance to fit one ADB reverse. Mobilec4cb8d2
+new independent certificate overlay43setup/lint PASS and code3013 exact build/audit/
+install PASS592–594; no full overnight/physical/release claim. Remotea9 CIrun36731753334
+is confirmed FAIL at Container source dependency audit. Contract and redacted
+source/history scan PASS; migrations, Isolated operator installation and Grafana
+jobs SKIPPED. Preserve deferred dependency and downstream release gates.

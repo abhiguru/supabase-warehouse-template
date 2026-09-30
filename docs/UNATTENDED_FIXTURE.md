@@ -5,6 +5,8 @@ npm 10.9.9, Docker 29.8.1 and Compose 2.40.3 on 2026-09-30. Read
 OPERATOR_INSTALL.md first. It creates fictional data and must run separately
 from any installed warehouse. The production pilot and recovery host are excluded.
 Recovery, printing, sensors and external delivery are not part of this sequence.
+Authenticated cross-origin acceptance uses the separate [switching fixture](SWITCHING_FIXTURE.md);
+its original core-fixture guards are not replaced or relaxed.
 
 Interrupted-write acceptance needs the optional guarded
 [lost-response rehearsal](FIXTURE_FAULT_REHEARSAL.md), independent database
