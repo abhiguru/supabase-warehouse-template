@@ -6,6 +6,11 @@ OPERATOR_INSTALL.md first. It creates fictional data and must run separately
 from any installed warehouse. The production pilot and recovery host are excluded.
 Recovery, printing, sensors and external delivery are not part of this sequence.
 
+Interrupted-write acceptance needs the optional guarded
+[lost-response rehearsal](FIXTURE_FAULT_REHEARSAL.md), independent database
+postconditions and native retry evidence. Link-offline tests do not establish
+whether a write committed before its response was lost.
+
 Use a clean checkout of reviewed backend
 `ee5b4936e2aa644667fe617f79e2a48b2eb67bbb` (review PR #79), fetched from
 `codex/fresh-vm-operator-install`. Record the full checked-out commit and any
