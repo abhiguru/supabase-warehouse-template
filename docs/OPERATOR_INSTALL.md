@@ -593,3 +593,15 @@ exact code and build IDs. The dated [pilot notes](OPERATOR_SETUP_NOTES.md) recor
 real SMS/API login and partial Android Wi-Fi acceptance; printing, sensors and
 the remaining native cases are still open. These pilot results do not carry over
 to a fresh operator instance without its own checks.
+
+
+### Resuming after an operator-managed VM reboot
+
+Keep the private inputs and instance state; do not run initial setup against a
+new state path merely to restart. Recheck disk/memory, effective noninteractive
+sudo/Docker access, private port ownership, tunnel service and both doctor modes.
+Use the pinned Node PATH in the same shell (and any `sg docker` shell) that runs
+the commands. The system Node may differ after reopening a terminal. Consult
+[FRESH_VM_INSTALL_LEDGER.md](FRESH_VM_INSTALL_LEDGER.md) before repeating suites:
+repeat health after a reboot, and failed or changed cases, rather than every
+completed fixture test. Never delete volumes or another instance to resume.

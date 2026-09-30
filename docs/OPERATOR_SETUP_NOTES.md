@@ -654,3 +654,76 @@ rerun only for new changes, changed prerequisites or unresolved scope/failures.
 Operator-requested pause: docs completed before the operator expands disk/reboots.
 See the consolidated ledger for completed normal43b8320 arm64 build/audit, exact
 artifact SHA and open signature/device checks; no reboot or physical update done.
+
+
+## Operator-authorized resume after disk expansion — 2026-09-30
+
+The operator resumed the exercise after their own reboot/expansion. A changed
+private boot identifier and fresh inventory show root157GiB with86GiB available,
+RAM17GiB and swap4GiB. Effective sudo and Docker access PASS. Installed Test1
+local/public doctor PASS (private evidence387/388); its dedicated tunnel remains
+active. No pilot or recovery host was contacted and no agent reboot was issued.
+Completed unit/API/build results above were reused, not rerun indiscriminately.
+
+Only the retained disposable fixture03 and owned API30 emulator were restarted.
+Ports18080/18443 and5556/5557 and the selected subnet were checked before startup.
+The first fixture restart FAILed the Node22.18+ guard because the private driver
+omitted the pinned PATH; retry with Node22.23.3 inside `sg docker` PASS. No source
+or ownership guard was changed. The emulator ready probe took127.4s; its own log
+later reports full boot205.797s (different readiness measurements). A native
+cold-launch Orders probe FAILed behind a SystemUI ANR. One explicit Wait on the
+owned emulator recovered the saved administrator session/Orders; this separate
+PASS does not establish an uninterrupted reliable cold launch.
+
+Normal arm64 code2026093006 signature/package inspection now PASS (389/390/398),
+SHA unchanged `f4f8dedafb3000bc602fd5c83620c7480d6bb19fa976694f8a3310e4af81befb`.
+It remains NOT INSTALLED; no physical acceptance is transferred.
+
+The pre-resume backend review head89b999c CI
+[36674599390](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36674599390)
+FAILed container-audit validation; contract and redacted source/history scans
+PASS, dependent operator/migrations/Grafana jobs SKIPPED. Existing security and
+release gates remain open.
+
+
+Current audited emulator43b8320/code3005 native receipt A0001 PASS: normal
+header/item/review/Create workflow, Customer A, MONTHLY,10 bags×10kg, guarded
+stock10. Image-required validation passed; the ordinary system picker uploaded
+the sole fictional PNG through the client pipeline, confirmed header WebP and
+scoped storage object PASS. Current native partial dispatch I0001 PASS: A queue2
+from BAC01 stock3→1, normal confirmation and queue cleared. Invalid hyphenated
+fictional registration was rejected; uppercase/digits/spaces retry passed.
+
+A private verifier incorrectly required a persisted automatic invoice after
+dispatch and FAILed. Actual pinned create_dispatch_with_stock_check_internal
+returns invoice data when requested; this path does not persist the invoice.
+The misleading mobile comment does not change that contract. Preserve the null
+invoice observation and corrected stock-only assertion; the separate native
+invoice workflow is required. No production billing rule or source was changed.
+Private evidence400/402/404 and the native attempt ledger retain exact artifact
+and fictional metadata; no successful input event alone counts as acceptance.
+
+
+Final-dispatch private-driver attempts FAILed before submission: one named
+registration placeholder disappeared under ghost text; another synthetic Back
+after input returned to Dispatch list despite the reported IME input-shown flag.
+No final stock change was claimed. Private helper backups/history are retained;
+automatic Back was removed, and normal next-step controls are used. This is a
+harness correction, not a backend/mobile source fix. The registration ghost
+input lacks an accessible name in this state; that limitation remains open.
+
+
+### Resumed mobile source correction — e54c826
+
+The final native draft exposed a real recoverability defect in mobile43b8320:
+clearing the dispatch number hides its input behind a spinner after generation
+has already settled. DispatchHeaderStep rendered loading from `!header.disp_no`
+while useDispatchForm's one-shot initializer would not generate again. Review
+commit `e54c8268f6f5dd67652d3779d2b4a111292a59fa` tracks actual number generation
+(including rejection/finally), leaving an empty field editable after completion.
+It also names Dispatch number/Vehicle registration and the normal Use suggestion
+button for accessibility. No backend/authentication/billing rule changed.
+Typecheck PASS; existing217 Jest tests/33 suites PASS; changed-file lint PASS
+0errors/57 existing warnings (private406/407/408). Native verification on a new
+audited artifact is required;43/code3005's earlier passes stay on that artifact.
+The owned emulator was stopped before the heavy build; fixture state retained.

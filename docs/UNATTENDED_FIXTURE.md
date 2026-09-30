@@ -29,6 +29,17 @@ git rev-parse HEAD
 git status --short
 ```
 
+Use the pinned Node installation in each new terminal before any fixture command:
+
+```bash
+export PATH="$HOME/.local/opt/node-v22.23.3-linux-x64/bin:$PATH"
+node --version
+npm --version
+```
+
+If using `sg docker -c`, ensure that same PATH reaches its command shell. An
+older system Node must fail the version guard; do not bypass it.
+
 The commands below assume the prerequisite sequence has passed and the shell
 has effective Docker access. Choose a new suffix rather than reusing the example
 when its state already exists. Choose an unused loopback gateway port; this run
