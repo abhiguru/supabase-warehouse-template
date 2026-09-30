@@ -1050,3 +1050,28 @@ After confirming owned services/listeners stopped, private parent ownership,
 socket type/mode, ECONNREFUSED and unchanged inode, only that stale socket was
 removed537 PASS. The same guarded recovery is integrated into UNATTENDED_FIXTURE
 stop/start instructions. Live sockets and other instance state are never removed.
+
+
+### Operator-requested pause before CPU upgrade — 2026-09-30
+
+The operator will assign six total CPU cores to this VM and reboot it. At pause
+the guest still exposes two CPUs/17GiB RAM/77GiB free; no KVM or vmx/svm. The
+interrupted turn performed inventory and read existing ANR evidence; it did not
+start a new emulator diagnostic. No host setting change or reboot was issued.
+Private539 confirms fixture03/bridge/emulator stopped, owned ports/socket absent
+and Test1 loopback18000/tunnel active. Persistent state, credentials, AVDs and
+artifact/evidence are preserved; protected540 captures boot/source/artifact and
+configuration fingerprints without displaying secret values.
+
+On explicit resume, inventory six guest CPUs and compare boot/configuration
+privately, verify installed Test1 local/public doctor and warehouse identity,
+then perform bounded emulator OS-startup/ANR collection before app launch. The
+launcher still uses two emulated cores; document a separate four-core trial if
+needed instead of assuming the guest CPU change updates AVD configuration.
+Recheck short-lived fixture certificate horizon and exact installed artifact.
+Three clean app cold launches and a30-minute unattended rehearsal are proposed
+prerequisites; no ANR dismissal is counted as readiness. Then complete clean
+pinned mobile build, bound executable plan, guarded fault controls and second
+authenticated fixture for dependent cases. Mobile docs/CPU_UPGRADE_RESUME.md
+provides the full ordered procedure. No overnight run is started by this pause;
+deferred security/hardware/provider/recovery/release gates remain unchanged.
