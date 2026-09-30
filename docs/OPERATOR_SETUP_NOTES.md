@@ -1204,3 +1204,26 @@ The installed Test1 and emulator fixtures have not yet received this correction
 at this checkpoint; original latency/native failures remain preserved. The
 container audit remains an existing FAIL. Main installation and fixture sequences
 now pin the explicit reviewed correction before creating new state.
+
+### DNS correction applied to both owned emulator fixtures
+
+Exact reviewed258 Kong dns_search root overlay applied only to both owned
+fixture gateways601, retaining credentials/identity/private state and unchanged
+strict validators. Three local/direct/pinned TLS read probes returned promptly;
+fresh clean core source258 full functional checks599 and same-input private
+identity/credentials/administrator/business/Storage-metadata preservation605 PASS.
+Fixture06 stopped normally with state retained. Stored PDF file bytes were not
+rehashed by this preservation comparison; preserve that evidence limit.
+
+Code3013 clean two-origin native actual-verifier trip602 PASS; corrected code3014
+full ordinary two-origin trip610 PASS with no Retry/human/ANR dismissal/ADB reset.
+Current3014 native receipts608 before/after response loss each showed native
+error, independently proven no-commit/commit, unchanged retry and exactly one
+receipt line/qty4/stock4/cached success; header images confirmed privately.
+These use separate fictional fixture03 only. Test1 requestedf18 source stays
+unchanged; no pilot/recovery/host DNS/production connector touched.
+
+[Current backend CI36748327886](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36748327886):
+validate dependency audit FAIL(brace-expansion HIGH/fast-uri MODERATE), contract
+and redacted-history scan PASS; dependent functional jobs SKIPPED. Local fresh
+checks do not turn skipped CI jobs into PASS or close deferred release gates.

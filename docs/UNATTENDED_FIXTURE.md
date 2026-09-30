@@ -263,3 +263,27 @@ permission to run the gateway-IP regression expecting the original.245 subnet.
 A second backend at the same fictional origin does not establish different-origin
 mobile switching; that needs separate private TLS/routing and authenticated
 artifact-scoped evidence.
+
+## Read-only native overnight observations
+
+After the separate native receipt/dispatch fault cases are reconciled, the mobile
+UNATTENDED_RUN.md defines the current optional nine-block/eight-hour read plan.
+New `scripts/fixture-soak-database.mjs` uses an explicitly read-only repeatable-read
+transaction and the unchanged original core validator from the explicitly selected
+WAREHOUSE_FIXTURE_CHECKOUT. Its private baseline compares reserved receipt
+stocks/counts/saved invoice and records native administrator refresh-session
+metadata without printing credentials. A review checkout does not own the running
+fixture: the first relative-guard invocation correctly refused it, and that failed
+attempt remains recorded. Explicitly select the owning checkout; never loosen the
+validator or invoke these against an installed warehouse.
+
+`scripts/fixture-soak-http.mjs` observes only that fixture's Kong logs since a
+bounded timestamp. Raw lines (which may contain query credentials) remain in
+memory; stdout contains only the two fixed RPC paths, status/counts. It requires
+actual Orders RPC200, refuses observed5xx and reports401 separately. A cached
+native screen alone cannot satisfy this check. Parser regressions and64 backend
+unit checks PASS612; actual owned observations/business baseline comparisons PASS.
+These tools do not alter warehouse records or establish production load capacity.
+The native loop uses fresh explicit reads and background/cold persistence, checks
+ANR/crash, and reconciles business state/session renewal without a new login.
+No timer/overnight run had started at this documentation checkpoint.

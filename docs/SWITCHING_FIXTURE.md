@@ -1,20 +1,26 @@
 # A second isolated fixture for authenticated server switching
 
-Current status: backend setup, local doctor, independent pinned TLS discovery and
-administrator authentication with mock delivery PASS. Exact dual-CA APK3013
-build/audit/install and secondary native administrator login, loaded empty
-Orders/invoices, profile and background/cold persistence PASS. Return-to-primary
-discovery timed out once; supported Retry plus fresh primary verifier login/data
-read PASS separately. A clean full switching trip and the complete overnight
-plan remain open. Do not use the pilot or Test1 as the
-second instance in this fixture-only run. Read UNATTENDED_FIXTURE.md first.
+Current status: backend setup/local doctor/independent pinned TLS/mock verifier
+authentication PASS. Both installed fixture gateways now explicitly include the
+reviewed Kong root DNS search correction2584496f20a86595be2cf1996e9b4e5f82164fd8;
+private identity/config/guard hashes were preserved601. Code3013 clean native
+authenticated round trip PASS602 and corrected GRN artifact code3014 passed the
+full clean round trip610: fresh native verifier logins, secondary identity/profile/
+empty caches/cold persistence, primary identity/data/cold persistence, without
+Retry/ADB restart/ANR dismissal/human input. Earlier discovery timeout and Retry
+recovery remain separate historical results596. Unsaved-form clearing and
+same-origin identity replacement remain separate NOT TESTED cases. Overnight
+plan is still being prepared; physical/provider evidence is not transferred.
+Do not use the pilot or Test1 as a second fixture.
 
-This sequence uses optional reviewed backend
-`a9a49863600dbb33935b49a721f3d406ede9302f` and mobile certificate tooling
-`c4cb8d24bedbb6bb730a6631385d4f6e114210c2`. The original core fixture validator is
-unchanged. The separate switching validator requires its own exact fictional
-identity, dummy provider, private state paths and running Compose ownership.
-Never run core fixture business scripts against this differently owned instance.
+The original separate installation pinned
+`a9a49863600dbb33935b49a721f3d406ede9302f`, later applying the exact declared258
+Kong correction. New checkouts below pin258, which contains both changes.
+Mobile42a5559b4abcad3ddd7601b2e4885e3c29101c76 includes independent CA tooling and
+the cleared-number correction. The original core validator remains unchanged;
+the separate strict switching validator requires its own exact fictional identity,
+dummy provider, private state and running Compose ownership. Never run core
+business scripts against this differently owned instance.
 
 ## Create the separate backend before changing emulator routing
 
@@ -37,7 +43,7 @@ umask 022
 git clone --branch codex/fresh-vm-operator-install \
   https://github.com/abhiguru/supabase-warehouse-template.git "$SWITCH_CHECKOUT"
 cd "$SWITCH_CHECKOUT"
-git checkout --detach a9a49863600dbb33935b49a721f3d406ede9302f
+git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
 npm ci
 ```
 
