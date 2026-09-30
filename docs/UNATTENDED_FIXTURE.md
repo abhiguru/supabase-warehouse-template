@@ -131,6 +131,24 @@ The earlier independent clean reproduction and same-input preservation checks
 are recorded in OPERATOR_SETUP_NOTES.md. Tests mutate their own fixture data;
 do not rerun against an installed warehouse to avoid preparing another fixture.
 
+## Checking a new mobile source against this running fixture
+
+Use the backend checkout that owns the fixture together with its original
+WAREHOUSE_STATE_DIR. A separate review checkout must not borrow the state to
+manage Compose or read its live catalog. With the new mobile path selected:
+
+```bash
+# Run inside this fixture's backend checkout; retain its state environment.
+node scripts/check-mobile-contract.mjs /absolute/path/to/mobile-checkout \
+  --live --output "$FIXTURE_PRIVATE/mobile-contract.json"
+```
+
+A refused ownership-checked catalog request is a FAIL to preserve, not permission
+to bypass the guard. Fix the checkout/state pairing. This checks call names,
+arguments, overloads, return types and grants; native/API behavior needs its own
+evidence. The resumed e54c826 source passed this check from the owning fixture
+checkout after the first wrong-checkout attempt failed.
+
 ## Optional native fixture delivery bridge
 
 Keep the above fixture running for the mobile emulator sequence. Install OpenSSL

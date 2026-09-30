@@ -510,6 +510,13 @@ natural token expiry, Realtime updates/reconnect and actual native offline
 behavior require their own results. Record PASS, FAIL, BLOCKED or NOT TESTED per
 case; compilation and historical device passes are insufficient.
 
+Also compare a fractional-tax native example against its saved invoice. This
+installation found mobile e54 showing tax8.50/total178.50 while the unchanged
+backend saved CEIL-rounded tax9/total179. The integer950/48/998 example passing
+does not close this mismatch. Preserve the failed result, keep native financial
+acceptance open, and agree a reviewed display/rounding correction before retesting.
+Do not change production rules or delete the evidence to obtain a PASS.
+
 These values validate the [documented fictional billing rules](INVOICE_RULES.md).
 They are not approved production pricing, tax or calendar policy. Ask the operator
 for business decisions before adopting production rules. Read the

@@ -727,3 +727,219 @@ Typecheck PASS; existing217 Jest tests/33 suites PASS; changed-file lint PASS
 0errors/57 existing warnings (private406/407/408). Native verification on a new
 audited artifact is required;43/code3005's earlier passes stay on that artifact.
 The owned emulator was stopped before the heavy build; fixture state retained.
+
+
+Resumed backend documentation head18b5317 CI
+[36683411636](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36683411636)
+FAIL: validate now stops at postgres-meta's dependency audit (brace-expansion
+HIGH and fast-uri MODERATE), before reaching Storage's audit. Contract and
+redacted source/history scans PASS; dependent migrations/operator/Grafana jobs
+SKIPPED. Preserve earlier metadata-clean/Storage-failure observations as dated
+evidence, not current clean metadata assurance. The separate historical Storage
+undici/ip-address findings remain unresolved. Image-security investigation and
+upgrades stay deferred; no dependency gate was relaxed. Private413/414/415 retain
+the exact run/job/failed-command evidence.
+
+
+New e54 fixture APK clean build/audit/signature/identity PASS: version0.1.0/
+code2026093007,x86_64,11m6s/983 tasks executed, restricted public CA overlay,
+SHA `f8ed582a6e37398cab49c0682c6d377a39f4b17249c1f6d04315b42f8c95dfe7`.
+Retained private fixture/fixture-e54c826-build2026093007-x86_64.apk. Installation
+and affected native verification remain pending at this dated point; current
+physical phone remains8d9da8e.
+
+New-source live contract first attempt FAILed the ownership-checked catalog
+request: the driver used the separate backend review checkout with fixture03's
+state. Keep the owning checkout and state together, even for `--live` read-only
+checks; never disable Compose ownership checks to make a cross-checkout command
+work. Retry uses warehouse-reproduce/unattended-backend and its own fixture03.
+Private416 preserves failure; corrected421 records the retry.
+
+
+The corrected e54 live contract check from its owning fixture checkout PASS
+(private421):128 typed calls/94 RPC names and3 explicitly reported dynamic wrappers; no
+name/overload/argument/grant mismatches. This remains a lower-bound inventory.
+Separate clean normal e54 checkout ran the revised main sequence: locked npm ci,
+36 setup tests,217 Jest/33 suites, lint0errors/1468 existing warnings, typecheck,
+Expo compatibility/Doctor18/18, npm audit0 and Test1 public bootstrap PASS. Native
+arm64 compilation remains in progress at this dated point. The prior successful
+suites were repeated here because a new shared-hook source change and revised
+clean-guide verification required new evidence; backend API suites were reused.
+
+
+The revised normal mobile guide completed from a separate clean e54 checkout
+with only the declared native Test1 identity, no fixture CA overlay. All main
+checks above and arm64-v8a assembleRelease PASS in11m8s/983 tasks executed.
+Exact artifact audit/signature/package PASS, version0.1.0/code2026093008,
+SHA `7ad6e19aee694865a4fdcc9753fddb19ddd5bce317f39e4da56d08464935fb3e`.
+Retained /home/jay/warehouse-artifacts/test1/test1-e54c826-build2026093008-arm64.apk
+(0600). It is NOT INSTALLED; physical read-back/native acceptance remains open.
+The normal clean source/build guide is reproduced; compilation is not E2E
+acceptance. New fixture APK installation and the affected native case are next.
+
+
+New e54/code3007 fixture installation/signature-match/read-back PASS (427–429),
+without uninstall/data clear. New emulator ready probe97.7s and full-boot log
+169.421s are separate measurements. Temporary labeled hosts/reverse mapping
+PASS; SELinux Enforcing. First Orders launch probe FAIL behind SystemUI ANR;
+one explicit owned Wait recovered actual Orders A1/Bempty and staff tabs.
+Cold-launch reliability remains FAIL; recovered session is a separate PASS.
+
+New e54 native naturally expired-access refresh PASS (430–432): before launch
+last administrator OTP verification age10832s exceeded accessTTL3600; after
+normal authenticated Orders restore, exactly one refresh hash rotated, session
+IDs and OTP verification timestamp/count stayed unchanged. No new challenge,
+fixed code, token injection or authentication lifetime change was used. Private
+hashes were compared without printing values. Old cached UI was not reused as
+new-artifact proof; the private driver now excludes cache predating installation.
+
+
+### Resumed audited e54 native dispatch and invoice findings
+
+Exact e54c8268f6f5dd67652d3779d2b4a111292a59fa/code2026093007 native
+cleared-number recovery PASS (private433): clearing generated I0002 left an
+enabled, named empty Dispatch number input. Normal re-entry and the explicit
+Use suggestion button restored a valid one-bag draft. Earlier queue navigation
+FAIL remains: an expanded recent-dispatch section hid the target below the
+viewport; collapse it and inspect a fresh screen before acting. No offscreen
+ADB tap or app-state injection was used for the successful case.
+
+Normal native final dispatch I0002 PASS: BAC01 stock1→0, quantity1 saved for
+Customer A, order/cart empty, success dialog matched; guarded private404-final
+confirmed rows. Prior43/code3005 partial dispatch2/stock3→1 and receipt A0001
+are separate artifact evidence, not transferred to e54.
+
+Native invoice creation saved invoice20260930/BAC01 and three dispatch lines
+(total quantity10) PASS for persistence, but preview/persisted reconciliation
+FAIL. Review and confirmation displayed storage150 + labour20 + tax8.50 =
+178.50; saved header tax9/total179. Root cause established: mobile
+src/utils/invoiceCalculations.ts rounds money to two decimals, while pinned
+backend migration00000000000006_invoice_line_integrity.sql save_invoice
+applies CEIL to header tax and total. Saved per-line rate/duration/quantity
+calculations reconcile to storage150/labour20; stock remains0 (private434).
+The earlier documented950/48/998 API example still passed separately.
+
+A private verifier initially expected178.50 and failed. Its surrounding shell
+continued and wrote a premature PASS; this has been explicitly superseded by
+FAIL while retaining attempt history. Subsequent action sequences stop on
+command failure. A separate guarded persistence check against the existing
+backend rule PASSed. Success dialogs and ADB delivery alone cannot establish
+financial acceptance. No invoice was deleted/recreated to hide the mismatch.
+
+OPEN: align native review/confirmation/success amounts with the agreed backend
+rounding contract and repeat on a newly audited artifact. No billing rule or
+production behavior was changed during this installation exercise. Until that
+work is reviewed, this case is FAIL; operator/business sign-off remains required
+before using financial output beyond fictional tests.
+
+
+Exact e54/code3007 link-offline banner/reconnect PASS: only the owned emulator's
+Wi-Fi/data were disabled and its reverse443 removed; No internet connection was
+observed within90s. A finally block restored previous links/reverse. Banner
+disappeared and ordinary Refresh orders restored A/B empty queues. This does
+not erase prior43 endpoint-only feedback FAIL (Wi-Fi remained on), establish
+offline writes, or demonstrate cellular/physical/no-USB behavior.
+
+Current e54 native administrator logout/revocation PASS: normal Sign Out reached
+login with selected fixture server retained; private431/437 comparison showed
+exactly one refresh session removed, none added, OTP verification count unchanged.
+Native disabled fictional B login denial PASS: actual generated challenge went
+through the Edge verifier and displayed Verification Failed / Account unavailable;
+guarded private435 confirmed disabled profile, empty assignments and no active
+refresh session. No real SMS or fixed OTP was used. First immediate OTP-screen
+hierarchy attempts FAILed (UIAutomator idle-state unavailable); private436
+screenshot established the actual empty-code focused screen before input. A
+private read-only verifier's initial nonexistent revoked_at-column assumption
+FAILed and was corrected to this schema's deletion-based revocation; backup
+retained. No backend/session enforcement was weakened.
+
+
+Reapproved B native login/Orders scope PASS on e54/code3007. Preparation used
+the existing isolated administrator API to approve only B (private435); it is
+not native reapproval evidence. Fresh generated code went through the actual
+verifier, and settled Orders contained only Customer B; customer tabs and
+Settings omitted Queue, Customers, Enrollment Review and Users. A prior43 native
+A-only result remains separately dated; same-artifact reciprocal A is not yet
+claimed. First denial/OK already returned to login; an extra Back-label attempt
+FAILed within90s without a tap. Inspect actual current UI rather than assuming
+a particular post-error route.
+
+
+Malformed-origin attempt initially FAILed because a previously unseen AOSP
+keyboard contacts permission dialog took foreground, not a warehouse-camera
+prompt. Private439 screenshot established it; ordinary DENY closed it without
+grants or app/phone setting changes. The HTTP text was already present but
+Check server had not completed. Retain the failed attempt and confirm actual
+foreground/keyboard state before retry; a sent tap is not validation evidence.
+This was on the disposable emulator only.
+
+
+Exact e54/code3007 native malformed HTTP and HTTPS-with-path origin rejection
+PASS after the established keyboard prompt was declined. No selection/credentials
+were substituted and earlier failed attempts remain. Native Check server then
+retrieved/displayed Test Warehouse 1 at https://test1.gurucold.in over the
+emulator's restored network. Test1 and fixture03 manifests have different
+instance IDs and independent state/credentials. This is the second owned test
+instance; the production pilot is excluded. Target login/authentication is not
+implied by public identity discovery.
+
+
+Current e54 native cross-instance switch to owned Test1 PASS, scoped:
+Check server displayed the distinct Test Warehouse1 identity, Use this server
+reached unauthenticated login, the persisted public selected-server key matched
+Test1's manifest, and prior fictional B refresh-session count changed1→0. Only
+the public selected-server SQLite key was read; no native session values were
+retrieved or written. First state-read command FAILed; bounded retry with
+SQLite5s busy timeout PASSed. Initial root cause is unestablished; do not infer
+database locking from the successful retry. Both attempts remain in private440.
+No Test1 OTP, business-data request, pilot contact or old-session injection.
+This closes authenticated-fixture switch-out/target-selection only, not login
+on both instances or same-origin identity replacement.
+
+
+Current e54 Test1 unauthenticated cold persistence/direct network PASS (private441):
+force-stop/launch with fixture reverse443 absent reached login, read-only
+persisted public server identity still matched Test1, and fresh native
+Check server retrieved/displayed Test Warehouse1 through the emulator's direct
+network. Finally restored only the emulator fixture route. No Metro, target OTP
+or native session value used. This scoped successful cold launch does not erase
+the first boot/SystemUI failure or establish authenticated Test1, physical
+no-USB, cellular or reliable cold behavior across runs.
+
+
+Current e54 ordinary switch-return/reciprocal native Orders scope PASS:
+selected fixture03 again from Test1, public persisted server key matched the
+original fixture manifest, login showed no stale B Orders, and fresh generated
+A challenge used the actual verifier. Same exact artifact showed only B during
+B login and only A during A login; customer tabs omitted Queue. Deep-linked
+foreign native records/privileged-RPC denial are not implied; reciprocal API
+denial evidence remains separate. No target Test1 OTP/session or source/app-state
+injection. Private442 and artifact-scoped native attempt ledger retain proof.
+
+Resumed tests complete to their recorded scope. Bridge stopped with Ctrl+C,
+owned emulator stopped through its explicit ADB target, fixture03 ownership-checked
+Compose down(no-v) PASS; fixture04 was already stopped. Socket and owned
+ports18443/18080/5556/5557 absent (private443). State/AVDs/artifacts/signing/failed
+logs retained; shared ADB server and physical phone untouched. Installed Test1
+final local/public doctor and active dedicated tunnel PASS (private444/445);
+backend source clean at f18f51d. Host root157GiB/free81GiB.
+
+The corrected installation and normal e54 Android build were reproduced from
+clean source with separate disposable state and declared overlays. Another
+operator can follow those revised sequences on the recorded prerequisites;
+the entire current end-to-end suite has not passed. Financial-preview mismatch,
+container audit, no-KVM cold reliability, physical corrected-artifact workflows,
+cellular/no-USB, PDF viewing, offline writes, both-instance authentication and
+same-origin replacement remain open. No skipped/historical/build-only evidence
+closes those gates. No release/merge, recovery/cutover or agent reboot.
+
+
+Review-command findings on Ubuntu24.04.3/Git2.43.0/GitHub CLI2.45.0:
+resumed git commit initially FAILed with Author identity unknown (private410).
+Supply an explicit local author for review commits, for example
+`git -c user.name='Warehouse Installation Agent' -c user.email='warehouse-install-agent@localhost' commit ...`; do not change global operator settings merely for this exercise.
+`gh pr edit` again FAILed on deprecated Projects Classic projectCards GraphQL
+(private422). Structured REST PATCH with a protected JSON input file updated
+only the existing draft PR body; return only number/URL/draft/head. Prior bodies
+and failures retained. Do not put credentials, multiline expansions or raw logs
+in CLI arguments/PRs. Corrected commits/updates passed; no merge/release.

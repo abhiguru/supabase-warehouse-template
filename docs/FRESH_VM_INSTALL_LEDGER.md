@@ -18,11 +18,11 @@ acceptance. No release or merge is authorized by these results.
 | Requested mobile candidate | `8240cce9121a797fd0cf2e00e568a61985814ddb`; remote codex/operator-mobile and draftPR33 verified. Mobile main272e434844b58d68fd714023a6ae11885a0f1a21 was different; no substitution |
 | Installed physical test APK | Mobile `8d9da8ecb3afb873422011cce4c6615b63163a88`, derived from candidate plus review fixes; generated native identity `in.gurucold.warehouse.test1`, label Test Warehouse 1, scheme warehouse-test1. Version0.1.0/code2026093001; arm64-v8a; test debug signer |
 | Tested unattended backend | `ee5b4936e2aa644667fe617f79e2a48b2eb67bbb`; separate owned fictional state. Declared local CI Docker network overlay10.233.245.0/24; private gateway18080; loopback TLS/mock-delivery bridge18443. Installed Test1 retains18000 |
-| Final tested emulator APK | Mobile `43b832092bb8157e73b012add6a57f2e6dd724a1`; `in.gurucold.warehouse.fixture`, Fictional Core Warehouse, warehouse-fixture, version0.1.0/code2026093005, x86_64. Generated native identity and restricted public fixture CA trust overlay; private CA key excluded. Actual Edge verifier used with generated fixture codes via protected local IPC; no SMS call or code in HTTP/logs |
+| Pre-pause tested emulator APK | Mobile `43b832092bb8157e73b012add6a57f2e6dd724a1`; `in.gurucold.warehouse.fixture`, Fictional Core Warehouse, warehouse-fixture, version0.1.0/code2026093005, x86_64. Generated native identity and restricted public fixture CA trust overlay; private CA key excluded. Actual Edge verifier used with generated fixture codes via protected local IPC; no SMS call or code in HTTP/logs |
 
 Physical APK SHA-256:
 `969d4fba6f21b7940897fb67aa8d09174f9e33cf376c964f4798ff96b15c25d4`.
-Final emulator APK SHA-256:
+Pre-pause emulator APK SHA-256:
 `c9a8052dff9834a9450c8afa82a22911cda4332222b7fc128699d15c16dd68fe`.
 Both passed their exact artifact audit/signature/package checks and installed
 read-back comparisons. The physical phone remains on8d9da8e; later source fixes
@@ -37,6 +37,21 @@ meaningful positive/negative overlay regression. Prior audited d4540c8/code3004,
 SHA `f8f1ad67bfea96bf3b286b78103f0b9df1b04cff1398ecb0f26eb1f0c5817ed7`,
 retains its own image-upload and expired-access-refresh evidence. Failed APKs,
 raw logs and prior metadata remain private; gates were not weakened.
+
+## Resumed current source and artifact boundary
+
+The physical phone still has8d9da8e/code2026093001 and was untouched during the
+resumed unattended run. The currently installed emulator is review source
+`e54c8268f6f5dd67652d3779d2b4a111292a59fa`, fixture code2026093007/x86_64,
+SHA `f8ed582a6e37398cab49c0682c6d377a39f4b17249c1f6d04315b42f8c95dfe7`.
+Clean build11m6s/983 executed, exact audit/signature/package/install/read-back PASS.
+It retains the declared generated identity and restricted public CA overlay.
+
+Separate normal Test1 arm64 build from the same e54 source, code2026093008,
+SHA `7ad6e19aee694865a4fdcc9753fddb19ddd5bce317f39e4da56d08464935fb3e`,
+passed the revised guide from a clean checkout, build11m8s/983 executed and exact
+audit/signature/package checks. No fixture CA overlay. It is NOT INSTALLED;
+physical read-back/native acceptance for that exact APK remains open.
 
 ## Environment and checks
 
@@ -61,7 +76,7 @@ software SwiftShader with no KVM/VMX/SVM. API35 Google APIs rev9 was unstable.
 | Baseline unit run under077 | FAIL |47/48; deliberately insecure test file became0600 due umask |
 | Corrected unit tests | PASS |48/48 under077 and022; explicit test fixture chmod0644; runtime private-file guard unchanged |
 | Locked dependencies, migration/auth/billing, shell syntax, contracts and source/history scans | PASS | Exact source/command evidence in setup notes; current43 mobile contract checked locally |
-| Current container dependency audit | FAIL | Storage undici7.29 HIGH/ip-address MODERATE; metadata clean. Existing security findings/release gates preserved |
+| Current container dependency audit | FAIL | Historical Storage undici7.29 HIGH/ip-address MODERATE; resumed18b5317 CI now fails metadata brace-expansion HIGH/fast-uri MODERATE before Storage. Existing findings/gates preserved |
 | Initial fixture image pull | FAIL then PASS | DNS lookup/pinned image pull initially failed, later succeeded with no DNS/source changes |
 | Real administrator/customerA OTP, pending registration/approval/login | PASS | Test1 only, operator explicitly authorized SMS; OTP entered locally, no plaintext code recorded |
 | Refresh, replay/logout, expired access denial/legitimate refresh | PASS API | Real installed Test1 and disposable fixture evidence; native scope below |
@@ -78,7 +93,7 @@ software SwiftShader with no KVM/VMX/SVM. API35 Google APIs rev9 was unstable.
 | Clean corrected installation/revised guide repeat | PASS after preserved disk-guard FAIL |Clean ee5b493 checkout, new suffix04 state, declared network/port overlay, setup and doctor; private same-input comparison preserved identity/credentials/admin/database and at least4 stored PDFs |
 | Recovery/archives/cutover/reboot, printing/sensors/iPhone/external alerts/rotation/image research | NOT TESTED; outside scope |Closed or explicitly deferred; existing release gates retained |
 
-| Android required case | Physical8d9da8e | Audited emulator43b8320 / limitation |
+| Historical Android required case (superseded only by explicit resumed rows below) | Physical8d9da8e | Audited emulator43b8320 / limitation |
 | --- | --- | --- |
 | Dependencies/setup/unit/lint/type/contract/compatibility/Doctor | PASS |PASS:36 setup tests,217 Jest/33 suites, lint0errors/1468 existing warnings, typecheck, SDK compatibility, Doctor18/18, public bootstrap and contract |
 | Dependency audit | Earlier PASS retained |Final43 PASS0; intervening FAIL3 packages retained, targeted compatible lock updates for brace-expansion/fast-uri/moment |
@@ -86,16 +101,16 @@ software SwiftShader with no KVM/VMX/SVM. API35 Google APIs rev9 was unstable.
 | Manual server selection and displayed identity | PASS |PASS fixture discovery/current saved selection, restricted TLS CA/hosts-label/reverse overlay documented |
 | Malformed HTTP/path origins | PASS scoped |Earlier initial fixture observations do not transfer to final43; other malformed variants NOT TESTED |
 | QR selection with real camera | PASS |NOT TESTED emulator; initial invisible QR window FAIL retained, visible fullscreen viewer scan later passed |
-| Cold launch and lifecycle/server persistence |PASS unauthenticated cold/Home, authenticated Home |PASS authenticated server/session restore after fixture package update; initial premature idle/focus probes retained. Full physical authenticated force-stop remains NOT TESTED |
+| Cold launch and lifecycle/server persistence |PASS unauthenticated cold/Home, authenticated Home |Current43 saved session restore PASS, resumed cold probe FAIL behind SystemUI ANR; explicit Wait recovered separately. Full physical authenticated force-stop NOT TESTED |
 | No Metro / no USB standalone |Metro absent observed; no-USB NOT TESTED |Bundled APK, Metro absent; ADB reverse required for local fixture, so no-USB NOT TESTED |
 | Administrator login |PASS real SMS/current phone |PASS fixture actual verifier; no provider/SMS acceptance implied |
 | Customer login/permissions/cart |NOT TESTED native |PASS fictionalA, Customer role/staff controls omitted, only A Orders, native cart quantity1 persisted |
 | Fresh pending enrollment and native approval |BLOCKED no third real phone |PASS fourth fictional account had no refresh session; native admin assigned only A, saved assignment checked |
 | Logout/revoked sessions |NOT TESTED native |PASS current43 native logout and prior admin refresh-session revocation |
 | Expired access/legitimate refresh |NOT TESTED native |PASS prior auditedd4540c8: verification age4339s exceededTTL3600, hash rotation/no extra OTP; final43 NOT TESTED |
-| Native receipt/partial-final dispatch/invoice creation |NOT TESTED |NOT TESTED; backend fixture/installed API passes are separate |
+| Native receipt/partial-final dispatch/invoice creation |NOT TESTED |Current43 receipt/partial PASS after resume; final-draft attempts FAIL before submission; invoice creation NOT TESTED. New e54 fix/artifact validation pending; API results separate |
 | Stock/dispatch/invoice display |NOT TESTED beyond dashboard |PASS scoped: current43 BAA01 stock0/100 and BAC01 stock3/10; invoice998 displayed on earlier artifact, not transferred |
-| Native image upload/render |NOT TESTED |Prior auditedd454 upload via scoped system picker→WebP metadata/remote bitmap PASS; final43 existing authorized render PASS16500/16500 pixels; final43 upload NOT TESTED |
+| Native image upload/render |NOT TESTED |Prior d454 upload retained; current43 upload PASS after resume with confirmed WebP/storage object, existing authorized render PASS16500/16500 pixels |
 | Authorized PDF download/view |NOT TESTED |Download PASS valid20982-byte GRN PDF/chooser; viewing BLOCKED no PDF VIEW activity in default API30 image |
 | Endpoint loss/offline |NOT TESTED |FAIL expected feedback not observed within bounded window after only emulator reverse443 removal; cause unestablished. Offline writes NOT TESTED |
 | Reconnect |NOT TESTED |PASS restored fixture route/manual refresh recovered cart; not cellular acceptance |
@@ -104,6 +119,40 @@ software SwiftShader with no KVM/VMX/SVM. API35 Google APIs rev9 was unstable.
 | Wi-Fi/cellular |Wi-Fi PASS observed; cellular NOT TESTED |Emulator transport scoped; cellular NOT TESTED |
 | Authenticated cross-instance switching/replacement |BLOCKED |NOT TESTED; suitable second authenticated emulator instance not prepared. Pilot excluded |
 | USB stability |PASS bounded trial |61 probes/300.06s with forced libusb, no restart/reset/disconnect; earlier native transport failures/kernel resets retained, root cause unresolved |
+
+## Resumed current-artifact acceptance — e54/code2026093007
+
+These rows supersede only their stated scope. Historical phone8d9da8e,
+emulator43 and d454 results stay attached to those artifacts. The new normal
+arm64 code2026093008 is built/audited but NOT INSTALLED.
+
+| Required current scope | Result | Exact evidence or remaining limitation |
+| --- | --- | --- |
+| Revised clean normal guide, locked dependencies/setup/unit/lint/type/Expo/audit/bootstrap | PASS |36 setup;217 Jest/33 suites;0 lint errors/1468 existing warnings;Doctor18/18;npm audit0; normal arm64 build11m8s/983 executed |
+| Mobile/backend live contract | PASS after FAIL |128 typed calls/94 names/3 dynamic wrappers,106 catalog signatures; first separate-checkout/state mismatch refused, corrected owning checkout guard retained |
+| Fixture x86 build/artifact/signature/package/install/read-back | PASS |e54/code3007,11m6s/983 executed; exact SHA recorded above; generated restricted CA/native identity overlay declared |
+| Physical corrected-artifact installation/acceptance | NOT TESTED |Phone remains8d9da8e; no new phone/SMS interaction in resumed scope |
+| First new-artifact cold Orders launch | FAIL |SystemUI ANR; one explicit owned Wait recovered session separately. No KVM; cold reliability unresolved |
+| Recovered administrator session and naturally expired access refresh | PASS |Age10832s>TTL3600; exactly one refresh hash rotated; session IDs and OTP verification count/time unchanged |
+| Native logout/backend revocation | PASS |Normal Sign Out; private comparison exactly one refresh session removed, none added, no new OTP |
+| Native disabled-B denial | PASS |Actual generated-OTP verifier showed Account unavailable; disabled profile/no active sessions/assignments confirmed |
+| Reapproved B native login and Orders/role scope | PASS |Preparation by isolated admin API, then actual native verifier; only B Orders/customer tabs and Settings, no admin controls. Not native reapproval evidence |
+| Same-artifact native A/B Orders isolation and switch return | PASS scoped |B-only then A-only through fresh actual verifier logins on e54; returned stored fixture identity matched; no stale B/Queue. Native deep-link/privileged denial not implied |
+| Fresh pending enrollment/native approval | NOT TESTED on e54 |Earlier43 native fourth-account pending/sole-A approval PASS retained separately |
+| Native cleared dispatch number regression | PASS |Empty field remains enabled/editable; normal I0002 re-entry and named suggestion accepted; private433 |
+| Native final dispatch | PASS |I0002 quantity1/BAC01 stock1→0 and empty A cart; normal Submit/success plus guarded rows |
+| Native receipt/image upload/partial dispatch | NOT TESTED on e54 |Earlier43 A0001 receipt/upload and I0001 partial2/stock3→1 PASS retained separately |
+| Native invoice persistence | PASS scoped |20260930/BAC01,3 lines/10 dispatched; storage150/labour20/saved tax9/total179,stock0 |
+| Native invoice preview/persisted financial reconciliation | FAIL |Preview tax8.50/total178.50 versus existing backend CEIL9/179; no rule change; correction/review/new-artifact retest open |
+| Native image render, Realtime, PDF download | NOT TESTED on e54 |Earlier exact-artifact passes preserved; no transfer |
+| PDF viewing | BLOCKED |Default API30 image has no PDF VIEW application; earlier download proof does not close viewing |
+| Link-offline banner and reconnect | PASS scoped |Owned emulator Wi-Fi/data and reverse removed; banner observed; finally restored; manual refresh recovered empty queues |
+| Endpoint-only loss and offline writes | FAIL earlier endpoint case; NOT TESTED writes |Keeping Wi-Fi on did not show expected feedback on43; no offline write/replay acceptance |
+| Malformed origin rejection | PASS scoped |Actual HTTP and HTTPS-with-path rejection on e54; first keyboard-contacts prompt blocked attempt retained FAIL |
+| Owned-instance discovery/switch-out | PASS scoped |Distinct Test1 identity displayed/persisted; prior fixture B refresh count1→0; target login reached without OTP |
+| Test1 unauthenticated cold persistence/direct network | PASS scoped |Force-stop/launch retained Test1 public server key; fresh discovery succeeded with fixture reverse absent. No Test1 OTP/Metro; first boot ANR remains FAIL |
+| Both-instance authenticated switching/same-origin identity replacement | NOT TESTED |No Test1 OTP in unattended scope; same-origin replacement not exercised; pilot excluded |
+| QR/camera, cellular, physical no-USB, complete physical workflows | NOT TESTED current |Historical phone camera/Wi-Fi evidence separate; emulator transport is not hardware acceptance |
 
 ## Evidence, review and ordinary operation
 
@@ -163,7 +212,7 @@ not host-reboot evidence. Keep secrets entered locally, never in chat/Git.
 Remaining decisions/resources: third owned phone for real reciprocal B and fresh
 physical enrollment; physical native customer/expiry/images/PDF/offline/Realtime
 and corrected APK retest; available cellular and disconnected operation; suitable
-second isolated authenticated instance; PDF viewer for emulator viewing; provider
+both-instance authenticated switch and same-origin replacement; PDF viewer for emulator viewing; provider
 fault/rate-limit test window; documented business-rule sign-off and outstanding
 security/release gates. No production readiness is asserted.
 
@@ -282,3 +331,208 @@ Typecheck PASS; existing217 Jest tests/33 suites PASS; changed-file lint PASS
 0errors/57 existing warnings (private406/407/408). Native verification on a new
 audited artifact is required;43/code3005's earlier passes stay on that artifact.
 The owned emulator was stopped before the heavy build; fixture state retained.
+
+
+Resumed backend documentation head18b5317 CI
+[36683411636](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36683411636)
+FAIL: validate now stops at postgres-meta's dependency audit (brace-expansion
+HIGH and fast-uri MODERATE), before reaching Storage's audit. Contract and
+redacted source/history scans PASS; dependent migrations/operator/Grafana jobs
+SKIPPED. Preserve earlier metadata-clean/Storage-failure observations as dated
+evidence, not current clean metadata assurance. The separate historical Storage
+undici/ip-address findings remain unresolved. Image-security investigation and
+upgrades stay deferred; no dependency gate was relaxed. Private413/414/415 retain
+the exact run/job/failed-command evidence.
+
+
+New e54 fixture APK clean build/audit/signature/identity PASS: version0.1.0/
+code2026093007,x86_64,11m6s/983 tasks executed, restricted public CA overlay,
+SHA `f8ed582a6e37398cab49c0682c6d377a39f4b17249c1f6d04315b42f8c95dfe7`.
+Retained private fixture/fixture-e54c826-build2026093007-x86_64.apk. Installation
+and affected native verification remain pending at this dated point; current
+physical phone remains8d9da8e.
+
+New-source live contract first attempt FAILed the ownership-checked catalog
+request: the driver used the separate backend review checkout with fixture03's
+state. Keep the owning checkout and state together, even for `--live` read-only
+checks; never disable Compose ownership checks to make a cross-checkout command
+work. Retry uses warehouse-reproduce/unattended-backend and its own fixture03.
+Private416 preserves failure; corrected421 records the retry.
+
+
+The corrected e54 live contract check from its owning fixture checkout PASS
+(private421):128 typed calls/94 RPC names and3 explicitly reported dynamic wrappers; no
+name/overload/argument/grant mismatches. This remains a lower-bound inventory.
+Separate clean normal e54 checkout ran the revised main sequence: locked npm ci,
+36 setup tests,217 Jest/33 suites, lint0errors/1468 existing warnings, typecheck,
+Expo compatibility/Doctor18/18, npm audit0 and Test1 public bootstrap PASS. Native
+arm64 compilation remains in progress at this dated point. The prior successful
+suites were repeated here because a new shared-hook source change and revised
+clean-guide verification required new evidence; backend API suites were reused.
+
+
+The revised normal mobile guide completed from a separate clean e54 checkout
+with only the declared native Test1 identity, no fixture CA overlay. All main
+checks above and arm64-v8a assembleRelease PASS in11m8s/983 tasks executed.
+Exact artifact audit/signature/package PASS, version0.1.0/code2026093008,
+SHA `7ad6e19aee694865a4fdcc9753fddb19ddd5bce317f39e4da56d08464935fb3e`.
+Retained /home/jay/warehouse-artifacts/test1/test1-e54c826-build2026093008-arm64.apk
+(0600). It is NOT INSTALLED; physical read-back/native acceptance remains open.
+The normal clean source/build guide is reproduced; compilation is not E2E
+acceptance. New fixture APK installation and the affected native case are next.
+
+
+New e54/code3007 fixture installation/signature-match/read-back PASS (427–429),
+without uninstall/data clear. New emulator ready probe97.7s and full-boot log
+169.421s are separate measurements. Temporary labeled hosts/reverse mapping
+PASS; SELinux Enforcing. First Orders launch probe FAIL behind SystemUI ANR;
+one explicit owned Wait recovered actual Orders A1/Bempty and staff tabs.
+Cold-launch reliability remains FAIL; recovered session is a separate PASS.
+
+New e54 native naturally expired-access refresh PASS (430–432): before launch
+last administrator OTP verification age10832s exceeded accessTTL3600; after
+normal authenticated Orders restore, exactly one refresh hash rotated, session
+IDs and OTP verification timestamp/count stayed unchanged. No new challenge,
+fixed code, token injection or authentication lifetime change was used. Private
+hashes were compared without printing values. Old cached UI was not reused as
+new-artifact proof; the private driver now excludes cache predating installation.
+
+
+### Resumed audited e54 native dispatch and invoice findings
+
+Exact e54c8268f6f5dd67652d3779d2b4a111292a59fa/code2026093007 native
+cleared-number recovery PASS (private433): clearing generated I0002 left an
+enabled, named empty Dispatch number input. Normal re-entry and the explicit
+Use suggestion button restored a valid one-bag draft. Earlier queue navigation
+FAIL remains: an expanded recent-dispatch section hid the target below the
+viewport; collapse it and inspect a fresh screen before acting. No offscreen
+ADB tap or app-state injection was used for the successful case.
+
+Normal native final dispatch I0002 PASS: BAC01 stock1→0, quantity1 saved for
+Customer A, order/cart empty, success dialog matched; guarded private404-final
+confirmed rows. Prior43/code3005 partial dispatch2/stock3→1 and receipt A0001
+are separate artifact evidence, not transferred to e54.
+
+Native invoice creation saved invoice20260930/BAC01 and three dispatch lines
+(total quantity10) PASS for persistence, but preview/persisted reconciliation
+FAIL. Review and confirmation displayed storage150 + labour20 + tax8.50 =
+178.50; saved header tax9/total179. Root cause established: mobile
+src/utils/invoiceCalculations.ts rounds money to two decimals, while pinned
+backend migration00000000000006_invoice_line_integrity.sql save_invoice
+applies CEIL to header tax and total. Saved per-line rate/duration/quantity
+calculations reconcile to storage150/labour20; stock remains0 (private434).
+The earlier documented950/48/998 API example still passed separately.
+
+A private verifier initially expected178.50 and failed. Its surrounding shell
+continued and wrote a premature PASS; this has been explicitly superseded by
+FAIL while retaining attempt history. Subsequent action sequences stop on
+command failure. A separate guarded persistence check against the existing
+backend rule PASSed. Success dialogs and ADB delivery alone cannot establish
+financial acceptance. No invoice was deleted/recreated to hide the mismatch.
+
+OPEN: align native review/confirmation/success amounts with the agreed backend
+rounding contract and repeat on a newly audited artifact. No billing rule or
+production behavior was changed during this installation exercise. Until that
+work is reviewed, this case is FAIL; operator/business sign-off remains required
+before using financial output beyond fictional tests.
+
+
+Exact e54/code3007 link-offline banner/reconnect PASS: only the owned emulator's
+Wi-Fi/data were disabled and its reverse443 removed; No internet connection was
+observed within90s. A finally block restored previous links/reverse. Banner
+disappeared and ordinary Refresh orders restored A/B empty queues. This does
+not erase prior43 endpoint-only feedback FAIL (Wi-Fi remained on), establish
+offline writes, or demonstrate cellular/physical/no-USB behavior.
+
+Current e54 native administrator logout/revocation PASS: normal Sign Out reached
+login with selected fixture server retained; private431/437 comparison showed
+exactly one refresh session removed, none added, OTP verification count unchanged.
+Native disabled fictional B login denial PASS: actual generated challenge went
+through the Edge verifier and displayed Verification Failed / Account unavailable;
+guarded private435 confirmed disabled profile, empty assignments and no active
+refresh session. No real SMS or fixed OTP was used. First immediate OTP-screen
+hierarchy attempts FAILed (UIAutomator idle-state unavailable); private436
+screenshot established the actual empty-code focused screen before input. A
+private read-only verifier's initial nonexistent revoked_at-column assumption
+FAILed and was corrected to this schema's deletion-based revocation; backup
+retained. No backend/session enforcement was weakened.
+
+
+Reapproved B native login/Orders scope PASS on e54/code3007. Preparation used
+the existing isolated administrator API to approve only B (private435); it is
+not native reapproval evidence. Fresh generated code went through the actual
+verifier, and settled Orders contained only Customer B; customer tabs and
+Settings omitted Queue, Customers, Enrollment Review and Users. A prior43 native
+A-only result remains separately dated; same-artifact reciprocal A is not yet
+claimed. First denial/OK already returned to login; an extra Back-label attempt
+FAILed within90s without a tap. Inspect actual current UI rather than assuming
+a particular post-error route.
+
+
+Malformed-origin attempt initially FAILed because a previously unseen AOSP
+keyboard contacts permission dialog took foreground, not a warehouse-camera
+prompt. Private439 screenshot established it; ordinary DENY closed it without
+grants or app/phone setting changes. The HTTP text was already present but
+Check server had not completed. Retain the failed attempt and confirm actual
+foreground/keyboard state before retry; a sent tap is not validation evidence.
+This was on the disposable emulator only.
+
+
+Exact e54/code3007 native malformed HTTP and HTTPS-with-path origin rejection
+PASS after the established keyboard prompt was declined. No selection/credentials
+were substituted and earlier failed attempts remain. Native Check server then
+retrieved/displayed Test Warehouse 1 at https://test1.gurucold.in over the
+emulator's restored network. Test1 and fixture03 manifests have different
+instance IDs and independent state/credentials. This is the second owned test
+instance; the production pilot is excluded. Target login/authentication is not
+implied by public identity discovery.
+
+
+Current e54 native cross-instance switch to owned Test1 PASS, scoped:
+Check server displayed the distinct Test Warehouse1 identity, Use this server
+reached unauthenticated login, the persisted public selected-server key matched
+Test1's manifest, and prior fictional B refresh-session count changed1→0. Only
+the public selected-server SQLite key was read; no native session values were
+retrieved or written. First state-read command FAILed; bounded retry with
+SQLite5s busy timeout PASSed. Initial root cause is unestablished; do not infer
+database locking from the successful retry. Both attempts remain in private440.
+No Test1 OTP, business-data request, pilot contact or old-session injection.
+This closes authenticated-fixture switch-out/target-selection only, not login
+on both instances or same-origin identity replacement.
+
+
+Current e54 Test1 unauthenticated cold persistence/direct network PASS (private441):
+force-stop/launch with fixture reverse443 absent reached login, read-only
+persisted public server identity still matched Test1, and fresh native
+Check server retrieved/displayed Test Warehouse1 through the emulator's direct
+network. Finally restored only the emulator fixture route. No Metro, target OTP
+or native session value used. This scoped successful cold launch does not erase
+the first boot/SystemUI failure or establish authenticated Test1, physical
+no-USB, cellular or reliable cold behavior across runs.
+
+
+Current e54 ordinary switch-return/reciprocal native Orders scope PASS:
+selected fixture03 again from Test1, public persisted server key matched the
+original fixture manifest, login showed no stale B Orders, and fresh generated
+A challenge used the actual verifier. Same exact artifact showed only B during
+B login and only A during A login; customer tabs omitted Queue. Deep-linked
+foreign native records/privileged-RPC denial are not implied; reciprocal API
+denial evidence remains separate. No target Test1 OTP/session or source/app-state
+injection. Private442 and artifact-scoped native attempt ledger retain proof.
+
+Resumed tests complete to their recorded scope. Bridge stopped with Ctrl+C,
+owned emulator stopped through its explicit ADB target, fixture03 ownership-checked
+Compose down(no-v) PASS; fixture04 was already stopped. Socket and owned
+ports18443/18080/5556/5557 absent (private443). State/AVDs/artifacts/signing/failed
+logs retained; shared ADB server and physical phone untouched. Installed Test1
+final local/public doctor and active dedicated tunnel PASS (private444/445);
+backend source clean at f18f51d. Host root157GiB/free81GiB.
+
+The corrected installation and normal e54 Android build were reproduced from
+clean source with separate disposable state and declared overlays. Another
+operator can follow those revised sequences on the recorded prerequisites;
+the entire current end-to-end suite has not passed. Financial-preview mismatch,
+container audit, no-KVM cold reliability, physical corrected-artifact workflows,
+cellular/no-USB, PDF viewing, offline writes, both-instance authentication and
+same-origin replacement remain open. No skipped/historical/build-only evidence
+closes those gates. No release/merge, recovery/cutover or agent reboot.
