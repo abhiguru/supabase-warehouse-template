@@ -24,6 +24,14 @@ const st = lstatSync(keyPath);
 assert.ok(st.isFile() && !st.isSymbolicLink() && st.uid === process.getuid() && (st.mode & 0o077) === 0);
 const allowedPhones = new Set(['919888888871', '919888888872', '919888888873', '919888888874']);
 const challenges = new Map(); // Plaintext exists only in harness memory, never logs/HTTP.
+const upstreamOrigin = new URL(base).origin;
+const fixtureTarget = path => {
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return null;
+  try {
+    const url = new URL(path, base);
+    return url.origin === upstreamOrigin ? url : null;
+  } catch { return null; }
+};
 const query = expression => {
   const result = spawnSync('docker', ['exec', '-i', '-e', `PGPASSWORD=${env.POSTGRES_PASSWORD}`,
     `${env.WAREHOUSE_PROJECT_NAME}-db-1`, 'psql', '-X', '-qAt', '-U', 'supabase_admin',
@@ -39,6 +47,8 @@ const json = (response, status, body) => {
   response.end(JSON.stringify(body));
 };
 const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(resolve(tlsDir, 'fixture-ca.pem')) }, async (req, res) => {
+  const target = fixtureTarget(req.url);
+  if (!target) return json(res, 400, { success: false, message: 'Only owned fixture upstream allowed' });
   if (req.method === 'POST' && req.url === '/functions/v1/operator-otp/request') {
     try {
       let body = '';
@@ -55,14 +65,16 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  const upstream = httpRequest(new URL(req.url, base), { method: req.method, headers: req.headers }, reply => {
+  const upstream = httpRequest(target, { method: req.method, headers: req.headers }, reply => {
     res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
   });
   upstream.on('error', () => { if (!res.headersSent) json(res, 502, { success: false, message: 'Fixture upstream unavailable' }); else res.destroy(); });
   req.pipe(upstream);
 });
 server.on('upgrade', (req, client, head) => {
-  const upstream = httpRequest(new URL(req.url, base), { headers: req.headers });
+  const target = fixtureTarget(req.url);
+  if (!target) { client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
+  const upstream = httpRequest(target, { headers: req.headers });
   upstream.on('upgrade', (reply, socket, upstreamHead) => {
     client.write(`HTTP/1.1 ${reply.statusCode} ${reply.statusMessage}\r\n`);
     for (let i = 0; i < reply.rawHeaders.length; i += 2) client.write(`${reply.rawHeaders[i]}: ${reply.rawHeaders[i + 1]}\r\n`);

@@ -566,3 +566,14 @@ directory supplies a code to the local test driver; no SMS provider is called.
 This is a mock delivery harness for the disposable fixture, not a replacement
 for warehouse authentication or provider acceptance. Nonfixture guard rejection
 and syntax checks passed; positive emulator integration is still pending.
+
+The bridge routing review found that URL resolution could accept an absolute or
+scheme-relative request target. Restrict every HTTP/WebSocket upstream to the
+owned fixture origin before forwarding. Runtime smoke passed normal forwarding
+and rejected absolute, scheme-relative and backslash external targets. The first
+restart diagnostic matched only absolute argv[0], while Node used relative
+argv[0]=node; it refused to signal anything. A source copy therefore left old
+code running and a new candidate refused the occupied socket. Correct exact
+process selection stopped only the owned bridge, its handler removed the IPC
+socket, and the restarted candidate passed the boundary smoke. No protected
+host was contacted; original attempts remain private.
