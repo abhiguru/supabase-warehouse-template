@@ -53,7 +53,9 @@ ss -ltn
 docker network inspect $(docker network ls -q) > "$FIXTURE_PRIVATE/networks.json"
 ```
 
-Confirm port 18080 is unoccupied before proceeding. For the gateway-IP tests,
+Configuration and locked dependencies may be prepared while an earlier disposable
+suite runs. Before starting any service or applying the network overlay, stop
+only that earlier fixture and confirm port 18080 is unoccupied. For the gateway-IP tests,
 inspect the saved network list for an overlap with **10.233.245.0/24**. Treat null
 IPAM.Config as an empty list. Stop if it overlaps; do not change another network
 or invent a subnet while claiming the same gateway regression coverage. In this

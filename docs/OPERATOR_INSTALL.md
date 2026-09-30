@@ -67,7 +67,14 @@ needed; never give the agent the sudo password in chat.
 Install Node.js 22.18 or newer, npm, Git, OpenSSL, util-linux (`flock`), Docker
 Engine and Compose v2.
 Choose a persistent filesystem with at least 10 GiB free for this initial
-installation check, plus capacity for the operator's actual data. Start Docker
+installation check, plus capacity for the operator's actual data. Maintain that
+minimum at every setup/doctor invocation, including when adding SDKs, AVD images
+or compiling Android. Finish disposable backend checks before heavy native
+builds on a constrained host, and record free space again. If space falls below
+the guard, stop and reclaim only your own completed generated compiler outputs
+after verifying their exact APKs are retained elsewhere; preserve warehouse
+state, logs, artifacts and signing files. Never weaken the guard or globally
+prune Docker to make installation pass. Start Docker
 at boot with `sudo systemctl enable --now docker`. The installer checks its
 availability and Linux x86-64 architecture before creating state.
 

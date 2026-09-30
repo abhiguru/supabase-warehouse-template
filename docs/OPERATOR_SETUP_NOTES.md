@@ -44,7 +44,7 @@ remain closed.
 | Backend dependency installation/unit checks | PASS with historical failure | npm ci; corrected review 48/48 tests under umasks 077 and 022. Baseline under 077 initially failed 1 permission fixture; only test fixture chmod changed in review |
 | Disposable migrations/auth/billing checks | PASS | Separate owned disposable database; original guards unchanged; no fixture issuer used against installed warehouse |
 | Current container dependency audit | FAIL | Storage undici 7.29.0 HIGH and ip-address MODERATE advisories; metadata clean. Historical seven-job green CI is retained but does not override current failure |
-| Review CI | FAIL overall | Current code-head [run 36659188131](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36659188131) at `ee5b4936e2aa644667fe617f79e2a48b2eb67bbb`: contract and secret scan PASS, validation audit FAIL, dependent jobs SKIPPED. Prior [run 36644865092](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36644865092) has the same recorded outcome. No skipped job counted as pass |
+| Review CI | FAIL overall | Latest recorded [run 36664842242](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36664842242) at documentation head `23db88011e45d20777ff4319f3ab2b9000e6d933`: contract and secret scan PASS, validation audit FAIL, dependent jobs SKIPPED. Prior [run 36644865092](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36644865092) has the same recorded outcome. No skipped job counted as pass |
 | Clean corrected-guide reproduction | PASS, scoped | Clean checkout of review commit `8bca643230961e2c91ace9b5a1a2491dd89c5126`, readable public source, separate `core-backend-test` state, fictional guard identity/origin and port 18080. Setup and safe rerun preserved private config/object hashes; owned fixture services stopped and state retained. This is local reproduction, not a second public tunnel/device installation |
 | Guarded core-backend fixture APIs | PASS, disposable only | Identity/roles, A/B customer isolation, receipt/cart/order/queue, invalid quantity/retry/concurrent dispatch, partial/final stock, invoice 998, four private signed PDFs, refresh/replay/logout, Realtime/reconnect, image lifecycle/privacy/oversize and disabled-account revocation. No guards weakened |
 | Real installed administrator/customer authentication | PASS | Real SMS login, pending enrollment, authenticated approval and post-approval login; provider acceptance also confirmed by received/verified codes |
@@ -605,3 +605,52 @@ corrected to require a fresh hierarchy and foreground ownership, and refused
 action when the app was no longer foreground. No stale-coordinate tap counts
 as native acceptance. A separate API 30 software-emulator trial is recorded in
 the mobile notes. No physical lock bypass, host change or host reboot occurred.
+
+
+Current documentation-head CI 36664842242 on 23db880 again completed validation
+FAIL, contract and redacted source/history scan PASS, dependent operator,
+migrations and Grafana jobs SKIPPED. No skipped check counts as a pass.
+The mobile raw fixture APK audit was rechecked: initial source94ead7e and
+rebuilt943ab86 both failed on the public CA's .pem resource, correcting a
+previous inaccurate PASS claim. The initial fixture APK was already installed;
+observations/failures are retained. A later d4540c8 clean fixture build packages
+the public CA as .crt and passes the unchanged audit, signature, package,
+certificate-fingerprint and installed read-back checks. The normal physical APK
+audit is separate and passed. See the mobile notes for exact source/artifact
+identifiers and the Android scoped-picker functional correction.
+
+
+### Repeat of the revised disposable guide
+
+A new clean checkout pinned ee5b493 and new private state suffix2026093004
+followed UNATTENDED_FIXTURE.md. Locked dependencies/configuration were prepared
+while the earlier fixture ran; before applying the declared10.233.245.0/24
+overlay/startup, the earlier bridge/emulator/fixture were stopped, and fresh
+port/network occupancy checks passed. Only the documented network override and
+private Kong port18080 differ from source. No hidden source edits occurred.
+
+The first local doctor invocation failed at its10GiB disk guard: retained SDK/AVD
+images and compiler trees reduced free space to9.4GiB during the concurrent
+normal APK build. This is an established host prerequisite failure, not a
+reason to weaken the guard. Three completed owned app/build directories were
+reclaimed after matching each exact APK to its separately retained artifact.
+Evidence, warehouse state, AVDs and signing material were preserved; no global
+Docker prune was used. Free space returned to12GiB. The main installation and
+mobile sequence now require maintaining the disk minimum throughout and
+finishing disposable backend checks before heavy builds on constrained hosts.
+The local doctor rerun PASS; clean unit48/migrations/setup/core API/Realtime/final
+accounts/images/Studio/gateway CORS+size/upstream-IP replacement/retention preview
+PASS. Container audit FAIL remains open. Same-input setup private comparisons
+preserved config/manifest hashes, administrator, databaseOID, document metadata
+and stored-file bytes (at least4 PDFs). New fixture04 was stopped without deleting
+state/volumes. The original disk-guard failure remains in private evidence.
+
+
+See [FRESH_VM_INSTALL_LEDGER.md](FRESH_VM_INSTALL_LEDGER.md) for the consolidated
+dated source/artifact matrix and repeat policy. Preserve historical attempts;
+rerun only for new changes, changed prerequisites or unresolved scope/failures.
+
+
+Operator-requested pause: docs completed before the operator expands disk/reboots.
+See the consolidated ledger for completed normal43b8320 arm64 build/audit, exact
+artifact SHA and open signature/device checks; no reboot or physical update done.
