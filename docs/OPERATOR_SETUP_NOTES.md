@@ -1227,3 +1227,23 @@ unchanged; no pilot/recovery/host DNS/production connector touched.
 validate dependency audit FAIL(brace-expansion HIGH/fast-uri MODERATE), contract
 and redacted-history scan PASS; dependent functional jobs SKIPPED. Local fresh
 checks do not turn skipped CI jobs into PASS or close deferred release gates.
+
+### Scoped overnight run actually started — 2026-10-01 IST
+
+After all required exact3014 launch cases/readiness/short-helper checks passed,
+the owned user unit warehouse-fixture-overnight-3014 started at00:30:19IST
+(19:00:19UTC30September). Actual unit active/running, PID2141593, first native
+block RUNNING after two PASS preflights;44bound inputs/nine3200second blocks.
+The plan performs native force-refresh/backend-observed reads, cold/background
+cycles, reserved business invariant checks and same-session renewal observation.
+No completed overnight PASS yet. All raw logs/session metadata/configs stay
+private; no real provider, pilot/recovery/Test1 business mutation.
+
+Exact read-only observer tooling98687380dc95e7200bf9888a9794a7a0dea12443 was
+pushed and remotely verified. Installed primary/secondary fixture source heads
+and every bridge/relay/DNS/subnet overlay are separately frozen in private hashes;
+review tooling HEAD is not the installed backend HEAD. Unit Restart=no and
+10hour maximum; ordinary stop is systemctl --user stop for that exact unit.
+Next require every runner case/verify/final aggregate PASS, preserve any failure,
+then update sanitized matrix/PRs. Dependency/physical/provider/release gates stay
+open. See mobile UNATTENDED_RUN.md for the complete reproducible plan recipe.

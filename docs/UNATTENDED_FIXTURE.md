@@ -286,4 +286,6 @@ unit checks PASS612; actual owned observations/business baseline comparisons PAS
 These tools do not alter warehouse records or establish production load capacity.
 The native loop uses fresh explicit reads and background/cold persistence, checks
 ANR/crash, and reconciles business state/session renewal without a new login.
-No timer/overnight run had started at this documentation checkpoint.
+The optional current run started2026-10-01T00:30:19IST, unit
+warehouse-fixture-overnight-3014 active/running; first block RUNNING, no completed
+long-run PASS. No timer; inspect private evidence before any restart.
