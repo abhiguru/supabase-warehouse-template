@@ -943,3 +943,68 @@ Supply an explicit local author for review commits, for example
 only the existing draft PR body; return only number/URL/draft/head. Prior bodies
 and failures retained. Do not put credentials, multiline expansions or raw logs
 in CLI arguments/PRs. Corrected commits/updates passed; no merge/release.
+
+
+### Invoice blocker correction under verification — 2026-09-30
+
+The operator promoted invoice reconciliation to the first blocker before long
+unattended runs. Mobile review commit4709056c6abe07c8f583ae5e30788b38ddc91213
+replaces duplicate two-decimal header calculations with the existing whole-rupee
+preview/save contract and shows the rounding adjustment separately. No backend
+pricing policy or installed Test1 source was changed. The native create path
+actually uses the three-argument save_invoice wrapper/save_invoice_internal in
+the initial schema; the earlier note referenced the one-argument migration,
+which has the same header ceiling behavior. Preserve the historical e54
+₹178.50 displayed versus ₹179 saved FAIL.
+
+Exact current fixture03 checkout is c0a6db16a8e6ff23d56a8563703231b2f76b5da4
+plus its declared local bridge boundary correction (byte-identical to reviewed
+ee5b493) and subnet10.233.245/24. Earlier shorthand attributing that checkout to
+ee5b493 omitted its actual HEAD/local-patch boundary; current private diff469
+records it explicitly. Business runtime remains unchanged. Fixture04's clean
+checkout evidence is separate.
+
+Five new fictional API cases compare the same three-argument save overload,
+server-calculated duration and private PDF metadata: 30days/storage100/labour40/
+tax7/total147; 31days/150/40/10/200; 46days/200/40/12/252; storage150/labour20/
+tax9 with discount2.50 gives177, and discount-2.50 gives182. All PASS (private468).
+The supplied duration99 is ignored by the server as expected; saved duration
+comes from receipt/dispatch dates. These are API/PDF tests, not native review or
+confirmation evidence. IRN01 is a new fictional receipt left for the native
+original-mismatch case; the old BAC01 invoice is retained.
+
+Source checks230Jest/36setup/typecheck/lint0errorsPASS. Exact APK/native verification
+is pending; invoice gate remains open. New one-day fixture certificate generated
+in a separate private directory expires2026-10-01T09:51:45Z; verifiedTLS identity
+PASS471. Rebuild/audit the fixture APK embedding that public certificate; never
+reuse expired trust or disable TLS. Other blockers remain queued one at a time;
+no overnight suite has started.
+
+
+Follow-up native evidence on mobile4709056, fixture APK version2026093009,
+SHA2562676332d1ba574782dd20a25332623434e6861382d104a0484d59f9ef67b2095:
+IRN01 review/confirmation PASS at179 (no discount),177 (discount2.50),182
+(surcharge2.50); native saved invoice20261006 at179, saved tax9/three server
+durations and generated private PDF metadata PASS491. First cold launch had
+system/SystemUI ANRs; recovering the app did not close unattended reliability.
+
+Further mobile corrections9867569 and57add44 fix saved net-before-tax labelling,
+hidden surcharge and binary half-cent rounding (0.29x1.5 must be0.44; x3.5 must
+be1.02). Full239Jest/typecheck/lint0errorsPASS. Guarded SQL and backend preview
+for new IRH01 storage0.44/tax1/total2 PASS505; it remains uninvoiced for the
+follow-up native artifact. These fixes do not change the backend billing policy.
+
+Other pre-run blockers: mobile6fa6553 restores CI for the stacked candidate PR;
+run36705487757 appeared (job outcomes remain separately recorded). fa74f28 adds
+a requested certificate lifetime guard, tested for invalid/insufficient horizons.
+Mobile812d5ac adds a private bounded/checkpointed fixture runner; six runner
+regressions and42setupchecks PASS. Its successful infrastructure tests are not
+a completed long acceptance plan. See mobile docs/UNATTENDED_RUN.md.
+
+PDF viewing remains BLOCKED: MJ PDF3.1.0 does not accept PDF SEND, Librera9.6.17
+crashes on API30, and verified9.5.7 requires manage-all-files before copying the
+shared PDF. Automatic approval review rejected granting that broad permission;
+no permission was granted or rejection bypassed. An explicit emulator-only
+approval question is pending. Existing PDF API authorization/content PASS is
+separate from external reader rendering. No overnight suite, production change,
+physical-phone change or real SMS was performed in this blocker-fix run.

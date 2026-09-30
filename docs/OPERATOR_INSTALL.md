@@ -516,6 +516,13 @@ backend saved CEIL-rounded tax9/total179. The integer950/48/998 example passing
 does not close this mismatch. Preserve the failed result, keep native financial
 acceptance open, and agree a reviewed display/rounding correction before retesting.
 Do not change production rules or delete the evidence to obtain a PASS.
+Treat a preview/save mismatch as a blocker before long mobile acceptance runs.
+Verify create and edit recalculation paths, confirmation, saved header and the
+private PDF. Keep storage, discount and rounding adjustment separate; the
+existing backend ceilings tax and total independently and preserves discount.
+Use the documented 30/31/46-day boundaries and a fractional discount/surcharge.
+Do not change billing policy or rewrite historical invoices to hide a failure.
+
 
 These values validate the [documented fictional billing rules](INVOICE_RULES.md).
 They are not approved production pricing, tax or calendar policy. Ask the operator
