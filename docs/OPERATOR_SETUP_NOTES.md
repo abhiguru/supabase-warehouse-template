@@ -538,3 +538,31 @@ For each case record time, code pair plus local changes, tool/build/device ident
 expected and observed result, evidence location, cleanup and any reason for NOT
 TESTED/FAILED/DEFERRED. Do not overwrite failed attempts with a later pass or mark
 initialization, CI success and complete production acceptance as the same state.
+
+## Unattended fixture/emulator run requested — in progress
+
+The operator selected isolated fictional fixtures and emulator tests with no
+further phone/OTP prompts. The production pilot remains excluded. A new private
+`core-backend-test-2026093003` state belongs to a separate disposable checkout of
+`09584d626d2a9f531aa9f467276a334aa98b949d`. Its private gateway was changed to
+18080 before startup; the checkout received the CI-documented dedicated
+10.233.245.0/24 network overlay after verifying no existing network overlaps.
+Record that overlay as a local configuration change, not pristine HEAD. A
+diagnostic initially mishandled null Docker IPAM.Config before any mutation;
+corrected null handling passed the occupancy check.
+
+Fresh unit, migrations, setup, local doctor, core API, customer A/B Realtime,
+final account/image probes, Studio, gateway CORS/size, upstream-IP replacement
+and retention preview passed. Container audit failed again. No skipped case
+or fictional mock delivery counts as real SMS acceptance.
+
+`scripts/emulator-fixture-bridge.mjs` uses the original fixture ownership,
+identity and non-delivery-key guards before listening. Its HTTPS listener is
+loopback-only. It forwards ordinary API and WebSocket traffic; only fictional
+OTP requests use the existing service-only challenge/finish functions, with
+cryptographically generated one-time values retained only in memory. The app's
+HTTP response never includes a code. A private 0600 Unix socket in a 0700
+directory supplies a code to the local test driver; no SMS provider is called.
+This is a mock delivery harness for the disposable fixture, not a replacement
+for warehouse authentication or provider acceptance. Nonfixture guard rejection
+and syntax checks passed; positive emulator integration is still pending.
