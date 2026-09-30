@@ -462,6 +462,54 @@ Enable the reverse proxy's system service at boot as well as Docker. If the
 router cannot send LAN clients back through its public address, configure local
 DNS for the same canonical domain; the app must still use the same HTTPS origin.
 
+## Verify fictional warehouse behavior before acceptance
+
+After local/public doctor, build/install the pinned mobile candidate using its
+[operator Android guide](https://github.com/abhiguru/rn-warehouse-template/blob/codex/fresh-vm-operator-notes/docs/OPERATOR_INSTALL_NOTES.md).
+Record both source commits and any native identity overrides. Choose this new
+server and confirm its company/origin/instance identity before authentication.
+Lift any no-SMS restriction explicitly for this instance before requesting codes;
+use owned phones and local hidden input. Never use a fixed OTP or fixture issuer
+against this installed warehouse.
+
+Sign in as the first administrator. Create **Fictional Customer A**, using a
+second owned phone only for authentication. Verify its first login remains pending
+without warehouse access; approve it from Enrollment Review and request a new
+code for Customer A. A third owned phone is required for a real Customer B session.
+If unavailable, mark reciprocal A/B authentication/isolation BLOCKED. A disposable
+fixture or one-way denial of access to a B record does not close that case.
+
+Use the existing fictional billing example, with deliberately fictional items,
+receipt/dispatch numbers and rack names. This exercise used:
+
+| Step | Input / expected check |
+| --- | --- |
+| Administrator catalog/price | Fictional potatoes in bags; monthly price 5, labour 2, tax 5%, effective January 1, 2026 for Customer A |
+| Receipt | April 1, 2026; 100 bags, 10 kg per bag; verify 100 bags / 1000 kg |
+| Customer cart/order | Add 7 bags from that receipt; staff queue sees the same order; other customers cannot read/change it |
+| Partial dispatch | May 2, 2026; 20 bags; 80 bags / 800 kg remain |
+| Final dispatch | Same day; remaining 80 bags; zero stock remains |
+| Invoice, existing legacy-duration example | Subtotal 950, rounded tax 48, total 998; compare preview and persisted invoice |
+| Private documents | Authorized GRN, dispatch, invoice and stock PDFs download with valid PDF bytes; anonymous/foreign access denied |
+
+Retain each first attempt and retry result separately. Check duplicate receipt
+and dispatch retries do not duplicate records/subtract stock twice; reject
+negative, zero and overstock quantities without changing balance. In a separate
+fictional 10-bag receipt, submit two conflicting 7-bag dispatches concurrently;
+exactly one succeeds and 3 remain. Test authorized image upload/confirmation,
+private reads, duplicate/oversize rejection and deletion; do not count arbitrary
+non-image bytes as proof of a native photo workflow. Refresh/replay/logout,
+natural token expiry, Realtime updates/reconnect and actual native offline
+behavior require their own results. Record PASS, FAIL, BLOCKED or NOT TESTED per
+case; compilation and historical device passes are insufficient.
+
+These values validate the [documented fictional billing rules](INVOICE_RULES.md).
+They are not approved production pricing, tax or calendar policy. Ask the operator
+for business decisions before adopting production rules. Read the
+[guarded disposable backend acceptance instructions](BACKEND_CORE_ACCEPTANCE.md)
+for repository fixtures: they require their own fictional identity, origin,
+state name and port. Preserve those guards and never point them at this warehouse.
+
 ## Ordinary operation
 
 Use the **installed checkout**, the recorded state directory and a shell with
