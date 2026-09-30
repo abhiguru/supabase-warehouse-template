@@ -193,7 +193,44 @@ native overlay separately from source HEAD. A CA expires after one day; create
 new private material and rebuild the fixture APK when needed, rather than
 disabling TLS verification.
 
-After tests, stop the bridge first, then only this checkout's fixture services:
+After tests, stop the bridge first. Confirm its process and loopback18443
+listener have stopped and its private IPC socket is gone before the next start.
+Interrupting a wrapped terminal session can leave an owned stale socket; the
+next bridge correctly refuses to replace it. If the recorded process is stopped
+but the socket remains, this explicit cleanup refuses live listeners, other
+owners, symlinks, unsafe permissions and a changed inode:
+
+```bash
+python3 - <<'PY_SOCKET'
+import errno, os, socket, stat
+from pathlib import Path
+p = Path(os.environ['WAREHOUSE_FIXTURE_SOCKET'])
+assert p.is_absolute() and p.resolve() == p and p.name == 'fixture-otp.sock'
+parent = p.parent.stat()
+assert parent.st_uid == os.getuid() and parent.st_mode & 0o077 == 0
+if not p.exists():
+    print('Fixture socket already absent')
+    raise SystemExit(0)
+s = p.lstat()
+assert stat.S_ISSOCK(s.st_mode) and s.st_uid == os.getuid()
+assert s.st_mode & 0o777 == 0o600
+for family, address in [(socket.AF_INET, ('127.0.0.1', 18443)),
+                        (socket.AF_UNIX, str(p))]:
+    with socket.socket(family, socket.SOCK_STREAM) as client:
+        client.settimeout(2)
+        try:
+            client.connect(address)
+        except OSError as error:
+            assert error.errno == errno.ECONNREFUSED, 'Listener stop is not proven'
+        else:
+            raise RuntimeError('Listener is active; preserve socket and inspect process')
+assert p.lstat().st_ino == s.st_ino
+p.unlink()
+print('Removed the verified owned stale fixture socket')
+PY_SOCKET
+```
+
+Then stop only this checkout's fixture services:
 
 ```bash
 bash scripts/compose.sh --profile '*' down

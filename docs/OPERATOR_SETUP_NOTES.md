@@ -1041,3 +1041,12 @@ for this owned emulator only; cold readiness remains FAIL and the full overnight
 plan/fault controls/second-instance work remain incomplete. Mobile main install
 examples now pinb22c3b5 (same app/config/dependency files as built57, corrected
 safeguards); example3011/full clean new-pin build remains NOT TESTED.
+
+Cleanup follow-up on Ubuntu24.04.3/Node22.23.3/current fixture03: interrupting
+the wrapped bridge session returned143 and closed its TCP listener, but left
+its owned0600 IPC socket. Expected a clean restart; actual next bridge would
+refuse the occupied path. Exact interruption/cleanup cause is not established.
+After confirming owned services/listeners stopped, private parent ownership,
+socket type/mode, ECONNREFUSED and unchanged inode, only that stale socket was
+removed537 PASS. The same guarded recovery is integrated into UNATTENDED_FIXTURE
+stop/start instructions. Live sockets and other instance state are never removed.
