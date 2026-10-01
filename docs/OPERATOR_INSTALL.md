@@ -683,3 +683,5 @@ long-run dependencies in tool-backed terminals; the first8hour attempt failed
 after those terminal processes disappeared. Retain that failed evidence and
 use a new artifact/CA/plan identity. These fictional checks do not change or
 replace the ordinary installedTest1 sourcef18f51d or its dedicated ingress.
+
+For optional unattended fictional tests, follow the [supervised fixture startup and bounded IPC readiness sequence](UNATTENDED_FIXTURE.md). A successful systemd start alone is not application readiness; run that check before relay control or plan freeze. Ordinary warehouse setup is unchanged.

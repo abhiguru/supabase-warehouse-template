@@ -1419,3 +1419,18 @@ e217/code2026100101. Three cold launches PASS;30minute readiness is RUNNING.
 perform final read/preflight/8-gate verification, then automatically launch the
 new8hour unit. That unit is NOT STARTED at this checkpoint. No source/business
 write or rate-limit modification was needed to clear the blocker.
+
+### Prelaunch IPC readiness failure633 — 2026-10-01
+
+Ubuntu24.04.3/Node22.23.3/systemd user services, current backend7e3f66a and
+APK e217c1f/code2026100101. Native629 readiness PASS: three cold launches,
+1802.6seconds/30cycles. Pipeline630 successfully captured business/session
+baselines and explicitly stopped/started its three owned helpers, then failed
+`socket.connect(faultSocket)` with ENOENT. Expected ready control IPC; actual
+systemd start had returned before Node created it. Traceback establishes this
+ordering defect; later all three units/listeners/private sockets were healthy.
+Original630 FAIL/logs retained. The main supervised startup instructions now
+wait at most30seconds for owned running services, mode0600 IPC and listeners,
+then require DISARMED. No automatic service restart, authentication bypass or
+business replay. Separate633 verification/short-read/launch remains pending
+at this checkpoint; do not count readiness as eight-hour acceptance.

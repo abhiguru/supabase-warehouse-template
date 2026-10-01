@@ -273,6 +273,62 @@ exact unit names in the mobile config's managedUnits and keep them running for
 the entire plan. Explicitly disarm a newly started relay and verify DISARMED
 before normal reads. Never silently restart a dependency during a test.
 
+A successful `systemctl start` means the process was launched; it does not
+mean Node has created its IPC socket. After initial start or an explicit
+pre-plan restart, run this bounded readiness check before sending control
+commands or freezing the plan. It checks only the three configured owned
+services, refuses a stopped/restarted service or unsafe socket, and disarms the
+relay after all listeners and IPC paths are ready. It neither restarts services
+nor sends an OTP. Keep the unchanged owning guards and full mobile preflight.
+
+```bash
+export FIXTURE_INFRASTRUCTURE="$FIXTURE_PRIVATE/infrastructure.json"
+python3 - <<'PY_READY'
+import json, os, pathlib, socket, stat, subprocess, time
+cfg = json.loads(pathlib.Path(os.environ['FIXTURE_INFRASTRUCTURE']).read_text())
+assert cfg['scope'] == 'isolated-fictional-fixture'
+ports = {'core': 18443, 'switch': 18444, 'fault': 18643}
+deadline = time.monotonic() + 30
+while True:
+    ready = True
+    for service in cfg['services']:
+        unit = 'warehouse-fixture-' + service['kind'] + '-' + cfg['runId'] + '.service'
+        result = subprocess.run(['systemctl', '--user', 'show', unit,
+            '--property=ActiveState,SubState,MainPID,Restart,NRestarts,KillMode'],
+            capture_output=True, text=True, timeout=5, check=True)
+        props = dict(line.split('=', 1) for line in result.stdout.splitlines())
+        assert props['ActiveState'] == 'active' and props['SubState'] == 'running'
+        assert int(props['MainPID']) > 0 and props['Restart'] == 'no'
+        assert props['NRestarts'] == '0' and props['KillMode'] == 'control-group'
+        path = pathlib.Path(service['socketPath'])
+        try:
+            st = path.lstat()
+            assert stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid()
+            assert st.st_mode & 0o077 == 0
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(1); client.connect(str(path))
+            with socket.create_connection(('127.0.0.1', ports[service['kind']]), 1):
+                pass
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+            ready = False
+    if ready:
+        break
+    assert time.monotonic() < deadline, 'Readiness deadline exceeded; preserve logs, stop pipeline'
+    time.sleep(0.2)
+fault = next(s['socketPath'] for s in cfg['services'] if s['kind'] == 'fault')
+with socket.socket(socket.AF_UNIX) as client:
+    client.settimeout(5); client.connect(fault)
+    client.sendall(b'{"action":"disarm"}\n')
+    response = b''
+    while not response.endswith(b'\n'):
+        part = client.recv(4096)
+        assert part and len(response) < 8192
+        response += part
+    assert json.loads(response)['state'] == 'DISARMED'
+print('PASS owned helpers, private IPC and listeners ready; relay DISARMED')
+PY_READY
+```
+
 Ordinary stop/start works on these persistent, unenabled units:
 
 ```bash
