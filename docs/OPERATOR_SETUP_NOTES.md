@@ -1532,3 +1532,19 @@ rebuilt container integration, Storage runtime regression and installed-image
 acceptance remain separate. No active warehouse/fixture image or service changed;
 all54 active-soak bindings remained unchanged. Existing image-scanning findings,
 production/recovery gates and deferred image-security research remain open.
+
+
+### Exact CI follow-up649 — 2026-10-01
+
+[CI36864729906](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36864729906)
+completed successfully on `bed4eeee4a008073aa453c32da27cade50a32a2f`:
+validate (including the unchanged source dependency audit), contract, redacted
+source/history scan, migrations, isolated operator installation and both Grafana
+architecture jobs all PASS. This supersedes the pending-CI observation in644;
+the earlier failed run36858689257 and its skipped jobs remain historical evidence.
+
+The isolated installation job exercised its fresh fictional CI state and required
+API, document, Realtime and Studio checks. It did not update this VM's installed
+warehouse or active soak. Installed-image acceptance, existing security findings,
+physical/provider acceptance and production/recovery gates remain separate.
+No deferred image-security research or production action was performed.
