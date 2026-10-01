@@ -83,6 +83,24 @@ Test1 ingress or a production connector for this exercise.
 Before a write, assert its reserved document is absent and save a private baseline
 of matching header/lines, affected stock and the operation key. After each fault,
 capture control status and independent read-only database results before retrying.
+For document-matched native cases, request `{"action":"observations"}` before
+retrying and require an empty observation list with `overflow:false`. After the
+single unchanged retry, request it again: require exactly one observation,
+sequence1, the exact RPC/document, `stateWhenObserved` equal to the previously
+proved drop state, `sameKey:true` and the original key. This observes a subsequent
+request independently; repeated `status` reads retain the first dropped key and
+cannot supply this proof. Keep control replies in private evidence. Read the socket
+until EOF (bounded8192bytes), rather than assuming a single recv returns all JSON.
+
+The observer is enabled only for a reserved document arm, not an exact-key arm.
+It retains at most eight matching subsequent requests; `overflow:true` fails the
+case instead of discarding extra-request evidence silently. A concurrent request
+observed while MATCHED, a changed/missing key, extra retry or unrelated document
+cannot satisfy the single-retry predicate. Invalid keys are redacted to null;
+headers and full bodies are never retained. Save observations before disarm or
+another arm resets them. Observation proves receipt of a request, not forwarding,
+a database commit or native success: all independent postconditions still apply.
+
 After a lost response, do not edit the form or generate a new operation key while
 calling it a retry. Match invoice postconditions to the actual RPC contract:
 create_dispatch_with_stock_check p_generate_invoice returns calculation data
@@ -104,3 +122,10 @@ retained with the corrected read-only recheck. No invoice policy/source was
 changed. Normal443→18443 route restored and fault disarmed PASS584. Native receipt
 faults, saved-invoice effects, current PDF viewing and the full plan remain
 separate cases; compilation or proxy tests cannot close them.
+
+Preparation639 (2026-10-01): independent subsequent-request observation added and
+verified with both RPCs and both drop phases against local stub servers. Source
+relay tests17/17 and complete backend tests80/80 PASS, Node22.23.3. The observer is
+not installed in the active eight-hour fixture; new native acceptance is NOT TESTED.
+Historical582 compares retained status keys; retain its database/UI results but
+do not describe that comparison as an independent retry-request observation.

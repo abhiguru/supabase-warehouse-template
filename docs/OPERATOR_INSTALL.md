@@ -685,3 +685,19 @@ use a new artifact/CA/plan identity. These fictional checks do not change or
 replace the ordinary installedTest1 sourcef18f51d or its dedicated ingress.
 
 For optional unattended fictional tests, follow the [supervised fixture startup and bounded IPC readiness sequence](UNATTENDED_FIXTURE.md). A successful systemd start alone is not application readiness; run that check before relay control or plan freeze. Ordinary warehouse setup is unchanged.
+
+### Post-soak retry observer preparation639 — 2026-10-01
+
+Source review found that fault-control `status` retains the first dropped key;
+comparing it after retry does not independently observe the retry key. The optional
+fixture relay now has bounded/redacted `observations` with ordering, changed-key
+and overflow evidence. Follow the corrected main sequence in
+[fixture fault rehearsal](FIXTURE_FAULT_REHEARSAL.md), including empty observations
+before retry and exactly one matching observation afterward.
+
+Separate review checkout, Ubuntu24.04.3, Node22.23.3; `npm ci --ignore-scripts
+--no-audit --no-fund`, `node --test tests/fixture-fault-relay.test.mjs` PASS17 and
+`npm test` PASS80, no skips. These use local stub sockets, not warehouse writes.
+Active soak/runtime sources are unchanged; installing the reviewed relay and
+native driver integration remain pending exclusive fixture access. No historical
+transaction was replayed or erased. This is not new end-to-end acceptance.

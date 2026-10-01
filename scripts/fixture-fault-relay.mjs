@@ -18,13 +18,17 @@ export function fixtureTarget(path, base) {
 
 export function faultController() {
   let armed = null, result = { state: 'IDLE' };
+  let observed = [], overflow = false;
+  const resetObservations = () => { observed = []; overflow = false; };
   return {
     control(command) {
       assert.ok(command && typeof command === 'object');
       if (command.action === 'status') return { ...result };
+      // Separate from retained first-fault status: these are subsequent requests.
+      if (command.action === 'observations') return { observations: observed.map(o => ({ ...o })), overflow };
       if (command.action === 'disarm') {
         assert.notEqual(result.state, 'MATCHED', 'An in-flight fault cannot be cancelled');
-        armed = null; result = { state: 'DISARMED' }; return { ...result };
+        armed = null; resetObservations(); result = { state: 'DISARMED' }; return { ...result };
       }
       assert.equal(command.action, 'arm');
       assert.ok(!armed && result.state !== 'MATCHED', 'A pending fault must not be overwritten');
@@ -34,11 +38,25 @@ export function faultController() {
       if (command.key) assert.match(command.key, /^(fixture-fault-[a-z0-9-]{1,60}|warehouse-(grn|dispatch)-[a-f0-9]{64})$/);
       else assert.match(command.record, /^FXF[0-9]{2,5}$/);
       armed = { phase: command.phase, path: command.path, ...(command.key ? { key: command.key } : { record: command.record }) };
-      result = { state: 'ARMED', ...armed }; return { ...result };
+      resetObservations(); result = { state: 'ARMED', ...armed }; return { ...result };
     },
     take(method, path, body) {
-      if (!armed || method !== 'POST' || path !== armed.path) return null;
+      if (method !== 'POST' || !paths.has(path)) return null;
       let payload; try { payload = JSON.parse(body); } catch { return null; }
+      if (!payload || typeof payload !== 'object') return null;
+      // Observe only the reserved document selected by this native fault case.
+      // No body, headers, phone numbers or arbitrary keys enter the control reply.
+      const document = path === '/rest/v1/rpc/save_grn' ? payload.p_gr_no : payload.p_dispatch_data?.disp_no;
+      if (!armed && result.record && path === result.path && document === result.record) {
+        if (observed.length >= 8) overflow = true;
+        else {
+          const validKey = new RegExp(`^warehouse-${path === '/rest/v1/rpc/save_grn' ? 'grn' : 'dispatch'}-[a-f0-9]{64}$`).test(payload.p_idempotency_key ?? '');
+          observed.push({ sequence: observed.length + 1, path, record: result.record,
+            stateWhenObserved: result.state, key: validKey ? payload.p_idempotency_key : null,
+            sameKey: validKey && payload.p_idempotency_key === result.key });
+        }
+      }
+      if (!armed || path !== armed.path) return null;
       if (armed.key && payload.p_idempotency_key !== armed.key) return null;
       if (armed.record) {
         const document = path === '/rest/v1/rpc/save_grn' ? payload.p_gr_no : payload.p_dispatch_data?.disp_no;

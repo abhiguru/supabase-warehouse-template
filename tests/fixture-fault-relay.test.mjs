@@ -105,3 +105,49 @@ test('oversized requests fail before any upstream mutation', async t => {
   const r = await post(origin, { padding: 'x'.repeat(1024 * 1024 + 1) });
   assert.equal(r.status, 502); assert.equal(calls, 0);
 });
+
+for (const rpc of ['save_grn', 'create_dispatch_with_stock_check']) {
+  for (const phase of ['before-upstream', 'after-upstream-success']) {
+    test(`native ${rpc} ${phase} independently observes subsequent request key`, async t => {
+      const target = `/rest/v1/rpc/${rpc}`;
+      const nativeKey = `warehouse-${rpc === 'save_grn' ? 'grn' : 'dispatch'}-${'a'.repeat(64)}`;
+      const body = { p_idempotency_key: nativeKey, ...(rpc === 'save_grn' ? { p_gr_no: 'FXF901' } : { p_dispatch_data: { disp_no: 'FXF901' } }) };
+      const { controller, origin } = await servers(t, (req, res) => { req.resume(); res.end('{"success":true}'); });
+      controller.control({ action: 'arm', path: target, record: 'FXF901', phase });
+      await assert.rejects(post(origin, body, target));
+      assert.deepEqual(controller.control({ action: 'observations' }), { observations: [], overflow: false });
+      await (await post(origin, body, target)).text();
+      const observation = controller.control({ action: 'observations' });
+      assert.equal(observation.observations.length, 1);
+      assert.deepEqual(observation.observations[0], { sequence: 1, path: target, record: 'FXF901',
+        stateWhenObserved: phase === 'before-upstream' ? 'DROPPED_BEFORE_UPSTREAM' : 'DROPPED_AFTER_UPSTREAM_SUCCESS', key: nativeKey, sameKey: true });
+      // Mutating a returned observation cannot forge subsequent control evidence.
+      observation.observations[0].key = 'changed';
+      assert.equal(controller.control({ action: 'observations' }).observations[0].key, nativeKey);
+    });
+  }
+}
+test('observer filters unrelated traffic, redacts invalid keys and bounds evidence without hiding overflow', () => {
+  const c = faultController(), nativeKey = 'warehouse-grn-' + 'a'.repeat(64);
+  const body = { p_gr_no: 'FXF901', p_idempotency_key: nativeKey };
+  c.control({ action: 'arm', phase: 'before-upstream', path, record: 'FXF901' });
+  const f = c.take('POST', path, JSON.stringify(body));
+  // Concurrent request is visible as MATCHED, not a verified post-loss retry.
+  c.take('POST', path, JSON.stringify(body));
+  c.finish(f, 'DROPPED_BEFORE_UPSTREAM');
+  for (const [method, target, value] of [['GET', path, body], ['POST', '/other', body], ['POST', path, { ...body, p_gr_no: 'FXF902' }], ['POST', path, null]]) c.take(method, target, JSON.stringify(value));
+  c.take('POST', path, JSON.stringify({ ...body, p_idempotency_key: 'warehouse-grn-' + 'b'.repeat(64) }));
+  c.take('POST', path, JSON.stringify({ ...body, p_idempotency_key: 'secret-must-not-escape', authorization: 'also-secret' }));
+  let o = c.control({ action: 'observations' });
+  assert.equal(o.observations.length, 3); assert.equal(o.observations[0].stateWhenObserved, 'MATCHED');
+  assert.equal(o.observations[1].sameKey, false); assert.equal(o.observations[2].key, null);
+  assert.ok(!JSON.stringify(o).includes('secret'));
+  for (let i = 0; i < 10; i++) c.take('POST', path, JSON.stringify(body));
+  o = c.control({ action: 'observations' });
+  assert.equal(o.observations.length, 8); assert.equal(o.overflow, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(o)) < 8192);
+  c.control({ action: 'disarm' });
+  assert.deepEqual(c.control({ action: 'observations' }), { observations: [], overflow: false });
+  c.control({ action: 'arm', phase: 'before-upstream', path, record: 'FXF903' });
+  assert.deepEqual(c.control({ action: 'observations' }), { observations: [], overflow: false });
+});
