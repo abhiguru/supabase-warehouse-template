@@ -2,7 +2,7 @@
 
 Current status: backend setup/local doctor/independent pinned TLS/mock verifier
 authentication PASS. Both installed fixture gateways now explicitly include the
-reviewed Kong root DNS search correction2584496f20a86595be2cf1996e9b4e5f82164fd8;
+reviewed Kong root DNS search correction7e3f66a34bb729d80e25c6a4a0975f072c05d03a;
 private identity/config/guard hashes were preserved601. Code3013 clean native
 authenticated round trip PASS602 and corrected GRN artifact code3014 passed the
 full clean round trip610: fresh native verifier logins, secondary identity/profile/
@@ -43,7 +43,7 @@ umask 022
 git clone --branch codex/fresh-vm-operator-install \
   https://github.com/abhiguru/supabase-warehouse-template.git "$SWITCH_CHECKOUT"
 cd "$SWITCH_CHECKOUT"
-git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
+git checkout --detach 7e3f66a34bb729d80e25c6a4a0975f072c05d03a
 npm ci
 ```
 

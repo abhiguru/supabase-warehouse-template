@@ -634,6 +634,12 @@ operation without a host login. Arrange the host test with its operator.
 
 ## Recovery and test boundary
 
+For this exercise, a consistent same-VM backup of the independent disposable
+fixture passed checksums and archive-format inspection (evidence616); no restore
+or off-host recovery was performed. Unattended fixture bridges must use the
+supervised lifecycle in [UNATTENDED_FIXTURE.md](UNATTENDED_FIXTURE.md). A runner
+unit alone does not keep its network dependencies alive.
+
 The manual `db:backup` command produces a private **unencrypted** archive
 directory containing the database, stored documents, public manifest and private
 configuration. Store it only on protected storage. `db:verify-restore` checks a

@@ -14,7 +14,7 @@ postconditions and native retry evidence. Link-offline tests do not establish
 whether a write committed before its response was lost.
 
 Use a clean checkout of reviewed backend
-`2584496f20a86595be2cf1996e9b4e5f82164fd8` (review PR #79), fetched from
+`7e3f66a34bb729d80e25c6a4a0975f072c05d03a` (review PR #79), fetched from
 `codex/fresh-vm-operator-install`. Record the full checked-out commit and any
 local configuration overlay. This source includes Kong-only root DNS search to
 avoid an inherited VM LAN suffix; do not add hidden DNS/source edits. Clone public source with umask 022. Use absolute,
@@ -32,7 +32,7 @@ umask 022
 git clone --branch codex/fresh-vm-operator-install \
   https://github.com/abhiguru/supabase-warehouse-template.git "$FIXTURE_CHECKOUT"
 cd "$FIXTURE_CHECKOUT"
-git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
+git checkout --detach 7e3f66a34bb729d80e25c6a4a0975f072c05d03a
 git rev-parse HEAD
 git status --short
 ```
@@ -177,7 +177,8 @@ export WAREHOUSE_FIXTURE_SOCKET="$FIXTURE_PRIVATE/fixture-otp.sock"
 node scripts/emulator-fixture-bridge.mjs
 ```
 
-Run the bridge in an owned foreground terminal and stop it with Ctrl+C. It
+For short interactive diagnostics, use an owned foreground terminal and stop it
+with Ctrl+C. For unattended work use the supervised procedure below. It
 refuses an occupied socket, nonfixture state or unsafe private-directory/key
 ownership. HTTPS binds only 127.0.0.1:18443 and forwards only to this fixture.
 HTTP and WebSocket absolute, scheme-relative and external backslash targets are
@@ -200,6 +201,92 @@ fixture APK, certificate overlay and emulator networking. Record that generated
 native overlay separately from source HEAD. A CA expires after one day; create
 new private material and rebuild the fixture APK when needed, rather than
 disabling TLS verification.
+
+## Supervise every dependency before an unattended run
+
+An actual eight-hour attempt stopped in block 05 when all three terminal-backed
+bridge/relay listeners disappeared, while Docker and the emulator continued.
+The exact process termination cause is unestablished. Supervising only the
+runner was insufficient. Use reviewed backend source
+7e3f66a34bb729d80e25c6a4a0975f072c05d03a for the owning fixture checkouts and
+tools. It adds bounded HTTP/upstream response handling, bounded WebSocket
+upgrade handling and nonsecret request metadata. Original guards and fixture
+authentication remain intact. Previously reproduced clean installation evidence
+on 2584496 remains historical; the new transport checks are separately recorded.
+
+Finish SWITCHING_FIXTURE.md setup and the fault-relay prerequisites first. Keep
+both fictional databases running. Stop existing owned bridge/relay processes and
+verify their ports and IPC paths are free. Never overwrite a listener/socket.
+The explicit stale-socket procedure below applies only after proving the
+recorded process is gone and connection is refused.
+
+Set these paths to the exact instances and private TLS/socket directories already
+recorded. Replace illustrative suffixes if different. Save the core state path
+before the switching guide changes WAREHOUSE_STATE_DIR. Never select Test1:
+
+```bash
+export OWNED_CORE_CHECKOUT="$FIXTURE_CHECKOUT"
+export OWNED_CORE_STATE="$HOME/warehouse-state/core-backend-test-2026093004"
+export OWNED_SWITCH_CHECKOUT="$SWITCH_CHECKOUT"
+export OWNED_SWITCH_STATE="$HOME/warehouse-state/cross-instance-test-2026093001"
+export CORE_TLS_DIR="$FIXTURE_PRIVATE/tls"
+export SWITCH_TLS_DIR="$SWITCH_PRIVATE/tls"
+export CORE_SOCKET="$FIXTURE_PRIVATE/fixture-otp.sock"
+export SWITCH_SOCKET="$SWITCH_PRIVATE/switch-otp.sock"
+export FAULT_SOCKET="$FIXTURE_PRIVATE/fixture-fault-control.sock"
+export FIXTURE_RUN_ID=network-diagnostic-20261001
+umask 077
+test ! -e "$FIXTURE_PRIVATE/service-logs"
+mkdir -m 700 "$FIXTURE_PRIVATE/service-logs"
+python3 - <<'PY_UNITS'
+import json, os, pathlib, shutil
+os.umask(0o077)
+env = os.environ
+services = []
+for kind, checkout, state, tls, sock in [
+    ('core', 'OWNED_CORE_CHECKOUT', 'OWNED_CORE_STATE', 'CORE_TLS_DIR', 'CORE_SOCKET'),
+    ('switch', 'OWNED_SWITCH_CHECKOUT', 'OWNED_SWITCH_STATE', 'SWITCH_TLS_DIR', 'SWITCH_SOCKET'),
+    ('fault', 'OWNED_CORE_CHECKOUT', 'OWNED_CORE_STATE', 'CORE_TLS_DIR', 'FAULT_SOCKET')]:
+    services.append(dict(kind=kind, checkout=env[checkout], state=env[state],
+                         tlsDir=env[tls], socketPath=env[sock]))
+config = dict(scope='isolated-fictional-fixture', runId=env['FIXTURE_RUN_ID'],
+              node=os.path.realpath(shutil.which('node')),
+              logDir=env['FIXTURE_PRIVATE'] + '/service-logs', services=services)
+with (pathlib.Path(env['FIXTURE_PRIVATE']) / 'infrastructure.json').open('x') as f:
+    json.dump(config, f, indent=2)
+PY_UNITS
+node "$FIXTURE_CHECKOUT/scripts/fixture-service-supervisor.mjs" \
+  "$FIXTURE_PRIVATE/infrastructure.json" start
+node "$FIXTURE_CHECKOUT/scripts/fixture-service-supervisor.mjs" \
+  "$FIXTURE_PRIVATE/infrastructure.json" status
+```
+
+Use effective Docker access and the documented Node22 PATH. The helper imports
+each owning checkout's unchanged guard, refuses occupied ports/IPC paths/units/
+logs, verifies unit syntax and waits for listeners. It creates owned mode0600
+files under ~/.config/systemd/user without enabling them at boot. Each unit has
+Restart=no, UMask=0077, KillMode=control-group and a12-hour maximum. Logs append
+privately; bridge metadata excludes OTPs, queries, headers and bodies. Capture
+exact unit names in the mobile config's managedUnits and keep them running for
+the entire plan. Explicitly disarm a newly started relay and verify DISARMED
+before normal reads. Never silently restart a dependency during a test.
+
+Ordinary stop/start works on these persistent, unenabled units:
+
+```bash
+systemctl --user stop "warehouse-fixture-core-$FIXTURE_RUN_ID.service"
+systemctl --user start "warehouse-fixture-core-$FIXTURE_RUN_ID.service"
+systemctl --user show "warehouse-fixture-core-$FIXTURE_RUN_ID.service" \
+  --property=ActiveState,SubState,MainPID,NRestarts,Result
+```
+
+Use the corresponding switch/fault names when needed. Stop the test runner
+before intentionally interrupting a dependency. On startup failure preserve
+its printed phase, generated unit, private log and service journal. Correct the
+reviewed generator and use new unit/log identities for a new attempt. The first
+transient-unit stop/start failed because systemd discarded the stopped unit;
+a first persistent attempt failed WorkingDirectory quoting. Both attempts are
+retained. Real systemd syntax verification now runs before start.
 
 After tests, stop the bridge first. Confirm its process and loopback18443
 listener have stopped and its private IPC socket is gone before the next start.

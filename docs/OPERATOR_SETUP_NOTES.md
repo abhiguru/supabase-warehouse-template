@@ -1286,3 +1286,54 @@ Mobile tooling CI 36761863580 completed with all four jobs PASS. Backend
 9868738 CI 36761784926 remains FAIL at the dependency audit; dependent checks
 were SKIPPED. Existing security, real-provider and physical-device gaps remain.
 Earlier RUNNING checkpoints below are historical observations.
+
+## Network failure investigation and local backup — 2026-10-01
+
+Evidence 615/616 supersedes the earlier unexplained block-05 timeout. Ubuntu
+24.04.3 x86_64 VMware/eight CPUs/17GiB RAM, Node22.23.3, Docker29.8.1,
+Compose2.40.3, disposable API30 emulator and unchanged source42/code3014 APK.
+The prior four PASS blocks and fifth FAIL remain historical; no blind resume.
+
+| Case | Result and evidence |
+| --- | --- |
+| Failure boundary | Established listener loss: core18443, switch18444 and relay18643 absent, all three helper processes absent; Docker18080 and emulator still active, reverse443 still targeted18443. Pinned TLS curl exited7. Old tool process sessions unavailable; private0600 IPC sockets stale. Exact termination cause NOT ESTABLISHED |
+| Failure-window logs | Gateway Orders200 through23:15:00UTC; no later request in23:13–23:18 window. Native Network request failed at04:45:53–55IST. Checked window contains no gateway timeout/DNS/connection-error category, kernel OOM/segfault or Android crash/ANR evidence; this does not prove the process termination mechanism |
+| Read-only reconciliation | PASS616: reserved quantities/business counts/saved invoice unchanged, original administrator session present, OTP verification count and session-ID set unchanged; refresh hash changed. No credential values logged |
+| Diagnostic preservation | PASS616: original failed logs/results/plan and all44 original bound inputs retained with matching SHA-256, plus private failure-window gateway/Android logs and original transport source bytes |
+| Consistent local fixture backup | PASS616 using owning checkout's scripts/backup.sh with explicit core fixture state and unused private destination. Script paused that fixture's write-facing services, captured database/Storage/config and restarted previous services. All7 archive checksum entries pass; pg_restore --list reads2201 catalog lines, Storage tar has71 members. Post-backup business invariants PASS. Unencrypted same-VM archive; no restore, off-host transfer or recovery-host test performed |
+| Supervised dependency lifecycle | PASS616: persistent mode0600 unenabled user units core/switch/fault-network-616-v3, independent private append logs, Restart=no, NRestarts0, KillMode=control-group,12hour cap. Original owning guards unchanged. Actual core stop removed listener/IPC; explicit start restored them |
+| Failed lifecycle attempts | Preserved616: stopped transient unit was discarded and start failed Unit not found; first persistent unit incorrectly quoted WorkingDirectory and systemd refused it. Reviewed generator now uses correct scalar syntax and real systemd-analyze verification before start |
+| Bounded proxy handling | PASS75 backend tests including real socket refusal502, stall504, truncated response, client cancellation, genuine WebSocket exchange/reconnection, rejected/stalled upgrade. No HTTP fallback or silent retry of a write added; metadata excludes bodies, headers, queries and credentials |
+| Native graceful failure | PASS616 on exact code3014: deliberate core bridge stop caused visible network error, retained already loaded order and login; harness explicitly refused dead dependency. Existing Snackbar expires after3seconds: persistent stale-data marking remains a limitation, not proof of current data |
+| Native recovery | PASS616 on exact code3014: original restored-bridge60second case/verify; final reviewed transport120second case/verify,2 cycles with actual Orders200, invoice read/background/foreground/business invariants. Same original native session, no OTP request. These short cases are not overnight acceptance |
+| Live fixture WebSocket transport | PASS616 both pinned TLS bridges: handshake/ping/close/reconnect twice. Does not establish every authenticated Realtime topic/event permission |
+| Clean fetched source checks | PASS616: backend7e3f66a locked npm ci/13 transport tests, mobilec0824db/5 helper tests, status and complete preflight from unchanged fetched checkouts against existing owned disposable states. Review trees75 backend/48 mobile setup tests PASS. Full installation into a new state at7e3f66a NOT TESTED; prior258 clean installation599 remains separately scoped |
+
+The infrastructure defect was supervising only the runner while depending on
+terminal/tool-backed bridges. Exact original kill/disconnect cause remains
+unknown. Helpers now retain independent process/journal/private request evidence.
+Mobile preflight and native health require explicit managedUnits and refuse a
+disappeared or automatically restarted helper. Observation separates missing
+requests from ownership/observer/auth/server errors, retains safe categories/
+counters/UTC windows and enforces the actual15second polling deadline.
+
+Source fixes are reviewed backend7e3f66a34bb729d80e25c6a4a0975f072c05d03a and
+mobilec0824db72b73a049f066a2259352c5207e393bb6. Installed backend fixture HEADs
+remain c0a6db1/a9a4986 with previously declared overlays plus the exact reviewed
+bridge/proxy files from7e3f66a; these runtime changes are explicitly hashed in
+private evidence616. Installed APK remains42a5559/code3014/SHA256
+6e882894ff4a0533b31e755fda6930aad6fea8c875030c083a887d445be5bb17.
+Test1 source/state/ingress, live pilot, recovery host and physical phone were not
+changed. No real SMS, business-write replay, insecure origin fallback, merge or
+release occurred.
+
+Next gate: renew independently owned fixture TLS and build/audit an APK with the
+new trust before a new long run; current CA expires09:51:45UTC1October. Complete
+affected exact-artifact prerequisites, freeze new config/unit/helper/source/CA
+bindings and use an unused plan/evidence directory. Never relabel the failed
+3014 run as PASS. The long suite remains incomplete and stopped; no timer is
+scheduled. No operator input is required for the retained diagnosis. Backend
+7e3f66a CI36819232397 FAIL at the existing dependency audit; inspect its exact
+job results before claiming any downstream checks. Mobilec082 CI36819240073
+was still running at this documentation checkpoint. Deferred security, provider,
+physical-device/cellular and persistent stale-display findings remain open.
