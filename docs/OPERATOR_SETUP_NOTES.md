@@ -1548,3 +1548,27 @@ API, document, Realtime and Studio checks. It did not update this VM's installed
 warehouse or active soak. Installed-image acceptance, existing security findings,
 physical/provider acceptance and production/recovery gates remain separate.
 No deferred image-security research or production action was performed.
+
+### Clean-guide source checkpoint656 — 2026-10-01
+
+Audited main corrected-source selection: advanced the new-install pin from the
+original gateway-only2584496 to bed4eeee4a008073aa453c32da27cade50a32a2f, with its
+explicit same-major source dependency correction and exact seven-job CI evidence.
+Original f18 Test1 and active7e fixture sources remain unchanged. The258 gateway
+latency/install measurements are historical258 evidence, not bed4 measurements.
+
+Fresh remote clean bed4 checkout passed locked root install,80unit tests and source
+dependency audit (both graphs zero reported vulnerabilities). Static mobile contract
+against clean2fbf238a270e9806ed055ddfab045b57eb926ab2 PASS: no missing names/typed
+mismatches; dynamic calls remain inventory limitations. Separate new fictional
+private configuration `core-backend-test-20261001656` was generated and rerun;
+manifest/credential hashes unchanged,0700state/0600credentials. No service/database,
+administrator, ingress, SMS or existing-instance modification occurred.
+
+Full local corrected-code setup remains BLOCKED while the active soak owns the
+documented fixture18080/subnet10.233.245.0/24. Do not stop that run, substitute
+another state or weaken fixture guards. Historical clean618/628 and exact bed4/b401
+CI isolated installations remain scoped evidence, not this VM's new full reproduction.
+Mobile guide now uses an explicit source that contains its SDK checker, unused
+checkout/build examples and separate source versus unbuilt-APK acceptance. Mobile
+clean source checks PASS; new standalone/native acceptance remains NOT TESTED.

@@ -9,7 +9,7 @@ Read [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) before provisioning for
 the pilot's observed failures, remedies, configuration traps and detailed
 remaining edge-case acceptance matrix.
 
-This is the pilot installation path. A successful setup does not enable the
+This path creates an independent warehouse. A successful setup does not enable the
 unfinished printer/sensor integrations or complete replacement-host recovery.
 Backend PR #68 is merged; mobile PR #33 remains a draft. Use the exact source
 pair below. Historical pilot results do not validate this fresh installation.
@@ -70,21 +70,27 @@ before configuring new state, then record this second source commit explicitly:
 
 ```bash
 git fetch origin codex/fresh-vm-operator-install
-git checkout --detach 2584496f20a86595be2cf1996e9b4e5f82164fd8
+git checkout --detach bed4eeee4a008073aa453c32da27cade50a32a2f
 git rev-parse HEAD
 git status --short
 ```
 
-This is draft PR#79 source, not a merged release or the originalf18 runtime.
+This is draft PR#79 code through644, not a merged release or the originalf18 runtime.
+It includes the gateway correction originally tested at2584496 and the same-major
+source dependency fixes. Exact CI36864729906 passed all seven jobs, including a
+separate isolated installation; it does not update Test1 or the active VM fixtures.
+Record this full installed commit and overlays when using a fresh state. Existing
+installed-image/security/release gates remain open even though the source audit passes.
 Its Compose configuration sets `dns_search: "."` for Kong alone, using the
 [supported Compose search-domain setting](https://docs.docker.com/reference/compose-file/services/#dns_search).
-The fresh clean fixture06 installed this exact source with only the explicitly
+The historical fresh clean fixture06 installed2584496 with only the explicitly
 recorded private port/subnet overlay: setup/local doctor and functional unit,
 migration, gateway, changed-upstream-IP, core API, Realtime, final API, Studio
 and retention-preview checks PASS. REST proxy latency became0–2ms, public
 discovery84ms, and missing/invalid API keys remained401. These are local fixture
-measurements, not production capacity claims. The deferred container audit still
-fails; no release approval is implied.
+measurements, not production capacity claims. The source audit failure at that
+historical pin is retained; bed4's source correction and isolated CI installation
+have their own evidence. Installed-image acceptance and release gates remain open.
 
 The already installed Test1 remains pinnedf18 with its earlier doctor evidence;
 this correction has not silently changed that runtime. Apply a correction to an
@@ -752,3 +758,19 @@ API, document, Realtime and Studio checks. It did not update this VM's installed
 warehouse or active soak. Installed-image acceptance, existing security findings,
 physical/provider acceptance and production/recovery gates remain separate.
 No deferred image-security research or production action was performed.
+
+
+### Clean-source guide verification656 — 2026-10-01
+
+The main corrected-source pin above is nowbed4, retaining the originalf18 baseline
+and258 gateway evidence. Fresh remote clean bed4/2fb mobile checkouts passed locked
+installs, backend80tests/source audit, mobile295unit/75setup/type/lint/Expo18/18/audit,
+public bootstrap and static contract without hidden source edits. Separate new
+fictional private configuration and identical-input rerun preserved identity and
+credentials. No services or SMS were started.
+
+Full local new-code installation/rebuilt-image checks remain pending until the
+active run releases its fixture resources; do not stop another instance to repeat
+the guide. Exact bed4/b401 CI passed independent isolated installation, but does
+not claim this VM's new full reproduction. Keep installed-image/security/physical
+release gates open and preserve every failed/historical result. See setup notes656.
