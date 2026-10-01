@@ -1434,3 +1434,50 @@ wait at most30seconds for owned running services, mode0600 IPC and listeners,
 then require DISARMED. No automatic service restart, authentication bypass or
 business replay. Separate633 verification/short-read/launch remains pending
 at this checkpoint; do not count readiness as eight-hour acceptance.
+
+## Renewed eight-hour run started — 2026-10-01 13:17 IST
+
+Separate corrected final gates633 PASS: bounded owned service/IPC/listener
+readiness and relay DISARMED, preserved business/native-session/verified-OTP
+count reconciliation, complete preflight, actual60second native read rehearsal
+and its verify. Original630 ENOENT failure and successful captured baselines
+remain retained; no transaction was replayed. All eight current-artifact
+prerequisites PASS. Current readiness629 completed three cold launches and
+1802.6seconds/30cycles. This corrects the earlier RUNNING/pending checkpoints.
+
+Actual start2026-10-01T07:47:00.288137Z (13:17:00IST), active PID2211555,
+unit `warehouse-fixture-overnight-2026100101.service`, first native block
+soak-01 RUNNING after two PASS preflights.54 inputs frozen; plan SHA256
+b18bcbd1cc1159a5e94f1ac196c58ee5ddca381a8fd26ddbe2ece19cf0150542.
+Nine3200second read blocks plus postconditions/aggregate; no completed8hour
+PASS yet. Native time alone ends no earlier than21:17IST; checks add time.
+The runner has a10-hour cap, Restart=no and stops at the first failure.
+No timer, automatic failed-case resume, authentication reset or write replay.
+
+Runtime source remains clean backend7e3f66a in new fictional2026100101 state
+plus documented subnet overlay; separately owned secondary retains declared
+transport/DNS overlays. Current emulator APK sourcee217c1f/code2026100101,
+SHA256238ba669f3e14e1e0ea6d0dd396b8766fe5ce1482eae48e264a9af2f95900ed0.
+Plan froze backend toolinge85b152b2df5f5d6c8cb7fe81fd8e53f129ac1b4 and
+mobile tooling73dc51c1b3911508c1f3a2d3a046685902f6ece8. Later documentation-only
+commits do not change frozen executable inputs. Both private CAs expire
+2026-10-02T05:43:04Z; helper12-hour windows cover this run and its cap.
+
+Inspect the exact unit and protected631 start result/overnight ledger/results;
+keep raw logs, phone/device/session values and hashes private. Do not run another
+UI actor or edit bound inputs. Ordinary health/stop:
+
+```bash
+systemctl --user show warehouse-fixture-overnight-2026100101.service \
+  --property=ActiveState,SubState,MainPID,NRestarts,Result
+systemctl --user stop warehouse-fixture-overnight-2026100101.service
+```
+
+Next: observe without interacting with the emulator. If it fails, preserve the
+ledger and diagnose/reconcile before a new separately frozen attempt. If it
+finishes, require all nine block verifies and final business/session/duration/
+actual-request/refresh-rotation aggregate PASS, then publish sanitized results.
+A start or compilation is not end-to-end acceptance. Real SMS/current revoked
+sessions, physical phone/Wi-Fi/cellular/noUSB, same-origin/unsaved-form switching,
+current native dispatch faults, undefined related-GRN Breakdown label and
+existing security/release gates remain open. Test1/pilot/recovery unchanged.
