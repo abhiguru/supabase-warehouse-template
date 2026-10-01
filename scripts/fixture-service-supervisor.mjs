@@ -1,6 +1,7 @@
 // Optional fixture infrastructure only. Never loaded by ordinary installation.
 // Private configuration is trusted executable input, like the fixture test plan.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync, existsSync, openSync, closeSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -41,6 +42,10 @@ export function serviceSpec(config, service) {
       assert.equal(service.kind,'core','Core fictional bridge options only');
     }
   }
+  if (Object.hasOwn(service,'owningCheckout')) {
+    assert.equal(service.kind,'core'); absolute(service.owningCheckout);
+    assert.match(service.ownerGuardSHA256,/^[a-f0-9]{64}$/);
+  } else assert.ok(!Object.hasOwn(service,'ownerGuardSHA256'));
   const [helper, guard, validator, port, socketVariable] = helpers[service.kind];
   const unit = `warehouse-fixture-${service.kind}-${config.runId}.service`;
   const log = resolve(config.logDir, unit + '.log');
@@ -51,6 +56,10 @@ export function serviceSpec(config, service) {
     (service.kind === 'switch' ? 'WAREHOUSE_SWITCH_FIXTURE_TLS_DIR' : 'WAREHOUSE_FIXTURE_TLS_DIR') + '=' + service.tlsDir,
     socketVariable + '=' + service.socketPath,
   ];
+  if (service.owningCheckout) {
+    variables.push('WAREHOUSE_FIXTURE_OWNING_CHECKOUT='+service.owningCheckout);
+    variables.push('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+service.ownerGuardSHA256);
+  }
   if (service.observeAuthenticationPresence === true) variables.push('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true');
   if (service.replacementAuthentication === true) variables.push('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true');
   const content = '[Unit]\nDescription=Owned fictional fixture ' + service.kind + '\n\n[Service]\n' +
@@ -59,7 +68,7 @@ export function serviceSpec(config, service) {
     variables.map(v => 'Environment=' + unitQuote(v)).join('\n') + '\n' +
     'StandardOutput=append:' + log.replaceAll('%', '%%') + '\nStandardError=append:' + log.replaceAll('%', '%%') + '\n' +
     'ExecStart=' + ['/usr/bin/sg', 'docker', '-c', command].map(v => unitQuote(v, true)).join(' ') + '\n';
-  return { unit, log, port, guard: resolve(service.checkout, guard), validator, content };
+  return { unit, log, port, guard: resolve(service.owningCheckout || service.checkout, guard), validator, content };
 }
 function command(program, args) {
   const r = spawnSync(program, args, { encoding: 'utf8', timeout: 45000, maxBuffer: 8 * 1024 * 1024 });
@@ -90,6 +99,11 @@ async function main(path, action) {
     const spec = serviceSpec(c, s);
     ownedPrivate(s.state, true); ownedPrivate(s.tlsDir, true);
     ownedPrivate(resolve(s.socketPath, '..'), true);
+    if (s.owningCheckout) {
+      assert.equal(realpathSync(s.owningCheckout),resolve(s.owningCheckout));
+      const st=lstatSync(spec.guard); assert.ok(st.isFile()&&!st.isSymbolicLink()&&st.uid===process.getuid());
+      assert.equal(createHash('sha256').update(readFileSync(spec.guard)).digest('hex'),s.ownerGuardSHA256,'Original owning fixture guard changed');
+    }
     const guard = `import {${spec.validator}} from ${JSON.stringify(pathToFileURL(spec.guard).href)}; ${spec.validator}();`;
     const r = spawnSync(c.node, ['--input-type=module', '-e', guard], {
       cwd: s.checkout, env: { ...process.env, WAREHOUSE_STATE_DIR: s.state },

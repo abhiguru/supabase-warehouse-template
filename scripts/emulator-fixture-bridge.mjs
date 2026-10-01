@@ -1,6 +1,8 @@
 // Private mock-delivery bridge for the guarded fictional fixture only.
 // Never attach this harness to an installed warehouse or expose its listener.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { createServer as httpsServer } from 'node:https';
 import { createServer as socketServer } from 'node:net';
 import { readFileSync, lstatSync, realpathSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
@@ -10,7 +12,16 @@ import { operatorFixture } from '../tests/operator-fixture.mjs';
 import { fixturePhones } from './fixture-phone-scope.mjs';
 import { proxyFixtureRequest, proxyFixtureUpgrade } from './fixture-http-proxy.mjs';
 
-const { env, base } = operatorFixture(); // Original ownership/identity guards intact.
+let owningFixture = operatorFixture;
+const owningCheckout = process.env.WAREHOUSE_FIXTURE_OWNING_CHECKOUT;
+if (owningCheckout !== undefined) {
+  assert.ok(isAbsolute(owningCheckout) && realpathSync(owningCheckout) === resolve(owningCheckout));
+  const guard = resolve(owningCheckout,'tests/operator-fixture.mjs');
+  const st = lstatSync(guard); assert.ok(st.isFile() && !st.isSymbolicLink() && st.uid === process.getuid());
+  assert.equal(createHash('sha256').update(readFileSync(guard)).digest('hex'),process.env.WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256);
+  owningFixture = (await import(pathToFileURL(guard).href)).operatorFixture;
+}
+const { env, base } = owningFixture(); // Original owning checkout guard and Compose labels remain intact.
 const observeAuthenticationPresence = process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE === 'true';
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
