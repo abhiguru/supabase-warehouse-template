@@ -1497,3 +1497,38 @@ Separate review checkout, Ubuntu24.04.3, Node22.23.3; `npm ci --ignore-scripts
 Active soak/runtime sources are unchanged; installing the reviewed relay and
 native driver integration remain pending exclusive fixture access. No historical
 transaction was replayed or erased. This is not new end-to-end acceptance.
+
+### Source dependency gate correction644 — 2026-10-01
+
+CI36858689257 on observer0dc7392 stopped at the metadata source dependency audit.
+Its log identified brace-expansion1.1.18 and fast-uri3.1.7. Running the Storage
+portion separately exposed22 findings (4high/18moderate, including transitive
+parent reports); the failed first command had prevented CI from reaching it.
+Keep that failed result and its skipped dependent jobs as historical evidence.
+
+Updated same-major leaf pins and committed locks: brace-expansion1.1.21/2.1.7/
+5.0.12, fast-uri2.4.7/3.1.8/4.1.5, ip-address10.7.2, minimatch10.2.6, Storage
+undici7.30.0, grpc-js1.14.5 and socks2.8.10. Lockfile review found only these updates
+and corresponding dependency deduplication; no direct framework/server major
+upgrade. The source audit command is unchanged; no advisory suppression or lower
+severity threshold was introduced.
+
+On Ubuntu24.04.3, Node22.23.3/npm10.9.9 regenerated locks without lifecycle scripts.
+Storage engine warnings during this metadata-only step were preserved. Clean
+installs and metadata source validation then used Node24.21.0/npm11.12.1, satisfying
+Storage's declared toolchain. `npm run check:container-dependencies` PASS with zero
+reported vulnerabilities in each graph; Storage's separate JSON audit also zero.
+`npm test` PASS80. Storage `npm ci --omit=dev --ignore-scripts --no-audit --no-fund`
+and `npm ls --omit=dev` PASS. Metadata clean install, `npm run check`, `npm run build`
+and its Docker-recipe app/admin/helper tests PASS12/3files.
+
+Metadata validation used a separate private checkout of upstreamv0.99.0 with the
+Dockerfile's archive SHA8d3974ac52eaa4ddd7d0462ac1bd30f9e0e50b511fa96a537d6f3f9cc28e726e,
+the tracked fastify5/vitest4 patches and corrected manifests/lock. No hidden source
+edit or warehouse database was used. Fastify deprecation warnings remain.
+
+This closes the locally reproduced **source audit** defect only. A fresh CI run,
+rebuilt container integration, Storage runtime regression and installed-image
+acceptance remain separate. No active warehouse/fixture image or service changed;
+all54 active-soak bindings remained unchanged. Existing image-scanning findings,
+production/recovery gates and deferred image-security research remain open.
