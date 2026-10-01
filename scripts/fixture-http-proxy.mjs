@@ -2,11 +2,12 @@
 // No payloads, query strings, headers, credentials or challenge IDs are logged.
 import { request as httpRequest } from 'node:http';
 const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/functions/v1/get-public-config']);
-export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {} } = {}) {
+export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false } = {}) {
   let upstream, reply, complete = false;
   const metadata = {
     method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(req.method) ? req.method : 'OTHER',
     path: observedPaths.has(target.pathname) ? target.pathname : 'other',
+    ...(observeAuthenticationPresence ? { authorizationPresent: typeof req.headers.authorization === 'string', credentialQueryPresent: ['access_token','token','apikey'].some(key => target.searchParams.has(key)) } : {}),
   };
   const finish = (event, status) => {
     if (complete) return false;
@@ -43,8 +44,11 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
   req.pipe(upstream);
 }
 
-export function proxyFixtureUpgrade(req, client, head, target, { timeoutMs = 15000 } = {}) {
+export function proxyFixtureUpgrade(req, client, head, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false } = {}) {
   let socket;
+  if (observeAuthenticationPresence) {
+    try { observe({ atUTC:new Date().toISOString(), event:'upgrade-request', path:target.pathname === '/realtime/v1/websocket' ? 'realtime' : 'other', authorizationPresent:typeof req.headers.authorization === 'string', credentialQueryPresent:['access_token','token','apikey'].some(key => target.searchParams.has(key)) }); } catch { /* Safe diagnostic only. */ }
+  }
   const upstream = httpRequest(target, { headers: req.headers });
   const fail = () => { clearTimeout(deadline); upstream.destroy(); socket?.destroy(); client.destroy(); };
   const deadline = setTimeout(fail, timeoutMs);

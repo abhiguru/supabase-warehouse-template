@@ -100,3 +100,35 @@ test('rejected and stalled upgrades fail instead of hanging or fabricating 101',
     } finally { await close(bridge); await close(upstream); }
   }
 });
+
+test('optional replacement observation records only credential presence, never values', async () => {
+  const observed=[];const upstream=createServer((_req,res)=>{res.writeHead(200);res.end('ok');});const base=await listen(upstream);
+  const bridge=createServer((req,res)=>proxyFixtureRequest(req,res,new URL('/functions/v1/get-public-config?token=fictional-secret',base),{observeAuthenticationPresence:true,observe:event=>observed.push(event)}));const url=await listen(bridge);
+  try {
+    await new Promise((resolve,reject)=>{const q=request(url,{headers:{authorization:'Bearer fictional-private-value'}},res=>{res.resume();res.on('end',resolve);});q.on('error',reject);q.end();});
+    assert.equal(observed.length,1);assert.equal(observed[0].authorizationPresent,true);assert.equal(observed[0].credentialQueryPresent,true);
+    const text=JSON.stringify(observed);assert.ok(!text.includes('fictional-secret')&&!text.includes('fictional-private-value'));assert.equal(observed[0].path,'/functions/v1/get-public-config');
+  } finally {await close(bridge);await close(upstream);}
+});
+
+test('optional upgrade observation exposes booleans only and forwarding remains genuine', async () => {
+  const observed = [], upstream = createServer(), ws = new WebSocketServer({ server: upstream });
+  ws.on('connection', socket => socket.on('message', data => socket.send(data)));
+  const base = await listen(upstream), bridge = createServer();
+  bridge.on('upgrade', (req, client, head) => proxyFixtureUpgrade(req, client, head,
+    new URL('/realtime/v1/websocket?access_token=fictional-query-value', base),
+    { observeAuthenticationPresence: true, observe: event => observed.push(event) }));
+  const url = (await listen(bridge)).replace('http:', 'ws:');
+  try {
+    const client = new WebSocket(url, { headers: { authorization: 'Bearer fictional-header-value' } });
+    await new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); });
+    const reply = new Promise((resolve, reject) => { client.once('message', data => resolve(data.toString())); client.once('error', reject); });
+    client.send('test-message'); assert.equal(await reply, 'test-message');
+    const closed = new Promise(resolve => client.once('close', resolve)); client.close(); await closed;
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].event, 'upgrade-request'); assert.equal(observed[0].path, 'realtime');
+    assert.equal(observed[0].authorizationPresent, true); assert.equal(observed[0].credentialQueryPresent, true);
+    assert.ok(!JSON.stringify(observed).includes('fictional-query-value'));
+    assert.ok(!JSON.stringify(observed).includes('fictional-header-value'));
+  } finally { await new Promise(resolve => ws.close(resolve)); await close(bridge); await close(upstream); }
+});

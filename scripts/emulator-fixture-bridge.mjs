@@ -10,6 +10,7 @@ import { operatorFixture } from '../tests/operator-fixture.mjs';
 import { proxyFixtureRequest, proxyFixtureUpgrade } from './fixture-http-proxy.mjs';
 
 const { env, base } = operatorFixture(); // Original ownership/identity guards intact.
+const observeAuthenticationPresence = process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE === 'true';
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
 assert.ok(tlsDir && socketPath && isAbsolute(tlsDir) && isAbsolute(socketPath));
@@ -65,12 +66,12 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
   if (!target) { client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
-  proxyFixtureUpgrade(req, client, head, target);
+  proxyFixtureUpgrade(req, client, head, target, { observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 const ipc = socketServer(client => {
   let buffer = ''; client.setTimeout(5000, () => client.destroy());
