@@ -2,12 +2,12 @@
 // Never attach this harness to an installed warehouse or expose its listener.
 import assert from 'node:assert/strict';
 import { createServer as httpsServer } from 'node:https';
-import { request as httpRequest } from 'node:http';
 import { createServer as socketServer } from 'node:net';
 import { readFileSync, lstatSync, realpathSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { operatorFixture } from '../tests/operator-fixture.mjs';
+import { proxyFixtureRequest, proxyFixtureUpgrade } from './fixture-http-proxy.mjs';
 
 const { env, base } = operatorFixture(); // Original ownership/identity guards intact.
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
@@ -65,24 +65,12 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  const upstream = httpRequest(target, { method: req.method, headers: req.headers }, reply => {
-    res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
-  });
-  upstream.on('error', () => { if (!res.headersSent) json(res, 502, { success: false, message: 'Fixture upstream unavailable' }); else res.destroy(); });
-  req.pipe(upstream);
+  proxyFixtureRequest(req, res, target, { observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
   if (!target) { client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
-  const upstream = httpRequest(target, { headers: req.headers });
-  upstream.on('upgrade', (reply, socket, upstreamHead) => {
-    client.write(`HTTP/1.1 ${reply.statusCode} ${reply.statusMessage}\r\n`);
-    for (let i = 0; i < reply.rawHeaders.length; i += 2) client.write(`${reply.rawHeaders[i]}: ${reply.rawHeaders[i + 1]}\r\n`);
-    client.write('\r\n'); if (upstreamHead.length) client.write(upstreamHead); if (head.length) socket.write(head);
-    client.on('error', () => socket.destroy()); socket.on('error', () => client.destroy());
-    client.pipe(socket); socket.pipe(client);
-  });
-  upstream.on('error', () => client.destroy()); upstream.end();
+  proxyFixtureUpgrade(req, client, head, target);
 });
 const ipc = socketServer(client => {
   let buffer = ''; client.setTimeout(5000, () => client.destroy());

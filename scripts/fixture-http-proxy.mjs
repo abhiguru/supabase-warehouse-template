@@ -1,0 +1,71 @@
+// Transport for guarded fictional bridges. Caller validates the fixed origin.
+// No payloads, query strings, headers, credentials or challenge IDs are logged.
+import { request as httpRequest } from 'node:http';
+const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/functions/v1/get-public-config']);
+export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {} } = {}) {
+  let upstream, reply, complete = false;
+  const metadata = {
+    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(req.method) ? req.method : 'OTHER',
+    path: observedPaths.has(target.pathname) ? target.pathname : 'other',
+  };
+  const finish = (event, status) => {
+    if (complete) return false;
+    complete = true; clearTimeout(deadline);
+    // Observers cannot throw back into the HTTP server.
+    try { observe({ atUTC: new Date().toISOString(), event, ...metadata, status }); } catch { /* Safe diagnostic only. */ }
+    return true;
+  };
+  const fail = (event, status) => {
+    if (!finish(event, status)) return;
+    upstream?.destroy(); reply?.destroy();
+    if (res.destroyed) return;
+    if (res.headersSent) res.destroy();
+    else {
+      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ success: false, message: status === 504 ? 'Fixture upstream timed out' : 'Fixture upstream unavailable' }));
+    }
+  };
+  const deadline = setTimeout(() => fail('upstream-timeout', 504), timeoutMs);
+  upstream = httpRequest(target, { method: req.method, headers: req.headers }, response => {
+    reply = response;
+    response.on('error', () => fail('upstream-response-error', 502));
+    response.on('aborted', () => fail('upstream-response-aborted', 502));
+    res.writeHead(response.statusCode, response.headers);
+    response.pipe(res);
+  });
+  upstream.on('error', () => fail('upstream-unavailable', 502));
+  req.on('error', () => fail('client-request-error', 499));
+  req.on('aborted', () => fail('client-request-aborted', 499));
+  res.on('finish', () => finish('complete', res.statusCode));
+  res.on('close', () => {
+    if (!res.writableFinished && finish('client-response-closed', 499)) { upstream.destroy(); reply?.destroy(); }
+  });
+  req.pipe(upstream);
+}
+
+export function proxyFixtureUpgrade(req, client, head, target, { timeoutMs = 15000 } = {}) {
+  let socket;
+  const upstream = httpRequest(target, { headers: req.headers });
+  const fail = () => { clearTimeout(deadline); upstream.destroy(); socket?.destroy(); client.destroy(); };
+  const deadline = setTimeout(fail, timeoutMs);
+  client.on('error', fail);
+  client.on('close', () => { clearTimeout(deadline); upstream.destroy(); socket?.destroy(); });
+  upstream.on('error', fail);
+  upstream.on('response', response => {
+    clearTimeout(deadline);
+    // A rejected upgrade is a rejection, never an invented successful socket.
+    client.end(`HTTP/1.1 ${response.statusCode} ${response.statusMessage}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    response.destroy();
+  });
+  upstream.on('upgrade', (reply, connected, upstreamHead) => {
+    clearTimeout(deadline); socket = connected;
+    socket.on('error', fail); socket.on('close', () => client.destroy());
+    client.write(`HTTP/1.1 ${reply.statusCode} ${reply.statusMessage}\r\n`);
+    for (let i = 0; i < reply.rawHeaders.length; i += 2) client.write(`${reply.rawHeaders[i]}: ${reply.rawHeaders[i + 1]}\r\n`);
+    client.write('\r\n');
+    if (upstreamHead.length) client.write(upstreamHead);
+    if (head.length) socket.write(head);
+    client.pipe(socket); socket.pipe(client);
+  });
+  upstream.end();
+}
