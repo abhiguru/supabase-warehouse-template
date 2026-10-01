@@ -1247,3 +1247,42 @@ review tooling HEAD is not the installed backend HEAD. Unit Restart=no and
 Next require every runner case/verify/final aggregate PASS, preserve any failure,
 then update sanitized matrix/PRs. Dependency/physical/provider/release gates stay
 open. See mobile UNATTENDED_RUN.md for the complete reproducible plan recipe.
+
+## Current overnight status — 2026-10-01: FAIL, stopped
+
+The supervised run started at 00:30:19 IST and stopped at 04:46:13 IST on
+1 October (`warehouse-fixture-overnight-3014.service`, exit status 1, no restart).
+Blocks 01–04 and their postconditions PASS: 208 native cycles over
+12,801.18 seconds (3 hours 33 minutes) of completed soak. Block 05 FAIL after
+40 additional successful cycles; its final assertion was
+`Actual Orders RPC200 not observed within deadline`. Blocks 06–09 and the final
+aggregate are NOT RUN. This does not establish eight-hour acceptance or a
+completed session-renewal aggregate.
+
+The installed artifact remains source
+42a5559b4abcad3ddd7601b2e4885e3c29101c76, code 2026093014, SHA-256
+6e882894ff4a0533b31e755fda6930aad6fea8c875030c083a887d445be5bb17.
+The private plan/ledger and original failed evidence are retained. Diagnosis 615
+preserved the owned gateway failure-window logs and emulator logcat without
+clearing buffers or changing business data. Gateway Orders RPCs returned 200
+through 23:15:00 UTC on 30 September; none was observed after that in the
+23:13–23:18 UTC window. No matching gateway timeout/connection/DNS error was
+found in that window. Android recorded `Network request failed` at 04:45:53–55
+IST; cause is not yet established. The observer retries currently suppress
+helper assertion details, so its final timeout alone cannot distinguish a
+missing request from an observation failure.
+
+Next: reconcile the failed interval with read-only bridge, emulator transport,
+fixture session and business-state evidence. Preserve the failed plan; do not
+blindly resume it, repeat receipt/dispatch writes, or change its bound inputs.
+Make any established correction in a review branch and verify it in a separate
+attempt. A new long plan needs a valid TLS horizon: the current fixture CA
+expires at 09:51:45 UTC on 1 October and cannot cover a fresh eight-hour run
+from this morning. Rebuilding with new trust requires auditing the new exact
+artifact and repeating affected prerequisites, rather than carrying forward
+old artifact acceptance. No operator input is currently needed for diagnosis.
+
+Mobile tooling CI 36761863580 completed with all four jobs PASS. Backend
+9868738 CI 36761784926 remains FAIL at the dependency audit; dependent checks
+were SKIPPED. Existing security, real-provider and physical-device gaps remain.
+Earlier RUNNING checkpoints below are historical observations.
