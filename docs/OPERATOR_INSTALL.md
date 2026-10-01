@@ -671,3 +671,15 @@ the commands. The system Node may differ after reopening a terminal. Consult
 [FRESH_VM_INSTALL_LEDGER.md](FRESH_VM_INSTALL_LEDGER.md) before repeating suites:
 repeat health after a reboot, and failed or changed cases, rather than every
 completed fixture test. Never delete volumes or another instance to resume.
+
+### Current independent fixture verification
+
+For optional unattended diagnostics, follow [UNATTENDED_FIXTURE.md](UNATTENDED_FIXTURE.md)
+from a clean pinned7e3f66a checkout and a new private state. The1October
+reproduction passed setup/local doctor and all functional checks618, with only
+the declared isolated subnet overlay. The deferred dependency audit remains
+FAIL. Use its supervised persistent bridge/relay procedure rather than keeping
+long-run dependencies in tool-backed terminals; the first8hour attempt failed
+after those terminal processes disappeared. Retain that failed evidence and
+use a new artifact/CA/plan identity. These fictional checks do not change or
+replace the ordinary installedTest1 sourcef18f51d or its dedicated ingress.

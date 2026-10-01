@@ -1337,3 +1337,36 @@ scheduled. No operator input is required for the retained diagnosis. Backend
 job results before claiming any downstream checks. Mobilec082 CI36819240073
 was still running at this documentation checkpoint. Deferred security, provider,
 physical-device/cellular and persistent stale-display findings remain open.
+
+## Clean supervised-network reproduction — 2026-10-01
+
+Ubuntu24.04.3/eight CPUs/17GiB, Node22.23.3/npm10.9.9, Docker29.8.1/Compose2.40.3.
+Clean remotely fetched7e3f66a34bb729d80e25c6a4a0975f072c05d03a checkout, new owned
+core-backend-test-2026100101 state, fresh fictional identity/credentials/DB/Storage,
+dummy non-delivery provider and documented10.233.245.0/24 overlay only.
+The earlier fixture03 was read-only reconciled and stopped with Compose down
+without volumes; its failed-run evidence, consistent local backup and state remain.
+
+Literal corrected configure/setup/local doctor PASS618. Required commands were
+run once in guide order, preserving individual exits:75 unit tests, migrations,
+operator-api-core, operator-realtime-core, operator-api-final, Studio, gateway,
+gateway-DNS replacement, retention preview and live mobile contract all PASS.
+check:container-dependencies remains FAIL at the deferred dependency findings;
+this does not establish release readiness. No hidden source patch or guard change.
+
+Renewed separate private core/switch certificates expire2026-10-02T05:43:04Z.
+Reviewed persistent unit generator started core/switch/fault-renewed-2026100101
+with independent private append logs, Restart=no/NRestarts0 and original ownership
+guards. The switching loopback443 socket/service is a system unit, while these
+three helpers are user units; checking only systemctl --user for the443 proxy
+gives an incorrect inactive result. Its existing system listener was verified
+without replacement. Fresh fictional625 API fault cases prove both receipt and
+dispatch no-commit/commit and same-key reconciliation; invoice179/147/200/252/177/182
+headers/durations/private PDFs PASS. This is API evidence, not new native evidence.
+
+Mobilee217c1f2b22f74ea5aaabca5101c27aa166c5f68/code2026100101 built620/audited and
+installed621 with both exact embedded public CAs and readback SHA-256
+238ba669f3e14e1e0ea6d0dd396b8766fe5ce1482eae48e264a9af2f95900ed0.
+Persistent stale-warning fix has RED/GREEN source evidence617; native gates
+remain pending. New long run NOT STARTED at this checkpoint. No installedTest1,
+pilot, recovery or physical phone change; no real SMS or old fixture write replay.
