@@ -40,7 +40,7 @@ jobs:
           cat "$RUNNER_TEMP/postgrest-static.drv-path"
       - name: Save recursive derivation graph
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: postgrest-nix-evaluation
           path: |
@@ -80,7 +80,7 @@ jobs:
           test "$(cat "$RUNNER_TEMP/patched-upstream.tree")" = 7e6d822e4754f3ac5d40869d64788ed03f806349
           (cd "$RUNNER_TEMP" && sha256sum postgrest-stack.yaml.lock patched-upstream.diff > evidence.sha256)
       - name: Save arm64 Stack resolution evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: postgrest-arm64-stack-resolution
           path: |
