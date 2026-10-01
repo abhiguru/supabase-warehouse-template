@@ -29,7 +29,7 @@ jobs:
       EXPECTED_MACHINE: ${{ matrix.machine }}
       TRIVY_ASSET: ${{ matrix.trivy_asset }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Verify native runner and prepare private scan directory
