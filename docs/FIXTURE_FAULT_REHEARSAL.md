@@ -65,8 +65,17 @@ The relay reports that distinction instead of pretending it interrupted a commit
 Requests/responses are bounded1MiB/2MiB and upstream work has a15second deadline.
 The controller itself does not write business data or produce credentials.
 
-For an owned emulator, temporarily reverse443 to18643 only for the selected
-fictional write. Restore443 to the normal18443 bridge in a finally/cleanup step.
+For an owned emulator, select the temporary443→18643 relay route **before**
+a cold app launch and before preparing the fictional form. Changing adb reverse
+after preparing a form does not prove an existing HTTP connection moved. Stop
+only the owned fixture app, set the reverse, launch it and prepare a new unused
+reserved document. Never discard an unresolved write to change routing.
+Prove the armed control actually changed to DROPPED_BEFORE_UPSTREAM or
+DROPPED_AFTER_UPSTREAM_SUCCESS before classifying the native case as a fault.
+If it remains ARMED but the app reports success, mark the fault case FAIL,
+read-only reconcile the record, disarm and retain it; do not replay the write.
+Use a new reserved document for the corrected attempt. Restore443→18443 and
+disarm in finally/cleanup, then cold-launch before normal-read acceptance.
 This relay deliberately rejects WebSocket upgrades; Realtime, images and PDFs
 must use the normal route and their separate cases. Never change VM DNS, a phone,
 Test1 ingress or a production connector for this exercise.

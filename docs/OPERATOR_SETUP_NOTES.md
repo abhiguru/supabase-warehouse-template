@@ -1370,3 +1370,44 @@ installed621 with both exact embedded public CAs and readback SHA-256
 Persistent stale-warning fix has RED/GREEN source evidence617; native gates
 remain pending. New long run NOT STARTED at this checkpoint. No installedTest1,
 pilot, recovery or physical phone change; no real SMS or old fixture write replay.
+
+Native receipt checkpoint624: initial new-APK FXF301 case FAIL because the
+armed control never fired; app reported successful creation. Read-only state
+reconciliation retained exactly one receipt/line/received4/stock4/confirmed image.
+No write replay. Revised main fault instructions configure the relay route
+before cold app launch/draft preparation; unused FXF303 before-upstream then
+PASS with independently proved no-commit before unchanged same-key retry and
+actual native success. Existing connection reuse is not conclusively established.
+After-success302 and other native gates are pending; no new long run yet.
+
+Corrected after-upstream-success302 now PASS624 with actual native Error,
+DROPPED_AFTER_UPSTREAM_SUCCESS, independently committed data before unchanged
+retry, one header/line/qty4/stock4/cache and native success. Confirmed private
+WebP images for retained301/302/303 PASS. This does not relabel301 fault failure.
+
+Fresh same-input setup preservation628 PASS: same literal setup arguments,
+then local doctor; instance/configuration hashes, administrator/customer/business/
+Storage-catalog row hashes and all13 actual stored-file hashes unchanged.
+No secret or row values were printed. This completes current7e clean guide
+reproduction to the functional scope, while its dependency gate stays FAIL.
+
+Native switching623b secondary login/data-isolation/cold launch PASS, primary
+return FAIL at the unchanged administrator five/hour OTP limit. Daily/hourly
+counts5, natural hour reset06:53:50Z1October, no new challenge after return.
+The generic native60second countdown underreports that quota window; keep this
+limitation. Supervised629 waits for the real reset before one normal request,
+new clean round trip and30minute readiness. No counters/auth guards changed.
+PDF626 current native SEND/render/new export/hash reconciles saved invoice182.
+New8hour plan remains unlaunched pending remaining gates.
+
+Automatic gated preparation/launch pipeline629/630 is now active under separate
+owned user units (Restart=no, private logs,70/100minute caps). It waits the real
+quota window, runs new clean switching and30minute readiness, captures private
+actual native-session/business baselines, explicitly resets only owned helper
+lifetimes before the plan, requires short native read/verify and all8 exact-APK
+gates, freezes source/config/helper/unit/CA bindings and starts a new9×3200second
+read-only native plan. First failure stops; no automatic retry or old write replay.
+It has NOT started the8hour unit at this checkpoint. No current physical,
+provider, revocation or release acceptance is inferred. Installation/build guides
+are independently exercised; the operator-specific private UI/plan assembly
+is not a published turnkey unattended suite. Preserve that reproducibility limit.

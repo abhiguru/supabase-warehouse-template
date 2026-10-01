@@ -131,9 +131,11 @@ npm run test:gateway-dns
 npm run retention:preview
 ```
 
-Current result: 48 unit tests, migrations, setup/doctor, core API, customer A/B
-Realtime, final accounts/images, Studio, gateway CORS/size, upstream-IP replacement
-and retention preview PASS. Container audit FAIL remains open. This run did not
+Current1October clean7e result618:75 unit tests, migrations, setup/doctor, core
+API, customer A/B Realtime, final accounts/images, Studio, gateway CORS/size,
+upstream-IP replacement, retention preview and live mobile contract PASS.
+Same-input setup/catalog/actual stored-file hash preservation628 also PASS.
+The earlier48-unit result remains historical in OPERATOR_SETUP_NOTES.md. Container audit FAIL remains open. This run did not
 execute recovery, backup/restore, monitoring delivery, pooler or printer suites.
 The earlier independent clean reproduction and same-input preservation checks
 are recorded in OPERATOR_SETUP_NOTES.md. Tests mutate their own fixture data;
