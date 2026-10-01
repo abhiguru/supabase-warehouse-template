@@ -1584,3 +1584,46 @@ was removed. No existing warehouse/fixture state, credential, session, route or
 container was used. This is not populated-fixture/RPC/RLS/native/guarded-CLI
 integration; those post-soak gates remain. Reproduction is in mobile
 `docs/OBSERVER_SCHEMA_CHECK.md`, tooling8f31e1a or recorded descendant.
+
+### Completed supervised soak658 — 2026-10-01
+
+Final native/session/business reconciliation completed PASS at
+2026-10-01T15:48:30.756Z (21:18:30 IST). All nine3200-second blocks PASS:
+28,804.866seconds of soak (8hours4.866seconds),459 lifecycle/read cycles,
+461 successful Orders request observations, zero failed request observations
+in the recorded cycle windows, and nine native credential rotations observed
+from private hashes. All21 ledger checks PASS; business baseline reconciliation
+and unchanged administrator OTP-verification count PASS. The original bound
+native session persisted. This is read/lifecycle/session evidence, not an
+eight-hour business-write or universal network-error test.
+
+Exact scope: mobile e217c1f2b22f74ea5aaabca5101c27aa166c5f68, fixture
+code2026100101/x86_64/API30, APK SHA256
+238ba669f3e14e1e0ea6d0dd396b8766fe5ce1482eae48e264a9af2f95900ed0;
+primary backend7e3f66a34bb729d80e25c6a4a0975f072c05d03a plus its
+declared subnet overlay. All54 frozen file bindings still match. Completed
+ledger SHA256 fe4aad31dcbd0ec95afc1ac268d15cfc9a9a7bb5ede45195e0b1e10d50a5c41b;
+plan SHA256 b18bcbd1cc1159a5e94f1ac196c58ee5ddca381a8fd26ddbe2ece19cf0150542.
+Raw results, private snapshots and immutable completion copies remain outside Git.
+The real `assertReleased` check PASS with this ledger/plan and the now absent
+successfully completed transient unit. No emulator, route, session or service
+was changed to record completion. Earlier failed3014/630 attempts remain intact.
+
+Exact latest pre-checkpoint CI: mobile802706de9dbf2f77f9f99250ecf93ded7eb2b6b3
+[36885457329](https://github.com/abhiguru/rn-warehouse-template/actions/runs/36885457329)
+all4jobs PASS; backend3a4342213474708869cd5001e1e778ee2ba7c7a3
+[36885501919](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36885501919)
+all7jobs PASS. Earlier pending backendb1 CI36882201481 also all7PASS. These
+conclusions precede this documentation commit, whose CI must be tracked separately.
+
+Next: preserve this completed evidence; prepare sufficient disposable fixture
+TLS/helper lifetime before freezing new APK trust; build/audit the clean2fb
+candidate with a new build ID; then run affected GRN, dispatch retry, offline,
+switch and reserved-session native cases with fresh private bindings/documents.
+Existing helpers end00:56IST2October and CAs expire11:13IST2October; neither
+should be assumed sufficient for a new long run. Do not repeat the unchanged
+e217 soak or transfer its PASS to the new APK. Complete local bed4 installation
+is no longer blocked by an active soak, but still requires explicit ownership/
+port/subnet planning and preservation of the current fixtures. Physical phone,
+cellular/noUSB, real CustomerB, natural refresh expiry, replacement-state and
+existing security/release gates remain open; no pilot/recovery action.
