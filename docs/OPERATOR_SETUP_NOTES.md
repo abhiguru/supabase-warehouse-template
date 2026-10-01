@@ -1572,3 +1572,15 @@ CI isolated installations remain scoped evidence, not this VM's new full reprodu
 Mobile guide now uses an explicit source that contains its SDK checker, unused
 checkout/build examples and separate source versus unbuilt-APK acceptance. Mobile
 clean source checks PASS; new standalone/native acceptance remains NOT TESTED.
+
+### Mobile observer schema check657 — 2026-10-01
+
+A separate disposable PostgreSQL15.8 container (pinned image, networknone, no
+host ports/external mounts,1CPU/1GiB/tmpfs) applied all18 unmodified migrations
+from clean bed4. New mobile dispatch/navigation observer queries passed complete
+empty-schema compatibility, stable digest and missing source/session checks.
+Reused schema was refused before migrations/query execution; the owned container
+was removed. No existing warehouse/fixture state, credential, session, route or
+container was used. This is not populated-fixture/RPC/RLS/native/guarded-CLI
+integration; those post-soak gates remain. Reproduction is in mobile
+`docs/OBSERVER_SCHEMA_CHECK.md`, tooling8f31e1a or recorded descendant.
