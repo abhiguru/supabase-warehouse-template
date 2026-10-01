@@ -51,3 +51,8 @@ test('listener health distinguishes an absent loopback server without replacing 
   finally { await new Promise(resolve => server.close(resolve)); }
   assert.equal(await portListening(port), false);
 });
+test('replacement and header-presence options are explicit core-only booleans',()=>{
+ const original=serviceSpec(config,service);assert.ok(!original.content.includes('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH'));assert.ok(!original.content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE'));
+ const s=serviceSpec(config,{...service,observeAuthenticationPresence:true,replacementAuthentication:true});assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true'));assert.ok(s.content.includes('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true'));assert.ok(s.content.includes('RuntimeMaxSec=43200\n'));
+ for(const option of ['observeAuthenticationPresence','replacementAuthentication']){assert.throws(()=>serviceSpec(config,{...service,[option]:'true'}));assert.throws(()=>serviceSpec(config,{...service,kind:'switch',[option]:true}));assert.throws(()=>serviceSpec(config,{...service,kind:'fault',[option]:true}));}
+});

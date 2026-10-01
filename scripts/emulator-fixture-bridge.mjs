@@ -7,6 +7,7 @@ import { readFileSync, lstatSync, realpathSync, chmodSync, existsSync, unlinkSyn
 import { dirname, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { operatorFixture } from '../tests/operator-fixture.mjs';
+import { fixturePhones } from './fixture-phone-scope.mjs';
 import { proxyFixtureRequest, proxyFixtureUpgrade } from './fixture-http-proxy.mjs';
 
 const { env, base } = operatorFixture(); // Original ownership/identity guards intact.
@@ -23,7 +24,7 @@ assert.ok(!existsSync(socketPath), 'Refusing to replace an occupied fixture sock
 const keyPath = resolve(tlsDir, 'fixture-key.pem');
 const st = lstatSync(keyPath);
 assert.ok(st.isFile() && !st.isSymbolicLink() && st.uid === process.getuid() && (st.mode & 0o077) === 0);
-const allowedPhones = new Set(['919888888871', '919888888872', '919888888873', '919888888874']);
+
 const challenges = new Map(); // Plaintext exists only in harness memory, never logs/HTTP.
 const upstreamOrigin = new URL(base).origin;
 const fixtureTarget = path => {
@@ -42,6 +43,13 @@ const query = expression => {
   assert.equal(result.status, 0, 'Private fixture SQL failed; payload not logged');
   return JSON.parse(result.stdout.trim());
 };
+const replacementAuthentication = process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH === 'true';
+if (process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH !== undefined)
+  assert.ok(['true','false'].includes(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH));
+const phoneProof = replacementAuthentication ? query(`json_build_object(
+  'primaryAdminPresent',EXISTS(SELECT 1 FROM public.user_profiles WHERE mobile='919888888871'),
+  'replacementAdminPresent',EXISTS(SELECT 1 FROM public.user_profiles WHERE mobile='919888888891' AND role='admin' AND active AND name='Replacement Demo Administrator'))`) : {};
+const allowedPhones = fixturePhones(replacementAuthentication,phoneProof);
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 const json = (response, status, body) => {
   response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });

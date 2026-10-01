@@ -35,6 +35,12 @@ export function serviceSpec(config, service) {
   assert.ok(Object.hasOwn(helpers, service.kind), 'Only declared fixture helpers allowed');
   for (const key of ['checkout', 'state', 'tlsDir', 'socketPath']) absolute(service[key]);
   absolute(config.node); absolute(config.logDir);
+  for (const option of ['observeAuthenticationPresence','replacementAuthentication']) {
+    if (Object.hasOwn(service,option)) {
+      assert.equal(typeof service[option],'boolean','Fixture options require booleans');
+      assert.equal(service.kind,'core','Core fictional bridge options only');
+    }
+  }
   const [helper, guard, validator, port, socketVariable] = helpers[service.kind];
   const unit = `warehouse-fixture-${service.kind}-${config.runId}.service`;
   const log = resolve(config.logDir, unit + '.log');
@@ -45,6 +51,8 @@ export function serviceSpec(config, service) {
     (service.kind === 'switch' ? 'WAREHOUSE_SWITCH_FIXTURE_TLS_DIR' : 'WAREHOUSE_FIXTURE_TLS_DIR') + '=' + service.tlsDir,
     socketVariable + '=' + service.socketPath,
   ];
+  if (service.observeAuthenticationPresence === true) variables.push('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true');
+  if (service.replacementAuthentication === true) variables.push('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true');
   const content = '[Unit]\nDescription=Owned fictional fixture ' + service.kind + '\n\n[Service]\n' +
     'Type=exec\nRestart=no\nUMask=0077\nKillMode=control-group\nTimeoutStopSec=20\nRuntimeMaxSec=43200\n' +
     'WorkingDirectory=' + service.checkout.replaceAll('%', '%%') + '\n' +
