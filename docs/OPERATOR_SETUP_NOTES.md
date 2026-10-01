@@ -1411,3 +1411,11 @@ It has NOT started the8hour unit at this checkpoint. No current physical,
 provider, revocation or release acceptance is inferred. Installation/build guides
 are independently exercised; the operator-specific private UI/plan assembly
 is not a published turnkey unattended suite. Preserve that reproducibility limit.
+
+Current supervised progression: natural quota reset12:23:50IST, normal primary
+login and unused clean native623c full authenticated two-origin trip PASS on
+e217/code2026100101. Three cold launches PASS;30minute readiness is RUNNING.
+630 will capture baselines/renew only owned helper lifetime before freeze and
+perform final read/preflight/8-gate verification, then automatically launch the
+new8hour unit. That unit is NOT STARTED at this checkpoint. No source/business
+write or rate-limit modification was needed to clear the blocker.
