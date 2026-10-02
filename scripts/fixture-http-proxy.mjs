@@ -3,8 +3,9 @@
 import { request as httpRequest } from 'node:http';
 import {discoveryDelayMilliseconds,delayDiscoveryReply} from './fixture-discovery-delay.mjs';
 import {ordersReadDelayMilliseconds} from './fixture-orders-delay.mjs';
+import {bufferConcurrencyRequest} from './fixture-dispatch-concurrency-delay.mjs';
 const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/functions/v1/get-public-config']);
-export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0 } = {}) {
+export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0, dispatchConcurrency = {milliseconds:0} } = {}) {
   const discoveryDelay=discoveryDelayMilliseconds(req,target,discoveryDelayMs),ordersDelay=ordersReadDelayMilliseconds(req,target,ordersReadDelayMs);
   const delayed=discoveryDelay||ordersDelay;
   let upstream, reply, complete = false, cancelDelay=()=>{};
@@ -31,6 +32,8 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
     }
   };
   const deadline = setTimeout(() => fail('upstream-timeout', 504), timeoutMs);
+  const start = (buffer=null) => {
+  if(complete)return;
   upstream = httpRequest(target, { method: req.method, headers: req.headers }, response => {
     reply = response;
     response.on('error', () => fail('upstream-response-error', 502));
@@ -39,13 +42,16 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
     else {res.writeHead(response.statusCode, response.headers);response.pipe(res);}
   });
   upstream.on('error', () => fail('upstream-unavailable', 502));
+  if(buffer===null)req.pipe(upstream);else upstream.end(buffer);
+  };
+  // Completion/abort handlers must exist while an eligible request is held.
+  res.on('finish', () => finish('complete', res.statusCode));
   req.on('error', () => fail('client-request-error', 499));
   req.on('aborted', () => fail('client-request-aborted', 499));
-  res.on('finish', () => finish('complete', res.statusCode));
-  res.on('close', () => {
-    if (!res.writableFinished && finish('client-response-closed', 499)) { upstream.destroy(); reply?.destroy(); }
-  });
-  req.pipe(upstream);
+  res.on('close', () => {if(!res.writableFinished)fail('client-response-closed',499);});
+  const hold=bufferConcurrencyRequest(req,target,dispatchConcurrency,{forward:start,fail,observe:event=>{try{observe({atUTC:new Date().toISOString(),...metadata,...event});}catch{/* Safe diagnostic only. */}}});
+  cancelDelay=hold||(()=>{});
+  if(!hold)start();
 }
 
 export function proxyFixtureUpgrade(req, client, head, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false } = {}) {

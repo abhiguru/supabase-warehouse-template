@@ -13,3 +13,19 @@ export function dispatchConcurrencyDelayMilliseconds(req,target,body,config={mil
  if(body.p_generate_invoice!==true||body.p_retry_count!==0||typeof body.p_idempotency_key!=='string'||body.p_idempotency_key.length<16||body.p_idempotency_key.length>200)return 0;
  return config.milliseconds;
 }
+
+export function bufferConcurrencyRequest(req,target,config,{forward,fail,observe=()=>{}}){
+ // Validate optional configuration before attaching any request handlers.
+ dispatchConcurrencyDelayMilliseconds(req,target,null,config);
+ if(!config.milliseconds||req.method!=='POST'||target.protocol!=='http:'||target.hostname!=='127.0.0.1'||target.port!=='18080'||target.pathname!=='/rest/v1/rpc/create_dispatch_with_stock_check'||target.search!==''||req.headers.host!=='backend-core.example.test'||typeof req.headers.authorization!=='string'||!req.headers.authorization)return null;
+ let chunks=[],bytes=0,timer,stopped=false;
+ const cancel=()=>{stopped=true;clearTimeout(timer);chunks=[];req.removeListener('data',data);req.removeListener('end',end);};
+ const data=chunk=>{if(stopped)return;bytes+=chunk.length;if(bytes>65536){cancel();fail('concurrency-body-bound',413);req.resume();return;}chunks.push(Buffer.from(chunk));};
+ const end=()=>{if(stopped)return;const raw=Buffer.concat(chunks);chunks=[];req.removeListener('data',data);req.removeListener('end',end);let body;try{body=JSON.parse(raw.toString('utf8'));}catch{/* Forward malformed input unchanged for ordinary backend rejection. */}
+  const milliseconds=dispatchConcurrencyDelayMilliseconds(req,target,body,config);
+  if(!milliseconds){stopped=true;forward(raw);return;}
+  try{observe({event:'dispatch-request-delay-start',delayMs:milliseconds});}catch{/* Observers cannot alter transport. */}
+  timer=setTimeout(()=>{if(stopped)return;stopped=true;try{observe({event:'dispatch-request-delay-release',delayMs:milliseconds});}catch{/* Safe metadata only. */}forward(raw);},milliseconds);
+ };
+ req.on('data',data);req.on('end',end);return cancel;
+}

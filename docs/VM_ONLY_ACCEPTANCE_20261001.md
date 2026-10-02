@@ -222,3 +222,15 @@ module has not been installed in any helper; no API/SQL/OTP/native action
 occurred. Backend application remains bed4eeee; current owned helpers and
 12-hour caps are unchanged. This is a distinct unexecuted concurrency case,
 not a rerun or alias of exhausted lost-response/offline writes.
+
+Fixture proxy review transport now supports the optional matcher via bounded
+64KiB in-memory request buffering, unchanged byte forwarding, at most five
+seconds delay and cancellation through the existing total timeout/client
+abort/response-close paths. Default behavior remains immediate forwarding.
+Matched observations contain event/time/delay metadata only, with no request
+body or credentials. Thirteen local matcher/stream/HTTP/WebSocket tests PASS,
+including delayed one-time forwarding, cancellation preventing upstream,
+oversize refusal, malformed/nonmatching immediate forwarding and existing
+proxy failure handling. This is local transport evidence only. Supervisor/
+bridge configuration and live owned helper integration remain pending; no
+warehouse request, OTP, fresh fixture or native dispatch occurred.
