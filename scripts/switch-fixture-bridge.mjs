@@ -12,6 +12,8 @@ import { X509Certificate } from 'node:crypto';
 
 process.umask(0o077);
 try {
+const discoveryDelayMs=process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS);
+assert.ok(Number.isInteger(discoveryDelayMs)&&(discoveryDelayMs===0||discoveryDelayMs>=500&&discoveryDelayMs<=5000),'Bounded fictional discovery delay required');
 const { env, base } = switchingFixture(); // The original core fixture guard is not changed.
 const tlsDir = process.env.WAREHOUSE_SWITCH_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_SWITCH_FIXTURE_SOCKET;
@@ -75,7 +77,7 @@ const server = httpsServer({ key: readFileSync(keyPath), cert }, async (req, res
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { discoveryDelayMs, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);

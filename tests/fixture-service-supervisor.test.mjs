@@ -60,3 +60,8 @@ test('separate helper source keeps a hash-bound original checkout ownership guar
  const s=serviceSpec(config,{...service,owningCheckout:'/private/original-core',ownerGuardSHA256:'a'.repeat(64)});assert.equal(s.guard,'/private/original-core/tests/operator-fixture.mjs');assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OWNING_CHECKOUT=/private/original-core'));assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+'a'.repeat(64)));
  assert.throws(()=>serviceSpec(config,{...service,owningCheckout:'/private/core'}));assert.throws(()=>serviceSpec(config,{...service,ownerGuardSHA256:'a'.repeat(64)}));assert.throws(()=>serviceSpec(config,{...service,kind:'fault',owningCheckout:'/private/core',ownerGuardSHA256:'a'.repeat(64)}));
 });
+test('discovery delay is explicit switching-only and retains the twelve-hour service cap',()=>{
+ const s=serviceSpec(config,{...service,kind:'switch',discoveryDelayMs:3000});assert.ok(s.content.includes('WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS=3000'));assert.ok(s.content.includes('RuntimeMaxSec=43200\n'));assert.ok(!serviceSpec(config,{...service,kind:'switch'}).content.includes('DISCOVERY_DELAY'));
+ for(const kind of ['core','fault'])assert.throws(()=>serviceSpec(config,{...service,kind,discoveryDelayMs:3000}));
+ for(const value of [0,499,5001,'3000',3.5])assert.throws(()=>serviceSpec(config,{...service,kind:'switch',discoveryDelayMs:value}));
+});
