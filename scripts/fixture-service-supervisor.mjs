@@ -44,7 +44,7 @@ export function serviceSpec(config, service) {
   }
   if(Object.hasOwn(service,'discoveryDelayMs')){assert.equal(service.kind,'switch');assert.ok(Number.isInteger(service.discoveryDelayMs)&&service.discoveryDelayMs>=500&&service.discoveryDelayMs<=5000,'Bounded switching discovery delay only');}
   if (Object.hasOwn(service,'owningCheckout')) {
-    assert.equal(service.kind,'core'); absolute(service.owningCheckout);
+    assert.ok(['core','switch'].includes(service.kind),'Only core/switch hash-bound helper ownership'); absolute(service.owningCheckout);
     assert.match(service.ownerGuardSHA256,/^[a-f0-9]{64}$/);
   } else assert.ok(!Object.hasOwn(service,'ownerGuardSHA256'));
   const [helper, guard, validator, port, socketVariable] = helpers[service.kind];

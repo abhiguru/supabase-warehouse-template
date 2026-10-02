@@ -8,13 +8,23 @@ import { readFileSync, lstatSync, realpathSync, chmodSync, existsSync, unlinkSyn
 import { dirname, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { switchingFixture } from './switch-fixture-common.mjs';
-import { X509Certificate } from 'node:crypto';
+import { X509Certificate,createHash } from 'node:crypto';
+import {pathToFileURL} from 'node:url';
 
 process.umask(0o077);
 try {
 const discoveryDelayMs=process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS);
 assert.ok(Number.isInteger(discoveryDelayMs)&&(discoveryDelayMs===0||discoveryDelayMs>=500&&discoveryDelayMs<=5000),'Bounded fictional discovery delay required');
-const { env, base } = switchingFixture(); // The original core fixture guard is not changed.
+let owningFixture=switchingFixture;
+const owningCheckout=process.env.WAREHOUSE_FIXTURE_OWNING_CHECKOUT;
+if(owningCheckout!==undefined){
+  assert.ok(isAbsolute(owningCheckout)&&realpathSync(owningCheckout)===resolve(owningCheckout));
+  const guard=resolve(owningCheckout,'scripts/switch-fixture-common.mjs');
+  const st=lstatSync(guard);assert.ok(st.isFile()&&!st.isSymbolicLink()&&st.uid===process.getuid());
+  assert.equal(createHash('sha256').update(readFileSync(guard)).digest('hex'),process.env.WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256);
+  owningFixture=(await import(pathToFileURL(guard).href)).switchingFixture;
+}
+const { env, base } = owningFixture(); // Original owning checkout/container/data guards remain unchanged.
 const tlsDir = process.env.WAREHOUSE_SWITCH_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_SWITCH_FIXTURE_SOCKET;
 assert.ok(tlsDir && socketPath && isAbsolute(tlsDir) && isAbsolute(socketPath));

@@ -65,3 +65,10 @@ test('discovery delay is explicit switching-only and retains the twelve-hour ser
  for(const kind of ['core','fault'])assert.throws(()=>serviceSpec(config,{...service,kind,discoveryDelayMs:3000}));
  for(const value of [0,499,5001,'3000',3.5])assert.throws(()=>serviceSpec(config,{...service,kind:'switch',discoveryDelayMs:value}));
 });
+
+test('fresh switching helper keeps the hash-bound original switching container guard',()=>{
+ const spec=serviceSpec(config,{...service,kind:'switch',owningCheckout:'/private/original-switch',ownerGuardSHA256:'b'.repeat(64),discoveryDelayMs:3000});
+ assert.equal(spec.guard,'/private/original-switch/scripts/switch-fixture-common.mjs');assert.equal(spec.validator,'switchingFixture');
+ assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+'b'.repeat(64)));assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_OWNING_CHECKOUT=/private/original-switch'));assert.ok(spec.content.includes('RuntimeMaxSec=43200\n'));
+ for(const value of ['','not-a-hash'])assert.throws(()=>serviceSpec(config,{...service,kind:'switch',owningCheckout:'/private/switch',ownerGuardSHA256:value}));
+});
