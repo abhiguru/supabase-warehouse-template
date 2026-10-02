@@ -72,3 +72,12 @@ test('fresh switching helper keeps the hash-bound original switching container g
  assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+'b'.repeat(64)));assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_OWNING_CHECKOUT=/private/original-switch'));assert.ok(spec.content.includes('RuntimeMaxSec=43200\n'));
  for(const value of ['','not-a-hash'])assert.throws(()=>serviceSpec(config,{...service,kind:'switch',owningCheckout:'/private/switch',ownerGuardSHA256:value}));
 });
+
+test('dispatch concurrency is explicit, bounded and isolated from other helper modes',()=>{
+ const dispatchConcurrency={milliseconds:3000,scope:'isolated-fictional-native-dispatch-concurrency',record:'FXQ994',lotId:'12345678-1234-1234-1234-123456789abc'};
+ const spec=serviceSpec(config,{...service,dispatchConcurrency});
+ assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_DISPATCH_CONCURRENCY='));assert.ok(spec.content.includes('RuntimeMaxSec=43200\n'));
+ assert.ok(!serviceSpec(config,service).content.includes('DISPATCH_CONCURRENCY'));
+ for(const extra of [{kind:'switch'},{kind:'fault'},{replacementAuthentication:true},{ordersReadDelayMs:3000}])assert.throws(()=>serviceSpec(config,{...service,...extra,dispatchConcurrency}));
+ for(const extra of [{milliseconds:0},{milliseconds:5001},{milliseconds:'3000'},{scope:'production'},{record:'FXQ995'},{lotId:'bad'}])assert.throws(()=>serviceSpec(config,{...service,dispatchConcurrency:{...dispatchConcurrency,...extra}}));
+});

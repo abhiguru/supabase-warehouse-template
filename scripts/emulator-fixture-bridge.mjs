@@ -9,6 +9,7 @@ import { readFileSync, lstatSync, realpathSync, chmodSync, existsSync, unlinkSyn
 import { dirname, resolve, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { operatorFixture } from '../tests/operator-fixture.mjs';
+import { dispatchConcurrencyDelayMilliseconds } from './fixture-dispatch-concurrency-delay.mjs';
 import { fixturePhones } from './fixture-phone-scope.mjs';
 import { proxyFixtureRequest, proxyFixtureUpgrade } from './fixture-http-proxy.mjs';
 
@@ -25,6 +26,9 @@ const { env, base } = owningFixture(); // Original owning checkout guard and Com
 const ordersReadDelayMs=process.env.WAREHOUSE_FIXTURE_ORDERS_READ_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_FIXTURE_ORDERS_READ_DELAY_MS);
 assert.ok(Number.isInteger(ordersReadDelayMs)&&(ordersReadDelayMs===0||ordersReadDelayMs>=500&&ordersReadDelayMs<=5000));
 if(ordersReadDelayMs)assert.equal(base,'http://127.0.0.1:18080','Orders delay only on original fictional primary');
+const dispatchConcurrency=process.env.WAREHOUSE_FIXTURE_DISPATCH_CONCURRENCY===undefined?{milliseconds:0}:JSON.parse(process.env.WAREHOUSE_FIXTURE_DISPATCH_CONCURRENCY);
+dispatchConcurrencyDelayMilliseconds({},{},null,dispatchConcurrency);
+if(dispatchConcurrency.milliseconds){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
 const observeAuthenticationPresence = process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE === 'true';
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
@@ -88,7 +92,7 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
