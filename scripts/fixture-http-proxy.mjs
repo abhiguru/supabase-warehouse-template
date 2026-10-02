@@ -2,9 +2,11 @@
 // No payloads, query strings, headers, credentials or challenge IDs are logged.
 import { request as httpRequest } from 'node:http';
 import {discoveryDelayMilliseconds,delayDiscoveryReply} from './fixture-discovery-delay.mjs';
+import {ordersReadDelayMilliseconds} from './fixture-orders-delay.mjs';
 const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/functions/v1/get-public-config']);
-export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0 } = {}) {
-  const delayed=discoveryDelayMilliseconds(req,target,discoveryDelayMs);
+export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0 } = {}) {
+  const discoveryDelay=discoveryDelayMilliseconds(req,target,discoveryDelayMs),ordersDelay=ordersReadDelayMilliseconds(req,target,ordersReadDelayMs);
+  const delayed=discoveryDelay||ordersDelay;
   let upstream, reply, complete = false, cancelDelay=()=>{};
   const metadata = {
     method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(req.method) ? req.method : 'OTHER',
@@ -33,7 +35,7 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
     reply = response;
     response.on('error', () => fail('upstream-response-error', 502));
     response.on('aborted', () => fail('upstream-response-aborted', 502));
-    if(delayed)cancelDelay=delayDiscoveryReply(response,res,delayed,fail,event=>{try{observe({atUTC:new Date().toISOString(),...metadata,...event});}catch{/* Safe diagnostic only. */}});
+    if(delayed&&(!ordersDelay||response.statusCode===200))cancelDelay=delayDiscoveryReply(response,res,delayed,fail,event=>{try{observe({atUTC:new Date().toISOString(),...metadata,...event});}catch{/* Safe diagnostic only. */}},ordersDelay?'orders':'discovery');
     else {res.writeHead(response.statusCode, response.headers);response.pipe(res);}
   });
   upstream.on('error', () => fail('upstream-unavailable', 502));

@@ -42,6 +42,7 @@ export function serviceSpec(config, service) {
       assert.equal(service.kind,'core','Core fictional bridge options only');
     }
   }
+  if(Object.hasOwn(service,'ordersReadDelayMs')){assert.equal(service.kind,'core');assert.ok(Number.isInteger(service.ordersReadDelayMs)&&service.ordersReadDelayMs>=500&&service.ordersReadDelayMs<=5000,'Bounded core Orders read delay only');assert.notEqual(service.replacementAuthentication,true);}
   if(Object.hasOwn(service,'discoveryDelayMs')){assert.equal(service.kind,'switch');assert.ok(Number.isInteger(service.discoveryDelayMs)&&service.discoveryDelayMs>=500&&service.discoveryDelayMs<=5000,'Bounded switching discovery delay only');}
   if (Object.hasOwn(service,'owningCheckout')) {
     assert.ok(['core','switch'].includes(service.kind),'Only core/switch hash-bound helper ownership'); absolute(service.owningCheckout);
@@ -61,6 +62,7 @@ export function serviceSpec(config, service) {
     variables.push('WAREHOUSE_FIXTURE_OWNING_CHECKOUT='+service.owningCheckout);
     variables.push('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+service.ownerGuardSHA256);
   }
+  if(Object.hasOwn(service,'ordersReadDelayMs'))variables.push('WAREHOUSE_FIXTURE_ORDERS_READ_DELAY_MS='+service.ordersReadDelayMs);
   if(Object.hasOwn(service,'discoveryDelayMs'))variables.push('WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS='+service.discoveryDelayMs);
   if (service.observeAuthenticationPresence === true) variables.push('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true');
   if (service.replacementAuthentication === true) variables.push('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true');
