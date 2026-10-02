@@ -13,6 +13,7 @@ import {pathToFileURL} from 'node:url';
 
 process.umask(0o077);
 try {
+const observeAuthenticationPresence=process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE==='true';
 const discoveryDelayMs=process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS);
 assert.ok(Number.isInteger(discoveryDelayMs)&&(discoveryDelayMs===0||discoveryDelayMs>=500&&discoveryDelayMs<=5000),'Bounded fictional discovery delay required');
 let owningFixture=switchingFixture;
@@ -87,12 +88,12 @@ const server = httpsServer({ key: readFileSync(keyPath), cert }, async (req, res
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { discoveryDelayMs, observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { discoveryDelayMs, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
   if (!target) { client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
-  proxyFixtureUpgrade(req, client, head, target);
+  proxyFixtureUpgrade(req, client, head, target, {observeAuthenticationPresence,observe:event=>console.log(JSON.stringify(event))});
 });
 const ipc = socketServer(client => {
   let buffer = ''; client.setTimeout(5000, () => client.destroy());

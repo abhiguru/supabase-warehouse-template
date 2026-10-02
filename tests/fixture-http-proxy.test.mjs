@@ -132,3 +132,13 @@ test('optional upgrade observation exposes booleans only and forwarding remains 
     assert.ok(!JSON.stringify(observed).includes('fictional-header-value'));
   } finally { await new Promise(resolve => ws.close(resolve)); await close(bridge); await close(upstream); }
 });
+
+test('ordinary logout is independently identified without exposing body or credential values',async()=>{
+ const observed=[];let upstreamBody='';const upstream=createServer((req,res)=>{req.on('data',part=>{upstreamBody+=part});req.on('end',()=>res.end('true'));});const base=await listen(upstream);
+ const bridge=createServer((req,res)=>proxyFixtureRequest(req,res,new URL('/rest/v1/rpc/logout_session',base),{observeAuthenticationPresence:true,observe:event=>observed.push(event)}));const url=await listen(bridge);
+ try{
+  const body=JSON.stringify({p_refresh_token:'fictional-body-secret'});
+  await new Promise((resolve,reject)=>{const q=request(url,{method:'POST',headers:{authorization:'Bearer fictional-header-secret','content-type':'application/json'}},res=>{res.resume();res.on('end',resolve)});q.on('error',reject);q.end(body)});
+  assert.equal(upstreamBody,body);assert.equal(observed.length,1);assert.equal(observed[0].path,'/rest/v1/rpc/logout_session');assert.equal(observed[0].method,'POST');assert.equal(observed[0].status,200);assert.equal(observed[0].authorizationPresent,true);assert.equal(observed[0].credentialQueryPresent,false);assert.ok(!JSON.stringify(observed).includes('secret'));
+ }finally{await close(bridge);await close(upstream)}
+});

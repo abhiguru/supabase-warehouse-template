@@ -51,10 +51,12 @@ test('listener health distinguishes an absent loopback server without replacing 
   finally { await new Promise(resolve => server.close(resolve)); }
   assert.equal(await portListening(port), false);
 });
-test('replacement and header-presence options are explicit core-only booleans',()=>{
+test('header-presence is optional on fictional core/switch; replacement auth remains core-only',()=>{
  const original=serviceSpec(config,service);assert.ok(!original.content.includes('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH'));assert.ok(!original.content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE'));
  const s=serviceSpec(config,{...service,observeAuthenticationPresence:true,replacementAuthentication:true});assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true'));assert.ok(s.content.includes('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true'));assert.ok(s.content.includes('RuntimeMaxSec=43200\n'));
- for(const option of ['observeAuthenticationPresence','replacementAuthentication']){assert.throws(()=>serviceSpec(config,{...service,[option]:'true'}));assert.throws(()=>serviceSpec(config,{...service,kind:'switch',[option]:true}));assert.throws(()=>serviceSpec(config,{...service,kind:'fault',[option]:true}));}
+ const switching=serviceSpec(config,{...service,kind:'switch',observeAuthenticationPresence:true});assert.ok(switching.content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true'));assert.ok(switching.content.includes('RuntimeMaxSec=43200\n'));assert.ok(!serviceSpec(config,{...service,kind:'switch'}).content.includes('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE'));
+ assert.throws(()=>serviceSpec(config,{...service,kind:'switch',replacementAuthentication:true}));
+ for(const option of ['observeAuthenticationPresence','replacementAuthentication']){assert.throws(()=>serviceSpec(config,{...service,[option]:'true'}));assert.throws(()=>serviceSpec(config,{...service,kind:'fault',[option]:true}));}
 });
 test('separate helper source keeps a hash-bound original checkout ownership guard',()=>{
  const s=serviceSpec(config,{...service,owningCheckout:'/private/original-core',ownerGuardSHA256:'a'.repeat(64)});assert.equal(s.guard,'/private/original-core/tests/operator-fixture.mjs');assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OWNING_CHECKOUT=/private/original-core'));assert.ok(s.content.includes('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+'a'.repeat(64)));

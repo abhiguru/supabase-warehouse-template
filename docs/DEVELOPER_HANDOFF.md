@@ -69,6 +69,17 @@ systemctl --user show warehouse-fixture-core-vm2026100110-normal10.service -p Ac
 sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-primary-helper-2026100110-concurrency02/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal10.json stop'
 ```
 
+Fixture switching observation tooling now optionally accepts
+`observeAuthenticationPresence: true` for the independently guarded switching
+bridge as well as the core bridge. It records only credential-presence booleans
+for HTTP and Realtime upgrades; the safe route allowlist also identifies ordinary
+`logout_session` completion without logging its body. Replacement authentication
+remains core-only. Default behavior, ownership guards, Restart=no and the existing
+12-hour caps remain unchanged. Eighteen focused proxy/supervisor tests passed.
+This source change is not installed in the currently running switching helper;
+native credential-forwarding acceptance remains open until a fresh supervised
+helper and real bounded case produce independent evidence.
+
 Starting again requires a new private helper config/runId/socket/log identity:
 invoke the same supervisor with the new config and `start`, then verify actual
 TLS/IPC readiness. Do not overwrite frozen config, replace a listener blindly or

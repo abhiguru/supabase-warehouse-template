@@ -4,7 +4,7 @@ import { request as httpRequest } from 'node:http';
 import {discoveryDelayMilliseconds,delayDiscoveryReply} from './fixture-discovery-delay.mjs';
 import {ordersReadDelayMilliseconds} from './fixture-orders-delay.mjs';
 import {bufferConcurrencyRequest} from './fixture-dispatch-concurrency-delay.mjs';
-const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/functions/v1/get-public-config']);
+const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/rest/v1/rpc/logout_session', '/functions/v1/get-public-config']);
 export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0, dispatchConcurrency = {milliseconds:0} } = {}) {
   const discoveryDelay=discoveryDelayMilliseconds(req,target,discoveryDelayMs),ordersDelay=ordersReadDelayMilliseconds(req,target,ordersReadDelayMs);
   const delayed=discoveryDelay||ordersDelay;

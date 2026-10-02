@@ -40,7 +40,7 @@ export function serviceSpec(config, service) {
   for (const option of ['observeAuthenticationPresence','replacementAuthentication']) {
     if (Object.hasOwn(service,option)) {
       assert.equal(typeof service[option],'boolean','Fixture options require booleans');
-      assert.equal(service.kind,'core','Core fictional bridge options only');
+      assert.ok(option==='observeAuthenticationPresence' ? ['core','switch'].includes(service.kind) : service.kind==='core','Fictional bridge option kind refused');
     }
   }
   if(Object.hasOwn(service,'ordersReadDelayMs')){assert.equal(service.kind,'core');assert.ok(Number.isInteger(service.ordersReadDelayMs)&&service.ordersReadDelayMs>=500&&service.ordersReadDelayMs<=5000,'Bounded core Orders read delay only');assert.notEqual(service.replacementAuthentication,true);}
