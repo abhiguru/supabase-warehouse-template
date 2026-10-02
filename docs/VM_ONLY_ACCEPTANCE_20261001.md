@@ -204,3 +204,21 @@ The reviewed `649cbbf2f9b56681924b2fec28e9f6823a30ffb6` helper was subsequently 
 The delay helper was then stopped with its final log hash preserved. A normal-helper setup was refused before unit creation because its required private log directory was missing. That failure is retained. Fresh identity `warehouse-fixture-core-vm2026100102-normal09.service` passed genuine TLS discovery, IPC readiness, no-restart/twelve-hour supervision and an undelayed native cold Orders HTTP 200 with the same primary identity. Warehouse services/state were unchanged; monitor 18 follows the new helper. Private proofs: `primary-normal-readiness09.json` and `primary-normal09-cold-read/result.json`. The preceding preparation-only statement is historical, superseded by these exact scoped results.
 
 Backend tooling at `649cbbf2f9b56681924b2fec28e9f6823a30ffb6` passed exact CI run `37011446107`. Application API/schema and frozen runtime inputs were unchanged by the fixture transport. Confirmed switching during saves/uploads, remaining native cases, final freeze, new eight-hour soak and the dedicated expiry appointment remain open. The mobile dependency gate remains blocked; a source/backend CI pass does not waive it.
+
+## Controlled native dispatch concurrency preparation
+
+A disabled-by-default fixture matcher is prepared in review source only. It
+requires the exact core loopback route, native reserved supervisor/customerA,
+recordFXQ994, one independently bound lot and quantity2, ordinary
+authentication presence, native RPC fields and idempotency key. The optional
+delay is bounded500–5000ms. Two source tests PASS: default disabled, exact
+match and refusal of competitor recordFXQ995, other accounts/lots/quantities,
+queries/routes/credentials and excessive waits. No request data is logged.
+
+Transport buffering/timeout/cancellation integration, supervisor/bridge
+configuration, fresh three-unit fixture, ordinary API competitor, native
+selectors and independent commit reconciliation remain unimplemented. The
+module has not been installed in any helper; no API/SQL/OTP/native action
+occurred. Backend application remains bed4eeee; current owned helpers and
+12-hour caps are unchanged. This is a distinct unexecuted concurrency case,
+not a rerun or alias of exhausted lost-response/offline writes.
