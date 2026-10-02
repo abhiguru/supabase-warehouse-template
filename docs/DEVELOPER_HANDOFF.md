@@ -12,7 +12,8 @@ Earlier installation history below does not authorize those excluded actions.
 
 Application installation is pinned to `bed4eeee4a008073aa453c32da27cade50a32a2f`
 with recorded overlays. Review source and optional helper tooling are separate;
-current normal helper source is `71a7ac8` with delay disabled. Reproduce setup
+current core/switch helper source is `7699364`, with delays disabled and optional
+credential-presence observation enabled only for the fictional bridges. Reproduce setup
 from clean pinned source using a new empty private disposable state according to
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), in dependency order: prerequisites,
 private configuration, migrations, first administrator, identity/local doctor,
@@ -52,21 +53,21 @@ FXQ994 norFXQ995 was committed. Three failed native attempts and their API
 sessions remain retained; no fourth run or blind session cleanup.
 
 Private campaign root is `/home/jay/warehouse-install-private/vm-campaign-20261001`.
-Current core helper config is `helpers-primary-normal10.json`, unit
-`warehouse-fixture-core-vm2026100110-normal10.service`, TLS18443/owned private IPC;
-switch config `helpers-switch-return07.json` must be read from the recorded
-fixture bindings before reuse, unit `warehouse-fixture-switch-vm2026100102-return07.service`,
-TLS18444. Fault unit `warehouse-fixture-fault-vm2026100102-renew03.service`,
-TLS18643, is DISARMED; config `helpers-fault-renew03.json` and its socket remain bound in the native
-configuration. Read-only monitor22 covers current units. Inspect actual remaining
+Current core helper config is `helpers-primary-normal11.json`, unit
+`warehouse-fixture-core-vm2026100110-normal11.service`, TLS18443/owned private IPC;
+switch config `helpers-switch-observe08.json` must be read from the recorded
+fixture bindings before reuse, unit `warehouse-fixture-switch-vm2026100110-observe08.service`,
+TLS18444. Fault unit `warehouse-fixture-fault-vm2026100110-renew04.service`,
+TLS18643, is DISARMED; config `helpers-fault-renew04.json` and its socket remain bound in the native
+configuration. Read-only monitor23 covers current units. Inspect actual remaining
 lifetimes before starting a bounded stage. All helpers retain twelve-hour caps,
 Restart=no and real TLS/IPC readiness requirements.
 
 ```bash
-sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-primary-helper-2026100110-concurrency02/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal10.json status'
-systemctl --user show warehouse-fixture-core-vm2026100110-normal10.service -p ActiveState -p SubState -p RuntimeMaxUSec -p NRestarts
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-switching-helper-2026100110-observe01/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal11.json status'
+systemctl --user show warehouse-fixture-core-vm2026100110-normal11.service -p ActiveState -p SubState -p RuntimeMaxUSec -p NRestarts
 # Stop only this owned helper after actor release; logs/state remain preserved:
-sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-primary-helper-2026100110-concurrency02/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal10.json stop'
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-switching-helper-2026100110-observe01/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal11.json stop'
 ```
 
 Fixture switching observation tooling now optionally accepts
@@ -76,20 +77,26 @@ for HTTP and Realtime upgrades; the safe route allowlist also identifies ordinar
 `logout_session` completion without logging its body. Replacement authentication
 remains core-only. Default behavior, ownership guards, Restart=no and the existing
 12-hour caps remain unchanged. Eighteen focused proxy/supervisor tests passed.
-This source change is not installed in the currently running switching helper;
-native credential-forwarding acceptance remains open until a fresh supervised
-helper and real bounded case produce independent evidence.
+The fresh core/switch helpers now include this tooling. Actual TLS/IPC readiness
+and exact before/after protected warehouse and stored-byte reconciliation passed.
+The initial fresh-relay IDLE-versus-DISARMED assertion failed and remains preserved;
+a separate completion verified no observations and initialized only that new relay.
+Old units/configurations/logs remain preserved. The original app is stopped
+without logout, and no native confirmation or authentication occurred. Native
+credential-forwarding acceptance still requires a real bounded case.
 
 Starting again requires a new private helper config/runId/socket/log identity:
 invoke the same supervisor with the new config and `start`, then verify actual
 TLS/IPC readiness. Do not overwrite frozen config, replace a listener blindly or
 extend RuntimeMaxSec. Mobile normal-route preflight uses
-`native-config0110-normal10.json`; it passed along with cold Orders HTTP200 and
-unchanged-state reconciliation. No Metro is needed.
+`native-config0110-normal11.json`. The earlier normal10 cold Orders HTTP200 proof
+remains historical; the fresh helper transition proves unchanged state, TLS/IPC
+and supervision. Native route/cold health must be verified on the new stage. No
+Metro is needed.
 
-Complete backend Node22 unit suite97/97 and redacted source/history scans PASS.
-Exact CI37067498320 at review33825bd remains live at the inspected checkpoint;
-its final result is not assumed. Mobile dependency and native gates remain open.
+Complete backend Node22 unit suite98/98 and redacted source/history scans PASS.
+Exact CI37069464095 at071806b completed successfully. New exact CI37071784558
+at7699364 remains live at the inspected checkpoint; its final result is not assumed. Mobile dependency and native gates remain open.
 Final freeze/readiness/new eight-hour soak are unstarted; the older artifact's
 completed soak stays separate. Dedicated natural expiry is unscheduled until an
 eligible final freeze, new owned API30 AVD and ordinary reserved-account session
