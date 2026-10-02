@@ -24,8 +24,8 @@ export function bufferConcurrencyRequest(req,target,config,{forward,fail,observe
  const end=()=>{if(stopped)return;const raw=Buffer.concat(chunks);chunks=[];req.removeListener('data',data);req.removeListener('end',end);let body;try{body=JSON.parse(raw.toString('utf8'));}catch{/* Forward malformed input unchanged for ordinary backend rejection. */}
   const milliseconds=dispatchConcurrencyDelayMilliseconds(req,target,body,config);
   if(!milliseconds){stopped=true;forward(raw);return;}
-  try{observe({event:'dispatch-request-delay-start',delayMs:milliseconds});}catch{/* Observers cannot alter transport. */}
-  timer=setTimeout(()=>{if(stopped)return;stopped=true;try{observe({event:'dispatch-request-delay-release',delayMs:milliseconds});}catch{/* Safe metadata only. */}forward(raw);},milliseconds);
+  try{observe({event:'dispatch-request-delay-start',delayMs:milliseconds,monotonicMs:performance.now()});}catch{/* Observers cannot alter transport. */}
+  timer=setTimeout(()=>{if(stopped)return;stopped=true;try{observe({event:'dispatch-request-delay-release',delayMs:milliseconds,monotonicMs:performance.now()});}catch{/* Safe metadata only. */}forward(raw);},milliseconds);
  };
  req.on('data',data);req.on('end',end);return cancel;
 }

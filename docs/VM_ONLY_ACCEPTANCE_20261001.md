@@ -236,3 +236,5 @@ bridge configuration and live owned helper integration remain pending; no
 warehouse request, OTP, fresh fixture or native dispatch occurred.
 
 Concurrency helper configuration is now wired through the fixture-only supervisor and core bridge. It remains disabled by default, restricted to the primary fictional upstream and exact declared record/lot, excludes replacement authentication and Orders delay, and retains the twelve-hour supervised lifetime. Nine supervisor tests passed, including refusal of incorrect helper kinds, scope, record, lot and duration; bridge syntax and whitespace checks passed. No active helper was replaced and no native concurrency result is claimed. Fresh helper provisioning, independently created stock and native/API coordination remain pending.
+
+The source-only concurrency delay observations now include process monotonic timestamps at actual hold start/release, permitting measured duration without recording request data. The fresh prepared helper checkout predates this timing addition and must be replaced with a new pinned identity before execution; no active runtime input changed.
