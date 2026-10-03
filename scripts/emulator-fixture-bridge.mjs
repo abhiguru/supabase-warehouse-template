@@ -1,3 +1,4 @@
+import {createConfirmedOrdersReadController} from './fixture-confirmed-orders-delay.mjs';
 // Private mock-delivery bridge for the guarded fictional fixture only.
 // Never attach this harness to an installed warehouse or expose its listener.
 import assert from 'node:assert/strict';
@@ -33,6 +34,7 @@ const observeAuthenticationPresence = process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH
 const confirmedOrdersReadDelayMs=process.env.WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS);
 assert.ok(confirmedOrdersReadDelayMs===0||confirmedOrdersReadDelayMs===30000);
 if(confirmedOrdersReadDelayMs){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.equal(dispatchConcurrency.milliseconds,0);assert.equal(observeAuthenticationPresence,true);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
+const confirmedReadController=createConfirmedOrdersReadController(confirmedOrdersReadDelayMs);
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
 assert.ok(tlsDir && socketPath && isAbsolute(tlsDir) && isAbsolute(socketPath));
@@ -95,7 +97,7 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, confirmedOrdersReadDelayMs, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, confirmedOrdersReadDelayMs, confirmedReadController, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
@@ -109,7 +111,11 @@ const ipc = socketServer(client => {
     buffer += part; if (buffer.length > 256) return client.destroy();
     if (!buffer.includes('\n')) return;
     try {
-      const phone = JSON.parse(buffer.trim()).phone;
+      const request=JSON.parse(buffer.trim());
+      if(request.action==='confirmed-orders-status'||request.action==='arm-confirmed-orders-read'){
+        assert.equal(confirmedOrdersReadDelayMs,30000);const result=request.action==='confirmed-orders-status'?confirmedReadController.status():confirmedReadController.arm(request);client.end(JSON.stringify(result)+'\n');return;
+      }
+      const phone = request.phone;
       const item = allowedPhones.has(phone) && challenges.get(phone);
       assert.ok(item && item.expiresAt > Date.now());
       client.end(JSON.stringify({ code: item.code }) + '\n');

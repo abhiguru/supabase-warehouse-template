@@ -25,3 +25,14 @@ test('supervision requires a separate observed core helper and retains twelve-ho
  const spec=serviceSpec(c,s);assert.match(JSON.stringify(spec),/WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS=30000/);assert.match(JSON.stringify(spec),/RuntimeMaxSec=43200/);
  for(const patch of [{kind:'switch'},{kind:'fault'},{observeAuthenticationPresence:false},{replacementAuthentication:true},{ordersReadDelayMs:5000},{dispatchConcurrency:{milliseconds:5000}},{discoveryDelayMs:5000},{confirmedOrdersReadDelayMs:30001}])assert.throws(()=>serviceSpec(c,{...s,...patch}));
 });
+
+import {createConfirmedOrdersReadController} from '../scripts/fixture-confirmed-orders-delay.mjs';
+test('one-shot private arm leaves startup and later reads normal and cannot be reset',()=>{
+ let clock=Date.parse('2026-10-03T00:00:00Z');const controller=createConfirmedOrdersReadController(30000,()=>clock),attemptId='11111111-1111-4111-8111-111111111111',arm={action:'arm-confirmed-orders-read',attemptId,deadlineUTC:'2026-10-03T00:00:30Z'};
+ assert.deepEqual(controller.status(),{state:'READY',attemptId:null});assert.equal(controller.take(req,target),null);assert.deepEqual(controller.arm(arm),{state:'ARMED',attemptId});assert.equal(controller.take(req,new URL('http://127.0.0.1:18080/rest/v1/rpc/save_grn')),null);assert.equal(controller.status().state,'ARMED');assert.deepEqual(controller.take(req,target),{milliseconds:30000,attemptId});assert.equal(controller.take(req,target),null);assert.equal(controller.status().state,'CONSUMED');assert.throws(()=>controller.arm(arm));
+ const expired=createConfirmedOrdersReadController(30000,()=>clock);expired.arm(arm);clock+=30000;assert.equal(expired.take(req,target),null);assert.equal(expired.status().state,'EXPIRED');assert.throws(()=>expired.arm({...arm,deadlineUTC:'2026-10-03T00:01:00Z'}));
+});
+test('disabled or malformed arm cannot activate or extend the fixture hold',()=>{
+ const now=()=>Date.parse('2026-10-03T00:00:00Z'),valid={action:'arm-confirmed-orders-read',attemptId:'11111111-1111-4111-8111-111111111111',deadlineUTC:'2026-10-03T00:00:30Z'};assert.throws(()=>createConfirmedOrdersReadController(0,now).arm(valid));
+ for(const patch of [{action:'reset'},{attemptId:'bad'},{deadlineUTC:'2026-10-03T00:02:00Z'},{deadlineUTC:'2026-10-03T00:00:00Z'},{phone:'synthetic'}])assert.throws(()=>createConfirmedOrdersReadController(30000,now).arm({...valid,...patch}));
+});
