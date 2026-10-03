@@ -38,6 +38,17 @@ restart. Its earlier19543 acceptance remains historical. A subsequent test
 requiring TLS/IPC must allocate a new private helper identity and verify actual
 readiness, retaining the12-hour cap and original campaign deadline.
 
+Post-restart bounded TLS/IPC revalidation PASSed with a new helper identity
+`vm2026100301-postresize-tls04`: trusted fictional19543 discovery returned the
+actual fresh UUID; private IPC returned the expected no-pending-challenge
+response. Zero OTP/login requests. The helper stopped normally and its socket
+was removed; all protected SQL/configuration/identity/stored bytes match the
+before-state snapshot. This is historical discovery evidence, not a running
+helper. Two failed readiness-driver attempts are retained: wrong discovery
+path, then an overlong Linux Unix-socket client path. The final correction used
+a short new private socket; no fourth attempt. Frozen tooling3ae80ae and
+application079ab4a were unchanged.
+
 Fresh local monitoring attempt1 reached its20-minute Prometheus compilation
 bound after source/UI checksums and Go-module verification PASSed. Controller
 FAIL/exit1 and build124 remain preserved. No monitoring image/service started;
