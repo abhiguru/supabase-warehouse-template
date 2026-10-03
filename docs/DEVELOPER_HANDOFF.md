@@ -9,10 +9,16 @@ loopback gateway19590 and declared independent subnet10.233.252.0/24.
 No existing warehouse was retired or modified. Initial legacy-builder attempt
 failed on the pinned PostgreSQL Dockerfile's BuildKit cache mounts before any
 service started. Configuration and logs remain preserved; corrected attempt2
-uses a new owned digest-pinned BuildKit container, actual2GiB/no-swap/2CPU/no
-restart limits and max-parallelism1. No global/default builder was changed.
+built database/functions/PDF-renderer images, then stopped before services when
+free disk fell below the10GiB installation floor. Its exact images/logs/state
+remain preserved. Only that newly owned builder's transient cache was reclaimed,
+restoring free disk from8.5GiB to20.7GiB; all three image IDs are unchanged and
+unrelated caches were untouched. Final allowed corrected attempt3 uses a new
+owned digest-pinned BuildKit container, actual2GiB/no-swap/2CPU/no-restart limits
+and max-parallelism1, reuses those exact images, and trims only its own cache
+after exporting other images. No fourth attempt or global/default builder change.
 The90-minute supervisor is
-`warehouse-fixture-reproduction-vm2026100301-install02.service`; a95-minute
+`warehouse-fixture-reproduction-vm2026100301-install03.service`; a95-minute
 owned-builder-only stop timer separately bounds its daemon lifetime.
 Evidence/plans/ledgers are under private `backend-reproduction0110-01`.
 Installation, local doctor and subsequent backend workflow gates are still
@@ -20,8 +26,8 @@ pending; do not inherit prior fixture acceptance. The original APK/warehouse
 services and completed older soak remain unchanged. This timer is not a
 natural-session-expiry appointment.
 
-Health: `systemctl --user status warehouse-fixture-reproduction-vm2026100301-install02.service`.
-To stop that controller: `systemctl --user stop warehouse-fixture-reproduction-vm2026100301-install02.service`.
+Health: `systemctl --user status warehouse-fixture-reproduction-vm2026100301-install03.service`.
+To stop that controller: `systemctl --user stop warehouse-fixture-reproduction-vm2026100301-install03.service`.
 Preserve any services/state/logs and reconcile before a corrected attempt.
 After this new fixture has services, its guarded health/stop commands are:
 
