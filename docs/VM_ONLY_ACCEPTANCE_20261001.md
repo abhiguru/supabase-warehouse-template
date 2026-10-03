@@ -359,3 +359,12 @@ formerly preserved native80417ab6 session is intentionally absent after this
 authorized logout. No account disabling or full authentication-group closure
 is claimed. Private supervisor-logout0110-final-proof.json SHA256
 ff0d879af8615c9a86174b909730e59199c6b1a40a3b458a539f3dfe945d790e. No fourth supervisor logout attempt.
+
+
+## 2026-10-03: genuine Customer A native authentication on APK10
+
+The first native login for genuine Customer A profile `79764e1a-3aed-4cac-9a25-42ccdafb79ac` passed on installed APK10 (SHA256 `a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69`). Guarded tooling commit `b2fbc52` requires the exact fictional account, warehouse identity and artifact, ordinary authentication limits, and preservation of existing sessions. Eleven targeted authentication source tests passed before execution.
+
+One ordinary mock-provider OTP request and verification produced one new native session. Independent SQL observations preserved both existing Customer A sessions, all unrelated account authentication, assignment and business hashes, static profile data, enrollment state, auth configuration and consumed-refresh-token history. The immutable native stage and verifier passed; credentials and plaintext OTPs were not serialized. Private evidence: `stage-approved-a-native-auth0110-01-evidence/ledger.json`, `native-approved-a-auth0110-01/`, and `customer-a-native-auth0110-final-proof01.json` under the existing campaign evidence root.
+
+The original owned API30 emulator is now authenticated as genuine Customer A. This replaces the previously logged-out device state; supervisor session804 remains intentionally removed by its earlier ordinary logout. This result covers native login only. It does not establish complete authentication, reciprocal isolation, native cart creation, stored-document byte reconciliation, account revocation, final readiness or delayed natural expiry. Earlier reserved-profile customer evidence remains separately historical. Final freeze, soak and expiry scheduling remain gated.
