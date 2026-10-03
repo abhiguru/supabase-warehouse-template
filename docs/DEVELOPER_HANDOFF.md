@@ -187,3 +187,29 @@ replay, OTP, logout or business cleanup occurred. A corrected one-shot armed
 read helper is required before using at most two remaining corrected attempts.
 Actual in-flight confirmation/destination continuation remain NOT TESTED;
 current app is stopped and current core helper still has the bounded hold.
+
+In-flight Orders attempt02 preserves native FAIL but independently reconciles
+the actual guarded refusal. Fresh pinned e3126a0 core confirmread13 passed
+sequential ownership/TLS/private IPC and identical before/after warehouse
+snapshots; monitor25 covers it. Single-use private arm created one safe read
+identifier. Actual read started00:25:08.135UTC, confirmation was attempted
+00:25:32.102007UTC, and genuine HTTP200 completed00:25:38.136UTC. The app
+source/compiled candidate's operation guard refuses activation while a request
+is active. Read-only actual screen capture showed Operation In Progress and
+Finish the current operation before switching servers. No source logout was
+observed, primary public selection remained intact and independent entire
+source/destination/auth/storage reconciliation passed exactly unchanged.
+No OTP or business submission occurred. The owned app was stopped without
+logout after preserving its screen/selection. Core controller is consumed;
+subsequent reads are normal and it cannot be rearmed. Failed first ADB public
+selection query quoting produced incomplete input before any mutation; the
+corrected read-only query used shell quoting and passed.
+
+Private proofs: confirmed-orders-read-switch0110-02-independent-refusal-proof.json
+and confirmed-orders-read-switch0110-02-independent-timing-proof.json. These
+preserve originalNativeStatus=FAIL and do not claim a completed server switch.
+Alert appearance before read settlement was not recorded precisely enough.
+Final allowed corrected attempt03 must expect the documented refusal, record
+the actual alert during the held read, reconcile unchanged selection/session,
+then verify normal-route cold reads. No application behavior needs relaxing to
+make the switch occur; earlier successful header-draft switches were idle.
