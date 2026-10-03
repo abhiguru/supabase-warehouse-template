@@ -9,6 +9,27 @@ application remains bed4eeee plus declared overlays. See the dated acceptance
 matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
 natural-expiry appointment exists. Historical results below do not transfer.
 
+Current original owned API30 emulator is authenticated as genuine Customer A
+(profile79764e1a-3aed-4cac-9a25-42ccdafb79ac), after one ordinary native login.
+The prior supervisor session804 was removed by normal logout; that account remains
+active. Customer B remains rejected/inactive and must not be reapproved to reuse
+historical acceptance. Private current A login/receipt denial/image and PDF API
+proofs are under the campaign root. The final A-to-B native receipt-denial attempt
+passed; its two failures remain preserved and no fourth attempt is allowed.
+API image and PDF denial preserve the current native session and actual stored
+bytes; they do not establish native image rendering or full reciprocal isolation.
+
+Latest complete fixture source validation passed323/323 under Node22.23.3.
+Revalidated source audits report26 high mobile dependency paths and8 high
+backend metadata paths, rooted in unpatched node-forge/braces advisories.
+Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
+storage busboy3.2.2 patch is source-only, not installed container acceptance.
+The installed application remains bed4eeee plus its four declared overlays.
+No final freeze, readiness soak or delayed-expiry appointment is eligible yet.
+Core helper14 uses pinned e3126a0, switching08 uses7699364, and fault04 is disarmed.
+Core's single-use Orders delay controller is consumed; normal traffic is restored.
+Each helper retains its12-hour cap; verify actual remaining lifetime before work.
+
 Current read-only monitor is `warehouse-vm-campaign-monitor-20261001-27.service`,
 frozen tooling e1194f8, private root
 `/home/jay/warehouse-install-private/vm-campaign-20261001`. Its configuration is
@@ -40,8 +61,9 @@ Earlier installation history below does not authorize those excluded actions.
 
 Application installation is pinned to `bed4eeee4a008073aa453c32da27cade50a32a2f`
 with recorded overlays. Review source and optional helper tooling are separate;
-current core/switch helper source is `7699364`, with delays disabled and optional
-credential-presence observation enabled only for the fictional bridges. Reproduce setup
+Current core helper14 source is `e3126a0`; switching08 source is `7699364`.
+The core single-use Orders delay controller is consumed; optional credential-presence
+observation is enabled only for the fictional bridges. Reproduce setup
 from clean pinned source using a new empty private disposable state according to
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), in dependency order: prerequisites,
 private configuration, migrations, first administrator, identity/local doctor,
