@@ -9,8 +9,10 @@ application remains bed4eeee plus declared overlays. See the dated acceptance
 matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
 natural-expiry appointment exists. Historical results below do not transfer.
 
-Current original owned API30 emulator is authenticated as genuine Customer A
-(profile79764e1a-3aed-4cac-9a25-42ccdafb79ac), after one ordinary native login.
+Current original owned API30 emulator is logged out after genuine Customer A
+normal logout and two cold login requirements. That account remains active;
+its two older API sessions remain preserved. The earlier native login and role
+controls passed; their removed native session must not be assumed present.
 The prior supervisor session804 was removed by normal logout; that account remains
 active. Customer B remains rejected/inactive and must not be reapproved to reuse
 historical acceptance. Private current A login/receipt denial/image and PDF API
@@ -19,7 +21,7 @@ passed; its two failures remain preserved and no fourth attempt is allowed.
 API image and PDF denial preserve the current native session and actual stored
 bytes; they do not establish native image rendering or full reciprocal isolation.
 
-Latest complete fixture source validation passed323/323 under Node22.23.3.
+Latest complete fixture source validation passed325/325 under Node22.23.3.
 Revalidated source audits report26 high mobile dependency paths and8 high
 backend metadata paths, rooted in unpatched node-forge/braces advisories.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
