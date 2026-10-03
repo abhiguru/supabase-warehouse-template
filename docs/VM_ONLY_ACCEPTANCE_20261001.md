@@ -347,3 +347,15 @@ This is source dependency/parser evidence only: no container build, fixture
 installation or live storage acceptance of the patched package is claimed.
 Frozen runtime backend bed4eeee plus its existing overlays remains unchanged.
 Metadata/mobile dependency gates still prevent final readiness and freeze.
+
+
+2026-10-03 APK2026100110 ordinary supervisor native logout PASS on final
+attempt03, frozen tooling de6d674. One confirmation revoked only its matched
+80417ab6 session; two cold launches required login and retained the Core
+selection. Independent SQL preserved unrelated authentication, profile active
+state, business/OTP data; actual stored-byte hashes matched before/after.
+Native OTP/business writes0. Original emulator now remains logged out; the
+formerly preserved native80417ab6 session is intentionally absent after this
+authorized logout. No account disabling or full authentication-group closure
+is claimed. Private supervisor-logout0110-final-proof.json SHA256
+ff0d879af8615c9a86174b909730e59199c6b1a40a3b458a539f3dfe945d790e. No fourth supervisor logout attempt.
