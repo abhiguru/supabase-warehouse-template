@@ -472,3 +472,15 @@ recreation despite green container health. Internal HTTP probes now wait up to
 90 seconds for transport failures and HTTP 502/503/504; other HTTP errors fail
 immediately and persistent outages still fail. Final paired CI evidence is
 recorded in the corrective PR rather than claiming closure from local checks.
+
+## Source dependency refresh644 (not an image scan)
+
+The failed operator-review CI36858689257 exposed stale pinned metadata leaves;
+its short-circuited Storage audit separately reported22 findings. The operator
+review candidate updates same-major leaf pins and locks; both source audits now
+report zero locally. Metadata typecheck/build/12recipe tests, Storage clean install/
+graph check and80backend tests passed. See
+[operator setup notes](OPERATOR_SETUP_NOTES.md#source-dependency-gate-correction644--2026-10-01)
+for versions, commands and limits. No running container changed. Historical image
+findings above are not cleared by npm audit; the deferred image/security and
+production gates remain separate. Fresh CI/container integration is pending.

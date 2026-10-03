@@ -13,6 +13,16 @@ Production remains gated; existing demo release tags are unchanged. Counts and
 versions below describe dated scan evidence, not a new scan or verification of
 currently patched publisher versions.
 
+## Current repository status — 2026-09-30
+
+Backend PR #68 merged at `f18f51d4625e7f8c0d977ac69645804e318a9d49`;
+[post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs. Mobile PR #33 remains open/draft at
+`8240cce9121a797fd0cf2e00e568a61985814ddb`, which differs from mobile `main`.
+The dated pilot/pre-merge text below describes its original checkpoint, not
+current merge state. Fresh-VM results are recorded separately in
+[OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md); production gates remain open.
+
 ## Independent operator installation work
 
 The target is one backend and database per cold-storage business, with one native

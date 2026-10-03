@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';import{fixturePhones}from'../scripts/fixture-phone-scope.mjs';
+test('ordinary helper keeps its original closed fictional accounts',()=>{const s=fixturePhones();assert.equal(s.size,4);assert.ok(s.has('919888888871'));assert.ok(!s.has('919888888891'));});
+test('replacement helper refuses missing or overlapping administrator identity',()=>{for(const proof of [{},{primaryAdminPresent:true,replacementAdminPresent:true},{primaryAdminPresent:false,replacementAdminPresent:false}])assert.throws(()=>fixturePhones(true,proof));assert.throws(()=>fixturePhones('true'));});
+test('independently provisioned replacement uses only its reserved fictional accounts',()=>{const s=fixturePhones(true,{primaryAdminPresent:false,replacementAdminPresent:true});assert.equal(s.size,4);assert.ok(s.has('919888888891'));assert.ok(!s.has('919888888871'));assert.ok(!s.has('919888888881'));});

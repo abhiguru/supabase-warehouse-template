@@ -1,5 +1,378 @@
 # Independent operator developer handoff
 
+## Approved staff GRN policy, 3 October 2026
+
+The operator selected staff GRN view/create/edit with deletion restricted to
+administrators/supervisors. The earlier unanswered-policy checkpoint below is
+historical. See [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md) for the scoped source
+change, local validation and preserved migration-test failures. Additive cache
+migrations 19–20 initialize the existing refresh queue and flush it after bulk
+GRN edits. The final explicitly authorized disposable test passed at fc149114
+at 15:25 UTC: cache consistency/rollback, staff permission and SQL Storage
+boundaries, revocation and the full migration regression suite. Five prior local
+failures remain preserved; both reopened test slots are consumed. Backend unit
+checks (127), exact mobile contract and scans passed. Exact published CI is a
+separate gate. Frozen runtime and APK10 are not updated; native acceptance
+remains open.
+
+## Current VM campaign checkpoint, 3 October 2026
+
+Post-resize verification at08:59UTC: VM now has31GiB RAM, about115GiB free
+on the enlarged disk and unused swap. User explicitly resumed work. Original
+and fresh owning-checkout doctor checks PASS; all99 prior matrix bindings and
+both review source heads verified. Fresh fixture85 tables/five actual stored
+files/configuration/identity match the pre-restart snapshot exactly. No emulator
+was restarted and no authentication or business write was replayed.
+
+New bounded read-only monitor28 uses the preserved e1194f8 source and a new
+private configuration/output. First integrity pass checked14,370 bound files,
+retained17 historical mismatches and found zero current/preserved-soak errors.
+It expires at the unchanged16:27:13UTC deadline. Old transient monitor27 and
+helpers stopped with reboot; their earlier lifetime/route observations below
+are historical, not live readiness. Do not restart expired identities.
+
+Live operational inventory verified at10:45UTC after the user restart:
+monitor28 is active/running with zero restarts. The fresh fixture's five
+monitoring services and application services are running; all services with
+health checks report healthy. Original API30 emulator and fixture TLS/IPC
+helpers remain stopped. Earlier helper/route commands below are historical
+examples and do not establish readiness or authorize reusing old identities.
+
+```bash
+systemctl --user show warehouse-vm-campaign-monitor-20261001-28.service -p ActiveState -p SubState -p NRestarts -p Result
+cd /home/jay/warehouse-backend-reproduce-2026100301
+export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
+export WAREHOUSE_STATE_DIR=/home/jay/warehouse-state/core-backend-test-2026100301
+sg docker -c 'node scripts/doctor.mjs --local'
+sg docker -c 'bash scripts/compose.sh --profile monitoring ps'
+```
+
+Current fresh application is079ab4a, loopback gateway19590 and state UUID
+f73725c1-0f0f-4637-bf7f-cb8decfaf404. No new TLS helper was started after
+restart. Its earlier19543 acceptance remains historical. A subsequent test
+requiring TLS/IPC must allocate a new private helper identity and verify actual
+readiness, retaining the12-hour cap and original campaign deadline.
+
+Post-restart bounded TLS/IPC revalidation PASSed with a new helper identity
+`vm2026100301-postresize-tls04`: trusted fictional19543 discovery returned the
+actual fresh UUID; private IPC returned the expected no-pending-challenge
+response. Zero OTP/login requests. The helper stopped normally and its socket
+was removed; all protected SQL/configuration/identity/stored bytes match the
+before-state snapshot. This is historical discovery evidence, not a running
+helper. Two failed readiness-driver attempts are retained: wrong discovery
+path, then an overlong Linux Unix-socket client path. The final correction used
+a short new private socket; no fourth attempt. Frozen tooling3ae80ae and
+application079ab4a were unchanged.
+
+Fresh local monitoring attempt1 reached its20-minute Prometheus compilation
+bound after source/UI checksums and Go-module verification PASSed. Controller
+FAIL/exit1 and build124 remain preserved. No monitoring image/service started;
+owned builder stoppedexit0. Independent failure reconciliation proved all85
+tables/five files/configuration/identity identical to the before-state snapshot.
+
+Independent natural five-minute OTP expiry/cooldown/hourly-limit stage01 PASSed
+at09:31:28UTC under source d3ab95c. Three normal challenges/counters2→5, zero
+sessions/external deliveries/manual resets, and unchanged profiles/sessions/
+business/files; only the expected three OTP tables changed. This does not
+establish the separate Android refresh-session-expiry requirement.
+
+Corrected monitoring attempt2 is terminal FAIL after a proven2GiB cgroup OOM.
+The AWS EC2 Go compiler reported signal:killed; actual ancestor cgroup recorded
+one OOM kill. Owned build-client interruption and normal exact-builder stop
+allowed the supervisor to preserve buffered compile output. No monitoring
+service/image started. Full85-table/five-file/configuration/identity failure
+reconciliation PASSed; both failed attempts remain preserved.
+
+Final allowed monitoring attempt3 PASSed at10:15:59UTC. The new builder's
+actual4GiB/no additional swap/2CPU/one-worker/no-restart limits avoided further
+OOM. Five exact amd64 images were exported and independently read back:
+Prometheus379ceec7, Alertmanager effec813, postgres-exporter f52de407,
+node-exporter ad258d6a and cAdvisor ac5bcb8d (full SHA256s in the private result).
+Prometheus/15 alert-rule configuration and Alertmanager configuration checks,
+all five scrape targets and actual local-only Alertmanager delivery PASSed.
+Full85 tables/five files/configuration/identity remained unchanged; owned
+builder stoppedexit0. Earlier timeout and AWS EC2 OOM attempts remain preserved.
+No external alert receiver/delivery or production-capacity claim is configured.
+Private monitoring-final-acceptance-proof01.json binds14 terminal evidence files;
+application079ab4a, observer1c2b724 and frozen orchestration overlay are separate.
+
+A consistent private local backup of this populated fresh fixture subsequently
+PASSed once. Only its write-facing services were temporarily stopped and the
+same containers normally restarted; original warehouses were untouched.
+Seven checksum-verified files include database dump, stored-object archive,
+configuration/identity and catalogs. Database/storage catalogs are readable;
+all85 tables/profiles/sessions/five stored files/configuration/identity match
+before/after exactly and post-backup doctor PASSed. No restoration/transfer.
+Private final-backup-acceptance-proof01.json records actual running DB image
+sha256:e697b8efaea2c76b03dceb72cc8d1f0336d18e4b87ad57aff7867d1b318e5cf0;
+the backup's metadata database_image field names only its upstream base.
+Backup location: backend-reproduction0110-01/final-preserved-warehouse-backup01.
+Six earlier preserved private archives also revalidated checksums and readable
+catalogs after resize, with no current-state acceptance inheritance.
+
+Fresh current-source backend reproduction PASSed separately on this VM.
+Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout
+`/home/jay/warehouse-backend-reproduce-2026100301` and new private state
+`/home/jay/warehouse-state/core-backend-test-2026100301`, instance
+f73725c1-0f0f-4637-bf7f-cb8decfaf404, loopback gateway19590 and declared
+independent subnet10.233.252.0/24. Existing warehouses were preserved.
+
+Installation attempt1 failed on legacy-builder cache-mount support; attempt2
+built three images but stopped before starting services at the10GiB free-disk
+floor. Both failures remain preserved. Only newly owned transient builder cache
+was reclaimed, preserving exported image IDs and unrelated caches. Final allowed
+attempt3 PASSed setup, migrations, bootstrap, local doctor and unchanged fixture
+guard. Its digest-pinned builder used2GiB/no additional swap/2CPU/one worker,
+no restart, and was stopped after completion. No fourth attempt is authorized.
+
+Core business API, reciprocal customer Realtime and ordinary final authentication,
+image lifecycle and account disabling PASSed. Application source is079ab4a;
+reviewed test tooling is1c2b724. Supporting Studio/metadata, gateway CORS/payload,
+actual upstream-IP replacement, retention preview, bounded load and current
+mobile live contract PASSed. Repeated setup preserved85 table counts/stable
+hashes, five actual stored files, configuration and identity. The sole full-row
+hash change was the existing public.sms_config.updated_at update. Image bytes
+were preserved before intentional lifecycle deletion. No real provider delivery,
+quota reset, restoration or native acceptance is inferred.
+
+Independent helper tooling3ae80ae verified actual TLS19543 and private OTP IPC
+readiness against the new identity, with no authentication requests. Original
+TLS18443 still returned its original identity; emulator routing was unchanged.
+The helper retains its12-hour cap. Private evidence is under
+`backend-reproduction0110-01`: install-result03.json, business-result01.json,
+supporting-result02.json and tls-readiness-proof02.json, with bound plans,
+ledgers, snapshots and preserved failures. These results do not transfer to the
+original APK/warehouse or complete native workflow groups.
+
+At08:34 UTC the campaign had less than eight hours remaining before its
+16:27:13 UTC deadline. A new full eight-hour soak plus readiness/reconciliation
+cannot fit; leave it unstarted. No final freeze or natural-expiry appointment
+exists. The older APK soak remains separate historical PASS.
+
+Health: `systemctl --user status warehouse-fixture-reproduction-vm2026100301-install03.service`.
+To stop that controller: `systemctl --user stop warehouse-fixture-reproduction-vm2026100301-install03.service`.
+Preserve any services/state/logs and reconcile before a corrected attempt.
+The running new fixture has these guarded health/stop commands:
+
+```sh
+export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
+export WAREHOUSE_STATE_DIR=/home/jay/warehouse-state/core-backend-test-2026100301
+cd /home/jay/warehouse-backend-reproduce-2026100301
+node scripts/doctor.mjs --local
+bash scripts/compose.sh stop
+```
+
+
+The VM-only campaign remains incomplete, with deadline 16:27:13 UTC today.
+Installed x86_64 APK2026100110 is application c422f62, SHA256
+a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69; backend
+application remains bed4eeee plus declared overlays. See the dated acceptance
+matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
+natural-expiry appointment exists. Historical results below do not transfer.
+
+Current original owned API30 emulator is logged out after normal removal of the
+temporary genuine A native session. Two cold launches require login and Core
+selection persists. Account remains active; its two older API sessions are
+preserved. Native cleanup attempt3 PASSed with zero OTP/business writes and
+unchanged protected SQL/authentication/stored bytes; no fourth attempt. Earlier
+A authentication and isolation results remain scoped to their recorded sessions.
+The prior supervisor session804 was removed by normal logout; that account remains
+active. Customer B remains rejected/inactive and must not be reapproved to reuse
+historical acceptance. Private current A login/receipt denial/image and PDF API
+proofs are under the campaign root. The final A-to-B native receipt-denial attempt
+passed; its two failures remain preserved and no fourth attempt is allowed.
+API image and PDF denial preserve the current native session and actual stored
+bytes; they do not establish native image rendering or full reciprocal isolation.
+
+Genuine B invoice20261031 now has one API-generated/downloaded private PDF,
+20,809 bytes, SHA256ebeb9b37e023389438ce07868aa08f32cf7c083b487488c38b02fa7f8bebebab.
+The first current A API direct invoice PDF read/generation denial PASSed400/404,
+with existing native/API sessions, business, pricing and actual bytes preserved.
+Only new supervisor/A API sessions were normally logged out. This closes the
+scoped invoice transport check, not native PDF or reciprocal workflow groups.
+Private proofs: `b-invoice-pdf-preparation0110-final-proof01.json` and
+`current-a-private-b-invoice0110-final-proof01.json`. Frozen tooling55cab9e;
+installed APK/application unchanged. Admin daily quota remains20 with natural
+reset after campaign deadline; no further Admin OTP or quota reset is allowed.
+
+Latest complete fixture source validation passed347/347 under Node22.23.3.
+Mobile source audit still reports26 high production dependency paths.
+Metadata review source now removes cpy-cli/nodemon in favor of native Node
+asset-copy/development-watch helpers; full metadata audit fell from8 high to0.
+All170 production lock entries and retained package entries are unchanged.
+Backend tests105/105 and pinned metadata build/check/upstream tests12/12 PASS.
+Both backend container dependency gates PASS. Clean9c11104 metadata image
+build and bounded exact-image root/health/missing-route smoke PASS; the first
+incorrect runtime-user override failure remains preserved. The new independent079ab4a fixture now has actual metadata/Studio acceptance;
+the original warehouse metadata service remains unchanged. See METADATA_NATIVE_TOOLING.md.
+Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
+storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; the independent fresh fixture now also passed actual image storage API cases.
+The installed application remains bed4eeee plus its four declared overlays.
+No final freeze, readiness soak or delayed-expiry appointment is eligible yet.
+Core helper14 uses pinned e3126a0, switching08 uses7699364, and fault04 is disarmed.
+Core's single-use Orders delay controller is consumed; normal traffic is restored.
+Each helper retains its12-hour cap; verify actual remaining lifetime before work.
+
+Current read-only monitor is `warehouse-vm-campaign-monitor-20261001-27.service`,
+frozen tooling e1194f8, private root
+`/home/jay/warehouse-install-private/vm-campaign-20261001`. Its configuration is
+`monitor27-config.json`, output `monitor27.jsonl`, transition record
+`monitor27-transition.json`. First full integrity pass checked all 7,848 bound
+files: no unreadable input/current/older-soak failure; 17 historical changes
+remain recorded. The prior 4,096-file limit was insufficient; the corrected
+finite limit is 16,384 with the unchanged 256-stage limit. Prior monitor26 logs
+are preserved. Restart is disabled and lifetime ends at the campaign deadline.
+
+Health: `systemctl --user status warehouse-vm-campaign-monitor-20261001-27.service`.
+Stop: `systemctl --user stop warehouse-vm-campaign-monitor-20261001-27.service`.
+Use the recorded supervised invocation and remaining deadline to start a new
+identity; do not resume old transient identities or extend the campaign.
+Current core14, switching08 and fault04 helpers retain their own twelve-hour
+caps; the core Orders controller is consumed and the fault relay disarmed.
+No helper, emulator session or business state was changed for this correction.
+
+
+Historical operational identities before the 3 October user restart (all stopped with reboot):
+
+| Historical service | Private configuration | Historical unit |
+| --- | --- | --- |
+| Core TLS18443 / OTP IPC | helpers-primary-confirmread14.json | warehouse-fixture-core-vm2026100110-confirmread14.service |
+| Switching TLS18444 / OTP IPC | helpers-switch-observe08.json | warehouse-fixture-switch-vm2026100110-observe08.service |
+| Disarmed fault TLS18643 | helpers-fault-renew04.json | warehouse-fixture-fault-vm2026100110-renew04.service |
+| Original API30 emulator | native-config0110-confirmread14.json | warehouse-fixture-emulator-vm2026100110-01.service |
+| Read-only monitor | monitor27-config.json | warehouse-vm-campaign-monitor-20261001-27.service |
+
+Private root: /home/jay/warehouse-install-private/vm-campaign-20261001.
+Read-only TLS/IPC/artifact/owned-route health command:
+
+```bash
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-install-private/vm-campaign-20261001/runtime-7b717d0/scripts/fixture-soak-preflight.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/native-config0110-confirmread14.json'
+systemctl --user show warehouse-fixture-core-vm2026100110-confirmread14.service -p ActiveState -p SubState -p RuntimeMaxUSec -p NRestarts
+```
+
+Stop only after actor release: systemctl --user stop followed by the exact owned
+unit above; this preserves logs, configuration, state and emulator storage.
+Do not restart an expired identity or reuse retired normal11/monitor23 inputs.
+A replacement start requires a new frozen private runId/socket/log config,
+reviewed supervisor, ownership guards, unchanged12-hour cap and actual TLS/IPC
+readiness. The emulator requires its own preserved storage and fresh supervisor
+identity, never a wipe/clone or another device's authenticated state.
+Mobile production audit26 high paths and full audit54 high paths including
+development tooling remain distinct. Metadata development audit8 high was
+corrected to0 in the separately recorded fresh application; original runtime
+inputs were preserved. Current full audit also reports
+unpatched http-cache-semantics (GHSA-ch52-4w7c-c8xp). Forced major downgrades and
+audit waivers were not applied. Exact current-head CI fails these dependency
+gates; standalone lint/type/source scans do not establish all-green CI.
+
+
+## Historical VM-only campaign handoff — 2 October 2026
+
+This section records the pre-resize installation and helper history. The current
+3 October checkpoint above supersedes its resource, service and readiness claims.
+
+Use [VM_ONLY_ACCEPTANCE_20261001.md](VM_ONLY_ACCEPTANCE_20261001.md) and the mobile
+[dated matrix](https://github.com/abhiguru/rn-warehouse-template/blob/codex/post-soak-session-tests/docs/OPERATOR_VM_ACCEPTANCE_20261001.md).
+Campaign deadline is3October16:27:13UTC. This is an in-progress fictional VM
+campaign, not release readiness. Production pilot/recovery hosts, SMS, public DNS,
+tunnels, reboot, restoration/cutover, printing/sensors and ARM/physical tests are
+outside its approved scope. Test1 is unchanged apart from read-only health checks.
+Earlier installation history below does not authorize those excluded actions.
+
+Application installation is pinned to `bed4eeee4a008073aa453c32da27cade50a32a2f`
+with recorded overlays. Review source and optional helper tooling are separate;
+Current core helper14 source is `e3126a0`; switching08 source is `7699364`.
+The core single-use Orders delay controller is consumed; optional credential-presence
+observation is enabled only for the fictional bridges. Reproduce setup
+from clean pinned source using a new empty private disposable state according to
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), in dependency order: prerequisites,
+private configuration, migrations, first administrator, identity/local doctor,
+then fictional HTTPS discovery. Keep source readable by container users and
+private state/configuration0700/0600. Record port/subnet/container overlays and
+new genuine identities; do not copy credentials, stored documents or configuration
+from an existing warehouse. The VM has eight CPUs/about17GiB; no new hardware is
+needed. Preserve existing archives and both successful/failed attempts.
+
+| Owned fixture | Installed checkout | Private state | Loopback gateway |
+| --- | --- | --- | --- |
+| Primary | `/home/jay/warehouse-backend-guide-check-2026100102` | `/home/jay/warehouse-state/core-backend-test-2026100102` |18080|
+| Switching | `/home/jay/warehouse-switch-backend-2026100102` | `/home/jay/warehouse-state/cross-instance-test-2026100102` |18590|
+| Same-origin replacement | `/home/jay/warehouse-replacement-backend-2026100103` | `/home/jay/warehouse-state/core-backend-test-2026100103` |18690|
+| Compatibility rejection | `/home/jay/warehouse-compatibility-backend-2026100104` | `/home/jay/warehouse-state/cross-instance-test-2026100104` |19490|
+
+For an owned fixture, use its installed checkout and state, never the review
+worktree. These ordinary commands preserve warehouse data; they are a handoff,
+not permission to interrupt an active native/soak actor:
+
+```bash
+cd /home/jay/warehouse-backend-guide-check-2026100102
+export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
+export WAREHOUSE_STATE_DIR=/home/jay/warehouse-state/core-backend-test-2026100102
+sg docker -c 'node scripts/doctor.mjs --local'
+sg docker -c 'bash scripts/compose.sh ps'
+# Start or stop only after ownership/run-release checks:
+sg docker -c 'bash start.sh'
+sg docker -c 'bash stop.sh'
+```
+
+Never use `down -v`, prune, state deletion, archive restoration or production
+host commands. Replacement helper remains stopped; no old credentials may be
+forwarded there. Warehouse records, credentials and successful documents are
+preserved. The API-prepared concurrency receipt FXQ993 retains stock3; neither
+FXQ994 norFXQ995 was committed. Three failed native attempts and their API
+sessions remain retained; no fourth run or blind session cleanup.
+
+Private campaign root is `/home/jay/warehouse-install-private/vm-campaign-20261001`.
+Current core helper config is `helpers-primary-normal11.json`, unit
+`warehouse-fixture-core-vm2026100110-normal11.service`, TLS18443/owned private IPC;
+switch config `helpers-switch-observe08.json` must be read from the recorded
+fixture bindings before reuse, unit `warehouse-fixture-switch-vm2026100110-observe08.service`,
+TLS18444. Fault unit `warehouse-fixture-fault-vm2026100110-renew04.service`,
+TLS18643, is DISARMED; config `helpers-fault-renew04.json` and its socket remain bound in the native
+configuration. Read-only monitor23 covers current units. Inspect actual remaining
+lifetimes before starting a bounded stage. All helpers retain twelve-hour caps,
+Restart=no and real TLS/IPC readiness requirements.
+
+```bash
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-switching-helper-2026100110-observe01/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal11.json status'
+systemctl --user show warehouse-fixture-core-vm2026100110-normal11.service -p ActiveState -p SubState -p RuntimeMaxUSec -p NRestarts
+# Stop only this owned helper after actor release; logs/state remain preserved:
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-switching-helper-2026100110-observe01/scripts/fixture-service-supervisor.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/helpers-primary-normal11.json stop'
+```
+
+Fixture switching observation tooling now optionally accepts
+`observeAuthenticationPresence: true` for the independently guarded switching
+bridge as well as the core bridge. It records only credential-presence booleans
+for HTTP and Realtime upgrades; the safe route allowlist also identifies ordinary
+`logout_session` completion without logging its body. Replacement authentication
+remains core-only. Default behavior, ownership guards, Restart=no and the existing
+12-hour caps remain unchanged. Eighteen focused proxy/supervisor tests passed.
+The fresh core/switch helpers now include this tooling. Actual TLS/IPC readiness
+and exact before/after protected warehouse and stored-byte reconciliation passed.
+The initial fresh-relay IDLE-versus-DISARMED assertion failed and remains preserved;
+a separate completion verified no observations and initialized only that new relay.
+Old units/configurations/logs remain preserved. The original app is stopped
+without logout, and no native confirmation or authentication occurred. Native
+credential-forwarding acceptance still requires a real bounded case.
+
+Starting again requires a new private helper config/runId/socket/log identity:
+invoke the same supervisor with the new config and `start`, then verify actual
+TLS/IPC readiness. Do not overwrite frozen config, replace a listener blindly or
+extend RuntimeMaxSec. Mobile normal-route preflight uses
+`native-config0110-normal11.json`. The earlier normal10 cold Orders HTTP200 proof
+remains historical; the fresh helper transition proves unchanged state, TLS/IPC
+and supervision. Native route/cold health must be verified on the new stage. No
+Metro is needed.
+
+Complete backend Node22 unit suite98/98 and redacted source/history scans PASS.
+Exact CI37069464095 at071806b completed successfully. New exact CI37071784558
+at7699364 remains live at the inspected checkpoint; its final result is not assumed. Mobile dependency and native gates remain open.
+Final freeze/readiness/new eight-hour soak are unstarted; the older artifact's
+completed soak stays separate. Dedicated natural expiry is unscheduled until an
+eligible final freeze, new owned API30 AVD and ordinary reserved-account session
+exist. No appointment may substitute the original AVD/session or altered expiry.
+
+
 See the [consolidated backend installation candidate](BACKEND_CORE_ACCEPTANCE.md)
 for exact version boundaries, backend verification and the closed recovery scope.
 The running pilot update is a separate operator action.
@@ -18,11 +391,15 @@ is the authoritative work and acceptance ledger. It distinguishes implemented
 software, automated verification, unfinished software, and external or physical
 acceptance. Green CI does not close the production handoff.
 
-The operator changes are under [backend PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+The backend operator changes merged in [backend PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
 and [mobile PR #33](https://github.com/abhiguru/rn-warehouse-template/pull/33).
 Use the exact companion commit pinned in the active backend CI workflow when
 reproducing a tested pair. Record both checked-out commits and the native build
-ID in the VM acceptance record. These draft PRs require review before merging.
+ID in the VM acceptance record. Backend merge baseline is
+`f18f51d4625e7f8c0d977ac69645804e318a9d49`;
+[post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs. Mobile PR #33 remains draft at
+`8240cce9121a797fd0cf2e00e568a61985814ddb`; do not substitute mobile `main`.
 
 For the new VM, first run local setup and doctor, then verify HTTPS discovery
 from warehouse Wi-Fi and cellular data. Verify real SMS login for the locally
@@ -43,3 +420,113 @@ production security approval.
 [Historical source-demo handoff](SOURCE_DEMO_DEVELOPER_HANDOFF.md) preserves the
 original exact commits and device evidence. Its installation commands apply only
 to the historical code. Preserve the immutable `v0.2.2-demo` tag.
+
+Fixture-only confirmed Orders hold tooling (not installed): optional
+confirmedOrdersReadDelayMs=30000 is separate from the existing <=5000ms
+ordersReadDelayMs. It matches only authenticated POST get_orders_list at
+backend-core.example.test forwarded to127.0.0.1:18080, with no query. Writes,
+discovery, refresh, foreign hosts, replacement and other state/routes cannot
+match. Supervisor requires a separate core helper, auth-presence observation
+and no other delay/concurrency mode, retaining RuntimeMaxSec43200/Restartno.
+Only a matching read gets a45-second transport deadline; original request
+deadlines and delay bounds remain unchanged. Genuine buffered response bytes
+are held for exactly30 seconds and cancelled on normal connection closure.
+25 focused transport/supervisor tests and101 complete source tests passed with
+the documented edge-import loader. The initial full-suite invocation omitted
+that loader and failed two imports; private failed log is preserved separately.
+No running helper, APK, database schema or application API changed. Native
+confirmed in-flight switching remains NOT TESTED pending guarded installation,
+actual timing, same-process continuation and normal-route cleanup/reconciliation.
+
+Confirmed in-flight Orders attempt01 FAIL, preserved. The separate pinned
+helper da5c75c was installed as core confirmread12 only after preserving old
+normal11 configuration/logs, stopping the owned app without logout and proving
+identical two-warehouse snapshots plus actual TLS/private IPC readiness.
+Switch observe08 and disarmed fault renew04 remained unchanged; monitor24
+covers the new owned units. Native frozenf6dc954 attempt01 stopped at the
+explicit Refresh orders phase before confirmation: zero confirmations, business
+submissions and OTP requests. Actual helper metadata shows overlapping
+automatic successful held Orders reads, including a start before the explicit
+request timestamp; the intended single pending read was not established.
+The first-stage FAIL is retained. App was subsequently stopped without logout
+under its actor lock, and independent stopped reconciliation passed protected
+source state, source session identity/fixed dates, destination state and stored
+bytes. Private confirmed-orders-read-switch0110-01-stopped-reconciliation.json
+records owned-session hash/history comparisons separately. No blind request
+replay, OTP, logout or business cleanup occurred. A corrected one-shot armed
+read helper is required before using at most two remaining corrected attempts.
+Actual in-flight confirmation/destination continuation remain NOT TESTED;
+current app is stopped and current core helper still has the bounded hold.
+
+In-flight Orders attempt02 preserves native FAIL but independently reconciles
+the actual guarded refusal. Fresh pinned e3126a0 core confirmread13 passed
+sequential ownership/TLS/private IPC and identical before/after warehouse
+snapshots; monitor25 covers it. Single-use private arm created one safe read
+identifier. Actual read started00:25:08.135UTC, confirmation was attempted
+00:25:32.102007UTC, and genuine HTTP200 completed00:25:38.136UTC. The app
+source/compiled candidate's operation guard refuses activation while a request
+is active. Read-only actual screen capture showed Operation In Progress and
+Finish the current operation before switching servers. No source logout was
+observed, primary public selection remained intact and independent entire
+source/destination/auth/storage reconciliation passed exactly unchanged.
+No OTP or business submission occurred. The owned app was stopped without
+logout after preserving its screen/selection. Core controller is consumed;
+subsequent reads are normal and it cannot be rearmed. Failed first ADB public
+selection query quoting produced incomplete input before any mutation; the
+corrected read-only query used shell quoting and passed.
+
+Private proofs: confirmed-orders-read-switch0110-02-independent-refusal-proof.json
+and confirmed-orders-read-switch0110-02-independent-timing-proof.json. These
+preserve originalNativeStatus=FAIL and do not claim a completed server switch.
+Alert appearance before read settlement was not recorded precisely enough.
+Final allowed corrected attempt03 must expect the documented refusal, record
+the actual alert during the held read, reconcile unchanged selection/session,
+then verify normal-route cold reads. No application behavior needs relaxing to
+make the switch occur; earlier successful header-draft switches were idle.
+
+Literal-staff APK10 check (3 October): ordinary login and logout PASS; cold
+Orders200/no Queue PASS, GRN denied with Staff access required. Mobile/backend
+permission-policy mismatch remains BLOCKED. Normal administrator API restored
+reserved profile947 to active/approved supervisor; no target native session,
+original emulator logged out. Business/assignments/other accounts/stored bytes
+preserved. Role-cycle hash qualification and failed attempt retained privately.
+Reviewed fixture tooling7b717d0 has328 passing source tests.
+
+Current B fixture/native invoice checkpoint supersedes earlier logged-out state:
+API-prepared FXI971/FXI972 and invoice20261031 (8/tax1), B-only fictional monthly
+price5/labour2/tax5, with original failed attempts and two failed API sessions
+preserved. Native genuine A-to-B invoice denial PASS on unchanged APK10; A is
+currently authenticated with new native-approved-a-auth0110-02 session. B stays
+rejected/inactive. Admin daily count20: its natural reset16:53:18UTC is after the
+16:27:13UTC campaign deadline, so no more administrator OTP requests. No counter
+reset or blind old-session cleanup. Source339 fixture tests/lint PASS; final
+freeze/soak/expiry and full group closure remain unestablished.
+
+Fixture upload-switch transport preparation (3 October): optional core-helper
+`switchUploadHold` is disabled by default. Its scope must be
+`isolated-fictional-native-switch-upload`, with an independently recorded GRN
+UUID, exact `FXS993-switch-upload.webp` filename and exact positive file size.
+Only authenticated header-image registration at the fictional primary's fixed
+RPC route can be held. The duration is 500–30000ms; body buffering is bounded
+to 64KiB. The controller consumes its one match before waiting; cancellation
+prevents forwarding and cannot rearm it. Other payloads pass through unchanged.
+Safe observations contain event/timing metadata only. Independent helper mode
+guards reject concurrent delay modes and replacement authentication; supervised
+helpers retain the twelve-hour cap and no restart. The proxy extends its request
+deadline only after an actual match. Source and ephemeral HTTP tests verify
+unchanged single forwarding and cancellation before upstream execution.
+
+This is tooling preparation only: no helper was installed or replaced, no
+warehouse/emulator operation ran, and upload/save switching acceptance remains
+incomplete. Native execution still requires an immutable bound plan, fresh
+fictional fixture, preserved baseline and independent object/state reconciliation.
+
+The upload hold also supports a declared `maxFileSize` up to1MiB, exclusively
+instead of `fileSize`, for Android's locally compressed WebP. All UUID, filename,
+header/type, route, host and authentication constraints remain exact. Zero,
+fractional, string and oversized sizes pass unchanged to ordinary validation;
+they cannot consume the hold. No compressed size is guessed. Final independent
+reconciliation must compare the actual image-record size to the actual stored
+file. Existing exact-size configurations remain valid; mixed modes are refused.
+Source validation:135 backend tests and374 mobile setup tests PASS; no runtime
+installation or native upload acceptance is claimed.

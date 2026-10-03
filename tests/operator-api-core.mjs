@@ -97,6 +97,15 @@ const receipt = good(await rpc('save_grn', adminToken, { p_gr_no: 'BAA01', p_dat
 assert.ok(receipt.success);
 const grn = mustUuid((await api('/rest/v1/goodsreceived?gr_no=eq.BAA01&select=id', adminToken)).data[0].id);
 const stock = mustUuid((await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${grn}&select=id`, adminToken)).data[0].id);
+// Execution permissions must also apply when a staff operation is already in
+// the idempotency cache. A known key must never turn a customer call into success.
+for (const token of [tokenA, tokenB]) {
+  const cached = await rpc('save_grn', token, { p_gr_no: 'BAA01', p_date: '2026-04-01T12:00:00Z',
+    p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_items: [],
+    p_idempotency_key: 'backend-test-receipt-a' });
+  assert.equal(cached.status, 403, 'customer cannot retrieve cached staff receipt RPC');
+  assert.notEqual(cached.data?.success, true);
+}
 assert.equal((await api(`/rest/v1/goodsreceived?id=eq.${grn}&select=id`, tokenB)).data.length, 0, 'B cannot read A receipt');
 const attachment = `${a}/backend-core.jpg`;
 const attachmentPath = `/storage/v1/object/customer-images/${attachment}`;
@@ -130,6 +139,11 @@ const partial = { p_dispatch_data: dispatchData, p_dispatch_items: [{ gr_trl_id:
   p_generate_invoice: false, p_idempotency_key: 'backend-test-dispatch-partial' };
 good(await rpc('create_dispatch_with_stock_check', adminToken, partial), 'partial dispatch');
 good(await rpc('create_dispatch_with_stock_check', adminToken, partial), 'dispatch retry');
+for (const token of [tokenA, tokenB]) {
+  const cached = await rpc('create_dispatch_with_stock_check', token, partial);
+  assert.equal(cached.status, 403, 'customer cannot retrieve cached staff dispatch RPC');
+  assert.notEqual(cached.data?.success, true);
+}
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${stock}&select=stock`, adminToken)).data[0].stock, 80);
 const invalid = await rpc('create_dispatch_with_stock_check', adminToken, { ...partial,
   p_idempotency_key: 'backend-test-invalid', p_dispatch_items: [{ gr_trl_id: stock, disp_qty: -1 }] });

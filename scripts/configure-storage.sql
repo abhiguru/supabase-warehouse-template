@@ -26,5 +26,29 @@ CREATE POLICY starter_customer_dispatch_images ON storage.objects FOR SELECT TO 
   bucket_id='dispatch-images' AND EXISTS (SELECT 1 FROM public.dispatch_images i JOIN public.dispatch d ON d.id=i.dispatch_id
     WHERE i.storage_path=name AND i.status='confirmed' AND warehouse_security.owns_customer(d.customer_id))
 );
+-- Staff can read GRN attachments and upload only their registered pending
+-- objects. Confirmed-object deletion and unrelated buckets remain restricted.
+DROP POLICY IF EXISTS starter_grn_staff_read ON storage.objects;
+CREATE POLICY starter_grn_staff_read ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+  SELECT 1 FROM public.grn_images i WHERE i.storage_path=name
+    AND (i.status='confirmed' OR i.uploaded_by=public.get_current_user_profile_id())
+));
+DROP POLICY IF EXISTS starter_grn_staff_insert ON storage.objects;
+CREATE POLICY starter_grn_staff_insert ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+  SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
+    AND i.uploaded_by=public.get_current_user_profile_id()
+));
+DROP POLICY IF EXISTS starter_grn_staff_update ON storage.objects;
+CREATE POLICY starter_grn_staff_update ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+  SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
+    AND i.uploaded_by=public.get_current_user_profile_id()
+))
+WITH CHECK (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
+  SELECT 1 FROM public.grn_images i WHERE i.storage_path=name AND i.status='pending'
+    AND i.uploaded_by=public.get_current_user_profile_id()
+));
 -- Generated PDFs have no direct client-read policy. Authorized Edge functions issue expiring links.
 COMMIT;

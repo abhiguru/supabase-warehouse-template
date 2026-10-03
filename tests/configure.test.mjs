@@ -56,6 +56,9 @@ test('fresh setup rejects checkout state and unprotected provider credentials', 
     copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
     const providerEnv = join(scratch, 'provider.env');
     writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=key\nMSG91_TEMPLATE_ID=id\nMSG91_PE_ID=pe\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o644 });
+    // Creation modes are masked by the operator's umask; explicitly create the
+    // insecure fixture so this rejection check also runs under umask 077.
+    chmodSync(providerEnv, 0o644);
     const options = { stateDir: join(scratch, 'state'), apiUrl: 'https://api.example.com', appUrl: 'https://app.example.com', company: 'Acme', providerEnv };
     assert.throws(() => configure(root, { ...options, stateDir: join(root, 'state') }), /outside the checkout/);
     assert.throws(() => configure(root, options), /mode 0600/);

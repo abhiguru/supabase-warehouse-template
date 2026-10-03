@@ -43,9 +43,14 @@ fast-uri overrides to patched 2.4.6, 3.1.7 and 4.1.4; the local high-severity au
 passes. Remaining moderate dependency and existing image findings remain open.
 Updated runtime dependencies require a new candidate build and exact-commit CI.
 
-These results do not apply to a newer candidate automatically. New exact-commit
-results belong in PR #68 before merge. The existing contract CI pins companion
-mobile source `8240cce9121a797fd0cf2e00e568a61985814ddb`; native acceptance is deferred.
+PR #68 subsequently merged on 2026-09-29 at
+`f18f51d4625e7f8c0d977ac69645804e318a9d49`.
+[Post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs, including isolated operator installation. This supersedes
+the pre-merge instruction to add results to PR #68; failed attempts above remain
+historical evidence. The contract CI pins mobile
+`8240cce9121a797fd0cf2e00e568a61985814ddb` in draft PR #33.
+Neither CI nor merge establishes current native acceptance or opens release gates.
 
 ## Backend verification
 

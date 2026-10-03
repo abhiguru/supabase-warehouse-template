@@ -1,0 +1,604 @@
+# VM-only backend reproduction checkpoint
+
+## Post-restart acceptance checkpoint, 3 October 10:48 UTC
+
+The user resumed the enlarged31GiB VM. The original API30 emulator is stopped
+with its own storage preserved; its final pre-restart native cleanup required
+login on two cold launches. No emulator was booted or native session issued
+after restart. Installed artifact evidence remains APK2026100110/application
+c422f62, SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+
+| Requirement | Authoritative scope and remaining gate |
+| --- | --- |
+| Fresh backend reproduction | Clean application079ab4a, independent state UUIDf73725c1-0f0f-4637-bf7f-cb8decfaf404, loopback19590/subnet252: setup/migrations/bootstrap/doctor, business API/Realtime/images/PDFs, gateway/Studio/metadata, bounded load/retention preview, live contract and repeat setup PASS. Original bed4 warehouse remains unchanged. |
+| Source and overlays | Application079ab4a, executed test tooling1c2b724, TLS tooling3ae80ae, and private port/subnet/orchestration overlays are recorded separately. No application/schema change to simplify tests. |
+| Dependencies and provider | Metadata development audit8 high→0; compatible storage busboy3.2.2 executed in fresh services. Mobile26 production/54 full high paths remain blocked. Backend126 source tests include mocked provider/refusal cases; no real delivery. |
+| Ordinary authentication | Backend pending/rejected/disabled/replay assertions PASS with controllerFAIL retained and independently reconciled. Actual five-minute OTP expiry/cooldown/hourly limit PASS; no clock/counter resets. This is not Android refresh-session expiry. |
+| Monitoring and preservation | Final attempt3 monitoring PASS: all five pinned images/config/rules/scrapes/local Alertmanager; earlier compile-bound/OOM failures retained. New consistent private backup: seven checksums/readable catalogs/normal restart/doctor PASS. All85 tables/five actual stored files/configuration/identity preserved; no restore/transfer. |
+| Post-restart HTTPS | New bounded helper identity verified trusted19543 genuine discovery/private IPC, zero OTP/login, protected state unchanged; normally stopped. Wrong-path and overlong-socket failures preserved. No live helper readiness inferred. |
+| Native business/isolation/lifecycle | Narrow APK10 results below remain valid in their recorded scopes. Full receipt/cart/image/invoice/navigation/fault/offline/concurrency/switching/reciprocal isolation groups remain incomplete or capped. Staff GRN policy awaits a decision; no fourth runs or invented permissions. |
+| Final readiness/soak/expiry | Unstarted: no final freeze or30-minute readiness, new eight-hour soak, dedicated expiry AVD/session/appointment. Full soak cannot fit before unchanged16:27:13UTC deadline; older APK0101 PASS remains separate. |
+| Publication and evidence | Sanitized fixes/docs published to existing review branches and draft PR34/79; no merge/release. Immutable private matrices retain terminal evidence and all previous failures. Each published head requires its own exact CI result. |
+
+The earlier checkpoint below is historical. Its old live statuses, metadata
+blocker and service identities are superseded by this checkpoint and the
+current developer handoff; they must not be used as restart instructions.
+
+## Historical APK10 checkpoint before resize, 3 October 2026
+
+The original owned API30 emulator is currently logged out after normal cleanup
+of the temporary genuine Customer A session. Two cold launches require login;
+the active account and two older API sessions remain preserved. Installed
+application remainsc422f62/APK2026100110,
+SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+Backend installation remainsbed4eeee plus four declared overlays. Source fixes,
+fixture tooling and installed runtime evidence remain separate.
+
+| Requirement | Verified current scope and remaining gate |
+| --- | --- |
+| Backend reproduction | Pinnedbed4 installation/repeat setup PASS with separate state; busboy3.2.2 source audit and isolated image build/parser/Fastify integration PASS, not installed into a warehouse service. Current metadata audit BLOCKED. |
+| Exact APK10 | Compiled trust/ABI/signer/standalone JS and installed hash PASS; final acceptance freeze absent. |
+| Native business | Invalid receipt/dispatch quantities PASS; normal partial/final dispatch reconciliation and final dispatch PASS; queue PASS with explicit API cart preparation. Positive native receipt/cart/image and selected invoice/fault/concurrency/offline cases remain capped incomplete. |
+| Invoice/PDF | Existing rounding invoice179/tax9, generation/download/SEND/Librera view/export PASS. Full arithmetic/save/list/Breakdown/GRN-navigation contract acceptance incomplete. |
+| Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. New ordinary A session active for scoped follow-up; earlier native session was removed. |
+| Isolation | Genuine A native B receipt and new genuine invoice denial PASS; A API B image GET/signing400/400, GRN PDF GET/generation400/404 and genuine invoice PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
+| Realtime/switching | Current supervisor foreground/reconnect PASS; four confirmed header drafts PASS. In-flight Orders case capped BLOCKED; remaining upload/save/payload/race acceptance incomplete. |
+| Source/CI |347/347 fixture tests, lint and typecheck PASS at reviewed tooling55cab9e. Exact published mobilec97b9a7/run37099712745 lint/types/scans PASS, dependencies FAIL, Android audit live at observation; backend9002adb/run37099724570 contract/scans PASS, validationFAIL/downstream skipped. Subsequent published heads require their own CI review. |
+| Dependency gate | Current audits26 high mobile paths/8 metadata paths; no patched versions reported for node-forge/braces. No downgrade/waiver. |
+| Evidence/closure |18 current proofs and218 nested bindings verified with no integrity error. No complete group closure; revocation remains ineligible. |
+| Final soak/expiry | Final freeze/readiness and eight-hour soak UNSTARTED; dedicated natural-expiry appointment UNSCHEDULED. No older-artifact transfer or shortened soak. |
+
+Exact private closure audit: `current-artifact-revocation-prerequisite-audit-20261003T0420.json`.
+Dependency revalidation: `current-dependency-blockers-revalidation03.json`.
+Older dated checkpoints below retain historical facts and are not current readiness.
+
+
+The 48-hour acceptance campaign started on 1 October 2026 at 16:27:13 UTC and ends on 3 October at the same time. This is an in-progress checkpoint, not release or production acceptance. Test1 was not changed; no pilot or recovery host, real SMS, public DNS, tunnel, restore, transfer or cutover was used.
+
+The backend application source remains `bed4eeee4a008073aa453c32da27cade50a32a2f`. The application was not changed to simplify acceptance.
+
+Consistent owner-only database/storage backups of the two retired fictional stacks passed checksum and archive-catalog checks. Their state and containers remain preserved. Readability does not claim restoration.
+
+Follow [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md) from clean pinned source using fresh disposable state. The campaign did this in dependency order: private configuration, setup and migrations, administrator bootstrap, public identity, local doctor and fictional HTTPS discovery. The only networking installation overlays were separately declared fixture subnets and loopback gateway ports. Independent primary, switching and same-origin replacement warehouses have separate state, credentials and genuine UUIDs.
+
+| Executed backend scope | Evidence result |
+| --- | --- |
+| Clean primary installation and local doctor | PASS |
+| Independent switching and same-origin replacement installs/guards | PASS; native replacement test remains pending |
+| Repeat setup | PASS; identity, credentials, administrator, observed records and five actual stored-document hashes retained |
+| Unit and scratch migration checks | PASS; 80 source tests and migrations |
+| Container/source dependency audits, secret scan and mobile contract | PASS |
+| Business API, quantities, stock, concurrent/duplicate/idempotent operations | PASS |
+| Reciprocal fictional customer/staff REST, Realtime, image and private PDF boundaries | PASS |
+| Authentication/replay/logout/disabled account and mocked provider contracts | PASS within local API/source scope; no real delivery |
+| Gateway CORS, payload/private exposure, discovery and upstream DNS/IP behavior | PASS |
+| Studio/metadata, retention preview and private local monitoring | PASS; local-only alert receiver, no external delivery |
+| Bounded load smoke | PASS declared workload/thresholds; no production-capacity claim |
+
+Some historical API validation helpers issue sessions internally. Those results remain API evidence. New native and campaign preparation logins use ordinary fictional authentication through the guarded local mock-provider bridge; no fixed OTP or counter reset is used.
+
+Each fictional certificate has a 14-day lifetime, exact test hostname and independent key. Primary, switching and fault helpers run under fresh supervised identities with the existing 12-hour caps and actual pinned TLS/IPC readiness. Before another long stage, check their remaining lifetime; do not replace helpers during a frozen run.
+
+Private evidence retains all failed attempts. Native after-commit dispatch committed exactly once and reconciled stock/cache; an observer audit-timestamp mismatch stopped the case before retry. Its successful document is preserved and unchanged retry is not claimed. Other bounded native dispatch attempts exhausted their corrected reruns and remain blocked. These do not invalidate the separate backend API results or permit a gate bypass.
+
+The new-artifact eight-hour soak and dedicated natural-expiry appointment have not started. Mobile native business, switching, lifecycle and document acceptance must be completed or explicitly recorded as blocked first. ARM execution, physical-device acceptance, real-provider acceptance, production policies, recovery and release remain outside this VM-only campaign.
+
+The reviewed fixture bridge can optionally enable `WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true` after the original fictional ownership guards pass. HTTP completion and WebSocket upgrade observations then record only whether an Authorization header or credential query parameter exists; header and parameter values are never recorded. This tooling will support the pending genuine same-origin replacement test. It is disabled by default and has not been installed into the frozen backend application checkouts. All 82 backend source tests pass, including HTTP and genuine WebSocket forwarding/redaction checks.
+
+## Replacement helper preparation and current-state preservation
+
+A fresh consistent private backup of the current primary fixture passed checksums and database/storage catalog readability after the native invoice/PDF work. Write-facing services were stopped by the documented backup procedure and restarted; an independent normal-route cold Orders read passed afterward. No restore or archive transfer occurred.
+
+Fixture tooling adds explicit core-only Boolean options for redacted authentication-presence observation and independently provisioned replacement mock authentication. The default four primary fictional accounts remain unchanged. Replacement mode admits only its four reserved fictional accounts after verifying the replacement administrator exists and the primary administrator does not. No authentication counters, production credentials or delivery provider are changed.
+
+A separately prepared helper initially refused the original Compose ownership guard because its source checkout did not own the replacement containers. That failed preparation remains preserved. Corrected tooling passes an explicit original owner-checkout reference and exact guard SHA-256, verifies the hash before importing, and executes the original unmodified fixture/Compose guard both during supervision and bridge startup. It does not reassign container ownership or edit the installed application checkout. The supervisor retains new unit/socket identities, private logs, no automatic restart and the existing 12-hour cap.
+
+All 87 backend unit tests passed on tooling `a2d4f66`, including closed replacement account sets, overlapping/missing identity refusal, core-only Boolean options and hash-bound owner configuration. A fresh helper checkout pins application `bed4eeee4a008073aa453c32da27cade50a32a2f` with four separately recorded fixture-tooling overlays, immutable sources and the original replacement owner's guard. Its ownership preflight passes; it is **PREPARED, NOT STARTED**. Actual replacement TLS/IPC, native credential isolation, destination authentication and return restoration remain pending. The primary listener is unchanged at this checkpoint; preparation is not native replacement acceptance.
+
+## Genuine same-origin replacement and authenticated return checkpoint
+
+APK0106 passed genuine same-origin replacement using the independently installed warehouse `7ce7a92f-9abf-476a-bd05-a967fac15124` and its independent core-host certificate. Two cold launches showed login and the replacement identity; old secure credentials, profile and protected caches were absent. Actual completed discovery requests carried neither authorization nor credential query parameters. Both warehouse business/authentication baselines stayed unchanged and no OTP was requested in the replacement stage. Two preparation failures remain preserved: the observer initially expected a flat discovery envelope, then expected a transport event name different from the helper's actual completed-request records. The third permitted cold-replacement attempt passed; no fourth attempt occurred.
+
+The replacement administrator then authenticated normally through one mocked challenge and one new native session. A separate authenticated return stage restored the original independently owned primary warehouse, required login on two cold launches, cleared replacement credentials and observed no forwarded replacement authorization. One subsequent ordinary primary administrator login passed. Business records and unrelated accounts stayed unchanged across both logins. Server sessions were preserved; local identity cleanup does not claim remote logout.
+
+Helper tooling remains separate from application commit `bed4eeee4a008073aa453c32da27cade50a32a2f`. Tooling `a2d4f66a14c1e6ae94876d6113837f806fd698b5` adds fixture-only credential-presence observation and replacement-phone admission only after a real administrator/owner proof. Separate immutable helper source overlays validate the original owning checkout and guard hash before invoking the unchanged ownership guard. All 87 backend source tests passed; native observer/control tooling has 53 control tests. Actual pinned TLS and private IPC readiness were verified, with fresh supervised identities retaining the twelve-hour caps.
+
+The primary helper is now `warehouse-fixture-core-vm2026100102-return05.service`; read-only monitor04 follows this actual identity and preserves earlier monitor logs. Current-state backup checksums and readable catalogs passed before replacement; no restore or transfer occurred. Pending enrollment was absent before replacement, so its cleanup is not established. Unsaved/in-flight switching and other independent native workflows remain pending. Final artifact freeze, the new eight-hour soak and the dedicated natural-expiry appointment remain unstarted.
+
+## Native lifecycle, logout and customer enrollment checkpoint
+
+APK0106 passed three cold launches and three background/foreground recoveries. Each recovery independently observed a fresh successful Orders response; the selected primary warehouse persisted, and business/unrelated authentication snapshots stayed unchanged. Ordinary native logout passed on the third permitted attempt, after two preserved selector preparation failures with no submission. Exactly one confirmation revoked only its matched native session; two cold launches required login and preserved server selection. Six navigation guard tests and three sign-out confirmation/refusal tests passed.
+
+The unused reserved fictional customer enrolled through one ordinary native OTP and reached pending status without a refresh session. A final stage verifier incorrectly required an authenticated session; its failure remains preserved. Read-only verification reconciled the already successful pending flow without another OTP. Three cold pending launches, foreground recovery and one explicit status check passed with no protected tabs, OTP or refresh session; independent snapshots remained identical.
+
+One ordinary administrator API login approved that customer and assigned only Backend Test Customer A. The approval returned success and was independently reconciled exactly once, with unchanged business data and unrelated accounts. The helper's subsequent logout used the wrong endpoint and failed; the overall helper remains **PARTIAL_BLOCKED**. Its temporary administrator session is preserved on the fictional backend because credentials existed only in memory. The source now uses the documented logout RPC; the committed approval was not replayed and no successful logout is claimed for that session. Three approval/refusal tests passed.
+
+Android then displayed actual approved status, explicitly left enrollment through Sign in, removed the one enrollment token, and required login after a cold launch. One further ordinary native OTP authenticated the approved customer; business data and unrelated accounts stayed unchanged. Three authentication-mode admission tests passed. Current private matrix and historical stage ledgers retain every failure and reconciliation. Customer business/isolation workflows, staff workflows, remaining switching/fault cases, final freeze, eight-hour soak and dedicated expiry appointment remain separate work. No application source or APK bytes changed in these tooling stages.
+
+
+APK0107 checkpoint: the clean x86_64 release from mobile `b53db175f6c13b39b774a0d8cf1f2a379086f226` and backend application `bed4eeee4a008073aa453c32da27cade50a32a2f` passed compilation, 303 application tests, 98 setup tests, lint/type checks, compiled trust/signature audit and owned API30 installation/read-back. APK SHA-256: `c9184cf60d13482b4f8e52242af3ac08a5bf8e5d21df770ccf88d9e453be871d`. Emulator state was archived locally with verified checksum/catalog; no restoration occurred.
+
+The dependency gate is BLOCKED: seven high transitive npm findings involve node-forge 1.4.0 ([GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv)), with no patched release listed. No forced downgrade or unreviewed cryptographic patch was applied. Compiled Expo Updates is disabled; that observation does not clear the dependency gate. Final freeze, readiness and the new eight-hour soak remain unstarted.
+
+The native cart/catalog preparation case exhausted its three actual attempts and is BLOCKED. The first exposed the missing search input, corrected in APK0107. The second stopped before launch on an overly strict foreground prerequisite, corrected in tooling `b039dda`. The third found the search input but observed F02 instead of intended FXC702 during input verification. No item submission occurred. Independent SQL confirms unchanged empty cart, stock, profile, business digest and session presence. The authentication digest changed and remains unresolved; separate session identity/creation/expiry and verified-OTP observations do not establish full reconciliation. Failed screens, ledgers and SQL evidence remain private and preserved. No fourth attempt or alternate alias is permitted. APK0106 customer read/control results remain scoped to those older bytes.
+
+
+Follow-up read-only reconstruction resolved the cart authentication-digest change: substituting only the bound session's retained consumed refresh-token hash reproduces the entire earlier authentication digest exactly; the current digest matches the observed later snapshot. This proves one ordinary refresh rotation with no new OTP/login or unrelated authentication mutation. No token or individual token-hash value was exported. The input-verification case remains BLOCKED at its three-attempt limit.
+
+
+APK0107 lifecycle regression recorded an actual native SIGSEGV during the third cold launch, after two cold reads and two background/foreground recoveries. Its logs and tombstone were preserved; native acceptance is stopped, with no log clearing or crash bypass. All 13 release x86_64 picker translation units lacked RN_SERIALIZABLE_STATE. The stack enters RawPropsParser::prepare<RNCAndroidDialogPickerProps>, matching the reported React Native 0.81 ABI mismatch ([upstream report](https://github.com/react-native-picker/picker/issues/663)).
+
+The review candidate pins the published picker patch 2.11.4, whose CMake calls target_compile_reactnative_options for RN >=80. Only this package is explicitly excluded from Expo's recommended-version check, using the [documented version override](https://docs.expo.dev/versions/latest/config/package-json/#installexclude); Expo SDK54 recommends 2.11.1, the version with the observed missing ABI flag. This is a declared compatibility variance, not native verification. A separate compile-command audit refuses missing/disabled flags or absent picker evidence. A clean corrected APK, exact compiler audit and native regression remain required. No build starts below the 25 GiB disk floor. The node-forge dependency blocker is unchanged.
+
+
+APK0108 checkpoint: a fresh pinned checkout at `893e3e76751e4ad3ec173ebf7bb292963b18a50e` completed plain npm ci, the documented Expo prebuild/release workflow and exact compiled audit. SHA-256: `c7382fb96c0522fbf61e49548cfe66703ca8ca700f2c7dce72ef47ed7213f176`; x86_64 only, fixture package, versionCode 2026100108, unchanged test signer and three fictional trust anchors. All 13 picker translation units now carry RN_SERIALIZABLE_STATE. Application tests 303/303, setup/tooling tests 101/101, lint, typecheck, mobile contract, source scan and Expo Doctor 17/17 passed with the declared picker override. Npm audit still reports seven high node-forge transitive findings; the exact source CI passes its other three jobs and fails dependencies.
+
+The installed APK read-back matches the audited SHA; application storage was preserved. An initial network-preparation input referenced not-yet-created metadata and refused before mutation; an installation precondition then refused because root networking had not yet been restored. Separate corrected inputs restored only owned routing and completed installation. Current device state was archived locally after clean stop, with verified checksum/catalog. Old APKs, failures, logs, compiler evidence and device/warehouse archives remain preserved. Only proven-owned reproducible build intermediates were removed after verifying no frozen plan bound them.
+
+The second lifecycle attempt passed on APK0108: three cold launches plus three background/foreground recoveries, each with actual fresh Orders200, persisted instance selection and unchanged business/unrelated authentication/OTP baseline. The first APK0107 SIGSEGV and tombstone remain a FAIL. This is targeted emulator regression evidence, not an eight-hour soak. Final freeze/readiness/soak and the delayed-expiry appointment remain unstarted.
+
+For reproducible corrected builds, retain the package/lockfile pin and documented single-package Expo override, run plain npm ci and the existing two-worker x86_64 release instructions, then audit the generated x86_64 compile_commands.json with `node scripts/audit-picker-native-compile.mjs <generated-compile-commands.json>` before the compiled APK/signature/trust audit. Missing or disabled ABI flags and absent picker translation units fail this audit; CI now enforces it on generated debug compile commands too. No native build starts below 25 GiB free. The override and passed Doctor checks do not waive the independent dependency gate.
+
+
+The separate ordinary normal-route receipt/image case FXN801 is BLOCKED after three actual attempts, with no receipt submission. Its first draft reached Review; the synthetic PNG was absent from MediaStore, and actual grid captions include filename/size/date metadata. Exact single-file indexing and caption guards were corrected without changing permissions. Subsequent capture failures came from selecting the DocumentsUI capture class based on background window entries while the app was foregrounded. Source now chooses capture strictly from current focus. Five normal-receipt control/readiness tests and four existing gallery-control tests pass; no fourth native attempt or alternate case alias is permitted. All independent failure snapshots show unchanged backend and stored bytes.
+
+A guarded picker-cleanup check refused because the app was already foregrounded; no gesture was sent. The initial read-only capture failed for the same helper-selection bug and is retained. Corrected read-only capture/reconciliation confirms the owned foreground and unchanged state without submitting or replaying the receipt. This does not establish receipt creation, image upload/render or native business acceptance for FXN801.
+
+
+APK0108 independent saved-rounding-invoice PDF acceptance passed for invoice 20261010: native details showed total ₹179 and tax ₹9; one new private PDF was generated and downloaded through the actual Android SEND chooser, opened in the original approved Librera reader and automatically copied to Downloads/Librera. Stored, native-download and reader-export bytes match SHA-256 `53a6dfa16e77ab64b61f3ca307155dbaf08f734d7f4393385b99ac028379499d`. Actual one-page viewing and PDF text agree on the total/tax and existing duration/quantity lines. Permissions and remembered reader settings were unchanged. Normal-route cold restoration and independently observed Orders200 passed afterward.
+
+This is an independent PDF group for the existing saved invoice; no second invoice save or fourth exhausted invoice-case attempt occurred. The original rounding-save case remains PARTIAL_BLOCKED at its attempt limit. Unauthorized PDF denial and the remaining invoice cases are separately pending. Tooling `7ca221d` adds exact saved-invoice arithmetic/identity checks and refuses failed, previously selected, changed-config, wrong-artifact or changed-driver preparations; its contract/refusal tests pass. APK application source remains `893e3e7`, with no new build. Final freeze, readiness, the new eight-hour soak and natural-expiry appointment remain unstarted; the dependency gate remains BLOCKED.
+
+
+APK0108 native administrator inventory reads passed against independent SQL: customer A had 68 units across five GRNs, customer B had eight units across one GRN, and A's item detail showed 68 units. Actual all/customer stock RPCs returned 200; business, unrelated authentication and OTP baselines stayed unchanged. This result is separate from the exhausted cart preparation and receipt/image cases.
+
+Separate normal-route dispatch cases used one fresh ten-unit API-provisioned source receipt FXF900. Ordinary temporary administrator authentication/logout and independent preservation checks passed. FXF901's first native attempt stopped before submission because its base tooling lacked the evidence archive method; valid Review and unchanged SQL were preserved. Corrected attempt two committed exactly one three-unit dispatch, one matching cached result and stock 10→7, preserving unrelated state.
+
+FXF902 then reached actual native success for the remaining seven units: one dispatch, one matching cached result, stock 7→0 and no invoice persistence. Its original plan failed reconciliation because the observer incorrectly treated the existing contract's source out_of_stock=false→true transition as unrelated. Read-only reconstruction replacing only that exact source flag reproduced the entire pre-dispatch digest; independent SQL confirmed out_of_stock=true, original quantity ten and zero stock. The final commit was reconciled without another submission. Original failed ledgers and the initial failed read-only capture helper remain preserved. The narrowly scoped normal observer now checks the expected source depletion flag explicitly; three refusal/reconciliation regressions and actual read-only SQL validation pass. Original fault/offline guards and their blocked results are unchanged.
+
+Normal-route cold restoration and actual Orders200 passed after final dispatch. These results establish ordinary partial/final dispatch and depletion for the audited x86_64 APK; they do not establish native excess/concurrency, lost-response retry, images, staff queue or reciprocal customer isolation. Current review tooling checks passed 110/110 before the final flag regression was added; the next recorded full check covers the final source. Exact completed mobile CI at 75ee785 passed lint/type, source/history scan and Android debug artifact audit, failing the dependency job; backend CI at 6b790e9 passed all seven jobs. Current application source remains 893e3e7; newer commits record tooling/evidence only. Final readiness and the new soak remain blocked/unstarted.
+
+
+APK0108 switching checkpoint: the third and final confirmed-switch attempt passed, followed by ordinary destination administrator login and the third and final switch-back attempt. Selected genuine warehouse identities persisted through cold launch and each source native session was revoked without changing business, other authentication or OTP baselines. Switch-back attempt two refused before the actor lock, evidence directory or ADB because its manifest omitted two required tooling hashes; its immutable plan/ledger and a static pre-actor diagnosis remain preserved. No fourth switching attempt is permitted.
+
+Expired switching/fault helper identities were retired only after ownership, release, hashes and state-preservation checks. Fresh supervised identities retain the twelve-hour cap. Actual fictional TLS discovery and private IPC readiness passed; the new relay initially reported IDLE with no observations, then one explicit safe initialization disarmed it. That initial readiness refusal and all old relay observations remain preserved. Monitor07 uses the new immutable identities; no terminal-dependent listener or warehouse restoration was introduced.
+
+The reserved approved customer was temporarily assigned literal staff through the normal administrator API, authenticated normally in Android, logged out through the UI and restored to customer. Source review found queue access uses admin/supervisor, while the distinct literal staff role is excluded. A corrected explicit supervisor preparation, ordinary native login and read-only Orders/Queue case followed. Actual cold Orders200, visible Queue and refreshed Queue200 succeeded; the case then failed waiting for a Create GRN label absent from the populated toolbar. Separate read-only reconciliation proves the complete business/authentication/OTP snapshot unchanged. The original native case remains PARTIAL_BLOCKED; queue processing, cart/order creation and create-control acceptance are not claimed. Its ordinary supervisor logout passed two cold login requirements, and normal API restoration returned the reserved account to approved active customer with no session, preserving assignments and all unrelated fields/data. Neither temporary role remains installed.
+
+Reviewed application correction 696165f4a4494c8b5652e4e98965ad05d600d10e labels the existing GRN and invoice create buttons. It also removes three unused normal-dispatch observer imports exposed by exact mobile CI at e74a328: lint failed, later test/type steps skipped, dependency job failed, and source/history plus Android debug artifact audit passed. Backend CI at 395aa4d passed all seven jobs. Local corrected lint and typecheck passed; the current frozen tooling source f40754a passed 118/118 setup tests and source/history scan. These are source checks, not acceptance of a newly compiled APK. The installed APK remains application source 893e3e7 and its exact build0108 bytes; the accessibility correction still needs a fresh audited build and the under-cap native regression.
+
+Administrator OTP usage reached eighteen of twenty daily requests after reversible fixture preparation/restoration. Remaining authentication must respect the existing limit and its natural reset; no counter or timestamp is changed. Current disk is below the twenty-five-GiB native-build floor, so a new build must wait for independently verified retirement of owned reproducible intermediates after preservation, without deleting unrelated state/caches. Final freeze, readiness, new eight-hour soak and delayed-expiry appointment remain unstarted; the independent dependency gate remains BLOCKED.
+
+
+APK0109 checkpoint (2026-10-02): a clean pinned checkout at mobile application commit `696165f4a4494c8b5652e4e98965ad05d600d10e`, paired with backend application `bed4eeee4a008073aa453c32da27cade50a32a2f`, completed plain npm ci and the documented two-worker Expo/Gradle release workflow. The x86_64 fixture APK has versionCode `2026100109` and SHA-256 `08271dada3bf90ed6912db71c0e08f95487a906d12a765bcaa706338bdf12fb7`. Exact compiled signature, package, permissions, three fictional trust anchors and all thirteen picker ABI compilation units passed audit; installed APK read-back matches. Application tests 303/303, build-source setup tests 118/118, lint, typecheck, SDK/mobile contract, source/history scan and Expo Doctor 17/17 passed with the previously declared picker variance.
+
+Before this build, the owned AVD was stopped cleanly and archived privately with verified checksum and readable catalog. Only independently verified owned reproducible intermediates were retired after preserving their inputs and checking ninety-four immutable plans for bindings. Build admission verified more than 25 GiB free. The initial monitor-integrity preflight refusal occurred before Gradle execution and remains preserved; the corrected guard required a recent complete integrity sample. No warehouse/device restoration or unrelated cache deletion occurred.
+
+On these exact APK0109 bytes, ordinary reserved-customer authentication, assigned-customer Orders reads and visible role controls passed, followed by UI logout and two cold login requirements. The reserved account was then temporarily changed to supervisor through the normal administrator API and authenticated ordinarily. Corrected supervisor read attempt two passed actual cold Orders200, visible Queue, fresh Queue200 and accessible Create GRN/Dispatch/Invoice controls. No business submission occurred; independent SQL proved unchanged business, unrelated authentication and OTP baselines. The original APK0108 accessibility failure remains preserved. Supervisor logout passed, and normal API restoration returned the account to its original approved active customer state with no active session and unchanged assignments. These read/control results do not establish queue processing, receipt/image submission or reciprocal customer execution.
+
+Subsequent tooling commit `91a713503f0bf608259ca36e017efd4e8858d042` passed 119/119 setup tests and source/history scan. Authentication observers now include additional dispatch/invoice lines, images, order items and idempotency state; actual populated-fixture native observations passed. Monitor09 is supervised and bounded to 256 stage plans and 4096 bound files, refuses overflow and checks every plan rather than silently truncating after one hundred. Its three Python regressions passed. These tooling changes do not alter the installed application bytes.
+
+Read-only server evidence records the administrator at its existing twenty-request daily limit, naturally resetting on 2026-10-02 at 16:39:22.426095 UTC (22:09:22 IST). Dependent administrator authentication is paused until that reset; no quota or timestamp was modified. The fresh APK0109 dependency audit still reports seven high node-forge findings. Final artifact freeze, thirty-minute readiness, the new eight-hour soak and the dedicated natural-expiry appointment remain unstarted. Historical APK0106/0108 PDF, inventory, switching and lifecycle results retain their original artifact scope; the completed older-APK soak is not transferred to APK0109.
+
+
+APK0109 disabled-account native acceptance passed on corrected attempt two. The exact independently identified fictional Customer B remained disabled/inactive. One ordinary fresh mock OTP was consumed, Android displayed Verification Failed, and cold launch required login. Independent SQL proved no refresh session was issued, the one pre-existing enrollment token was preserved, and profile/business/unrelated authentication remained unchanged. Attempt one stopped during pre-auth observation before ADB or OTP because tooling incorrectly required zero retained enrollment tokens; its failure is preserved. The correction binds the observed existing count and requires it unchanged rather than deleting state. Five authentication admission/refusal regressions passed; the complete corrected tooling suite passed 120/120. The installed application remains the same audited APK0109 bytes; this result does not establish native revocation or rejected-account acceptance.
+
+
+APK0109 synthetic-camera QR acceptance passed on the third and final native attempt. The SDK imagefile camera fed a deterministic QR containing only the exact fictional core HTTPS origin into Android CameraView. Android displayed the genuine Fictional Core Warehouse discovery preview; leaving with Back never activated Use this server. Two public-selection storage checks and cold login restoration passed, with zero OTP requests and independent unchanged digests for all 97 owned public/authentication/security/storage tables. The explicitly temporary fixture-app camera grant was restored to its original denied state; reader permissions were unchanged. This establishes emulator synthetic-camera evidence only, not physical camera/QR acceptance.
+
+The first native attempt timed out; the second retained a frame proving the large QR was clipped at the right edge. Both failures were independently reconciled unchanged before another attempt. The final correction uses a smaller QR positioned inside the observed visible frame, with a new immutable image, private manifest and owned camera supervisor. A separate initial manifest-mode refusal occurred before any native actor or permission change and is preserved. Clean stops preceded private checksummed/readable AVD archives; the same owned storage booted without restoration, cloning or APK reinstall. Monitor11 follows the new supervisor. No fourth QR attempt is permitted.
+
+QR source/refusal/privacy checks and the complete tooling suite passed 124/124, with lint and source/history scan passing. Source 64438dd records the guarded driver and diagnostic correction; installed application source and APK0109 SHA remain unchanged. Exact published predecessor mobile CI fe59c4447f0f115ef700cd7eaeaffbcec93f864e passed lint/type/tests, source/history scan and Android artifact/ABI audit, failing dependencies only. Backend CI a16bdc96ef59fef9eb74a47b27678712837b06a1 passed all seven jobs. The dependency gate, final freeze/readiness, new soak and delayed-expiry appointment remain open.
+
+
+APK0109 lifecycle acceptance passed on the third bounded lifecycle attempt: three cold launches and three background/foreground recoveries, each independently observed as fresh Orders200. The exact genuine primary selection persisted, and no ANR/crash, new OTP or business mutation occurred during the lifecycle run. The earlier APK0107 SIGSEGV and APK0108 targeted recovery retain their original evidence/artifact scopes; no fourth lifecycle attempt is permitted.
+
+One ordinary reserved-customer OTP login preceded this run, respecting its existing quota and leaving administrator counters unchanged. The fixture-only lifecycle admission now explicitly binds the original reserved customer UUID/name/role; it refuses switching/logout modes, another profile or administrator role. Independent SQL additionally preserves OTP records, quotas, enrollment tokens, dispatch images and idempotency state while allowing normal refresh of only the bound native session. All 125 tooling checks, targeted guard refusals, source/history scan and actual populated-fixture SQL validation passed. Frozen tooling source 574f531 executed the native case; application commit and exact audited APK0109 bytes are unchanged. The reserved account remains normally authenticated as its original customer role for dependent customer workflows; no token or plaintext OTP was published. This is bounded native regression evidence, not the required final eight-hour soak.
+
+
+APK0109 native Realtime foreground delivery and reconnect passed on corrected attempt two. The original approved reserved customer remained authenticated on the genuine primary instance. A separate fictional Customer A caller authenticated through one ordinary mock OTP request/verification; credentials stayed in process memory. Supported cart RPCs added one fresh line at quantity one, then changed that same line to two only after the first SQL reconciliation and native delivery passed. Android displayed the exact assigned-customer card and independent fresh Orders200 in both delivery windows, without manual refresh or navigation. Between them, two stable Android observations established no default network, with an exact fixture-UID loopback rejection; owned airplane/radio/reverse settings and rule were restored before the second trigger.
+
+Independent SQL preserved stock at eight, every earlier cart revision, unrelated business and authentication state, and the original native session. Exactly two revisions and one item line remain intentionally preserved; normal logout deleted only the newly issued API-caller session. The first attempt failed before OTP or writes because the observer incorrectly expected an empty cart to have no visible card. Its ledger and read-only native diagnosis are preserved; the correction binds the application's actual Empty/No items yet card and adds an exact regression test. Frozen tooling b766918 executed attempt two; application source and audited APK0109 bytes remain unchanged. This proves customer Orders delivery/reconnect on the emulator, not native cart editing, staff topic delivery, reciprocal Realtime isolation or missed-write replay.
+
+The complete orchestration tooling suite passed 139/139; source/history scans passed before the final observer correction, with final publication checks tracked separately. Required dependency, final freeze/readiness, new eight-hour soak and delayed natural-expiry appointment remain open.
+
+
+APK0109 authorized rounding-PDF acceptance passed using the original approved reserved customer's existing session, without another login or role change. The second independently scoped PDF attempt generated exactly one new private document for saved invoice 20261010; native download, Android SEND, original approved Librera scroll-mode viewing and automatic Downloads copy all passed. The actual one-page reader image displays tax 9, total 179 and the expected quantity/duration/day lines. Stored, native-downloaded and reader-export bytes share SHA256 b05cff567f130bdfb1090da70cc2a9d5f0187599db597db4dab464d787368786. Existing reader permissions and remembered selection were not changed.
+
+Before native regeneration, the recognized earlier cache/export files were copied into the private attempt evidence, independently checksum-verified and parsed as readable PDFs. All older warehouse documents and bytes were preserved; the new reader copy was created after this native share. Independent post-reader/cold-read SQL confirmed preserved native session, OTP baseline, unrelated authentication and business state. Normal-route cold Orders200 passed after restoring the fixture foreground. Frozen tooling cc22916 executed this case; the exact APK0109 application bytes are unchanged. All 141 tooling checks and pinned source/history scans passed. APK0108's earlier PDF result remains separate; the exhausted invoice-save/read group was not rerun or given another acceptance attempt. Unauthorized/reciprocal PDF denial and broader arithmetic/workflow cases remain independent.
+
+
+APK0109 sustained Orders-offline and rapid-connectivity acceptance passed on the third and final permitted Orders-offline attempt. The current original approved customer session loaded assigned Orders, then actual Android device disconnection was established by two stable no-default-network readings, owned radio/airplane changes and an exact fixture-UID loopback rejection. Native offline/stale-cache warnings appeared; an explicit refresh made no successful current Orders RPC during the sustained observation. Reconnection restored current Orders200. Three additional bounded connectivity cycles each independently established disconnection and restored a fresh Orders200; observed cycle durations were approximately 4.4 seconds each. No business submission or new OTP occurred.
+
+Independent checks verified original airplane/radio settings, normal reverse route, absent owned rejection rule, normal-route cold Orders200, and identical before/after plus post-cleanup SQL preservation. Frozen tooling 256f7b5 executed the case, with exact APK0109 bytes unchanged. All 142 tooling tests, lint and pinned source/history scans passed. Earlier offline attempts and their artifact scopes remain preserved; no fourth attempt or alias is permitted. This is emulator connectivity evidence, not physical Wi-Fi/cellular acceptance or offline receipt/dispatch acceptance. The private acceptance matrix now reconciles previously stale pending rows against exact scoped QR, lifecycle, Realtime, PDF, replacement and capped-case checkpoints rather than treating historical fields as current results.
+
+Exact corrected predecessor mobile CI c52af8a passed Lint & Type Check and source/history scan; dependencies still failed and the Android job was pending at observation. Backend predecessor c91b707 passed six jobs with isolated installation still pending. Fresh exact-head CI remains required after this publication; final freeze, readiness, eight-hour soak and delayed expiry remain unstarted.
+
+
+APK0109 native Customer A-to-B receipt denial passed on the first bounded attempt. The existing approved reserved customer remained assigned only to A. A direct native link requested the real independently provisioned B receipt FXC702; a fresh get_grn_details RPC200 was observed, Android displayed Failed to Load / GRN not found or access denied, and two native observations contained no B receipt/customer content. Read-only SQL before and after proved that the target existed, belonged to B, remained unassigned to this customer, and all business/authentication/OTP state was unchanged. Normal-route cold Orders200 passed without a new login or business write. Frozen tooling 1e0d55e executed the case; application and exact APK0109 bytes are unchanged. All 144 tooling tests, lint and source/history scans passed.
+
+The prerequisite inventory found no B invoice or B image. Native PDF/image denial therefore remains pending genuine fixtures; absent/fabricated IDs cannot establish isolation. Reciprocal B-to-A and staff boundaries remain separate, with ordinary administrator preparation respecting its natural quota reset. This independent denied-receipt case does not rerun the exhausted saved-invoice/GRN navigation group or establish successful native image upload.
+
+Fixture tooling source 9e44fe3 adds optional supervised switching-helper `discoveryDelayMs` (integer 500..5000). It propagates only `WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS` to the switching bridge and retains Restart=no, private loopback/IPC and the unchanged 43200-second service cap. Delay applies only to unauthenticated GET of the exact fictional switching discovery path, without queries, against the owned 127.0.0.1:18590 upstream. Authentication, writes, upgrades and other hosts/routes retain normal transport. Responses remain genuine; buffered discovery bytes are bounded to 64 KiB, with cancellation/deadline cleanup and metadata-only observations.
+
+All 91 backend source tests and pinned source/history scans passed, including exact route/host/auth refusal, genuine byte/status preservation, oversized response refusal, cancellation, supervisor option scoping and service lifetime. This is source evidence only. Existing frozen helpers, warehouses, emulator and routes were not changed; a fresh owned helper identity and immutable native late-discovery stage are still required. Backend application remains bed4; the optional helper transport is tooling, not an application API/schema change or production overlay.
+# Genuine late-discovery checkpoint (2026-10-02)
+
+APK0109 native switching-host discovery transport failure/recovery passed on its first attempt with mobile tooling `05252fa`. An exact fixture-app-UID/`10.0.2.2`/TCP443 rejection produced Android `Network request failed` and two counted rejected packets. After exact rule removal, genuine switching discovery recovered; normal-route cold Orders200 and unchanged session, OTP, other authentication and business snapshots passed without selecting the destination. Independent restoration checks confirmed the rule absent and primary reverse route intact. No backend helper, warehouse state, radio setting or authentication was changed. This does not establish HTTP-status failure or compatibility rejection.
+
+APK0109 additionally passed genuine different-instance discovery followed by cancellation using mobile tooling `d73099e`. Native identity display and the exact switch warning preceded cancellation; normal-route cold Orders200 and unchanged session, OTP, other authentication and business snapshots passed. The original failure and older APK result remain preserved; this was the third/final permitted cancellation attempt. It does not establish unsaved-draft retention, switching during writes/uploads or confirmed switching on the current artifact.
+
+The primary helper was subsequently renewed with fresh immutable tooling/configuration and the original hash-bound owning checkout. Actual fictional TLS discovery and private IPC passed, warehouse identity/state remained unchanged, and the existing 12-hour cap was retained. Prior helper unit/log evidence and monitor output remain preserved. APK0109's second campaign malformed-origin attempt passed native HTTP/path/query rejection, normal-route cold Orders200 and unchanged session/OTP/other-authentication/business snapshots. No new authentication or business writes were required, and no app database containing tokens was copied. Failed HTTP discovery and compatibility rejection remain separate unproved cases.
+
+Fixture tooling at `caefd85c0676e6613023acc17ee62c9965b4cac4` now permits the switching helper to use its original hash-bound owning checkout, retaining all existing container/state checks and the 12-hour helper cap. A fresh helper was provisioned after a consistent private local switching-state backup; checksum and database/storage catalog readability passed, with no restore. Prior helper and monitor evidence remains preserved. Actual fictional TLS discovery, independent switching identity, private IPC and a three-second genuine-response delay passed readiness.
+
+The APK0109 native late-discovery case passed with mobile tooling `f8a88fb`: delay began at 09:36:53.347 UTC, the app left selection at 09:36:54.703512, and genuine HTTP 200 completed at 09:36:56.350. No stale preview/alert appeared; normal-route cold Orders200 and unchanged native session, OTP, other authentication and business snapshots passed. One preceding navigation-label failure occurred before discovery and was reconciled without state change. This is scoped late-discovery acceptance, not acceptance of switching during business writes/uploads or final readiness. All prior failed attempts remain retained.
+
+## Clean revised-source reproduction and genuine compatibility fixture
+
+On 2 October 2026, a fresh detached checkout at `e449340acd1ceb17a36d85dc7b6c6a98263be27a` and fresh disposable state completed the documented operator installation sequence. Plain npm ci, all 92 backend source tests, host preflight, private configuration, migrations, administrator bootstrap and local doctor passed. A second actual setup retained the same instance UUID, credentials/configuration, administrator, migration catalog and independently hashed database records. This warehouse initially contains zero stored objects; the earlier primary fixture's five actual stored-document byte checks remain separate evidence.
+
+Declared overlays were applied before the first startup: loopback Kong port 19490, fixture subnet `10.233.251.0/24` in the Compose override, and initial minimum client policy `0.2.0` for native compatibility rejection. No old generated configuration was copied. Its instance UUID is `a6efd021-cbf2-42a2-bebf-281551614d93`, with independently generated warehouse credentials and state. The exact install and repeat proofs are preserved privately as `compatibility-install04-result.json` and `compatibility-repeat04-result.json`. The normal installation instructions were followed; no application API or database-schema changes were introduced for testing.
+
+Before sequentially attaching the existing fictional switching TLS route, the original switching warehouse received a consistent private backup with verified checksums and readable database/storage catalogs. Actual TLS discovery and IPC readiness passed under a fresh supervised helper with the unchanged twelve-hour cap. APK 0109 then displayed `This server requires app version 0.2.0 or newer.`, offered no selection action, retained the primary selection/session after cold restoration, and completed a fresh primary Orders request. Independent SQL snapshots preserved authentication and business state. No OTP or business write was issued.
+
+The TLS route subsequently returned to the original preserved switching warehouse through another fresh supervised helper; genuine identity and TLS/IPC readiness passed. Both independent warehouse states, credentials, backups and helper logs remain preserved. No database restore, public routing change or production cutover occurred. Native proof: `native-compatibility0109-01-proof.json`; route-return proof: `switch-return-readiness07.json`. These scoped passes do not clear remaining native cases, the mobile dependency gate, final freeze, eight-hour soak or dedicated natural-expiry appointment.
+
+## Bounded Orders-read race transport preparation
+
+Fixture tooling adds optional `ordersReadDelayMs` (500–5000 ms) for a core helper, translated to `WAREHOUSE_FIXTURE_ORDERS_READ_DELAY_MS`. Only authenticated POST requests to the exact query-free original primary loopback route `/rest/v1/rpc/get_orders_list` can match. Only successful upstream responses are delayed; genuine status, headers and bytes are retained. The bounded buffer is 64 KiB, cancellation suppresses late delivery, and observations contain route/timing/status only. Other warehouses, write/authentication routes, query-bearing URLs and replacement-authentication helpers are refused. Normal installation and default helpers remain unchanged.
+
+All 96 source tests passed with the documented pinned Node 22 toolchain, including route refusals, genuine bytes, redaction, bounded buffering, cancellation and supervisor guards. An initial accidental Node 18 run failed six TypeScript-loading suites and remains preserved; no fixture or application state changed. This is source preparation only: no live helper carries the delay and no native switching-during-request result is claimed. Application API/schema and frozen runtime inputs were not changed.
+
+## Orders race execution and normal-route restoration
+
+The reviewed `649cbbf2f9b56681924b2fec28e9f6823a30ffb6` helper was subsequently started under a fresh supervised Orders-delay identity, with actual TLS/IPC readiness and the twelve-hour cap. APK 0109's late-response selection case passed on its final permitted corrected attempt: genuine read start `2026-10-02T13:44:10.308Z`, selection visible `2026-10-02T13:44:11.591130Z`, and response completion `2026-10-02T13:44:15.308Z`. Selection remained visible, cold Orders returned HTTP 200, and independent authentication/business SQL snapshots matched. No OTP, selection activation or business write occurred. The two preceding startup-read/verifier failures and their unchanged-state reconciliation remain preserved; mobile tooling now distinguishes the measured read from a subsequent serial refetch and refuses ambiguous overlap. Private proof: `orders-selection-race0109-final-proof.json`.
+
+The delay helper was then stopped with its final log hash preserved. A normal-helper setup was refused before unit creation because its required private log directory was missing. That failure is retained. Fresh identity `warehouse-fixture-core-vm2026100102-normal09.service` passed genuine TLS discovery, IPC readiness, no-restart/twelve-hour supervision and an undelayed native cold Orders HTTP 200 with the same primary identity. Warehouse services/state were unchanged; monitor 18 follows the new helper. Private proofs: `primary-normal-readiness09.json` and `primary-normal09-cold-read/result.json`. The preceding preparation-only statement is historical, superseded by these exact scoped results.
+
+Backend tooling at `649cbbf2f9b56681924b2fec28e9f6823a30ffb6` passed exact CI run `37011446107`. Application API/schema and frozen runtime inputs were unchanged by the fixture transport. Confirmed switching during saves/uploads, remaining native cases, final freeze, new eight-hour soak and the dedicated expiry appointment remain open. The mobile dependency gate remains blocked; a source/backend CI pass does not waive it.
+
+## Controlled native dispatch concurrency preparation
+
+A disabled-by-default fixture matcher is prepared in review source only. It
+requires the exact core loopback route, native reserved supervisor/customerA,
+recordFXQ994, one independently bound lot and quantity2, ordinary
+authentication presence, native RPC fields and idempotency key. The optional
+delay is bounded500–5000ms. Two source tests PASS: default disabled, exact
+match and refusal of competitor recordFXQ995, other accounts/lots/quantities,
+queries/routes/credentials and excessive waits. No request data is logged.
+
+Transport buffering/timeout/cancellation integration, supervisor/bridge
+configuration, fresh three-unit fixture, ordinary API competitor, native
+selectors and independent commit reconciliation remain unimplemented. The
+module has not been installed in any helper; no API/SQL/OTP/native action
+occurred. Backend application remains bed4eeee; current owned helpers and
+12-hour caps are unchanged. This is a distinct unexecuted concurrency case,
+not a rerun or alias of exhausted lost-response/offline writes.
+
+Fixture proxy review transport now supports the optional matcher via bounded
+64KiB in-memory request buffering, unchanged byte forwarding, at most five
+seconds delay and cancellation through the existing total timeout/client
+abort/response-close paths. Default behavior remains immediate forwarding.
+Matched observations contain event/time/delay metadata only, with no request
+body or credentials. Thirteen local matcher/stream/HTTP/WebSocket tests PASS,
+including delayed one-time forwarding, cancellation preventing upstream,
+oversize refusal, malformed/nonmatching immediate forwarding and existing
+proxy failure handling. This is local transport evidence only. Supervisor/
+bridge configuration and live owned helper integration remain pending; no
+warehouse request, OTP, fresh fixture or native dispatch occurred.
+
+Concurrency helper configuration is now wired through the fixture-only supervisor and core bridge. It remains disabled by default, restricted to the primary fictional upstream and exact declared record/lot, excludes replacement authentication and Orders delay, and retains the twelve-hour supervised lifetime. Nine supervisor tests passed, including refusal of incorrect helper kinds, scope, record, lot and duration; bridge syntax and whitespace checks passed. No active helper was replaced and no native concurrency result is claimed. Fresh helper provisioning, independently created stock and native/API coordination remain pending.
+
+The source-only concurrency delay observations now include process monotonic timestamps at actual hold start/release, permitting measured duration without recording request data. The fresh prepared helper checkout predates this timing addition and must be replaced with a new pinned identity before execution; no active runtime input changed.
+
+Post-concurrency source validation: complete documented Node22 backend unit suite 97/97 PASS; pinned gitleaks 8.30.1 redacted source and all-history scans PASS. The separate thirteen bounded transport tests also passed after monotonic instrumentation. Fresh normal10 helper runs pinned 71a7ac8 with delay disabled and twelve-hour cap; timed helper stopped/preserved. Native race exhausted its three attempts before either dispatch write and is BLOCKED; do not infer concurrency acceptance from source tests.
+
+
+Current checkpoint, 2026-10-03 01:00 UTC: the exact helper-code CI run
+37081811670 at e3126a03775f76e7d9a82d6ac73ebc36aa6dbd0c completed SUCCESS.
+This validates reviewed helper source; installed backend application remains
+bed4eeee with separately recorded overlays. It does not establish APK acceptance.
+
+In-flight Orders switching remains BLOCKED after all three native attempts.
+Final attempt03 captured Operation In Progress at 00:39:18.044916 UTC before
+the identified genuine read completed HTTP200 at 00:39:23.803 UTC, then failed
+at the acknowledgement selector. No completed switch, OTP or business write
+occurred. Original failed ledgers remain unchanged and no fourth run is allowed.
+The capped proof SHA256 is
+15ca26b5c7f690bbf53a095af7af08090dc0631147c5bd408aebe94ecef38a9a.
+Separately labelled normal cleanup passed primary selection, authenticated cold
+Orders200 and exact before/after protected SQL/storage reconciliation against
+the actual attempt03 baseline. Cleanup does not relabel native acceptance.
+
+Current owned core helper confirmread14 uses pinned e3126a0; its single-use
+controller is CONSUMED and subsequent reads are normal. Switching observe08 and
+fault renew04 are unchanged; fault relay remains DISARMED. Monitor26 covers
+current units. Existing primary supervisor session is preserved. Latest mobile
+review tooling 28ce721 has 299 passing source tests and a separate exact refusal
+acknowledgement selector; this future tooling correction does not reopen the
+capped native case or change installed APK2026100110. Final readiness, eight-hour
+soak and dedicated natural-expiry appointment remain unestablished.
+
+
+2026-10-03 exact backend review head 1e5366b CI run37084227711
+completed SUCCESS, all seven jobs including isolated operator installation.
+This is source CI, not physical or excluded recovery/printer acceptance.
+
+Current APK2026100110 supervisor foreground Realtime and actual Android
+disconnect/reconnect passed with fresh fictional markers and protected
+SQL/stored-byte/authentication reconciliation. Three new API sessions per
+case were normally logged out; the existing native session was preserved.
+Normal final dispatch FXF962 passed one seven-unit native submission, stock
+7 to 0, one header/line/matching cached success and out-of-stock true. Separate
+normal cold Orders200 and whole-state/stored-byte preservation passed.
+Partial FXF961 original native FAIL remains recorded; independent exact-once
+reconciliation passed (10 to 7), without replay. Pair proof SHA256
+a8d812b934fe367a6b1e64878ca484c75fddd6c85fea0c93ca31f4877afddc61.
+Application sources remain backend bed4eeee and mobile c422f62; final dispatch
+driver tooling a1d7572, mobile documentation d66bf3c. These narrow cases do not
+close entire workflow groups, concurrency, lost-response retries or isolation.
+
+Mobile exact documentation-head d66bf3c CI run37088802017 was in progress at
+this checkpoint. Prior bc6e4dc run37085292624 failed dependencies while lint,
+typecheck, debug artifact audit and redacted source/history scans passed.
+Dependencies remain unresolved; no waiver or older green CI transfer. Final
+readiness/eight-hour soak are unstarted. Dedicated natural-expiry helper
+lifecycle guards were source-tested, but no final freeze, dedicated AVD/session
+or expiry appointment exists. Existing helper twelve-hour caps are retained.
+
+
+2026-10-03 APK2026100110 saved rounding-invoice PDF PASS on final permitted
+attempt03, frozen tooling ddc5bcc. Existing invoice20261010 was not saved again.
+Actual native Overview displayed total179/tax9, then one Share generated one
+new private PDF, downloaded matching bytes and opened Android SEND. Original
+approved Librera was selected once, scroll viewing captured, and its actual
+export independently matched stored/native bytes (21,221 bytes, SHA256
+8e0523eab7d91020ade2340513fcfee23371b1553069d18e614d4fff3b9ba84e). Prior stored/device PDFs
+were preserved before overwrite; approved permissions and remembered settings
+were unchanged. Normal-route cold Orders200 and entire two-warehouse/auth/
+stored-byte reconciliation passed afterward; no new OTP/logout/business save.
+Private rounding-pdf0110-final-proof.json SHA256 3e841f35086a4416ac0f1df19ab056b2e9376d0c9f491963907170828012a83c.
+This is current supervisor PDF acceptance, not arithmetic/save/list, reciprocal
+customer denial, complete workflow-group closure or final readiness.
+
+
+2026-10-03 APK2026100110 native queue processing PASS on final attempt03,
+frozen tooling de6d674. Fresh FXQ996 dispatched exactly two units from the
+existing FXC701 lot, stock6 to4; one header/line/movement/matching cached
+success, only the prepared cart item removed, persistent order OPEN.
+Protected SQL/auth/stored bytes reconciled, then cold Orders200 and empty
+Queue passed. Native OTP/item-save attempts0, submission1. Preparation used
+one ordinary A customer OTP/API add_item_to_order, exact revision append
+with all old revisions/notes preserved, unchanged stock, and normal logout
+of only its new API session after reconciliation. API preparation is not
+native customer cart creation. Prior FXQ992 and all old transactions remain.
+An uppercase plan step ID was rejected before ledger/driver creation; that
+plan is preserved and a corrected immutable plan executed the same third
+native attempt without replay. Private queue-processing0110-final-proof.json
+SHA256 19d65bb62dbd2d778835238a08444d440b9a519439b78e3b0cbc658d42dcd39e. No fourth queue attempt, group closure or final readiness claim.
+
+
+2026-10-03 exact backend ca2730b CI run37091085641 FAILED validation
+after all103 source tests passed. Metadata dependency audit reported8 high
+paths rooted in braces3.0.3; contract and source/history scans passed, while
+installation/migrations/Grafana jobs were skipped. Earlier seven-job success
+is historical, not current-head acceptance. The primary advisory
+https://github.com/advisories/GHSA-vfj7-8cjw-p6xm lists affected<=3.0.3 and no
+patched version. No audit waiver or forced downgrade was applied.
+
+Independent storage production audit (CI had short-circuited before it) found
+@fastify/busboy3.1.1 affected by GHSA-xjh9-v7x6-24jw and GHSA-x8mw-p69m-v3mx.
+Review-source storage lock now updates only that transitive package to3.2.2,
+within the existing declared^3.0.0 range; package manifest/API/schema unchanged.
+Production storage audit is now zero vulnerabilities. Tarball integrity matched
+the locked sha512; isolated three-second-bounded parser checks passed normal
+input,252-byte boundary and prototype-named header. Private source evidence
+backend-ca2730b-storage-audit01.json, storage-busboy-patched-audit01.json and
+busboy-3.2.2-source-validation01/result.json preserves before/after results.
+This is source dependency/parser evidence only: no container build, fixture
+installation or live storage acceptance of the patched package is claimed.
+Frozen runtime backend bed4eeee plus its existing overlays remains unchanged.
+Metadata/mobile dependency gates still prevent final readiness and freeze.
+
+
+2026-10-03 APK2026100110 ordinary supervisor native logout PASS on final
+attempt03, frozen tooling de6d674. One confirmation revoked only its matched
+80417ab6 session; two cold launches required login and retained the Core
+selection. Independent SQL preserved unrelated authentication, profile active
+state, business/OTP data; actual stored-byte hashes matched before/after.
+Native OTP/business writes0. Original emulator now remains logged out; the
+formerly preserved native80417ab6 session is intentionally absent after this
+authorized logout. No account disabling or full authentication-group closure
+is claimed. Private supervisor-logout0110-final-proof.json SHA256
+ff0d879af8615c9a86174b909730e59199c6b1a40a3b458a539f3dfe945d790e. No fourth supervisor logout attempt.
+
+
+## 2026-10-03: genuine Customer A native authentication on APK10
+
+The first native login for genuine Customer A profile `79764e1a-3aed-4cac-9a25-42ccdafb79ac` passed on installed APK10 (SHA256 `a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69`). Guarded tooling commit `b2fbc52` requires the exact fictional account, warehouse identity and artifact, ordinary authentication limits, and preservation of existing sessions. Eleven targeted authentication source tests passed before execution.
+
+One ordinary mock-provider OTP request and verification produced one new native session. Independent SQL observations preserved both existing Customer A sessions, all unrelated account authentication, assignment and business hashes, static profile data, enrollment state, auth configuration and consumed-refresh-token history. The immutable native stage and verifier passed; credentials and plaintext OTPs were not serialized. Private evidence: `stage-approved-a-native-auth0110-01-evidence/ledger.json`, `native-approved-a-auth0110-01/`, and `customer-a-native-auth0110-final-proof01.json` under the existing campaign evidence root.
+
+The original owned API30 emulator is now authenticated as genuine Customer A. This replaces the previously logged-out device state; supervisor session804 remains intentionally removed by its earlier ordinary logout. This result covers native login only. It does not establish complete authentication, reciprocal isolation, native cart creation, stored-document byte reconciliation, account revocation, final readiness or delayed natural expiry. Earlier reserved-profile customer evidence remains separately historical. Final freeze, soak and expiry scheduling remain gated.
+
+
+## 2026-10-03: APK10 genuine Customer A receipt isolation, final attempt
+
+Genuine Customer A native access to Customer B receipt FXC702 passed on APK10 in the third and final attempt. The app displayed “GRN not found or access denied”, exposed no B receipt content, and the real get_grn_details RPC was independently observed. A subsequent cold launch and normal-route authenticated Orders read passed. Independent before/after database snapshots were identical, preserving business records, stock, storage metadata and authentication. No OTP or business submission occurred.
+
+Attempt one remains FAIL despite observed denial: the new test driver overwrote its epoch campaign deadline with a monotonic HTTP deadline and stopped before cold cleanup. Separate unchanged-state reconciliation passed. Attempt two remains FAIL before any target request because the prior denial screen was still open. Source corrections `98f2077` and `264f937` separate the clocks and explicitly cold restore before starting. Four targeted isolation source tests passed. Neither historical failure was relabelled; no fourth attempt is permitted.
+
+Private evidence: `native-genuine-a-receipt-denial0110-03/`, `stage-genuine-a-receipt-denial0110-03-evidence/ledger.json`, and `genuine-a-receipt-denial0110-final-proof.json`. Scope is genuine A-to-B native receipt denial only. Stored bytes, reciprocal current-APK B acceptance, image/PDF denial and the complete isolation group remain unproven by this case. Final readiness, soak and natural expiry remain gated.
+
+
+## 2026-10-03: current Customer A private-image API isolation
+
+One ordinary authenticated A-to-B private-image test passed while preserving genuine Customer A’s APK10 native session and its two older API sessions. Direct private B image GET and signing both returned HTTP400 with no image bytes. Only the new API session was normally logged out after independent SQL and actual stored-byte reconciliation. Ordinary quotas were checked before the single OTP request; no counters were reset. The existing confirmed B image and older generated GRN PDF remained byte-identical. Their original provenance is retained as historical object provenance, not APK10 native rendering acceptance.
+
+Private evidence: `ordinary-a-private-b-image0110-01/`, `stage-a-private-b-image0110-01-evidence/ledger.json`, and `current-a-private-b-image0110-final-proof01.json`. Source `737755d` binds actual A native-session ownership, independent TLS/IPC readiness, exact APK10 and preserved stored-object provenance. Targeted denial/refusal/SQL checks and the subsequent full fixture source suite passed under pinned Node22. Scope remains ordinary API read/signing denial only; native image upload/render/retry and full reciprocal isolation remain incomplete.
+
+
+## 2026-10-03: genuine A private B GRN PDF API isolation
+
+One ordinary authenticated A-to-B PDF-denial case passed against genuine B receipt FXC702. Direct GET of the existing private GRN PDF returned HTTP400 without PDF bytes; cross-customer generate-grn-pdf returned HTTP404. The current genuine A native session and both older API sessions were preserved. Only the new ordinary API session was logged out after protected SQL, authentication and actual stored-byte reconciliation. One ordinary OTP request was used, within real limits; no quota reset or fixed OTP was introduced.
+
+Private evidence: `ordinary-a-private-b-grn0110-01/`, `stage-a-private-b-grn0110-01-evidence/ledger.json`, `current-a-private-b-grn0110-final-proof01.json`. Source `e868031` supplied the frozen tooling; installed APK10 remained unchanged. The complete fixture source suite subsequently passed323/323 under documented Node22. Historical object-generation provenance remains historical; this case establishes ordinary API read/generation denial only, not native PDF viewing, complete reciprocal isolation or readiness.
+
+Exact backend source `b9200631c82c476370ba91893f3a0cbfa368c3b9` CI run37093775307 is terminal FAILURE; inspect its preserved exact job evidence before transferring any individual result. Current mobile source `e868031cd226015ce1e13ff31f6aa7881f5a1c02` CI run37093919599 was confirmed in progress. Final freeze, eight-hour soak and delayed natural-expiry scheduling remain unstarted and gated.
+
+
+## 2026-10-03: genuine Customer A native role controls and logout
+
+APK10 genuine Customer A assigned Orders and visible role controls passed: actual cold authenticated Orders200, A-only visible customer, no staff Queue, and no create/print controls on GRN, Dispatch or Invoices. Independent full authentication/business snapshots were identical before and after; no OTP or business write occurred. Private evidence: `native-genuine-a-read-controls0110-01/`, its immutable stage ledger, and `genuine-a-read-controls0110-final-proof01.json`. This is visible role-control acceptance only, not complete API write/isolation coverage.
+
+The subsequent ordinary native A logout passed in attempt two. One normal confirmation removed only the current native session; two cold launches required login with Core selection preserved. The account stayed active, its two older API sessions were preserved, and unrelated authentication/business snapshots and actual stored bytes were unchanged. Attempt one remains a pre-native refusal: the legacy supervisor config template omitted the required origin, so no native case directory, logout or session mutation occurred. The corrected plan is separate and bound to the preserved refusal. Private evidence: `native-genuine-a-logout0110-02/`, `stage-genuine-a-logout0110-02-evidence/ledger.json`, `genuine-a-logout0110-final-proof02.json`, and the before/after byte observations.
+
+The original owned API30 emulator is now logged out. Neither its A session nor the previously removed supervisor804 session may be assumed present in new configs. No new login is required for handoff. Full fixture source validation at source51c67ab passed325/325 under Node22; installed application/APK10 was unchanged. Account disabling, full group closure, final freeze, readiness, eight-hour soak and natural-expiry scheduling remain unproven/gated.
+
+## Literal staff role check and restored state, 3 October 2026
+
+Reviewed fixture tooling 7b717d0 adds exact APK10/profile/role guards for a
+reversible supervisor-to-staff test and ordinary staff authentication. All
+328 source fixture tests passed with pinned Node22. The normal administrator
+API changed only the reserved account role; ordinary native staff login passed.
+A cold Orders read returned200 with no Queue tab. The subsequent GRN control
+check failed: Android displayed “Staff access required”. The mobile CRUD matrix
+allows staff create/read/update, whereas backend authorize_rpc only grants the
+staff-wide bypass to admin/supervisor. This is an unresolved permission-policy
+mismatch, not a passing staff workflow. No authorization change or rerun was
+made to invent the intended policy.
+
+The failed attempt and independent SQL/session/actual stored-byte reconciliation
+are preserved privately in current-staff-read0110-attempt01-reconciliation.json.
+Normal native logout passed, removed only the new staff session, and required
+login on two cold launches. A second ordinary administrator API operation
+restored the original active/approved supervisor role. Original administrator
+sessions, target assignment, unrelated authentication, business rows and actual
+stored bytes match the pre-cycle checkpoint. The account has no native session;
+the original emulator is logged out. Two legitimate administrator OTPs and one
+staff OTP remain recorded, without counter resets.
+
+The role-cycle targetOtherFieldsHash differs across login. Each role operation
+preserved this hash; the native authentication observer independently preserved
+profileStaticHash, which excludes mobile_verified/mobile_verified_at/updated_at.
+The normal verify-OTP implementation updates mobile_verified_at=now(). This
+explains the likely cross-login hash change, but the checkpoint retains a
+qualification rather than claiming an identical full profile across the cycle.
+Private checkpoint: current-staff-role-cycle0110-checkpoint01.json. This result
+does not close reciprocal isolation, revocation, final-freeze, soak or expiry gates.
+
+## Genuine B invoice fixture and current A native denial, 3 October 2026
+
+Reviewed tooling27e262a prepared a fresh fictional B receiptFXI971 (one unit),
+dispatchFXI972 (one unit, stock1→0), B-only monthly test price5/labour2/tax5%, and
+invoice20261031 (total8/tax1). These are API fixture preparations, not native
+receipt/dispatch/invoice creation acceptance or production pricing decisions.
+The test rates come from tests/operator-api-core.mjs and the supported
+create_item_storage_price contract. Existing records, pricing rows, credentials
+and actual stored objects remain preserved; every intended write occurred once.
+
+The first preparation failed after a committed dispatch because the observer
+omitted the legitimate out_of_stock=false→true effect. Its FAIL remains unchanged;
+independent actual-state reconciliation passed before continuation, without
+replaying receipt or dispatch. Invoice-only attempt1 failed on the missing unit
+price; its session is preserved. Attempt2 retained the real preview, refused its
+null unit price, and normally removed only its new read-only session. One normal
+API operation then appended the absent B-only fictional price and reconciled it.
+The final invoice-only attempt passed and removed only its new session. A
+65-character step identifier was separately refused before driver/authentication;
+its original plan is retained alongside the corrected immutable plan.
+
+Private evidence: b-invoice-fixture0110-final-preparation-proof01.json and its
+bound ledgers. Two failed preparation API sessions are deliberately preserved.
+Five ordinary administrator OTPs brought its daily count to20; the next natural
+daily reset is16:53:18UTC, after this campaign deadline. No further administrator
+OTP request, quota reset or blind session cleanup is permitted in this campaign.
+
+Genuine Customer A then authenticated normally on the original APK10 emulator.
+The first native A-to-B invoice-denial attempt passed against the actual B invoice:
+Invoice Not Found with no B content/document controls, fresh get_invoice_data200,
+normal-route cold Orders200, and identical before/after SQL/authentication/pricing
+and actual stored-byte snapshots. No OTP or business write occurred during the
+denial case. Private proof: genuine-a-invoice-denial0110-final-proof01.json; case
+native-genuine-a-invoice-denial0110-01. This does not establish B PDF transport,
+full reciprocal isolation, group closure or final freeze. Customer B remains
+rejected/inactive; no B authentication or reapproval occurred.
+
+Current original emulator is authenticated as genuine Customer A using its new
+native-approved-a-auth0110-02 session; two older A API sessions remain preserved.
+Do not assume the earlier logged-out A session or supervisor804 exists. Full
+fixture source tests339/339 and lint PASS. Installed app/APK remainsc422f62,
+SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+Exact preceding documentation-head mobilefccd516/run37096877438 Android debug
+audit, lint/types and scans PASS; dependencies FAIL. Back end0e046cb/run37096889890
+contract/scans PASS, validationFAIL and dependent checks skipped. New heads need
+their own exact CI review. Final readiness/eight-hour soak and dedicated expiry
+appointment remain gated and unstarted.
+
+## Current genuine B invoice PDF API acceptance, 3 October 2026
+
+The first supervisor preparation and current A denial stages both PASSed.
+One ordinary supervisor login generated one PDF for actual B invoice20261031
+and downloaded20,809 bytes; stored/downloaded SHA256 is
+`ebeb9b37e023389438ce07868aa08f32cf7c083b487488c38b02fa7f8bebebab`.
+Customer A's one ordinary API login then tested the genuine stored object:
+direct GET400 without PDF bytes and generation404. Existing native/API sessions,
+business/pricing, unrelated authentication, old metadata/files and actual stored
+bytes were independently preserved. Only each newly issued API session was
+normally logged out. B remains rejected/inactive; no reapproval, quota reset,
+write replay, application API or schema change occurred. Source347/347 fixture
+tests, lint and typecheck PASS at tooling55cab9e. These are API PDF evidence,
+not native B PDF viewing, complete reciprocal workflow closure or final freeze.
+Final readiness/eight-hour soak and delayed natural-expiry appointment remain
+gated by unresolved native workflows, staff policy and dependency audits.
+
+## Compatible storage dependency image build, 3 October 2026
+
+Pinned application fix `3df69a2c2393a1f81326b4c6a4a30d60a2868a88` was
+built from a clean detached checkout, using only its `docker/storage` context.
+The first bounded build PASSed under a new local fictional tag:
+`warehouse-fixture-storage-3df69a2-vm2026100110-01:local`, image
+`sha256:dba23152b96787abecb0ce93e769f2b3ea6a0da1c1f91ef8080d72c1d120ed2d`.
+The source lock exactly matches the image's installed lock; busboy is3.2.2.
+The existing source-only proof remains historical and is not rewritten.
+
+The image's Node24.21.0 smoke passed ordinary multipart, bounded252-byte
+boundary and prototype-header cases plus actual Fastify multipart injection.
+Its1,166 precompiled application files and65 native binaries exactly match the
+pinned upstream base; the native xattr module loads. The first smoke failed
+because root with all capabilities dropped could not read the UID1000-owned
+private0400 test source. Failure output is preserved. Corrected attempt2 ran as
+the owning UID1000, retaining network-none/read-only/no-new-privileges limits.
+No rebuild or relaxed host permissions were used.
+
+Reproduce the isolated build from the pinned fix checkout with an unused tag:
+
+```sh
+DOCKER_BUILDKIT=0 docker build --platform linux/amd64 --pull=false \
+  --memory=2g --memory-swap=2g --cpu-period=100000 --cpu-quota=200000 \
+  --tag warehouse-fixture-storage-review:local docker/storage
+```
+
+Legacy builder resource limits were used for this measured VM build; its
+upstream deprecation notice remains in the saved log. Hold the owned fixture
+actor locks, allow only one heavy builder, and supervise the client with a
+30-minute cap/Restart=no. The tag must be unused. Do not overwrite a runtime tag.
+Run `tests/storage-image-candidate-smoke.cjs` via a readonly bind at
+`/fixture-image-smoke.cjs`, using `--entrypoint node` and argument `candidate`.
+Container limits used: `--network none --read-only --user 1000:1000`,
+`--cap-drop ALL --security-opt no-new-privileges --cpus 2 --memory 512m
+--memory-swap 512m --pids-limit 128`, with each process bounded45seconds.
+Choose the owning UID/GID when the private source has0400 permissions. The
+`base` mode records the pinned upstream image's compiled/native manifests for
+independent equality comparison; retain both actual outputs and failures.
+
+Private proof: `storage-busboy-image-build-final-proof01.json`, with source,
+command, clean checkout, built identity, logs, both smoke attempts and bindings.
+Actual fixture SQL/authentication/business/pricing/stored-byte reconciliation
+PASSed after the isolated build. No warehouse volume, credential, port, service
+or image tag was attached/replaced. **This is not installed storage-service or
+fresh complete backend reproduction acceptance.** The metadata braces audit,
+other dependency/native gates, final freeze, soak and expiry remain unresolved.
+
+Current temporary A native cleanup attempt3 PASSed: one ordinary confirmed logout, two cold login requirements, selected Core persistence, zero OTP/business writes and unchanged protected SQL/authentication/actual stored bytes. Account remains active; older API sessions preserved. First refusal and attempt2 PASS remain historical. No fourth attempt. Private proof: `genuine-a-logout0110-final-proof03.json`.

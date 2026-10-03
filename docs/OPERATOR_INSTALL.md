@@ -9,32 +9,95 @@ Read [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md) before provisioning for
 the pilot's observed failures, remedies, configuration traps and detailed
 remaining edge-case acceptance matrix.
 
-This is the pilot installation path. A successful setup does not enable the
+This path creates an independent warehouse. A successful setup does not enable the
 unfinished printer/sensor integrations or complete replacement-host recovery.
-Use the operator PR pair linked by [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)
-until it has been reviewed and merged; do not assume the changes are on `main`.
+Backend PR #68 is merged; mobile PR #33 remains a draft. Use the exact source
+pair below. Historical pilot results do not validate this fresh installation.
 
 ## Select the reviewed repository version
 
-Until PR #68 is reviewed and merged, use its published operator branch. Check the
-PR's recorded full commit and passing CI before executing installation commands:
+Backend [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
+merged on 2026-09-29 at `f18f51d4625e7f8c0d977ac69645804e318a9d49`.
+[Post-merge CI 36591024357](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36591024357)
+passed all seven jobs. Verify availability and pin both repositories before setup:
 
 ```bash
-git clone --branch codex/operator-install --single-branch \
-  https://github.com/abhiguru/supabase-warehouse-template.git
-cd supabase-warehouse-template
-git rev-parse HEAD
-git status --porcelain
+git ls-remote https://github.com/abhiguru/supabase-warehouse-template.git HEAD refs/heads/main
+git ls-remote https://github.com/abhiguru/rn-warehouse-template.git refs/heads/codex/operator-mobile refs/pull/33/head
+(umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git backend)
+(umask 022; git clone https://github.com/abhiguru/rn-warehouse-template.git mobile)
+git -C backend switch --detach f18f51d4625e7f8c0d977ac69645804e318a9d49
+git -C mobile switch --detach 8240cce9121a797fd0cf2e00e568a61985814ddb
+git -C backend rev-parse HEAD
+git -C mobile rev-parse HEAD
+git -C backend status --porcelain
+git -C mobile status --porcelain
 ```
 
-Compare the printed commit with [PR #68](https://github.com/abhiguru/supabase-warehouse-template/pull/68)
-and require a clean status. Record that exact commit in the instance handoff.
-After merge, the reviewed merge commit may be checked out directly; do not use an
-unrelated moving branch or assume an operator release tag exists. The current
+Public source must be readable by container service users: clone in a subshell
+with `umask 022` as above. Keep `umask 077` for private state, provider files and
+raw evidence. Do not use a recursive permission change on the whole workspace:
+that could expose private configuration. A fresh-VM clone under 077 produced
+mode-0600 initialization SQL; PostgreSQL failed with `Permission denied`,
+restarted and became healthy despite incomplete initialization. Healthy process
+status alone was misleading. Inspect initialization failures before rerunning;
+retain and stop an incomplete owned attempt and use a separate empty state for
+an independently diagnosed reinstall. Never delete another instance or copy its
+state. Record the failed attempt and new instance identity.
+
+Require clean source status and record both full commits. Mobile `main` does not
+contain this draft candidate. If either checkout fails, stop and explain the
+missing baseline before selecting a substitute. Keep the installed checkout
+pinned and make corrections in a separate review branch/worktree. The current
 release gate still blocks publishing an operator release. See the
 [backend acceptance record](BACKEND_CORE_ACCEPTANCE.md) for test-only setup and
 remaining release gates. Instance configuration belongs outside the checkout;
-no source edits should be necessary for the documented installation.
+no hidden source edits should be necessary for the documented installation.
+The explicit reviewed correction below records why its source differs from the
+starting baseline.
+
+## Reviewed gateway correction before a new corrected installation
+
+The requested baseline above remains the starting record. On this VMware host,
+Kong3.9.3 inherited `search localdomain` from Docker. The gateway waited about
+four seconds on `rest.localdomain` SERVFAIL retries although Docker answered
+`rest` immediately. Two public-configuration reads took about eight seconds;
+one native server-return discovery timed out. Direct REST reads were15–39ms.
+Do not hide this by extending the client timeout or changing host DNS.
+
+For the corrected independent test sequence, fetch and pin the reviewed source
+before configuring new state, then record this second source commit explicitly:
+
+```bash
+git fetch origin codex/fresh-vm-operator-install
+git checkout --detach bed4eeee4a008073aa453c32da27cade50a32a2f
+git rev-parse HEAD
+git status --short
+```
+
+This is draft PR#79 code through644, not a merged release or the originalf18 runtime.
+It includes the gateway correction originally tested at2584496 and the same-major
+source dependency fixes. Exact CI36864729906 passed all seven jobs, including a
+separate isolated installation; it does not update Test1 or the active VM fixtures.
+Record this full installed commit and overlays when using a fresh state. Existing
+installed-image/security/release gates remain open even though the source audit passes.
+Its Compose configuration sets `dns_search: "."` for Kong alone, using the
+[supported Compose search-domain setting](https://docs.docker.com/reference/compose-file/services/#dns_search).
+The historical fresh clean fixture06 installed2584496 with only the explicitly
+recorded private port/subnet overlay: setup/local doctor and functional unit,
+migration, gateway, changed-upstream-IP, core API, Realtime, final API, Studio
+and retention-preview checks PASS. REST proxy latency became0–2ms, public
+discovery84ms, and missing/invalid API keys remained401. These are local fixture
+measurements, not production capacity claims. The source audit failure at that
+historical pin is retained; bed4's source correction and isolated CI installation
+have their own evidence. Installed-image acceptance and release gates remain open.
+
+The already installed Test1 remains pinnedf18 with its earlier doctor evidence;
+this correction has not silently changed that runtime. Apply a correction to an
+existing instance only through its owning checkout/state, recording the source
+change and preservation/health results. Never replace host DNS, delete volumes
+or recreate another instance's gateway. See UNATTENDED_FIXTURE.md for clean
+separate state rather than borrowing an installed warehouse for regression tests.
 
 ## Linux host preparation
 
@@ -48,10 +111,95 @@ needed; never give the agent the sudo password in chat.
 
 Install Node.js 22.18 or newer, npm, Git, OpenSSL, util-linux (`flock`), Docker
 Engine and Compose v2.
+After an operator-approved VM resource change, recheck effective CPUs, RAM,
+disk, sudo/Docker access and pinned Node in the new session. Compare saved private
+configuration/identity fingerprints without printing values; then run the installed
+instance's local/public doctor before resuming optional fixtures. Resource changes
+do not authorize replacing state, credentials, DNS or another connector. See
+OPERATOR_SETUP_NOTES.md for the scoped eight-CPU/KVM post-reboot results.
+
 Choose a persistent filesystem with at least 10 GiB free for this initial
-installation check, plus capacity for the operator's actual data. Start Docker
+installation check, plus capacity for the operator's actual data. Maintain that
+minimum at every setup/doctor invocation, including when adding SDKs, AVD images
+or compiling Android. Finish disposable backend checks before heavy native
+builds on a constrained host, and record free space again. If space falls below
+the guard, stop and reclaim only your own completed generated compiler outputs
+after verifying their exact APKs are retained elsewhere; preserve warehouse
+state, logs, artifacts and signing files. Never weaken the guard or globally
+prune Docker to make installation pass. Start Docker
 at boot with `sudo systemctl enable --now docker`. The installer checks its
 availability and Linux x86-64 architecture before creating state.
+
+### Ubuntu 24.04 x86-64 prerequisite sequence
+
+Record the host before changing it: `cat /etc/os-release`, `uname -m`, `id`,
+`sudo -n true`, `command -v node npm git docker`, `node --version`,
+`npm --version`, `git --version`, `free -h`, `df -h`, `ss -lntup`, and
+`stat -c '%a %U:%G %n' "$HOME"`. If Docker exists, also record `docker version`,
+`docker compose version`, and `docker ps`. Inspect existing paths and projects;
+never delete them to resolve a collision. Keep raw output in a mode-0700 evidence
+directory outside Git, creating evidence files under `umask 077`.
+
+The fresh-VM run found Ubuntu's Node 18 inadequate. This installs a user-owned
+Node 22 binary without replacing the OS package. Start with these packages:
+
+```bash
+sudo -n apt-get update
+sudo -n apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils
+mkdir -p "$HOME/.local/opt" "$HOME/.cache/warehouse-node-download"
+cd "$HOME/.cache/warehouse-node-download"
+curl -fSLO https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
+curl -fSLO https://nodejs.org/dist/v22.23.3/SHASUMS256.txt
+rg ' node-v22.23.3-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -
+tar -xJf node-v22.23.3-linux-x64.tar.xz -C "$HOME/.local/opt"
+export PATH="$HOME/.local/opt/node-v22.23.3-linux-x64/bin:$PATH"
+node --version
+npm --version
+```
+
+If `rg` is unavailable, use `grep` for the checksum selection above. Checksum
+comparison uses Node's published HTTPS checksum file; this is not a claim that
+a release signature was verified. Repeat the PATH export in every installation,
+health-check and build shell; a change in a different terminal does not update
+the agent or a system service. Avoid overwriting an existing version directory.
+
+Install Docker using its [official Ubuntu repository procedure](https://docs.docker.com/engine/install/ubuntu/).
+Inspect conflicting packages first; do not remove an existing container runtime
+without assessing the services it owns. On this fresh host none were present:
+
+```bash
+sudo -n install -m 0755 -d /etc/apt/keyrings
+sudo -n curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo -n chmod a+r /etc/apt/keyrings/docker.asc
+printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo -n tee /etc/apt/sources.list.d/docker.sources
+sudo -n apt-get update
+apt-cache madison docker-compose-plugin
+sudo -n apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
+sudo -n systemctl enable --now docker
+sudo -n usermod -aG docker "$(id -un)"
+```
+
+The unversioned Compose package installed v5.5.1 on 2026-09-30; the guide calls
+for v2. This sequence explicitly selects available v2.40.3. If another Compose
+version is already installed, inspect its use before changing it. Do not call
+Compose v5 tested by these instructions. Open a new login session, or use
+`sg docker` to open a shell with effective Docker-group access. In that shell,
+repeat the Node PATH export and verify:
+
+```bash
+id
+docker version
+docker compose version
+docker buildx version
+docker info --format '{{.ServerVersion}}'
+docker ps --format '{{.Names}} {{.Status}} {{.Ports}}'
+```
+
+Do not run warehouse setup as root or make the Docker socket world-writable.
+Record actual package versions with `dpkg-query -W`; repository package versions
+can change. This run installed Engine 29.8.1, containerd 2.3.6, Buildx 0.37.1,
+Node 22.23.3 and npm 10.9.9. These prerequisite checks alone do not establish
+service or business acceptance.
 
 Choose an empty state path outside the checkout, such as
 `/srv/warehouse/acme`. Its existing parent must be owned by the installation
@@ -83,11 +231,11 @@ either. The database synchronizer validates a 24-character lowercase hex Flow
 ID, a numeric PE ID and six uppercase alphanumeric sender characters.
 
 `MSG91_TEMPLATE_ID` holds the MSG91 **Flow ID**, not the separate DLT Template
-ID. For the current Guru Cold Storage flow, use Flow ID
-`694a8ea0cd30ae1f432f445a`, PE ID `1101817660000088076`, sender/header
-`GCSAMD`, and DLT Template ID `1107176638369238844`. Its approved message is
-`{OTP} is your OTP code for Guru Cold Storage Private Limited, Ahmedabad. Valid for 5 mins. Please do not share this with anyone.`
-The Flow variable is exactly `OTP`, including capitalization. The operator OTP
+ID. Do not copy another warehouse's provider identifiers or credentials. Obtain a
+Flow, entity and sender owned and approved for this test instance from the
+operator's protected provider file. The historical pilot's Flow and DLT values
+remain dated evidence in [OPERATOR_SETUP_NOTES.md](OPERATOR_SETUP_NOTES.md), not
+fresh-install defaults. The Flow variable is exactly `OTP`, including capitalization. The operator OTP
 worker sends this variable through MSG91's Flow endpoint and reads the active
 provider settings from the latest protected `public.sms_config` row. It accepts
 the request only after MSG91 confirms success. [MSG91's Send SMS
@@ -128,6 +276,7 @@ administrator details with the warehouse's values:
 
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+export COMPOSE_PARALLEL_LIMIT=1 # Limit simultaneous startup on small VMs.
 export WAREHOUSE_ADMIN_PHONE=91XXXXXXXXXX
 bash setup.sh --operator \
   --state-dir "$WAREHOUSE_STATE_DIR" \
@@ -145,6 +294,13 @@ credentials, database and stored files. Run the same setup command a second time
 to verify that behavior before loading business data. Do not copy another
 instance's state directory or credentials.
 
+Keep before/after comparisons in private evidence: hash this instance's manifest
+and credential file without printing contents, compare the existing administrator
+record/database identity and migration count, and hash a fictional stored document.
+Rerun with exactly the same inputs, then compare those values and verify local
+health. Do not treat a maintenance Storage upload as customer authorization
+evidence; test signed documents separately using a real customer session.
+
 ## HTTPS and network
 
 Only the HTTPS reverse proxy or an integrator-managed tunnel should accept
@@ -159,6 +315,21 @@ uses a different gateway port.
 
 If the operator chooses Cloudflare Tunnel, install `cloudflared` from
 [Cloudflare's signed Debian/Ubuntu package repository](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/#1-download-and-install-cloudflared).
+The fresh Ubuntu run used the signed `any` package repository:
+
+```bash
+sudo -n install -m 0755 -d /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo -n tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+printf 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main\n' | sudo -n tee /etc/apt/sources.list.d/cloudflared.list
+sudo -n apt-get update
+sudo -n apt-get install -y cloudflared
+cloudflared --version
+```
+
+This installed cloudflared 2026.9.3. Inspect any existing package-repository files
+before replacing them on a reused host. Package installation does not create a
+route or start a connector.
+
 The provided Windows configuration was a **sample**, not an approved hostname,
 tunnel, credential path, or authorization to change Cloudflare DNS. Ask the
 operator for these details **one question at a time**, at the step that needs
@@ -200,6 +371,47 @@ existing tunnel, stop another connector, run tunnel cleanup on another
 connector, or use `route dns --overwrite-dns`. Before creating the new DNS
 route, confirm the exact hostname has no existing record. Limit the CLI changes
 to the new tunnel and that hostname, then record the new UUID and route.
+
+For account-side inspection after local login, keep the certificate private and
+save tunnel inventory in private evidence:
+
+```bash
+cloudflared tunnel --origincert /private/path/cert.pem list --output json > /private/path/tunnels-before.json
+```
+
+Inspect the exact hostname's DNS records in the authenticated Cloudflare zone,
+including all record types. This attempt used the following read-only API check
+with cloudflared 2026.9.3's login certificate. It prints only the vacancy result;
+the token stays in memory. Replace the certificate path and hostname. If access
+is denied or the certificate format differs, stop route creation and use an
+authenticated dashboard inspection; never infer vacancy from NXDOMAIN alone.
+
+```bash
+export WAREHOUSE_TUNNEL_CERT=/private/path/cert.pem
+export WAREHOUSE_API_HOSTNAME=confirmed-api.example.com
+python3 - <<'CHECK_DNS'
+import base64, json, os, urllib.parse, urllib.request
+from pathlib import Path
+pem = Path(os.environ['WAREHOUSE_TUNNEL_CERT']).read_text()
+body = ''.join(line for line in pem.splitlines() if not line.startswith('-----'))
+cert = {key.lower(): value for key, value in json.loads(base64.b64decode(body)).items()}
+url = 'https://api.cloudflare.com/client/v4/zones/' + cert['zoneid'] + '/dns_records?'
+url += urllib.parse.urlencode({'name': os.environ['WAREHOUSE_API_HOSTNAME'], 'per_page': 100})
+request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + cert['apitoken']})
+try:
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.load(response)
+except Exception:
+    raise SystemExit('Authenticated DNS inspection failed; stop before configuring ingress.')
+if not result.get('success') or result.get('result'):
+    raise SystemExit('Hostname occupied or inspection unsuccessful; stop before configuring ingress.')
+print('Authenticated exact-hostname DNS vacancy confirmed.')
+CHECK_DNS
+```
+
+Verify the proposed **new** tunnel name is absent from inventory. Recheck DNS
+immediately before routing, and route without overwrite. Do not inspect private
+warehouse endpoints on the existing pilot as part of this fresh test exercise.
 
 For CLI management, `cloudflared tunnel login` opens a browser authorization
 flow and writes a new `cert.pem` for the selected zone. Move that file into the
@@ -265,6 +477,34 @@ or in the service unit. Check that only the gateway is exposed through the
 tunnel, then run the local and external doctor checks and test from warehouse
 Wi-Fi and cellular data.
 
+For this fresh VM, a dedicated local unit avoided changing an existing connector.
+Use a new **unoccupied unit name**, replacing the user, paths and unit name below
+with this instance's recorded values. Validate ingress and confirm file ownership
+before enabling it. The service user must be able to read its private directory;
+keep credentials/configuration mode 0600. Do not put tokens in the unit.
+
+```ini
+# /etc/systemd/system/warehouse-NEW-INSTANCE-tunnel.service
+[Unit]
+Description=Dedicated test warehouse HTTPS tunnel
+Wants=network-online.target
+After=network-online.target docker.service
+[Service]
+User=YOUR_INSTALL_USER
+Group=YOUR_INSTALL_USER
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /private/path/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+```
+
+Write that new unit using noninteractive sudo, then run `sudo systemctl
+daemon-reload`, `sudo systemctl enable --now warehouse-NEW-INSTANCE-tunnel.service`
+and `systemctl is-active warehouse-NEW-INSTANCE-tunnel.service`. Inspect its logs
+privately if inactive. An active/enabled service is not evidence of an unattended
+restart; do not reboot without separate authorization.
+
 After the proxy or tunnel is live, run:
 
 ```bash
@@ -280,6 +520,101 @@ pass.
 Enable the reverse proxy's system service at boot as well as Docker. If the
 router cannot send LAN clients back through its public address, configure local
 DNS for the same canonical domain; the app must still use the same HTTPS origin.
+
+## Verify fictional warehouse behavior before acceptance
+
+After local/public doctor, build/install the pinned mobile candidate using its
+[operator Android guide](https://github.com/abhiguru/rn-warehouse-template/blob/codex/fresh-vm-operator-notes/docs/OPERATOR_INSTALL_NOTES.md).
+Record both source commits and any native identity overrides. Choose this new
+server and confirm its company/origin/instance identity before authentication.
+Lift any no-SMS restriction explicitly for this instance before requesting codes;
+use owned phones and local hidden input. Never use a fixed OTP or fixture issuer
+against this installed warehouse.
+
+Sign in as the first administrator. Create **Fictional Customer A**, using a
+second owned phone only for authentication. Verify its first login remains pending
+without warehouse access; approve it from Enrollment Review and request a new
+code for Customer A. A third owned phone is required for a real Customer B session.
+If unavailable, mark reciprocal A/B authentication/isolation BLOCKED. A disposable
+fixture or one-way denial of access to a B record does not close that case.
+
+Use the existing fictional billing example, with deliberately fictional items,
+receipt/dispatch numbers and rack names. This exercise used:
+
+| Step | Input / expected check |
+| --- | --- |
+| Administrator catalog/price | Fictional potatoes in bags; monthly price 5, labour 2, tax 5%, effective January 1, 2026 for Customer A |
+| Receipt | April 1, 2026; 100 bags, 10 kg per bag; verify 100 bags / 1000 kg |
+| Customer cart/order | Add 7 bags from that receipt; staff queue sees the same order; other customers cannot read/change it |
+| Partial dispatch | May 2, 2026; 20 bags; 80 bags / 800 kg remain |
+| Final dispatch | Same day; remaining 80 bags; zero stock remains |
+| Invoice, existing legacy-duration example | Subtotal 950, rounded tax 48, total 998; compare preview and persisted invoice |
+| Private documents | Authorized GRN, dispatch, invoice and stock PDFs download with valid PDF bytes; anonymous/foreign access denied |
+
+Retain each first attempt and retry result separately. Check duplicate receipt
+and dispatch retries do not duplicate records/subtract stock twice; reject
+negative, zero and overstock quantities without changing balance. In a separate
+fictional 10-bag receipt, submit two conflicting 7-bag dispatches concurrently;
+exactly one succeeds and 3 remain. Test authorized image upload/confirmation,
+private reads, duplicate/oversize rejection and deletion; do not count arbitrary
+non-image bytes as proof of a native photo workflow. Refresh/replay/logout,
+natural token expiry, Realtime updates/reconnect and actual native offline
+behavior require their own results. Record PASS, FAIL, BLOCKED or NOT TESTED per
+case; compilation and historical device passes are insufficient.
+
+Also compare a fractional-tax native example against its saved invoice. This
+installation found mobile e54 showing tax8.50/total178.50 while the unchanged
+backend saved CEIL-rounded tax9/total179. The integer950/48/998 example passing
+does not close this mismatch. Preserve the failed result, keep native financial
+acceptance open, and agree a reviewed display/rounding correction before retesting.
+Do not change production rules or delete the evidence to obtain a PASS.
+Treat a preview/save mismatch as a blocker before long mobile acceptance runs.
+Verify create and edit recalculation paths, confirmation, saved header and the
+private PDF. Keep storage, discount and rounding adjustment separate; the
+existing backend ceilings tax and total independently and preserves discount.
+Use the documented 30/31/46-day boundaries and a fractional discount/surcharge.
+Do not change billing policy or rewrite historical invoices to hide a failure.
+
+
+These values validate the [documented fictional billing rules](INVOICE_RULES.md).
+They are not approved production pricing, tax or calendar policy. Ask the operator
+for business decisions before adopting production rules. Read the
+[guarded disposable backend acceptance instructions](BACKEND_CORE_ACCEPTANCE.md)
+for repository fixtures: they require their own fictional identity, origin,
+state name and port. Preserve those guards and never point them at this warehouse.
+
+## Optional unattended fictional fixture checks
+
+For unattended backend/native checks, follow [the isolated fixture sequence](UNATTENDED_FIXTURE.md)
+in a **new disposable checkout and state**. It uses an explicit no-delivery
+provider and the repository's unchanged ownership/fictional-identity guards.
+Never point those scripts or the mock-delivery bridge at the installed warehouse.
+Mock delivery does not establish MSG91 acceptance. Emulator execution also needs
+its own resource checks; boot completion and compilation alone are insufficient.
+
+## Ordinary operation
+
+Use the **installed checkout**, the recorded state directory and a shell with
+Node 22 and effective Docker access. The Compose wrapper refuses a running
+project owned by another checkout; a review worktree is not its service owner.
+
+```bash
+cd /path/to/installed/backend
+export PATH="$HOME/.local/opt/node-v22.23.3-linux-x64/bin:$PATH"
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash start.sh
+node scripts/doctor.mjs --local
+node scripts/doctor.mjs
+bash scripts/compose.sh ps
+# Stop this instance while preserving its data:
+bash stop.sh
+```
+
+Start/stop the dedicated tunnel service separately using its recorded systemd
+unit name. Never stop a connector belonging to another instance. Do not run
+`down -v`, broad Docker prune, or delete state as a restart procedure. Docker
+restart policies and an enabled tunnel service are configuration evidence;
+unattended host restart remains untested until an authorized test occurs.
 
 ## Windows host with Linux VM
 
@@ -305,6 +640,12 @@ operation without a host login. Arrange the host test with its operator.
 
 ## Recovery and test boundary
 
+For this exercise, a consistent same-VM backup of the independent disposable
+fixture passed checksums and archive-format inspection (evidence616); no restore
+or off-host recovery was performed. Unattended fixture bridges must use the
+supervised lifecycle in [UNATTENDED_FIXTURE.md](UNATTENDED_FIXTURE.md). A runner
+unit alone does not keep its network dependencies alive.
+
 The manual `db:backup` command produces a private **unencrypted** archive
 directory containing the database, stored documents, public manifest and private
 configuration. Store it only on protected storage. `db:verify-restore` checks a
@@ -324,3 +665,112 @@ exact code and build IDs. The dated [pilot notes](OPERATOR_SETUP_NOTES.md) recor
 real SMS/API login and partial Android Wi-Fi acceptance; printing, sensors and
 the remaining native cases are still open. These pilot results do not carry over
 to a fresh operator instance without its own checks.
+
+
+### Resuming after an operator-managed VM reboot
+
+Keep the private inputs and instance state; do not run initial setup against a
+new state path merely to restart. Recheck disk/memory, effective noninteractive
+sudo/Docker access, private port ownership, tunnel service and both doctor modes.
+Use the pinned Node PATH in the same shell (and any `sg docker` shell) that runs
+the commands. The system Node may differ after reopening a terminal. Consult
+[FRESH_VM_INSTALL_LEDGER.md](FRESH_VM_INSTALL_LEDGER.md) before repeating suites:
+repeat health after a reboot, and failed or changed cases, rather than every
+completed fixture test. Never delete volumes or another instance to resume.
+
+### Current independent fixture verification
+
+For optional unattended diagnostics, follow [UNATTENDED_FIXTURE.md](UNATTENDED_FIXTURE.md)
+from a clean pinned7e3f66a checkout and a new private state. The1October
+reproduction passed setup/local doctor and all functional checks618, with only
+the declared isolated subnet overlay. The deferred dependency audit remains
+FAIL. Use its supervised persistent bridge/relay procedure rather than keeping
+long-run dependencies in tool-backed terminals; the first8hour attempt failed
+after those terminal processes disappeared. Retain that failed evidence and
+use a new artifact/CA/plan identity. These fictional checks do not change or
+replace the ordinary installedTest1 sourcef18f51d or its dedicated ingress.
+
+For optional unattended fictional tests, follow the [supervised fixture startup and bounded IPC readiness sequence](UNATTENDED_FIXTURE.md). A successful systemd start alone is not application readiness; run that check before relay control or plan freeze. Ordinary warehouse setup is unchanged.
+
+### Post-soak retry observer preparation639 — 2026-10-01
+
+Source review found that fault-control `status` retains the first dropped key;
+comparing it after retry does not independently observe the retry key. The optional
+fixture relay now has bounded/redacted `observations` with ordering, changed-key
+and overflow evidence. Follow the corrected main sequence in
+[fixture fault rehearsal](FIXTURE_FAULT_REHEARSAL.md), including empty observations
+before retry and exactly one matching observation afterward.
+
+Separate review checkout, Ubuntu24.04.3, Node22.23.3; `npm ci --ignore-scripts
+--no-audit --no-fund`, `node --test tests/fixture-fault-relay.test.mjs` PASS17 and
+`npm test` PASS80, no skips. These use local stub sockets, not warehouse writes.
+Active soak/runtime sources are unchanged; installing the reviewed relay and
+native driver integration remain pending exclusive fixture access. No historical
+transaction was replayed or erased. This is not new end-to-end acceptance.
+
+### Source dependency gate correction644 — 2026-10-01
+
+CI36858689257 on observer0dc7392 stopped at the metadata source dependency audit.
+Its log identified brace-expansion1.1.18 and fast-uri3.1.7. Running the Storage
+portion separately exposed22 findings (4high/18moderate, including transitive
+parent reports); the failed first command had prevented CI from reaching it.
+Keep that failed result and its skipped dependent jobs as historical evidence.
+
+Updated same-major leaf pins and committed locks: brace-expansion1.1.21/2.1.7/
+5.0.12, fast-uri2.4.7/3.1.8/4.1.5, ip-address10.7.2, minimatch10.2.6, Storage
+undici7.30.0, grpc-js1.14.5 and socks2.8.10. Lockfile review found only these updates
+and corresponding dependency deduplication; no direct framework/server major
+upgrade. The source audit command is unchanged; no advisory suppression or lower
+severity threshold was introduced.
+
+On Ubuntu24.04.3, Node22.23.3/npm10.9.9 regenerated locks without lifecycle scripts.
+Storage engine warnings during this metadata-only step were preserved. Clean
+installs and metadata source validation then used Node24.21.0/npm11.12.1, satisfying
+Storage's declared toolchain. `npm run check:container-dependencies` PASS with zero
+reported vulnerabilities in each graph; Storage's separate JSON audit also zero.
+`npm test` PASS80. Storage `npm ci --omit=dev --ignore-scripts --no-audit --no-fund`
+and `npm ls --omit=dev` PASS. Metadata clean install, `npm run check`, `npm run build`
+and its Docker-recipe app/admin/helper tests PASS12/3files.
+
+Metadata validation used a separate private checkout of upstreamv0.99.0 with the
+Dockerfile's archive SHA8d3974ac52eaa4ddd7d0462ac1bd30f9e0e50b511fa96a537d6f3f9cc28e726e,
+the tracked fastify5/vitest4 patches and corrected manifests/lock. No hidden source
+edit or warehouse database was used. Fastify deprecation warnings remain.
+
+This closes the locally reproduced **source audit** defect only. A fresh CI run,
+rebuilt container integration, Storage runtime regression and installed-image
+acceptance remain separate. No active warehouse/fixture image or service changed;
+all54 active-soak bindings remained unchanged. Existing image-scanning findings,
+production/recovery gates and deferred image-security research remain open.
+
+
+### Exact CI follow-up649 — 2026-10-01
+
+[CI36864729906](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36864729906)
+completed successfully on `bed4eeee4a008073aa453c32da27cade50a32a2f`:
+validate (including the unchanged source dependency audit), contract, redacted
+source/history scan, migrations, isolated operator installation and both Grafana
+architecture jobs all PASS. This supersedes the pending-CI observation in644;
+the earlier failed run36858689257 and its skipped jobs remain historical evidence.
+
+The isolated installation job exercised its fresh fictional CI state and required
+API, document, Realtime and Studio checks. It did not update this VM's installed
+warehouse or active soak. Installed-image acceptance, existing security findings,
+physical/provider acceptance and production/recovery gates remain separate.
+No deferred image-security research or production action was performed.
+
+
+### Clean-source guide verification656 — 2026-10-01
+
+The main corrected-source pin above is nowbed4, retaining the originalf18 baseline
+and258 gateway evidence. Fresh remote clean bed4/2fb mobile checkouts passed locked
+installs, backend80tests/source audit, mobile295unit/75setup/type/lint/Expo18/18/audit,
+public bootstrap and static contract without hidden source edits. Separate new
+fictional private configuration and identical-input rerun preserved identity and
+credentials. No services or SMS were started.
+
+Full local new-code installation/rebuilt-image checks remain pending until the
+active run releases its fixture resources; do not stop another instance to repeat
+the guide. Exact bed4/b401 CI passed independent isolated installation, but does
+not claim this VM's new full reproduction. Keep installed-image/security/physical
+release gates open and preserve every failed/historical result. See setup notes656.
