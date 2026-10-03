@@ -37,7 +37,7 @@ Latest complete fixture source validation passed347/347 under Node22.23.3.
 Revalidated source audits report26 high mobile dependency paths and8 high
 backend metadata paths, rooted in unpatched node-forge/braces advisories.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
-storage busboy3.2.2 patch is source-only, not installed container acceptance.
+storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; it is not installed storage-service acceptance.
 The installed application remains bed4eeee plus its four declared overlays.
 No final freeze, readiness soak or delayed-expiry appointment is eligible yet.
 Core helper14 uses pinned e3126a0, switching08 uses7699364, and fault04 is disarmed.

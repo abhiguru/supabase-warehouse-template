@@ -11,7 +11,7 @@ fixture tooling and installed runtime evidence remain separate.
 
 | Requirement | Verified current scope and remaining gate |
 | --- | --- |
-| Backend reproduction | Pinnedbed4 installation/repeat setup PASS with separate state; busboy3.2.2 source patch audit/parser PASS, not rebuilt or installed. Current metadata audit BLOCKED. |
+| Backend reproduction | Pinnedbed4 installation/repeat setup PASS with separate state; busboy3.2.2 source audit and isolated image build/parser/Fastify integration PASS, not installed into a warehouse service. Current metadata audit BLOCKED. |
 | Exact APK10 | Compiled trust/ABI/signer/standalone JS and installed hash PASS; final acceptance freeze absent. |
 | Native business | Invalid receipt/dispatch quantities PASS; normal partial/final dispatch reconciliation and final dispatch PASS; queue PASS with explicit API cart preparation. Positive native receipt/cart/image and selected invoice/fault/concurrency/offline cases remain capped incomplete. |
 | Invoice/PDF | Existing rounding invoice179/tax9, generation/download/SEND/Librera view/export PASS. Full arithmetic/save/list/Breakdown/GRN-navigation contract acceptance incomplete. |
@@ -527,3 +527,51 @@ tests, lint and typecheck PASS at tooling55cab9e. These are API PDF evidence,
 not native B PDF viewing, complete reciprocal workflow closure or final freeze.
 Final readiness/eight-hour soak and delayed natural-expiry appointment remain
 gated by unresolved native workflows, staff policy and dependency audits.
+
+## Compatible storage dependency image build, 3 October 2026
+
+Pinned application fix `3df69a2c2393a1f81326b4c6a4a30d60a2868a88` was
+built from a clean detached checkout, using only its `docker/storage` context.
+The first bounded build PASSed under a new local fictional tag:
+`warehouse-fixture-storage-3df69a2-vm2026100110-01:local`, image
+`sha256:dba23152b96787abecb0ce93e769f2b3ea6a0da1c1f91ef8080d72c1d120ed2d`.
+The source lock exactly matches the image's installed lock; busboy is3.2.2.
+The existing source-only proof remains historical and is not rewritten.
+
+The image's Node24.21.0 smoke passed ordinary multipart, bounded252-byte
+boundary and prototype-header cases plus actual Fastify multipart injection.
+Its1,166 precompiled application files and65 native binaries exactly match the
+pinned upstream base; the native xattr module loads. The first smoke failed
+because root with all capabilities dropped could not read the UID1000-owned
+private0400 test source. Failure output is preserved. Corrected attempt2 ran as
+the owning UID1000, retaining network-none/read-only/no-new-privileges limits.
+No rebuild or relaxed host permissions were used.
+
+Reproduce the isolated build from the pinned fix checkout with an unused tag:
+
+```sh
+DOCKER_BUILDKIT=0 docker build --platform linux/amd64 --pull=false \
+  --memory=2g --memory-swap=2g --cpu-period=100000 --cpu-quota=200000 \
+  --tag warehouse-fixture-storage-review:local docker/storage
+```
+
+Legacy builder resource limits were used for this measured VM build; its
+upstream deprecation notice remains in the saved log. Hold the owned fixture
+actor locks, allow only one heavy builder, and supervise the client with a
+30-minute cap/Restart=no. The tag must be unused. Do not overwrite a runtime tag.
+Run `tests/storage-image-candidate-smoke.cjs` via a readonly bind at
+`/fixture-image-smoke.cjs`, using `--entrypoint node` and argument `candidate`.
+Container limits used: `--network none --read-only --user 1000:1000`,
+`--cap-drop ALL --security-opt no-new-privileges --cpus 2 --memory 512m
+--memory-swap 512m --pids-limit 128`, with each process bounded45seconds.
+Choose the owning UID/GID when the private source has0400 permissions. The
+`base` mode records the pinned upstream image's compiled/native manifests for
+independent equality comparison; retain both actual outputs and failures.
+
+Private proof: `storage-busboy-image-build-final-proof01.json`, with source,
+command, clean checkout, built identity, logs, both smoke attempts and bindings.
+Actual fixture SQL/authentication/business/pricing/stored-byte reconciliation
+PASSed after the isolated build. No warehouse volume, credential, port, service
+or image tag was attached/replaced. **This is not installed storage-service or
+fresh complete backend reproduction acceptance.** The metadata braces audit,
+other dependency/native gates, final freeze, soak and expiry remain unresolved.
