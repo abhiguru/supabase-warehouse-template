@@ -324,3 +324,26 @@ An uppercase plan step ID was rejected before ledger/driver creation; that
 plan is preserved and a corrected immutable plan executed the same third
 native attempt without replay. Private queue-processing0110-final-proof.json
 SHA256 19d65bb62dbd2d778835238a08444d440b9a519439b78e3b0cbc658d42dcd39e. No fourth queue attempt, group closure or final readiness claim.
+
+
+2026-10-03 exact backend ca2730b CI run37091085641 FAILED validation
+after all103 source tests passed. Metadata dependency audit reported8 high
+paths rooted in braces3.0.3; contract and source/history scans passed, while
+installation/migrations/Grafana jobs were skipped. Earlier seven-job success
+is historical, not current-head acceptance. The primary advisory
+https://github.com/advisories/GHSA-vfj7-8cjw-p6xm lists affected<=3.0.3 and no
+patched version. No audit waiver or forced downgrade was applied.
+
+Independent storage production audit (CI had short-circuited before it) found
+@fastify/busboy3.1.1 affected by GHSA-xjh9-v7x6-24jw and GHSA-x8mw-p69m-v3mx.
+Review-source storage lock now updates only that transitive package to3.2.2,
+within the existing declared^3.0.0 range; package manifest/API/schema unchanged.
+Production storage audit is now zero vulnerabilities. Tarball integrity matched
+the locked sha512; isolated three-second-bounded parser checks passed normal
+input,252-byte boundary and prototype-named header. Private source evidence
+backend-ca2730b-storage-audit01.json, storage-busboy-patched-audit01.json and
+busboy-3.2.2-source-validation01/result.json preserves before/after results.
+This is source dependency/parser evidence only: no container build, fixture
+installation or live storage acceptance of the patched package is claimed.
+Frozen runtime backend bed4eeee plus its existing overlays remains unchanged.
+Metadata/mobile dependency gates still prevent final readiness and freeze.
