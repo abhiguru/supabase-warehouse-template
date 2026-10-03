@@ -35,15 +35,32 @@ allowed the supervisor to preserve buffered compile output. No monitoring
 service/image started. Full85-table/five-file/configuration/identity failure
 reconciliation PASSed; both failed attempts remain preserved.
 
-Final allowed monitoring attempt3 is now live, using a new digest-pinned builder
-with actual4GiB/no additional swap/2CPU/max-parallelism1/no-restart limits on the
-resized31GiB VM. Old builders/inputs were not edited. Whole stage is bounded to
-three hours, Prometheus60 minutes and other images30 minutes each serially;
-a new ownership-checked builder-only stop timer bounds the daemon to185 minutes.
-The stage fits before the unchanged16:27:13UTC deadline. No fourth attempt or
-alias is allowed. Before-state/ownership/resource checks PASSed; runtime and
-final preservation remain pending in monitoring-result03.json. Local-only
-Alertmanager configuration is unchanged; no external alerts are configured.
+Final allowed monitoring attempt3 PASSed at10:15:59UTC. The new builder's
+actual4GiB/no additional swap/2CPU/one-worker/no-restart limits avoided further
+OOM. Five exact amd64 images were exported and independently read back:
+Prometheus379ceec7, Alertmanager effec813, postgres-exporter f52de407,
+node-exporter ad258d6a and cAdvisor ac5bcb8d (full SHA256s in the private result).
+Prometheus/15 alert-rule configuration and Alertmanager configuration checks,
+all five scrape targets and actual local-only Alertmanager delivery PASSed.
+Full85 tables/five files/configuration/identity remained unchanged; owned
+builder stoppedexit0. Earlier timeout and AWS EC2 OOM attempts remain preserved.
+No external alert receiver/delivery or production-capacity claim is configured.
+Private monitoring-final-acceptance-proof01.json binds14 terminal evidence files;
+application079ab4a, observer1c2b724 and frozen orchestration overlay are separate.
+
+A consistent private local backup of this populated fresh fixture subsequently
+PASSed once. Only its write-facing services were temporarily stopped and the
+same containers normally restarted; original warehouses were untouched.
+Seven checksum-verified files include database dump, stored-object archive,
+configuration/identity and catalogs. Database/storage catalogs are readable;
+all85 tables/profiles/sessions/five stored files/configuration/identity match
+before/after exactly and post-backup doctor PASSed. No restoration/transfer.
+Private final-backup-acceptance-proof01.json records actual running DB image
+sha256:e697b8efaea2c76b03dceb72cc8d1f0336d18e4b87ad57aff7867d1b318e5cf0;
+the backup's metadata database_image field names only its upstream base.
+Backup location: backend-reproduction0110-01/final-preserved-warehouse-backup01.
+Six earlier preserved private archives also revalidated checksums and readable
+catalogs after resize, with no current-state acceptance inheritance.
 
 Fresh current-source backend reproduction PASSed separately on this VM.
 Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout

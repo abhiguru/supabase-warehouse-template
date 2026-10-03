@@ -220,7 +220,11 @@ one worker and no restart remain. This profile-build exception does not alter
 the previously exercised core-installation2GiB recipe or Gradle limits. Its
 whole stage is bounded to three hours within the original campaign deadline,
 with a separate185-minute owned-daemon stop. Both failures remain preserved;
-no fourth attempt. Runtime acceptance remains pending until actual checks pass.
+no fourth attempt. Final attempt3 subsequently PASSed actual configuration, all five scrape
+targets and local-only Alertmanager delivery, with85 tables/five stored files/
+configuration/identity unchanged and builder stopped. Prior failures remain
+retained. This supporting result does not establish native acceptance or
+production capacity.
 Stop only the exact owned builder after the stage, retaining images and logs.
 
 Run the documented setup and suites in dependency order against that owning

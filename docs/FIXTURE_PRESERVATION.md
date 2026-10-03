@@ -124,3 +124,21 @@ unchanged. Private otp-natural-expiry-result01.json/proof01.json and snapshots
 record exact source d3ab95c and observer1c2b724. No fourth/alias/replay was used.
 This five-minute OTP test does not establish the separate seven-day Android
 refresh-session expiry requirement or permit scheduling it before final freeze.
+
+## Final fresh local monitoring and backup
+
+Monitoring attempt3 PASSed actual pinned image builds/readback, config/scrape
+checks and local-only Alertmanager delivery. Both earlier failures are retained;
+4GiB/no-extra-swap/two-CPU/one-worker builder stopped normally. All85 tables and
+five actual files/configuration/identity were preserved. Independent aggregate
+monitoring-final-acceptance-proof01.json binds the terminal evidence.
+
+A consistent private backup then PASSed checksum and database/storage catalog
+readability, identical before/after protected state and post-restart doctor.
+Only new-owned fixture write-facing services were temporarily stopped.
+final-backup-acceptance-proof01.json records actual custom DB image SHA256
+separately from the archive's upstream-base metadata label. Seven backup files
+remain private; no dump/configuration/credentials enter review source.
+The generic backup script recommends restoration testing, but restoration is
+explicitly excluded from this campaign. Catalog/checksum PASS is no restore
+claim. No external archive transfer, production state or other fixture is used.
