@@ -158,6 +158,63 @@ Check resource floors between stages. Reclaim only proven-owned transient cache
 when needed; never globally prune or delete unrelated state. The two failed
 install attempts and final corrected attempt are retained in the campaign ledger.
 
+The actual builder flags used by this reproduction are shown below. They are
+for a future fresh, unused fixture after ownership/release/resource checks;
+do not repeat the completed installation in this campaign or reuse its failed
+attempt identities. Retain the original state and archives. Use a new builder
+name and private directory; the example name must be unoccupied.
+
+```bash
+export FIXTURE_BUILDER=warehouse-future-fixture-build-2026100302
+umask 077
+cat > "$FIXTURE_PRIVATE/buildkit.toml" <<'TOML'
+[worker.oci]
+  max-parallelism = 1
+  gc = true
+  reservedSpace = "512MB"
+  maxUsedSpace = "2GB"
+  minFreeSpace = "12GB"
+TOML
+docker buildx create --name "$FIXTURE_BUILDER" --driver docker-container \
+  --driver-opt image=moby/buildkit@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 \
+  --driver-opt memory=2g --driver-opt memory-swap=2g \
+  --driver-opt cpu-period=100000 --driver-opt cpu-quota=200000 \
+  --driver-opt restart-policy=no --platform linux/amd64 \
+  --buildkitd-config "$FIXTURE_PRIVATE/buildkit.toml"
+docker buildx inspect "$FIXTURE_BUILDER" --bootstrap
+```
+
+Inspect the actual builder container's Memory/MemorySwap/CpuPeriod/CpuQuota and
+RestartPolicy before building; expected values are2147483648/2147483648/
+100000/200000/no. Record its full container ID and pinned image ID. A new bounded
+supervisor and separate ownership-checked daemon-stop timer are required for
+unattended execution; `buildx inspect --bootstrap` alone is not supervision.
+No new global/default builder is selected.
+
+Resolve each service's context, Dockerfile and project-scoped tag from the
+owning `scripts/compose.sh config --format json` in memory; it includes private
+credentials and must never be printed or placed in a public log. Refuse shared
+tags, unexpected build arguments, existing unverified image tags and source
+changes beyond declared overlays. For each selected service, run this command
+serially with its resolved context/tag (optional --file for a declared Dockerfile):
+
+```bash
+docker buildx build --builder "$FIXTURE_BUILDER" --load --progress plain \
+  --platform linux/amd64 --pull=false \
+  --label warehouse.fixture.source=079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 \
+  --tag "$FIXTURE_IMAGE_TAG" "$FIXTURE_BUILD_CONTEXT"
+```
+
+Record the actual exported image ID, architecture, source label and command
+exit code before the next service. The fresh installation built db/functions/
+gotenberg/imgproxy/meta/realtime/storage/studio; already-pinned base-image
+services have no local build. Profile images are separate supporting checks.
+The monitoring compile reached its initial20-minute bound; that failed attempt
+is retained. Its corrected Prometheus bound is60 minutes within a90-minute
+whole stage, with serial profile builds and the original daemon stop unchanged.
+Do not carry this longer bound into a plan without checking remaining deadlines.
+Stop only the exact owned builder after the stage, retaining images and logs.
+
 Run the documented setup and suites in dependency order against that owning
 checkout/state. For the final accounts/images suite, use reviewed tooling
 1c2b724c10a9a8b6fb96c5a98eabf190484b1c0e with the hash-bound private binding
