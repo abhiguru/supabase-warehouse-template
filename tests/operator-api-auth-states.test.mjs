@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-const driver=resolve('tests/operator-api-auth-states.mjs');
+for(const driverName of ['operator-api-auth-states.mjs','operator-api-otp-expiry.mjs']) {
+const driver=resolve('tests',driverName);
 for(const kind of ['missing binding','wrong mode','public binding','symlink binding','wrong state','wrong guard','wrong identity','public evidence']) {
- test('ordinary auth driver refuses '+kind+' before fixture or SQL access',()=>{
+ test(driverName+' refuses '+kind+' before fixture or SQL access',()=>{
   const root=mkdtempSync(join(tmpdir(),'warehouse-auth-refusal-'));chmodSync(root,0o700);
   try {
    const checkout=join(root,'checkout'),state=join(root,'state'),evidence=join(root,'evidence'),bin=join(root,'bin'),marker=join(root,'access-marker');
@@ -28,4 +29,5 @@ for(const kind of ['missing binding','wrong mode','public binding','symlink bind
    assert.equal(q.signal,null);assert.notEqual(q.status,0);assert.match(q.stderr,/AssertionError/);assert.equal(existsSync(marker),false,'fixture and Docker must remain unaccessed');
   } finally {rmSync(root,{recursive:true,force:true});}
  });
+}
 }

@@ -99,3 +99,21 @@ invalid payload, authentication/template rejection, ambiguous timeout, and
 contradictory success on gateway error. All sends are injected in-memory mocks;
 no provider transport or handset delivery occurs. Full source suite118/118 PASS.
 This is source/provider-contract evidence, not real-provider acceptance.
+
+## Prepared natural OTP expiry and limits
+
+operator-api-otp-expiry.mjs is a separately bound backend-only driver. It requires
+an unused ordinary quota budget/window, prepares and mock-accepts a random
+challenge, observes resend_cooldown without consuming another challenge, waits
+for its actual five-minute server expiry, and verifies invalid_otp with no
+session. It then reaches the existing hourly five-challenge limit through at
+most five ordinary challenges, retaining normal cooldowns, and verifies
+rate_limited without counter resets. It never changes clocks/timestamps.
+The reserved fictional rejection account remains unchanged; no administrator
+session, external delivery or Android state is used.
+
+Both auth drivers refuse eight unsafe bindings before fixture/Docker access.
+Full source126/126 tests PASS; expiry/runtime assertions remain unexecuted
+until their separately supervised stage and preservation checks complete.
+This five-minute OTP test does not establish the separate seven-day Android
+refresh-session expiry requirement or permit scheduling it before final freeze.
