@@ -40,7 +40,9 @@ Metadata review source now removes cpy-cli/nodemon in favor of native Node
 asset-copy/development-watch helpers; full metadata audit fell from8 high to0.
 All170 production lock entries and retained package entries are unchanged.
 Backend tests105/105 and pinned metadata build/check/upstream tests12/12 PASS.
-Both backend container dependency gates PASS; no running metadata replacement
+Both backend container dependency gates PASS. Clean9c11104 metadata image
+build and bounded exact-image root/health/missing-route smoke PASS; the first
+incorrect runtime-user override failure remains preserved. No running metadata replacement
 or fresh complete installation is claimed. See METADATA_NATIVE_TOOLING.md.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
 storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; it is not installed storage-service acceptance.
