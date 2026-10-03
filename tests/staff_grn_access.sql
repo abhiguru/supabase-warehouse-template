@@ -84,6 +84,9 @@ SELECT public.update_grn(p_grn_id=>:'grn_b'::uuid,p_note=>'Staff edited receipt'
 SELECT pg_temp.grn_assert(:'edited'::jsonb->>'success'='true','staff edits receipt');
 SELECT pg_temp.grn_assert((SELECT note='Staff edited receipt' FROM public.goodsreceived WHERE id=:'grn_b'::uuid),'edited header persisted');
 SELECT pg_temp.grn_assert((SELECT qty=12 AND stock=12 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid),'edited quantity and stock reconcile');
+SELECT pg_temp.grn_assert(
+ (public.get_all_grn_items(p_grn_id=>:'grn_b'::uuid)#>>'{data,items,0,stock}')::integer=12,
+ 'legacy GRN stock refreshes after the staff edit');
 SELECT public.register_grn_image_upload(:'grn_b'::uuid,'header','fictional.webp',32,'image/webp') AS upload \gset
 SELECT pg_temp.grn_assert(:'upload'::jsonb->>'success'='true','staff registers attachment');
 INSERT INTO storage.objects(bucket_id,name,owner)

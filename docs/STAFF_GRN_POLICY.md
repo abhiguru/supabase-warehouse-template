@@ -40,6 +40,19 @@ fixture now declares the later API bucket columns before exercising the actual
 policy setup twice. This proves SQL policy behavior when executed; it does not
 prove actual Storage HTTP/file-byte acceptance.
 
-Normal CI must verify the final migration test revision. Native staff GRN
-acceptance and a new installed artifact remain separate outstanding evidence.
+CI run37121635390 reached the staff regression and failed the strict legacy
+GRN-list count assertion. Source tracing found that fresh installation never
+initialized mv_refresh_queue: the existing dirty/refresh triggers only update
+existing entries. The newer mobile list reads live rows and passed its count
+assertion before this failure. Additive migration19 registers the seven existing
+runtime refresh targets and reconciles their views under the same advisory lock
+as the refresh trigger. The assertion is retained without a test-only refresh.
+Migration19 has not been executed; the local migration attempt limit is reached.
+
+The mobile CI run37121658351 also exposed an older authentication test that
+still mocked the replaced dispatch-table query. Its correction checks use of
+the authenticated GRN-detail RPC and absence of direct table access.
+
+Further database validation requires an explicitly authorized bounded attempt.
+Native staff GRN acceptance and a new installed artifact remain outstanding.
 The user's permission decision is resolved; all other campaign gates remain.
