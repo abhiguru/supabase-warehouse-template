@@ -308,3 +308,19 @@ stored-byte reconciliation passed afterward; no new OTP/logout/business save.
 Private rounding-pdf0110-final-proof.json SHA256 3e841f35086a4416ac0f1df19ab056b2e9376d0c9f491963907170828012a83c.
 This is current supervisor PDF acceptance, not arithmetic/save/list, reciprocal
 customer denial, complete workflow-group closure or final readiness.
+
+
+2026-10-03 APK2026100110 native queue processing PASS on final attempt03,
+frozen tooling de6d674. Fresh FXQ996 dispatched exactly two units from the
+existing FXC701 lot, stock6 to4; one header/line/movement/matching cached
+success, only the prepared cart item removed, persistent order OPEN.
+Protected SQL/auth/stored bytes reconciled, then cold Orders200 and empty
+Queue passed. Native OTP/item-save attempts0, submission1. Preparation used
+one ordinary A customer OTP/API add_item_to_order, exact revision append
+with all old revisions/notes preserved, unchanged stock, and normal logout
+of only its new API session after reconciliation. API preparation is not
+native customer cart creation. Prior FXQ992 and all old transactions remain.
+An uppercase plan step ID was rejected before ledger/driver creation; that
+plan is preserved and a corrected immutable plan executed the same third
+native attempt without replay. Private queue-processing0110-final-proof.json
+SHA256 19d65bb62dbd2d778835238a08444d440b9a519439b78e3b0cbc658d42dcd39e. No fourth queue attempt, group closure or final readiness claim.
