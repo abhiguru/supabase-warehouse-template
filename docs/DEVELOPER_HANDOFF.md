@@ -2,34 +2,49 @@
 
 ## Current VM campaign checkpoint, 3 October 2026
 
-Fresh current-source backend reproduction is now running separately on this VM.
-Pinned source079ab4a, checkout `/home/jay/warehouse-backend-reproduce-2026100301`,
-new private state `/home/jay/warehouse-state/core-backend-test-2026100301`,
-loopback gateway19590 and declared independent subnet10.233.252.0/24.
-No existing warehouse was retired or modified. Initial legacy-builder attempt
-failed on the pinned PostgreSQL Dockerfile's BuildKit cache mounts before any
-service started. Configuration and logs remain preserved; corrected attempt2
-built database/functions/PDF-renderer images, then stopped before services when
-free disk fell below the10GiB installation floor. Its exact images/logs/state
-remain preserved. Only that newly owned builder's transient cache was reclaimed,
-restoring free disk from8.5GiB to20.7GiB; all three image IDs are unchanged and
-unrelated caches were untouched. Final allowed corrected attempt3 uses a new
-owned digest-pinned BuildKit container, actual2GiB/no-swap/2CPU/no-restart limits
-and max-parallelism1, reuses those exact images, and trims only its own cache
-after exporting other images. No fourth attempt or global/default builder change.
-The90-minute supervisor is
-`warehouse-fixture-reproduction-vm2026100301-install03.service`; a95-minute
-owned-builder-only stop timer separately bounds its daemon lifetime.
-Evidence/plans/ledgers are under private `backend-reproduction0110-01`.
-Installation, local doctor and subsequent backend workflow gates are still
-pending; do not inherit prior fixture acceptance. The original APK/warehouse
-services and completed older soak remain unchanged. This timer is not a
-natural-session-expiry appointment.
+Fresh current-source backend reproduction PASSed separately on this VM.
+Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout
+`/home/jay/warehouse-backend-reproduce-2026100301` and new private state
+`/home/jay/warehouse-state/core-backend-test-2026100301`, instance
+f73725c1-0f0f-4637-bf7f-cb8decfaf404, loopback gateway19590 and declared
+independent subnet10.233.252.0/24. Existing warehouses were preserved.
+
+Installation attempt1 failed on legacy-builder cache-mount support; attempt2
+built three images but stopped before starting services at the10GiB free-disk
+floor. Both failures remain preserved. Only newly owned transient builder cache
+was reclaimed, preserving exported image IDs and unrelated caches. Final allowed
+attempt3 PASSed setup, migrations, bootstrap, local doctor and unchanged fixture
+guard. Its digest-pinned builder used2GiB/no additional swap/2CPU/one worker,
+no restart, and was stopped after completion. No fourth attempt is authorized.
+
+Core business API, reciprocal customer Realtime and ordinary final authentication,
+image lifecycle and account disabling PASSed. Application source is079ab4a;
+reviewed test tooling is1c2b724. Supporting Studio/metadata, gateway CORS/payload,
+actual upstream-IP replacement, retention preview, bounded load and current
+mobile live contract PASSed. Repeated setup preserved85 table counts/stable
+hashes, five actual stored files, configuration and identity. The sole full-row
+hash change was the existing public.sms_config.updated_at update. Image bytes
+were preserved before intentional lifecycle deletion. No real provider delivery,
+quota reset, restoration or native acceptance is inferred.
+
+Independent helper tooling3ae80ae verified actual TLS19543 and private OTP IPC
+readiness against the new identity, with no authentication requests. Original
+TLS18443 still returned its original identity; emulator routing was unchanged.
+The helper retains its12-hour cap. Private evidence is under
+`backend-reproduction0110-01`: install-result03.json, business-result01.json,
+supporting-result02.json and tls-readiness-proof02.json, with bound plans,
+ledgers, snapshots and preserved failures. These results do not transfer to the
+original APK/warehouse or complete native workflow groups.
+
+At08:34 UTC the campaign had less than eight hours remaining before its
+16:27:13 UTC deadline. A new full eight-hour soak plus readiness/reconciliation
+cannot fit; leave it unstarted. No final freeze or natural-expiry appointment
+exists. The older APK soak remains separate historical PASS.
 
 Health: `systemctl --user status warehouse-fixture-reproduction-vm2026100301-install03.service`.
 To stop that controller: `systemctl --user stop warehouse-fixture-reproduction-vm2026100301-install03.service`.
 Preserve any services/state/logs and reconcile before a corrected attempt.
-After this new fixture has services, its guarded health/stop commands are:
+The running new fixture has these guarded health/stop commands:
 
 ```sh
 export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
@@ -80,10 +95,10 @@ All170 production lock entries and retained package entries are unchanged.
 Backend tests105/105 and pinned metadata build/check/upstream tests12/12 PASS.
 Both backend container dependency gates PASS. Clean9c11104 metadata image
 build and bounded exact-image root/health/missing-route smoke PASS; the first
-incorrect runtime-user override failure remains preserved. No running metadata replacement
-or fresh complete installation is claimed. See METADATA_NATIVE_TOOLING.md.
+incorrect runtime-user override failure remains preserved. The new independent079ab4a fixture now has actual metadata/Studio acceptance;
+the original warehouse metadata service remains unchanged. See METADATA_NATIVE_TOOLING.md.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
-storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; it is not installed storage-service acceptance.
+storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; the independent fresh fixture now also passed actual image storage API cases.
 The installed application remains bed4eeee plus its four declared overlays.
 No final freeze, readiness soak or delayed-expiry appointment is eligible yet.
 Core helper14 uses pinned e3126a0, switching08 uses7699364, and fault04 is disarmed.

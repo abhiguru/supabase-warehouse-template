@@ -40,8 +40,8 @@ Actual populated-fixture observer validation:85 tables/17 files read twice,
 identical snapshots, no writes. Private proof under VM campaign
 `backend-reproduction0110-01/observer-populated-primary-proof01.json`.
 The fresh079ab4a VM setup/local doctor/unchanged guard now PASSed on its final
-allowed corrected attempt. Workflow, repeat-setup and fixture HTTPS acceptance
-still require their own execution and evidence. Both prior install failures,
+allowed corrected attempt. Business, repeat-setup, supporting and fixture HTTPS evidence now PASSed
+separately; exact scope is recorded below. Both prior install failures,
 exact preserved images and owned-cache reclamation remain recorded.
 
 ## Independent discovery listener
@@ -54,13 +54,15 @@ and private IPC path; never replace the original core listener or emulator
 reverse route. This enables HTTPS discovery against an independent current-source
 VM fixture while the original native acceptance warehouse remains selected.
 Backend source regressions, including explicit parser/ownership refusals,
-PASS107/107. TLS and IPC execution require separate readiness evidence.
+PASS107/107. Actual TLS19543 and private IPC readiness PASSed in tls-readiness-proof02.json;
+original TLS18443 identity and route were preserved, with zero OTP requests.
 
 Fresh VM core API, Realtime, final ordinary-authentication/image/account cases
 now PASSed once under application079ab4a and tooling1c2b724. Actual read-only
 snapshots bracketed every group. All five earlier stored files remain unchanged;
 both intentional1024-byte image lifecycle deletions have saved byte/metadata
 evidence. No sessions were minted through the internal test issuer and no
-quotas/timestamps were reset. Repeat setup, supporting gateway/Studio/load checks
-and exact current mobile contract remain separate pending cases. Private result:
+quotas/timestamps were reset. Repeat setup, supporting gateway/Studio/load checks and exact current mobile
+live contract subsequently PASSed in supporting-result02.json. Repeat setup
+preserved85 tables and five actual files; only sms_config.updated_at changed. Private result:
 `backend-reproduction0110-01/business-result01.json`.

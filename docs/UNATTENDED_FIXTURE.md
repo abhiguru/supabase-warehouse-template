@@ -141,6 +141,41 @@ The earlier independent clean reproduction and same-input preservation checks
 are recorded in OPERATOR_SETUP_NOTES.md. Tests mutate their own fixture data;
 do not rerun against an installed warehouse to avoid preparing another fixture.
 
+## Current VM reproduction, 3 October 2026
+
+The sequence above records the older7e3f66a reproduction. For the current
+verified run, use a clean detached application checkout at
+079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50, new state suffix2026100301,
+loopback gateway19590 and independently checked subnet10.233.252.0/24.
+Record these generated configuration/network overlays separately. Preserve
+existing fixtures; do not stop them to reuse their ports or state.
+
+This application uses Dockerfile cache mounts: build with BuildKit, not the
+legacy builder. Use a new owned digest-pinned docker-container builder with
+max-parallelism1, actual2GiB memory/no extra swap and2CPU limits. Inspect those
+limits before building. Build images serially; preserve each exported image ID.
+Check resource floors between stages. Reclaim only proven-owned transient cache
+when needed; never globally prune or delete unrelated state. The two failed
+install attempts and final corrected attempt are retained in the campaign ledger.
+
+Run the documented setup and suites in dependency order against that owning
+checkout/state. For the final accounts/images suite, use reviewed tooling
+1c2b724c10a9a8b6fb96c5a98eabf190484b1c0e with the hash-bound private binding
+in [FIXTURE_PRESERVATION.md](FIXTURE_PRESERVATION.md), so authentication follows
+normal OTP verification and image bytes are preserved before deletion. Keep
+application, tooling and overlays as separate identifiers. Do not substitute
+the older internal session-issuer shortcut.
+
+Actual setup/doctor, business API, Realtime, ordinary final accounts/images,
+Studio/metadata, gateway/DNS, retention preview, bounded load and live mobile
+contract PASSed. Run the same setup again, bracketed by the documented read-only
+preservation observer:85 tables and five stored files were preserved, with only
+the declared sms_config.updated_at update. Private install-result03.json,
+business-result01.json and supporting-result02.json record exact scope.
+Independent fixture helper3ae80ae on19543 also passed actual TLS/IPC discovery;
+original native routing was unchanged. These backend results do not close native
+acceptance, production capacity, restoration or final soak gates.
+
 ## Checking a new mobile source against this running fixture
 
 Use the backend checkout that owns the fixture together with its original
