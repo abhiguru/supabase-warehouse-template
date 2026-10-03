@@ -5,8 +5,15 @@
 The operator selected staff GRN view/create/edit with deletion restricted to
 administrators/supervisors. The earlier unanswered-policy checkpoint below is
 historical. See [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md) for the scoped source
-change, local validation and preserved migration-test failures. Frozen runtime
-and APK10 are not updated; native acceptance remains open.
+change, local validation and preserved migration-test failures. Additive cache
+migrations 19–20 initialize the existing refresh queue and flush it after bulk
+GRN edits. The final explicitly authorized disposable test passed at fc149114
+at 15:25 UTC: cache consistency/rollback, staff permission and SQL Storage
+boundaries, revocation and the full migration regression suite. Five prior local
+failures remain preserved; both reopened test slots are consumed. Backend unit
+checks (127), exact mobile contract and scans passed. Exact published CI is a
+separate gate. Frozen runtime and APK10 are not updated; native acceptance
+remains open.
 
 ## Current VM campaign checkpoint, 3 October 2026
 
