@@ -21,7 +21,7 @@ passed; its two failures remain preserved and no fourth attempt is allowed.
 API image and PDF denial preserve the current native session and actual stored
 bytes; they do not establish native image rendering or full reciprocal isolation.
 
-Latest complete fixture source validation passed325/325 under Node22.23.3.
+Latest complete fixture source validation passed328/328 under Node22.23.3.
 Revalidated source audits report26 high mobile dependency paths and8 high
 backend metadata paths, rooted in unpatched node-forge/braces advisories.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
@@ -49,6 +49,38 @@ identity; do not resume old transient identities or extend the campaign.
 Current core14, switching08 and fault04 helpers retain their own twelve-hour
 caps; the core Orders controller is consumed and the fault relay disarmed.
 No helper, emulator session or business state was changed for this correction.
+
+
+Current operational identities (3 October) supersede the older examples below:
+
+| Service | Private configuration | Current unit |
+| --- | --- | --- |
+| Core TLS18443 / OTP IPC | helpers-primary-confirmread14.json | warehouse-fixture-core-vm2026100110-confirmread14.service |
+| Switching TLS18444 / OTP IPC | helpers-switch-observe08.json | warehouse-fixture-switch-vm2026100110-observe08.service |
+| Disarmed fault TLS18643 | helpers-fault-renew04.json | warehouse-fixture-fault-vm2026100110-renew04.service |
+| Original API30 emulator | native-config0110-confirmread14.json | warehouse-fixture-emulator-vm2026100110-01.service |
+| Read-only monitor | monitor27-config.json | warehouse-vm-campaign-monitor-20261001-27.service |
+
+Private root: /home/jay/warehouse-install-private/vm-campaign-20261001.
+Read-only TLS/IPC/artifact/owned-route health command:
+
+```bash
+sg docker -c '/home/jay/.local/opt/node-v22.23.3-linux-x64/bin/node /home/jay/warehouse-install-private/vm-campaign-20261001/runtime-7b717d0/scripts/fixture-soak-preflight.mjs /home/jay/warehouse-install-private/vm-campaign-20261001/native-config0110-confirmread14.json'
+systemctl --user show warehouse-fixture-core-vm2026100110-confirmread14.service -p ActiveState -p SubState -p RuntimeMaxUSec -p NRestarts
+```
+
+Stop only after actor release: systemctl --user stop followed by the exact owned
+unit above; this preserves logs, configuration, state and emulator storage.
+Do not restart an expired identity or reuse retired normal11/monitor23 inputs.
+A replacement start requires a new frozen private runId/socket/log config,
+reviewed supervisor, ownership guards, unchanged12-hour cap and actual TLS/IPC
+readiness. The emulator requires its own preserved storage and fresh supervisor
+identity, never a wipe/clone or another device's authenticated state.
+Production audit26 high paths and full audit54 high paths including development
+tooling are distinct; metadata audit8 high. Current full audit also reports
+unpatched http-cache-semantics (GHSA-ch52-4w7c-c8xp). Forced major downgrades and
+audit waivers were not applied. Exact current-head CI fails these dependency
+gates; standalone lint/type/source scans do not establish all-green CI.
 
 
 ## Active VM-only campaign handoff — 2 October 2026
