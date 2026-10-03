@@ -87,6 +87,32 @@ SELECT pg_temp.grn_assert((SELECT qty=12 AND stock=12 FROM public.goodsreceived_
 SELECT pg_temp.grn_assert(
  (public.get_all_grn_items(p_grn_id=>:'grn_b'::uuid)#>>'{data,items,0,stock}')::integer=12,
  'legacy GRN stock refreshes after the staff edit');
+-- A failed bulk edit must roll back both the header and any intermediate
+-- materialized refresh, and restore the temporarily suppressed dirty trigger.
+DO $$ DECLARE receipt uuid; lot uuid; catalog uuid; BEGIN
+ SELECT g.id,t.id,t.item_id INTO receipt,lot,catalog
+ FROM public.goodsreceived g JOIN public.goodsreceived_trl t ON t.gr_id=g.id
+ WHERE g.gr_no='STAFFB';
+ BEGIN
+  PERFORM public.update_grn(p_grn_id=>receipt,p_note=>'Must roll back',
+    p_items=>jsonb_build_array(jsonb_build_object('id',lot,'item_id',catalog,
+      'item_name','GRN Policy Potatoes','qty','invalid-quantity')));
+  RAISE EXCEPTION 'Invalid GRN edit was accepted';
+ EXCEPTION WHEN invalid_text_representation THEN NULL; END;
+END $$;
+SELECT pg_temp.grn_assert((SELECT note='Staff edited receipt' FROM public.goodsreceived WHERE id=:'grn_b'::uuid),'failed edit rolls back header');
+SELECT pg_temp.grn_assert((SELECT qty=12 AND stock=12 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid),'failed edit preserves underlying stock');
+SELECT pg_temp.grn_assert(
+ (public.get_all_grn_items(p_grn_id=>:'grn_b'::uuid)#>>'{data,items,0,stock}')::integer=12,
+ 'failed edit preserves cached stock');
+SELECT pg_temp.grn_denied('SELECT warehouse_security.refresh_dirty_lists()');
+RESET ROLE;
+SELECT pg_temp.grn_assert((SELECT current_stock=12 AND grn_qty=12 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_b'::uuid AND item_id=:'item_id'::uuid),'customer stock cache refreshed');
+SELECT pg_temp.grn_assert((SELECT total_qty=12 FROM public.mv_grn_daily_summary WHERE customer_id=:'customer_b'::uuid),'daily receipt aggregate refreshed');
+SELECT pg_temp.grn_assert((SELECT current_stock=10 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_a'::uuid AND item_id=:'item_id'::uuid),'unrelated customer cache unchanged');
+SELECT pg_temp.grn_assert((SELECT tgenabled='O' FROM pg_trigger WHERE tgrelid='public.goodsreceived_trl'::regclass AND tgname='trg_mark_stock_mvs_dirty_grn'),'dirty trigger restored after failed edit');
+SELECT pg_temp.grn_assert(NOT EXISTS(SELECT 1 FROM public.mv_refresh_queue WHERE needs_refresh),'successful edit consumes refresh queue');
+SET LOCAL ROLE authenticated;
 SELECT public.register_grn_image_upload(:'grn_b'::uuid,'header','fictional.webp',32,'image/webp') AS upload \gset
 SELECT pg_temp.grn_assert(:'upload'::jsonb->>'success'='true','staff registers attachment');
 INSERT INTO storage.objects(bucket_id,name,owner)
