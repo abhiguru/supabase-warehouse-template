@@ -6,7 +6,7 @@ export interface UserProfile {
   name: string;
   display_name: string;
   mobile: string;
-  role: 'admin' | 'supervisor' | 'customer' | 'user';
+  role: 'admin' | 'supervisor' | 'staff' | 'customer' | 'user';
   active: boolean;
 }
 export interface AuthError { status: number; message: string }

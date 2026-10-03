@@ -1,5 +1,13 @@
 # Independent operator developer handoff
 
+## Approved staff GRN policy, 3 October 2026
+
+The operator selected staff GRN view/create/edit with deletion restricted to
+administrators/supervisors. The earlier unanswered-policy checkpoint below is
+historical. See [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md) for the scoped source
+change, local validation and preserved migration-test failures. Frozen runtime
+and APK10 are not updated; native acceptance remains open.
+
 ## Current VM campaign checkpoint, 3 October 2026
 
 Post-resize verification at08:59UTC: VM now has31GiB RAM, about115GiB free
