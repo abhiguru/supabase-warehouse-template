@@ -167,3 +167,23 @@ that loader and failed two imports; private failed log is preserved separately.
 No running helper, APK, database schema or application API changed. Native
 confirmed in-flight switching remains NOT TESTED pending guarded installation,
 actual timing, same-process continuation and normal-route cleanup/reconciliation.
+
+Confirmed in-flight Orders attempt01 FAIL, preserved. The separate pinned
+helper da5c75c was installed as core confirmread12 only after preserving old
+normal11 configuration/logs, stopping the owned app without logout and proving
+identical two-warehouse snapshots plus actual TLS/private IPC readiness.
+Switch observe08 and disarmed fault renew04 remained unchanged; monitor24
+covers the new owned units. Native frozenf6dc954 attempt01 stopped at the
+explicit Refresh orders phase before confirmation: zero confirmations, business
+submissions and OTP requests. Actual helper metadata shows overlapping
+automatic successful held Orders reads, including a start before the explicit
+request timestamp; the intended single pending read was not established.
+The first-stage FAIL is retained. App was subsequently stopped without logout
+under its actor lock, and independent stopped reconciliation passed protected
+source state, source session identity/fixed dates, destination state and stored
+bytes. Private confirmed-orders-read-switch0110-01-stopped-reconciliation.json
+records owned-session hash/history comparisons separately. No blind request
+replay, OTP, logout or business cleanup occurred. A corrected one-shot armed
+read helper is required before using at most two remaining corrected attempts.
+Actual in-flight confirmation/destination continuation remain NOT TESTED;
+current app is stopped and current core helper still has the bounded hold.
