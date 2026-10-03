@@ -26,7 +26,8 @@ export function createSwitchUploadHold(config={milliseconds:0}) {
       if(!match){stopped=true;forward(raw);return;}
       // Consume before notifying; cancellation never rearms a write.
       consumed=true;
-      const event=name=>{try{observe({event:name,delayMs:bound.milliseconds,monotonicMs:performance.now()});}catch{/* Observers cannot change transport. */}};
+      // CLOCK_MONOTONIC shares an origin with the native driver's host clock.
+      const event=name=>{try{observe({event:name,delayMs:bound.milliseconds,monotonicMs:Number(process.hrtime.bigint())/1e6});}catch{/* Observers cannot change transport. */}};
       event('switch-upload-delay-start');
       timer=setTimeout(()=>{if(stopped)return;stopped=true;event('switch-upload-delay-release');forward(raw);},bound.milliseconds);
     };
