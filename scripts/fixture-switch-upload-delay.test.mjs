@@ -7,6 +7,16 @@ const config={scope:'isolated-fictional-native-switch-upload',milliseconds:500,g
 const target=new URL('http://127.0.0.1:18080/rest/v1/rpc/register_grn_image_upload');
 const request=()=>Object.assign(new PassThrough(),{method:'POST',headers:{host:'backend-core.example.test',authorization:'private-test-credential'}});
 const body=()=>({p_grn_id:config.grnId,p_image_type:'header',p_grn_item_id:null,p_file_name:config.fileName,p_file_size:config.fileSize,p_mime_type:'image/webp'});
+test('native compression permits only a declared positive size up to one MiB and keeps all other matching constraints',async()=>{
+ const {fileSize,...base}=config;
+ for(const change of [{maxFileSize:1048577},{maxFileSize:0},{maxFileSize:'1234'},{maxFileSize:1234,fileSize:1234},{}])assert.throws(()=>createSwitchUploadHold({...base,...change}));
+ for(const size of [0,1048577,1.5,'1234']){
+  const r=request(),raw=Buffer.from(JSON.stringify({...body(),p_file_size:size}));let forwarded;const events=[];
+  createSwitchUploadHold({...base,maxFileSize:1048576}).buffer(r,target,{forward:b=>forwarded=b,fail:()=>assert.fail(),observe:e=>events.push(e)});r.end(raw);await wait(5);assert.deepEqual(forwarded,raw);assert.deepEqual(events,[]);
+ }
+ const r=request();let forwarded;const raw=Buffer.from(JSON.stringify(body()));
+ createSwitchUploadHold({...base,maxFileSize:1048576}).buffer(r,target,{forward:b=>forwarded=b,fail:()=>assert.fail()});r.end(raw);await wait(20);assert.equal(forwarded,undefined);await wait(550);assert.deepEqual(forwarded,raw);
+});
 test('disabled by default; invalid configuration and unrelated transport refused',()=>{
  assert.equal(createSwitchUploadHold().buffer(request(),target,{}),null);
  for(const change of[{milliseconds:30001},{scope:'production'},{grnId:'other'},{fileName:'other.webp'},{fileSize:0}])assert.throws(()=>createSwitchUploadHold({...config,...change}));

@@ -520,3 +520,13 @@ This is tooling preparation only: no helper was installed or replaced, no
 warehouse/emulator operation ran, and upload/save switching acceptance remains
 incomplete. Native execution still requires an immutable bound plan, fresh
 fictional fixture, preserved baseline and independent object/state reconciliation.
+
+The upload hold also supports a declared `maxFileSize` up to1MiB, exclusively
+instead of `fileSize`, for Android's locally compressed WebP. All UUID, filename,
+header/type, route, host and authentication constraints remain exact. Zero,
+fractional, string and oversized sizes pass unchanged to ordinary validation;
+they cannot consume the hold. No compressed size is guessed. Final independent
+reconciliation must compare the actual image-record size to the actual stored
+file. Existing exact-size configurations remain valid; mixed modes are refused.
+Source validation:135 backend tests and374 mobile setup tests PASS; no runtime
+installation or native upload acceptance is claimed.

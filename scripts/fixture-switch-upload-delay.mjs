@@ -7,7 +7,9 @@ export function createSwitchUploadHold(config={milliseconds:0}) {
     assert.equal(config.scope,'isolated-fictional-native-switch-upload');
     assert.match(config.grnId,uuid);
     assert.equal(config.fileName,'FXS993-switch-upload.webp');
-    assert.ok(Number.isInteger(config.fileSize)&&config.fileSize>0&&config.fileSize<=10485760);
+    assert.notEqual(Object.hasOwn(config,'fileSize'),Object.hasOwn(config,'maxFileSize'),'ONE_UPLOAD_SIZE_MODE_REQUIRED');
+    if(Object.hasOwn(config,'fileSize'))assert.ok(Number.isInteger(config.fileSize)&&config.fileSize>0&&config.fileSize<=10485760);
+    else assert.ok(Number.isInteger(config.maxFileSize)&&config.maxFileSize>0&&config.maxFileSize<=1048576,'BOUNDED_NATIVE_COMPRESSION_REQUIRED');
   }
   const bound=Object.freeze({...config});
   let consumed=false;
@@ -22,7 +24,8 @@ export function createSwitchUploadHold(config={milliseconds:0}) {
       const raw=Buffer.concat(chunks);chunks=[];req.removeListener('data',data);req.removeListener('end',end);
       let body;try{body=JSON.parse(raw.toString('utf8'));}catch{/* Ordinary backend rejection. */}
       const keys=['p_file_name','p_file_size','p_grn_id','p_grn_item_id','p_image_type','p_mime_type'];
-      const match=!consumed&&body&&typeof body==='object'&&!Array.isArray(body)&&JSON.stringify(Object.keys(body).sort())===JSON.stringify(keys)&&body.p_grn_id===bound.grnId&&body.p_image_type==='header'&&body.p_grn_item_id===null&&body.p_file_name===bound.fileName&&body.p_file_size===bound.fileSize&&body.p_mime_type==='image/webp';
+      const sizeMatches=body&&Number.isInteger(body.p_file_size)&&(Object.hasOwn(bound,'fileSize')?body.p_file_size===bound.fileSize:body.p_file_size>0&&body.p_file_size<=bound.maxFileSize);
+      const match=!consumed&&body&&typeof body==='object'&&!Array.isArray(body)&&JSON.stringify(Object.keys(body).sort())===JSON.stringify(keys)&&body.p_grn_id===bound.grnId&&body.p_image_type==='header'&&body.p_grn_item_id===null&&body.p_file_name===bound.fileName&&sizeMatches&&body.p_mime_type==='image/webp';
       if(!match){stopped=true;forward(raw);return;}
       // Consume before notifying; cancellation never rearms a write.
       consumed=true;
