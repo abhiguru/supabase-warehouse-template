@@ -16,6 +16,28 @@ It expires at the unchanged16:27:13UTC deadline. Old transient monitor27 and
 helpers stopped with reboot; their earlier lifetime/route observations below
 are historical, not live readiness. Do not restart expired identities.
 
+Live operational inventory verified at10:45UTC after the user restart:
+monitor28 is active/running with zero restarts. The fresh fixture's five
+monitoring services and application services are running; all services with
+health checks report healthy. Original API30 emulator and fixture TLS/IPC
+helpers remain stopped. Earlier helper/route commands below are historical
+examples and do not establish readiness or authorize reusing old identities.
+
+```bash
+systemctl --user show warehouse-vm-campaign-monitor-20261001-28.service -p ActiveState -p SubState -p NRestarts -p Result
+cd /home/jay/warehouse-backend-reproduce-2026100301
+export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
+export WAREHOUSE_STATE_DIR=/home/jay/warehouse-state/core-backend-test-2026100301
+sg docker -c 'node scripts/doctor.mjs --local'
+sg docker -c 'bash scripts/compose.sh --profile monitoring ps'
+```
+
+Current fresh application is079ab4a, loopback gateway19590 and state UUID
+f73725c1-0f0f-4637-bf7f-cb8decfaf404. No new TLS helper was started after
+restart. Its earlier19543 acceptance remains historical. A subsequent test
+requiring TLS/IPC must allocate a new private helper identity and verify actual
+readiness, retaining the12-hour cap and original campaign deadline.
+
 Fresh local monitoring attempt1 reached its20-minute Prometheus compilation
 bound after source/UI checksums and Go-module verification PASSed. Controller
 FAIL/exit1 and build124 remain preserved. No monitoring image/service started;
@@ -184,9 +206,9 @@ caps; the core Orders controller is consumed and the fault relay disarmed.
 No helper, emulator session or business state was changed for this correction.
 
 
-Current operational identities (3 October) supersede the older examples below:
+Historical operational identities before the 3 October user restart (all stopped with reboot):
 
-| Service | Private configuration | Current unit |
+| Historical service | Private configuration | Historical unit |
 | --- | --- | --- |
 | Core TLS18443 / OTP IPC | helpers-primary-confirmread14.json | warehouse-fixture-core-vm2026100110-confirmread14.service |
 | Switching TLS18444 / OTP IPC | helpers-switch-observe08.json | warehouse-fixture-switch-vm2026100110-observe08.service |
@@ -209,14 +231,19 @@ A replacement start requires a new frozen private runId/socket/log config,
 reviewed supervisor, ownership guards, unchanged12-hour cap and actual TLS/IPC
 readiness. The emulator requires its own preserved storage and fresh supervisor
 identity, never a wipe/clone or another device's authenticated state.
-Production audit26 high paths and full audit54 high paths including development
-tooling are distinct; metadata audit8 high. Current full audit also reports
+Mobile production audit26 high paths and full audit54 high paths including
+development tooling remain distinct. Metadata development audit8 high was
+corrected to0 in the separately recorded fresh application; original runtime
+inputs were preserved. Current full audit also reports
 unpatched http-cache-semantics (GHSA-ch52-4w7c-c8xp). Forced major downgrades and
 audit waivers were not applied. Exact current-head CI fails these dependency
 gates; standalone lint/type/source scans do not establish all-green CI.
 
 
-## Active VM-only campaign handoff — 2 October 2026
+## Historical VM-only campaign handoff — 2 October 2026
+
+This section records the pre-resize installation and helper history. The current
+3 October checkpoint above supersedes its resource, service and readiness claims.
 
 Use [VM_ONLY_ACCEPTANCE_20261001.md](VM_ONLY_ACCEPTANCE_20261001.md) and the mobile
 [dated matrix](https://github.com/abhiguru/rn-warehouse-template/blob/codex/post-soak-session-tests/docs/OPERATOR_VM_ACCEPTANCE_20261001.md).
