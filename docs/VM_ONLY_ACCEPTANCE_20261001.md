@@ -266,3 +266,30 @@ review tooling 28ce721 has 299 passing source tests and a separate exact refusal
 acknowledgement selector; this future tooling correction does not reopen the
 capped native case or change installed APK2026100110. Final readiness, eight-hour
 soak and dedicated natural-expiry appointment remain unestablished.
+
+
+2026-10-03 exact backend review head 1e5366b CI run37084227711
+completed SUCCESS, all seven jobs including isolated operator installation.
+This is source CI, not physical or excluded recovery/printer acceptance.
+
+Current APK2026100110 supervisor foreground Realtime and actual Android
+disconnect/reconnect passed with fresh fictional markers and protected
+SQL/stored-byte/authentication reconciliation. Three new API sessions per
+case were normally logged out; the existing native session was preserved.
+Normal final dispatch FXF962 passed one seven-unit native submission, stock
+7 to 0, one header/line/matching cached success and out-of-stock true. Separate
+normal cold Orders200 and whole-state/stored-byte preservation passed.
+Partial FXF961 original native FAIL remains recorded; independent exact-once
+reconciliation passed (10 to 7), without replay. Pair proof SHA256
+a8d812b934fe367a6b1e64878ca484c75fddd6c85fea0c93ca31f4877afddc61.
+Application sources remain backend bed4eeee and mobile c422f62; final dispatch
+driver tooling a1d7572, mobile documentation d66bf3c. These narrow cases do not
+close entire workflow groups, concurrency, lost-response retries or isolation.
+
+Mobile exact documentation-head d66bf3c CI run37088802017 was in progress at
+this checkpoint. Prior bc6e4dc run37085292624 failed dependencies while lint,
+typecheck, debug artifact audit and redacted source/history scans passed.
+Dependencies remain unresolved; no waiver or older green CI transfer. Final
+readiness/eight-hour soak are unstarted. Dedicated natural-expiry helper
+lifecycle guards were source-tested, but no final freeze, dedicated AVD/session
+or expiry appointment exists. Existing helper twelve-hour caps are retained.
