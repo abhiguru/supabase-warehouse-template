@@ -83,3 +83,12 @@ test('dispatch concurrency is explicit, bounded and isolated from other helper m
  for(const extra of [{kind:'switch'},{kind:'fault'},{replacementAuthentication:true},{ordersReadDelayMs:3000}])assert.throws(()=>serviceSpec(config,{...service,...extra,dispatchConcurrency}));
  for(const extra of [{milliseconds:0},{milliseconds:5001},{milliseconds:'3000'},{scope:'production'},{record:'FXQ995'},{lotId:'bad'}])assert.throws(()=>serviceSpec(config,{...service,dispatchConcurrency:{...dispatchConcurrency,...extra}}));
 });
+
+test('independent core TLS19543 requires unchanged hash-bound ownership and retains helper lifetime',()=>{
+ const selected={...service,owningCheckout:'/private/original-core',ownerGuardSHA256:'a'.repeat(64),tlsPort:19543};
+ const spec=serviceSpec(config,selected);assert.equal(spec.port,19543);assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_TLS_PORT=19543'));assert.ok(spec.content.includes('RuntimeMaxSec=43200'));assert.ok(spec.content.includes('Restart=no'));
+ assert.equal(serviceSpec(config,service).port,18443);assert.ok(!serviceSpec(config,service).content.includes('WAREHOUSE_FIXTURE_TLS_PORT='));
+ for(const port of [443,18443,19544,0,'19543'])assert.throws(()=>serviceSpec(config,{...selected,tlsPort:port}));
+ for(const kind of ['switch','fault'])assert.throws(()=>serviceSpec(config,{...selected,kind}));
+ assert.throws(()=>serviceSpec(config,{...service,tlsPort:19543}));
+});

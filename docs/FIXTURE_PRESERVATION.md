@@ -43,3 +43,24 @@ The fresh079ab4a VM setup/local doctor/unchanged guard now PASSed on its final
 allowed corrected attempt. Workflow, repeat-setup and fixture HTTPS acceptance
 still require their own execution and evidence. Both prior install failures,
 exact preserved images and owned-cache reclamation remain recorded.
+
+## Independent discovery listener
+
+Fixture-only supervisor/bridge tooling accepts optional core TLS port19543
+only with the original hash-bound owning checkout. The default remains18443;
+switch/fault/privileged/arbitrary ports and missing ownership are refused.
+The twelve-hour cap and restart prohibition remain unchanged. Use a new unit
+and private IPC path; never replace the original core listener or emulator
+reverse route. This enables HTTPS discovery against an independent current-source
+VM fixture while the original native acceptance warehouse remains selected.
+Backend source regressions, including explicit parser/ownership refusals,
+PASS107/107. TLS and IPC execution require separate readiness evidence.
+
+Fresh VM core API, Realtime, final ordinary-authentication/image/account cases
+now PASSed once under application079ab4a and tooling1c2b724. Actual read-only
+snapshots bracketed every group. All five earlier stored files remain unchanged;
+both intentional1024-byte image lifecycle deletions have saved byte/metadata
+evidence. No sessions were minted through the internal test issuer and no
+quotas/timestamps were reset. Repeat setup, supporting gateway/Studio/load checks
+and exact current mobile contract remain separate pending cases. Private result:
+`backend-reproduction0110-01/business-result01.json`.

@@ -1,3 +1,4 @@
+import { coreFixtureTlsPort } from './fixture-core-tls-port.mjs';
 // Optional fixture infrastructure only. Never loaded by ordinary installation.
 // Private configuration is trusted executable input, like the fixture test plan.
 import assert from 'node:assert/strict';
@@ -51,7 +52,14 @@ export function serviceSpec(config, service) {
     assert.ok(['core','switch'].includes(service.kind),'Only core/switch hash-bound helper ownership'); absolute(service.owningCheckout);
     assert.match(service.ownerGuardSHA256,/^[a-f0-9]{64}$/);
   } else assert.ok(!Object.hasOwn(service,'ownerGuardSHA256'));
-  const [helper, guard, validator, port, socketVariable] = helpers[service.kind];
+  const [helper, guard, validator, defaultPort, socketVariable] = helpers[service.kind];
+  let port = defaultPort;
+  if (Object.hasOwn(service, 'tlsPort')) {
+    assert.equal(service.kind, 'core');
+    assert.equal(service.tlsPort, 19543);
+    assert.ok(service.owningCheckout, 'Independent TLS listener requires hash-bound fixture ownership');
+    port = coreFixtureTlsPort(service.tlsPort);
+  }
   const unit = `warehouse-fixture-${service.kind}-${config.runId}.service`;
   const log = resolve(config.logDir, unit + '.log');
   const command = [config.node, resolve(service.checkout, helper)].map(quote).join(' ');
@@ -61,6 +69,7 @@ export function serviceSpec(config, service) {
     (service.kind === 'switch' ? 'WAREHOUSE_SWITCH_FIXTURE_TLS_DIR' : 'WAREHOUSE_FIXTURE_TLS_DIR') + '=' + service.tlsDir,
     socketVariable + '=' + service.socketPath,
   ];
+  if (Object.hasOwn(service, 'tlsPort')) variables.push('WAREHOUSE_FIXTURE_TLS_PORT=' + port);
   if (service.owningCheckout) {
     variables.push('WAREHOUSE_FIXTURE_OWNING_CHECKOUT='+service.owningCheckout);
     variables.push('WAREHOUSE_FIXTURE_OWNER_GUARD_SHA256='+service.ownerGuardSHA256);

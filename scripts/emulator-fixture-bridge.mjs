@@ -1,3 +1,4 @@
+import { coreFixtureTlsPort } from './fixture-core-tls-port.mjs';
 import {createConfirmedOrdersReadController} from './fixture-confirmed-orders-delay.mjs';
 // Private mock-delivery bridge for the guarded fictional fixture only.
 // Never attach this harness to an installed warehouse or expose its listener.
@@ -122,7 +123,7 @@ const ipc = socketServer(client => {
     } catch { client.end('{"error":"no pending fixture challenge"}\n'); }
   });
 });
-server.listen(18443, '127.0.0.1', () => console.log('Guarded fixture HTTPS bridge ready on loopback; no SMS worker invoked.'));
+server.listen(coreFixtureTlsPort(process.env.WAREHOUSE_FIXTURE_TLS_PORT), '127.0.0.1', () => console.log('Guarded fixture HTTPS bridge ready on loopback; no SMS worker invoked.'));
 ipc.listen(socketPath, () => chmodSync(socketPath, 0o600));
 let socketInode;
 ipc.on('listening', () => { socketInode = lstatSync(socketPath).ino; });
