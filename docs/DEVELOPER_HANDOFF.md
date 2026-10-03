@@ -2,6 +2,30 @@
 
 ## Current VM campaign checkpoint, 3 October 2026
 
+Post-resize verification at08:59UTC: VM now has31GiB RAM, about115GiB free
+on the enlarged disk and unused swap. User explicitly resumed work. Original
+and fresh owning-checkout doctor checks PASS; all99 prior matrix bindings and
+both review source heads verified. Fresh fixture85 tables/five actual stored
+files/configuration/identity match the pre-restart snapshot exactly. No emulator
+was restarted and no authentication or business write was replayed.
+
+New bounded read-only monitor28 uses the preserved e1194f8 source and a new
+private configuration/output. First integrity pass checked14,370 bound files,
+retained17 historical mismatches and found zero current/preserved-soak errors.
+It expires at the unchanged16:27:13UTC deadline. Old transient monitor27 and
+helpers stopped with reboot; their earlier lifetime/route observations below
+are historical, not live readiness. Do not restart expired identities.
+
+Fresh local monitoring attempt1 is now supervised for at most two hours.
+Its five pinned amd64 images build serially in a new digest-pinned builder,
+actual2GiB/no extra swap/2CPU/max-parallelism1. The declared execution overlay
+only removes implicit parallel image building from monitoring-check.sh and
+pins its owning ROOT; normal config/scrape/local-only Alertmanager checks remain.
+Before-state preservation PASSed. Build/runtime/final preservation acceptance
+remain pending in monitoring-result01.json. This does not permit external
+alerts, source edits to frozen inputs or shorter soak acceptance.
+
+
 Fresh current-source backend reproduction PASSed separately on this VM.
 Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout
 `/home/jay/warehouse-backend-reproduce-2026100301` and new private state
