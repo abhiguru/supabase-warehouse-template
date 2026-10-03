@@ -540,3 +540,14 @@ three terminal-backed helpers disappeared. Four blocks passed; later blocks and
 final reconciliation were NOT RUN. The failed ledger/44bindings and local backup
 are retained. The corrected supervised new-state/new-TLS run remains pending
 its new APK native gates. No blind resume or completed-write replay.
+
+
+## Fixture IPC pathname bound
+
+New helper configurations must use an absolute private socket pathname of at
+most107 UTF-8 bytes, including parent directories. Linux reserves the final
+byte of its108-byte pathname socket field for a terminator. The reviewed
+supervisor refuses overlong ASCII and multibyte paths before importing the
+owning fixture guard or creating a unit/listener. Use a short unused pathname
+under the owner-only campaign root. Existing frozen helpers/configurations and
+failed attempts remain historical; do not edit them to adopt this guard.

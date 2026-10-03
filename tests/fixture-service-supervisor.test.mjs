@@ -92,3 +92,16 @@ test('independent core TLS19543 requires unchanged hash-bound ownership and reta
  for(const kind of ['switch','fault'])assert.throws(()=>serviceSpec(config,{...selected,kind}));
  assert.throws(()=>serviceSpec(config,{...service,tlsPort:19543}));
 });
+
+
+test('IPC pathname limits use encoded bytes and refuse before supervision', () => {
+  for (const kind of ['core', 'switch', 'fault']) {
+    const boundary = '/' + 'x'.repeat(106);
+    assert.ok(serviceSpec(config, { ...service, kind, socketPath: boundary }).content.includes(boundary));
+    for (const socketPath of ['/' + 'x'.repeat(107), '/' + 'é'.repeat(54)]) {
+      assert.throws(() => serviceSpec(config, { ...service, kind, socketPath }), /IPC pathname exceeds Linux 107-byte limit/);
+    }
+    const multibyteBoundary = '/' + 'é'.repeat(53);
+    assert.ok(serviceSpec(config, { ...service, kind, socketPath: multibyteBoundary }).content.includes(multibyteBoundary));
+  }
+});

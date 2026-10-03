@@ -37,6 +37,9 @@ export function serviceSpec(config, service) {
   assert.match(config.runId, /^[a-z0-9][a-z0-9-]{0,39}$/);
   assert.ok(Object.hasOwn(helpers, service.kind), 'Only declared fixture helpers allowed');
   for (const key of ['checkout', 'state', 'tlsDir', 'socketPath']) absolute(service[key]);
+  // Linux pathname sockets reserve one of sun_path's 108 bytes for NUL.
+  // Refuse before fixture guards or any unit/listener creation.
+  assert.ok(Buffer.byteLength(service.socketPath, 'utf8') <= 107, 'Fixture IPC pathname exceeds Linux 107-byte limit');
   absolute(config.node); absolute(config.logDir);
   for (const option of ['observeAuthenticationPresence','replacementAuthentication']) {
     if (Object.hasOwn(service,option)) {
