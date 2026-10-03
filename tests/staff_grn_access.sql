@@ -115,17 +115,20 @@ SELECT pg_temp.grn_assert(NOT EXISTS(SELECT 1 FROM public.mv_refresh_queue WHERE
 SET LOCAL ROLE authenticated;
 SELECT public.register_grn_image_upload(:'grn_b'::uuid,'header','fictional.webp',32,'image/webp') AS upload \gset
 SELECT pg_temp.grn_assert(:'upload'::jsonb->>'success'='true','staff registers attachment');
-INSERT INTO storage.objects(bucket_id,name,owner)
- VALUES ('grn-images',:'upload'::jsonb->>'storage_path',auth.uid());
+-- These policies use the registered GRN metadata's uploaded_by, not Storage's
+-- legacy owner FK to auth.users. Operator sessions do not create GoTrue users;
+-- leave that unrelated nullable column unset in this SQL-only policy fixture.
+INSERT INTO storage.objects(bucket_id,name)
+ VALUES ('grn-images',:'upload'::jsonb->>'storage_path');
 SELECT pg_temp.grn_assert((SELECT count(*)=1 FROM storage.objects),'own pending upload readable');
 UPDATE storage.objects SET name=name WHERE bucket_id='grn-images';
 DO $$ BEGIN
  BEGIN
-  INSERT INTO storage.objects(bucket_id,name,owner) VALUES ('grn-images','unregistered.webp',auth.uid());
+  INSERT INTO storage.objects(bucket_id,name) VALUES ('grn-images','unregistered.webp');
   RAISE EXCEPTION 'unregistered staff upload accepted';
  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
  BEGIN
-  INSERT INTO storage.objects(bucket_id,name,owner) VALUES ('dispatch-images','unrelated.webp',auth.uid());
+  INSERT INTO storage.objects(bucket_id,name) VALUES ('dispatch-images','unrelated.webp');
   RAISE EXCEPTION 'unrelated bucket staff upload accepted';
  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
