@@ -2,8 +2,9 @@
 
 ## Current APK10 checkpoint, 3 October 2026
 
-The original owned API30 emulator is currently authenticated as genuine Customer A
-after a new ordinary login for the genuine B invoice-denial case. Installed
+The original owned API30 emulator is currently logged out after normal cleanup
+of the temporary genuine Customer A session. Two cold launches require login;
+the active account and two older API sessions remain preserved. Installed
 application remainsc422f62/APK2026100110,
 SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
 Backend installation remainsbed4eeee plus four declared overlays. Source fixes,
@@ -575,3 +576,5 @@ PASSed after the isolated build. No warehouse volume, credential, port, service
 or image tag was attached/replaced. **This is not installed storage-service or
 fresh complete backend reproduction acceptance.** The metadata braces audit,
 other dependency/native gates, final freeze, soak and expiry remain unresolved.
+
+Current temporary A native cleanup attempt3 PASSed: one ordinary confirmed logout, two cold login requirements, selected Core persistence, zero OTP/business writes and unchanged protected SQL/authentication/actual stored bytes. Account remains active; older API sessions preserved. First refusal and attempt2 PASS remain historical. No fourth attempt. Private proof: `genuine-a-logout0110-final-proof03.json`.

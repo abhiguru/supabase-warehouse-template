@@ -9,11 +9,12 @@ application remains bed4eeee plus declared overlays. See the dated acceptance
 matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
 natural-expiry appointment exists. Historical results below do not transfer.
 
-Current original owned API30 emulator has a new genuine Customer A native
-session after ordinary login and successful native B invoice denial. Its earlier
-normal logout and two cold login requirements remain historical. That account remains active;
-its two older API sessions remain preserved. The earlier native login and role
-controls passed; their removed native session must not be assumed present.
+Current original owned API30 emulator is logged out after normal removal of the
+temporary genuine A native session. Two cold launches require login and Core
+selection persists. Account remains active; its two older API sessions are
+preserved. Native cleanup attempt3 PASSed with zero OTP/business writes and
+unchanged protected SQL/authentication/stored bytes; no fourth attempt. Earlier
+A authentication and isolation results remain scoped to their recorded sessions.
 The prior supervisor session804 was removed by normal logout; that account remains
 active. Customer B remains rejected/inactive and must not be reapproved to reuse
 historical acceptance. Private current A login/receipt denial/image and PDF API
