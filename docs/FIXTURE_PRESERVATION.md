@@ -66,3 +66,26 @@ quotas/timestamps were reset. Repeat setup, supporting gateway/Studio/load check
 live contract subsequently PASSed in supporting-result02.json. Repeat setup
 preserved85 tables and five actual files; only sms_config.updated_at changed. Private result:
 `backend-reproduction0110-01/business-result01.json`.
+
+## Normal rejection, disabling and replay
+
+The explicitly bound operator-api-auth-states.mjs driver consumes normal quotas
+for one administrator login, one disabled B challenge, and two challenges for
+a new reserved fictional rejection account. It verifies pending/no session,
+normal administrator rejection, rejected and disabled account_unavailable, and
+OTP replay invalid_otp. Only the new administrator session is normally logged
+out; business/files and earlier sessions remain preserved. There is no provider
+delivery, counter reset or manual timestamp change.
+
+Actual fresh-fixture assertions PASSed once under driver6fb66af. The surrounding
+controller FAILed because its expected-change list omitted audit_log and its
+October partition. Preserve that failure; do not replay login. Independent
+read-only reconciliation proved all29 existing audit rows byte-equivalent by
+hash, exactly five new user_profiles audit events for the reserved accounts,
+and unchanged business, configuration, identity and actual stored files.
+Private auth-states-result01.json remains FAIL; auth-states-proof01.json and
+auth-states-reconciliation-proof01.json separately record assertions and
+reconciliation PASS. Observer source1c2b724 and driver6fb66af are distinct.
+The proof field timestampChanges:0 means no manual clock/timestamp manipulation;
+normal backend authentication timestamps and audit entries changed as designed.
+This is backend evidence and does not close native authentication acceptance.
