@@ -265,3 +265,11 @@ Final allowed corrected attempt03 must expect the documented refusal, record
 the actual alert during the held read, reconcile unchanged selection/session,
 then verify normal-route cold reads. No application behavior needs relaxing to
 make the switch occur; earlier successful header-draft switches were idle.
+
+Literal-staff APK10 check (3 October): ordinary login and logout PASS; cold
+Orders200/no Queue PASS, GRN denied with Staff access required. Mobile/backend
+permission-policy mismatch remains BLOCKED. Normal administrator API restored
+reserved profile947 to active/approved supervisor; no target native session,
+original emulator logged out. Business/assignments/other accounts/stored bytes
+preserved. Role-cycle hash qualification and failed attempt retained privately.
+Reviewed fixture tooling7b717d0 has328 passing source tests.

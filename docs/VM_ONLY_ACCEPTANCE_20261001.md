@@ -3,7 +3,8 @@
 ## Current APK10 checkpoint, 3 October 2026
 
 The original owned API30 emulator is now logged out after genuine Customer A
-ordinary native logout. Installed application remainsc422f62/APK2026100110,
+ordinary native logout and a reversible literal-staff test with normal logout
+and supervisor-role restoration. Installed application remainsc422f62/APK2026100110,
 SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
 Backend installation remainsbed4eeee plus four declared overlays. Source fixes,
 fixture tooling and installed runtime evidence remain separate.
@@ -17,7 +18,7 @@ fixture tooling and installed runtime evidence remain separate.
 | Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. Original emulator LOGGED OUT. |
 | Isolation | Genuine A native B receipt denial PASS; A API B image GET/signing400/400 and GRN PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
 | Realtime/switching | Current supervisor foreground/reconnect PASS; four confirmed header drafts PASS. In-flight Orders case capped BLOCKED; remaining upload/save/payload/race acceptance incomplete. |
-| Source/CI |325/325 fixture tests PASS. Exact mobile5c9b1b1/run37094827452 lint/types and scans PASS, dependencies FAIL, Android audit live at observation. Exact backend53a0701/run37094834001 terminalFAIL; contract/scans PASS, validationFAIL, downstream jobs skipped. |
+| Source/CI |328/328 fixture tests PASS. Exact mobile5c9b1b1/run37094827452 lint/types and scans PASS, dependencies FAIL, Android audit live at observation. Exact backend53a0701/run37094834001 terminalFAIL; contract/scans PASS, validationFAIL, downstream jobs skipped. |
 | Dependency gate | Current audits26 high mobile paths/8 metadata paths; no patched versions reported for node-forge/braces. No downgrade/waiver. |
 | Evidence/closure |18 current proofs and218 nested bindings verified with no integrity error. No complete group closure; revocation remains ineligible. |
 | Final soak/expiry | Final freeze/readiness and eight-hour soak UNSTARTED; dedicated natural-expiry appointment UNSCHEDULED. No older-artifact transfer or shortened soak. |
@@ -429,3 +430,35 @@ APK10 genuine Customer A assigned Orders and visible role controls passed: actua
 The subsequent ordinary native A logout passed in attempt two. One normal confirmation removed only the current native session; two cold launches required login with Core selection preserved. The account stayed active, its two older API sessions were preserved, and unrelated authentication/business snapshots and actual stored bytes were unchanged. Attempt one remains a pre-native refusal: the legacy supervisor config template omitted the required origin, so no native case directory, logout or session mutation occurred. The corrected plan is separate and bound to the preserved refusal. Private evidence: `native-genuine-a-logout0110-02/`, `stage-genuine-a-logout0110-02-evidence/ledger.json`, `genuine-a-logout0110-final-proof02.json`, and the before/after byte observations.
 
 The original owned API30 emulator is now logged out. Neither its A session nor the previously removed supervisor804 session may be assumed present in new configs. No new login is required for handoff. Full fixture source validation at source51c67ab passed325/325 under Node22; installed application/APK10 was unchanged. Account disabling, full group closure, final freeze, readiness, eight-hour soak and natural-expiry scheduling remain unproven/gated.
+
+## Literal staff role check and restored state, 3 October 2026
+
+Reviewed fixture tooling 7b717d0 adds exact APK10/profile/role guards for a
+reversible supervisor-to-staff test and ordinary staff authentication. All
+328 source fixture tests passed with pinned Node22. The normal administrator
+API changed only the reserved account role; ordinary native staff login passed.
+A cold Orders read returned200 with no Queue tab. The subsequent GRN control
+check failed: Android displayed “Staff access required”. The mobile CRUD matrix
+allows staff create/read/update, whereas backend authorize_rpc only grants the
+staff-wide bypass to admin/supervisor. This is an unresolved permission-policy
+mismatch, not a passing staff workflow. No authorization change or rerun was
+made to invent the intended policy.
+
+The failed attempt and independent SQL/session/actual stored-byte reconciliation
+are preserved privately in current-staff-read0110-attempt01-reconciliation.json.
+Normal native logout passed, removed only the new staff session, and required
+login on two cold launches. A second ordinary administrator API operation
+restored the original active/approved supervisor role. Original administrator
+sessions, target assignment, unrelated authentication, business rows and actual
+stored bytes match the pre-cycle checkpoint. The account has no native session;
+the original emulator is logged out. Two legitimate administrator OTPs and one
+staff OTP remain recorded, without counter resets.
+
+The role-cycle targetOtherFieldsHash differs across login. Each role operation
+preserved this hash; the native authentication observer independently preserved
+profileStaticHash, which excludes mobile_verified/mobile_verified_at/updated_at.
+The normal verify-OTP implementation updates mobile_verified_at=now(). This
+explains the likely cross-login hash change, but the checkpoint retains a
+qualification rather than claiming an identical full profile across the cycle.
+Private checkpoint: current-staff-role-cycle0110-checkpoint01.json. This result
+does not close reciprocal isolation, revocation, final-freeze, soak or expiry gates.
