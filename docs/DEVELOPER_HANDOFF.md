@@ -1,5 +1,33 @@
 # Independent operator developer handoff
 
+## Current VM campaign checkpoint, 3 October 2026
+
+The VM-only campaign remains incomplete, with deadline 16:27:13 UTC today.
+Installed x86_64 APK2026100110 is application c422f62, SHA256
+a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69; backend
+application remains bed4eeee plus declared overlays. See the dated acceptance
+matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
+natural-expiry appointment exists. Historical results below do not transfer.
+
+Current read-only monitor is `warehouse-vm-campaign-monitor-20261001-27.service`,
+frozen tooling e1194f8, private root
+`/home/jay/warehouse-install-private/vm-campaign-20261001`. Its configuration is
+`monitor27-config.json`, output `monitor27.jsonl`, transition record
+`monitor27-transition.json`. First full integrity pass checked all 7,848 bound
+files: no unreadable input/current/older-soak failure; 17 historical changes
+remain recorded. The prior 4,096-file limit was insufficient; the corrected
+finite limit is 16,384 with the unchanged 256-stage limit. Prior monitor26 logs
+are preserved. Restart is disabled and lifetime ends at the campaign deadline.
+
+Health: `systemctl --user status warehouse-vm-campaign-monitor-20261001-27.service`.
+Stop: `systemctl --user stop warehouse-vm-campaign-monitor-20261001-27.service`.
+Use the recorded supervised invocation and remaining deadline to start a new
+identity; do not resume old transient identities or extend the campaign.
+Current core14, switching08 and fault04 helpers retain their own twelve-hour
+caps; the core Orders controller is consumed and the fault relay disarmed.
+No helper, emulator session or business state was changed for this correction.
+
+
 ## Active VM-only campaign handoff — 2 October 2026
 
 Use [VM_ONLY_ACCEPTANCE_20261001.md](VM_ONLY_ACCEPTANCE_20261001.md) and the mobile
