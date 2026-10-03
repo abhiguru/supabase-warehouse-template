@@ -2,6 +2,38 @@
 
 ## Current VM campaign checkpoint, 3 October 2026
 
+Fresh current-source backend reproduction is now running separately on this VM.
+Pinned source079ab4a, checkout `/home/jay/warehouse-backend-reproduce-2026100301`,
+new private state `/home/jay/warehouse-state/core-backend-test-2026100301`,
+loopback gateway19590 and declared independent subnet10.233.252.0/24.
+No existing warehouse was retired or modified. Initial legacy-builder attempt
+failed on the pinned PostgreSQL Dockerfile's BuildKit cache mounts before any
+service started. Configuration and logs remain preserved; corrected attempt2
+uses a new owned digest-pinned BuildKit container, actual2GiB/no-swap/2CPU/no
+restart limits and max-parallelism1. No global/default builder was changed.
+The90-minute supervisor is
+`warehouse-fixture-reproduction-vm2026100301-install02.service`; a95-minute
+owned-builder-only stop timer separately bounds its daemon lifetime.
+Evidence/plans/ledgers are under private `backend-reproduction0110-01`.
+Installation, local doctor and subsequent backend workflow gates are still
+pending; do not inherit prior fixture acceptance. The original APK/warehouse
+services and completed older soak remain unchanged. This timer is not a
+natural-session-expiry appointment.
+
+Health: `systemctl --user status warehouse-fixture-reproduction-vm2026100301-install02.service`.
+To stop that controller: `systemctl --user stop warehouse-fixture-reproduction-vm2026100301-install02.service`.
+Preserve any services/state/logs and reconcile before a corrected attempt.
+After this new fixture has services, its guarded health/stop commands are:
+
+```sh
+export PATH=/home/jay/.local/opt/node-v22.23.3-linux-x64/bin:$PATH
+export WAREHOUSE_STATE_DIR=/home/jay/warehouse-state/core-backend-test-2026100301
+cd /home/jay/warehouse-backend-reproduce-2026100301
+node scripts/doctor.mjs --local
+bash scripts/compose.sh stop
+```
+
+
 The VM-only campaign remains incomplete, with deadline 16:27:13 UTC today.
 Installed x86_64 APK2026100110 is application c422f62, SHA256
 a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69; backend
