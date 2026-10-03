@@ -89,3 +89,13 @@ reconciliation PASS. Observer source1c2b724 and driver6fb66af are distinct.
 The proof field timestampChanges:0 means no manual clock/timestamp manipulation;
 normal backend authentication timestamps and audit entries changed as designed.
 This is backend evidence and does not close native authentication acceptance.
+
+## Mocked provider contract
+
+The reviewed provider suite now explicitly covers malformed200 responses, absent/
+trimmed/bounded request IDs, terminal429 after at most one explicit retry, and
+malformed503 without retry. Existing cases cover missing authentication/template,
+invalid payload, authentication/template rejection, ambiguous timeout, and
+contradictory success on gateway error. All sends are injected in-memory mocks;
+no provider transport or handset delivery occurs. Full source suite118/118 PASS.
+This is source/provider-contract evidence, not real-provider acceptance.

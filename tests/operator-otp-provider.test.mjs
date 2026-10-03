@@ -85,3 +85,28 @@ test('retries one explicit transient HTTP rejection, never an auth rejection', a
   }), error => error instanceof Msg91DeliveryError && error.code === 'provider_auth');
   assert.equal(calls, 1);
 });
+
+// Every send function below is injected; none can contact the provider.
+test('rejects malformed success responses without retrying or exposing response text', async () => {
+  for (const body of ['not-json', 'null', '42', JSON.stringify({type:'success',message:42}), JSON.stringify({type:'success',message:'   '})]) {
+    let calls=0;
+    await assert.rejects(deliverOtp(phone,code,authKey,templateId,async()=>{calls++;return new Response(body,{status:200});}), error=>error instanceof Msg91DeliveryError && error.code==='provider_invalid_response' && error.message==='MSG91 delivery unavailable');
+    assert.equal(calls,1);
+  }
+});
+
+test('preserves absent request IDs and bounds accepted request-ID text', async () => {
+  assert.equal(await deliverOtp(phone,code,authKey,templateId,async()=>Response.json({status:'success',message:null})),null);
+  assert.equal(await deliverOtp(phone,code,authKey,templateId,async()=>Response.json({status:'success',message:'  accepted-id  '})),'accepted-id');
+  const id=await deliverOtp(phone,code,authKey,templateId,async()=>Response.json({type:'success',message:'x'.repeat(300)}));
+  assert.equal(id.length,255);
+});
+
+test('limits explicit rate-limit retries and never retries malformed gateway responses', async () => {
+  let calls=0;
+  await assert.rejects(deliverOtp(phone,code,authKey,templateId,async()=>{calls++;return Response.json({type:'error'},{status:429});}),{code:'provider_rate_limited'});
+  assert.equal(calls,2);
+  calls=0;
+  await assert.rejects(deliverOtp(phone,code,authKey,templateId,async()=>{calls++;return new Response('malformed gateway response',{status:503});}),{code:'provider_unavailable'});
+  assert.equal(calls,1);
+});
