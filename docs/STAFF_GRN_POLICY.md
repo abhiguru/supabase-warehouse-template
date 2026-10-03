@@ -47,12 +47,24 @@ existing entries. The newer mobile list reads live rows and passed its count
 assertion before this failure. Additive migration19 registers the seven existing
 runtime refresh targets and reconciles their views under the same advisory lock
 as the refresh trigger. The assertion is retained without a test-only refresh.
-Migration19 has not been executed; the local migration attempt limit is reached.
+The operator explicitly authorized one additional five-minute isolated test of
+commit9a6a9d8. That test passed the initial legacy-list count, staff edit RPC and
+underlying quantity/stock reconciliation, then failed the retained-list stock
+check after the edit. The disposable database was removed and the fourth local
+log/result were preserved. Migration19 remains unpublished; no fifth local
+attempt or further correction was started.
+
+Source inspection explains the remaining refresh mismatch: update_grn disables
+the item dirty trigger, then marks mv_refresh_status, while the starter's
+synchronous refresher consumes mv_refresh_queue. Initial queue registration
+does not repair that edit path. A complete cache correction and independent
+validation remain open; the passing earlier assertions do not establish full
+staff permission, attachment or native acceptance.
 
 The mobile CI run37121658351 also exposed an older authentication test that
 still mocked the replaced dispatch-table query. Its correction checks use of
 the authenticated GRN-detail RPC and absence of direct table access.
 
-Further database validation requires an explicitly authorized bounded attempt.
+The authorized extra attempt is consumed; this case stopped as agreed.
 Native staff GRN acceptance and a new installed artifact remain outstanding.
 The user's permission decision is resolved; all other campaign gates remain.
