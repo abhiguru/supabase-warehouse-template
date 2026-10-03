@@ -2,9 +2,9 @@
 
 ## Current APK10 checkpoint, 3 October 2026
 
-The original owned API30 emulator is now logged out after genuine Customer A
-ordinary native logout and a reversible literal-staff test with normal logout
-and supervisor-role restoration. Installed application remainsc422f62/APK2026100110,
+The original owned API30 emulator is currently authenticated as genuine Customer A
+after a new ordinary login for the genuine B invoice-denial case. Installed
+application remainsc422f62/APK2026100110,
 SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
 Backend installation remainsbed4eeee plus four declared overlays. Source fixes,
 fixture tooling and installed runtime evidence remain separate.
@@ -15,10 +15,10 @@ fixture tooling and installed runtime evidence remain separate.
 | Exact APK10 | Compiled trust/ABI/signer/standalone JS and installed hash PASS; final acceptance freeze absent. |
 | Native business | Invalid receipt/dispatch quantities PASS; normal partial/final dispatch reconciliation and final dispatch PASS; queue PASS with explicit API cart preparation. Positive native receipt/cart/image and selected invoice/fault/concurrency/offline cases remain capped incomplete. |
 | Invoice/PDF | Existing rounding invoice179/tax9, generation/download/SEND/Librera view/export PASS. Full arithmetic/save/list/Breakdown/GRN-navigation contract acceptance incomplete. |
-| Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. Original emulator LOGGED OUT. |
-| Isolation | Genuine A native B receipt denial PASS; A API B image GET/signing400/400 and GRN PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
+| Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. New ordinary A session active for scoped follow-up; earlier native session was removed. |
+| Isolation | Genuine A native B receipt and new genuine invoice denial PASS; A API B image GET/signing400/400 and GRN PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
 | Realtime/switching | Current supervisor foreground/reconnect PASS; four confirmed header drafts PASS. In-flight Orders case capped BLOCKED; remaining upload/save/payload/race acceptance incomplete. |
-| Source/CI |328/328 fixture tests PASS. Exact mobile5c9b1b1/run37094827452 lint/types and scans PASS, dependencies FAIL, Android audit live at observation. Exact backend53a0701/run37094834001 terminalFAIL; contract/scans PASS, validationFAIL, downstream jobs skipped. |
+| Source/CI |339/339 fixture tests, lint and typecheck PASS at reviewed tooling27e262a. Preceding mobilefccd516/run37096877438 Android audit/lint/types/scans PASS, dependencies FAIL; backend0e046cb/run37096889890 contract/scans PASS, validationFAIL/downstream skipped. New published heads require their own CI review. |
 | Dependency gate | Current audits26 high mobile paths/8 metadata paths; no patched versions reported for node-forge/braces. No downgrade/waiver. |
 | Evidence/closure |18 current proofs and218 nested bindings verified with no integrity error. No complete group closure; revocation remains ineligible. |
 | Final soak/expiry | Final freeze/readiness and eight-hour soak UNSTARTED; dedicated natural-expiry appointment UNSCHEDULED. No older-artifact transfer or shortened soak. |
@@ -462,3 +462,51 @@ explains the likely cross-login hash change, but the checkpoint retains a
 qualification rather than claiming an identical full profile across the cycle.
 Private checkpoint: current-staff-role-cycle0110-checkpoint01.json. This result
 does not close reciprocal isolation, revocation, final-freeze, soak or expiry gates.
+
+## Genuine B invoice fixture and current A native denial, 3 October 2026
+
+Reviewed tooling27e262a prepared a fresh fictional B receiptFXI971 (one unit),
+dispatchFXI972 (one unit, stock1→0), B-only monthly test price5/labour2/tax5%, and
+invoice20261031 (total8/tax1). These are API fixture preparations, not native
+receipt/dispatch/invoice creation acceptance or production pricing decisions.
+The test rates come from tests/operator-api-core.mjs and the supported
+create_item_storage_price contract. Existing records, pricing rows, credentials
+and actual stored objects remain preserved; every intended write occurred once.
+
+The first preparation failed after a committed dispatch because the observer
+omitted the legitimate out_of_stock=false→true effect. Its FAIL remains unchanged;
+independent actual-state reconciliation passed before continuation, without
+replaying receipt or dispatch. Invoice-only attempt1 failed on the missing unit
+price; its session is preserved. Attempt2 retained the real preview, refused its
+null unit price, and normally removed only its new read-only session. One normal
+API operation then appended the absent B-only fictional price and reconciled it.
+The final invoice-only attempt passed and removed only its new session. A
+65-character step identifier was separately refused before driver/authentication;
+its original plan is retained alongside the corrected immutable plan.
+
+Private evidence: b-invoice-fixture0110-final-preparation-proof01.json and its
+bound ledgers. Two failed preparation API sessions are deliberately preserved.
+Five ordinary administrator OTPs brought its daily count to20; the next natural
+daily reset is16:53:18UTC, after this campaign deadline. No further administrator
+OTP request, quota reset or blind session cleanup is permitted in this campaign.
+
+Genuine Customer A then authenticated normally on the original APK10 emulator.
+The first native A-to-B invoice-denial attempt passed against the actual B invoice:
+Invoice Not Found with no B content/document controls, fresh get_invoice_data200,
+normal-route cold Orders200, and identical before/after SQL/authentication/pricing
+and actual stored-byte snapshots. No OTP or business write occurred during the
+denial case. Private proof: genuine-a-invoice-denial0110-final-proof01.json; case
+native-genuine-a-invoice-denial0110-01. This does not establish B PDF transport,
+full reciprocal isolation, group closure or final freeze. Customer B remains
+rejected/inactive; no B authentication or reapproval occurred.
+
+Current original emulator is authenticated as genuine Customer A using its new
+native-approved-a-auth0110-02 session; two older A API sessions remain preserved.
+Do not assume the earlier logged-out A session or supervisor804 exists. Full
+fixture source tests339/339 and lint PASS. Installed app/APK remainsc422f62,
+SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+Exact preceding documentation-head mobilefccd516/run37096877438 Android debug
+audit, lint/types and scans PASS; dependencies FAIL. Back end0e046cb/run37096889890
+contract/scans PASS, validationFAIL and dependent checks skipped. New heads need
+their own exact CI review. Final readiness/eight-hour soak and dedicated expiry
+appointment remain gated and unstarted.

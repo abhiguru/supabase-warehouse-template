@@ -9,8 +9,9 @@ application remains bed4eeee plus declared overlays. See the dated acceptance
 matrix for exact native scope. No final freeze, new eight-hour soak or dedicated
 natural-expiry appointment exists. Historical results below do not transfer.
 
-Current original owned API30 emulator is logged out after genuine Customer A
-normal logout and two cold login requirements. That account remains active;
+Current original owned API30 emulator has a new genuine Customer A native
+session after ordinary login and successful native B invoice denial. Its earlier
+normal logout and two cold login requirements remain historical. That account remains active;
 its two older API sessions remain preserved. The earlier native login and role
 controls passed; their removed native session must not be assumed present.
 The prior supervisor session804 was removed by normal logout; that account remains
@@ -21,7 +22,7 @@ passed; its two failures remain preserved and no fourth attempt is allowed.
 API image and PDF denial preserve the current native session and actual stored
 bytes; they do not establish native image rendering or full reciprocal isolation.
 
-Latest complete fixture source validation passed328/328 under Node22.23.3.
+Latest complete fixture source validation passed339/339 under Node22.23.3.
 Revalidated source audits report26 high mobile dependency paths and8 high
 backend metadata paths, rooted in unpatched node-forge/braces advisories.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
@@ -305,3 +306,13 @@ reserved profile947 to active/approved supervisor; no target native session,
 original emulator logged out. Business/assignments/other accounts/stored bytes
 preserved. Role-cycle hash qualification and failed attempt retained privately.
 Reviewed fixture tooling7b717d0 has328 passing source tests.
+
+Current B fixture/native invoice checkpoint supersedes earlier logged-out state:
+API-prepared FXI971/FXI972 and invoice20261031 (8/tax1), B-only fictional monthly
+price5/labour2/tax5, with original failed attempts and two failed API sessions
+preserved. Native genuine A-to-B invoice denial PASS on unchanged APK10; A is
+currently authenticated with new native-approved-a-auth0110-02 session. B stays
+rejected/inactive. Admin daily count20: its natural reset16:53:18UTC is after the
+16:27:13UTC campaign deadline, so no more administrator OTP requests. No counter
+reset or blind old-session cleanup. Source339 fixture tests/lint PASS; final
+freeze/soak/expiry and full group closure remain unestablished.
