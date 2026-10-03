@@ -1,6 +1,30 @@
 # VM-only backend reproduction checkpoint
 
-## Current APK10 checkpoint, 3 October 2026
+## Post-restart acceptance checkpoint, 3 October 10:48 UTC
+
+The user resumed the enlarged31GiB VM. The original API30 emulator is stopped
+with its own storage preserved; its final pre-restart native cleanup required
+login on two cold launches. No emulator was booted or native session issued
+after restart. Installed artifact evidence remains APK2026100110/application
+c422f62, SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+
+| Requirement | Authoritative scope and remaining gate |
+| --- | --- |
+| Fresh backend reproduction | Clean application079ab4a, independent state UUIDf73725c1-0f0f-4637-bf7f-cb8decfaf404, loopback19590/subnet252: setup/migrations/bootstrap/doctor, business API/Realtime/images/PDFs, gateway/Studio/metadata, bounded load/retention preview, live contract and repeat setup PASS. Original bed4 warehouse remains unchanged. |
+| Source and overlays | Application079ab4a, executed test tooling1c2b724, TLS tooling3ae80ae, and private port/subnet/orchestration overlays are recorded separately. No application/schema change to simplify tests. |
+| Dependencies and provider | Metadata development audit8 high→0; compatible storage busboy3.2.2 executed in fresh services. Mobile26 production/54 full high paths remain blocked. Backend126 source tests include mocked provider/refusal cases; no real delivery. |
+| Ordinary authentication | Backend pending/rejected/disabled/replay assertions PASS with controllerFAIL retained and independently reconciled. Actual five-minute OTP expiry/cooldown/hourly limit PASS; no clock/counter resets. This is not Android refresh-session expiry. |
+| Monitoring and preservation | Final attempt3 monitoring PASS: all five pinned images/config/rules/scrapes/local Alertmanager; earlier compile-bound/OOM failures retained. New consistent private backup: seven checksums/readable catalogs/normal restart/doctor PASS. All85 tables/five actual stored files/configuration/identity preserved; no restore/transfer. |
+| Post-restart HTTPS | New bounded helper identity verified trusted19543 genuine discovery/private IPC, zero OTP/login, protected state unchanged; normally stopped. Wrong-path and overlong-socket failures preserved. No live helper readiness inferred. |
+| Native business/isolation/lifecycle | Narrow APK10 results below remain valid in their recorded scopes. Full receipt/cart/image/invoice/navigation/fault/offline/concurrency/switching/reciprocal isolation groups remain incomplete or capped. Staff GRN policy awaits a decision; no fourth runs or invented permissions. |
+| Final readiness/soak/expiry | Unstarted: no final freeze or30-minute readiness, new eight-hour soak, dedicated expiry AVD/session/appointment. Full soak cannot fit before unchanged16:27:13UTC deadline; older APK0101 PASS remains separate. |
+| Publication and evidence | Sanitized fixes/docs published to existing review branches and draft PR34/79; no merge/release. Immutable private matrices retain terminal evidence and all previous failures. Each published head requires its own exact CI result. |
+
+The earlier checkpoint below is historical. Its old live statuses, metadata
+blocker and service identities are superseded by this checkpoint and the
+current developer handoff; they must not be used as restart instructions.
+
+## Historical APK10 checkpoint before resize, 3 October 2026
 
 The original owned API30 emulator is currently logged out after normal cleanup
 of the temporary genuine Customer A session. Two cold launches require login;
