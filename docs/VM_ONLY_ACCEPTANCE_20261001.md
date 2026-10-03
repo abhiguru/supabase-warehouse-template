@@ -1,5 +1,32 @@
 # VM-only backend reproduction checkpoint
 
+## Current APK10 checkpoint, 3 October 2026
+
+The original owned API30 emulator is now logged out after genuine Customer A
+ordinary native logout. Installed application remainsc422f62/APK2026100110,
+SHA256a7df6781bdcd889eb9ccaa01ee0973890effd4d187bb6ac45f100284e1b04b69.
+Backend installation remainsbed4eeee plus four declared overlays. Source fixes,
+fixture tooling and installed runtime evidence remain separate.
+
+| Requirement | Verified current scope and remaining gate |
+| --- | --- |
+| Backend reproduction | Pinnedbed4 installation/repeat setup PASS with separate state; busboy3.2.2 source patch audit/parser PASS, not rebuilt or installed. Current metadata audit BLOCKED. |
+| Exact APK10 | Compiled trust/ABI/signer/standalone JS and installed hash PASS; final acceptance freeze absent. |
+| Native business | Invalid receipt/dispatch quantities PASS; normal partial/final dispatch reconciliation and final dispatch PASS; queue PASS with explicit API cart preparation. Positive native receipt/cart/image and selected invoice/fault/concurrency/offline cases remain capped incomplete. |
+| Invoice/PDF | Existing rounding invoice179/tax9, generation/download/SEND/Librera view/export PASS. Full arithmetic/save/list/Breakdown/GRN-navigation contract acceptance incomplete. |
+| Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. Original emulator LOGGED OUT. |
+| Isolation | Genuine A native B receipt denial PASS; A API B image GET/signing400/400 and GRN PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
+| Realtime/switching | Current supervisor foreground/reconnect PASS; four confirmed header drafts PASS. In-flight Orders case capped BLOCKED; remaining upload/save/payload/race acceptance incomplete. |
+| Source/CI |325/325 fixture tests PASS. Exact mobile5c9b1b1/run37094827452 lint/types and scans PASS, dependencies FAIL, Android audit live at observation. Exact backend53a0701/run37094834001 terminalFAIL; contract/scans PASS, validationFAIL, downstream jobs skipped. |
+| Dependency gate | Current audits26 high mobile paths/8 metadata paths; no patched versions reported for node-forge/braces. No downgrade/waiver. |
+| Evidence/closure |18 current proofs and218 nested bindings verified with no integrity error. No complete group closure; revocation remains ineligible. |
+| Final soak/expiry | Final freeze/readiness and eight-hour soak UNSTARTED; dedicated natural-expiry appointment UNSCHEDULED. No older-artifact transfer or shortened soak. |
+
+Exact private closure audit: `current-artifact-revocation-prerequisite-audit-20261003T0420.json`.
+Dependency revalidation: `current-dependency-blockers-revalidation03.json`.
+Older dated checkpoints below retain historical facts and are not current readiness.
+
+
 The 48-hour acceptance campaign started on 1 October 2026 at 16:27:13 UTC and ends on 3 October at the same time. This is an in-progress checkpoint, not release or production acceptance. Test1 was not changed; no pilot or recovery host, real SMS, public DNS, tunnel, restore, transfer or cutover was used.
 
 The backend application source remains `bed4eeee4a008073aa453c32da27cade50a32a2f`. The application was not changed to simplify acceptance.
