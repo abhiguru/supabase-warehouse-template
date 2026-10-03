@@ -48,8 +48,9 @@ under unused tag `warehouse-fixture-metadata-9c11104-vm2026100110-01:local`.
 Build/check/selected upstream suites PASS in the Dockerfile. The exact image
 then PASSed root200, health200 and absent-route404 via actual Fastify injection,
 with the exact source lock and worker bytes. The bounded probe uses no network,
-read-only filesystem, dropped capabilities, no ports/warehouse volumes or
-credentials, and512MiB/2CPU limits. Reusable source is
+read-only filesystem, dropped capabilities and no ports or warehouse volumes.
+The probe receives no warehouse configuration. Limits are512MiB and two CPUs.
+Reusable source is
 `tests/meta-image-candidate-smoke.mjs`; pass it on stdin to the image's Node
 entry point using `--input-type=module` and the Dockerfile's declared user.
 
