@@ -293,3 +293,18 @@ Dependencies remain unresolved; no waiver or older green CI transfer. Final
 readiness/eight-hour soak are unstarted. Dedicated natural-expiry helper
 lifecycle guards were source-tested, but no final freeze, dedicated AVD/session
 or expiry appointment exists. Existing helper twelve-hour caps are retained.
+
+
+2026-10-03 APK2026100110 saved rounding-invoice PDF PASS on final permitted
+attempt03, frozen tooling ddc5bcc. Existing invoice20261010 was not saved again.
+Actual native Overview displayed total179/tax9, then one Share generated one
+new private PDF, downloaded matching bytes and opened Android SEND. Original
+approved Librera was selected once, scroll viewing captured, and its actual
+export independently matched stored/native bytes (21,221 bytes, SHA256
+8e0523eab7d91020ade2340513fcfee23371b1553069d18e614d4fff3b9ba84e). Prior stored/device PDFs
+were preserved before overwrite; approved permissions and remembered settings
+were unchanged. Normal-route cold Orders200 and entire two-warehouse/auth/
+stored-byte reconciliation passed afterward; no new OTP/logout/business save.
+Private rounding-pdf0110-final-proof.json SHA256 3e841f35086a4416ac0f1df19ab056b2e9376d0c9f491963907170828012a83c.
+This is current supervisor PDF acceptance, not arithmetic/save/list, reciprocal
+customer denial, complete workflow-group closure or final readiness.
