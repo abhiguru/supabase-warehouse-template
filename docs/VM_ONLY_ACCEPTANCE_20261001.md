@@ -240,3 +240,29 @@ Concurrency helper configuration is now wired through the fixture-only superviso
 The source-only concurrency delay observations now include process monotonic timestamps at actual hold start/release, permitting measured duration without recording request data. The fresh prepared helper checkout predates this timing addition and must be replaced with a new pinned identity before execution; no active runtime input changed.
 
 Post-concurrency source validation: complete documented Node22 backend unit suite 97/97 PASS; pinned gitleaks 8.30.1 redacted source and all-history scans PASS. The separate thirteen bounded transport tests also passed after monotonic instrumentation. Fresh normal10 helper runs pinned 71a7ac8 with delay disabled and twelve-hour cap; timed helper stopped/preserved. Native race exhausted its three attempts before either dispatch write and is BLOCKED; do not infer concurrency acceptance from source tests.
+
+
+Current checkpoint, 2026-10-03 01:00 UTC: the exact helper-code CI run
+37081811670 at e3126a03775f76e7d9a82d6ac73ebc36aa6dbd0c completed SUCCESS.
+This validates reviewed helper source; installed backend application remains
+bed4eeee with separately recorded overlays. It does not establish APK acceptance.
+
+In-flight Orders switching remains BLOCKED after all three native attempts.
+Final attempt03 captured Operation In Progress at 00:39:18.044916 UTC before
+the identified genuine read completed HTTP200 at 00:39:23.803 UTC, then failed
+at the acknowledgement selector. No completed switch, OTP or business write
+occurred. Original failed ledgers remain unchanged and no fourth run is allowed.
+The capped proof SHA256 is
+15ca26b5c7f690bbf53a095af7af08090dc0631147c5bd408aebe94ecef38a9a.
+Separately labelled normal cleanup passed primary selection, authenticated cold
+Orders200 and exact before/after protected SQL/storage reconciliation against
+the actual attempt03 baseline. Cleanup does not relabel native acceptance.
+
+Current owned core helper confirmread14 uses pinned e3126a0; its single-use
+controller is CONSUMED and subsequent reads are normal. Switching observe08 and
+fault renew04 are unchanged; fault relay remains DISARMED. Monitor26 covers
+current units. Existing primary supervisor session is preserved. Latest mobile
+review tooling 28ce721 has 299 passing source tests and a separate exact refusal
+acknowledgement selector; this future tooling correction does not reopen the
+capped native case or change installed APK2026100110. Final readiness, eight-hour
+soak and dedicated natural-expiry appointment remain unestablished.
