@@ -28,15 +28,22 @@ sessions/external deliveries/manual resets, and unchanged profiles/sessions/
 business/files; only the expected three OTP tables changed. This does not
 establish the separate Android refresh-session-expiry requirement.
 
-Corrected monitoring attempt2 is now live, separately bound to90 minutes. It
-resumes only the exact stopped owned digest-pinned2GiB/no-extra-swap/2CPU/
-max-parallelism1/no-restart builder/cache. The first failure remains intact.
-Prometheus compile is bounded to60 minutes; images remain serial. Original
-125-minute builder-only stop timer was retained and verified later than this
-stage's90-minute bound. The execution overlay only removes implicit parallel
-building and pins the owning ROOT; config/scrape/local-only Alertmanager checks
-remain unchanged. Before-state/ownership PASSed, runtime/final preservation
-acceptance remains pending in monitoring-result02.json. No external alerts.
+Corrected monitoring attempt2 is terminal FAIL after a proven2GiB cgroup OOM.
+The AWS EC2 Go compiler reported signal:killed; actual ancestor cgroup recorded
+one OOM kill. Owned build-client interruption and normal exact-builder stop
+allowed the supervisor to preserve buffered compile output. No monitoring
+service/image started. Full85-table/five-file/configuration/identity failure
+reconciliation PASSed; both failed attempts remain preserved.
+
+Final allowed monitoring attempt3 is now live, using a new digest-pinned builder
+with actual4GiB/no additional swap/2CPU/max-parallelism1/no-restart limits on the
+resized31GiB VM. Old builders/inputs were not edited. Whole stage is bounded to
+three hours, Prometheus60 minutes and other images30 minutes each serially;
+a new ownership-checked builder-only stop timer bounds the daemon to185 minutes.
+The stage fits before the unchanged16:27:13UTC deadline. No fourth attempt or
+alias is allowed. Before-state/ownership/resource checks PASSed; runtime and
+final preservation remain pending in monitoring-result03.json. Local-only
+Alertmanager configuration is unchanged; no external alerts are configured.
 
 Fresh current-source backend reproduction PASSed separately on this VM.
 Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout

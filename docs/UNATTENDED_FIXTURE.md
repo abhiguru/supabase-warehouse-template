@@ -213,6 +213,14 @@ The monitoring compile reached its initial20-minute bound; that failed attempt
 is retained. Its corrected Prometheus bound is60 minutes within a90-minute
 whole stage, with serial profile builds and the original daemon stop unchanged.
 Do not carry this longer bound into a plan without checking remaining deadlines.
+The corrected2GiB monitoring attempt subsequently hit a confirmed AWS EC2 Go
+compiler OOM. The final allowed attempt uses a new builder with memory=4g and
+memory-swap=4g; actual Memory/MemorySwap are4294967296/4294967296. Two CPUs,
+one worker and no restart remain. This profile-build exception does not alter
+the previously exercised core-installation2GiB recipe or Gradle limits. Its
+whole stage is bounded to three hours within the original campaign deadline,
+with a separate185-minute owned-daemon stop. Both failures remain preserved;
+no fourth attempt. Runtime acceptance remains pending until actual checks pass.
 Stop only the exact owned builder after the stage, retaining images and logs.
 
 Run the documented setup and suites in dependency order against that owning
