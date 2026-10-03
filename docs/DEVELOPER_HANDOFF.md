@@ -16,15 +16,27 @@ It expires at the unchanged16:27:13UTC deadline. Old transient monitor27 and
 helpers stopped with reboot; their earlier lifetime/route observations below
 are historical, not live readiness. Do not restart expired identities.
 
-Fresh local monitoring attempt1 is now supervised for at most two hours.
-Its five pinned amd64 images build serially in a new digest-pinned builder,
-actual2GiB/no extra swap/2CPU/max-parallelism1. The declared execution overlay
-only removes implicit parallel image building from monitoring-check.sh and
-pins its owning ROOT; normal config/scrape/local-only Alertmanager checks remain.
-Before-state preservation PASSed. Build/runtime/final preservation acceptance
-remain pending in monitoring-result01.json. This does not permit external
-alerts, source edits to frozen inputs or shorter soak acceptance.
+Fresh local monitoring attempt1 reached its20-minute Prometheus compilation
+bound after source/UI checksums and Go-module verification PASSed. Controller
+FAIL/exit1 and build124 remain preserved. No monitoring image/service started;
+owned builder stoppedexit0. Independent failure reconciliation proved all85
+tables/five files/configuration/identity identical to the before-state snapshot.
 
+Independent natural five-minute OTP expiry/cooldown/hourly-limit stage01 PASSed
+at09:31:28UTC under source d3ab95c. Three normal challenges/counters2→5, zero
+sessions/external deliveries/manual resets, and unchanged profiles/sessions/
+business/files; only the expected three OTP tables changed. This does not
+establish the separate Android refresh-session-expiry requirement.
+
+Corrected monitoring attempt2 is now live, separately bound to90 minutes. It
+resumes only the exact stopped owned digest-pinned2GiB/no-extra-swap/2CPU/
+max-parallelism1/no-restart builder/cache. The first failure remains intact.
+Prometheus compile is bounded to60 minutes; images remain serial. Original
+125-minute builder-only stop timer was retained and verified later than this
+stage's90-minute bound. The execution overlay only removes implicit parallel
+building and pins the owning ROOT; config/scrape/local-only Alertmanager checks
+remain unchanged. Before-state/ownership PASSed, runtime/final preservation
+acceptance remains pending in monitoring-result02.json. No external alerts.
 
 Fresh current-source backend reproduction PASSed separately on this VM.
 Application079ab4a6f8c3e8c3d9e4f4f3ffd917a420ef0a50 owns checkout

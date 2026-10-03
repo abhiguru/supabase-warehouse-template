@@ -113,7 +113,14 @@ The reserved fictional rejection account remains unchanged; no administrator
 session, external delivery or Android state is used.
 
 Both auth drivers refuse eight unsafe bindings before fixture/Docker access.
-Full source126/126 tests PASS; expiry/runtime assertions remain unexecuted
-until their separately supervised stage and preservation checks complete.
+Full source126/126 tests PASS. Fresh supervised OTP stage01 now PASSed on
+its first execution. Actual server expiry09:30:24UTC was observed expired before
+verification, with zero prior attempts and an unverified challenge. Three normal
+challenges moved the reserved account's counters2→5; cooldown/rate rejections
+consumed no additional challenge and reset timestamps remained identical.
+No session was issued. Read-only before/after snapshots changed only the three
+OTP quota/challenge tables; profiles, sessions, business and actual files stayed
+unchanged. Private otp-natural-expiry-result01.json/proof01.json and snapshots
+record exact source d3ab95c and observer1c2b724. No fourth/alias/replay was used.
 This five-minute OTP test does not establish the separate seven-day Android
 refresh-session expiry requirement or permit scheduling it before final freeze.
