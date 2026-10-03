@@ -22,7 +22,18 @@ passed; its two failures remain preserved and no fourth attempt is allowed.
 API image and PDF denial preserve the current native session and actual stored
 bytes; they do not establish native image rendering or full reciprocal isolation.
 
-Latest complete fixture source validation passed339/339 under Node22.23.3.
+Genuine B invoice20261031 now has one API-generated/downloaded private PDF,
+20,809 bytes, SHA256ebeb9b37e023389438ce07868aa08f32cf7c083b487488c38b02fa7f8bebebab.
+The first current A API direct invoice PDF read/generation denial PASSed400/404,
+with existing native/API sessions, business, pricing and actual bytes preserved.
+Only new supervisor/A API sessions were normally logged out. This closes the
+scoped invoice transport check, not native PDF or reciprocal workflow groups.
+Private proofs: `b-invoice-pdf-preparation0110-final-proof01.json` and
+`current-a-private-b-invoice0110-final-proof01.json`. Frozen tooling55cab9e;
+installed APK/application unchanged. Admin daily quota remains20 with natural
+reset after campaign deadline; no further Admin OTP or quota reset is allowed.
+
+Latest complete fixture source validation passed347/347 under Node22.23.3.
 Revalidated source audits report26 high mobile dependency paths and8 high
 backend metadata paths, rooted in unpatched node-forge/braces advisories.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend

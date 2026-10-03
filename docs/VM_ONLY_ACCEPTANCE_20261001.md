@@ -16,9 +16,9 @@ fixture tooling and installed runtime evidence remain separate.
 | Native business | Invalid receipt/dispatch quantities PASS; normal partial/final dispatch reconciliation and final dispatch PASS; queue PASS with explicit API cart preparation. Positive native receipt/cart/image and selected invoice/fault/concurrency/offline cases remain capped incomplete. |
 | Invoice/PDF | Existing rounding invoice179/tax9, generation/download/SEND/Librera view/export PASS. Full arithmetic/save/list/Breakdown/GRN-navigation contract acceptance incomplete. |
 | Customer authentication/controls | Genuine A ordinary native login, assigned Orders/visible customer controls, native logout and two cold login requirements PASS. Account active, old API sessions preserved. New ordinary A session active for scoped follow-up; earlier native session was removed. |
-| Isolation | Genuine A native B receipt and new genuine invoice denial PASS; A API B image GET/signing400/400 and GRN PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
+| Isolation | Genuine A native B receipt and new genuine invoice denial PASS; A API B image GET/signing400/400, GRN PDF GET/generation400/404 and genuine invoice PDF GET/generation400/404 PASS with actual stored bytes preserved. Complete reciprocal/current staff/customer native read/write/Realtime/document group incomplete. |
 | Realtime/switching | Current supervisor foreground/reconnect PASS; four confirmed header drafts PASS. In-flight Orders case capped BLOCKED; remaining upload/save/payload/race acceptance incomplete. |
-| Source/CI |339/339 fixture tests, lint and typecheck PASS at reviewed tooling27e262a. Preceding mobilefccd516/run37096877438 Android audit/lint/types/scans PASS, dependencies FAIL; backend0e046cb/run37096889890 contract/scans PASS, validationFAIL/downstream skipped. New published heads require their own CI review. |
+| Source/CI |347/347 fixture tests, lint and typecheck PASS at reviewed tooling55cab9e. Exact published mobilec97b9a7/run37099712745 lint/types/scans PASS, dependencies FAIL, Android audit live at observation; backend9002adb/run37099724570 contract/scans PASS, validationFAIL/downstream skipped. Subsequent published heads require their own CI review. |
 | Dependency gate | Current audits26 high mobile paths/8 metadata paths; no patched versions reported for node-forge/braces. No downgrade/waiver. |
 | Evidence/closure |18 current proofs and218 nested bindings verified with no integrity error. No complete group closure; revocation remains ineligible. |
 | Final soak/expiry | Final freeze/readiness and eight-hour soak UNSTARTED; dedicated natural-expiry appointment UNSCHEDULED. No older-artifact transfer or shortened soak. |
@@ -510,3 +510,20 @@ audit, lint/types and scans PASS; dependencies FAIL. Back end0e046cb/run37096889
 contract/scans PASS, validationFAIL and dependent checks skipped. New heads need
 their own exact CI review. Final readiness/eight-hour soak and dedicated expiry
 appointment remain gated and unstarted.
+
+## Current genuine B invoice PDF API acceptance, 3 October 2026
+
+The first supervisor preparation and current A denial stages both PASSed.
+One ordinary supervisor login generated one PDF for actual B invoice20261031
+and downloaded20,809 bytes; stored/downloaded SHA256 is
+`ebeb9b37e023389438ce07868aa08f32cf7c083b487488c38b02fa7f8bebebab`.
+Customer A's one ordinary API login then tested the genuine stored object:
+direct GET400 without PDF bytes and generation404. Existing native/API sessions,
+business/pricing, unrelated authentication, old metadata/files and actual stored
+bytes were independently preserved. Only each newly issued API session was
+normally logged out. B remains rejected/inactive; no reapproval, quota reset,
+write replay, application API or schema change occurred. Source347/347 fixture
+tests, lint and typecheck PASS at tooling55cab9e. These are API PDF evidence,
+not native B PDF viewing, complete reciprocal workflow closure or final freeze.
+Final readiness/eight-hour soak and delayed natural-expiry appointment remain
+gated by unresolved native workflows, staff policy and dependency audits.
