@@ -9,6 +9,14 @@ import { serviceSpec, portListening } from '../scripts/fixture-service-superviso
 
 const config = { scope: 'isolated-fictional-fixture', runId: 'diagnostic-1', node: '/opt/node/bin/node', logDir: '/private/logs' };
 const service = { kind: 'core', checkout: "/private/fixture's checkout", state: '/private/core-backend-test-1', tlsDir: '/private/tls', socketPath: '/private/otp.sock' };
+test('upload switching hold requires an independent bounded core helper',()=>{
+ const switchUploadHold={scope:'isolated-fictional-native-switch-upload',milliseconds:30000,grnId:'11111111-1111-4111-8111-111111111111',fileName:'FXS993-switch-upload.webp',fileSize:1234};
+ const spec=serviceSpec(config,{...service,switchUploadHold});
+ assert.ok(spec.content.includes('WAREHOUSE_FIXTURE_SWITCH_UPLOAD_HOLD='));
+ assert.ok(spec.content.includes('RuntimeMaxSec=43200'));
+ for(const extra of[{kind:'switch'},{kind:'fault'},{replacementAuthentication:true},{ordersReadDelayMs:500},{dispatchConcurrency:{}},{confirmedOrdersReadDelayMs:30000}])assert.throws(()=>serviceSpec(config,{...service,switchUploadHold,...extra}));
+ assert.throws(()=>serviceSpec(config,{...service,switchUploadHold:{...switchUploadHold,milliseconds:0}}));
+});
 test('long-lived fixture helpers use independent user supervision without hidden restart', () => {
   const s = serviceSpec(config, service);
   assert.equal(s.unit, 'warehouse-fixture-core-diagnostic-1.service');

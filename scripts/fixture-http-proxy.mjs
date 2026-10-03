@@ -6,7 +6,8 @@ import {confirmedOrdersReadDelayMilliseconds} from './fixture-confirmed-orders-d
 import {ordersReadDelayMilliseconds} from './fixture-orders-delay.mjs';
 import {bufferConcurrencyRequest} from './fixture-dispatch-concurrency-delay.mjs';
 const observedPaths = new Set(['/rest/v1/rpc/get_orders_list', '/rest/v1/rpc/refresh_jwt_token', '/rest/v1/rpc/logout_session', '/functions/v1/get-public-config']);
-export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0, confirmedOrdersReadDelayMs = 0, confirmedReadController = null, dispatchConcurrency = {milliseconds:0} } = {}) {
+export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, observe = () => {}, observeAuthenticationPresence = false, discoveryDelayMs = 0, ordersReadDelayMs = 0, confirmedOrdersReadDelayMs = 0, confirmedReadController = null, dispatchConcurrency = {milliseconds:0}, switchUploadHold = null } = {}) {
+  if(switchUploadHold&&(dispatchConcurrency.milliseconds||discoveryDelayMs||ordersReadDelayMs||confirmedOrdersReadDelayMs))throw new Error('INDEPENDENT_UPLOAD_HOLD_REQUIRED');
   const discoveryDelay=discoveryDelayMilliseconds(req,target,discoveryDelayMs),ordersDelay=ordersReadDelayMilliseconds(req,target,ordersReadDelayMs);
   const eligibleConfirmedRead=confirmedOrdersReadDelayMilliseconds(req,target,confirmedOrdersReadDelayMs);
   const held=eligibleConfirmedRead?confirmedReadController?.take(req,target):null;
@@ -36,7 +37,7 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
       res.end(JSON.stringify({ success: false, message: status === 504 ? 'Fixture upstream timed out' : 'Fixture upstream unavailable' }));
     }
   };
-  const deadline = setTimeout(() => fail('upstream-timeout', 504), confirmedOrdersDelay?45000:timeoutMs);
+  let deadline = setTimeout(() => fail('upstream-timeout', 504), confirmedOrdersDelay?45000:timeoutMs);
   const start = (buffer=null) => {
   if(complete)return;
   upstream = httpRequest(target, { method: req.method, headers: req.headers }, response => {
@@ -54,7 +55,14 @@ export function proxyFixtureRequest(req, res, target, { timeoutMs = 15000, obser
   req.on('error', () => fail('client-request-error', 499));
   req.on('aborted', () => fail('client-request-aborted', 499));
   res.on('close', () => {if(!res.writableFinished)fail('client-response-closed',499);});
-  const hold=bufferConcurrencyRequest(req,target,dispatchConcurrency,{forward:start,fail,observe:event=>{try{observe({atUTC:new Date().toISOString(),...metadata,...event});}catch{/* Safe diagnostic only. */}}});
+  const holdObserver=event=>{
+    if(event.event==='switch-upload-delay-start'){
+      clearTimeout(deadline);
+      deadline=setTimeout(()=>fail('upstream-timeout',504),event.delayMs+timeoutMs);
+    }
+    try{observe({atUTC:new Date().toISOString(),...metadata,...event});}catch{/* Safe diagnostic only. */}
+  };
+  const hold=switchUploadHold?switchUploadHold.buffer(req,target,{forward:start,fail,observe:holdObserver}):bufferConcurrencyRequest(req,target,dispatchConcurrency,{forward:start,fail,observe:holdObserver});
   cancelDelay=hold||(()=>{});
   if(!hold)start();
 }

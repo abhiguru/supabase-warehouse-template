@@ -501,3 +501,22 @@ rejected/inactive. Admin daily count20: its natural reset16:53:18UTC is after th
 16:27:13UTC campaign deadline, so no more administrator OTP requests. No counter
 reset or blind old-session cleanup. Source339 fixture tests/lint PASS; final
 freeze/soak/expiry and full group closure remain unestablished.
+
+Fixture upload-switch transport preparation (3 October): optional core-helper
+`switchUploadHold` is disabled by default. Its scope must be
+`isolated-fictional-native-switch-upload`, with an independently recorded GRN
+UUID, exact `FXS993-switch-upload.webp` filename and exact positive file size.
+Only authenticated header-image registration at the fictional primary's fixed
+RPC route can be held. The duration is 500–30000ms; body buffering is bounded
+to 64KiB. The controller consumes its one match before waiting; cancellation
+prevents forwarding and cannot rearm it. Other payloads pass through unchanged.
+Safe observations contain event/timing metadata only. Independent helper mode
+guards reject concurrent delay modes and replacement authentication; supervised
+helpers retain the twelve-hour cap and no restart. The proxy extends its request
+deadline only after an actual match. Source and ephemeral HTTP tests verify
+unchanged single forwarding and cancellation before upstream execution.
+
+This is tooling preparation only: no helper was installed or replaced, no
+warehouse/emulator operation ran, and upload/save switching acceptance remains
+incomplete. Native execution still requires an immutable bound plan, fresh
+fictional fixture, preserved baseline and independent object/state reconciliation.

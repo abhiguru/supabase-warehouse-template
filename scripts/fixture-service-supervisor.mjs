@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { isMain } from './is-main.mjs';
 import { dispatchConcurrencyDelayMilliseconds } from './fixture-dispatch-concurrency-delay.mjs';
+import { createSwitchUploadHold } from './fixture-switch-upload-delay.mjs';
 
 const helpers = {
   core: ['scripts/emulator-fixture-bridge.mjs', 'tests/operator-fixture.mjs', 'operatorFixture', 18443, 'WAREHOUSE_FIXTURE_SOCKET'],
@@ -47,6 +48,11 @@ export function serviceSpec(config, service) {
       assert.ok(option==='observeAuthenticationPresence' ? ['core','switch'].includes(service.kind) : service.kind==='core','Fictional bridge option kind refused');
     }
   }
+  if(Object.hasOwn(service,'switchUploadHold')){
+    assert.equal(service.kind,'core');assert.notEqual(service.replacementAuthentication,true);
+    for(const key of ['ordersReadDelayMs','dispatchConcurrency','discoveryDelayMs','confirmedOrdersReadDelayMs'])assert.ok(!Object.hasOwn(service,key),'INDEPENDENT_UPLOAD_HOLD_REQUIRED');
+    assert.ok(service.switchUploadHold.milliseconds>0);createSwitchUploadHold(service.switchUploadHold);
+  }
   if(Object.hasOwn(service,'confirmedOrdersReadDelayMs')){assert.equal(service.kind,'core');assert.equal(service.confirmedOrdersReadDelayMs,30000);assert.equal(service.observeAuthenticationPresence,true);assert.notEqual(service.replacementAuthentication,true);for(const key of ['ordersReadDelayMs','dispatchConcurrency','discoveryDelayMs'])assert.ok(!Object.hasOwn(service,key),'INDEPENDENT_CONFIRMED_READ_HELPER_REQUIRED');}
   if(Object.hasOwn(service,'ordersReadDelayMs')){assert.equal(service.kind,'core');assert.ok(Number.isInteger(service.ordersReadDelayMs)&&service.ordersReadDelayMs>=500&&service.ordersReadDelayMs<=5000,'Bounded core Orders read delay only');assert.notEqual(service.replacementAuthentication,true);}
   if(Object.hasOwn(service,'dispatchConcurrency')){assert.equal(service.kind,'core');assert.notEqual(service.replacementAuthentication,true);assert.ok(!Object.hasOwn(service,'ordersReadDelayMs'),'Independent concurrency helper required');assert.ok(service.dispatchConcurrency.milliseconds>0);dispatchConcurrencyDelayMilliseconds({},{},null,service.dispatchConcurrency);}
@@ -80,6 +86,7 @@ export function serviceSpec(config, service) {
   if(Object.hasOwn(service,'confirmedOrdersReadDelayMs'))variables.push('WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS='+service.confirmedOrdersReadDelayMs);
   if(Object.hasOwn(service,'ordersReadDelayMs'))variables.push('WAREHOUSE_FIXTURE_ORDERS_READ_DELAY_MS='+service.ordersReadDelayMs);
   if(Object.hasOwn(service,'dispatchConcurrency'))variables.push('WAREHOUSE_FIXTURE_DISPATCH_CONCURRENCY='+JSON.stringify(service.dispatchConcurrency));
+  if(Object.hasOwn(service,'switchUploadHold'))variables.push('WAREHOUSE_FIXTURE_SWITCH_UPLOAD_HOLD='+JSON.stringify(service.switchUploadHold));
   if(Object.hasOwn(service,'discoveryDelayMs'))variables.push('WAREHOUSE_SWITCH_FIXTURE_DISCOVERY_DELAY_MS='+service.discoveryDelayMs);
   if (service.observeAuthenticationPresence === true) variables.push('WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE=true');
   if (service.replacementAuthentication === true) variables.push('WAREHOUSE_FIXTURE_REPLACEMENT_AUTH=true');

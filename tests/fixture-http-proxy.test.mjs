@@ -9,6 +9,37 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 async function close(server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+// Ephemeral servers exercise proxy plumbing; the fixed-origin matcher is tested
+// separately without ever binding the campaign's occupied warehouse port.
+function testUploadHold(events){return {buffer(req,_target,{forward,observe}){
+ let timer,stopped=false;const chunks=[];
+ req.on('data',chunk=>chunks.push(chunk));req.on('end',()=>{
+  observe({event:'switch-upload-delay-start',delayMs:100,monotonicMs:performance.now()});
+  timer=setTimeout(()=>{if(stopped)return;events.push('release');forward(Buffer.concat(chunks));},100);
+ });return ()=>{stopped=true;clearTimeout(timer);};
+}};}
+test('held HTTP body executes once after release; ordinary timeout does not expire during hold',async()=>{
+ let calls=0,received;const events=[];
+ const upstream=createServer((req,res)=>{calls++;const chunks=[];req.on('data',b=>chunks.push(b));req.on('end',()=>{received=Buffer.concat(chunks);res.end('committed');});});
+ const base=await listen(upstream);
+ const bridge=createServer((req,res)=>proxyFixtureRequest(req,res,new URL('/upload',base),{timeoutMs:50,switchUploadHold:testUploadHold(events)}));
+ const url=await listen(bridge),raw=Buffer.from('{"private":"not observed"}');
+ try{
+  const result=await new Promise((resolve,reject)=>{const q=request(url,{method:'POST',headers:{'content-length':raw.length}},res=>{const parts=[];res.on('data',b=>parts.push(b));res.on('end',()=>resolve({status:res.statusCode,body:Buffer.concat(parts).toString()}));});q.on('error',reject);q.end(raw);});
+  assert.deepEqual(result,{status:200,body:'committed'});assert.equal(calls,1);assert.deepEqual(received,raw);assert.deepEqual(events,['release']);
+ }finally{await close(bridge);await close(upstream);}
+});
+test('HTTP client disconnect while upload held prevents upstream execution',async()=>{
+ let calls=0;const events=[];let held;
+ const started=new Promise(resolve=>held=resolve);
+ const upstream=createServer((_req,res)=>{calls++;res.end('unexpected');}),base=await listen(upstream);
+ const bridge=createServer((req,res)=>proxyFixtureRequest(req,res,new URL('/upload',base),{switchUploadHold:testUploadHold(events),observe:e=>{if(e.event==='switch-upload-delay-start')held();}}));
+ const url=await listen(bridge);
+ try{
+  const q=request(url,{method:'POST'});q.on('error',()=>{});q.end('private');await started;q.destroy();
+  await new Promise(resolve=>setTimeout(resolve,150));assert.equal(calls,0);assert.deepEqual(events,[]);
+ }finally{await close(bridge);await close(upstream);}
+});
 function fetchResult(url) {
   return new Promise((resolve, reject) => {
     const q = request(url, response => {

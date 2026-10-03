@@ -1,5 +1,6 @@
 import { coreFixtureTlsPort } from './fixture-core-tls-port.mjs';
 import {createConfirmedOrdersReadController} from './fixture-confirmed-orders-delay.mjs';
+import {createSwitchUploadHold} from './fixture-switch-upload-delay.mjs';
 // Private mock-delivery bridge for the guarded fictional fixture only.
 // Never attach this harness to an installed warehouse or expose its listener.
 import assert from 'node:assert/strict';
@@ -36,6 +37,10 @@ const confirmedOrdersReadDelayMs=process.env.WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_
 assert.ok(confirmedOrdersReadDelayMs===0||confirmedOrdersReadDelayMs===30000);
 if(confirmedOrdersReadDelayMs){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.equal(dispatchConcurrency.milliseconds,0);assert.equal(observeAuthenticationPresence,true);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
 const confirmedReadController=createConfirmedOrdersReadController(confirmedOrdersReadDelayMs);
+const switchUploadConfig=process.env.WAREHOUSE_FIXTURE_SWITCH_UPLOAD_HOLD===undefined?{milliseconds:0}:JSON.parse(process.env.WAREHOUSE_FIXTURE_SWITCH_UPLOAD_HOLD);
+const switchUploadHold=switchUploadConfig.milliseconds?createSwitchUploadHold(switchUploadConfig):null;
+createSwitchUploadHold(switchUploadConfig);
+if(switchUploadHold){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.equal(dispatchConcurrency.milliseconds,0);assert.equal(confirmedOrdersReadDelayMs,0);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
 assert.ok(tlsDir && socketPath && isAbsolute(tlsDir) && isAbsolute(socketPath));
@@ -98,7 +103,7 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, confirmedOrdersReadDelayMs, confirmedReadController, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, confirmedOrdersReadDelayMs, confirmedReadController, dispatchConcurrency, switchUploadHold, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
