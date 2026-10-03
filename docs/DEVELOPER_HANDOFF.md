@@ -35,8 +35,13 @@ installed APK/application unchanged. Admin daily quota remains20 with natural
 reset after campaign deadline; no further Admin OTP or quota reset is allowed.
 
 Latest complete fixture source validation passed347/347 under Node22.23.3.
-Revalidated source audits report26 high mobile dependency paths and8 high
-backend metadata paths, rooted in unpatched node-forge/braces advisories.
+Mobile source audit still reports26 high production dependency paths.
+Metadata review source now removes cpy-cli/nodemon in favor of native Node
+asset-copy/development-watch helpers; full metadata audit fell from8 high to0.
+All170 production lock entries and retained package entries are unchanged.
+Backend tests105/105 and pinned metadata build/check/upstream tests12/12 PASS.
+Both backend container dependency gates PASS; no running metadata replacement
+or fresh complete installation is claimed. See METADATA_NATIVE_TOOLING.md.
 Do not use audit fix --force, downgrade Expo/nodemon or waive gates. Backend
 storage busboy3.2.2 patch now has isolated image build/parser/integration PASS; it is not installed storage-service acceptance.
 The installed application remains bed4eeee plus its four declared overlays.
