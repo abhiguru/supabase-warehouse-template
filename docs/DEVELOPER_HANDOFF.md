@@ -150,3 +150,20 @@ production security approval.
 [Historical source-demo handoff](SOURCE_DEMO_DEVELOPER_HANDOFF.md) preserves the
 original exact commits and device evidence. Its installation commands apply only
 to the historical code. Preserve the immutable `v0.2.2-demo` tag.
+
+Fixture-only confirmed Orders hold tooling (not installed): optional
+confirmedOrdersReadDelayMs=30000 is separate from the existing <=5000ms
+ordersReadDelayMs. It matches only authenticated POST get_orders_list at
+backend-core.example.test forwarded to127.0.0.1:18080, with no query. Writes,
+discovery, refresh, foreign hosts, replacement and other state/routes cannot
+match. Supervisor requires a separate core helper, auth-presence observation
+and no other delay/concurrency mode, retaining RuntimeMaxSec43200/Restartno.
+Only a matching read gets a45-second transport deadline; original request
+deadlines and delay bounds remain unchanged. Genuine buffered response bytes
+are held for exactly30 seconds and cancelled on normal connection closure.
+25 focused transport/supervisor tests and101 complete source tests passed with
+the documented edge-import loader. The initial full-suite invocation omitted
+that loader and failed two imports; private failed log is preserved separately.
+No running helper, APK, database schema or application API changed. Native
+confirmed in-flight switching remains NOT TESTED pending guarded installation,
+actual timing, same-process continuation and normal-route cleanup/reconciliation.

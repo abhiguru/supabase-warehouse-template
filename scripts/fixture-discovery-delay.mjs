@@ -6,8 +6,8 @@ export function discoveryDelayMilliseconds(req,target,configured=0){
  return req.method==='GET'&&target.protocol==='http:'&&target.hostname==='127.0.0.1'&&target.port==='18590'&&target.pathname==='/functions/v1/get-public-config'&&target.search===''&&req.headers.host==='backend-switch.example.test'&&req.headers.authorization===undefined?configured:0;
 }
 export function delayDiscoveryReply(response,res,milliseconds,fail,observe=()=>{},kind='discovery'){
- assert.ok(['discovery','orders'].includes(kind));
- assert.ok(Number.isInteger(milliseconds)&&milliseconds>=500&&milliseconds<=5000);
+ assert.ok(['discovery','orders','confirmed-orders'].includes(kind));
+ assert.ok(kind==='confirmed-orders'?milliseconds===30000:Number.isInteger(milliseconds)&&milliseconds>=500&&milliseconds<=5000);
  let bytes=0,chunks=[],timer,stopped=false;
  const cancel=()=>{stopped=true;clearTimeout(timer);chunks=[];};
  response.on('data',chunk=>{if(stopped)return;bytes+=chunk.length;if(bytes>65536){cancel();fail(kind+'-response-too-large',502);}else chunks.push(chunk);});

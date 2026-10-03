@@ -30,6 +30,9 @@ const dispatchConcurrency=process.env.WAREHOUSE_FIXTURE_DISPATCH_CONCURRENCY===u
 dispatchConcurrencyDelayMilliseconds({},{},null,dispatchConcurrency);
 if(dispatchConcurrency.milliseconds){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
 const observeAuthenticationPresence = process.env.WAREHOUSE_FIXTURE_OBSERVE_AUTH_PRESENCE === 'true';
+const confirmedOrdersReadDelayMs=process.env.WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS===undefined?0:Number(process.env.WAREHOUSE_FIXTURE_CONFIRMED_ORDERS_READ_DELAY_MS);
+assert.ok(confirmedOrdersReadDelayMs===0||confirmedOrdersReadDelayMs===30000);
+if(confirmedOrdersReadDelayMs){assert.equal(base,'http://127.0.0.1:18080');assert.equal(ordersReadDelayMs,0);assert.equal(dispatchConcurrency.milliseconds,0);assert.equal(observeAuthenticationPresence,true);assert.notEqual(process.env.WAREHOUSE_FIXTURE_REPLACEMENT_AUTH,'true');}
 const tlsDir = process.env.WAREHOUSE_FIXTURE_TLS_DIR;
 const socketPath = process.env.WAREHOUSE_FIXTURE_SOCKET;
 assert.ok(tlsDir && socketPath && isAbsolute(tlsDir) && isAbsolute(socketPath));
@@ -92,7 +95,7 @@ const server = httpsServer({ key: readFileSync(keyPath), cert: readFileSync(reso
         expires_at: prepared.data.expires_at }, message: 'Fixture mock delivery accepted' });
     } catch { return json(res, 400, { success: false, message: 'Fixture challenge failed' }); }
   }
-  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
+  proxyFixtureRequest(req, res, target, { ordersReadDelayMs, confirmedOrdersReadDelayMs, dispatchConcurrency, observeAuthenticationPresence, observe: event => console.log(JSON.stringify(event)) });
 });
 server.on('upgrade', (req, client, head) => {
   const target = fixtureTarget(req.url);
