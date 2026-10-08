@@ -11,7 +11,7 @@ RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     && (cd internal/forks/pgproto3 && go test ./...) \
     && go test -p=2 ./internal/crypto/... \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -trimpath -ldflags='-X github.com/supabase/auth/internal/utilities.Version=v2.196.0-warehouse.1' -o /out/auth .
-FROM supabase/gotrue:v2.196.0@sha256:c0c25187a6b835e65a6f6e6c6b39d090e832d40e6de5186f2c038e0411944232
+FROM supabase/gotrue:v2.197.0@sha256:1736a63078f5922b198c4cbe50f80ab9a2d3b54fe8b7b6cfb2e9dc5dbbc12c6b
 USER root
 RUN apk upgrade --no-cache libcrypto3 libssl3
 COPY --from=build /out/auth /usr/local/bin/auth
