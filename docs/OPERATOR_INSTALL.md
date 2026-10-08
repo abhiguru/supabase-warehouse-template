@@ -442,9 +442,13 @@ It then moves `data/db` and `data/storage` to `data/db.pre-restore-<utc>` and
 storage archive, optionally replaces `config/compose.env` (keeping
 `config/compose.env.pre-restore-<utc>`), initializes a fresh cluster with
 `compose up -d --wait db`, recreates missing roles from `roles.txt` as `NOLOGIN`,
-replays `database.dump` by section with `--clean --if-exists --exit-on-error`
-and the archived owners, repairs the pg_graphql wrapper and replays ACLs exactly
-as the verifier does, restores `_supabase.dump`, re-asserts the database JWT
+recreates the `postgres` database from `template1` (the same template the
+verifier restores into), replays `database.dump` by section with
+`--exit-on-error` and the archived owners (event triggers are replayed last,
+owned by the restoring superuser, because PostgreSQL requires a superuser owner
+and the archived owner is not one in this image), repairs the pg_graphql
+wrapper and replays ACLs exactly as the verifier does, recreates `_supabase`
+the same way and restores `_supabase.dump`, re-asserts the database JWT
 settings from `compose.env`, diffs `scripts/backup-integrity.sql` against the
 backup's `integrity.txt`, runs `scripts/migrate.sh --operator` (a no-op unless
 this checkout added migrations after the backup), starts every service with
@@ -467,10 +471,7 @@ bash start.sh
 ```
 
 A failed restore prints this sequence with the actual paths. Remove the kept
-directories only after the restored instance is accepted. If `--clean` ever
-fails on an object the fresh initialization created but the dump does not list,
-`scripts/restore.sh` documents the fallback of recreating the `postgres`
-database from `_supabase` before replaying the dump.
+directories only after the restored instance is accepted.
 
 ## Rerun and upgrade
 
