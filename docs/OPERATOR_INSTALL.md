@@ -29,6 +29,9 @@ Sections: [host prerequisites](#host-prerequisites),
   make the Docker socket world-writable.
 - At least 10 GiB free on a persistent filesystem for the initial installation,
   plus capacity for the warehouse's data; the doctor enforces the minimum.
+- A **second, empty disk for backups** is strongly recommended. A backup on
+  the same disk as the data does not survive loss of that disk; see
+  [Backup disk](#backup-disk).
 - `cloudflared` for the tunnel (installed in the ingress section).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`,
@@ -97,11 +100,20 @@ to run the test suite.
 
 **State directory.** An empty absolute path outside the checkout, not reached
 through a symlink, on the persistent filesystem, mode 0700 and owned by the
-installation user:
+installation user. The installer builds the state next to its final path
+(`<state>.installing-<random>`) and renames it into place, so the **parent**
+directory must belong to the installation user as well. Create both, the
+second command without `sudo`:
 
 ```bash
-sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" /srv/warehouse/acme
+sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" /srv/warehouse
+install -d -m 0700 /srv/warehouse/acme
 ```
+
+If you create only the leaf with `sudo install -d … /srv/warehouse/acme`, the
+parent `/srv/warehouse` is created root-owned and setup stops with
+`EACCES: permission denied, mkdir '/srv/warehouse/acme.installing-…'`
+(see Troubleshooting).
 
 **MSG91 provider file.** A mode-0600 file outside the checkout with exactly
 these five keys. Values are unquoted and contain no whitespace, quotes,
@@ -165,11 +177,22 @@ outside the checkout; no source edit is needed for the documented installation.
 
 Login is phone OTP only, delivered through MSG91. Customers who sign up stay
 pending until an administrator approves them from Enrollment Review; staff and
-administrators are created by an administrator. Limits enforced by the
-database:
+administrators are created by an administrator. There is no create-user
+screen: the person signs in once, an administrator approves them, and then
+sets their role under Settings → Users → edit. Every accepted code request
+is a real SMS billed by MSG91 (there is no test or fixed-OTP mode), so budget
+for it: a full acceptance run with three roles, a restore and a key rotation
+used about 24 codes. Limits enforced by the database:
 
 - OTPs expire after 5 minutes.
-- Per phone: 5 per hour and 20 per day, with a 60 s resend cooldown.
+- Per phone: 5 per hour and 20 per day, with a 60 s resend cooldown. The hourly
+  and daily counters are **fixed windows**, not sliding ones: a window opens at
+  the first request after the previous window has expired and lasts one hour
+  (one day). A phone whose requests straddle a window boundary can therefore
+  receive up to about ten codes within sixty minutes. A request refused for the
+  window limit answers HTTP 429 "Too many OTP requests. Try again later."; one
+  refused for the cooldown answers 429 "Please wait before requesting another
+  OTP.". The window limit is checked first, and neither sends an SMS.
 - Per client IP: 30 per hour, keyed on Cloudflare's `CF-Connecting-IP`.
 - Warehouse-wide cap: `otp_global_hourly_cap` in
   `warehouse_security.auth_config` (default 300 per hour). Raise it with
@@ -288,6 +311,16 @@ installation's. Repeat it from warehouse Wi-Fi and from cellular data.
 `doctor --local` covers the loopback gateway only; `--host-preflight` and
 `--preflight` are the checks setup runs before touching anything.
 
+If the external doctor reports `fetch failed` right after you routed the
+hostname, check name resolution before suspecting the tunnel. A lookup made
+*before* the route existed (for example the `dig` that confirms the name is
+free) leaves an NXDOMAIN in the host's resolver cache for the zone's negative
+TTL, up to 30 minutes on a Cloudflare zone, while the public internet already
+resolves the name. Compare `dig +short <hostname> @1.1.1.1` with
+`dig +short <hostname>`; `resolvectl flush-caches` helps on systemd-resolved
+hosts, but an upstream router may cache the answer too. Once the name resolves
+on the host the doctor passes.
+
 ## First-use checks
 
 Install the companion app
@@ -296,19 +329,37 @@ select this origin and confirm the company name it discovers. Then, with
 fictional data and owned phones:
 
 1. Sign in as the administrator with a real SMS code.
-2. Sign up a customer from a second phone; its login stays pending until
-   approved from Enrollment Review; approve it and sign in.
-3. Create a staff account. As staff, create a goods receipt, a partial and a
-   final dispatch (with a photo) for that customer, and save the invoice:
+2. Create two fictional customers (Settings → Customers) and an item with a
+   price (Settings → Items, Item Pricing). Sign up a customer login from a
+   second phone; its login stays pending until you approve it from Enrollment
+   Review, and the assignment list there is empty until customers exist.
+   Approve it with an assignment to the first customer, sign in, and confirm
+   it sees only that customer's records.
+3. Create a staff account. There is no create-user screen: the person signs
+   in once, you approve them, then set the role under Settings → Users → edit.
+   As staff, create a goods receipt for the customer who is **not** assigned
+   to that person (the app requires a photo of the GRN book entry), a partial
+   and a final dispatch (a photo is optional and can only be attached while
+   the dispatch is being created, not afterwards), and save the invoice:
    totals are computed by the server and staff see no price list.
 4. Download the GRN, dispatch, invoice and stock PDFs as an authorized user;
    confirm an anonymous or foreign request is denied.
-5. Disable a user, confirm login is refused, then re-enable and sign in again.
+5. Disable a user (Settings → Users → edit → Account Status) and confirm login
+   is refused (the code can still be requested, verification is rejected),
+   then re-enable and sign in again.
 6. Take a backup and verify it (below).
 
+One phone is enough to exercise every role if you sign out and in again for
+each, but each role needs its own number that can receive an SMS. To reuse a
+number for the staff role, change that login's role only after the customer
+checks are finished.
+
 [INVOICE_RULES.md](INVOICE_RULES.md) and [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md)
-describe the expected behaviour; the fictional billing example there (subtotal
-950, tax 48, total 998) is a convenient check. Record what you tested.
+describe the expected behaviour. The fictional billing example there (subtotal
+950, tax 48, total 998) holds only for its fixture dates: received on 1 April,
+dispatched on 2 May, 31 billable days, so 1.5 periods. If you receive and
+dispatch on the same day one period applies, and 100 bags at price 5, labour 2
+and tax 5 % give 700 + 35 = **735**. Record what you tested.
 
 ## Ordinary operation
 
@@ -328,11 +379,16 @@ bash scripts/compose.sh ps
 bash stop.sh
 ```
 
+`compose ps` shows every service `Up (healthy)` except `rest`, which defines no
+healthcheck and appears as plain `Up`; the doctor, not the status column, is
+the health verdict.
+
 Start and stop the tunnel service separately through its systemd unit. Do not
 run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`,
-`db:backup`, `db:restore`, `test:recovery`, `retention:*`, `test:gateway-dns`)
+`db:backup`, `db:restore`, `backup-disk.sh sync`, `test:recovery`,
+`retention:*`, `test:gateway-dns`)
 takes an exclusive per-state lock on `config/operator.lock` before touching
 Docker. A second command for the same state fails immediately with "Another
 operator command ... is running for this state." Wait for the first to finish;
@@ -350,8 +406,9 @@ export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 bash rotate-keys.sh --yes
 ```
 
-Without `--yes` the command prints what it would do and changes nothing. With
-`--yes` it takes the operator lock, requires a healthy database, and then:
+Without `--yes` the command prints a usage message, changes nothing and exits
+with status 1. With `--yes` it takes the operator lock, requires a healthy
+database, and then:
 
 1. stages a copy of `config/compose.env` with a new 96-hex `JWT_SECRET` and
    newly signed `ANON_KEY` and `SERVICE_ROLE_KEY` (only those three lines change);
@@ -375,6 +432,14 @@ database already holds a secret the file does not; rerun
 end. Take a fresh `db:backup` after rotation: earlier backups restore the
 previous keys together with the previous database state and remain internally
 consistent, but they no longer match the running instance.
+
+Two things to expect afterwards. `doctor --local` passes at the end of the
+command, but an external `doctor` run immediately afterwards can fail once with
+a local-service message while the recreated services settle behind the tunnel;
+rerun it after about thirty seconds. And already-open apps are not sent to the
+login screen: their next requests are rejected with HTTP 401, and the current
+client shows load errors or empty lists instead of prompting. Ask every user to
+sign out (Settings → Sign Out) and sign in again after a rotation.
 
 ## Backup and restore
 
@@ -413,6 +478,79 @@ ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
 instance.
 
+### Backup disk
+
+A backup on the same disk as `data/` is lost with it, which is why `db:backup`
+warns. The first protection is a **second, empty disk** used only for backups.
+`scripts/backup-disk.sh` prepares that disk and copies verified backups onto it;
+`db:backup` itself is unchanged. A partition carved out of the system disk is
+deliberately not offered, because it would not survive failure of that disk,
+and the helper never shrinks, resizes or wipes anything.
+
+A second disk is **local custody only**. A separate physical drive (or, on a
+hypervisor, a disk on a different datastore) protects against failure of the
+data disk. It does not protect against loss of the host or datastore, theft,
+fire, or ransomware that reaches the guest; only an encrypted off-host copy
+does, and the acceptance ledger keeps that open.
+
+1. Attach an empty disk (VMware: VM settings, add a hard disk, preferably on a
+   different datastore or drive; cloud: create and attach a volume; hardware:
+   install a drive), then rescan or reboot. It must be blank: no partitions, no
+   filesystem or other signature, not mounted.
+2. Look first. These commands are read-only and run as the installation user:
+
+   ```bash
+   cd /path/to/installed/backend
+   export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+   bash scripts/backup-disk.sh status
+   bash scripts/backup-disk.sh plan                      # lists eligible disks
+   bash scripts/backup-disk.sh plan --device /dev/sdb    # shows exactly what apply would do
+   ```
+
+   `plan` prints the apply command with the confirmation value taken from the
+   disk itself (its serial number, or its exact size when it reports none).
+   With no eligible second disk it stops with "No second disk found".
+3. Prepare the disk. This is the only destructive command and the only one that
+   needs root. It never escalates by itself; run it through `sudo` from the
+   installation user so the disk is owned by that user and not by root:
+
+   ```bash
+   sudo bash scripts/backup-disk.sh apply --device /dev/sdb --yes --confirm-serial SERIAL
+   ```
+
+   It refuses the system disk and any disk that holds the operator data; any
+   disk with a partition, filesystem, LVM, RAID, swap or encryption signature,
+   or even an empty partition table; mounted, removable or read-only disks; and
+   disks smaller than 10 GiB or twice the current data and backups. It creates
+   one GPT partition with an ext4 filesystem labelled `warehouse-backup`,
+   mounts it at `/srv/warehouse-backups` (owned by you, mode 0700), writes
+   `.warehouse-backup-disk` there and appends one `UUID=… nofail` line to
+   `/etc/fstab`, keeping a dated copy of the file. It re-checks the disk
+   immediately before writing. Running it again on the prepared disk changes
+   nothing. If it stops part way it says where and wipes nothing automatically;
+   run `status` and clean up by hand only if you are sure.
+4. Copy and verify, as the installation user, after every backup (including
+   the one you take after a key rotation, which is the one that matches the
+   running keys):
+
+   ```bash
+   npm run db:backup
+   bash scripts/backup-disk.sh sync
+   ```
+
+   `sync` takes the operator lock and refuses unless `/srv/warehouse-backups`
+   is a real mount of a different device than `data/` (an unmounted directory
+   would quietly fill the system disk instead). It copies each backup to
+   `/srv/warehouse-backups/<state name>/`, checks `SHA256SUMS` on the copy and
+   runs `db:verify-restore` against it (`--skip-verify-restore` omits that
+   step). It never overwrites or deletes anything: a corrupt existing copy is
+   reported and left alone, and retention is manual.
+
+The copies contain `compose.env`, which holds every credential of the instance,
+so the disk itself must be physically controlled. `nofail` lets the host boot if
+the disk is missing; `status` then reports it as not mounted and `sync` refuses
+to write into the empty mount point.
+
 ### In-place restore of the same instance
 
 `npm run db:restore -- --yes /path/to/backup` replaces the installed database
@@ -429,6 +567,10 @@ npm run db:restore -- --yes /path/to/backup   # add --restore-config if keys wer
 bash start.sh
 node scripts/doctor.mjs --local
 ```
+
+A restore returns the instance to the moment of the backup: everything recorded
+after it is gone. To rehearse a restore without losing current data, take a
+fresh `db:backup` immediately beforehand and restore that one.
 
 The restore refuses, without touching anything, unless all of the following hold:
 `--yes` is given; no other operator command holds the state lock; `compose ps -q`
@@ -471,7 +613,15 @@ bash start.sh
 ```
 
 A failed restore prints this sequence with the actual paths. Remove the kept
-directories only after the restored instance is accepted.
+directories only after the restored instance is accepted. They contain files
+owned by the containers' users (PostgreSQL's data, and objects written by the
+storage container), so removing them needs root; use the two exact paths the
+restore printed, never a wildcard:
+
+```bash
+sudo rm -rf "$WAREHOUSE_STATE_DIR/data/db.pre-restore-<utc>" "$WAREHOUSE_STATE_DIR/data/storage.pre-restore-<utc>"
+ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
+```
 
 ## Rerun and upgrade
 
@@ -489,6 +639,7 @@ cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
+bash scripts/backup-disk.sh sync       # only if you use a backup disk
 git pull --ff-only
 bash setup.sh --operator ...           # the same inputs as the installation
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
@@ -547,10 +698,36 @@ problems seen so far and their causes:
   `rest.localdomain` SERVFAIL** — the host's DHCP search domain leaked into
   the gateway's resolver. `docker/docker-compose.yml` pins `dns_search: "."`
   for Kong; keep it, and do not change host DNS or extend client timeouts.
+- **`EACCES: permission denied, mkdir '…/<name>.installing-…'` during setup** —
+  the parent of the state directory (for example `/srv/warehouse`) is not owned
+  by the installation user, typically because `sudo install -d` created it with
+  the leaf. Run `sudo chown "$(id -un):$(id -gn)" /srv/warehouse`, keep it mode
+  0755, and rerun the same setup command.
 - **External doctor fails while `--local` passes** — the tunnel service is
   inactive, the DNS record does not point to `<tunnel-uuid>.cfargotunnel.com`,
-  the route targets the wrong loopback port, or the origin redirects. Check
-  `systemctl status` of the unit and `cloudflared ... tunnel ingress validate`.
+  the route targets the wrong loopback port, the origin redirects, or the host
+  cached an NXDOMAIN from a lookup made before the route existed (compare
+  `dig +short <hostname> @1.1.1.1` with `dig +short <hostname>`; wait for the
+  negative TTL or flush the resolver cache). Check `systemctl status` of the
+  unit and `cloudflared ... tunnel ingress validate`. Right after a key rotation
+  one failure is normal; rerun after about thirty seconds.
+- **`backup-disk.sh`: `No second disk found`** — nothing but the system disk is
+  attached. Attach an empty disk (see [Backup disk](#backup-disk)), rescan or
+  reboot, and run `plan` again. The helper never offers a partition of the
+  system disk.
+- **`backup-disk.sh`: the disk `already carries a … signature` or `has a
+  partition table`** — the helper only uses blank disks and never wipes. Inspect
+  with `lsblk -f`; if you are certain the disk holds nothing you need, clear it
+  yourself (for example `sudo wipefs -a /dev/sdX`) and run `plan` again.
+- **`backup-disk.sh sync` or `status` says the mount point is not mounted, is
+  missing its marker, or sits on the system disk** — the disk did not mount at
+  boot (the fstab entry uses `nofail`). Run `bash scripts/backup-disk.sh status`,
+  then `sudo mount /srv/warehouse-backups`. Never copy backups into an unmounted
+  mount point: they would land on the system disk.
+- **`apply stopped during: …`** — a step of `backup-disk.sh apply` failed after
+  it had started writing. Nothing is undone or wiped automatically. Run
+  `status` to see how far it got (a disk labelled `warehouse-backup` but not
+  mounted is "partitioned but not finished") and finish or clean up by hand.
 - **`An admin already exists with a different phone`** — the state directory
   belongs to another installation; use an empty one.
 - **OTP accepted by the API but not received** — verify the Flow ID (not the

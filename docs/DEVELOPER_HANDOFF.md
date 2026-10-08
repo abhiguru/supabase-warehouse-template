@@ -5,7 +5,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 ## Repository layout
 
 - `setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`, `health-check.sh` — operator commands; each takes the per-state lock (`scripts/operator-lock.sh`) before touching Docker.
-- `scripts/` — `configure.mjs` (state and config generation), `doctor.mjs` (host preflight, local and external checks), `migrate.sh` + `migration-plan.mjs` (checksummed ledger), `backup.sh` / `verify-restore.sh` / `restore.sh`, `rotate-keys.mjs` + `keys.mjs`, `compose.sh` (project-owned Compose wrapper), `check-mobile-contract.mjs`, and the smoke/check scripts CI runs.
+- `scripts/` — `configure.mjs` (state and config generation), `doctor.mjs` (host preflight, local and external checks), `migrate.sh` + `migration-plan.mjs` (checksummed ledger), `backup.sh` / `verify-restore.sh` / `restore.sh`, `backup-disk.sh` (second-disk preparation and backup copy; see below), `rotate-keys.mjs` + `keys.mjs`, `compose.sh` (project-owned Compose wrapper), `check-mobile-contract.mjs`, and the smoke/check scripts CI runs.
 - `migrations/` — numbered SQL applied in order. `functions/` — Deno edge functions. `docker/` — Compose files and digest-pinned image recipes. `deploy/` — cloudflared examples. `config/` — seed SQL.
 - `tests/` — node tests (`*.test.mjs`), SQL tests run by `tests/migrations.sh`, and the HTTP/Realtime drivers (`operator-api-*.mjs`, `operator-realtime-core.mjs`, `operator-fixture.mjs`) the CI install job runs against a live instance.
 
@@ -16,6 +16,13 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - `for f in *.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done` — shell syntax, as in CI.
 - `node scripts/check-mobile-contract.mjs <mobile checkout>` — static name inventory against the app (needs the app's `node_modules`).
 - Everything else (`npm run test:gateway`, `test:rotation`, `db:backup`, ...) needs an installed operator state; CI exercises them in the `operator-install` job.
+
+## Backup disk helper (`scripts/backup-disk.sh`)
+
+- Subcommands: `status` and `plan` (read-only), `apply` (destructive, root, never self-escalates), `sync` (copies and verifies backups under the operator lock). `db:backup` is deliberately unchanged; its tests and warning text do not depend on this helper.
+- Safety rules to preserve in any change: only a blank, whole, non-removable, unmounted second disk; refuse the system disk and the disk holding `data/` (fail **closed** if the system disk cannot be determined); never wipe, resize or shrink; confirmation comes from the disk itself (`--confirm-serial`, else `--confirm-size`); re-check right before writing; `sync` must prove the mount point is a real mount of a different device before writing anything.
+- `tests/backup-disk.test.mjs` runs the script against PATH shims for `lsblk`, `blkid`, `wipefs`, `findmnt`, `sgdisk`, `mkfs.ext4`, `mount` and friends, so no test touches a device or the real `/etc/fstab`. The `WAREHOUSE_BACKUP_DISK_*` variables (mount point, fstab, sysfs) exist for those tests only and are printed by `plan`. The shims pin the `lsblk` argument forms (`-P` and `-r` are mutually exclusive in real `lsblk`; a real run once caught this), so change both together.
+- **Not verifiable in CI:** the real `apply` path. Before a release that touches it, attach a spare virtual disk to a throwaway VM and run: `plan` → `sudo bash scripts/backup-disk.sh apply …` → reboot (the fstab entry must remount it) → `db:backup` + `sync` → `db:verify-restore` on the copy → `apply` again (must be a no-op). Also confirm `plan --device` on the system disk and on a partition is refused.
 
 ## Migration conventions
 

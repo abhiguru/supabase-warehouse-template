@@ -2,6 +2,19 @@
 
 ## Unreleased — second-pass review fixes (2026-10-08)
 
+- Added `scripts/backup-disk.sh`: prepares an empty second disk for backups
+  (`status`, `plan`, `apply`, `sync`) and copies verified backups onto it. It
+  refuses the system disk and anything that is not blank, never wipes or
+  resizes, and `db:backup` is unchanged.
+- Operator guide corrected from a from-scratch acceptance run: the state
+  directory's parent must be owned by the installation user (`sudo install -d`
+  on the leaf made setup fail with `EACCES`); fixed-window OTP limits and SMS
+  cost; DNS negative caching after the tunnel route; `rest` has no healthcheck;
+  `rotate-keys.sh` without `--yes` exits 1, and an external doctor right after
+  rotation can fail once; root is needed to remove `*.pre-restore-*`; staff are
+  created through Users, GRNs need a photo, and the 998 invoice example holds
+  only for its fixture dates (same-day is 735).
+
 - Migration 23: staff dispatch workflow completed (GRN picker, recent dispatches,
   dispatch photo register/confirm/cancel with matching storage policies);
   `get_item_storage_prices` removed from the staff allowlist; pending-upload
