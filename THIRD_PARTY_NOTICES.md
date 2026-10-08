@@ -29,8 +29,8 @@ inventory, provenance boundary, and maintainer attestation.
 ## Grafana (AGPL-3.0)
 
 Grafana is licensed under the GNU Affero General Public License v3.0
-(upstream: https://github.com/grafana/grafana, licence text:
-https://www.gnu.org/licenses/agpl-3.0.txt; see `LICENSES/grafana/README.md`).
+(upstream: https://github.com/grafana/grafana; the complete licence text is
+vendored at `LICENSES/grafana/LICENSE`, see `LICENSES/grafana/README.md`).
 `docker/grafana/Dockerfile` builds the local `warehouse-grafana:local` image
 from the publisher's digest-pinned `grafana/grafana:13.2.2` image: it upgrades
 two Alpine libraries and replaces the bundled plugins with publisher-signed,
