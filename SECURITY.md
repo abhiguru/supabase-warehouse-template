@@ -11,7 +11,7 @@ private vulnerability reporting for this repository ("Report a vulnerability"
 under the Security tab). If that is unavailable, write to the security contact
 below.
 
-Security contact: SECURITY_CONTACT_MAILBOX
+Security contact: abhinavguru@gmail.com
 
 Include the affected version, reproduction steps, impact, and any suggested
 mitigation. Please allow a reasonable amount of time for investigation before

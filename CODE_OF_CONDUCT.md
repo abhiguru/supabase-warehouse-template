@@ -28,7 +28,7 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported privately to the maintainer at SECURITY_CONTACT_MAILBOX (the same
+reported privately to the maintainer at abhinavguru@gmail.com (the same
 mailbox as in [SECURITY.md](SECURITY.md)), not by opening an issue. All
 complaints will be reviewed and investigated promptly and fairly.
 
