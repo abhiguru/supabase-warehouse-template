@@ -1,4 +1,4 @@
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS build
+FROM golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/prometheus-community/postgres_exporter/tar.gz/refs/tags/v0.20.1 -o /tmp/source.tar.gz \
     && echo 'be5d9b71cdedcc5bd484869a2a1c66e51f76d5620ebf681781f22acc0cba283b  /tmp/source.tar.gz' | sha256sum -c - \
