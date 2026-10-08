@@ -1,0 +1,28 @@
+# /etc/systemd/system/warehouse-NEW-INSTANCE-tunnel.service
+#
+# Dedicated cloudflared connector for one warehouse instance. Use a new,
+# unoccupied unit name and replace the user, group and config path with this
+# instance's recorded values. The service user must be able to read the private
+# directory; keep the configuration and credentials files mode 0600. Never put
+# a tunnel token or credential on the command line or in this unit.
+#
+# For a dashboard-managed (remote) tunnel there is no config.yml; replace the
+# ExecStart line with:
+#   ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /private/path/tunnel.token
+#
+# Install with: sudo systemctl daemon-reload
+#               sudo systemctl enable --now warehouse-NEW-INSTANCE-tunnel.service
+[Unit]
+Description=Warehouse instance HTTPS tunnel (cloudflared)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+User=YOUR_INSTALL_USER
+Group=YOUR_INSTALL_USER
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /private/path/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

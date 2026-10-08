@@ -1,0 +1,431 @@
+# Open-source release checklist
+
+## Post-release local-readiness follow-up — 2026-09-22
+
+- [x] Complete provider-independent backup/restore, owned-service recovery,
+  auth/RLS, loopback gateway, approved database retention, business, local load,
+  monitoring, Realtime, and companion Android debug-artifact checks.
+- [x] Add reproducible commands and extend paired CI while keeping tracked
+  workflow copies byte-identical.
+- [ ] Clear the all-profile container HIGH/CRITICAL scan blocker and repeat the
+  exact scan; current upstream findings are not waived.
+- [ ] Complete external/provider gates: production SMS, public DNS/trusted TLS,
+  external alert delivery, operator policy/SLO/DR, signed store artifacts,
+  payments/telemetry, and printer/sensor hardware.
+
+This follow-up does not move or republish `v0.2.2-demo`. The dated local
+readiness evidence is archived (see [HISTORY.md](HISTORY.md)).
+
+## Post-release physical iPhone closure — 2026-09-22
+
+- [x] Backend PR #13 merged as
+      `cf18f1e43ab613310b1b13339ab97e8533861f9b`; mobile PR #18 merged as
+      `9ba56ff122dc38dc57d6100de4c27599023d22b1`.
+- [x] Exact-main backend CI `35686198287` and mobile CI `35686164009` passed.
+- [x] Migration, doctor/health, full API, contracts and scans passed, including
+      94 RPC names / 129 typed calls with zero missing names or mismatches.
+- [x] Customer-authorized GRN/per-item dispatch history, readable fixtures,
+      stable order snapshots, invoice arithmetic and all four private document
+      contracts passed the paired physical-iPhone matrix.
+- [x] Setup rerun and checkout-owned stop/restart preserved generated
+      configuration and fictional data; temporary local services were removed.
+- [x] Existing `v0.2.2-demo` tags remain unchanged. Production SMS/TLS,
+      distribution, enabled telemetry, retention/privacy, printing, sensors,
+      Realtime, payments and unsupported integrations remain separate gates.
+
+This closes the local source-demo handoff. The historical ordered work below is
+reconciled against the later Android, iPhone, contract, ownership and attribution
+evidence. Its remaining unchecked rows now describe production deployment or a
+future native-binary distribution, not unfinished `v0.2.2-demo` acceptance.
+
+## v0.2.2-demo source-only prerelease — 2026-09-18
+
+- [x] Android-first source-demo acceptance summarized in the archived
+      `SOURCE_DEMO_ACCEPTANCE.md` ([HISTORY.md](HISTORY.md)); physical hardware, iOS, production, printing,
+      sensors, payments, and unsupported integrations remain separate gates.
+- [x] Maintainer redistribution attestation and tracked-material/third-party
+      inventory reconciled in `ATTRIBUTION_REVIEW.md` and
+      `../THIRD_PARTY_NOTICES.md`; Apache-2.0 text is included and no unresolved
+      source-only provenance blocker remains.
+- [x] Exact `v0.2.2-demo` positive/negative gate tests and required local checks
+      pass: 16 Node tests, fresh/no-op migration suite, static 93/127/0/0
+      contract, zero-vulnerability audit, and source/history scan.
+- [x] Required hosted PR/default-branch checks pass for the release-preparation
+      change: mobile PR #11 and backend PR #8 passed their required checks.
+- [x] Mobile change merged through review as
+      `6e6885786912fe9186285103e19de762e4ba88f8`; main CI run `35274817895`
+      passed.
+- [x] Both backend CI jobs pin that exact mobile `main` SHA in byte-identical
+      active/documented workflow copies; backend merged as
+      `2959881d0e46a8797a98d10da8c7139217477476` and paired main CI run
+      `35275536840` passed.
+- [x] Matching immutable tags passed tag validation before publication: mobile
+      run `35276024942` and backend run `35276027479`.
+- [x] Both GitHub releases are prereleases with generated source archives only,
+      matching cross-links, zero uploaded assets, and no latest-stable
+      designation.
+
+The final tag SHAs and workflow/release URLs are recorded in GitHub release notes
+and the external delivery ledger to avoid circular commit-SHA documentation.
+Historical release records follow.
+
+## v0.2.1-demo release and verification follow-up — 2026-09-15
+
+Published source-only prerelease pair (no native assets): mobile
+`8f22fbd14ee93816e42c120eef91a689a2da98c7`, backend
+`35cfa90f41cc25fb91cae6d966551d9774faf3d5`. Historical tags stay unchanged.
+Node 22.23.2 / npm 10.9.8; Expo SDK 54 / React Native 0.81.5.
+Mobile main [CI 34825877719](https://github.com/abhiguru/rn-warehouse-template/actions/runs/34825877719)
+passed. Backend main [CI 34825847890](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/34825847890)
+failed live contracts because its mobile checkout was the older `48e804c`.
+The subsequent API/setup-rerun steps were skipped. Backend PR #5 fixed this;
+merged commit `96d62a58895fe27e3a00f8a3b378fabeddbd4866` passed all five jobs
+in [main CI 34858238914](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/34858238914).
+Publication alone does not establish native or full release acceptance.
+
+| ID | Severity | Reproduction / finding | Fix / regression evidence | Remaining limitation |
+| --- | --- | --- | --- | --- |
+| R01 | High, fixed | Auth config survived logout/account changes and expired memory caches | Origin/session scoped TTL caches; rejection, expiry and late-response tests in released mobile | Server authorization remains authoritative |
+| R02 | High, fixed | Refresh completion could restore a logged-out session | Serialized credential writes, session generation, Redux request guards; migration 07 and refresh/logout API race | Offline server revocation must wait for connectivity |
+| R03 | Moderate, fixed | Navigation pulled vulnerable decoder <=0.4.2 | Upstream 0.5.0, checked CommonJS adapter and actual navigation/malformed-input tests; SDK 54 retained | Version/content checks deliberately fail on unexpected dependency changes |
+| R04 | High, fixed | Contributor command targeted a generic database container | Checkout ownership wrappers, disposable migration tests, read-only doctors, exclusive config creation | Demo remains loopback-only |
+| R05 | Review, covered API cases | Images, orders, invoice/report values, role changes and retries lacked coverage | Full demo API passes locally; confirmed GRN/dispatch customer isolation, staff-only customer-images, explicit 950/48/998 invoice fixture, duration boundaries, concurrent stock mutations and rollback | See INVOICE_RULES.md; legacy dual-rate overload unsupported; payments not comprehensively accepted |
+| R06 | Acceptance, later closed | Native build and actual Android UI workflow required separate evidence at this historical checkpoint | See mobile NATIVE_ACCEPTANCE.md for the later Android and complete iPhone records | Production distribution and optional hardware remain separate |
+| R07 | High onboarding/CI, fixed | Backend branch inference selected old or nonexistent mobile branch | Both CI companion checkouts pinned to released mobile SHA; both tested SHAs printed | PR #5 and merged main CI pass; tags are not moved |
+| R08 | High, mobile follow-up | Login/OTP screens logged inputs; PDF service logged private signed URLs | Inputs/raw errors removed, fixed auth diagnostics, CI lint guards and six PDF privacy regressions | Historical tag still contains these logs |
+| R09 | High workflow, backend follow-up | Default GRN sort and next-number helpers cast valid alphanumeric suffixes to integers | Additive migration 08 preserves authorization/grants, guards suffix casts, retains numeric sequence ordering; native reproduction and API/disposable SQL regressions | Existing number-series rollover/collision policy remains unchanged |
+
+The immutable v0.2.1-demo tags precede R08/R09 fixes. Use the verified follow-up
+commits on main for current onboarding; the tags are historical checkpoints,
+not an assertion that every advertised native flow has passed.
+
+Local review services use API 28000, HTTPS 28443, Studio 55325, database 25433,
+and renderer 23100, all on 127.0.0.1 under project `warehouse-v021-review`.
+These differ from quickstart defaults (API 18000, Studio 54325, database 15433,
+renderer 13100). No pooler was started for the review. These test services do
+not establish production readiness.
+
+
+
+
+## Historical v0.2.0-demo review (2026-09-13)
+
+The entries below are historical evidence, not the current release status.
+
+This is the ordered work tracker for **both** public repositories:
+[backend](https://github.com/abhiguru/supabase-warehouse-template) and
+[mobile](https://github.com/abhiguru/rn-warehouse-template).
+They are already public. Current main is a local-demo checkpoint, not a
+production-ready release. The historical backend `v0.1.0` tag is incomplete.
+
+Matching `v0.2.0-demo` source-only prereleases were published on 2026-09-13:
+[backend](https://github.com/abhiguru/supabase-warehouse-template/releases/tag/v0.2.0-demo)
+and [mobile](https://github.com/abhiguru/rn-warehouse-template/releases/tag/v0.2.0-demo).
+At that historical checkpoint, `v0.2.1-demo` was the onboarding tag. The current
+release instructions at the top of this file supersede it; older evidence remains
+preserved below.
+
+## Boundaries
+
+- Change only the new open-source repositories and isolated test environments.
+- Never copy production data or credentials, or modify the original deployments.
+- Do not revoke or rotate another installation's credentials. New installations
+  generate their own secrets; setup reruns preserve existing environment files
+  (only the MSG91 provider lines change when a new `--provider-env` is given).
+  Rotating an installation's own signing keys is the operator's explicit
+  `bash rotate-keys.sh --yes`, never a release step.
+- Do not mark a task complete without recorded evidence. A passing source scan
+  does not prove application security or native-device compatibility.
+- Keep demo authentication loopback-only. Production remains gated.
+
+## Ordered work
+
+### 1. Secure token persistence — implemented; device verification pending
+
+- [x] Remove the mobile fallback that writes access/refresh tokens to AsyncStorage
+      as Base64; encoding is not encryption.
+- [x] Fail closed on secure-storage write failure and attempt cleanup of partial writes.
+- [x] Preserve safe migration of legacy sessions into secure storage only.
+- [x] Add failure-path tests and run authentication regression tests, typecheck,
+      and lint.
+
+### 2. Dependency remediation — completed for the source demo
+
+- [x] Triage the fresh npm audit: 9 high, 20 moderate, 0 critical findings.
+- [x] Apply reviewed Metro/PostCSS/UUID fixes, with no blind forced major SDK upgrade.
+- [x] Re-run audit, tests, typecheck, and Android JavaScript export. Distinguish
+      build-tool findings from verified runtime exposure.
+- [x] Record remaining advisories and assess backend npm dependencies.
+- [x] Resolve the URL-decoder/navigation advisory through a tested compatibility
+      adapter. Current mobile and backend audits report 0 vulnerabilities; malformed
+      URL and navigation regressions pass on both JavaScript and physical iPhone.
+- [x] Inventory container, Edge and native dependencies beyond npm for the
+      source-only distribution boundary. Container references and versioned URL
+      imports are recorded in source, and provenance/license locations are recorded in
+      `ATTRIBUTION_REVIEW.md` and `THIRD_PARTY_NOTICES.md`. Production image
+      vulnerability scanning, immutable-digest selection and compiled-artifact
+      review remain separate gates.
+- [x] Validate native builds after native dependency changes (see item 4).
+      Android and the complete physical-iPhone source-demo evidence are recorded
+      in the mobile `NATIVE_ACCEPTANCE.md`.
+
+### 3. Continuous integration and repository protection — completed
+
+GitHub CLI maintainer authentication is verified (`abhiguru` with ADMIN and `workflow` scopes).
+Repository security settings have been activated on both repositories:
+secret scanning, push protection, Dependabot vulnerability alerts, automated security updates,
+and private vulnerability reporting. Workflows have been activated under `.github/workflows/`.
+
+- [x] Authenticate maintainer with workflow-capable access (`abhiguru` active).
+- [x] Verify and enable secret scanning/push protection, dependency alerts, and a working private vulnerability-reporting channel.
+- [x] Review and activate workflows under `.github/workflows/` (the former `docs/github-workflows/` copies and the research workflows were removed under the [won't-fix disposition](PRODUCTION_DEPENDENCIES.md#technical-follow-ups-and-dispositions)).
+- [x] Run unit, migration, contract, security and dependency checks in CI.
+      Exported and reviewed the 3 preprinted document endpoints (`print-dispatch-preprinted`,
+      `print-grn-preprinted`, `print-invoice-preprinted`) so mobile contract inventory has 0 missing endpoints.
+- [x] Verify required checks, branch protection, and confirm workflow runs succeed on GitHub.
+
+### 4. Clean-install and later native/device acceptance completed
+
+- [x] Reproduce setup from public-only source in a clean, isolated environment,
+      including prerequisite documentation, generated credentials, and safe reruns.
+      Fresh public clones at backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`
+      and mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf` passed setup,
+      75 mobile tests, API tests and migration reruns (archived `CLEAN_INSTALL.md`,
+      see [HISTORY.md](HISTORY.md)).
+- [x] Compile an Android ARM64 debug APK from public source after SDK alignment
+      at mobile `96d92a287f2ce8a27b2587fcebe482eb4fe988b2`. This is not a device test
+      or signed release build; see the mobile `docs/NATIVE_ACCEPTANCE.md` evidence.
+- [x] Compile the iOS app on a Mac with Xcode; the final physical run used
+      Xcode 26.3 and Personal Team development signing.
+- [x] On physical Android and iOS devices, test fresh install, login,
+      restart, refresh, logout, offline/retry, camera, secure storage, deep links and
+      role-dependent screens.
+- [x] Record platform/device/build evidence in the mobile
+      `docs/NATIVE_ACCEPTANCE.md`; JavaScript export alone was not used as device
+      evidence.
+
+### 5. Authorization and business-flow coverage — source-demo scope completed
+
+- [x] GRN image upload/confirmation/deletion, anonymous/customer upload denial,
+      and assigned-customer read visibility before/after confirmation/deletion.
+      Verified in `tests/api-demo.mjs`: anonymous upload to `grn-images` denied (HTTP 400/403 RLS violation),
+      customer role upload denied, admin registers upload via `register_grn_image_upload` and uploads binary,
+      unconfirmed image hidden from customer, confirmation via `confirm_grn_image_upload` grants read access to
+      assigned customer, deletion via `delete_grn_image` immediately revokes customer read access, and admin cleans up storage.
+- [x] Disabled-user login, changed customer assignments, staff/customer role boundaries,
+      sequential refresh replay and logout revocation.
+      Verified in `tests/auth_and_access.sql` and `tests/api-demo.mjs`: inactive accounts cannot authenticate,
+      customer role is denied access to staff RPCs (`save_grn`), dynamic customer assignment removal immediately
+      hides assigned customers from RLS and reassignment restores access, refresh token rotation with replay denial,
+      and logout session revokes both REST and Edge Function credentials.
+- [x] Concurrent dispatch oversell denial, invoice save/malformed-input rejection,
+      and selected reporting response smoke checks.
+      Verified in `tests/api-demo.mjs`: concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
+      and the other fails with "Insufficient stock", leaving exact stock of 20; single oversell requests (999 items) rejected;
+      malformed invoice data structures rejected; the dashboard returns a finite stock KPI
+      and the stock-aging response reports success. Later independent-value fixtures
+      close the financial assertions below.
+- [x] Static and live companion contract checks cover 94 RPC names and 129 typed
+      calls with 0 missing names or mismatches, including effective signatures and
+      grants against the running demo.
+      `tests/auth_and_access.sql` enforces that anonymous function execution
+      is restricted strictly to the 5 authentication endpoints (`send_otp`, `verify_otp_or_register`, `refresh_jwt_token`,
+      `logout_session`, `check_session`).
+
+- [x] Verify cross-customer denial for confirmed Storage images and the source-demo
+      GRN/customer-image lifecycle. Live API coverage exercises stored bytes rather
+      than metadata alone; the physical iPhone run also passed capture, picker,
+      reopen and deletion with role boundaries intact.
+- [x] Test actual refresh-versus-logout races, active-session role changes,
+      retry/idempotency, cart/orders and interruption recovery. The paired API and
+      physical-iPhone matrices passed, including exactly-once retry outcomes and
+      definitive session revocation.
+- [x] Assert invoice/pricing/tax calculations and reporting values against
+      independently specified fixtures. The reviewed 950/48/998 backend fixture,
+      735-total physical-iPhone fixture, duration boundaries, stock reports and
+      effective RPC signature/grant checks pass.
+- [ ] Define and verify production retention/cleanup for GRN, dispatch and customer
+      images, and complete operator-specific payment, reconciliation, tax and billing
+      approval. These are production-policy gates, not source-demo defects.
+
+### 6. Distribution, privacy and rights — source-only scope completed
+
+- [x] Run secret scanning on publishable source and Git history. Gitleaks reports
+      no unreviewed findings after exact historical exceptions for reviewed demo
+      and synthetic JWT examples. Current mobile test fixtures construct explicitly
+      invalid-signature JWTs; no deployment credential was substituted or rotated.
+      Automated secret scanning does not prove the absence of all customer data.
+- [x] Add third-party notice summaries for code, fonts and images.
+      Both repositories now include `THIRD_PARTY_NOTICES.md` documenting upstream Apache 2.0, SIL OFL 1.1,
+      and MIT licenses for icons, SDKs, and Supabase bootstrap files.
+- [x] Replace or clearly label placeholder privacy/terms/contact information;
+      added `EXPO_PUBLIC_LEGAL_EMAIL` support with documented placeholder defaults.
+- [x] Review optional telemetry and redaction of user data, tokens, URLs, headers
+      and breadcrumbs. Establish retention/cleanup expectations.
+      Enhanced Sentry/GlitchTip configuration with client-side sanitization of URLs, query
+      params, headers, user PII (phone, email, IP), recursive payloads, and real-time breadcrumbs
+      before transmission. Documented retention window and cleanup policy in `docs/TELEMETRY_AND_PRIVACY.md`.
+      Verified with 16 automated Jest tests in `src/config/__tests__/sentryConfig.test.ts`.
+
+- [x] Obtain scoped maintainer confirmation of ownership/redistribution rights and
+      reconcile required source-only license texts and attributions. The dated
+      attestation, tracked-material inventory and Apache-2.0 text are recorded in
+      `ATTRIBUTION_REVIEW.md`, `THIRD_PARTY_NOTICES.md` and `LICENSES/`.
+- [x] Inspect source trees/history at the published tags and verify no uploaded
+      release attachments. Published releases contain GitHub-generated source only.
+- [ ] Review native artifacts for secrets/customer data before any future binary
+      distribution; the local debug APK is not a published release attachment.
+- [ ] Validate actual telemetry payloads/native crashes, privacy declarations and
+      server retention/cleanup configuration. Documentation does not enforce server retention.
+
+### 7. Documentation and release integrity — demo release preparation
+
+- [x] Reconcile current setup, ports and production instructions; do not prescribe
+      rotating another installation's credentials.
+      Reconciled READMEs in both repositories: documented active GitHub Actions CI workflows,
+      loopback demo ports (`127.0.0.1:18000`, `127.0.0.1:54325`, `127.0.0.1:15433`),
+      and contract parity for preprinted document functions.
+- [x] Record a tested frontend/backend commit pair and known limitations.
+      Clean-install-tested source pair: mobile `75e42324b6c9317d8432c1caebe122e4cafa4fdf`,
+      backend `c4ca1dec911b23f259315dee1154ef93ad1fe94c`. Release tags must record
+      exact final commits, not the moving label "current main".
+      At that 2026-09-13 checkpoint the known limitations were one root moderate
+      URL-decoder advisory (eight affected packages), pending physical camera,
+      deep-link, secure-storage/reboot and offline/retry testing, an unverified iOS
+      build, broader business/privacy/rights review and the separate production
+      gate. Later records above close the source-demo items. Barcode scanning and
+      automatic SQLite sync are not established features, and printer/sensor
+      hardware remains unsupported.
+- [x] Prepare an explicitly scoped demo/prerelease; do not repoint historical
+      tags or claim production readiness.
+      Both repositories define `main` as a verified local development and integration demo (`v0.2.0-demo checkpoint`).
+      Historical `v0.1.0` tag remains untouched as an archived partial baseline.
+- [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
+      Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
+      and WebSocket Realtime remain unverified and default-disabled.
+- [x] Publish matching `v0.2.0-demo` source-only prereleases after protected PR/main
+      CI, exact-tag validation and final source/history scans pass. Record both
+      final commit IDs and limitations in the release notes; attach no native binaries.
+      Mobile: `31c2d67bb9070e8d1bd80f1c95f9168eb097c290`.
+      Backend: `d349b14a4241aa4998382100b2ba54497f665e4a`.
+      Main CI runs `34759059888` / `34759062815` and tag validation runs
+      `34759204107` / `34759206029` passed (mobile / backend respectively).
+
+## Separate production gate
+
+Open-source availability does not imply safe production deployment. Before a
+production release, implement and test real SMS/operator onboarding without
+fixed-code fallback; TLS/CORS and service hardening; container/renderer isolation;
+backup restoration and startup-failure recovery; concurrency/scale behavior;
+monitoring, incident response and data retention. Provider choice, production
+credentials/domains, distribution accounts, operator policies and optional
+hardware need explicit human input or access where unavailable.
+
+## Evidence log
+
+- 2026-09-13: Published both matching `v0.2.0-demo` prereleases after required
+  PR/main CI and exact-tag validation passed. Remote annotated tags resolve to
+  the commit pair above, and release readback confirms prerelease status with
+  zero uploaded assets. Historical `v0.1.0` tags remain unchanged. Only the nine
+  isolated test containers and their network were removed; scratch data/config
+  are preserved, with `docker/.env` still mode 0600 and Git-ignored. Original
+  repositories, deployments and credentials remain untouched.
+- 2026-09-13: Mobile SDK-aligned commit `96d92a2` compiles an ARM64 debug APK
+  successfully on Linux (594 Gradle tasks, 6m 57s). No Android device is attached;
+  iOS and physical acceptance remain unrun. Backend `73627e6` passes a fresh
+  public-fetch install, all 10 Node tests and the expanded API suite in the same
+  isolated scratch demo. No existing configuration or production credentials changed.
+- 2026-09-13: Both release-preparation PRs pass required checks (mobile run
+  `34695665141`, backend run `34695668197`). Full Git-history scans pass with
+  narrowly reviewed historical demo/synthetic-token exceptions. Mobile audit
+  remains eight moderate / zero high / zero critical; backend npm audit is zero.
+- 2026-09-22: Reconciled the historical open rows against the final source-demo
+  evidence. Current npm audits are zero; physical Android and complete iPhone
+  acceptance, live companion signatures/grants, cross-customer storage access,
+  session races, orders/idempotency, independent invoice values and scoped
+  ownership/attribution are closed. Only the separately labeled production and
+  future-binary rows remain open.
+- 2026-09-12 follow-up: corrected earlier completion overstatements. Static inventory
+  proves names, not all RPC signatures/results. Concurrent oversell and malformed
+  invoices do not establish idempotency, payments/orders or invoice calculations.
+  License summaries do not establish ownership approval, and documented telemetry
+  retention is not a deployed cleanup mechanism. These statements were authoritative
+  at that checkpoint; the dated 2026-09-22 reconciliation above supersedes the
+  source-demo gaps while retaining the production limitations.
+- 2026-09-12 follow-up: fresh unauthenticated public clones passed backend install,
+  all five migrations/full stack startup, API tests, byte-preserving setup rerun,
+  data preservation and disposable SQL security tests. Mobile fresh install passed
+  75 Jest tests, 7 bootstrap/dependency tests, typecheck, lint and public bootstrap.
+  Android native generation passed at that historical checkpoint; later physical
+  Android and complete physical-iPhone acceptance are recorded in the mobile repo.
+- 2026-09-12: Completed Item 7 (Documentation and release integrity). Reconciled `README.md` and setup
+  instructions across both repositories to reflect active CI workflows, loopback demo ports (`127.0.0.1:18000`,
+  `127.0.0.1:54325`, `127.0.0.1:15433`), and preprinted printing status. Documented the verified commit pair,
+  retained historical `v0.1.0` tag untouched while scoping current `main` as a tested local-demo checkpoint,
+  and reinforced the separate production gating requirements.
+- 2026-09-12: Completed Item 5 (Authorization and business-flow coverage). Expanded `tests/api-demo.mjs`
+  to verify: Storage image upload/confirmation/read/deletion lifecycle with cross-customer and anonymous
+  denials on `grn-images`; role boundaries preventing customer execution of staff RPCs (`save_grn`);
+  dynamic customer assignment removal and restoration with immediate RLS reflection; concurrent dispatch
+  race condition where 2 parallel 50-unit dispatches against 70 remaining stock serialize to prevent
+  overselling with exact remainder of 20; malformed invoice structure rejection; operational reporting
+  (`get_operations_dashboard` KPIs and `get_stock_aging_report`); and full contract coverage across 100 RPCs.
+- 2026-09-12: Completed Item 6 (Distribution, privacy and rights). Implemented comprehensive
+  client-side telemetry redaction in `src/config/sentryConfig.ts` with `beforeBreadcrumb` and `beforeSend`,
+  sanitizing JWTs, Bearer tokens, phone numbers, OTPs, emails, API keys, sensitive query params
+  and headers. Added 16 unit tests in `src/config/__tests__/sentryConfig.test.ts` (75 total mobile tests pass).
+  Created `docs/TELEMETRY_AND_PRIVACY.md` establishing opt-in telemetry and 30-90 day data retention expectations.
+  Verified in CI: Mobile run 34675088177 (`Lint & Type Check` 1m55s, `dependencies` 30s) and Backend run 34675093154
+  (`validate` 9s, `contract` 27s, `migrations` 1m31s) both passed 100% green.
+- 2026-09-12: Added mobile `THIRD_PARTY_NOTICES.md` documenting vector icons,
+  React Native, and Expo SDK licensing. Parameterized privacy policy and terms of
+  service with `EXPO_PUBLIC_LEGAL_EMAIL`. Mobile CI rerun (34674661061) passed 100% green.
+- 2026-09-12: Backend CI (run 34674424611) passed 100% green across all three jobs:
+  `validate` (10s), `contract` (26s), and `migrations` (1m21s). Branch protection
+  rules were enabled on `main` for both repositories via GitHub API, enforcing required
+  CI status checks (`Lint & Type Check`, `dependencies`, `validate`, `contract`, `migrations`).
+- 2026-09-12: Exported and reviewed the three preprinted document endpoints
+  (`print-dispatch-preprinted`, `print-grn-preprinted`, `print-invoice-preprinted`)
+  and `functions/_shared/print-status-monitor.ts`. Sanitized key logging in `print-grn-preprinted`.
+  Contract check (`check-mobile-contract.mjs`) now passes with 0 missing RPCs, 0 missing tables,
+  and 0 missing Edge functions.
+- 2026-09-12: Pushed commits to `origin/main` on both repositories:
+  - Mobile (`rn-warehouse-template` run 34673422024): All CI jobs passed 100% green
+    (`Lint & Type Check` passed in 1m19s, `dependencies` passed in 25s).
+  - Backend (`supabase-warehouse-template` run 34673438189): `validate` (9s) and
+    `migrations` (1m9s with full disposable postgres container test) passed. `contract`
+    failed on the 3 unexported preprinted functions (`print-dispatch-preprinted`,
+    `print-grn-preprinted`, `print-invoice-preprinted`), maintaining the intentional
+    gate documented in the archived `READINESS.md`.
+- 2026-09-12: Maintainer authentication confirmed via GitHub CLI for `abhiguru`
+  with ADMIN permission and `workflow` scope. Enabled secret scanning, secret scanning
+  push protection, Dependabot vulnerability alerts, automated security fixes, and private
+  vulnerability reporting on both repositories via API. CI and Release workflows copied
+  to `.github/workflows/`.
+- 2026-09-12: Gitleaks 8.30.1 re-scanned snapshots containing only publishable
+  files (101 backend, 477 mobile files), with redacted output; no leaks found.
+  Ignored environment files and deployment volumes were excluded. This does
+  not complete the pending release-attachment/native-bundle/privacy review.
+- 2026-09-12: Reviewed mobile overrides select Metro 0.83.8, PostCSS 8.5.28,
+  UUID 11.1.1 only for Xcode/ngrok. Audit now reports 8 moderate, 0 high,
+  0 critical; all remaining package findings trace to URL decoding in navigation.
+  Backend npm audit reports zero findings. 59 Jest tests, TypeScript, full
+  ESLint error checks, bootstrap/dependency tests and Android JS export pass.
+  See the mobile repository's
+  [dependency review](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/DEPENDENCY_SECURITY.md).
+- 2026-09-12: Token-storage changes pass 59 Jest tests (5 suites), TypeScript,
+  and targeted ESLint. Added write failures at each token/expiry step, partial
+  session rejection, failed migration, failed OTP persistence, failed refresh
+  persistence, and centralized refresh-token reading. Expiry is invalidated
+  before replacing credentials and written last as a completion marker. Native
+  storage deletion remains best-effort when the OS itself rejects cleanup;
+  physical-device fault/restart testing remains under item 4.
+- 2026-09-12: Initial review confirmed insecure mobile token fallback, inactive
+  GitHub workflow definitions, and npm audit totals above. Earlier readiness
+  results are archived (see [HISTORY.md](HISTORY.md)); they are not evidence that
+  all items in this checklist are complete.
+
+## References
+
+- [GitHub repository security quickstart](https://docs.github.com/en/code-security/getting-started/quickstart-for-securing-your-repository)
+- [Mobile repository](https://github.com/abhiguru/rn-warehouse-template) (its dated readiness evidence is archived with its history)

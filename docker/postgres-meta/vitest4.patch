@@ -1,0 +1,18 @@
+--- a/test/server/result-size-limit.ts
++++ b/test/server/result-size-limit.ts
+@@ -94,5 +94,6 @@
+   test(
+     'should not kill the server on underlying parser error',
++    { timeout: 20000 },
+     async () => {
+       // Set a small maxResultSize (50MB)
+       const res = await app.inject({
+@@ -134,7 +135,6 @@
+         },
+       ]
+     `)
+-    },
+-    { timeout: 20000 }
++    }
+   )
+ })

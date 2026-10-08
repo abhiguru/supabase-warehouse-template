@@ -1,0 +1,58 @@
+# Environment
+docker/.env
+.env
+.env.local
+.env.*.local
+
+# Docker volumes (persistent data)
+docker/volumes/db/data/
+docker/volumes/db/data.failed-init-*/
+docker/volumes/db/data.review-*/
+docker/volumes/storage/
+docker/volumes/logs/
+docker/volumes/bundles/
+docker/logs/
+
+# Secrets
+*.key
+*.pem
+*.crt
+!docker/cups/config/*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Node
+node_modules/
+
+# Build artifacts
+*.eszip
+
+# Backups
+*.sql.gz
+*.sql.bak
+database_backups/
+backups/
+
+# Generated configuration and copied runtime files
+.env.*
+!.env.example
+docker/volumes/api/
+docker/volumes/functions/
+docker/cups/spool/
+
+# Mobile build artifacts and signing material never belong in this repository
+*.apk
+*.keystore

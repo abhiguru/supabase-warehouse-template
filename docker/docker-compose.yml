@@ -1,0 +1,478 @@
+# Supabase Warehouse Template - Docker Compose
+#
+# Start:    docker compose up -d
+# Stop:     docker compose down
+# Destroy:  docker compose down -v --remove-orphans
+
+name: warehouse-template
+
+services:
+
+  studio:
+    build:
+      context: ./studio
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://studio:3000/api/platform/profile').then((r) => {if (r.status !== 200) throw new Error(r.status)})"
+        ]
+      timeout: 10s
+      interval: 5s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      NEXT_PUBLIC_ENABLE_LOGS: false
+
+  kong:
+    image: kong:3.9.3-ubuntu
+    restart: unless-stopped
+    # Kong's resolver can wait on an inherited, unavailable search domain even
+    # when Docker has answered the bare service alias. Resolve Compose aliases
+    # at the DNS root; do not inherit a VM's LAN search suffix.
+    dns_search: "."
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: ["CMD-SHELL", "kong health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "127.0.0.1:${KONG_HTTP_PORT}:8000/tcp"
+    volumes:
+      - ./kong.yml:/tmp/temp.yml:ro,z
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
+      KONG_DNS_ORDER: "LAST,A"
+      # Compose can replace upstream IPs during setup/recovery. Do not retain
+      # a dead address for an hour after a healthy replacement is available.
+      KONG_DNS_VALID_TTL: "5"
+      KONG_DNS_STALE_TTL: "1"
+      KONG_DNS_NOT_FOUND_TTL: "1"
+      KONG_DNS_ERROR_TTL: "1"
+      KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      KONG_NGINX_HTTP2: "on"
+      KONG_UPSTREAM_KEEPALIVE: "320"
+      KONG_NGINX_KEEPALIVE_REQUESTS: "10000"
+      KONG_NGINX_KEEPALIVE_TIMEOUT: "75s"
+      KONG_NGINX_HTTP_KEEPALIVE_TIMEOUT: "75s"
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
+      # Cloudflare Tunnel is the only ingress. cloudflared on this host connects
+      # to the loopback-published gateway, and Docker's userland proxy
+      # (docker-proxy) or hairpin NAT presents that connection to Kong from the
+      # Compose bridge gateway address (172.16/12, 10/8 or 192.168/16, depending
+      # on the daemon's address pool), never from 127.0.0.1 itself. Trust those
+      # private ranges plus loopback so Kong reads the client address that
+      # Cloudflare sets in CF-Connecting-IP; the per-IP rate limits in kong.yml
+      # key on that address. Recursion stays off: the header is taken as-is
+      # from the one trusted hop, so a forged X-Forwarded-For chain is ignored.
+      # Do not place another reverse proxy in front of the gateway; it would
+      # not set CF-Connecting-IP and clients could supply their own.
+      KONG_REAL_IP_HEADER: CF-Connecting-IP
+      KONG_REAL_IP_RECURSIVE: "off"
+      KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
+
+  # GoTrue auth service DISABLED - using custom phone OTP authentication instead
+  # To re-enable: remove the 'profiles' line and uncomment auth routes in kong.yml
+  auth:
+    build:
+      context: ./auth
+    profiles: ["disabled"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT}
+      GOTRUE_SMTP_USER: ${SMTP_USER}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
+      GOTRUE_MAILER_URLPATHS_INVITE: ${MAILER_URLPATHS_INVITE}
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION}
+      GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
+      GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
+      GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
+
+  rest:
+    image: postgrest/postgrest:v14.17
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_DB_PRE_REQUEST: public.check_session
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+    command: ["postgrest"]
+
+  realtime:
+    build:
+      context: ./realtime
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - realtime-dev
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD", "curl", "-sSfL", "--head", "-o", "/dev/null",
+          "-H", "Authorization: Bearer ${ANON_KEY}",
+          "http://localhost:4000/api/tenants/realtime-dev/health"
+        ]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+      start_period: 90s
+    environment:
+      PORT: 4000
+      DB_HOST: ${POSTGRES_HOST}
+      DB_PORT: ${POSTGRES_PORT}
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
+      DB_ENC_KEY: supabaserealtime
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: true
+      RUN_JANITOR: true
+
+  storage:
+    build:
+      context: ./storage
+    restart: unless-stopped
+    volumes:
+      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://storage:5000/status"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      imgproxy:
+        condition: service_started
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+
+  imgproxy:
+    build:
+      context: ./imgproxy
+    restart: unless-stopped
+    volumes:
+      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
+
+  meta:
+    build:
+      context: ./postgres-meta
+    restart: unless-stopped
+    # The runtime image keeps node but no wget or curl (docker/postgres-meta/Dockerfile).
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then((r) => {if (r.status !== 200) throw new Error(r.status)})"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: ${POSTGRES_HOST}
+      PG_META_DB_PORT: ${POSTGRES_PORT}
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+  functions:
+    build:
+      context: ./edge-runtime
+    restart: unless-stopped
+    # The edge runtime has no health endpoint and ships neither wget nor curl.
+    # Probe the public `hello` function (functions/main/index.ts) on the main
+    # service port 9000 over bash /dev/tcp and require an HTTP 200 status line,
+    # so a listening socket whose worker cannot start is reported unhealthy.
+    # docker-compose.override.yml carries the same probe.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000
+          && printf "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+          && head -n 1 <&3 | grep -q " 200 "'
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ../functions:/home/deno/functions:ro,Z
+      - ${WAREHOUSE_MANIFEST_PATH:?Set public manifest path}:/etc/warehouse/instance.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      GOTENBERG_URL: http://gotenberg:3000
+      VERIFY_JWT: "true"
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      APP_ENV: ${APP_ENV:?Operator environment required}
+      AUTH_MODE: ${AUTH_MODE:?Operator mode required}
+      INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
+    command:
+      [
+        "start",
+        "--main-service", "/home/deno/functions/main"
+      ]
+
+  db:
+    build:
+      context: ./postgres
+    restart: unless-stopped
+    volumes:
+      - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ${WAREHOUSE_DB_PATH:?Set private database path}:/var/lib/postgresql/data:Z
+      - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
+      - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
+      - db-config:/etc/postgresql-custom
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      POSTGRES_DB: ${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY}
+      AUTH_MODE: ${AUTH_MODE:?Operator mode required}
+      APP_ENV: ${APP_ENV:?Operator environment required}
+      SMS_PROVIDER: ${SMS_PROVIDER:?MSG91 provider required}
+      SMS_PRODUCTION_MODE: ${SMS_PRODUCTION_MODE:?Production SMS mode required}
+      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:?MSG91 auth key required}
+      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow ID required}
+      MSG91_PE_ID: ${MSG91_PE_ID:?MSG91 PE ID required}
+      MSG91_SENDER_ID: ${MSG91_SENDER_ID:?MSG91 sender ID required}
+    command:
+      [
+        "postgres",
+        "-c", "config_file=/etc/postgresql/postgresql.conf",
+        "-c", "log_min_messages=fatal"
+      ]
+
+  # Connection pooler — start with: docker compose --profile pooler up -d
+  supavisor:
+    build:
+      context: ./supavisor
+    restart: unless-stopped
+    profiles: ["pooler"]
+    # The upstream entrypoint requires this limit; Docker defaults vary by host.
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - ./volumes/pooler/pooler.exs:/etc/pooler/pooler.exs:ro,z
+    healthcheck:
+      test: ["CMD", "curl", "-sSfL", "--head", "-o", "/dev/null", "http://127.0.0.1:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Migration, tenant initialization and server startup each boot the VM.
+      start_period: 60s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 4000
+      PROXY_PORT_SESSION: "5432"
+      PROXY_PORT_TRANSACTION: "6543"
+      PROXY_PORT: "5412"
+      PROM_POLL_RATE: "15000"
+      LOCAL_PROXY_MULTIPLIER: "1"
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
+      CLUSTER_POSTGRES: true
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      REGION: local
+      ERL_AFLAGS: -proto_dist inet_tcp
+      POOLER_TENANT_ID: ${POOLER_TENANT_ID}
+      POOLER_DEFAULT_POOL_SIZE: ${POOLER_DEFAULT_POOL_SIZE}
+      POOLER_MAX_CLIENT_CONN: ${POOLER_MAX_CLIENT_CONN}
+      POOLER_POOL_MODE: transaction
+      DB_POOL_SIZE: ${POOLER_DB_POOL_SIZE}
+    command:
+      [
+        "/bin/sh", "-c",
+        "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
+      ]
+
+  # CUPS Print Server — start with: docker compose --profile printing up -d
+  cups:
+    build:
+      context: ./cups
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["printing"]
+    privileged: true
+    volumes:
+      - ./cups/config/cupsd.conf:/etc/cups/cupsd.conf.custom:ro,z
+      - cups-spool:/var/spool/cups
+      - /dev/usb:/dev/usb:rw
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      CUPS_ADMIN_USER: ${CUPS_ADMIN_USER:-admin}
+      CUPS_ADMIN_PASSWORD: ${CUPS_ADMIN_PASSWORD:?Run setup to generate a password}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:631/"]
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 40s
+
+  # Gotenberg - HTML to PDF conversion (Chromium-based)
+  gotenberg:
+    build:
+      context: ./gotenberg
+    restart: unless-stopped
+    environment:
+      - CHROMIUM_DISABLE_JAVASCRIPT=false
+      - CHROMIUM_ALLOW_FILE_ACCESS_FROM_FILES=true
+      - API_TIMEOUT=60s
+      - LOG_LEVEL=info
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  db-config:
+  cups-spool:
+
+# Compose allocates a project-scoped network; services resolve by DNS name.

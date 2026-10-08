@@ -1,0 +1,272 @@
+// Historical fixed-OTP demo test. Not part of the operator test suite.
+// Mutates only an explicitly configured local demo, after matching its generated anon key.
+import assert from 'node:assert/strict';
+import { reviewCore } from './review-core.mjs';
+import { probe, root } from '../scripts/doctor-common.mjs';
+assert.ok(probe('bash', [root + '/scripts/compose.sh', 'ps', '-q']).ok, 'Review demo ownership must be valid');
+import { readFileSync } from 'node:fs';
+const envText=readFileSync(new URL('../docker/.env',import.meta.url),'utf8');
+const env=key=>envText.match(new RegExp(`^${key}=([^#\\r\\n]*)`,'m'))?.[1].trim();
+assert.equal(env('AUTH_MODE'),'demo'); assert.equal(env('BIND_ADDRESS'),'127.0.0.1');
+const base=`http://127.0.0.1:${env('KONG_HTTP_PORT')}`;
+const anon=env('ANON_KEY');
+const configResponse=await fetch(`${base}/functions/v1/get-public-config`,{signal:AbortSignal.timeout(30000)});
+assert.equal(configResponse.status,200,'public configuration');
+const config=await configResponse.json();
+// Boolean comparison prevents assertion errors from printing credential values.
+assert.ok(config.data?.anonKey===anon,'Must match THIS demo installation before any writes');
+assert.equal(config.success,true);
+
+async function api(path,token=anon,body,method=body===undefined?'GET':'POST') {
+  const response=await fetch(`${base}${path}`,{method,headers:{apikey:anon,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+    body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(60000)});
+  const text=await response.text();
+  let data; try {data=JSON.parse(text);} catch {data=null;}
+  return {status:response.status,ok:response.ok,data};
+}
+async function rpc(name,token,args={}) {
+  const result=await api(`/rest/v1/rpc/${name}`,token,args);
+  assert.ok(result.ok,`${name}: HTTP ${result.status}, ${result.data?.code || ''}`);
+  return result.data;
+}
+function success(data,label) {
+  assert.equal(data?.success,true,`${label}: ${typeof data?.error==='string'?data.error:data?.message || 'unsuccessful response'}`);
+}
+async function login(phone) {
+  success(await rpc('send_otp',anon,{p_phone_number:phone}),'send OTP');
+  const data=await rpc('verify_otp_or_register',anon,{p_phone_number:phone,p_otp_code:'123456'});
+  success(data,'verify OTP'); return data.data.session;
+}
+const admin=await login('0000000001'); const customer=await login('0000000002');
+const adminToken=admin.access_token; const customerToken=customer.access_token;
+console.log('Public bootstrap and admin/customer OTP login passed.');
+assert.ok(!(await api('/rest/v1/customers')).ok,'anonymous business read denied');
+const customerRows=await api('/rest/v1/customers?select=id',customerToken);
+assert.equal(customerRows.data.length,1,'customer assignment RLS');
+const customerId='22222222-0000-4000-8000-000000000001';
+const otherId='22222222-0000-4000-8000-000000000002';
+assert.equal(customerRows.data[0].id,customerId);
+assert.ok(!(await api('/rest/v1/user_profiles',customerToken,{role:'admin'},'PATCH')).ok,'self-promotion denied');
+const denied=await api('/rest/v1/rpc/get_customer_stock_summary',customerToken,{p_customer_uuid:otherId});
+assert.ok(!denied.ok || denied.data?.success===false,'cross-customer RPC denied');
+assert.equal((await api('/functions/v1/generate-customer-stock-pdf',customerToken,{customer_id:otherId})).status,404);
+assert.equal((await api('/functions/v1/generate-customer-stock-pdf',anon,{customer_id:customerId})).status,401);
+console.log('Anonymous, role-escalation, cross-customer RPC and PDF denials passed.');
+
+const number='T'+Date.now().toString(36).slice(-7).toUpperCase();
+const grn=await rpc('save_grn',adminToken,{p_gr_no:number,p_date:new Date().toISOString(),p_customer_id:customerId,
+  p_customer_name:'Example Customer A',p_pricing_mode:'MONTHLY',p_items:[{
+    item_id:'33333333-0000-4000-8000-000000000001',item_name:'Example Potatoes',packaging:'Bag',qty:100,weight:10,rack:'DEMO',package_mark:'TEST',
+  }]});
+success(grn,'create GRN');
+const headers=await api(`/rest/v1/goodsreceived?gr_no=eq.${number}&select=id`,adminToken);
+assert.equal(headers.data?.length,1,'created GRN visible');
+const grnId=headers.data[0].id;
+const trailers=await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${grnId}&select=id,stock`,adminToken);
+assert.equal(trailers.data[0].stock,100);
+const grnItem=trailers.data[0].id;
+success(await rpc('get_grn_details',customerToken,{p_grn_id:grnId}),'customer GRN details');
+const available=await rpc('get_customer_items_for_order_selection',customerToken,{p_customer_id:customerId,p_grn_no_filter:number});
+success(available,'order-item lookup'); assert.equal(available.data.length,1);
+const dispatchArgs={p_dispatch_data:{disp_no:number,disp_date:new Date().toISOString(),customer_id:customerId,customer_name:'Example Customer A',
+    supervisor_id:'11111111-0000-4000-8000-000000000001',supervisor_name:'Demo Admin'},
+  p_dispatch_items:[{gr_trl_id:grnItem,disp_qty:20}],p_generate_invoice:false};
+success(await rpc('create_dispatch_with_stock_check',adminToken,dispatchArgs),'create dispatch');
+const after=await api(`/rest/v1/goodsreceived_trl?id=eq.${grnItem}&select=stock`,adminToken);
+assert.equal(after.data[0].stock,80,'dispatch updates stock exactly once');
+const oversell=await rpc('create_dispatch_with_stock_check',adminToken,{...dispatchArgs,p_dispatch_items:[{gr_trl_id:grnItem,disp_qty:999}]});
+assert.equal(oversell.success,false,'overselling denied');
+const dispatch=await api(`/rest/v1/dispatch?disp_no=eq.${number}&select=id`,adminToken);
+const dispatchId=dispatch.data[0].id;
+success(await rpc('get_dispatch_details',customerToken,{p_dispatch_id:dispatchId}),'customer dispatch details');
+const customerGrns=await rpc('get_customer_grn_items',customerToken,{
+  p_customer_id:customerId,p_filters:{gr_no:number},p_sort_by:'date',p_sort_order:'desc',p_limit:1,p_offset:0
+});
+success(customerGrns,'customer GRN list');
+assert.equal(customerGrns.data.items.length,1,'assigned customer GRN page');
+assert.equal(customerGrns.data.items[0].grn_id,grnId,'assigned customer GRN mapping');
+const deniedCustomerGrns=await api('/rest/v1/rpc/get_customer_grn_items',customerToken,{
+  p_customer_id:otherId,p_limit:1,p_offset:0
+});
+assert.ok(!deniedCustomerGrns.ok || deniedCustomerGrns.data?.success===false,'other-customer GRN list denied');
+
+const secondDispatchNumber='P'+Date.now().toString(36).slice(-7).toUpperCase();
+success(await rpc('create_dispatch_with_stock_check',adminToken,{
+  ...dispatchArgs,
+  p_dispatch_data:{...dispatchArgs.p_dispatch_data,disp_no:secondDispatchNumber,disp_date:new Date(Date.now()+1000).toISOString()},
+  p_dispatch_items:[{gr_trl_id:grnItem,disp_qty:1}]
+}),'create pagination dispatch');
+const dispatchPageOne=await rpc('get_customer_dispatch_list',customerToken,{
+  p_customer_id:customerId,p_limit:1,p_offset:0,p_include_items:true
+});
+const dispatchPageTwo=await rpc('get_customer_dispatch_list',customerToken,{
+  p_customer_id:customerId,p_limit:1,p_offset:1,p_include_items:true
+});
+success(dispatchPageOne,'customer dispatch page one');
+success(dispatchPageTwo,'customer dispatch page two');
+assert.equal(dispatchPageOne.data.dispatches.length,1,'customer dispatch page size');
+assert.equal(dispatchPageTwo.data.dispatches.length,1,'customer dispatch second page size');
+assert.notEqual(dispatchPageOne.data.dispatches[0].id,dispatchPageTwo.data.dispatches[0].id,'customer dispatch pages do not repeat');
+assert.equal(dispatchPageOne.data.dispatches[0].customer_id,customerId,'assigned customer dispatch mapping');
+assert.ok(dispatchPageOne.data.dispatches[0].items.length>0,'customer dispatch includes item rows');
+assert.ok(dispatchPageOne.data.pagination.total_count>=2,'customer dispatch total count');
+assert.equal(dispatchPageOne.data.pagination.has_more,true,'customer dispatch has-more pagination');
+const deniedCustomerDispatches=await api('/rest/v1/rpc/get_customer_dispatch_list',customerToken,{
+  p_customer_id:otherId,p_limit:1,p_offset:0,p_include_items:true
+});
+assert.ok(!deniedCustomerDispatches.ok || deniedCustomerDispatches.data?.success===false,'other-customer dispatch list denied');
+const dispatchItems=await api(`/rest/v1/dispatch_trl?disp_id=eq.${dispatchId}&select=id`,adminToken);
+const invoiceNumber=Date.now()%1000000000;
+const financialYear=new Date().getUTCFullYear();
+success(await rpc('save_invoice',adminToken,{p_invoice_data:{inv_no:invoiceNumber,inv_fin_year:financialYear,
+  gr_id:grnId,gr_no:number,customer_id:customerId,customer_name:'Example Customer A',inv_date:new Date().toISOString(),total:100,
+    items:[{disp_trl_id:dispatchItems.data[0].id,charge:5,tax:0,labour_rate:0}]}}),'save invoice');
+console.log('GRN and dispatch customer lists, pagination, denial, stock update, oversell denial, and invoice save passed.');
+
+// --- Item 5.1: Storage & Image Lifecycle ---
+assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/anon.jpg`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${anon}`, 'Content-Type': 'image/jpeg' },
+  body: Buffer.from('test')
+})).ok, 'anonymous upload to grn-images denied');
+
+assert.ok(!(await fetch(`${base}/storage/v1/object/grn-images/cust.jpg`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${customerToken}`, 'Content-Type': 'image/jpeg' },
+  body: Buffer.from('test')
+})).ok, 'customer role upload to grn-images denied');
+
+// Original 2x2 red PNG fixture; exercise decoding/resizing rather than opaque bytes.
+const imageFixture = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
+const imgReg = await rpc('register_grn_image_upload', adminToken, {
+  p_grn_id: grnId, p_image_type: 'header', p_file_name: 'grn-header.png', p_file_size: imageFixture.length, p_mime_type: 'image/png'
+});
+success(imgReg, 'register GRN image upload');
+const imgUpload = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  method: 'POST', headers: { apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/png' },
+  body: imageFixture
+});
+assert.equal(imgUpload.status, 200, 'admin uploads GRN image');
+
+const unconfRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.ok(!unconfRead.ok, 'unconfirmed image not readable by customer');
+
+const imgConf = await rpc('confirm_grn_image_upload', adminToken, {
+  p_image_id: imgReg.image_id, p_upload_token: imgReg.upload_token
+});
+success(imgConf, 'confirm GRN image upload');
+
+const confRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.equal(confRead.status, 200, 'assigned customer reads confirmed image');
+const resized = await fetch(`${base}/storage/v1/render/image/authenticated/grn-images/${imgReg.storage_path}?width=1&height=1&resize=fill&format=origin`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` },
+  signal: AbortSignal.timeout(30000)
+});
+assert.equal(resized.status, 200, 'assigned customer transforms confirmed image');
+const resizedBytes = Buffer.from(await resized.arrayBuffer());
+assert.ok(resizedBytes.subarray(0, 8).equals(imageFixture.subarray(0, 8)), 'transformed image is PNG');
+assert.equal(resizedBytes.readUInt32BE(16), 1, 'transformed width');
+assert.equal(resizedBytes.readUInt32BE(20), 1, 'transformed height');
+
+
+const imgDel = await rpc('delete_grn_image', adminToken, { p_image_id: imgReg.image_id });
+success(imgDel, 'delete GRN image');
+
+const delRead = await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  headers: { apikey: anon, Authorization: `Bearer ${customerToken}` }
+});
+assert.ok(!delRead.ok, 'customer read denied after image record deleted');
+
+await fetch(`${base}/storage/v1/object/grn-images/${imgReg.storage_path}`, {
+  method: 'DELETE', headers: { apikey: anon, Authorization: `Bearer ${adminToken}` }
+});
+console.log('Image upload, confirmation, customer access, native resize, and deletion passed.');
+
+// --- Item 5.2: Role Boundaries & Dynamic Customer Assignment Lifecycle ---
+const staffRpcDenied = await api('/rest/v1/rpc/save_grn', customerToken, {
+  p_gr_no: 'DENY', p_date: new Date().toISOString(), p_customer_id: customerId,
+  p_customer_name: 'Example', p_pricing_mode: 'MONTHLY', p_items: []
+});
+assert.ok(!staffRpcDenied.ok, 'staff RPC denied to customer role');
+
+const unassigned = await rpc('remove_customer_assignment', adminToken, {
+  target_user_mobile: '910000000002', target_customer_id: customerId
+});
+assert.equal(unassigned, true, 'remove customer assignment');
+const hiddenCustomers = await api('/rest/v1/customers', customerToken);
+assert.equal(hiddenCustomers.data.length, 0, 'revoked assignment immediately hides customer records from RLS');
+
+const reassigned = await rpc('assign_customer_to_user', adminToken, {
+  target_user_mobile: '910000000002', target_customer_id: customerId, assigner_comment: 'Restored'
+});
+assert.equal(reassigned, true, 'restore customer assignment');
+const restoredCustomers = await api('/rest/v1/customers', customerToken);
+assert.equal(restoredCustomers.data.length, 1, 'restored assignment enables customer access');
+console.log('Role boundary enforcement and dynamic assignment lifecycle passed.');
+
+// --- Item 5.3: Concurrency, Validation, and Operational Reporting ---
+const cNumber = 'C' + Date.now().toString(36).slice(-6).toUpperCase();
+const cGrn = await rpc('save_grn', adminToken, {
+  p_gr_no: cNumber, p_date: new Date().toISOString(), p_customer_id: customerId,
+  p_customer_name: 'Example Customer A', p_pricing_mode: 'MONTHLY',
+  p_items: [{ item_id: '33333333-0000-4000-8000-000000000001', item_name: 'Example Potatoes', packaging: 'Bag', qty: 70, weight: 5, rack: 'DEMO', package_mark: 'TEST' }]
+});
+success(cGrn, 'create second GRN');
+const cGrnId = (await api(`/rest/v1/goodsreceived?gr_no=eq.${cNumber}&select=id`, adminToken)).data[0].id;
+const cGrnItem = (await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${cGrnId}&select=id`, adminToken)).data[0].id;
+
+const dispA = rpc('create_dispatch_with_stock_check', adminToken, {
+  p_dispatch_data: { disp_no: 'D' + Date.now().toString(36).slice(-5).toUpperCase() + '1', disp_date: new Date().toISOString(), customer_id: customerId, customer_name: 'Example Customer A', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' },
+  p_dispatch_items: [{ gr_trl_id: cGrnItem, disp_qty: 50 }],
+  p_generate_invoice: false
+});
+const dispB = rpc('create_dispatch_with_stock_check', adminToken, {
+  p_dispatch_data: { disp_no: 'D' + Date.now().toString(36).slice(-5).toUpperCase() + '2', disp_date: new Date().toISOString(), customer_id: customerId, customer_name: 'Example Customer A', supervisor_id: '11111111-0000-4000-8000-000000000001', supervisor_name: 'Demo Admin' },
+  p_dispatch_items: [{ gr_trl_id: cGrnItem, disp_qty: 50 }],
+  p_generate_invoice: false
+});
+const [resA, resB] = await Promise.all([dispA, dispB]);
+assert.equal(resA.success !== resB.success, true, 'exactly one concurrent dispatch must succeed on 70 total stock with 2x50 requests');
+const remainingStock = (await api(`/rest/v1/goodsreceived_trl?id=eq.${cGrnItem}&select=stock`, adminToken)).data[0].stock;
+assert.equal(remainingStock, 20, 'remaining stock correctly reflects 70 - 50 = 20 without overselling');
+
+const badInvoice = await rpc('save_invoice', adminToken, {
+  p_invoice_data: { inv_no: -999, inv_fin_year: financialYear, total: -50, items: [] }
+});
+assert.equal(badInvoice.success, false, 'malformed invoice data structure rejected');
+
+const dashboard = await rpc('get_operations_dashboard', adminToken, {
+  p_from_date: '2026-01-01', p_to_date: '2026-12-31'
+});
+assert.ok(dashboard.kpis && Number.isFinite(dashboard.kpis.total_stock_qty), 'dashboard calculates valid operational KPIs');
+
+const aging = await rpc('get_stock_aging_report', adminToken);
+success(aging, 'stock aging report');
+console.log('Concurrent dispatch race condition, invalid invoice rejection, and reporting response smoke checks passed.');
+
+for(const [name,body] of [
+  ['generate-grn-pdf',{gr_no:number}],['generate-dispatch-pdf',{disp_no:number}],
+  ['generate-invoice-pdf',{inv_no:invoiceNumber,fin_year:financialYear}],['generate-customer-stock-pdf',{customer_id:customerId}],
+]) {
+  const pdf=await api(`/functions/v1/${name}`,customerToken,body);
+  assert.equal(pdf.status,200,`${name}: HTTP ${pdf.status}`); success(pdf.data,name);
+  const url=new URL(pdf.data.pdf_url); const configured=new URL(config.data.supabaseUrl);
+  assert.equal(url.origin,configured.origin,'public PDF origin');
+  const download=await fetch(base+url.pathname+url.search,{signal:AbortSignal.timeout(30000)});
+  assert.equal(download.status,200,`${name} signed download`);
+  const bytes=new Uint8Array(await download.arrayBuffer());
+  assert.equal(new TextDecoder().decode(bytes.slice(0,5)),'%PDF-');
+  const privateRead=await api('/storage/v1/object/documents/'+decodeURIComponent(url.pathname.split('/documents/')[1]),customerToken);
+  assert.ok(!privateRead.ok,'PDF bucket cannot be read directly without signed capability');
+  console.log(`${name}: generated and downloaded valid PDF.`);
+}
+await reviewCore({ api, rpc, success, login, anon, adminToken, customerToken, customerId, grnId, grnItem, dispatchId, base });
+const renewed=await rpc('refresh_jwt_token',anon,{p_refresh_token:customer.refresh_token}); success(renewed,'refresh');
+assert.equal((await rpc('refresh_jwt_token',anon,{p_refresh_token:customer.refresh_token})).success,false,'refresh replay denied');
+await rpc('logout_session',anon,{p_refresh_token:renewed.refresh_token});
+assert.ok(!(await api('/rest/v1/customers',renewed.access_token)).ok,'logout revokes REST access');
+assert.equal((await api('/functions/v1/get-config',renewed.access_token)).status,403,'logout revokes Edge access');
+await rpc('logout_session',anon,{p_refresh_token:admin.refresh_token});
+console.log('Refresh replay protection and REST/Edge logout revocation passed. Demo fixtures remain available in the new demo only.');

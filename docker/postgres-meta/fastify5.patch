@@ -1,0 +1,163 @@
+--- a/src/server/app.ts
++++ b/src/server/app.ts
+@@ -19,8 +19,9 @@
+   Sentry.setupFastifyErrorHandler(app)
+ 
+   app.setErrorHandler((error, request, reply) => {
+-    app.log.error({ error: error.toString(), request: extractRequestForLogging(request) })
+-    reply.code(500).send({ error: error.message })
++    const message = error instanceof Error ? error.message : String(error)
++    app.log.error({ error: String(error), request: extractRequestForLogging(request) })
++    reply.code(500).send({ error: message })
+   })
+ 
+   app.setNotFoundHandler((request, reply) => {
+--- a/src/server/server.ts
++++ b/src/server/server.ts
+@@ -35,8 +35,8 @@
+   timestamp: pino.stdTimeFunctions.isoTime,
+ })
+ 
+-const app = buildApp({ logger })
+-const adminApp = buildAdminApp({ logger })
++const app = buildApp({ loggerInstance: logger })
++const adminApp = buildAdminApp({ loggerInstance: logger })
+ 
+ async function getTypeOutput(): Promise<string | null> {
+   const pgMeta: PostgresMeta = new PostgresMeta({
+--- a/src/server/routes/column-privileges.ts
++++ b/src/server/routes/column-privileges.ts
+@@ -27,6 +27,7 @@
+           offset: Type.Optional(Type.Integer()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresColumnPrivilegesSchema),
+           500: Type.Object({
+             error: Type.String(),
+@@ -71,6 +72,7 @@
+         }),
+         body: Type.Array(postgresColumnPrivilegesGrantSchema),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresColumnPrivilegesSchema),
+           400: Type.Object({
+             error: Type.String(),
+@@ -104,6 +106,7 @@
+         }),
+         body: Type.Array(postgresColumnPrivilegesRevokeSchema),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresColumnPrivilegesSchema),
+           400: Type.Object({
+             error: Type.String(),
+--- a/src/server/routes/columns.ts
++++ b/src/server/routes/columns.ts
+@@ -25,6 +25,7 @@
+           offset: Type.Optional(Type.Integer()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresColumnSchema),
+           500: Type.Object({
+             error: Type.String(),
+@@ -77,6 +78,7 @@
+           offset: Type.Optional(Type.Integer()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresColumnSchema,
+           400: Type.Object({
+             error: Type.String(),
+@@ -144,6 +146,7 @@
+         }),
+         body: postgresColumnCreateSchema,
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresColumnSchema,
+           400: Type.Object({
+             error: Type.String(),
+@@ -180,6 +183,7 @@
+         }),
+         body: postgresColumnUpdateSchema,
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresColumnSchema,
+           400: Type.Object({
+             error: Type.String(),
+@@ -218,6 +222,7 @@
+           cascade: Type.Optional(Type.String()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresColumnSchema,
+           400: Type.Object({
+             error: Type.String(),
+--- a/src/server/routes/table-privileges.ts
++++ b/src/server/routes/table-privileges.ts
+@@ -27,6 +27,7 @@
+           offset: Type.Optional(Type.Integer()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresTablePrivilegesSchema),
+           500: Type.Object({
+             error: Type.String(),
+@@ -71,6 +72,7 @@
+         }),
+         body: Type.Array(postgresTablePrivilegesGrantSchema),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresTablePrivilegesSchema),
+           400: Type.Object({
+             error: Type.String(),
+@@ -104,6 +106,7 @@
+         }),
+         body: Type.Array(postgresTablePrivilegesRevokeSchema),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresTablePrivilegesSchema),
+           400: Type.Object({
+             error: Type.String(),
+--- a/src/server/routes/tables.ts
++++ b/src/server/routes/tables.ts
+@@ -31,6 +31,7 @@
+           include_columns: Type.Optional(Type.Boolean()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: Type.Array(postgresTableSchema),
+           500: Type.Object({
+             error: Type.String(),
+@@ -79,6 +80,7 @@
+           id: Type.Integer(),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresTableSchema,
+           404: Type.Object({
+             error: Type.String(),
+@@ -113,6 +115,7 @@
+         }),
+         body: postgresTableCreateSchema,
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresTableSchema,
+           400: Type.Object({
+             error: Type.String(),
+@@ -148,6 +151,7 @@
+         }),
+         body: postgresTableUpdateSchema,
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresTableSchema,
+           400: Type.Object({
+             error: Type.String(),
+@@ -191,6 +195,7 @@
+           cascade: Type.Optional(Type.Boolean()),
+         }),
+         response: {
++          default: Type.Object({ error: Type.String() }),
+           200: postgresTableSchema,
+           400: Type.Object({
+             error: Type.String(),

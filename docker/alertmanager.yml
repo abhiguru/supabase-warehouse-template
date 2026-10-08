@@ -1,0 +1,18 @@
+global:
+  resolve_timeout: 5m
+
+# Provider-independent default: alerts remain queryable in local Alertmanager.
+# Configure a reviewed external receiver only for a production deployment.
+route:
+  receiver: local-only
+  group_wait: 1s
+  group_interval: 30s
+  repeat_interval: 4h
+
+receivers:
+  - name: local-only
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']

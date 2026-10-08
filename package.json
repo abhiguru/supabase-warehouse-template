@@ -1,0 +1,38 @@
+{
+  "name": "supabase-warehouse-template-checks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "test": "node --import ./tests/register-edge-imports.mjs --test tests/*.test.mjs",
+    "test:migrations": "bash tests/migrations.sh",
+    "test:recovery": "bash scripts/recovery-check.sh",
+    "db:backup": "bash scripts/backup.sh",
+    "db:verify-restore": "bash scripts/verify-restore.sh",
+    "db:restore": "bash scripts/restore.sh",
+    "keys:rotate": "bash rotate-keys.sh",
+    "test:rotation": "node tests/operator-api-rotation.mjs",
+    "test:gateway": "node scripts/gateway-smoke.mjs",
+    "test:gateway-dns": "bash scripts/gateway-dns-check.sh",
+    "test:monitoring": "bash scripts/monitoring-check.sh",
+    "test:grafana": "bash scripts/grafana-check.sh",
+    "test:load": "bash scripts/load-smoke.sh",
+    "test:cups": "bash scripts/cups-check.sh",
+    "scan:images": "bash scripts/scan-images.sh",
+    "retention:preview": "bash scripts/retention.sh preview",
+    "retention:apply": "bash scripts/retention.sh apply",
+    "check:contract": "node scripts/check-mobile-contract.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "test:pooler": "bash scripts/pooler-check.sh",
+    "test:studio": "bash scripts/studio-check.sh",
+    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high"
+  },
+  "devDependencies": {
+    "jose": "5.10.0",
+    "ws": "^8.21.0"
+  }
+}

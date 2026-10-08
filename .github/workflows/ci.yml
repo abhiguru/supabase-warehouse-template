@@ -1,0 +1,209 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+env:
+  # Operator mobile companion commit tested by the contract job. Bump it when
+  # the mobile branch moves; see CONTRIBUTING.md "Mobile companion pin".
+  MOBILE_REF: 97ddf3c4e1d01698cf9c9cee9dc279d5136f95b1
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Container source dependency audit
+        run: npm run check:container-dependencies
+      - name: Shell syntax
+        run: |
+          for script in *.sh scripts/*.sh tests/*.sh; do bash -n "$script"; done
+  migrations:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: bash tests/migrations.sh
+  grafana:
+    name: Grafana plugins and live queries (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run test:grafana
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: abhiguru/rn-warehouse-template
+          # Operator mobile companion, pinned to the tested commit.
+          ref: ${{ env.MOBILE_REF }}
+          path: mobile
+          persist-credentials: false
+      - name: Record tested commit pair
+        run: |
+          git -C backend log -1 --format='Backend %H'
+          git -C mobile log -1 --format='Mobile %H'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: mobile
+      - run: node scripts/check-mobile-contract.mjs ../mobile
+        working-directory: backend
+
+  secrets:
+    name: Redacted source and history scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash scripts/scan-secrets.sh
+
+  operator-install:
+    name: Isolated operator installation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: backend
+      - name: Prepare private operator state
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20260929"
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20260929" >> "$GITHUB_ENV"
+      - name: Configure isolated gateway regression network
+        run: |
+          cat >> docker/docker-compose.override.yml <<'YAML'
+
+          networks:
+            default:
+              ipam:
+                config:
+                  - subnet: 10.233.245.0/24
+          YAML
+        working-directory: backend
+      - name: Fresh private operator configuration and local services
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
+          cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-ci.env" \
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+        working-directory: backend
+      - run: node scripts/doctor.mjs --local
+        working-directory: backend
+      - name: Signing-key rotation, session revocation and rotated-instance health
+        run: npm run test:rotation
+        working-directory: backend
+      - name: Operator backend HTTP, documents, Realtime and account lifecycle
+        run: |
+          node tests/operator-api-core.mjs
+          node tests/operator-realtime-core.mjs
+          node tests/operator-api-final.mjs
+        working-directory: backend
+      - name: Studio and metadata compatibility
+        run: npm run test:studio
+        working-directory: backend
+      - name: Gateway CORS, payload and local TLS
+        run: npm run test:gateway
+        working-directory: backend
+      - name: Gateway upstream IP replacement
+        run: npm run test:gateway-dns
+        working-directory: backend
+      - name: Retention dry run
+        run: npm run retention:preview
+        working-directory: backend
+      - name: API and database load smoke
+        run: npm run test:load
+        working-directory: backend
+      - name: Monitoring targets and local alert delivery
+        run: npm run test:monitoring
+        working-directory: backend
+      - name: Backup and isolated restore drill
+        run: |
+          npm run db:backup -- /tmp/warehouse-ci-backup
+          npm run db:verify-restore -- /tmp/warehouse-ci-backup
+        working-directory: backend
+      - name: In-place restore drill
+        run: |
+          bash stop.sh
+          npm run db:restore -- --yes /tmp/warehouse-ci-backup
+          bash start.sh
+          node scripts/doctor.mjs --local
+          bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+            < scripts/backup-integrity.sql > /tmp/warehouse-ci-restored-integrity.txt
+          diff -u /tmp/warehouse-ci-backup/integrity.txt /tmp/warehouse-ci-restored-integrity.txt
+          node tests/operator-api-restore.mjs /tmp/warehouse-ci-backup
+        working-directory: backend
+      - name: Pooler session and transaction authentication
+        run: npm run test:pooler
+        working-directory: backend
+      - name: CUPS startup without printer hardware
+        run: npm run test:cups
+        working-directory: backend
+      - name: Owned-service recovery
+        run: npm run test:recovery
+        working-directory: backend
+      - name: Preserve config and rerun setup
+        run: |
+          sha256sum "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.sha256
+          stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env" > /tmp/warehouse-config.mode
+          bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-ci.env" \
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+          sha256sum -c /tmp/warehouse-config.sha256
+          test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
+        working-directory: backend
+      - name: Stop only this checkout's operator project
+        if: always()
+        run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
+        working-directory: backend

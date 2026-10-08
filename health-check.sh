@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+failed=0
+for service in db kong rest realtime storage imgproxy meta studio functions gotenberg; do
+  id=$(compose ps -q "$service")
+  if [[ -z "$id" ]]; then
+    echo "$service: missing"; failed=1; continue
+  fi
+  state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")
+  echo "$service: $state"
+  if [[ "$state" != running* || "$state" == *unhealthy* || "$state" == *starting* ]]; then
+    failed=1
+  fi
+done
+compose exec -T db pg_isready -U postgres || failed=1
+# Probe the intended project internally, never an unrelated server on a fixed host port.
+{
+cat "$ROOT/scripts/http-readiness.mjs"
+cat <<'JS'
+for (const [name,url,headers] of [
+  ['REST','http://kong:8000/rest/v1/',{apikey:process.env.SUPABASE_ANON_KEY}],
+  ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
+  ['PDF renderer','http://gotenberg:3000/health',{}],
+  ['metadata','http://meta:8080/health',{}],
+  ['Realtime','http://realtime-dev:4000/api/tenants/realtime-dev/health',{Authorization:`Bearer ${process.env.SUPABASE_ANON_KEY}`}],
+]) {
+  await waitForHttp(name,url,headers);
+  console.log(`${name}: available`);
+}
+JS
+} | compose exec -T studio node --input-type=module || failed=1
+if [[ "$failed" != 0 ]]; then
+  node "$ROOT/scripts/service-diagnostics.mjs" kong functions rest
+fi
+exit "$failed"
