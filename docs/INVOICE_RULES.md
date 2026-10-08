@@ -69,6 +69,9 @@ Dispatch the remaining 80 on the same date. Monthly price is 5 per bag, labour
 | 80 | 600 | 160 | 760 | 38.00 | 798.00 |
 
 Preview subtotal is **950**, header tax **48**, and grand total **998**.
+These numbers belong to the fixture dates above (31 days, 1.5 periods). With the
+same prices, receiving and dispatching 100 bags on the same day bills one period:
+storage 500 + labour 200 = base 700, tax 35, total **735**.
 New previews require a fully dispatched, uninvoiced GRN. The tests also verify
 that an invalid dispatch reference rolls back the invoice header.
 
