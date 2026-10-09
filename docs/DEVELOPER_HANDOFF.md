@@ -5,7 +5,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 ## Repository layout
 
 - `setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`, `health-check.sh` — operator commands; each takes the per-state lock (`scripts/operator-lock.sh`) before touching Docker.
-- `scripts/` — `configure.mjs` (state and config generation), `doctor.mjs` (host preflight, local and external checks), `migrate.sh` + `migration-plan.mjs` (checksummed ledger), `backup.sh` / `verify-restore.sh` / `restore.sh`, `backup-disk.sh` (second-disk preparation and backup copy; see below), `rotate-keys.mjs` + `keys.mjs`, `compose.sh` (project-owned Compose wrapper), `check-mobile-contract.mjs`, and the smoke/check scripts CI runs.
+- `scripts/` — `configure.mjs` (state and config generation), `doctor.mjs` (host preflight, local and external checks), `migrate.sh` + `migration-plan.mjs` (checksummed ledger), `backup.sh` / `verify-restore.sh` / `restore.sh`, `backup-usb.sh` (automatic copy to an enrolled USB drive; see below) and `usb-backup-status.mjs` (its doctor warning), `backup-disk.sh` (second-disk alternative), `rotate-keys.mjs` + `keys.mjs`, `compose.sh` (project-owned Compose wrapper), `check-mobile-contract.mjs`, and the smoke/check scripts CI runs.
 - `migrations/` — numbered SQL applied in order. `functions/` — Deno edge functions. `docker/` — Compose files and digest-pinned image recipes. `deploy/` — cloudflared examples. `config/` — seed SQL.
 - `tests/` — node tests (`*.test.mjs`), SQL tests run by `tests/migrations.sh`, and the HTTP/Realtime drivers (`operator-api-*.mjs`, `operator-realtime-core.mjs`, `operator-fixture.mjs`) the CI install job runs against a live instance.
 
@@ -23,13 +23,21 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - Safety rules to preserve in any change: only a blank, whole, non-removable, unmounted second disk; refuse the system disk and the disk holding `data/` (fail **closed** if the system disk cannot be determined); never wipe, resize or shrink; confirmation comes from the disk itself (`--confirm-serial`, else `--confirm-size`); re-check right before writing; `sync` must prove the mount point is a real mount of a different device before writing anything.
 - `tests/backup-disk.test.mjs` runs the script against PATH shims for `lsblk`, `blkid`, `wipefs`, `findmnt`, `sgdisk`, `mkfs.ext4`, `mount` and friends, so no test touches a device or the real `/etc/fstab`. The `WAREHOUSE_BACKUP_DISK_*` variables (mount point, fstab, sysfs) exist for those tests only and are printed by `plan`. The shims pin the `lsblk` argument forms (`-P` and `-r` are mutually exclusive in real `lsblk`; a real run once caught this), so change both together.
 - **Not verifiable in CI:** the real `apply` path. Before a release that touches it, attach a spare virtual disk to a throwaway VM and run: `plan` → `sudo bash scripts/backup-disk.sh apply …` → reboot (the fstab entry must remount it) → `db:backup` + `sync` → `db:verify-restore` on the copy → `apply` again (must be a no-op). Also confirm `plan --device` on the system disk and on a partition is refused.
-- **Direction:** pilot operators will use an existing **USB drive** (next section) rather than a dedicated second disk. Keep `backup-disk.sh` working until its replacement exists; do not extend it.
+- **Direction:** pilot operators use the **USB drive** (next section). Keep `backup-disk.sh` working for hosts with a spare disk; do not extend it.
 
 ## USB backup drive
 
 Decided for pilot installs: the operator attaches an **existing exFAT USB drive** and the system does the rest. exFAT because the install may run on Linux or in the Linux VM of a Windows host, and a restore must work on either; the drive is never partitioned or formatted, so existing files on it stay untouched. Archives are **not encrypted** (decision): anyone holding the drive can read every credential in `compose.env`, so the drive is kept locked away and a lost drive means `rotate-keys.sh --yes`. A drive kept on site does not close the off-host custody gate in [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md); rotating it to another location does.
 
-Until the automation below exists, an installer copies backups by hand. This was run on a real install (one 15 GB exFAT stick, desktop automount, four backups, verify-restore from the stick passed); run it as the install user, no root needed when the desktop has mounted the drive:
+`scripts/backup-usb.sh` automates it. Layout and trust boundaries:
+
+- **Root, installed once** by `sudo bash scripts/backup-usb.sh setup --state DIR --enroll /dev/sdX1`: copies the script itself to `/usr/local/libexec/warehouse-usb-backup` (root-owned, so root never runs code from the user-writable checkout; setup refuses a group/world-writable script), writes `/etc/warehouse-usb-backup.conf` (state, checkout, user, uid/gid, options), `/etc/warehouse-usb-backup.drives` (enrolled filesystem UUIDs), a udev rule with one line per enrolled UUID (`ID_BUS==usb`, `ID_FS_TYPE==exfat`) that adds `SYSTEMD_WANTS=warehouse-usb-backup@%k.service`, the template unit, and a scan service + daily timer (enabled only with `--daily`). `enroll`, `uninstall` and `status` complete the set.
+- **The unit** runs `ExecStartPre=+helper mount %I` (root: re-checks USB/exFAT/enrolled, waits a few seconds for a desktop automount and uses it, otherwise mounts privately under `/run/warehouse-usb-backup/` with `uid/gid`, `fmask=0177`, `dmask=0077`, `nosuid,nodev,noexec`), then `ExecStart=bash <checkout>/scripts/backup-usb.sh run --device %I` **as the installation user**, then `ExecStopPost=+helper unmount %I` (always, also after a failure: `sync`, unmount every mount of the enrolled drive). The checkout path is baked into the unit: run setup again after moving or updating the checkout (`status` compares the helper with the checkout).
+- **`run`** (installation user): refuses root, unenrolled/non-USB/non-exFAT/read-only drives, an unmounted drive, a mount on the data device, and a folder whose `.instance-id` belongs to another instance. It waits up to 15 minutes for the operator lock, runs `scripts/backup.sh` (which takes the lock itself), then holds the lock while it writes `warehouse-backups/<state name>/<backup>.tar` via `.partial` + rename, hashing the stream as written and comparing with a direct-I/O read back from the drive; writes `<backup>.tar.sha256`; never overwrites or deletes; extracts the newest archive into a private temp dir under the state and runs `verify-restore.sh` on it. It records the result in `<state>/config/usb-backup.last` (read by `scripts/usb-backup-status.mjs` for the doctor warning) and in `LAST-RESULT.txt` on the drive; a failed fresh backup still copies the existing ones but marks the run failed.
+- Tests: `tests/backup-usb.test.mjs` runs every subcommand against PATH shims (`lsblk`, `findmnt`, `mount`, `umount`, `systemctl`, `udevadm`, `chown`, `id`, `getent`) and the fake `docker`; `WAREHOUSE_USB_BACKUP_ETC`, `_LIBEXEC`, `_RUN`, `_SETTLE`, `_LOCK_WAIT`, `_FRESH` and `_VERIFY_RESTORE` exist for them (`status` prints the first three when set).
+- **Not verifiable in CI:** udev, systemd and the real mount. Before a release that touches them, on a VM with a real exFAT USB stick: `setup --enroll` → re-plug → `journalctl -u 'warehouse-usb-backup@*'` shows the fresh backup, copies, read-back and verify-restore, and the drive ends unmounted → re-plug again (everything "already present") → plug an unenrolled exFAT stick (no run, still mounted by the desktop) → pull the drive mid-copy (only a `.partial` is left; the next run removes it) → `--daily` and `systemctl start warehouse-usb-backup-scan.service` with the drive attached → `uninstall`.
+
+Manual fallback (same layout; for a host where `setup` cannot be run), as the installation user with the drive mounted by the desktop:
 
 ```bash
 export WAREHOUSE_STATE_DIR=/srv/warehouse/<instance>
@@ -45,7 +53,7 @@ for b in "$SRC"/warehouse-*; do n=$(basename "$b")
   tar -C "$SRC" -cf "$DST/.$n.tar.partial" "$n"; sync -f "$DST/.$n.tar.partial"
   (cd "$DST" && sha256sum ".$n.tar.partial" | sed "s/\.$n\.tar\.partial/$n.tar/" > ".$n.sha.partial")
   mv "$DST/.$n.tar.partial" "$DST/$n.tar"; mv "$DST/.$n.sha.partial" "$DST/$n.tar.sha256"
-  (cd "$DST" && sha256sum -c --quiet "$n.tar.sha256")                                            # read back from the drive
+  (cd "$DST" && sha256sum -c --quiet "$n.tar.sha256")
 done; sync
 
 T=$(mktemp -d); tar -C "$T" -xf "$DST/<newest>.tar"                    # prove the copy restores
@@ -56,9 +64,7 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 - One `.tar` per backup keeps the 0600/0700 modes inside the archive (exFAT has no Unix permissions) and avoids exFAT name and attribute quirks. The `.tar.sha256` file lets anyone, on any OS, check the archive.
 - Write only under `warehouse-backups/<instance>/`; never touch other files on the drive, never delete or overwrite an existing archive (a mismatching archive is a failure to investigate, not to replace).
 - Restore on a fresh install (Linux, or the Linux VM of a Windows host with the USB device passed through): mount the drive, `sha256sum -c <name>.tar.sha256`, extract into `$WAREHOUSE_STATE_DIR/backups/`, `db:verify-restore`, then `db:restore` as in [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md).
-- VMware USB passthrough can drop a device; check `lsblk` before starting and do not detach during a copy (a dropped copy leaves only a `.partial` file, which the next run ignores and can be deleted).
-
-**To build next** (replaces the manual steps and `backup-disk.sh`): the operator's only job is attaching the drive. A systemd unit, installed once with `sudo` at install time, starts when an exFAT USB drive carrying a `warehouse-backups` marker is mounted, takes the operator lock, runs `db:backup`, the copy and verification above, and `db:verify-restore` on the newest archive, then unmounts and reports "safe to remove" (and failures) where the operator will see them. The same command must also work with a permanently attached drive (`nofail` mount by UUID plus a timer), and `doctor` should warn when the last successful copy is older than N days. Tests use PATH shims as `tests/backup-disk.test.mjs` does; the real attach/detach path needs the manual check above on hardware before release.
+- VMware USB passthrough can drop a device; do not detach during a copy.
 
 ## Migration conventions
 
