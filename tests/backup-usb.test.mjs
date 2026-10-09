@@ -265,6 +265,11 @@ test('setup is root-only through sudo and installs the helper, units, rule and c
     const helper = join(f.libexec, 'warehouse-usb-backup');
     assert.equal(readFileSync(helper, 'utf8'), readFileSync(join(f.root, 'scripts/backup-usb.sh'), 'utf8'));
     assert.equal(statSync(helper).mode & 0o777, 0o755);
+    // Directories setup creates stay world-readable despite umask 077 (a 0700
+    // /usr/local/libexec broke every Docker CLI plugin on the host).
+    for (const dir of [f.libexec, join(f.etc, 'systemd/system'), join(f.etc, 'udev/rules.d')]) {
+      assert.equal(statSync(dir).mode & 0o777, 0o755, dir);
+    }
     assert.match(f.calls(), new RegExp(`^chown root:root ${helper}$`, 'm'));
     const conf = readFileSync(join(f.etc, 'warehouse-usb-backup.conf'), 'utf8');
     assert.match(conf, new RegExp(`^STATE=${f.state}$`, 'm'));

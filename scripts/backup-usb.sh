@@ -62,7 +62,7 @@ enrolled() { [[ -f "$DRIVES" ]] && grep -qxF -- "$1" "$DRIVES"; }
 # ---------------------------------------------------------------- root: installation
 write_rule() {
   local tmp uuid
-  mkdir -p "$(dirname "$RULE")"
+  (umask 022; mkdir -p "$(dirname "$RULE")")
   tmp="$(mktemp "$RULE.XXXXXX")"
   {
     echo '# Managed by scripts/backup-usb.sh: attaching an enrolled drive starts a warehouse backup.'
@@ -112,7 +112,10 @@ cmd_setup() {
   old="$(conf_get STATE)"
   [[ -z "$old" || "$old" == "$state" ]] || die "USB backup is already set up for $old; run uninstall first."
 
-  mkdir -p "$LIBEXEC" "$UNITS"
+  # System directories created here must stay world-readable: under umask 077 a new
+  # /usr/local/libexec became 0700, and the Docker CLI, which searches
+  # /usr/local/libexec/docker/cli-plugins first, then failed every plugin with EACCES.
+  (umask 022; mkdir -p "$LIBEXEC" "$UNITS")
   install -m 0755 -- "$SELF" "$HELPER"; chown root:root "$HELPER"
   local tmp; tmp="$(mktemp "$CONF.XXXXXX")"
   printf 'STATE=%s\nCHECKOUT=%s\nUSER=%s\nUID=%s\nGID=%s\nFRESH_BACKUP=%s\nDAILY=%s\n' "$state" "$ROOT" "$user" "$uid" "$gid" "$fresh" "$daily" > "$tmp"
