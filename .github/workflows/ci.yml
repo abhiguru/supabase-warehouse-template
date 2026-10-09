@@ -220,6 +220,11 @@ jobs:
           bash scripts/data-fingerprint.sh | diff -u /tmp/warehouse-ci-fingerprint.txt -
           bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
             < scripts/backup-integrity.sql | diff -u /tmp/warehouse-ci-lost-host-backup/integrity.txt -
+          # The restore is proven above. This backup was taken minutes after the earlier
+          # steps signed the fictional customer in five times, and the restore faithfully
+          # brings back its exhausted hourly OTP counter; clear it for the API check.
+          bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+            -c "DELETE FROM public.otp_rate_limits WHERE phone_number = '919888888872'"
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
         working-directory: backend
       - name: Stop only this checkout's operator project

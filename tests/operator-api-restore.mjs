@@ -38,7 +38,7 @@ function good(result, label) {
 }
 function login(phone, name) {
   const prepared = queryJson(`public.operator_prepare_otp(${quote(phone)})`);
-  assert.equal(prepared.success, true, 'fictional challenge prepared');
+  assert.equal(prepared.success, true, `fictional challenge prepared: ${prepared.code || 'no code'}`);
   const finished = queryJson(`public.operator_finish_otp(${quote(prepared.data.request_id)}::uuid,true,'mock-provider-only')`);
   assert.equal(finished.success, true, 'mock provider accepted');
   const verified = queryJson(`public.operator_verify_otp(${quote(phone)},${quote(prepared.data.otp_code)},${quote(name)})`);
