@@ -557,18 +557,24 @@ run `./rotate-keys.sh --yes` and take a new backup. A drive kept on site is
 local custody only; taking it (or a second drive in rotation) to another
 location is what protects against loss of the host, theft or fire.
 
-To use an archive from the drive, attach it, check the archive with
-`sha256sum -c <name>.tar.sha256`, extract it into
-`$WAREHOUSE_STATE_DIR/backups/` and run `db:verify-restore` on it. On the
-**same** installation (its state directory intact) follow
-[In-place restore of the same instance](#in-place-restore-of-the-same-instance).
-**A fresh install cannot load it yet:** a new `setup.sh` creates a new
-instance identity, and `db:restore` refuses a backup whose `instance.json`
-differs ("in-place restore only replaces the instance that produced the
-backup"). Keep the drive; recovery onto a reinstalled or replacement host is an
-open item in the acceptance ledger and needs the developer until it is built.
-What the drive does prove today is that each copy is complete and restorable:
-every run verifies the newest archive from the drive in a disposable database.
+To use an archive from the drive: on the **same** installation (its state
+directory intact) extract it into `$WAREHOUSE_STATE_DIR/backups/` and follow
+[In-place restore of the same instance](#in-place-restore-of-the-same-instance);
+after losing the host, follow
+[Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive).
+
+**Record a fingerprint with each backup you may need to prove later.** Right
+after a USB run, before anyone uses the app again:
+
+```bash
+bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
+```
+
+It prints a row count and a SHA-256 for every business table (customers, items,
+prices, GRNs, dispatches, invoices, stock movements, users), the storage catalog
+and the stored files. It holds no secrets; keep a copy off the host (for
+example next to the archive on the drive). After a restore the same command
+must print identical lines.
 
 ### Backup disk
 
@@ -716,6 +722,109 @@ sudo rm -rf "$WAREHOUSE_STATE_DIR/data/db.pre-restore-<utc>" "$WAREHOUSE_STATE_D
 ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 ```
 
+### Recover a lost host from the USB drive
+
+Use this when the original host is gone (disk failure, reinstall, stolen or
+destroyed machine) and the USB drive is the only thing left. The rebuilt host
+becomes **the same warehouse**: same instance identity, HTTPS origin, signing
+keys, MSG91 settings, users, sessions and data, exactly as at the moment of the
+backup. Phones keep working without selecting the server again. Everything
+recorded after the backup is lost.
+
+> **Status: manual procedure under acceptance.** It uses only the existing
+> `db:restore` and must be confirmed with a fingerprint comparison on a fresh
+> VM before it is relied on; record the result. A dedicated `db:restore-host`
+> command and backups that also carry the tunnel credential are planned.
+
+**Never run the old and the new host at the same time.** They would answer as
+the same warehouse with the same keys. If the old host might come back, wipe
+its disk or keep it disconnected; if in doubt, rotate the keys afterwards
+(step 9).
+
+Before you start you need: the new host prepared as in
+[host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
+`cloudflared`, your user in the `docker` group), the USB drive, and your private
+copy of the tunnel credential (the tunnel `config.yml` plus its credentials JSON,
+or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
+different warehouse.
+
+1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
+   sequence. Any release at least as new as the backup works (the backup's
+   `metadata.txt` records `source_commit`); newer migrations are applied during
+   the restore.
+2. **Attach the drive and choose the backup.** On VMware connect it under
+   Removable Devices. The desktop usually mounts it under `/media/$USER/`;
+   otherwise `udisksctl mount -b /dev/sdX1` (find it with
+   `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`: `usb`, `exfat`).
+
+   ```bash
+   DRIVE="/media/$USER/<label>"
+   ls "$DRIVE"/warehouse-backups/*/                       # one folder per installation
+   cd "$DRIVE/warehouse-backups/<state name>"
+   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK
+   ```
+
+3. **Find the original state path.** The restore must use the same path, because
+   the configuration records it:
+
+   ```bash
+   ARCHIVE="$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
+   NAME="$(basename "$ARCHIVE" .tar)"
+   STATE="$(tar -xOf "$ARCHIVE" "$NAME/compose.env" | sed -n 's|^WAREHOUSE_DB_PATH=\(.*\)/data/db$|\1|p')"
+   echo "$STATE"                                          # for example /srv/warehouse/acme
+   ```
+
+4. **Recreate the state directory from the backup.** Its parent must belong to
+   you (see [private inputs](#private-inputs)); the state itself must not exist yet.
+
+   ```bash
+   sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$STATE")"
+   (umask 077
+    install -d -m 0700 "$STATE" "$STATE/config" "$STATE/public" "$STATE/data" \
+      "$STATE/data/db" "$STATE/data/storage" "$STATE/backups"
+    tar -C "$STATE/backups" -xf "$ARCHIVE"
+    install -m 0600 "$STATE/backups/$NAME/compose.env" "$STATE/config/compose.env"
+    install -m 0644 "$STATE/backups/$NAME/instance.json" "$STATE/public/instance.json")
+   ```
+
+5. **Verify and restore.** From the checkout:
+
+   ```bash
+   export WAREHOUSE_STATE_DIR="$STATE"
+   node scripts/doctor.mjs --host-preflight
+   npm run db:verify-restore -- "$STATE/backups/$NAME"
+   npm run db:restore -- --yes "$STATE/backups/$NAME"
+   ```
+
+   The restore initializes a new database from the pinned image, replays the
+   backup, compares the integrity report, applies newer migrations, starts every
+   service and runs `doctor --local`. It keeps the (empty) directories it
+   replaced as `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>`;
+   remove them with `rmdir` (they are empty on a new host).
+6. **Prove it.** If you recorded a fingerprint with this backup:
+
+   ```bash
+   bash scripts/data-fingerprint.sh | diff ~/fingerprint-$NAME.txt - && echo IDENTICAL
+   ```
+
+   Otherwise sign in to the app and check the latest GRNs, dispatches and
+   invoices you remember. Record the result.
+7. **Bring the public address back.** Put the tunnel credential in a mode-0700
+   private directory, set `credentials-file:` in `config.yml` to its new path,
+   install the unit as in [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)
+   (the DNS route already exists; do not create a new tunnel), then run
+   `node scripts/doctor.mjs`. If the credential is lost too, create a new tunnel
+   and point the existing hostname at it in the Cloudflare dashboard, replacing
+   the old tunnel's record.
+8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
+   again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
+   check that a new backup appears next to the old ones.
+9. **Rotate if the drive may have been exposed.** The archives hold every key in
+   plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
+   signs in again). Rotate the MSG91 key in its console and apply it as in
+   [Replacing MSG91 credentials](#authentication-and-otp-limits), rotate the
+   tunnel credential in Cloudflare, then take a new backup.
+
 ## Rerun and upgrade
 
 A rerun is the same `setup.sh --operator ...` command with the same inputs
@@ -818,11 +927,12 @@ problems seen so far and their causes:
   — the command was started from a shell without a terminal. Run it in a
   terminal window on the host or an SSH session.
 - **`db:restore`: `the backup instance.json differs from this state`** — the
-  backup belongs to another installation, for example the one before a
-  reinstall. In-place restore only replaces the instance that produced the
-  backup; restoring onto a new installation is not supported yet (see
-  [USB backup drive](#usb-backup-drive)). Do not edit `instance.json` to get
-  past the check.
+  backup belongs to another installation, typically because `setup.sh` was run
+  on the new host before restoring. In-place restore only replaces the instance
+  that produced the backup. Do not edit `instance.json` to get past the check:
+  move the new state aside and follow
+  [Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive),
+  which recreates the state from the backup instead of running setup.
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
