@@ -23,6 +23,42 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - Safety rules to preserve in any change: only a blank, whole, non-removable, unmounted second disk; refuse the system disk and the disk holding `data/` (fail **closed** if the system disk cannot be determined); never wipe, resize or shrink; confirmation comes from the disk itself (`--confirm-serial`, else `--confirm-size`); re-check right before writing; `sync` must prove the mount point is a real mount of a different device before writing anything.
 - `tests/backup-disk.test.mjs` runs the script against PATH shims for `lsblk`, `blkid`, `wipefs`, `findmnt`, `sgdisk`, `mkfs.ext4`, `mount` and friends, so no test touches a device or the real `/etc/fstab`. The `WAREHOUSE_BACKUP_DISK_*` variables (mount point, fstab, sysfs) exist for those tests only and are printed by `plan`. The shims pin the `lsblk` argument forms (`-P` and `-r` are mutually exclusive in real `lsblk`; a real run once caught this), so change both together.
 - **Not verifiable in CI:** the real `apply` path. Before a release that touches it, attach a spare virtual disk to a throwaway VM and run: `plan` → `sudo bash scripts/backup-disk.sh apply …` → reboot (the fstab entry must remount it) → `db:backup` + `sync` → `db:verify-restore` on the copy → `apply` again (must be a no-op). Also confirm `plan --device` on the system disk and on a partition is refused.
+- **Direction:** pilot operators will use an existing **USB drive** (next section) rather than a dedicated second disk. Keep `backup-disk.sh` working until its replacement exists; do not extend it.
+
+## USB backup drive
+
+Decided for pilot installs: the operator attaches an **existing exFAT USB drive** and the system does the rest. exFAT because the install may run on Linux or in the Linux VM of a Windows host, and a restore must work on either; the drive is never partitioned or formatted, so existing files on it stay untouched. Archives are **not encrypted** (decision): anyone holding the drive can read every credential in `compose.env`, so the drive is kept locked away and a lost drive means `rotate-keys.sh --yes`. A drive kept on site does not close the off-host custody gate in [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md); rotating it to another location does.
+
+Until the automation below exists, an installer copies backups by hand. This was run on a real install (one 15 GB exFAT stick, desktop automount, four backups, verify-restore from the stick passed); run it as the install user, no root needed when the desktop has mounted the drive:
+
+```bash
+export WAREHOUSE_STATE_DIR=/srv/warehouse/<instance>
+DRIVE="/media/$USER/<label>"            # lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS: TRAN usb, FSTYPE exfat
+findmnt "$DRIVE"                        # must be a real mount, not a plain directory on the system disk
+npm run db:backup                       # fresh backup; briefly stops write-facing services
+
+set -euo pipefail; umask 077
+SRC="$WAREHOUSE_STATE_DIR/backups"; DST="$DRIVE/warehouse-backups/<instance>"; mkdir -p "$DST"
+for b in "$SRC"/warehouse-*; do n=$(basename "$b")
+  [ -e "$DST/$n.tar" ] && { (cd "$DST" && sha256sum -c --quiet "$n.tar.sha256"); continue; }   # never overwrite
+  (cd "$b" && sha256sum -c --quiet SHA256SUMS)                                                   # source intact
+  tar -C "$SRC" -cf "$DST/.$n.tar.partial" "$n"; sync -f "$DST/.$n.tar.partial"
+  (cd "$DST" && sha256sum ".$n.tar.partial" | sed "s/\.$n\.tar\.partial/$n.tar/" > ".$n.sha.partial")
+  mv "$DST/.$n.tar.partial" "$DST/$n.tar"; mv "$DST/.$n.sha.partial" "$DST/$n.tar.sha256"
+  (cd "$DST" && sha256sum -c --quiet "$n.tar.sha256")                                            # read back from the drive
+done; sync
+
+T=$(mktemp -d); tar -C "$T" -xf "$DST/<newest>.tar"                    # prove the copy restores
+npm run db:verify-restore -- "$T/<newest>"; rm -rf "$T"
+udisksctl unmount -b /dev/<partition>                                  # then unplug
+```
+
+- One `.tar` per backup keeps the 0600/0700 modes inside the archive (exFAT has no Unix permissions) and avoids exFAT name and attribute quirks. The `.tar.sha256` file lets anyone, on any OS, check the archive.
+- Write only under `warehouse-backups/<instance>/`; never touch other files on the drive, never delete or overwrite an existing archive (a mismatching archive is a failure to investigate, not to replace).
+- Restore on a fresh install (Linux, or the Linux VM of a Windows host with the USB device passed through): mount the drive, `sha256sum -c <name>.tar.sha256`, extract into `$WAREHOUSE_STATE_DIR/backups/`, `db:verify-restore`, then `db:restore` as in [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md).
+- VMware USB passthrough can drop a device; check `lsblk` before starting and do not detach during a copy (a dropped copy leaves only a `.partial` file, which the next run ignores and can be deleted).
+
+**To build next** (replaces the manual steps and `backup-disk.sh`): the operator's only job is attaching the drive. A systemd unit, installed once with `sudo` at install time, starts when an exFAT USB drive carrying a `warehouse-backups` marker is mounted, takes the operator lock, runs `db:backup`, the copy and verification above, and `db:verify-restore` on the newest archive, then unmounts and reports "safe to remove" (and failures) where the operator will see them. The same command must also work with a permanently attached drive (`nofail` mount by UUID plus a timer), and `doctor` should warn when the last successful copy is older than N days. Tests use PATH shims as `tests/backup-disk.test.mjs` does; the real attach/detach path needs the manual check above on hardware before release.
 
 ## Migration conventions
 
