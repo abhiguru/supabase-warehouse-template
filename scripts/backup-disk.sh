@@ -260,7 +260,7 @@ cmd_apply() {
   [[ "$gid" =~ ^[0-9]+$ ]] || die "Cannot resolve the group of user id $uid."
   mode="$(stat -c %a -- "$SELF")"
   if (( (8#$mode & 8#022) != 0 )) || (( (8#$(stat -c %a -- "$(dirname "$SELF")") & 8#022) != 0 )); then
-    die 'Refusing to run as root: this script or its directory is group- or world-writable.'
+    die "Refusing to run as root: this script or its directory is group- or world-writable (a git pull under umask 0002 does this). As the installation user run: bash $(dirname "$(dirname "$SELF")")/scripts/checkout-permissions.sh, then try again."
   fi
   [[ -n "$STATE" || "${WAREHOUSE_STATE_DIR:-}" != /* ]] || STATE="${WAREHOUSE_STATE_DIR:-}"
   [[ "$MOUNT" == /* && "$MOUNT" != / ]] || die "The mount point must be an absolute path other than /: $MOUNT"

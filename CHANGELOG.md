@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — checkout permissions after an update (2026-10-09)
+
+- Fixed F3 from the testvm2 operator run: a `git pull` under Ubuntu's default
+  umask `0002` left changed scripts group-writable, so the documented "run setup
+  again after updating" step was refused by `scripts/backup-usb.sh` (and
+  `scripts/backup-disk.sh`). `setup.sh` now runs the new
+  `scripts/checkout-permissions.sh` first, which removes group/world write and
+  restores world read on tracked files and their directories (ignored runtime
+  files and symlinks are untouched). The refusals name that command.
+- Operator guide: the upgrade steps update the checkout with
+  `(umask 022; git pull --ff-only)`, rerun the USB backup setup after
+  `setup.sh`, and troubleshooting covers the refusal.
+
 ## Unreleased — orders screen review fixes (2026-10-09)
 
 - Migration 28: cart history moved from the ever-growing `orders.revisions`

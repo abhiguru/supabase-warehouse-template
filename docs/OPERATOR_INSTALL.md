@@ -549,8 +549,9 @@ stranger's USB stick never receives the credentials.
    attached (a daily timer starts the same run), and `--no-fresh-backup` to copy
    only existing backups. Enroll a second drive for rotation with
    `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`. **Run setup again
-   after updating the checkout** so the installed helper matches it (`status`
-   warns when it does not); `sudo bash scripts/backup-usb.sh uninstall` removes
+   after updating the checkout** (see [Rerun and upgrade](#rerun-and-upgrade);
+   `setup.sh` runs first) so the installed helper matches it (`status` warns
+   when it does not); `sudo bash scripts/backup-usb.sh uninstall` removes
    everything it installed and never touches a drive.
 2. From then on: plug the drive in and wait. The run takes a few minutes; when
    the drive disappears from the file manager (or `lsblk` shows no mount point
@@ -876,10 +877,19 @@ export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 bash scripts/backup-disk.sh sync       # only if you use a backup disk
-git pull --ff-only
+(umask 022; git pull --ff-only)
 bash setup.sh --operator ...           # the same inputs as the installation
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
+sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
+
+Update the checkout under `umask 022`, as for the first clone. Git writes the
+files it changes with the current umask: Ubuntu's default `0002` makes them
+group-writable, which the root-run backup helpers refuse, and `077` makes them
+unreadable by the containers. `setup.sh` restores the modes of every tracked
+file on each run, and `bash scripts/checkout-permissions.sh` does the same on
+its own, for example after a `git pull` or `git checkout` made without
+`umask 022`.
 
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the
@@ -917,6 +927,12 @@ problems seen so far and their causes:
   setup, start, backup or restore is still running, or was interrupted while
   holding `config/operator.lock`. Wait or inspect `ps`; never delete the lock
   file.
+- **`... is group- or world-writable` from `backup-usb.sh setup` or
+  `backup-disk.sh`** — the checkout was updated (`git pull`, `git checkout`)
+  under a umask other than `022`; Ubuntu's default `0002` does this. As the
+  installation user run `bash scripts/checkout-permissions.sh` (or rerun
+  `setup.sh`), then repeat the command. Update with `(umask 022; git pull
+  --ff-only)` from then on.
 - **PostgreSQL restarts with `Permission denied` on first start** — the
   checkout was cloned under `umask 077`. Re-clone with `umask 022` into a new
   directory and use a fresh empty state; keep the failed state for diagnosis.
