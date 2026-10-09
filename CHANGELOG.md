@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
+
+- `doctor --host-preflight` (run by `setup.sh`) now refuses a fresh install
+  whose state directory sits in a parent the installation user cannot write,
+  and names the `sudo chown` fix. Before, a state directory pre-created under a
+  root-owned parent such as `/srv/warehouse` passed the preflight and setup then
+  failed with `EACCES` while staging `<state>.installing-*` next to it (testvm2
+  known issue 3). Reruns of an installed state need no parent write access.
+
 ## Unreleased — checkout permissions after an update (2026-10-09)
 
 - Fixed F3 from the testvm2 operator run: a `git pull` under Ubuntu's default

@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -54,6 +55,29 @@ export function validateOperatorEnv(env, stateDir) {
   return { port, origin, manifest };
 }
 
+// Where the operator state may live. Returns the existing directory to measure
+// free space on. A fresh install stages <state>.installing-* next to the state
+// and renames it into place, so the parent must be writable even when the
+// operator pre-created the (empty) state directory; a rerun of an installed
+// state never stages and needs no parent write access.
+export function checkStatePlacement(state, checkoutRoot = root) {
+  if (!state || !state.startsWith('/') || resolve(state) === realpathSync(checkoutRoot) || resolve(state).startsWith(realpathSync(checkoutRoot) + sep)) throw new Error('Set WAREHOUSE_STATE_DIR to an absolute path outside this checkout.');
+  const parent = existsSync(state) ? state : resolve(state, '..');
+  const st = lstatSync(parent, { throwIfNoEntry: false });
+  if (!st?.isDirectory() || st.uid !== process.getuid()) throw new Error('State directory or parent must exist and be owned by this user.');
+  if (realpathSync(parent) !== resolve(parent)) throw new Error('State path must not use a symlink.');
+  if (existsSync(state) && (st.mode & 0o077)) throw new Error('State directory must be mode 0700.');
+  if (!existsSync(resolve(state, 'config/compose.env'))) {
+    const container = resolve(state, '..');
+    try {
+      accessSync(container, constants.W_OK | constants.X_OK);
+    } catch {
+      throw new Error(`A fresh install creates its files next to the state directory, so ${container} must be writable by ${userInfo().username}. Run: sudo chown ${userInfo().username} ${container} (or choose a state path inside a directory you own), then run setup again.`);
+    }
+  }
+  return parent;
+}
+
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
@@ -61,12 +85,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose v2' : ''}.`);
   }
   const state = process.env.WAREHOUSE_STATE_DIR;
-  if (!state || !state.startsWith('/') || resolve(state) === realpathSync(root) || resolve(state).startsWith(realpathSync(root) + sep)) throw new Error('Set WAREHOUSE_STATE_DIR to an absolute path outside this checkout.');
-  const parent = existsSync(state) ? state : resolve(state, '..');
-  const st = lstatSync(parent, { throwIfNoEntry: false });
-  if (!st?.isDirectory() || st.uid !== process.getuid()) throw new Error('State directory or parent must exist and be owned by this user.');
-  if (realpathSync(parent) !== resolve(parent)) throw new Error('State path must not use a symlink.');
-  if (existsSync(state) && (st.mode & 0o077)) throw new Error('State directory must be mode 0700.');
+  const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);
   if (Number(fs.bavail) * Number(fs.bsize) < 10 * 1024 ** 3) throw new Error('At least 10 GiB free space is required for database and storage.');
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
