@@ -509,8 +509,15 @@ stranger's USB stick never receives the credentials.
    sudo bash scripts/backup-usb.sh setup --state /absolute/path/to/this/warehouse --enroll /dev/sdb1
    ```
 
-   It refuses to run without `sudo` from the installation user, and the copy
-   itself always runs as that user, never as root. It copies its root helper to
+   Run it in an interactive terminal on the host: `sudo` asks for your
+   password, and a shell without a terminal (a script, a scheduler or an
+   automation agent) cannot answer it. It refuses to run without `sudo` from
+   the installation user, and the copy itself always runs as that user, never
+   as root. **Setup does not copy anything to a drive that is already
+   attached**: unplug the drive and attach it again to make the first copy.
+   The unit runs `scripts/backup-usb.sh` from this checkout, so do not move or
+   delete the checkout, or switch it to a branch or release without that
+   script, while USB backup is set up. It copies its root helper to
    `/usr/local/libexec/warehouse-usb-backup`, writes
    `/etc/warehouse-usb-backup.conf`, the enrolled-drive list
    `/etc/warehouse-usb-backup.drives`,
@@ -533,6 +540,8 @@ stranger's USB stick never receives the credentials.
    journalctl -u 'warehouse-usb-backup@*' -n 50  # the run's own output
    ```
 
+   Until the first run after setup, `journalctl` answers "Failed to add filter
+   for units: No data available"; that only means no run has happened yet.
    The result is also written to `warehouse-backups/<state name>/LAST-RESULT.txt`
    on the drive, and `npm run doctor` adds a warning when the last run failed or
    the last successful copy is older than 7 days
@@ -548,10 +557,18 @@ run `./rotate-keys.sh --yes` and take a new backup. A drive kept on site is
 local custody only; taking it (or a second drive in rotation) to another
 location is what protects against loss of the host, theft or fire.
 
-To restore on a fresh install, attach the drive, check the archive with
+To use an archive from the drive, attach it, check the archive with
 `sha256sum -c <name>.tar.sha256`, extract it into
-`$WAREHOUSE_STATE_DIR/backups/`, run `db:verify-restore` on it and then follow
+`$WAREHOUSE_STATE_DIR/backups/` and run `db:verify-restore` on it. On the
+**same** installation (its state directory intact) follow
 [In-place restore of the same instance](#in-place-restore-of-the-same-instance).
+**A fresh install cannot load it yet:** a new `setup.sh` creates a new
+instance identity, and `db:restore` refuses a backup whose `instance.json`
+differs ("in-place restore only replaces the instance that produced the
+backup"). Keep the drive; recovery onto a reinstalled or replacement host is an
+open item in the acceptance ledger and needs the developer until it is built.
+What the drive does prove today is that each copy is complete and restorable:
+every run verifies the newest archive from the drive in a disposable database.
 
 ### Backup disk
 
@@ -793,6 +810,19 @@ problems seen so far and their causes:
   `journalctl -u 'warehouse-usb-backup@*' -n 50`. Only exFAT partitions on USB
   drives whose UUID is enrolled start a run; reformatting a drive changes its
   UUID, so enroll it again.
+- **Setup succeeded but no backup was copied** — setup does not start a run for
+  a drive that is already attached. Unplug the drive (on VMware: Removable
+  Devices → Disconnect) and attach it again, then follow the run with
+  `journalctl -f -u 'warehouse-usb-backup@*'`.
+- **`sudo: a terminal is required` or `a password is required` running setup**
+  — the command was started from a shell without a terminal. Run it in a
+  terminal window on the host or an SSH session.
+- **`db:restore`: `the backup instance.json differs from this state`** — the
+  backup belongs to another installation, for example the one before a
+  reinstall. In-place restore only replaces the instance that produced the
+  backup; restoring onto a new installation is not supported yet (see
+  [USB backup drive](#usb-backup-drive)). Do not edit `instance.json` to get
+  past the check.
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
