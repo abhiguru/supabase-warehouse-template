@@ -1,5 +1,10 @@
 # /etc/systemd/system/warehouse-NEW-INSTANCE-tunnel.service
 #
+# Preferred: `bash scripts/tunnel.sh adopt …` then
+# `sudo bash scripts/tunnel.sh install-service --state <state>` writes this unit
+# for the credential kept in the state, so backups carry it. Install this file by
+# hand only to keep the credential out of backups.
+#
 # Dedicated cloudflared connector for one warehouse instance. Use a new,
 # unoccupied unit name and replace the user, group and config path with this
 # instance's recorded values. The service user must be able to read the private

@@ -2,6 +2,13 @@
 
 ## Unreleased — second-pass review fixes (2026-10-08)
 
+- Added `scripts/tunnel.sh`: `adopt` keeps the Cloudflare Tunnel credential
+  (config and credentials JSON, or a dashboard token) in the state under
+  `config/tunnel/`, refusing the account certificate and another
+  installation's tunnel; `install-service` writes the systemd unit for that
+  copy. Backups (and USB copies) now carry it, and `db:restore-host` restores it,
+  so a rebuilt host gets its public address back without a Cloudflare login.
+  A lost backup drive now also means replacing the tunnel credential.
 - Added `npm run db:restore-host` (`scripts/restore-host.sh`): rebuilds a lost
   installation on a new host from a backup directory or a USB `.tar`, with the
   same identity, keys and data, without running setup. It checks the archive,

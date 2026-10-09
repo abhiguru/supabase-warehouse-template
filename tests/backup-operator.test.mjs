@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { makeBackup, fakeDocker } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -95,6 +95,22 @@ esac
     assert.equal(existsSync(join(scratch, 'failed-backup')), false);
     const failureCalls = readFileSync(log, 'utf8');
     assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
+    assert.equal(existsSync(join(destination, 'tunnel')), false, 'no tunnel directory without an adopted credential');
+
+    // A tunnel credential adopted into the state (scripts/tunnel.sh) travels with every backup.
+    mkdirSync(join(state, 'config/tunnel'), { mode: 0o700 });
+    writeFileSync(join(state, 'config/tunnel/config.yml'), `tunnel: x\ncredentials-file: ${state}/config/tunnel/credentials.json\n`, { mode: 0o600 });
+    writeFileSync(join(state, 'config/tunnel/credentials.json'), '{"TunnelSecret":"s"}', { mode: 0o600 });
+    const withTunnel = join(scratch, 'backup-tunnel');
+    const tunnelRun = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, withTunnel], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.equal(tunnelRun.status, 0, tunnelRun.stderr);
+    assert.equal(readFileSync(join(withTunnel, 'tunnel/credentials.json'), 'utf8'), '{"TunnelSecret":"s"}');
+    assert.equal(statSync(join(withTunnel, 'tunnel')).mode & 0o777, 0o700);
+    assert.equal(statSync(join(withTunnel, 'tunnel/config.yml')).mode & 0o777, 0o600);
+    assert.match(readFileSync(join(withTunnel, 'SHA256SUMS'), 'utf8'), /^[0-9a-f]{64} {2}tunnel\/credentials\.json$/m);
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: withTunnel }).status, 0);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -157,5 +173,35 @@ test('restore verifier fails when a catalogued object is missing from the archiv
     const diffed = verify(drifted, scratch, { FAKE_CATALOG_FILE: join(scratch, 'other-catalog.txt') });
     assert.notEqual(diffed.status, 0, 'restored catalog must equal the archived catalog');
     assert.match(diffed.stdout + diffed.stderr, /\+documents\/b\.pdf\/v1/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier accepts a checksummed tunnel credential and refuses anything else in tunnel/', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-tunnel-'));
+  const resum = backup => spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt tunnel/* > SHA256SUMS'], { cwd: backup });
+  try {
+    const good = makeBackup(join(scratch, 'good'));
+    mkdirSync(join(good, 'tunnel'), { mode: 0o700 });
+    writeFileSync(join(good, 'tunnel/config.yml'), 'tunnel: x\n');
+    writeFileSync(join(good, 'tunnel/credentials.json'), '{}');
+    resum(good);
+    const passed = verify(good, scratch, { FAKE_CATALOG_FILE: join(good, 'storage_objects.txt') });
+    assert.equal(passed.status, 0, passed.stderr);
+
+    const unlisted = makeBackup(join(scratch, 'unlisted'));
+    mkdirSync(join(unlisted, 'tunnel'));
+    writeFileSync(join(unlisted, 'tunnel/token'), 'abc\n');
+    const missingSum = verify(unlisted, scratch);
+    assert.notEqual(missingSum.status, 0);
+    assert.match(missingSum.stderr, /checksum missing for tunnel\/token/);
+
+    const extra = makeBackup(join(scratch, 'extra'));
+    mkdirSync(join(extra, 'tunnel'));
+    writeFileSync(join(extra, 'tunnel/cert.pem'), 'x');
+    resum(extra);
+    const unexpected = verify(extra, scratch);
+    assert.notEqual(unexpected.status, 0);
+    assert.match(unexpected.stderr, /Unexpected entry in the backup tunnel directory: tunnel\/cert\.pem/);
+    assert.doesNotMatch(unexpected.calls, /^run /m, 'no container is started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -194,3 +194,33 @@ test('restore.sh --relocated accepts only a difference in the three state paths'
     assert.equal(result.status, 1); assert.match(result.stderr, /Usage/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('restore-host brings back a tunnel credential carried by the backup, pointed at the new state', () => {
+  const f = fixture('warehouse-restore-host-tunnel-');
+  try {
+    mkdirSync(join(f.backup, 'tunnel'), { mode: 0o700 });
+    writeFileSync(join(f.backup, 'tunnel/config.yml'), `tunnel: 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d\ncredentials-file: ${f.original}/config/tunnel/credentials.json\ningress:\n  - service: http_status:404\n`, { mode: 0o600 });
+    writeFileSync(join(f.backup, 'tunnel/credentials.json'), '{"TunnelSecret":"kept"}', { mode: 0o600 });
+    assert.equal(spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt tunnel/* > SHA256SUMS'], { cwd: f.backup }).status, 0);
+    const result = f.run(['--state-dir', f.state, '--yes', f.tarball()]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const dest = join(f.state, 'config/tunnel');
+    assert.equal(statSync(dest).mode & 0o777, 0o700);
+    assert.equal(readFileSync(join(dest, 'credentials.json'), 'utf8'), '{"TunnelSecret":"kept"}');
+    assert.equal(statSync(join(dest, 'credentials.json')).mode & 0o777, 0o600);
+    const config = readFileSync(join(dest, 'config.yml'), 'utf8');
+    assert.match(config, new RegExp(`^credentials-file: ${dest}/credentials\\.json$`, 'm'));
+    assert.match(config, /^tunnel: 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d$/m);
+    assert.match(result.stdout, new RegExp(`sudo bash scripts/tunnel\\.sh install-service --state ${f.state}`));
+  } finally { clean(f); }
+});
+
+test('restore-host without a tunnel in the backup points to the manual connector setup', () => {
+  const f = fixture('warehouse-restore-host-notunnel-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(f.state, 'config/tunnel')), false);
+    assert.match(result.stdout, /carries no tunnel credential/);
+  } finally { clean(f); }
+});

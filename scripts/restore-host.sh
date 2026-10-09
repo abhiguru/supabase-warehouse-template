@@ -106,6 +106,22 @@ awk -v s="$state" '
   { print }' "$stage/backups/$name/compose.env" > "$stage/config/compose.env"
 chmod 0600 "$stage/config/compose.env"
 install -m 0644 -- "$stage/backups/$name/instance.json" "$stage/public/instance.json"
+# The tunnel credential, when the backup carries one (scripts/tunnel.sh adopt).
+tunnel=false
+if [[ -d "$stage/backups/$name/tunnel" ]]; then
+  mkdir -m 0700 "$stage/config/tunnel"
+  for file in config.yml credentials.json token; do
+    src="$stage/backups/$name/tunnel/$file"
+    [[ -f "$src" && ! -L "$src" ]] || continue
+    if [[ "$file" == config.yml ]]; then
+      awk -v c="$state/config/tunnel/credentials.json" '/^credentials-file:/ { print "credentials-file: " c; next } { print }' "$src" > "$stage/config/tunnel/config.yml"
+      chmod 0600 "$stage/config/tunnel/config.yml"
+    else
+      install -m 0600 -- "$src" "$stage/config/tunnel/$file"
+    fi
+    tunnel=true
+  done
+fi
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
@@ -126,13 +142,21 @@ fi
 for kept in "$state"/data/db.pre-restore-* "$state"/data/storage.pre-restore-*; do
   [[ -d "$kept" ]] && rmdir -- "$kept" 2>/dev/null || true
 done
+if [[ "$tunnel" == true ]]; then
+  address="Bring the public address back with the tunnel credential from the backup:
+       sudo bash scripts/tunnel.sh install-service --state $state
+     then: node scripts/doctor.mjs"
+else
+  address="Bring the public address back: this backup carries no tunnel credential, so install the
+     connector with your private copy (docs/OPERATOR_INSTALL.md, Cloudflare Tunnel ingress), then:
+     node scripts/doctor.mjs"
+fi
 cat <<MSG
 
 This host now serves the warehouse from backup $name.
 Next:
   1. Keep the original host off for good: both must never run at once.
-  2. Bring the public address back: install the tunnel connector with your private copy of its
-     credentials (docs/OPERATOR_INSTALL.md, Cloudflare Tunnel ingress), then: node scripts/doctor.mjs
+  2. $address
   3. Compare with the fingerprint taken at backup time, if you have one:
        WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -
   4. Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1

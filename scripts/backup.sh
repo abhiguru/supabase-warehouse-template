@@ -80,6 +80,19 @@ tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
 cp "$state/config/compose.env" "$stage/compose.env"
 cp "$state/public/instance.json" "$stage/instance.json"
 chmod 600 "$stage/compose.env" "$stage/instance.json"
+# The tunnel credential kept by scripts/tunnel.sh, so db:restore-host can bring the
+# public address back on a new host. Only its known regular files are copied.
+tunnel_files=()
+if [[ -d "$state/config/tunnel" && ! -L "$state/config/tunnel" ]]; then
+  mkdir -m 700 "$stage/tunnel"
+  for file in config.yml credentials.json token; do
+    path="$state/config/tunnel/$file"
+    [[ -e "$path" || -L "$path" ]] || continue
+    [[ -f "$path" && ! -L "$path" ]] || { echo "Refusing: $path is not a regular file." >&2; exit 1; }
+    cp "$path" "$stage/tunnel/$file"
+    tunnel_files+=("tunnel/$file")
+  done
+fi
 
 cat > "$stage/metadata.txt" <<EOF
 format=warehouse-backup-v4
@@ -88,8 +101,9 @@ source_commit=$(git -C "$ROOT" rev-parse HEAD)
 database_image=supabase/postgres:15.8.1.060
 consistency=write-facing services stopped during database/storage capture
 EOF
-(cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
-chmod 600 "$stage"/*
+(cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${tunnel_files[@]}" > SHA256SUMS)
+find "$stage" -mindepth 1 -type f -exec chmod 600 {} +
+find "$stage" -mindepth 1 -type d -exec chmod 700 {} +
 mv "$stage" "$destination"
 if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
 echo "Backup created at $destination"
