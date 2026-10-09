@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — orders screen review fixes (2026-10-09)
+
+- Migration 28: cart history moved from the ever-growing `orders.revisions`
+  array to an append-only `order_revisions` table (backfilled). The column is
+  pinned to `[]` by a CHECK, so audit rows and realtime payloads no longer carry
+  the whole history. `get_order_change_log` and dispatch deletion use the table.
+- Staff have full order access: list, open and edit carts, the queue, and
+  order history (guard v5). Customers can read the history of their own orders.
+- Quantity changes check order state, dispatched quantity and stock. A two-
+  customer account can edit its carts again (the old `<> ANY` check denied it).
+- Cart removals go through the new `remove_item_from_order` RPC, which records
+  history; the direct customer delete policy on `order_items` is gone. A lot can
+  appear in a cart once (`order_items_order_grn_item_key`, duplicates merged).
+- Dropped `convert_order_to_dispatch` and `update_order_after_dispatch_creation`,
+  which wrote columns that do not exist. Orders become dispatches through
+  `create_dispatch_with_stock_check` with `source_order_id`.
+- Migration 29: `get_orders_list` reads a live view instead of rebuilding
+  `mv_orders_list` on every cart write, and pages stably by order id. Weight
+  search accepts decimals (`12.5`) and its access denials carry `success=false`.
+- Added `tests/order_screen.sql` to `npm run test:migrations`.
+
 ## Unreleased — second-pass review fixes (2026-10-08)
 
 - Added `scripts/tunnel.sh`: `adopt` keeps the Cloudflare Tunnel credential
