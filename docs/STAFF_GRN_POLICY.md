@@ -283,3 +283,15 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
 - **Status changes.** `update_user_status(false)` disables the enrollment and
   revokes sessions; `update_user_status(true)` re-approves a disabled or
   rejected profile. Pending enrollments still need `operator_review_enrollment`.
+
+## Orders and queue, 9 October 2026
+
+The operator decided that staff have the same order access as supervisors.
+Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
+`get_order_with_items`, `get_or_create_cart`, `add_item_to_order`,
+`update_order_item_quantity`, `remove_item_from_order`, `get_cart_dispatches`,
+`search_customer_items_for_order`, `get_customer_items_for_order_selection` and
+`get_order_change_log`. Staff can read `order_revisions`. Direct table writes to
+orders and order items stay denied for staff. Customers keep access to their
+own carts only, and can now read their own order history.
+`tests/order_screen.sql` proves both.
