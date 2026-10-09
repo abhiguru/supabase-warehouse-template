@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# An update (git pull) writes files with the caller's umask; restore the modes of a
+# umask 022 clone so the containers can read them and the root-run helpers accept them.
+bash "$ROOT/scripts/checkout-permissions.sh" --quiet
 bash "$ROOT/scripts/check-readiness.sh" "${1:-}"
 shift
 STATE=''

@@ -307,6 +307,7 @@ test('setup refuses a writable script, enroll refuses unsuitable drives and does
     const writable = f.asRoot(['setup', '--state', f.state]);
     assert.equal(writable.status, 1);
     assert.match(writable.stderr, /group- or world-writable/);
+    assert.match(writable.stderr, /checkout-permissions\.sh/);
     chmodSync(join(f.root, 'scripts/backup-usb.sh'), 0o755);
     assert.equal(f.asRoot(['setup', '--state', f.state]).status, 0);
     f.put('tran.sdb', 'sata\n');

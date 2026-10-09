@@ -108,7 +108,7 @@ cmd_setup() {
   [[ "$(stat -c %u -- "$state")" == "$uid" ]] || die "$state is not owned by $user."
   [[ "$(stat -c %u -- "$ROOT")" == "$uid" ]] || die "The checkout $ROOT is not owned by $user."
   # The helper copy runs as root, so its source must not be writable by anyone but its owner.
-  [[ "$(stat -c %a -- "$SELF")" =~ ^[0-7][0145][0145]$ && "$(stat -c %a -- "$ROOT/scripts")" =~ ^[0-7][0145][0145]$ ]] || die "$SELF or its directory is group- or world-writable."
+  [[ "$(stat -c %a -- "$SELF")" =~ ^[0-7][0145][0145]$ && "$(stat -c %a -- "$ROOT/scripts")" =~ ^[0-7][0145][0145]$ ]] || die "$SELF or its directory is group- or world-writable (a git pull under umask 0002 does this). As $user run: bash $ROOT/scripts/checkout-permissions.sh, then this setup again."
   old="$(conf_get STATE)"
   [[ -z "$old" || "$old" == "$state" ]] || die "USB backup is already set up for $old; run uninstall first."
 
