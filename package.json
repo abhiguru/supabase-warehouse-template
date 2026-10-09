@@ -14,6 +14,7 @@
     "db:backup": "bash scripts/backup.sh",
     "db:verify-restore": "bash scripts/verify-restore.sh",
     "db:restore": "bash scripts/restore.sh",
+    "db:restore-host": "bash scripts/restore-host.sh",
     "keys:rotate": "bash rotate-keys.sh",
     "test:rotation": "node tests/operator-api-rotation.mjs",
     "test:gateway": "node scripts/gateway-smoke.mjs",
