@@ -6,6 +6,10 @@
   (`status`, `plan`, `apply`, `sync`) and copies verified backups onto it. It
   refuses the system disk and anything that is not blank, never wipes or
   resizes, and `db:backup` is unchanged.
+- Backups for pilot installs go to an operator-attached exFAT USB drive (one
+  verified `.tar` per backup, readable from Linux and Windows-hosted VMs);
+  the operator guide and contributor guide describe it, and the second disk is
+  now the alternative. Automatic copy on attach is planned.
 - Operator guide corrected from a from-scratch acceptance run: the state
   directory's parent must be owned by the installation user (`sudo install -d`
   on the leaf made setup fail with `EACCES`); fixed-window OTP limits and SMS

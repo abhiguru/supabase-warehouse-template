@@ -29,9 +29,9 @@ Sections: [host prerequisites](#host-prerequisites),
   make the Docker socket world-writable.
 - At least 10 GiB free on a persistent filesystem for the initial installation,
   plus capacity for the warehouse's data; the doctor enforces the minimum.
-- A **second, empty disk for backups** is strongly recommended. A backup on
-  the same disk as the data does not survive loss of that disk; see
-  [Backup disk](#backup-disk).
+- A **USB drive formatted exFAT for backups** (an existing drive is fine; it is
+  not reformatted). A backup on the same disk as the data does not survive loss
+  of that disk; see [USB backup drive](#usb-backup-drive).
 - `cloudflared` for the tunnel (installed in the ingress section).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`,
@@ -478,10 +478,43 @@ ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
 instance.
 
-### Backup disk
+### USB backup drive
 
 A backup on the same disk as `data/` is lost with it, which is why `db:backup`
-warns. The first protection is a **second, empty disk** used only for backups.
+warns. Pilot installs copy every backup to a **USB drive formatted exFAT**,
+which the operator attaches; exFAT is readable by a Linux host and by the Linux
+VM of a [Windows host](#windows-host-with-linux-vm), so a restore works on
+either. The drive is never partitioned or formatted, and other files on it are
+left alone; backups go under `warehouse-backups/<state name>/` as one `.tar`
+archive (file modes kept inside) plus a `.tar.sha256` file per backup.
+
+The operator's job is to **attach the drive**: plug it in (on VMware also
+connect it to the VM under Removable Devices, and confirm with
+`lsblk -o NAME,TRAN,FSTYPE,MOUNTPOINTS` that it shows `usb` and `exfat`), then
+leave it until the copy finishes. The copy, verification and unmount are run
+for the operator: today by the installer, with the procedure in
+[DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#usb-backup-drive) (fresh
+`db:backup`, archive, read back from the drive, `db:verify-restore` on the
+newest copy, unmount); an automatic run on attach is planned. Do not unplug
+during a copy; a dropped USB connection leaves only a `.partial` file and the
+next run starts that backup again.
+
+The archives are **not encrypted** and contain `compose.env`, which holds every
+credential of the instance. Keep the drive locked away, and if it is ever lost
+run `./rotate-keys.sh --yes` and take a new backup. A drive kept on site is
+local custody only; taking it (or a second drive in rotation) to another
+location is what protects against loss of the host, theft or fire.
+
+To restore on a fresh install, attach the drive, check the archive with
+`sha256sum -c <name>.tar.sha256`, extract it into
+`$WAREHOUSE_STATE_DIR/backups/`, run `db:verify-restore` on it and then follow
+[In-place restore of the same instance](#in-place-restore-of-the-same-instance).
+
+### Backup disk
+
+Alternative to the USB drive for hosts with a spare internal disk; new installs
+should use the [USB backup drive](#usb-backup-drive).
+The protection here is a **second, empty disk** used only for backups.
 `scripts/backup-disk.sh` prepares that disk and copies verified backups onto it;
 `db:backup` itself is unchanged. A partition carved out of the system disk is
 deliberately not offered, because it would not survive failure of that disk,
