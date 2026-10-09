@@ -285,15 +285,38 @@ confirm the hostname's DNS record points to `<tunnel-uuid>.cfargotunnel.com`.
 For a dashboard-managed tunnel the hostname and origin live in the dashboard
 and the YAML is not used.
 
-Make the connector a system service so it survives reboots: copy the example
-unit to `/etc/systemd/system/warehouse-<instance>-tunnel.service` with an unused
-unit name, set the user, group and config (or `--token-file`) path, then:
+**Keep the tunnel credential in the state, so backups carry it.** Copy it into
+the installation's state directory (`config/tunnel/`, mode 0700/0600) and make
+the connector a system service that reads that copy and survives reboots:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now warehouse-acme-tunnel.service
-systemctl is-active warehouse-acme-tunnel.service
+export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+bash scripts/tunnel.sh adopt --config /private/path/config.yml     # locally managed
+# or: bash scripts/tunnel.sh adopt --token-file /private/path/tunnel.token   (dashboard)
+sudo bash scripts/tunnel.sh install-service --state "$WAREHOUSE_STATE_DIR"
+bash scripts/tunnel.sh status
 ```
+
+`adopt` copies the config with its credentials JSON (rewriting the
+`credentials-file:` path) or the token. It refuses the account certificate
+(`cert.pem`, or a config with an `origincert:` line), which can create and
+delete any tunnel or DNS record of the account and must never be in a backup,
+and it refuses a config that does not route this installation's hostname.
+`install-service` writes `/etc/systemd/system/warehouse-<state name>-tunnel.service`
+(keeping a dated copy of an existing unit of that name), runs it as the user who
+ran `sudo`, then enables and restarts it. From then on every backup, and every
+USB copy, includes the credential, and
+[restoring onto a new host](#recover-a-lost-host-from-the-usb-drive) brings the
+public address back without a Cloudflare login. Keep `cert.pem` in your private
+directory only. Once the service runs from the state copy you may delete the
+old private copies of the config and credentials JSON.
+
+An installation from before `tunnel.sh` runs the same two commands once; the
+connector restarts, so the public address is unavailable for a few seconds. To
+keep the credential out of backups instead, skip `adopt` and install the unit
+by hand from [deploy/warehouse-tunnel.service.example](../deploy/warehouse-tunnel.service.example)
+(`sudo systemctl daemon-reload && sudo systemctl enable --now <unit>`); a
+restore on a new host then needs your private copy or a new tunnel.
 
 If the LAN router cannot hairpin to the public hostname, configure local DNS
 for the same name; the app must always use the same HTTPS origin.
@@ -552,8 +575,17 @@ yourself. A run that finds an archive that no longer matches its checksum
 reports it and leaves it alone.
 
 The archives are **not encrypted** and contain `compose.env`, which holds every
-credential of the instance. Keep the drive locked away, and if it is ever lost
-run `./rotate-keys.sh --yes` and take a new backup. A drive kept on site is
+credential of the instance, and, after `tunnel.sh adopt`, the tunnel
+credential: whoever holds the drive could run a connector for your hostname and
+receive part of the phones' traffic, sign-in codes included. Keep the drive
+locked away. If it is ever lost, act at once: run `./rotate-keys.sh --yes`,
+rotate the MSG91 key, and replace the tunnel credential (for a dashboard
+tunnel, refresh its token in the Cloudflare dashboard; for a locally managed
+tunnel, create a new tunnel, route the hostname to it with `route dns
+--overwrite-dns` and delete the old one), then
+`mv "$WAREHOUSE_STATE_DIR/config/tunnel" <private place>`, `tunnel.sh adopt`
+the new credential, `sudo bash scripts/tunnel.sh install-service`, and take a
+new backup. A drive kept on site is
 local custody only; taking it (or a second drive in rotation) to another
 location is what protects against loss of the host, theft or fire.
 
@@ -734,7 +766,8 @@ recorded after the backup is lost.
 > **Status:** `db:restore-host` is exercised in CI by a lost-host drill on real
 > containers (fresh backup, containers and Docker volume removed, restore into a
 > different path, identical fingerprint). Record the result of your first drill
-> on a real new host. Backups do not carry the tunnel credential yet (step 6).
+> on a real new host. The tunnel credential comes back too when the backup was
+> taken after `tunnel.sh adopt` (step 6).
 
 **Never run the old and the new host at the same time.** They would answer as
 the same warehouse with the same keys. If the old host might come back, wipe
@@ -743,9 +776,10 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
-`cloudflared`, your user in the `docker` group), the USB drive, and your private
-copy of the tunnel credential (the tunnel `config.yml` plus its credentials JSON,
-or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
+`cloudflared`, your user in the `docker` group) and the USB drive. Backups taken
+after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
+need your private copy of it (the tunnel `config.yml` plus its credentials
+JSON, or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
 different warehouse.
 
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
@@ -801,21 +835,29 @@ different warehouse.
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
-6. **Bring the public address back.** Put the tunnel credential in a mode-0700
-   private directory, set `credentials-file:` in `config.yml` to its new path,
-   install the unit as in [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)
-   (the DNS route already exists; do not create a new tunnel), then run
-   `node scripts/doctor.mjs`. If the credential is lost too, create a new tunnel
-   and point the existing hostname at it in the Cloudflare dashboard, replacing
-   the old tunnel's record.
+6. **Bring the public address back.** If the backup carried the tunnel
+   credential, `db:restore-host` put it in `config/tunnel/` and says so; then:
+
+   ```bash
+   sudo bash scripts/tunnel.sh install-service --state "$WAREHOUSE_STATE_DIR"
+   node scripts/doctor.mjs
+   ```
+
+   Otherwise adopt your private copy first (`bash scripts/tunnel.sh adopt
+   --config …` or `--token-file …`, as in
+   [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)), then run the same
+   two commands. The DNS route already exists; do not create a new tunnel. If
+   the credential is lost too, create a new tunnel and point the existing
+   hostname at it in the Cloudflare dashboard, replacing the old tunnel's record.
 7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
 8. **Rotate if the drive may have been exposed.** The archives hold every key in
    plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
-   [Replacing MSG91 credentials](#authentication-and-otp-limits), rotate the
-   tunnel credential in Cloudflare, then take a new backup.
+   [Replacing MSG91 credentials](#authentication-and-otp-limits), and replace
+   the tunnel credential (see [USB backup drive](#usb-backup-drive)), then take a
+   new backup.
 
 ## Rerun and upgrade
 
@@ -934,6 +976,17 @@ problems seen so far and their causes:
   empty`: choose a new state path; restore-host never overwrites an
   installation. `Missing checksum file` or `does not match`: use another
   archive from the drive.
+- **`tunnel.sh adopt` refuses** — `certificate or key block` / `origincert`: you
+  pointed it at `cert.pem` or at a config naming it; adopt only the tunnel's
+  `config.yml` with its credentials JSON (remove the `origincert:` line) or the
+  token file. `does not route <host>`: the config belongs to another installation
+  or its `hostname:` differs from this installation's `--api-url`.
+  `not the credentials JSON of tunnel`: the `credentials-file:` is another
+  tunnel's. `already exists`: a credential is already adopted; move
+  `config/tunnel` aside to replace it.
+- **`tunnel.sh install-service`: `did not start`** — read
+  `journalctl -u warehouse-<state name>-tunnel.service -n 50`; a dated copy of the
+  previous unit is next to it in `/etc/systemd/system/` if you need to go back.
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).

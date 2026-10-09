@@ -34,6 +34,15 @@ case "$format" in
     ;;
   *) echo 'Unsupported backup format.' >&2; exit 1 ;;
 esac
+# Optional tunnel credential (scripts/tunnel.sh): only known regular files, each checksummed.
+if [[ -e "$backup/tunnel" || -L "$backup/tunnel" ]]; then
+  [[ -d "$backup/tunnel" && ! -L "$backup/tunnel" ]] || { echo 'Backup tunnel entry is not a directory.' >&2; exit 1; }
+  while IFS= read -r -d '' entry; do
+    file="${entry#"$backup/"}"
+    [[ "$file" =~ ^tunnel/(config\.yml|credentials\.json|token)$ && -f "$entry" && ! -L "$entry" ]] || { echo "Unexpected entry in the backup tunnel directory: $file" >&2; exit 1; }
+    grep -Fqx "$(cd "$backup" && sha256sum "$file")" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
+  done < <(find "$backup/tunnel" -mindepth 1 -print0)
+fi
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 
