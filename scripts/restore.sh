@@ -11,11 +11,15 @@ usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-con
 
 confirm=false
 restore_config=false
+# --relocated is used by scripts/restore-host.sh, which built this state from the
+# backup itself: compose.env may then differ only in the three state-path lines.
+relocated=false
 backup=''
 while (($#)); do
   case "$1" in
     --yes) confirm=true ;;
     --restore-config) restore_config=true ;;
+    --relocated) relocated=true ;;
     -h|--help) usage ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
@@ -23,6 +27,7 @@ while (($#)); do
   shift
 done
 [[ -n "$backup" ]] || usage
+[[ "$relocated" != true || "$restore_config" != true ]] || usage
 if [[ "$confirm" != true ]]; then
   echo 'Refusing: in-place restore replaces the database and stored objects of this instance. Pass --yes to confirm.' >&2
   exit 1
@@ -66,6 +71,12 @@ if [[ "$restore_config" == true ]]; then
       exit 1
     fi
   done
+elif [[ "$relocated" == true ]]; then
+  without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' "$1" || true; }
+  if ! cmp -s <(without_paths "$backup/compose.env") <(without_paths "$state/config/compose.env"); then
+    echo 'Refusing: config/compose.env differs from the backup copy in more than the state paths.' >&2
+    exit 1
+  fi
 elif ! cmp -s "$backup/compose.env" "$state/config/compose.env"; then
   echo 'Refusing: config/compose.env differs from the backup copy (keys rotated or configuration changed after it was taken). Pass --restore-config to restore the backup configuration together with its data, or use a backup taken after the change.' >&2
   exit 1

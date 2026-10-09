@@ -203,6 +203,25 @@ jobs:
           sha256sum -c /tmp/warehouse-config.sha256
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend
+      - name: Lost-host restore drill
+        run: |
+          npm run db:backup -- /tmp/warehouse-ci-lost-host-backup
+          bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
+          project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
+          # Lose the host: no containers and no Docker volume of this installation remain;
+          # only the backup is carried over. The old state stays where it is, unused.
+          bash scripts/compose.sh --profile '*' down
+          docker volume rm "${project}_db-config"
+          restored="$RUNNER_TEMP/core-backend-test-20260930"
+          npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup
+          echo "WAREHOUSE_STATE_DIR=$restored" >> "$GITHUB_ENV"
+          export WAREHOUSE_STATE_DIR="$restored"
+          node scripts/doctor.mjs --local
+          bash scripts/data-fingerprint.sh | diff -u /tmp/warehouse-ci-fingerprint.txt -
+          bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+            < scripts/backup-integrity.sql | diff -u /tmp/warehouse-ci-lost-host-backup/integrity.txt -
+          node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
+        working-directory: backend
       - name: Stop only this checkout's operator project
         if: always()
         run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down

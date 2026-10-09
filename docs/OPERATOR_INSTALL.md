@@ -731,15 +731,15 @@ keys, MSG91 settings, users, sessions and data, exactly as at the moment of the
 backup. Phones keep working without selecting the server again. Everything
 recorded after the backup is lost.
 
-> **Status: manual procedure under acceptance.** It uses only the existing
-> `db:restore` and must be confirmed with a fingerprint comparison on a fresh
-> VM before it is relied on; record the result. A dedicated `db:restore-host`
-> command and backups that also carry the tunnel credential are planned.
+> **Status:** `db:restore-host` is exercised in CI by a lost-host drill on real
+> containers (fresh backup, containers and Docker volume removed, restore into a
+> different path, identical fingerprint). Record the result of your first drill
+> on a real new host. Backups do not carry the tunnel credential yet (step 6).
 
 **Never run the old and the new host at the same time.** They would answer as
 the same warehouse with the same keys. If the old host might come back, wipe
 its disk or keep it disconnected; if in doubt, rotate the keys afterwards
-(step 9).
+(step 8).
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
@@ -764,62 +764,54 @@ different warehouse.
    sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK
    ```
 
-3. **Find the original state path.** The restore must use the same path, because
-   the configuration records it:
+3. **Restore.** Choose the state directory for this host. The original path is
+   a good choice (the drive's folder name is its last part), but any new path
+   works. Its parent must belong to you, and the state itself must
+   not exist yet or be empty:
 
    ```bash
-   ARCHIVE="$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
-   NAME="$(basename "$ARCHIVE" .tar)"
-   STATE="$(tar -xOf "$ARCHIVE" "$NAME/compose.env" | sed -n 's|^WAREHOUSE_DB_PATH=\(.*\)/data/db$|\1|p')"
-   echo "$STATE"                                          # for example /srv/warehouse/acme
+   export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+   sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$WAREHOUSE_STATE_DIR")"
+   npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --yes \
+     "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
 
-4. **Recreate the state directory from the backup.** Its parent must belong to
-   you (see [private inputs](#private-inputs)); the state itself must not exist yet.
+   `--yes` confirms that the original host is permanently off. The command first
+   checks, without creating anything: the archive against its `.tar.sha256` and
+   its contents (only the backup folder, no links), the backup's own checksums,
+   that this checkout contains every migration the backup applied (otherwise it
+   names the `source_commit` to check out), that no container of this
+   installation exists on the host, the host prerequisites and 10 GiB of free
+   space. It then creates the state from the backup's `compose.env` and
+   `instance.json`, changing only the three state-path lines, keeps a copy of the
+   backup under `backups/`, and runs the in-place restore: a new database from
+   the pinned image, replay of both databases and the stored files, integrity
+   comparison, newer migrations, all services started and `doctor --local`. It
+   ends by printing the remaining steps. A backup directory (already extracted)
+   works as well as the `.tar`. If it fails after creating the state, it says so
+   and how to start over; nothing else on the host is changed.
+4. **Check the summary line.** The command prints the instance ID and the path the
+   installation used before. Use `export WAREHOUSE_STATE_DIR=<the new path>` for
+   every operator command on this host from now on.
+5. **Prove it.** If you recorded a fingerprint with this backup:
 
    ```bash
-   sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$STATE")"
-   (umask 077
-    install -d -m 0700 "$STATE" "$STATE/config" "$STATE/public" "$STATE/data" \
-      "$STATE/data/db" "$STATE/data/storage" "$STATE/backups"
-    tar -C "$STATE/backups" -xf "$ARCHIVE"
-    install -m 0600 "$STATE/backups/$NAME/compose.env" "$STATE/config/compose.env"
-    install -m 0644 "$STATE/backups/$NAME/instance.json" "$STATE/public/instance.json")
-   ```
-
-5. **Verify and restore.** From the checkout:
-
-   ```bash
-   export WAREHOUSE_STATE_DIR="$STATE"
-   node scripts/doctor.mjs --host-preflight
-   npm run db:verify-restore -- "$STATE/backups/$NAME"
-   npm run db:restore -- --yes "$STATE/backups/$NAME"
-   ```
-
-   The restore initializes a new database from the pinned image, replays the
-   backup, compares the integrity report, applies newer migrations, starts every
-   service and runs `doctor --local`. It keeps the (empty) directories it
-   replaced as `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>`;
-   remove them with `rmdir` (they are empty on a new host).
-6. **Prove it.** If you recorded a fingerprint with this backup:
-
-   ```bash
-   bash scripts/data-fingerprint.sh | diff ~/fingerprint-$NAME.txt - && echo IDENTICAL
+   bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
-7. **Bring the public address back.** Put the tunnel credential in a mode-0700
+6. **Bring the public address back.** Put the tunnel credential in a mode-0700
    private directory, set `credentials-file:` in `config.yml` to its new path,
    install the unit as in [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)
    (the DNS route already exists; do not create a new tunnel), then run
    `node scripts/doctor.mjs`. If the credential is lost too, create a new tunnel
    and point the existing hostname at it in the Cloudflare dashboard, replacing
    the old tunnel's record.
-8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
+7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
-9. **Rotate if the drive may have been exposed.** The archives hold every key in
+8. **Rotate if the drive may have been exposed.** The archives hold every key in
    plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), rotate the
@@ -933,6 +925,15 @@ problems seen so far and their causes:
   move the new state aside and follow
   [Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive),
   which recreates the state from the backup instead of running setup.
+- **`db:restore-host` refuses** — every refusal happens before anything is
+  created. `backup has N migrations and this checkout only M` or `migrations this
+  backup applied differ`: check out the commit the message names
+  (`source_commit`) or a later release. `containers of … already exist`: this
+  host still runs (or ran) that installation; restore-host is for a new host,
+  use `db:restore` on the existing state instead. `already exists and is not
+  empty`: choose a new state path; restore-host never overwrites an
+  installation. `Missing checksum file` or `does not match`: use another
+  archive from the drive.
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).

@@ -2,9 +2,15 @@
 
 ## Unreleased — second-pass review fixes (2026-10-08)
 
-- Operator guide: "Recover a lost host from the USB drive", a manual procedure
-  that rebuilds the same warehouse on a new host from a USB archive with the
-  existing `db:restore` (under acceptance). Added `scripts/data-fingerprint.sh`,
+- Added `npm run db:restore-host` (`scripts/restore-host.sh`): rebuilds a lost
+  installation on a new host from a backup directory or a USB `.tar`, with the
+  same identity, keys and data, without running setup. It checks the archive,
+  the backup, the migration history against the checkout and that the host is
+  new before creating anything, then runs the in-place restore
+  (`restore.sh --relocated`). CI runs a lost-host drill on real containers.
+- Operator guide: "Recover a lost host from the USB drive", which rebuilds the
+  same warehouse on a new host from a USB archive (now with `db:restore-host`;
+  the first version used manual steps). Added `scripts/data-fingerprint.sh`,
   a read-only row-count and SHA-256 fingerprint of business tables and stored
   files to compare before backup and after restore.
 - Added `scripts/backup-disk.sh`: prepares an empty second disk for backups
