@@ -2,6 +2,11 @@
 
 ## Unreleased — second-pass review fixes (2026-10-08)
 
+- Operator guide: "Recover a lost host from the USB drive", a manual procedure
+  that rebuilds the same warehouse on a new host from a USB archive with the
+  existing `db:restore` (under acceptance). Added `scripts/data-fingerprint.sh`,
+  a read-only row-count and SHA-256 fingerprint of business tables and stored
+  files to compare before backup and after restore.
 - Added `scripts/backup-disk.sh`: prepares an empty second disk for backups
   (`status`, `plan`, `apply`, `sync`) and copies verified backups onto it. It
   refuses the system disk and anything that is not blank, never wipes or
