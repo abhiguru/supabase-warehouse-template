@@ -295,7 +295,8 @@ cmd_apply() {
   ! fstab_has_mount || die "$FSTAB already has an entry for $MOUNT."
 
   print_plan "$real"
-  if [[ -b "$real" ]]; then
+  # Tests redirect SYSFS; they must never open a real device that happens to share the fixture's name.
+  if [[ -b "$real" && "$SYSFS" == /sys ]]; then
     exec 8<"$real"
     flock -n 8 || die "$real is being modified by another process."
   fi

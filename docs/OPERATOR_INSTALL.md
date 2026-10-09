@@ -30,8 +30,9 @@ Sections: [host prerequisites](#host-prerequisites),
 - At least 10 GiB free on a persistent filesystem for the initial installation,
   plus capacity for the warehouse's data; the doctor enforces the minimum.
 - A **USB drive formatted exFAT for backups** (an existing drive is fine; it is
-  not reformatted). A backup on the same disk as the data does not survive loss
-  of that disk; see [USB backup drive](#usb-backup-drive).
+  not reformatted), and `sudo` once to set up the automatic copy. A backup on
+  the same disk as the data does not survive loss of that disk; see
+  [USB backup drive](#usb-backup-drive).
 - `cloudflared` for the tunnel (installed in the ingress section).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`,
@@ -387,12 +388,13 @@ Start and stop the tunnel service separately through its systemd unit. Do not
 run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`,
-`db:backup`, `db:restore`, `backup-disk.sh sync`, `test:recovery`,
-`retention:*`, `test:gateway-dns`)
+`db:backup`, `db:restore`, `backup-disk.sh sync`, `backup-usb.sh run`,
+`test:recovery`, `retention:*`, `test:gateway-dns`)
 takes an exclusive per-state lock on `config/operator.lock` before touching
 Docker. A second command for the same state fails immediately with "Another
 operator command ... is running for this state." Wait for the first to finish;
-never delete the lock file to force a run.
+never delete the lock file to force a run. The automatic USB backup is the one
+exception that waits: it retries for up to 15 minutes, then records a failure.
 
 ## Rotate signing keys
 
@@ -488,16 +490,57 @@ either. The drive is never partitioned or formatted, and other files on it are
 left alone; backups go under `warehouse-backups/<state name>/` as one `.tar`
 archive (file modes kept inside) plus a `.tar.sha256` file per backup.
 
-The operator's job is to **attach the drive**: plug it in (on VMware also
-connect it to the VM under Removable Devices, and confirm with
-`lsblk -o NAME,TRAN,FSTYPE,MOUNTPOINTS` that it shows `usb` and `exfat`), then
-leave it until the copy finishes. The copy, verification and unmount are run
-for the operator: today by the installer, with the procedure in
-[DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#usb-backup-drive) (fresh
-`db:backup`, archive, read back from the drive, `db:verify-restore` on the
-newest copy, unmount); an automatic run on attach is planned. Do not unplug
-during a copy; a dropped USB connection leaves only a `.partial` file and the
-next run starts that backup again.
+The operator's only job is to **attach the drive**; the host does the rest.
+`scripts/backup-usb.sh` installs a udev rule and a systemd unit once; after
+that, attaching an **enrolled** drive takes a fresh `db:backup` (write-facing
+services stop briefly), writes each backup not yet on the drive, reads every new
+archive back from the drive and compares checksums, runs `db:verify-restore` on
+the newest archive extracted from the drive, and unmounts the drive. Only
+enrolled drives (identified by their filesystem UUID) trigger a run, so a
+stranger's USB stick never receives the credentials.
+
+1. Set it up once, as the installation user with `sudo`, with the drive attached
+   (on VMware connect it to the VM under Removable Devices first). Find the
+   partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it must show
+   `usb` and `exfat`:
+
+   ```bash
+   cd /path/to/installed/backend
+   sudo bash scripts/backup-usb.sh setup --state /absolute/path/to/this/warehouse --enroll /dev/sdb1
+   ```
+
+   It refuses to run without `sudo` from the installation user, and the copy
+   itself always runs as that user, never as root. It copies its root helper to
+   `/usr/local/libexec/warehouse-usb-backup`, writes
+   `/etc/warehouse-usb-backup.conf`, the enrolled-drive list
+   `/etc/warehouse-usb-backup.drives`,
+   `/etc/udev/rules.d/90-warehouse-usb-backup.rules` and the
+   `warehouse-usb-backup@.service` unit. Add `--daily` for a drive that stays
+   attached (a daily timer starts the same run), and `--no-fresh-backup` to copy
+   only existing backups. Enroll a second drive for rotation with
+   `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`. **Run setup again
+   after updating the checkout** so the installed helper matches it (`status`
+   warns when it does not); `sudo bash scripts/backup-usb.sh uninstall` removes
+   everything it installed and never touches a drive.
+2. From then on: plug the drive in and wait. The run takes a few minutes; when
+   the drive disappears from the file manager (or `lsblk` shows no mount point
+   for it), it is unmounted and safe to remove. Do not unplug during a copy; an
+   interrupted archive is left as a `.partial` file that the next run removes.
+3. Check the result as the installation user:
+
+   ```bash
+   bash scripts/backup-usb.sh status            # last result, enrolled drives, last success age
+   journalctl -u 'warehouse-usb-backup@*' -n 50  # the run's own output
+   ```
+
+   The result is also written to `warehouse-backups/<state name>/LAST-RESULT.txt`
+   on the drive, and `npm run doctor` adds a warning when the last run failed or
+   the last successful copy is older than 7 days
+   (`WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`).
+
+Nothing is ever deleted from the drive or from `backups/`; remove old archives
+yourself. A run that finds an archive that no longer matches its checksum
+reports it and leaves it alone.
 
 The archives are **not encrypted** and contain `compose.env`, which holds every
 credential of the instance. Keep the drive locked away, and if it is ever lost
@@ -744,6 +787,20 @@ problems seen so far and their causes:
   negative TTL or flush the resolver cache). Check `systemctl status` of the
   unit and `cloudflared ... tunnel ingress validate`. Right after a key rotation
   one failure is normal; rerun after about thirty seconds.
+- **Nothing happens when the USB drive is attached** — check that it is
+  enrolled and visible to the host: `bash scripts/backup-usb.sh status` (on
+  VMware the drive must be connected to the VM, not the Windows host), then
+  `journalctl -u 'warehouse-usb-backup@*' -n 50`. Only exFAT partitions on USB
+  drives whose UUID is enrolled start a run; reformatting a drive changes its
+  UUID, so enroll it again.
+- **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
+  is using the drive; close it and run
+  `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
+- **USB run failed: `does not match its checksum; it was not overwritten`** — an
+  archive on the drive is damaged. Copy the drive's other files elsewhere, run
+  `sha256sum -c` on each `.tar.sha256` to see which, and replace the drive if
+  errors recur; delete a damaged archive yourself and the next run writes it
+  again.
 - **`backup-disk.sh`: `No second disk found`** — nothing but the system disk is
   attached. Attach an empty disk (see [Backup disk](#backup-disk)), rescan or
   reboot, and run `plan` again. The helper never offers a partition of the

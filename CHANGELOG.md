@@ -9,7 +9,16 @@
 - Backups for pilot installs go to an operator-attached exFAT USB drive (one
   verified `.tar` per backup, readable from Linux and Windows-hosted VMs);
   the operator guide and contributor guide describe it, and the second disk is
-  now the alternative. Automatic copy on attach is planned.
+  now the alternative.
+- Added `scripts/backup-usb.sh`: after a one-time `sudo … setup --enroll`,
+  attaching an enrolled exFAT USB drive starts a systemd unit that takes a fresh
+  backup, copies it as a read-back-verified `.tar`, runs verify-restore on the
+  copy and unmounts the drive. Optional daily timer for a drive left attached;
+  `status`, `enroll` and `uninstall`; `doctor` warns when the last USB copy
+  failed or is older than 7 days. Only enrolled drives (by filesystem UUID)
+  trigger a run, and the copy runs as the installation user.
+- Fixed `tests/backup-disk.test.mjs` opening a real device when the host has a
+  disk with the fixture's name (`/dev/sdb`).
 - Operator guide corrected from a from-scratch acceptance run: the state
   directory's parent must be owned by the installation user (`sudo install -d`
   on the leaf made setup fail with `EACCES`); fixed-window OTP limits and SMS
