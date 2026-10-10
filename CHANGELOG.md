@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — a line can be added to an existing receipt (2026-10-10)
+
+- Migration 40: `update_grn` saves a line that has no `id` as a new line of the
+  receipt, with its whole quantity in stock, and reports it in `item_mapping`.
+  Before, every edit that added a line failed with `column "pricing_mode" of
+  relation "goodsreceived_trl" does not exist` and saved nothing: the insert named
+  a column the line table does not have. The pricing mode stays on the receipt
+  header (`p_pricing_mode`); a `pricing_mode` sent on a line is ignored.
+- No request or response changes. A photo attached to a line added during an
+  edit still needs the app to send the new line's id (`item_mapping`).
+
 ## Unreleased — a dispatch carries only its own customer's lots (2026-10-10)
 
 - Migration 39: `create_dispatch_with_stock_check` and `update_dispatch_smart`
