@@ -58,6 +58,11 @@ No migration. Operator actions are named in each item.
   a damaged archive, and the key-replacement steps in
   `docs/OPERATOR_INSTALL.md` now say to move the older archives aside on the
   drive; without that every later run ended as failed.
+- **The backup key is created atomically.** An interrupted setup could leave
+  an empty `config/backup.key` that every later command accepted as present
+  and then rejected. Setup now writes the key to a temporary file and links it
+  into place, replaces an empty key file, and refuses, without touching it, a
+  key file whose content is not a key.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 

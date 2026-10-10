@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync, linkSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,14 +40,25 @@ function replaceFileAtomically(path, text) {
 
 // The backup key signs every backup (scripts/backup-key.sh) and is never part
 // of one: the operator keeps a copy off the machine for a lost-host restore.
+// It is written to a temporary file and linked into place, so an interrupted
+// setup leaves no key file at all rather than an empty one that every later
+// command finds and then rejects.
 export function createBackupKey(configDir) {
   const path = join(configDir, 'backup.key');
   const st = lstatSync(path, { throwIfNoEntry: false });
   if (st) {
     if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('config/backup.key must be an owned regular file with mode 0600.');
-    return false;
+    if (st.size > 0) {
+      if (!/^[0-9a-f]{64}\r?\n?$/.test(readFileSync(path, 'utf8'))) throw new Error('config/backup.key does not hold a backup key (64 hexadecimal characters on one line). Put your copy of the key back; if no backup was ever signed with this file, remove it and run setup again.');
+      return false;
+    }
+    // Empty: the remnant of a creation that was interrupted before this was atomic. It signed nothing.
+    rmSync(path);
   }
-  writeFileSync(path, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
+  const stage = join(configDir, `.backup.key.${randomBytes(8).toString('hex')}`);
+  writeFileSync(stage, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
+  // link, not rename: it fails instead of replacing a key that appeared in the meantime.
+  try { linkSync(stage, path); } finally { rmSync(stage, { force: true }); }
   return true;
 }
 

@@ -53,6 +53,18 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     chmodSync(keyPath, 0o644);
     assert.throws(() => configure(root, options), /backup\.key must be an owned regular file with mode 0600/);
     chmodSync(keyPath, 0o600);
+    // An empty key file is what an interrupted first creation left behind: it never signed anything and is replaced.
+    writeFileSync(keyPath, '', { mode: 0o600 });
+    assert.equal(configure(root, options).backupKeyCreated, true, 'an empty key file is replaced');
+    assert.match(readFileSync(keyPath, 'utf8'), /^[0-9a-f]{64}\n$/);
+    assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).filter(name => name.startsWith('.backup.key')), [], 'no temporary key file is left');
+    // Any other content is not a key and is never overwritten: backups may have been signed with what it should hold.
+    writeFileSync(keyPath, 'not a key\n', { mode: 0o600 });
+    assert.throws(() => configure(root, options), /backup\.key does not hold a backup key/);
+    assert.equal(readFileSync(keyPath, 'utf8'), 'not a key\n');
+    writeFileSync(keyPath, keyBefore, { mode: 0o600 });
+    assert.equal(configure(root, options).backupKeyCreated, false);
     assert.throws(() => validateOperatorEnv({ ...env, ANON_KEY: env.SERVICE_ROLE_KEY }, stateDir), /Invalid ANON_KEY/);
     assert.throws(() => validateOperatorEnv({ ...env, JWT_SECRET: '0'.repeat(96) }, stateDir), /Invalid ANON_KEY/);
     assert.throws(() => validateOperatorEnv({ ...env, WAREHOUSE_PROJECT_NAME: 'warehouse-other' }, stateDir), /project differs/);
