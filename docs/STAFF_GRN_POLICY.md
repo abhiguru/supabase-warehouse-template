@@ -262,7 +262,16 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   `update_invoice` ignore client-supplied `labour`, `tax_amount` and `total` for
   every role and derive them from the saved lines and the stored `discount`
   (migration 24, see [INVOICE_RULES.md](INVOICE_RULES.md)). Line rates remain
-  inputs. A missing, duplicate or unrelated line rolls the whole save back.
+  inputs within a range: charge and labour rate from 0 to 999999, tax from 0 to
+  100 (migration 41). A missing, duplicate or unrelated line rolls the whole
+  save back.
+- **A dispatch line is invoiced once.** A save for a receipt that is already
+  invoiced, or with a line that is on another invoice, is refused for every
+  role (migration 41). Only an administrator or supervisor can free a receipt,
+  by deleting its invoice; an invoice with payments cannot be deleted.
+- **Discount changes are kept.** Besides the last reason and author on the
+  invoice, every change is appended to `invoice_discount_history`, readable by
+  administrators and supervisors only (migration 41).
 - **Edits may remove lines and images; whole documents cannot be deleted.**
   `update_grn` removes undispatched lines and unlisted images, `update_dispatch_smart`
   replaces dispatch lines and `update_invoice` replaces invoice lines. That is

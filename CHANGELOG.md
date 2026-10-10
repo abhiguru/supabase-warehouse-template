@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — invoice line rules: rate ranges, one invoice per dispatch line, India dates, discount history (2026-10-10)
+
+- Migration 41: `save_invoice` (both signatures) and `update_invoice` refuse a
+  line whose `charge` or `labour_rate` is outside 0 to 999999 or whose `tax` is
+  outside 0 to 100 (`Invoice line charge must be between 0 and 999999`,
+  `Invoice line labour rate must be between 0 and 999999`, `Invoice line tax must
+  be between 0 and 100`). Zero rates are still accepted and a negative discount
+  is still a surcharge. Before, a negative labour rate or tax could bring an
+  invoice to nothing without a discount reason.
+- Migration 41: a dispatch line is invoiced once. A save for a receipt already
+  marked invoiced is refused (`GRN is already invoiced`, code `WH409`), as is a
+  line that is on another invoice (`A dispatch line is already on another
+  invoice`). `update_invoice` cannot move an invoice onto an invoiced receipt.
+  Before, a second save under a new invoice number billed the same lines twice.
+  After `delete_invoice` the receipt can be invoiced again.
+- Migration 41: billable days are counted between calendar dates in India
+  (`Asia/Kolkata`) in the preview and all save paths, not in the database
+  session's time zone. **Amounts change** for a receipt whose stored time falls
+  between 18:30 and 24:00 UTC (00:00 to 05:30 in India): it loses the extra day
+  it was given, which mattered at the 30/45/60-day steps. Saved invoices are not
+  recalculated; an invoice edited after the upgrade gets the corrected days.
+- Migration 41: every discount change is appended to the new
+  `invoice_discount_history` table (old and new discount, reason, profile, role,
+  time). It cannot be updated or deleted, administrators and supervisors read
+  it, and it stays when the invoice is deleted. A discount reason made only of
+  white space or invisible characters is treated as empty for staff.
+- Migration 41: `get_invoice_detail` returns `discount_reason`,
+  `discount_set_by`, `discount_set_by_name` and `discount_set_at` to
+  administrators, supervisors and staff (not to customer accounts).
+  `get_invoice_items_detailed` computes line tax and total as the header does;
+  a one-time line no longer includes duration and labour.
+- Migration 41: `delete_invoice` refuses an invoice that payments refer to
+  (`Cannot delete an invoice that has payments`).
+- Existing invoices are not validated or changed. Applying the migration prints
+  a warning with the number of dispatch lines that are already on more than one
+  invoice, if any.
+
 ## Unreleased — a line can be added to an existing receipt (2026-10-10)
 
 - Migration 40: `update_grn` saves a line that has no `id` as a new line of the
