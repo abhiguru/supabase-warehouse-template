@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — a dispatch carries only its own customer's lots (2026-10-10)
+
+- Migration 39: `create_dispatch_with_stock_check` and `update_dispatch_smart`
+  refuse a line whose receipt belongs to another customer than the dispatch
+  (`Item belongs to another customer: <item> (<receipt>)`, code `WH409`), for
+  every role. `update_dispatch_smart` also refuses a change of the dispatch
+  customer unless every line the edit leaves belongs to the new customer
+  (`Cannot change the dispatch customer: items belong to another customer: ...`).
+  Before, a dispatch for one customer could take another customer's stock and
+  show that customer's receipt details to the first.
+- Migration 39: `update_grn` refuses a change of the receipt's customer once the
+  receipt has dispatch lines, an invoice or a line in an open cart (error
+  `Cannot change the customer of a GRN that has dispatches, invoices or order
+  items`). Sending the present customer again is still an ordinary edit.
+- Existing records are not validated or changed. Applying the migration prints a
+  warning with the number of dispatch lines that already mix customers, if any;
+  such a dispatch can still be edited, but no further foreign line can be added.
+
 ## Unreleased — receipts sort by number in every accepted form (2026-10-10)
 
 - Migration 31: `get_all_grn_items` and `get_grn_list` sort by receipt number with

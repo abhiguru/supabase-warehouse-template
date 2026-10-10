@@ -295,3 +295,20 @@ Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
 orders and order items stay denied for staff. Customers keep access to their
 own carts only, and can now read their own order history.
 `tests/order_screen.sql` proves both.
+
+## One customer per dispatch, 10 October 2026
+
+Staff, supervisors and administrators may dispatch any customer's goods, but one
+dispatch carries one customer's lots. Migration 39 enforces this for every role:
+
+- `create_dispatch_with_stock_check` and `update_dispatch_smart` refuse a line
+  whose receipt belongs to another customer than the dispatch.
+- `update_dispatch_smart` lets the dispatch customer change only when every line
+  the edit leaves belongs to the new customer.
+- `update_grn` does not change the customer of a receipt that has dispatch
+  lines, an invoice or a line in an open cart. Its quantity and stock rules are
+  unchanged: a dispatched line keeps its quantity and cannot be removed.
+
+Records saved before migration 39 are not checked or repaired.
+`tests/dispatch_lot_ownership.sql` proves the rule and the dispatch-edit
+refusals of migration 25 (invoiced lines, insufficient stock).
