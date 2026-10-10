@@ -112,6 +112,28 @@ RESET ROLE;
 SELECT pg_temp.core_assert(NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=20260930),'invalid invoice rolls back header');
 SET LOCAL ROLE authenticated;
 
+-- Migration 30: staff may discount an invoice only with a reason, and the
+-- reason, author and time are recorded; an unchanged discount keeps them.
+SELECT (:'invoice_data'::jsonb - 'items') AS invoice_header \gset
+SELECT public.update_invoice((:'saved'::jsonb->>'invoice_id')::uuid, :'invoice_header'::jsonb || '{"discount":235}'::jsonb,
+ ARRAY(SELECT jsonb_array_elements(:'invoice_items'::jsonb))) AS no_reason \gset
+SELECT pg_temp.core_assert(:'no_reason'::jsonb->>'success'='false' AND :'no_reason'::jsonb::text LIKE '%reason is required%',
+ 'staff discount without a reason refused: ' || :'no_reason');
+SELECT public.update_invoice((:'saved'::jsonb->>'invoice_id')::uuid, :'invoice_header'::jsonb || '{"discount":235,"discount_reason":"  Damaged bags  "}'::jsonb,
+ ARRAY(SELECT jsonb_array_elements(:'invoice_items'::jsonb))) AS with_reason \gset
+SELECT pg_temp.core_assert(:'with_reason'::jsonb->>'success'='true','staff discount with a reason saved: ' || :'with_reason');
+SELECT public.update_invoice((:'saved'::jsonb->>'invoice_id')::uuid, :'invoice_header'::jsonb || '{"discount":235,"notes":"unchanged discount"}'::jsonb,
+ ARRAY(SELECT jsonb_array_elements(:'invoice_items'::jsonb))) AS unchanged \gset
+SELECT pg_temp.core_assert(:'unchanged'::jsonb->>'success'='true','staff edit with an unchanged discount needs no new reason');
+RESET ROLE;
+SELECT pg_temp.core_assert((SELECT discount=235 AND total=763 AND discount_reason='Damaged bags' AND discount_set_at IS NOT NULL
+   AND discount_set_by=(SELECT id FROM public.user_profiles WHERE auth_user_id=(:'staff_claims'::jsonb->>'sub')::uuid)
+ FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'discount reason, author and total recorded');
+SELECT pg_temp.core_assert((SELECT bool_and(pg_get_functiondef(f) LIKE '%warehouse.discount_reason%') FROM unnest(ARRAY[
+ 'public.save_invoice(jsonb)','public.save_invoice(uuid,jsonb,jsonb[])','public.update_invoice(uuid,jsonb,jsonb[])']::regprocedure[]) f),
+ 'every invoice save path forwards the discount reason');
+SET LOCAL ROLE authenticated;
+
 SELECT pg_temp.core_assert(public.get_invoice_data((:'saved'::jsonb->>'invoice_id')::uuid)->>'success'='true','staff reads invoice RPC');
 SELECT pg_temp.core_assert(public.get_invoices_list()->>'success'='true','staff lists invoices');
 SELECT public.get_dispatch_list() AS staff_dispatch_list \gset

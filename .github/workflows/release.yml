@@ -12,14 +12,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Release readiness gate
         # Semantic version tags only (vMAJOR.MINOR.PATCH[-prerelease][+build]);
         # anything else is refused before the checks run.
         run: bash scripts/check-release.sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm

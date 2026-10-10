@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — receipts sort by number in every accepted form (2026-10-10)
+
+- Migration 31: `get_all_grn_items` and `get_grn_list` sort by receipt number with
+  one key for every form `gr_no` accepts. One-letter prefixes keep their order
+  (X, Y, Z, then A onward); numbers compare as numbers at any length, so A10000
+  follows A9999; other forms (two-letter prefixes, digits only, separators) sort
+  by prefix and then number. Before, every form other than a letter plus digits
+  came back in ascending text order whichever direction was requested, and
+  five-digit numbers collided with the next letter. No request or response changes.
+- Migration 32: `get_customer_grn_items` sorts by number with the same key, so
+  customer accounts and warehouse roles see one order (it compared numbers as
+  plain text: B10 before B9).
+- Migration 33: `get_dispatch_list_with_items` sorts by dispatch number with the
+  same key. Same-day dispatches follow the requested direction, and every order
+  ends in the key, so paging cannot repeat or skip a dispatch. CLR numbers now
+  sort after the one-letter prefixes.
+- Migration 34: a receipt or dispatch number made only of spaces, or an empty
+  receipt number, is refused (`save_grn` answers with its "required" message;
+  both tables carry a NOT VALID check, so existing records still migrate).
+- Migration 35: quick search on the receipt lists. `get_all_grn_items` and
+  `get_customer_grn_items` accept `p_filters.search`; every word must match the
+  receipt number, customer, item, package, rack or vehicle number
+  (case-insensitive; `%` and `_` are literal). `gr_no_from` / `gr_no_to` now
+  compare in document order, so B9..B10 is a real range.
+- Migration 36: quick search on the dispatch, invoice and order lists, and the
+  filters those lists showed but did not apply.
+  `get_dispatch_list_with_items` accepts `p_filters.search` (dispatch number,
+  customer, vehicle number, or the item, package, rack or receipt number of a
+  line) and `p_filters.package_mark`; `disp_no_from` / `disp_no_to` follow
+  document order. `get_invoices_list` gains `p_search` (invoice number, also as
+  `2026-12` or `2026-0012`, customer, receipt number), `p_date_from`,
+  `p_date_to` and `p_customer_ids`. `get_orders_list` gains `p_search` (customer
+  name or city, or the item, package or receipt number of a pending line). The
+  new parameters are optional, so current app versions keep working.
+- Migration 37: the dispatch list's `date_from` / `date_to` are moments in time,
+  not whole days in the database's time zone, so "up to 7 Oct" includes all of
+  7 Oct for the person asking. A plain date still means the start of that day.
+- Migration 38: the language a person chose in the app is kept on their profile.
+  `user_profiles.preferred_language` holds `en`, `gu` or NULL; `set_my_language(p_language)`
+  stores the caller's own choice (NULL clears it) and `get_my_language()` returns it.
+  Both need a signed-in, active account with a valid session. Server text stays English.
+- Documents: text in Gujarati (a customer or item name) is set in Noto Sans Gujarati, to
+  match the sans-serif page. It was already drawn correctly, in the serif face.
+
+## Unreleased — invoice discount reason and author (2026-10-09)
+
+- Migration 30: a changed invoice discount records its reason, the profile that
+  set it and the time (`discount_reason`, `discount_set_by`, `discount_set_at`).
+  Staff must give a reason (`discount_reason` in the invoice data) for any
+  discount; administrators and supervisors may leave it empty. Applies to both
+  `save_invoice` signatures and `update_invoice`. Apps that let staff set a
+  discount must send the reason; see `docs/INVOICE_RULES.md`.
+
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
 - `doctor --host-preflight` (run by `setup.sh`) now refuses a fresh install
