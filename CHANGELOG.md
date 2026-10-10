@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — OTP limits a stranger cannot turn against a user (2026-10-11)
+
+- Migration 44 changes the OTP limits; the table is in
+  `docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits". Before, anyone
+  could keep a chosen phone (the only administrator's included) from signing
+  in with five code requests an hour or five wrong guesses per code, and about
+  ten addresses could use up the warehouse cap for everybody.
+  - Wrong codes are counted on each issued code in two budgets of five: one for
+    the address that requested the code, one shared by all other addresses.
+    Each address is also limited to 20 failed verifications an hour.
+  - A phone with an approved, active profile is no longer refused after 5
+    requests an hour or 20 a day: it gets one code every 15 minutes instead,
+    and 5 an hour from an address it has signed in from before, which other
+    addresses cannot use up. Other phones keep the hard limit.
+  - The 60 s resend cooldown is per phone and address.
+  - Phones without an approved profile may use only `otp_unknown_hourly_cap`
+    (default 60) of the warehouse cap (`otp_global_hourly_cap`, default 300).
+  - A send MSG91 did not accept no longer counts against the phone or the
+    warehouse cap.
+  - New access requests are limited to 3 per address and
+    `enrollment_daily_cap` (default 30) per day, and the name a new user types
+    is checked (markup or links are replaced by "New customer").
+- `operator_verify_otp` takes the caller's address as a fifth argument; the
+  four-argument function is gone. Only the edge worker calls it.
+- The edge function answers two new cases: verification from an address over
+  its failure limit gets 429 "Too many OTP requests. Try again later.", and an
+  access request over the limit gets 429 "Too many new access requests. Try
+  again tomorrow.". A cooldown answer now carries `retry_after_seconds` and a
+  `Retry-After` header.
+- The edge function's request handling moved to
+  `functions/operator-otp/handler.ts` so it can be tested.
+- Tests: new `tests/otp_abuse_limits.sql` and
+  `tests/operator-otp-handler.test.mjs` (mode gate, routing, CF-Connecting-IP
+  checks, formats, status mapping, provider failure order).
+
 ## Unreleased — a replayed refresh token ends the session; a retried renewal does not (2026-10-11)
 
 - Migration 44: `refresh_jwt_token` now tells a retry from reuse. A refresh

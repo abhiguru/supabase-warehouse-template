@@ -22,7 +22,7 @@ UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_ke
   WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
 SELECT pg_temp.assert_true((public.operator_sms_config()#>>'{data,flow_id}')='694a8ea0cd30ae1f432f445a',
   'worker reads the latest protected Flow ID');
-SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_verify_otp(text,text,text,text)','EXECUTE'),'authenticated cannot bypass provider');
+SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_verify_otp(text,text,text,text,inet)','EXECUTE'),'authenticated cannot bypass provider');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE'),'anon cannot approve');
 
 SELECT warehouse_security.bootstrap_first_admin('9888888801','Test Administrator') AS admin_user \gset
@@ -190,7 +190,7 @@ END $$;
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888808',:'cap_second'::jsonb#>>'{data,otp_code}')->>'success')='false','attempt cap is shared across live codes');
 SELECT pg_temp.assert_true((SELECT value='300' FROM warehouse_security.auth_config WHERE key='otp_global_hourly_cap'),'global cap defaults to 300');
 UPDATE warehouse_security.auth_config SET value='2' WHERE key='otp_global_hourly_cap';
-UPDATE warehouse_security.operator_otp_global_limit SET hourly_count=0,window_started=now() WHERE id;
+UPDATE warehouse_security.operator_otp_global_limit SET hourly_count=0,unknown_count=0,window_started=now() WHERE id;
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888811')->>'success')='true','configurable cap: first request');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888812')->>'success')='true','configurable cap: second request');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888813')->>'code')='rate_limited','configurable cap enforced');

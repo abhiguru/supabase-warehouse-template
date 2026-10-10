@@ -169,7 +169,7 @@ monitoring are never published.
 
 Running the same command again is safe: a rerun preserves identity, keys,
 database and stored files (see [rerun and upgrade](#rerun-and-upgrade)). Setup
-refuses an existing administrator with a different phone, a state path through
+refuses an active administrator with a different phone, a state path through
 a symlink or inside the checkout, a running project owned by another checkout,
 and another operator command holding the lock. Private configuration belongs
 outside the checkout; no source edit is needed for the documented installation.
@@ -186,26 +186,92 @@ for it: a full acceptance run with three roles, a restore and a key rotation
 used about 24 codes. Limits enforced by the database:
 
 - OTPs expire after 5 minutes.
-- Per phone: 5 per hour and 20 per day, with a 60 s resend cooldown. The hourly
-  and daily counters are **fixed windows**, not sliding ones: a window opens at
-  the first request after the previous window has expired and lasts one hour
-  (one day). A phone whose requests straddle a window boundary can therefore
-  receive up to about ten codes within sixty minutes. A request refused for the
-  window limit answers HTTP 429 "Too many OTP requests. Try again later."; one
-  refused for the cooldown answers 429 "Please wait before requesting another
-  OTP.". The window limit is checked first, and neither sends an SMS.
-- Per client IP: 30 per hour, keyed on Cloudflare's `CF-Connecting-IP`.
-- Warehouse-wide cap: `otp_global_hourly_cap` in
-  `warehouse_security.auth_config` (default 300 per hour). Raise it with
-  `UPDATE warehouse_security.auth_config SET value='500' WHERE key='otp_global_hourly_cap'`.
 - A resend does not void the earlier code: every delivered code stays valid
-  until its own expiry, the 5 wrong-attempt cap is shared across them, and a
-  successful verification consumes all of them.
+  until its own expiry, and a successful verification consumes all of them.
 - Expired OTPs are cleaned up by `pg_cron`; sessions are HS256 JWTs signed with
   the instance's `JWT_SECRET`.
 
+Anyone can ask for a code for any number, so the limits are built so that a
+stranger cannot use them to keep a real user out. A phone is **known** when it
+has an approved, active profile; a **source** is the caller's address
+(Cloudflare's `CF-Connecting-IP`).
+
+| Limit | Value | Applies to | When it is reached |
+| --- | --- | --- | --- |
+| Open lane | 5 per hour and 20 per day per phone, any source | every phone | Unknown phone: 429 "Too many OTP requests. Try again later.". Known phone: moves to the slow lane |
+| Slow lane | one code every 15 minutes per phone | known phones whose open lane is used up | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
+| Trusted lane | 5 per hour per phone and source, not counted in the open lane | known phones, from a source that completed a sign-in for that phone in the last 90 days (the last five sources are kept) | 429 "Too many OTP requests. Try again later." |
+| Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
+| Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
+| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour | every request | same 429 |
+| Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
+| Wrong codes, requester | 5 per issued code | verifications from the source that requested the code | 400 "Invalid or expired OTP" |
+| Wrong codes, others | 5 per issued code, shared | verifications from any other source | 400 "Invalid or expired OTP" |
+| Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
+| New access requests | 3 per source and `enrollment_daily_cap` (default 30) for the warehouse, per 24 hours | a verified number that has no profile yet | No SMS is sent for a number that would exceed it (429 "Too many OTP requests..."); a verification that exceeds it answers 429 "Too many new access requests. Try again tomorrow." |
+
+What this means in practice:
+
+- The open-lane counters are **fixed windows**, not sliding ones: a window opens
+  at the first request after the previous one has expired and lasts one hour
+  (one day), so a phone whose requests straddle a boundary can receive up to
+  about ten open-lane codes within sixty minutes. The window limit is checked
+  before the cooldown, and a refused request sends no SMS.
+- Someone who requests codes for the administrator's number uses up the open
+  lane only. The administrator still gets a code every 15 minutes from anywhere
+  (slow lane), and up to 5 per hour from an address they have signed in from
+  before (trusted lane), which strangers cannot use up.
+- Someone who guesses codes for another person's number uses up the shared
+  budget of five. The person who requested the code keeps their own five
+  attempts, as long as they verify from the address they requested it from. A
+  phone that changes network between request and verification (Wi-Fi to mobile
+  data) falls into the shared budget; requesting a new code on the new network
+  restores the separate budget. No code can be tried more than ten times.
+- What remains possible: a caller who shares the user's public address (same
+  Wi-Fi, or the same mobile-carrier gateway) is the same source and can still
+  use up that user's attempts and cooldown. A flood from many addresses can
+  still fill the slow lane's 15 minute slot or the warehouse cap; the trusted
+  lane then serves only users on a network they have signed in from. If that
+  happens, add a Cloudflare WAF rate rule on
+  `/functions/v1/operator-otp/request` and `/verify`.
+- A send that MSG91 did not accept (outage, rejection, timeout) is not counted
+  against the phone or the warehouse cap, so a provider outage does not lock
+  users out; a number MSG91 calls invalid stays counted. The per-source count
+  is kept either way.
+- While the unknown-number share or the open lane is used up, a known and an
+  unknown number get different answers, so a caller can tell during that time
+  whether a number is registered. Each such check costs them an SMS to the real
+  user.
+- The name typed by a new user is shown in Enrollment Review. Letters of any
+  script, digits, spaces and `. , ' & ( ) / -` are kept, cut to 30 characters;
+  a name with anything else (markup, a link) is stored as "New customer".
+
+Change a cap with, for example,
+`UPDATE warehouse_security.auth_config SET value='500' WHERE key='otp_global_hourly_cap'`
+(as `supabase_admin`). The unknown-number share can never exceed the warehouse
+cap.
+
+**Sessions.** The access token lives one hour (`JWT_EXP`); the app renews it
+with a refresh token that is replaced at every renewal and is valid for 7 days
+from sign-in. If the app repeats a renewal within 60 seconds because the answer
+was lost on a slow network, it receives the same new token again
+(`refresh_grace_seconds` in `warehouse_security.auth_config`, 0 to 300). A
+replaced refresh token that is presented later, or one from an earlier
+generation, means two devices hold tokens of one session: the session is ended
+for both and the user signs in again. The database log then carries
+`Refresh token reuse: session ... revoked`.
+
 Disabling a user (`update_user_status(false)`) revokes their sessions; enabling
 them again re-approves a disabled or rejected profile.
+
+**The last administrator.** The only active administrator cannot delete their
+own account, and an administrator cannot be deactivated or given another role
+when no other active administrator would remain. If a warehouse nevertheless
+has no administrator who can sign in (for example one deleted before this
+rule existed), rerun the setup command with `--admin-phone` and `--admin-name`:
+when no approved, active administrator exists, setup makes the profile with
+that phone an administrator again, or creates one. An existing profile keeps
+its name. Setup still refuses to act when another administrator is active.
 
 **Replacing MSG91 credentials.** Write the new values to a mode-0600 provider
 file and rerun the same setup command with `--provider-env` pointing at it.
@@ -1047,8 +1113,11 @@ problems seen so far and their causes:
   it had started writing. Nothing is undone or wiped automatically. Run
   `status` to see how far it got (a disk labelled `warehouse-backup` but not
   mounted is "partitioned but not finished") and finish or clean up by hand.
-- **`An admin already exists with a different phone`** — the state directory
-  belongs to another installation; use an empty one.
+- **`An admin already exists with a different phone`** — an active
+  administrator with another phone exists: the state directory belongs to
+  another installation (use an empty one), or you gave the wrong
+  `--admin-phone`. An administrator who was deleted or disabled does not cause
+  this; see [the last administrator](#authentication-and-otp-limits).
 - **OTP accepted by the API but not received** — verify the Flow ID (not the
   DLT template ID), the `OTP` variable name and the sender/entity approval in
   the MSG91 console. The per-phone, per-IP and warehouse-wide caps above return
