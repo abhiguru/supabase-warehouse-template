@@ -57,6 +57,14 @@ checked with the unit tests and `docker compose config` named in
   for 1,01,000 and above (it assigned to a constant). The functions are still
   refused with 503 by the router; `tests/print-number-words.test.mjs` runs the
   fallback.
+- Every service's container log is capped at three 10 MB files; ten services
+  had no cap. imgproxy mounts the stored files read-only. The pooler no longer
+  registers a `pgbouncer_reporting` user that no database role backed, and
+  `POOLER_REPORTING_POOL_SIZE` is gone from `.env.example`.
+- The Studio and CUPS recipes apply their distribution's package updates at
+  build time, as the other recipes do. Studio's Next.js and simple-git
+  advisories are in the application and remain
+  (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").
 
 ## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
 
