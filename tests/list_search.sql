@@ -1,5 +1,5 @@
 -- Quick search and document-order number ranges on the receipt lists (migration 35) and on the
--- dispatch, invoice and order lists (migration 36).
+-- dispatch, invoice and order lists (migrations 36 and 37).
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -176,6 +176,11 @@ SELECT pg_temp.search_assert(pg_temp.dispatches('{"package_mark": "pkg", "search
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_from": "SDB9", "disp_no_to": "SDB10"}') = ARRAY['SDB10', 'SDB9'], 'dispatches: range SDB9..SDB10');
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_from": "SDB10"}') = ARRAY['SDB10', 'SDB100'], 'dispatches: from SDB10');
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_to": "SDB9"}') = ARRAY['SDB9'], 'dispatches: up to SDB9');
+-- Dates are moments in time (migration 37): SDB9 is two days old, SDB10 one day, SDB100 new.
+SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_from', now() - interval '36 hours')) = ARRAY['SDB10', 'SDB100'], 'dispatches: from a moment');
+SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_to', now() - interval '1 minute')) = ARRAY['SDB10', 'SDB9'], 'dispatches: up to a moment, not the start of its day');
+SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_from', now() - interval '36 hours', 'date_to', now() - interval '12 hours')) = ARRAY['SDB10'], 'dispatches: between two moments');
+SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_from', (now() + interval '2 days')::date::text)) = '{}', 'dispatches: a plain date still works');
 
 -- Invoices.
 SELECT pg_temp.search_assert(pg_temp.invoices(public.get_invoices_list()) = ARRAY['2025-7', '2026-12', '2026-120'], 'invoices: all three: ' || pg_temp.invoices(public.get_invoices_list())::text);

@@ -34,6 +34,9 @@
   `p_date_to` and `p_customer_ids`. `get_orders_list` gains `p_search` (customer
   name or city, or the item, package or receipt number of a pending line). The
   new parameters are optional, so current app versions keep working.
+- Migration 37: the dispatch list's `date_from` / `date_to` are moments in time,
+  not whole days in the database's time zone, so "up to 7 Oct" includes all of
+  7 Oct for the person asking. A plain date still means the start of that day.
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
