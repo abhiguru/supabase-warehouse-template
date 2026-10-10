@@ -1,7 +1,8 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
-import { verifyRequest } from '../_shared/jwt.ts';
+import { verifySignedInRequest } from '../_shared/jwt.ts';
 import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { workerEnv } from './worker-env.ts';
 
 const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp']);
 const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp',
@@ -16,12 +17,15 @@ serve(async (req: Request) => {
   }
   if (!allowed.has(name)) return new Response('Function not found', { status: 404, headers: corsHeaders });
   try {
-    if (!publicFunctions.has(name)) await verifyRequest(req);
-    const envVars = Object.entries(Deno.env.toObject());
+    // Each function still checks its caller itself; this keeps the anon key out
+    // of any function added later without that check.
+    if (!publicFunctions.has(name)) await verifySignedInRequest(req);
+    // A worker receives only the variables listed for it in worker-env.ts.
+    const extra: Record<string, string> = {};
     if (name === 'get-public-config') {
       const path = Deno.env.get('INSTANCE_MANIFEST_PATH');
       if (!path) throw new Error('Instance manifest path missing');
-      envVars.push(['INSTANCE_MANIFEST_JSON', await Deno.readTextFile(path)]);
+      extra.INSTANCE_MANIFEST_JSON = await Deno.readTextFile(path);
     }
     const worker = await EdgeRuntime.userWorkers.create({
       servicePath: `/home/deno/functions/${name}`,
@@ -29,7 +33,7 @@ serve(async (req: Request) => {
       workerTimeoutMs: 60000,
       noModuleCache: false,
       importMapPath: '/home/deno/functions/import_map.json',
-      envVars,
+      envVars: workerEnv(name, Deno.env.toObject(), extra),
     });
     return await worker.fetch(req);
   } catch (error) {

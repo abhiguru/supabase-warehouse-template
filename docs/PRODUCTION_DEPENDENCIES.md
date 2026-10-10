@@ -29,7 +29,7 @@ dispositions and the owner inputs.
 | Warehouse onboarding and business flow | Pending; staff policy corrected 2026-10-08 | Editable warehouse identity/branding/customer/pricing configuration; approval, receipt, inventory, orders, queue, dispatch, invoices and cart accepted against existing billing semantics. The staff policy was corrected by migrations 23–25 and is proven by the SQL tests: staff pricing only through invoice generation for a specific GRN, invoice totals computed server-side for every role, edits may remove lines and images but whole documents cannot be deleted, dispatch picker/feed/photo RPCs allowlisted, disabled users can be re-approved. See [STAFF_GRN_POLICY.md](STAFF_GRN_POLICY.md#second-pass-corrections-8-october-2026) and [INVOICE_RULES.md](INVOICE_RULES.md). |
 | Epson LQ-1310 printing | Pending | Authorized durable jobs with queue/state/duplicate handling; actual continuous forms, alignment and fault recovery on Linux USB and Windows shared-queue VM paths. Disappeared jobs remain uncertain, not proof of paper output. |
 | Tapo T310/H100/H200 and Home Assistant monitoring | Pending | Sanitized integration assets, narrow ingestion credential, device mapping, source timestamps, idempotent five-minute uploads/fifteen-minute replay, missing values and stale/offline state; real-device acceptance before enabling mobile capability. Cooling control excluded. |
-| Recovery, upgrades, diagnostics and alerts | Partially implemented; backup format v4 (both databases, owners, object catalog), disposable restore verification, same-instance in-place restore (`scripts/restore.sh`, CI restore drill), an isolated replacement-host drill (pilot evidence, see [HISTORY.md](HISTORY.md)), and owned-service recovery PASS for their recorded scope | Encrypted off-host backup custody, schedule and retention, and full host-loss recovery onto a replacement host with nonempty objects, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test remain. Local monitoring/CI acceptance does not establish external delivery. |
+| Recovery, upgrades, diagnostics and alerts | Partially implemented; backup format v5 (both databases, owners, object catalog, signed with the installation's backup key; optional encryption of USB archives), disposable restore verification, same-instance in-place restore (`scripts/restore.sh`, CI restore drill), an isolated replacement-host drill (pilot evidence, see [HISTORY.md](HISTORY.md)), and owned-service recovery PASS for their recorded scope | Encrypted off-host backup custody, schedule and retention, and full host-loss recovery onto a replacement host with nonempty objects, paired-version upgrade with preflight and rollback path, redacted diagnostics and delivered external alert test remain. Local monitoring/CI acceptance does not establish external delivery. |
 | Final handoff | Pending | Both repositories' checks, reviewed PRs/CI, exact main commits and native build IDs, plus physical results and exceptions recorded. Hardware-dependent cases stay **not tested** until performed. |
 
 ## Technical follow-ups and dispositions
@@ -135,6 +135,17 @@ dispositions and the owner inputs.
   closed; that work does not explain the separate 500.
   The dated readiness evidence is archived (see [HISTORY.md](HISTORY.md)).
 
+- **Review of 2026-10-10, container and dependency findings.** Done in the
+  2026-10-11 changelog entry: network separation, per-function environment,
+  pinned function modules, Kong digest, working API alerts. Open, each with
+  its steps in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md): one database
+  password for every role ("Database passwords"), no `deno.lock` ("Edge
+  function modules"), PostgREST digest ("Image pins"), and the list under
+  "Open items with their steps" (Go builders, Studio application advisories,
+  Chromium switches, `pg_net` grants, container privileges, scheduled scan).
+  The committed changes have not run on started containers; see "Changes
+  awaiting a first run".
+
 ## Operator inputs and later acceptance
 
 | # | Work and required owner input | Next action and acceptance evidence |
@@ -143,7 +154,7 @@ dispositions and the owner inputs.
 | 3 | **Public domain and HTTPS.** The pilot has a dedicated Cloudflare hostname/tunnel with local/public doctor and Android Wi-Fi discovery passing. Gateway CORS/body limits and upstream recovery also passed. | Cellular and native authenticated end-to-end acceptance remain. Preserve the private boundary and other machines' routes. Current installation has no demo mode; new deployments require their own domain/ingress checks. |
 | 4 | **External alerts.** Operator supplies an owned receiver, credentials, incident contacts and escalation policy. Local targets, rules and synthetic ingestion already pass. | Operations owner wires the receiver and runbook. Accept after a delivered test alert, acknowledgement/escalation and recovery notification reach the intended contacts. |
 | 5 | **Off-host backups and disaster recovery.** Operator chooses encrypted off-host destination, key custody, schedule, retention and RTO/RPO. Private v4 backup, isolated restore verification and same-instance in-place restore (`db:restore`) already pass in CI; the backup is unencrypted and local. | Operations owner exercises host loss using only off-host copies. Accept after data and object integrity, access controls, measured recovery time and point, and runbook evidence meet the approved objectives. Local copies and the in-place restore do not close this gate, and neither does a second local backup disk prepared with `scripts/backup-disk.sh`: it protects against failure of the data disk only, not against loss of the host, theft or ransomware. |
-| 6 | **Production retention.** Operator/legal owner approves retention, deletion and legal-hold rules for business documents, invoices, PDFs, images and backups. Ephemeral/audit database retention supports preview/apply. | Backend/operations owner maps approved policy to preview, deletion and hold behavior. Accept after representative records prove retention and hold boundaries, with reviewed deletion evidence. No business-data deletion is inferred from the demo. |
+| 6 | **Production retention.** Operator/legal owner approves retention, deletion and legal-hold rules for business documents, invoices, PDFs, images and backups. Ephemeral/audit database retention supports preview/apply; the same command removes generated PDFs older than 7 days (configurable) through the Storage API. It is not scheduled: the operator runs it. | Backend/operations owner maps approved policy to preview, deletion and hold behavior. Accept after representative records prove retention and hold boundaries, with reviewed deletion evidence. No business-data deletion is inferred from the demo. |
 | 7 | **Billing and accounting.** Business/finance owner approves rates, taxes, rounding and reconciliation examples; payment requirements and provider only if payments are in scope. Fictional-policy calculations, stock, concurrency and rollback checks pass. | Backend/mobile owners implement approved rules and independently compare invoices, credits and reconciliation against expected examples. Accept after business sign-off and provider settlement tests if payments are required. |
 | 8 | **Capacity and resilience.** Operator supplies target host, representative data volume and concurrency, latency/error SLOs, soak duration, storage-growth assumptions and recovery objectives. Local API/database load and owned-service recovery smoke pass. | Deployment owner runs target-scale load, soak, restart and recovery exercises. Accept with measured SLO, capacity, storage and recovery evidence against approved thresholds; local smoke alone is insufficient. |
 | 9 | **Realtime application acceptance — closed for source-demo orders/cart.** Physical iPhone 15/iOS 26.6.2 passed the complete live-update matrix on 2026-09-23 at mobile `c943de56b460852e8bca71fbe481b40d0c5265e6` / backend `8c682e4d4b83d4f4a8cb2dc252a00702478b11f9`. Reviewed mobile PR #26/backend PR #40 and exact-main CI passed; backend delivery/isolation/token/reconnect probe passed. | The exact-pair readiness evidence and the mobile native acceptance record are archived (see [HISTORY.md](HISTORY.md)). Refresh after reconnect is part of the accepted scope. Production Realtime resilience is part of item 8. Stock/invoice subscriptions are outside the accepted scope; future runtime changes require affected-case acceptance. |
@@ -164,7 +175,10 @@ public demo exposure, or publication of rebuilt third-party container binaries.
 
 `docker/edge-runtime/Dockerfile` upgrades only Debian's PCRE2 library and checks
 the minimum fixed version. `docker/realtime/Dockerfile` applies Debian package
-updates while retaining the digest-pinned Realtime application. Package indexes
+updates while retaining the digest-pinned Realtime application; the Studio,
+Supavisor and CUPS recipes do the same for their bases. Kong is referenced by
+digest; PostgREST v16.4 by tag only. The Go builder images (1.27.0 and 1.27.1)
+are behind the patch release that fixes three standard-library advisories. Package indexes
 remain live: rebuild and rescan when deploying; Docker layer cache is not proof
 of current patch status. These Dockerfiles are source build instructions, not
 published container binaries. Upstream notices remain in the base image.

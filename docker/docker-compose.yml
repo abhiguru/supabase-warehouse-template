@@ -12,6 +12,11 @@ services:
     build:
       context: ./studio
     restart: unless-stopped
+    # Studio has no login and can run SQL through postgres-meta, so it sits on
+    # the admin network only: no gateway or function container can reach it.
+    # The Studio panels that call the API gateway therefore do not work; it is
+    # kept for the metadata acceptance check (npm run test:studio).
+    networks: [admin]
     healthcheck:
       test:
         [
@@ -40,7 +45,7 @@ services:
       NEXT_PUBLIC_ENABLE_LOGS: false
 
   kong:
-    image: kong:3.9.3-ubuntu
+    image: kong:3.9.3-ubuntu@sha256:12972ce1ab6396083e56e7d46fce084836c98cc819344bef44a1f583ec3ab191
     restart: unless-stopped
     # Kong's resolver can wait on an inherited, unavailable search domain even
     # when Docker has answered the bare service alias. Resolve Compose aliases
@@ -110,6 +115,7 @@ services:
       context: ./auth
     profiles: ["disabled"]
     restart: unless-stopped
+    networks: [default, database]
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
       timeout: 5s
@@ -149,8 +155,10 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
+    # No digest yet: see docs/CONTAINER_SECURITY.md, "Image pins".
     image: postgrest/postgrest:v16.4
     restart: unless-stopped
+    networks: [default, database]
     depends_on:
       db:
         condition: service_healthy
@@ -173,6 +181,7 @@ services:
       default:
         aliases:
           - realtime-dev
+      database:
     depends_on:
       db:
         condition: service_healthy
@@ -210,6 +219,7 @@ services:
     build:
       context: ./storage
     restart: unless-stopped
+    networks: [default, database]
     volumes:
       - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
     healthcheck:
@@ -244,7 +254,8 @@ services:
       context: ./imgproxy
     restart: unless-stopped
     volumes:
-      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
+      # imgproxy only reads stored images; the storage service writes them.
+      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:ro,z
     healthcheck:
       test: ["CMD", "imgproxy", "health"]
       timeout: 5s
@@ -260,6 +271,9 @@ services:
     build:
       context: ./postgres-meta
     restart: unless-stopped
+    # postgres-meta runs any SQL as supabase_admin for whoever can connect to
+    # port 8080. Only Studio and the database share its network.
+    networks: [admin]
     # The runtime image keeps node but no wget or curl (docker/postgres-meta/Dockerfile).
     healthcheck:
       test:
@@ -315,7 +329,6 @@ services:
       SUPABASE_URL: http://kong:8000
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       GOTENBERG_URL: http://gotenberg:3000
       VERIFY_JWT: "true"
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
@@ -332,6 +345,7 @@ services:
     build:
       context: ./postgres
     restart: unless-stopped
+    networks: [database, admin]
     volumes:
       - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
       - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
@@ -378,6 +392,7 @@ services:
       context: ./supavisor
     restart: unless-stopped
     profiles: ["pooler"]
+    networks: [database]
     # The upstream entrypoint requires this limit; Docker defaults vary by host.
     ulimits:
       nofile:
@@ -475,4 +490,13 @@ volumes:
   db-config:
   cups-spool:
 
-# Compose allocates a project-scoped network; services resolve by DNS name.
+# Three project-scoped networks; services resolve each other by DNS name only
+# on a network they share (tests/compose-networks.test.mjs holds the table).
+#   default   the gateway, its upstreams, the PDF and image helpers, monitoring
+#   database  the database and the services that open a connection to it
+#   admin     Studio, postgres-meta and the database
+# A service that is not listed under `database` or `admin` cannot open a
+# connection to PostgreSQL, postgres-meta or Studio at all.
+networks:
+  database:
+  admin:

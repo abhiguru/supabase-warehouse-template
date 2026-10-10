@@ -109,9 +109,11 @@ try {
     assert.match(String(error?.message), /401|403/i, 'invalid JWT handshake rejected');
   }
   const marker = `Backend realtime ${Date.now()}`;
+  // Migration 42: orders are not written directly; the note goes through the guarded RPC.
+  const setNote = (id, note) => api('/rest/v1/rpc/update_order_metadata', admin, { p_order_id: id, p_note: note });
   for (const id of [cartA.data, cartB.data]) {
-    const updated = await api(`/rest/v1/orders?id=eq.${id}`, admin, { note: marker }, 'PATCH');
-    assert.ok(updated.ok, 'admin update emits event');
+    const updated = await setNote(id, marker);
+    assert.ok(updated.ok && updated.data?.success === true, 'admin update emits event');
   }
   const received = (channel, id, note = marker) => channel.messages.some(m =>
     m.event === 'postgres_changes' && m.payload?.data?.record?.id === id && m.payload?.data?.record?.note === note);
@@ -124,7 +126,7 @@ try {
   assert.equal(reconnect.status, 'ok');
   await waitFor(() => reconnect.messages.some(m => m.event === 'system' && m.payload?.status === 'ok'), 'reconnected subscription ready');
   const next = `${marker} reconnect`;
-  assert.ok((await api(`/rest/v1/orders?id=eq.${cartA.data}`, admin, { note: next }, 'PATCH')).ok);
+  assert.equal((await setNote(cartA.data, next)).data?.success, true);
   await waitFor(() => received(reconnect, cartA.data, next), 'delivery after reconnect');
   console.log('PASS isolated operator Realtime A/B delivery, invalid-token rejection, and reconnect');
 } finally {

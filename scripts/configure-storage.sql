@@ -27,7 +27,8 @@ CREATE POLICY starter_customer_dispatch_images ON storage.objects FOR SELECT TO 
     WHERE i.storage_path=name AND i.status='confirmed' AND warehouse_security.owns_customer(d.customer_id))
 );
 -- Staff can read GRN attachments and upload only their registered pending
--- objects. Confirmed-object deletion and unrelated buckets remain restricted.
+-- objects. A file that an image row names cannot be deleted or overwritten by
+-- staff, and unrelated buckets remain restricted.
 DROP POLICY IF EXISTS starter_grn_staff_read ON storage.objects;
 CREATE POLICY starter_grn_staff_read ON storage.objects FOR SELECT TO authenticated
 USING (bucket_id='grn-images' AND warehouse_security.active_role()='staff' AND EXISTS (
@@ -74,5 +75,21 @@ WITH CHECK (bucket_id='dispatch-images' AND warehouse_security.active_role()='st
   SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name AND i.status='pending'
     AND i.uploaded_by=public.get_current_user_profile_id()
 ));
+-- Photo removal by staff (migrations 45 and 47): delete_grn_image /
+-- delete_dispatch_image remove the image row, then the app removes the file.
+-- Staff may read and delete a file in the two photo buckets only when it lies
+-- in the folder of a receipt or dispatch that is not deleted and no image row
+-- names it. A file that a document still shows, and every file of a deleted
+-- document, cannot be read, deleted or overwritten by staff through these.
+-- The read policy is there because the Storage API looks the object up before
+-- it deletes it; this was not checked against a running Storage API.
+DROP POLICY IF EXISTS starter_staff_removed_image_read ON storage.objects;
+CREATE POLICY starter_staff_removed_image_read ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role()='staff'
+  AND warehouse_security.staff_may_remove_image_file(bucket_id,name));
+DROP POLICY IF EXISTS starter_staff_removed_image_delete ON storage.objects;
+CREATE POLICY starter_staff_removed_image_delete ON storage.objects FOR DELETE TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role()='staff'
+  AND warehouse_security.staff_may_remove_image_file(bucket_id,name));
 -- Generated PDFs have no direct client-read policy. Authorized Edge functions issue expiring links.
 COMMIT;

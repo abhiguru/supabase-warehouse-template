@@ -321,6 +321,10 @@ image findings or replace a full monitoring acceptance test.
 
 ## Remaining scan-coverage dependency: PostgREST
 
+Compose has referenced `postgrest/postgrest:v16.4` since 2026-10-08. Everything
+below was established for the v14.17 image and has not been repeated for
+v16.4; the scan-coverage gap is assumed, not re-measured, for the new image.
+
 Trivy detects no OS or language package results in the static PostgREST v14.17
 image. `docker buildx imagetools inspect --format '{{json .SBOM}}'
 postgrest/postgrest:v14.17` returned an empty object during this review. The
@@ -500,3 +504,405 @@ the pilot setup notes (archived with the private pilot evidence, see
 [HISTORY.md](HISTORY.md)) for versions, commands and limits. No running container changed. Historical image
 findings above are not cleared by npm audit; the deferred image/security and
 production gates remain separate. Fresh CI/container integration is pending.
+
+## Network boundaries (2026-10-11)
+
+Until this change every service shared one Compose network. postgres-meta
+answers on `meta:8080` without a credential and runs any SQL as
+`supabase_admin`, and Studio (no login) forwards SQL to it, so a foothold in
+any container, for example in the Chromium that renders PDFs, was superuser
+SQL. The project now has three networks; the table is in
+[ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks).
+
+- `meta` is reachable from `studio` and `db` only; `studio` from `meta` and
+  `db` only.
+- `db` is reachable from the services that hold a database connection (rest,
+  realtime, storage, supavisor, the disabled auth service, postgres-exporter,
+  grafana) and from the admin pair. Kong, the function runtime, Gotenberg,
+  imgproxy, CUPS, Prometheus, Alertmanager, node-exporter and cAdvisor cannot
+  connect to it.
+- Operator probes follow the same rule: `health-check.sh` and
+  `scripts/gateway-dns-check.sh` call the gateway from the `storage` container
+  (they used Studio), and postgres-meta from Studio.
+
+What this does not do:
+
+- Services on `default` still reach each other without Kong's limits
+  (`functions:9000`, `imgproxy:5001`, `storage:5000`, `rest:3000`,
+  `prometheus:9090`). PostgREST, Storage and the functions check tokens
+  themselves; imgproxy and Prometheus do not.
+- A service on `database` can open a connection to PostgreSQL; what it can do
+  there is still decided by one shared password (next section).
+- The networks are ordinary bridges, not `internal: true`: the database needs
+  outbound HTTPS for the SMS provider, and Studio and postgres-meta were left
+  with the outbound access they had. Making `admin` internal is a possible
+  later step and needs a run on real containers.
+- Studio's Storage, Auth and API panels call `http://kong:8000`, which Studio
+  can no longer reach. No operator procedure uses Studio's interface and no
+  host port is published for it. Attaching Studio to `default` to use those
+  panels reopens the path this change closes.
+
+Each install now creates three Docker networks instead of one. A host that
+runs many Compose projects can exhaust Docker's default address pools
+(about 30 networks); `docker network prune` removes unused ones.
+
+## Edge function modules (2026-10-11)
+
+The functions load three remote modules when a worker first starts: the Deno
+standard library 0.192.0 from deno.land, and supabase-js 2.39.0 and jose 5.10.0
+from esm.sh. The printing functions, which the router refuses with 503, import
+`npm:ipp@2.0.1` on demand.
+
+- `functions/import_map.json` is the one list of those URLs.
+  `tests/edge-imports.test.mjs` fails on any remote import that is not in the
+  list, on a list entry without an exact version, on a list entry nothing
+  imports, and on an `npm:` import without an exact version.
+- supabase-js was imported at 2.39.0 by the functions that run (configuration
+  and PDFs) and at 2.39.3 by the printing functions that do not. All now use
+  2.39.0, so no running function changed version.
+- The unit tests verify tokens with jose 5.10.0, the release the runtime
+  loads (`package.json` pins it; Dependabot version updates for it are held so
+  the two move together). They ran on jose 6 before.
+
+Still open:
+
+- **No lock file.** A URL pins the top-level version only; esm.sh resolves that
+  module's own dependencies when it serves it, and nothing checks content
+  hashes. The module cache lives in the container and is refetched after the
+  container is recreated. To close this, on a machine with the Deno release
+  that matches the edge runtime in `docker/edge-runtime/Dockerfile` (Deno is
+  not installed where this was written, so the command is a starting point
+  and has not been run):
+
+  ```bash
+  cd functions
+  deno cache --lock=deno.lock --frozen=false --import-map=import_map.json \
+    main/index.ts hello/index.ts get-public-config/index.ts operator-otp/index.ts \
+    get-config/index.ts generate-*-pdf/index.ts
+  git add deno.lock
+  ```
+
+  Then make the runtime refuse a module that is not in the lock. How the
+  pinned edge-runtime release takes a lock file (a `deno.json` beside the
+  functions with `"lock": {"frozen": true}`, or a start-up flag) is not
+  recorded in this repository and was not tested, so no such setting is
+  committed. Confirm it against that release, start the stack, call
+  `get-public-config`, `operator-otp`, `get-config` and one PDF function, and
+  only then commit the setting. A second option that needs no runtime support
+  is to vendor the three modules under `functions/vendor/` and point the
+  import map at the files.
+- **The functions import by full URL, not through the import map's names.**
+  `functions/_shared/jwt.ts` is loaded by the main service as well as by the
+  workers, and only the workers are given the import map
+  (`functions/main/index.ts`). Switching to bare names therefore needs the
+  main service to receive the map too, and a failure there leaves the
+  functions container unhealthy. It needs a run on the edge runtime first.
+- jose 5 to 6 and supabase-js 2.39 to a current 2.x release are version
+  moves for the same run.
+
+## Image pins (2026-10-11)
+
+Every service image is either built from a Dockerfile whose `FROM` lines carry
+a digest, or referenced with a digest in Compose, with one exception:
+
+| Image | State |
+|---|---|
+| `kong:3.9.3-ubuntu` | Pinned to `sha256:12972ce1ab6396083e56e7d46fce084836c98cc819344bef44a1f583ec3ab191`, the multi-platform index (linux/amd64 and linux/arm64) published for that tag on 2026-09-16, read from a local copy of the image and confirmed against the registry. Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
+| `postgrest/postgrest:v16.4` | **Tag only.** The image was not available locally to read a digest from. On a host that has pulled it: `docker image inspect --format '{{index .RepoDigests 0}}' postgrest/postgrest:v16.4`, confirm with `docker buildx imagetools inspect` that the digest is an index covering amd64 and arm64, write it after the tag in `docker/docker-compose.yml`, and remove the exception in `tests/gateway-config.test.mjs`. |
+
+Kong still has no recipe of its own, so its Ubuntu packages are as old as the
+pinned build; the pin makes that explicit instead of leaving it to whichever
+build a host pulled first. A `docker/kong/Dockerfile` with an
+`apt-get upgrade` step, as Realtime and Supavisor have, would need a build and
+a gateway run and is not part of this change.
+
+`THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` named PostgREST
+v14.17 and edge-runtime v1.76.2 after Compose and the Dockerfile had moved to
+v16.4 and v1.77.4. They are corrected, and `tests/gateway-config.test.mjs` now
+reads the versions from Compose and the Dockerfiles and fails when either
+document names a different one.
+
+## Gateway limits and metrics (2026-10-11)
+
+- The GraphQL route and both Realtime routes had the public-key check but no
+  rate limit. GraphQL and the Realtime HTTP route now have the REST route's
+  limit (300 requests a minute and 6000 an hour per client address). The
+  Realtime socket route has its own limit, 1800 connection attempts a minute
+  and no hourly window (next section). The Realtime HTTP route also has a 2 MB
+  body limit.
+- The storage route still has no rate limit. A list screen loads one image per
+  row and every phone at a facility shares one public address, so a limit low
+  enough to matter could refuse ordinary use; it needs request counts from a
+  running facility before a number is chosen.
+- The Prometheus plugin is enabled for all routes (see
+  [MONITORING.md](MONITORING.md)). Its series are served on the status
+  listener (port 8100, inside the Compose project only), not on the proxy port.
+- `docker/kong.yml` is filled in by a shell `eval` in the gateway entrypoint,
+  so a double quote, backtick or backslash anywhere in the file, comments
+  included, is silently altered. `tests/gateway-config.test.mjs` now runs the
+  same evaluation and compares the result; it found one such comment.
+- These gateway changes were checked by parsing the evaluated file and by
+  reading the plugin schemas in the pinned Kong image. Kong itself has not
+  loaded the file.
+
+### Realtime socket limit
+
+The first version of the socket limit was the REST numbers, 300 a minute and
+6000 an hour per client address. That could lock a whole facility out of
+Realtime after an outage, so it was replaced. The reasoning:
+
+- **One address per facility.** Kong limits by `CF-Connecting-IP`. Every
+  phone on the facility network leaves through the same router, so the whole
+  facility is one client address and shares one counter. (Phones on mobile
+  data have their own, or a carrier-shared, address.)
+- **Failed attempts count.** The limit applies to the upgrade request before
+  it is passed on. When Realtime is down or restarting and the gateway is up,
+  each retry is counted and then answered 502.
+- **How the app retries.** `src/services/order-live-updates.ts` in the app
+  opens one socket per live order screen (order list, supervisor queue, an
+  open order), only while the app is in the foreground and online; a phone
+  holds one, at most two at a time. The Realtime client retries a lost socket
+  after 1, 2, 5 and 10 seconds and then every 10 seconds: 8 attempts in the
+  first minute, 6 a minute after that, for as long as the outage lasts.
+- **The arithmetic for 100 phones.** 100 phones x 2 sockets = 200 sockets:
+  1600 attempts in the first minute, 1200 a minute afterwards, 72,000 an hour.
+  Under the old limit a facility of 50 phones with one socket each (300 a
+  minute) used the 6000-an-hour budget in 20 minutes; from then on every
+  connection attempt of the facility was refused until the hour ended, also
+  after Realtime was back.
+- **The limit now.** 1800 attempts a minute per address, above the 1600 of a
+  full facility's worst minute, and no hourly window. A per-minute window
+  cannot lock anyone out: a refused attempt is retried 10 seconds later, and
+  the counter starts again within the minute. What it still stops is one
+  address opening sockets faster than 30 a second.
+- **What this does not cover.** A facility with more than about 100 phones in
+  the foreground at once would see some attempts refused in the first minute
+  of an outage and reconnect a little later; raise `minute` in
+  `docker/kong.yml` and the numbers in `tests/gateway-config.test.mjs`
+  together. The REST and GraphQL limits were not changed here; they have the
+  same one-address-per-facility property (see the storage note above) and
+  need request counts from a running facility. As with the other gateway
+  changes, Kong has not loaded this file on a running stack.
+
+## Database passwords: one shared value, and the plan to split it
+
+Not changed in this release. This section is the design and the procedure for
+the change, written from the files named in it; nothing in it has been run.
+
+### Today
+
+`POSTGRES_PASSWORD` is the password of every database login:
+
+| Role | Set by | Used by |
+|---|---|---|
+| `postgres`, `supabase_admin` (superusers) | the database image's entrypoint, first start only | operator scripts (`compose exec db psql -U supabase_admin`), Realtime (`DB_USER`), postgres-meta, Supavisor's own metadata (`_supabase` database), Postgres exporter and Grafana (`postgres`) |
+| `authenticator` | `docker/volumes/db/roles.sql`, first start only | PostgREST |
+| `supabase_storage_admin` | same | Storage |
+| `supabase_auth_admin` | same | the disabled Auth service |
+| `supabase_functions_admin` | same | nothing |
+| `pgbouncer` | same | Supavisor's pool user (pooler profile) |
+
+Three more copies exist: Studio is given the value; Realtime stores its
+tenant's database credentials in `_realtime.extensions`, encrypted with
+`DB_ENC_KEY`, which is the fixed text `supabaserealtime` in
+`docker/docker-compose.yml`; Supavisor stores the pool user's password in its
+tenant record, encrypted with `VAULT_ENC_KEY`, written only when the tenant
+does not exist yet (`docker/volumes/pooler/pooler.exs`).
+
+`roles.sql` is an init script: it runs when the data directory is empty and
+never again. `db:backup` dumps databases, not roles, so role passwords are not
+in a backup; a restore onto an empty data directory sets them again from
+`compose.env` through the same init scripts.
+
+Since the network change above, only services on the `database` and `admin`
+networks can present this password to PostgreSQL at all.
+
+### Target
+
+- New 64-hex values generated by `scripts/configure.mjs` next to
+  `POSTGRES_PASSWORD`: `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`,
+  `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING`, and
+  `REALTIME_DB_ENC_KEY` (16 characters, the length Realtime requires).
+- `supabase_functions_admin` gets a random password that is stored nowhere, or
+  `NOLOGIN` if a start confirms nothing logs in as it.
+- A new role `warehouse_monitoring` (`LOGIN`, member of `pg_monitor`, no other
+  grant) for the Postgres exporter and the Grafana datasource, which today
+  connect as the `postgres` superuser. The role itself can be created by a
+  migration (`CREATE ROLE ... NOLOGIN` if absent, `GRANT pg_monitor`) and
+  asserted in `tests/security_baseline.sql`; its password and `LOGIN` are set
+  by the step below, because a migration must not contain a secret.
+- `POSTGRES_PASSWORD` stays the superuser password, used by operator scripts,
+  postgres-meta, Realtime and Supavisor's metadata connection. Giving Realtime
+  a non-superuser role is a later, separate step: it creates its own schema
+  and replication slot and its needs must be measured on a running stack.
+
+### Changes, in order
+
+1. `scripts/configure.mjs`: generate the new values for a fresh state. In the
+   existing-state branch (where the backup key is created for older
+   installs), append any that are missing; never replace one that exists.
+   `tests/configure.test.mjs`: fresh state has them, rerun preserves them, a
+   state written by the previous release gains them.
+2. New `scripts/configure-db-roles.sql`, run by `setup.sh` after the migration
+   ledger and before the services start, with `psql -v`: one
+   `ALTER ROLE ... WITH LOGIN PASSWORD :'value'` per role above. It is
+   idempotent and is what an existing install relies on, because `roles.sql`
+   does not run again. Keep `roles.sql` (it still makes a first start usable
+   before setup reaches this step) but have it read the per-role variables
+   from the database container's environment, which then needs them added
+   under `db: environment:`.
+3. `docker/docker-compose.yml` and the override: `PGRST_DB_URI`
+   (`DB_PASSWORD_AUTHENTICATOR`), Storage `DATABASE_URL`
+   (`DB_PASSWORD_STORAGE`), `GOTRUE_DB_DATABASE_URL` (`DB_PASSWORD_AUTH`),
+   exporter `DATA_SOURCE_NAME` and the Grafana datasource
+   (`warehouse_monitoring`, `DB_PASSWORD_MONITORING`; drop `POSTGRES_PASSWORD`
+   from the Grafana service and set the datasource `editable: false`),
+   `pooler.exs` (`DB_PASSWORD_POOLER`), Realtime `DB_ENC_KEY`. Use
+   `${NAME:?...}` so a state without the value fails at `compose config`
+   with a message, not at first login. `tests/compose-networks.test.mjs` can
+   then assert from the rendered configuration that the superuser password
+   appears only in db, meta, realtime, supavisor and studio.
+4. Stored copies. Supavisor: the script must update the tenant's user when it
+   exists instead of skipping it (or `scripts/pooler-check.sh` must fail with
+   a clear message telling the operator to remove the tenant row). Realtime:
+   changing `DB_ENC_KEY` makes the existing `_realtime.extensions` row
+   unreadable; delete the `realtime-dev` tenant rows in the same step so
+   `SEED_SELF_HOST` writes them again with the new key. `rotate-keys.sh`
+   already removes that tenant row for a signing-key rotation
+   (`docs/OPERATOR_INSTALL.md`), so the statement exists.
+5. `rotate-keys.sh` (or a new `db:rotate-passwords`): generate new per-role
+   values into a staged `compose.env`, run `configure-db-roles.sql`, recreate
+   the consumers, and roll back the file if a consumer does not become
+   healthy, as the signing-key rotation does. Rotating the superuser password
+   is the last piece: `ALTER ROLE postgres` and `supabase_admin`, then both
+   stored tenants, then every service.
+6. Backup and restore: `restore.sh` compares `compose.env` with the backup's
+   copy and `restore-host.sh` adopts the backup's copy; both then start from
+   an empty data directory, so `roles.sql` and `configure-db-roles.sql` apply
+   whatever that file holds. A backup taken before this change has no
+   per-role values: `configure.mjs`'s existing-state branch must run before
+   the database starts in both restore paths.
+
+### Upgrade of an existing install
+
+`git pull`, then the same `setup.sh --operator ...` command. Expected
+sequence: `configure.mjs` appends the missing values; the database starts;
+migrations run; `configure-db-roles.sql` changes the passwords while the old
+containers still hold open connections (those stay valid; a new connection
+from an old container fails until it is recreated); `up -d --wait` recreates
+every consumer with its new address. The window in which PostgREST or Storage
+cannot open a new connection is the time between those two steps.
+
+### Drill before release
+
+On a disposable host, never on a facility:
+
+1. Install the previous release with `setup.sh --operator`, run
+   `tests/operator-api-core.mjs`, take a `db:backup`.
+2. Check out the change, run the same `setup.sh` command. `node
+   scripts/doctor.mjs --local` must pass.
+3. For each of `authenticator`, `supabase_storage_admin`, `pgbouncer`:
+   `compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h
+   127.0.0.1 -U <role> -d postgres -c "select 1"'` must fail, and the same
+   with the role's own value must succeed.
+4. `tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs`,
+   `npm run test:pooler`, `npm run test:monitoring`, `npm run test:grafana`.
+5. `npm run keys:rotate`, then step 4 again (Realtime tenant re-seeded).
+6. `db:backup`, `db:verify-restore`, `db:restore --yes`, and on a second
+   state directory `db:restore-host` from the backup taken in step 1 (no
+   per-role values) and from the new one. Step 4 after each.
+7. The `operator-install` CI job covers a fresh install; add the upgrade from
+   the previous tag as a second job before relying on it.
+
+## Open items with their steps
+
+Each of these was left unchanged because the change cannot be checked without
+building an image or starting the stack.
+
+- **Go builders (three fixed HIGH standard-library advisories).** Ten `FROM
+  golang:` lines use 1.27.0 or 1.27.1: line 1 of
+  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter}/Dockerfile`
+  (`golang:1.27.0-bookworm@sha256:ded31c68...`), and line 1 of
+  `docker/{auth,gotenberg,imgproxy,prometheus,postgres}/Dockerfile` plus line
+  12 of `docker/postgres/Dockerfile` (`golang:1.27.1-bookworm@sha256:69a7b978...`).
+  Replace all ten with the patch release that fixes the advisories and its
+  digest (`docker pull golang:<version>-bookworm`, then `docker image inspect
+  --format '{{index .RepoDigests 0}}'`); the fixed image was not available
+  locally, so no digest could be read. Each recipe runs `go mod verify` and
+  its selected tests during the build; follow with `npm run scan:images`.
+  The Gotenberg server binary is the publisher's and is not rebuilt by any
+  recipe.
+- **Studio application advisories.** The recipe now applies Debian updates,
+  which addresses the operating-system findings at build time. The Next.js
+  and simple-git advisories are in the publisher's application and need a
+  Studio tag that ships fixed versions (the review named next 16.3.6 and
+  simple-git 4.0.1 as the first fixed releases); change the tag and digest in
+  `docker/studio/Dockerfile`, then `npm run test:studio`. Until then the
+  exposure is bounded by the network change: only postgres-meta and the
+  database can reach Studio. The scan numbers in the table near the top of
+  this page are from 2026-09-22 and an older tag; they have not been
+  re-measured.
+- **Edge runtime and Storage operating-system packages.**
+  `docker/edge-runtime/Dockerfile` upgrades one package; replacing that with a
+  full `apt-get upgrade` (keeping the PCRE2 version check) and adding
+  `apk upgrade --no-cache` to `docker/storage/Dockerfile` both change images
+  that every request depends on. Build, then run the operator API and
+  document tests.
+- **Storage `npm install`.** `npm ci` would fail on lock drift, but it deletes
+  `node_modules` first, and the recipe keeps the publisher's prebuilt native
+  modules and runs no install scripts, so they would not be rebuilt. Moving
+  to `npm ci` needs a build that proves Storage still starts.
+- **Gotenberg Chromium switches.** `CHROMIUM_DISABLE_JAVASCRIPT=true` and
+  removing `CHROMIUM_ALLOW_FILE_ACCESS_FROM_FILES` look safe, since the
+  templates carry no scripts or file links, but need a rendered PDF compared
+  with the current output. Gotenberg can no longer reach the database,
+  postgres-meta or Studio.
+- **Gateway configuration through shell `eval`.** Replacing the entrypoint's
+  `eval` with Kong's own environment references needs Kong to load the result.
+  The new test catches a character the `eval` would alter.
+- **`net.http_get` and `net.http_post` executable by `anon` and
+  `authenticated`.** The grants come from `docker/volumes/db/webhooks.sql` (an
+  init script) and from the event trigger it installs, which re-grants on
+  `CREATE EXTENSION`. The fix is to remove the two roles from both `GRANT`
+  lists there and add a migration that revokes them where the `net` schema
+  exists. The migration test database is the plain publisher image without
+  these init scripts, so the migration could not be exercised by
+  `tests/migrations.sh`; mount `webhooks.sql` in that test first. The `net`
+  schema is not exposed through PostgREST.
+- **`app.settings.jwt_secret` readable by every database role.** Unchanged;
+  see the earlier review note (needs a migration and the removal of
+  `PGRST_APP_SETTINGS_JWT_SECRET`, then a check that nothing reads it).
+- **`no-new-privileges`, dropped capabilities, read-only root filesystems.**
+  Not a blanket change: Realtime's start script runs `sudo -u nobody`
+  (`/app/run.sh` in the pinned image), which `no-new-privileges` blocks, and
+  Kong's entrypoint writes `/tmp/kong.yml`. Each service needs its own trial.
+- **cAdvisor and CUPS run privileged.** Both are optional profiles. CUPS also
+  accepts print jobs from any container on `default` without a login; no
+  function reaches it while the router refuses the printing functions.
+- **Scheduled image scan.** No workflow runs `npm run scan:images`; the image
+  gate was closed as "won't fix in current scope" in
+  [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md).
+
+## Changes awaiting a first run (2026-10-11)
+
+These were committed after unit tests, `docker compose config` on generated
+state and, where noted, reading the pinned images. None has run on started
+containers. The `operator-install` CI job is the first run; if it fails, the
+step that fails points at the change.
+
+| Change | What a first run proves | CI step that exercises it |
+|---|---|---|
+| Three networks; Studio and postgres-meta off `default` | every service starts healthy and resolves its peers | setup, then every later step |
+| Health probes from `storage` instead of Studio | `node --input-type=module` from stdin works in the Storage image and reaches the gateway | setup (`doctor --local`), key rotation, recovery |
+| `gateway-dns-check.sh` probes from `storage` | same | Gateway upstream IP replacement |
+| Per-function worker environment | each function still has every variable it reads | setup health check, operator API, documents |
+| supabase-js 2.39.0 and `npm:ipp@2.0.1` in the printing functions | nothing: the router refuses them | none |
+| Kong image by digest | the digest pulls on the runner | setup |
+| Prometheus plugin enabled globally; new rate limits | Kong accepts the declarative file; Realtime connects through the limit | setup, Realtime test, gateway test |
+| Alert rules and `monitoring-check.sh` metric check | Prometheus scrapes `kong_http_requests_total` | Monitoring targets |
+| Prometheus without `--web.enable-lifecycle` | Prometheus starts | Monitoring targets |
+| Log cap on every service; imgproxy read-only mount | containers start; image transformation still reads files | setup, document tests |
+| Pooler tenant with one user | tenant creation succeeds | Pooler authentication |
+| Studio and CUPS `apt-get upgrade` | both images build | setup (Studio), CUPS startup |
+| Actions pinned to commits | the hashes resolve | every job |
+

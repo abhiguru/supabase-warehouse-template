@@ -9,7 +9,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
+import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -34,31 +35,53 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   const original = '/srv/warehouse/lost-host';
   const backup = makeBackup(join(scratch, 'drive', NAME), {
     env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity });
-  writeFileSync(join(backup, 'metadata.txt'), `format=warehouse-backup-v4\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n`);
-  const sums = spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
-  assert.equal(sums.status, 0);
+  // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
+  const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '' } = {}) => {
+    writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n`);
+    const sums = spawnSync('sh', ['-c', `sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt ${files} > SHA256SUMS`], { cwd: backup });
+    assert.equal(sums.status, 0);
+    if (sign) signBackup(backup); else rmSync(join(backup, 'SHA256SUMS.hmac'), { force: true });
+  };
+  resum();
+  // The operator's own copy of the lost installation's backup key.
+  const keyFile = writeKey(join(scratch, 'operator-key-copy.txt'));
   const parent = join(scratch, 'srv'); mkdirSync(parent, { mode: 0o755 });
   const log = join(scratch, 'restore.log'); writeFileSync(log, '');
   const dockerLog = join(scratch, 'docker.log'); writeFileSync(dockerLog, '');
   const bin = fakeDocker(join(scratch, 'bin'));
-  // Containers of the project exist only when FAKE_PROJECT_EXISTS=yes.
+  // Containers of the project exist only when FAKE_PROJECT_EXISTS=yes; FAKE_VOLUMES
+  // lists the Docker volumes the host still has (space-separated, as `docker volume ls -q`).
   const wrap = join(scratch, 'wrap'); mkdirSync(wrap);
   writeFileSync(join(wrap, 'docker'), `#!/bin/sh
 if [ "$1" = ps ] && [ "$FAKE_PROJECT_EXISTS" = yes ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo 0123456789ab; exit 0; fi
+if [ "$1" = volume ] && [ -n "$FAKE_VOLUMES" ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\\n' $FAKE_VOLUMES; exit 0; fi
 exec ${bin}/docker "$@"
 `, { mode: 0o755 });
-  const run = (args, extra = {}) => {
-    const result = spawnSync('bash', [join(root, 'scripts/restore-host.sh'), ...args], { encoding: 'utf8',
+  // `key` is the file passed as --backup-key; null leaves the option out.
+  const run = (args, extra = {}, { key = keyFile } = {}) => {
+    const result = spawnSync('bash', [join(root, 'scripts/restore-host.sh'), ...(key ? ['--backup-key', key] : []), ...args], { encoding: 'utf8',
       env: { ...process.env, PATH: `${wrap}:${process.env.PATH}`, FAKE_DOCKER_LOG: dockerLog, RESTORE_LOG: log, ...extra } });
     return { ...result, restoreCalls: readFileSync(log, 'utf8') };
   };
-  const tarball = () => {
+  const signArchive = file => writeFileSync(`${file}.hmac`, `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${file}.sha256`))}\n`);
+  const tarball = ({ sign = true } = {}) => {
     const tar = join(scratch, 'drive', `${NAME}.tar`);
     assert.equal(spawnSync('tar', ['-C', join(scratch, 'drive'), '-cf', tar, NAME]).status, 0);
     writeFileSync(`${tar}.sha256`, spawnSync('sha256sum', [`${NAME}.tar`], { cwd: join(scratch, 'drive'), encoding: 'utf8' }).stdout);
+    if (sign) signArchive(tar);
     return tar;
   };
-  return { scratch, root, backup, parent, run, tarball, original, state: join(parent, 'acme') };
+  // The encrypted form backup-usb.sh writes, produced with the script's own cipher.
+  const encrypted = () => {
+    const tar = tarball({ sign: false });
+    const enc = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; backup_key_load "$2"; backup_encrypt "$BACKUP_KEY" < "$3" > "$3.enc"', 'sh', join(root, 'scripts/backup-key.sh'), keyFile, tar], { encoding: 'utf8' });
+    assert.equal(enc.status, 0, enc.stderr);
+    rmSync(tar); rmSync(`${tar}.sha256`);
+    writeFileSync(`${tar}.enc.sha256`, spawnSync('sha256sum', [`${NAME}.tar.enc`], { cwd: join(scratch, 'drive'), encoding: 'utf8' }).stdout);
+    signArchive(`${tar}.enc`);
+    return `${tar}.enc`;
+  };
+  return { scratch, root, backup, parent, run, tarball, encrypted, resum, keyFile, original, state: join(parent, 'acme') };
 }
 const clean = f => rmSync(f.scratch, { recursive: true, force: true });
 const nothingCreated = (f, result) => {
@@ -85,15 +108,139 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['db', 'storage'], 'empty pre-restore directories removed');
     assert.deepEqual(readdirSync(f.parent), ['acme'], 'no staging directory left');
     assert.match(result.stdout, /Keep the original host off/);
+    assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
+    assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
   } finally { clean(f); }
+});
+
+test('restore-host refuses a backup it cannot prove genuine: no key, a re-checksummed edit, another key', () => {
+  const f = fixture('warehouse-restore-host-signature-');
+  try {
+    let result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: null });
+    assert.equal(result.status, 1); assert.match(result.stderr, /needs the backup key of the lost installation/); nothingCreated(f, result);
+    // Someone with the drive edits the configuration and regenerates the checksums; the signature cannot be regenerated.
+    const signature = readFileSync(join(f.backup, 'SHA256SUMS.hmac'), 'utf8');
+    writeFileSync(join(f.backup, 'compose.env'), readFileSync(join(f.backup, 'compose.env'), 'utf8') + 'JWT_SECRET=planted\n');
+    f.resum({ sign: false });
+    writeFileSync(join(f.backup, 'SHA256SUMS.hmac'), signature);
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: f.backup }).status, 0, 'the plain checksums accept the edit');
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of this backup does not match the backup key/); nothingCreated(f, result);
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
+    assert.equal(result.status, 1, 'a wrong signature is never waved through'); nothingCreated(f, result);
+    // The signature removed altogether.
+    rmSync(join(f.backup, 'SHA256SUMS.hmac'));
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /carries no signature/); nothingCreated(f, result);
+    // A genuine backup, but the operator brought the key of another installation.
+    f.resum();
+    const other = writeKey(join(f.scratch, 'other.key'), 'c3'.repeat(32));
+    result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: other });
+    assert.equal(result.status, 1); assert.match(result.stderr, /does not match the backup key/); nothingCreated(f, result);
+    writeFileSync(join(f.scratch, 'not-a-key'), 'hello\n');
+    result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: join(f.scratch, 'not-a-key') });
+    assert.equal(result.status, 1); assert.match(result.stderr, /does not hold a backup key/); nothingCreated(f, result);
+    // An extra file that the signed list does not name.
+    writeFileSync(join(f.backup, 'extra.sql'), 'select 1;\n');
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /not exactly the files its signed SHA256SUMS lists/); nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host takes an unsigned v4 backup only with --allow-unsigned, with a warning, and passes the flag on', () => {
+  const f = fixture('warehouse-restore-host-v4-');
+  try {
+    f.resum({ format: 'warehouse-backup-v4', sign: false });
+    let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /carries no signature[\s\S]*--allow-unsigned/); nothingCreated(f, result);
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
+    assert.equal(existsSync(join(f.state, 'config/backup.key')), false, 'no key is invented; the first backup creates one');
+  } finally { clean(f); }
+  // A v5 label without a signature is not an old backup.
+  const g = fixture('warehouse-restore-host-v5-unsigned-');
+  try {
+    g.resum({ sign: false });
+    const result = g.run(['--state-dir', g.state, '--yes', g.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /carries no signature/); nothingCreated(g, result);
+  } finally { clean(g); }
+});
+
+test('restore-host opens an encrypted archive with the backup key and refuses it when its signature is wrong or missing', () => {
+  const f = fixture('warehouse-restore-host-enc-');
+  try {
+    const enc = f.encrypted();
+    assert.doesNotMatch(readFileSync(enc, 'latin1'), /JWT_SECRET|kept-secret|database\.dump/, 'the archive on the drive is not readable');
+    let result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', enc], {}, { key: null });
+    assert.equal(result.status, 1); assert.match(result.stderr, /cannot be opened without --backup-key/); nothingCreated(f, result);
+    const signature = readFileSync(`${enc}.hmac`, 'utf8');
+    writeFileSync(`${enc}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
+    result = f.run(['--state-dir', f.state, '--yes', enc]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of .*\.tar\.enc does not match the backup key/); nothingCreated(f, result);
+    rmSync(`${enc}.hmac`);
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', enc]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /has no signature file/); nothingCreated(f, result);
+    // A plain archive copied by hand has no .hmac; the signed backup inside is what gets checked.
+    writeFileSync(`${enc}.hmac`, signature);
+    result = f.run(['--state-dir', f.state, '--yes', enc]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'));
+    assert.match(readFileSync(join(f.state, 'config/compose.env'), 'utf8'), /^JWT_SECRET=kept-secret$/m);
+    assert.deepEqual(readdirSync(f.parent), ['acme'], 'no decrypted archive is left behind');
+  } finally { clean(f); }
+});
+
+// What a host that ran the monitoring and printing profiles keeps after `compose down`.
+const OTHER_VOLUMES = ['prometheus_data', 'grafana_data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
+
+test('restore-host refuses a host that still has the database configuration volume, and names only that volume', () => {
+  const f = fixture('warehouse-restore-host-volume-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: ['warehouse-backup-test_prometheus_data', 'warehouse-backup-test_db-config', 'warehouse-backup-test_cups-spool'].join(' ') });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Docker volume warehouse-backup-test_db-config of the previous database remains[\s\S]*docker volume rm warehouse-backup-test_db-config$/m);
+    assert.doesNotMatch(result.stderr, /docker volume rm.*(prometheus_data|cups-spool)/, 'the operator is not told to delete monitoring history or the print spool');
+    nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host is not stopped by monitoring and printing volumes, which hold no restored state', () => {
+  const f = fixture('warehouse-restore-host-other-volumes-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: OTHER_VOLUMES.join(' ') });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, new RegExp(`Kept the Docker volumes ${OTHER_VOLUMES.join(', ')}`));
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
+  } finally { clean(f); }
+});
+
+test('the volumes restore-host refuses are exactly the named volumes of the services whose data a restore replaces', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const declared = readFileSync(join(repo, 'scripts/restore-host.sh'), 'utf8').match(/^STATE_VOLUMES=\(([^)]*)\)$/m);
+  assert.ok(declared, 'restore-host.sh declares STATE_VOLUMES');
+  // restore.sh replays the database (data/db) and the stored files (data/storage).
+  const { services, volumes } = renderedCompose();
+  const named = ['db', 'storage'].flatMap(service => (services[service].volumes ?? []).filter(mount => mount.type === 'volume').map(mount => mount.source));
+  assert.deepEqual(declared[1].split(/\s+/).filter(Boolean).sort(), [...new Set(named)].sort());
+  // The realistic left-overs used above are real volumes of this Compose project.
+  for (const name of OTHER_VOLUMES) assert.ok(name.replace('warehouse-backup-test_', '') in volumes, name);
 });
 
 test('restore-host takes a USB archive after checking it, and accepts an existing empty state directory', () => {
   const f = fixture('warehouse-restore-host-tar-');
   try {
     const tar = f.tarball();
+    writeFileSync(`${tar}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
+    const forged = f.run(['--yes', '--state-dir', f.state, tar]);
+    assert.equal(forged.status, 1); assert.match(forged.stderr, /signature of .*\.tar does not match the backup key/); nothingCreated(f, forged);
+    // Without its .hmac file the archive cannot be checked before it is unpacked, so it is not unpacked.
+    rmSync(`${tar}.hmac`);
+    const unsigned = f.run(['--yes', '--state-dir', f.state, tar]);
+    assert.equal(unsigned.status, 1); assert.match(unsigned.stderr, /has no signature file \(.*\.tar\.hmac\)[\s\S]*--allow-unsigned/); nothingCreated(f, unsigned);
+    // An archive packed by hand is taken with --allow-unsigned; the signed backup inside it is still checked.
     mkdirSync(f.state, { mode: 0o700 });
-    const result = f.run(['--yes', '--state-dir', f.state, tar]);
+    const result = f.run(['--yes', '--allow-unsigned', '--state-dir', f.state, tar]);
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.equal(readFileSync(join(f.state, 'public/instance.json'), 'utf8'), instanceJson);
     assert.ok(existsSync(join(f.state, 'backups', NAME, 'database.dump')));
@@ -201,7 +348,7 @@ test('restore-host brings back a tunnel credential carried by the backup, pointe
     mkdirSync(join(f.backup, 'tunnel'), { mode: 0o700 });
     writeFileSync(join(f.backup, 'tunnel/config.yml'), `tunnel: 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d\ncredentials-file: ${f.original}/config/tunnel/credentials.json\ningress:\n  - service: http_status:404\n`, { mode: 0o600 });
     writeFileSync(join(f.backup, 'tunnel/credentials.json'), '{"TunnelSecret":"kept"}', { mode: 0o600 });
-    assert.equal(spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt tunnel/* > SHA256SUMS'], { cwd: f.backup }).status, 0);
+    f.resum({ files: 'tunnel/*' });
     const result = f.run(['--state-dir', f.state, '--yes', f.tarball()]);
     assert.equal(result.status, 0, result.stderr + result.stdout);
     const dest = join(f.state, 'config/tunnel');

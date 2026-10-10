@@ -169,7 +169,7 @@ monitoring are never published.
 
 Running the same command again is safe: a rerun preserves identity, keys,
 database and stored files (see [rerun and upgrade](#rerun-and-upgrade)). Setup
-refuses an existing administrator with a different phone, a state path through
+refuses an active administrator with a different phone, a state path through
 a symlink or inside the checkout, a running project owned by another checkout,
 and another operator command holding the lock. Private configuration belongs
 outside the checkout; no source edit is needed for the documented installation.
@@ -186,26 +186,125 @@ for it: a full acceptance run with three roles, a restore and a key rotation
 used about 24 codes. Limits enforced by the database:
 
 - OTPs expire after 5 minutes.
-- Per phone: 5 per hour and 20 per day, with a 60 s resend cooldown. The hourly
-  and daily counters are **fixed windows**, not sliding ones: a window opens at
-  the first request after the previous window has expired and lasts one hour
-  (one day). A phone whose requests straddle a window boundary can therefore
-  receive up to about ten codes within sixty minutes. A request refused for the
-  window limit answers HTTP 429 "Too many OTP requests. Try again later."; one
-  refused for the cooldown answers 429 "Please wait before requesting another
-  OTP.". The window limit is checked first, and neither sends an SMS.
-- Per client IP: 30 per hour, keyed on Cloudflare's `CF-Connecting-IP`.
-- Warehouse-wide cap: `otp_global_hourly_cap` in
-  `warehouse_security.auth_config` (default 300 per hour). Raise it with
-  `UPDATE warehouse_security.auth_config SET value='500' WHERE key='otp_global_hourly_cap'`.
 - A resend does not void the earlier code: every delivered code stays valid
-  until its own expiry, the 5 wrong-attempt cap is shared across them, and a
-  successful verification consumes all of them.
+  until its own expiry, and a successful verification consumes all of them.
 - Expired OTPs are cleaned up by `pg_cron`; sessions are HS256 JWTs signed with
   the instance's `JWT_SECRET`.
 
+Anyone can ask for a code for any number. The limits therefore have a fixed
+order of priority: first, a code cannot be guessed more than five times;
+second, one phone is not sent more than 30 SMS in 24 hours; third, inside
+those two bounds, a stranger cannot keep a real user from signing in on a
+network that user has signed in from before. A phone is **known** when it has
+an approved, active profile; a **source** is the caller's address
+(Cloudflare's `CF-Connecting-IP`); a source is **trusted** for a known phone
+when a sign-in for that phone was completed from it in the last 90 days (the
+last five such sources are kept).
+
+| Limit | Value | Applies to | When it is reached |
+| --- | --- | --- | --- |
+| Per phone, all sends | `otp_phone_daily_cap`, default 30 in any 24 hours, every source and lane together | every phone | 429 "Too many OTP requests. Try again later." |
+| Open lane | 5 per hour per phone, and the daily cap less the trusted reserve (30 − 10 = 20) in any 24 hours, shared by all sources that are not trusted | every request that is not from a trusted source | same 429 |
+| Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
+| Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
+| Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
+| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour | every request | same 429 |
+| Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
+| Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
+| Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
+| New access requests | 3 per source and `enrollment_daily_cap` (default 30) for the warehouse, per 24 hours | a verified number that has no profile yet | No SMS is sent for a number that would exceed it (429 "Too many OTP requests..."); a verification that exceeds it answers 429 "Too many new access requests. Try again tomorrow." |
+
+What this means in practice:
+
+- The hourly open-lane counter is a **fixed window**, not a sliding one: a
+  window opens at the first request after the previous one has expired and
+  lasts one hour, so a phone whose requests straddle a boundary can receive up
+  to ten open-lane codes within sixty minutes. The 24 hour counts are sliding:
+  each code stops counting 24 hours after it was requested. The limits are
+  checked before the cooldown, and a refused request sends no SMS.
+- No phone is sent more than 30 codes in any 24 hours, whoever asks. Of these,
+  sources that are not trusted can cause at most 20.
+- Someone who requests codes for the administrator's number from one address
+  or from many uses up the open lane: 5 an hour, 20 in 24 hours. **While that
+  goes on, the administrator can still get a code on a network they have
+  signed in from before** (trusted lane, 5 an hour, at least 10 in 24 hours
+  that nobody else can use), **but may get none from a brand-new network** (a
+  new SIM, a carrier address that changed, another Wi-Fi) until the attack
+  stops, the window passes, or the operator clears the phone's counters (next
+  paragraph). The trusted sources of one phone share the reserve between them.
+- Someone who guesses codes for another person's number can use up two of the
+  five attempts of each code. The person who requested the code keeps at least
+  three, as long as they verify from the address they requested it from. A
+  phone that changes network between request and verification (Wi-Fi to mobile
+  data) counts as another source and has the two shared attempts; requesting a
+  new code on the new network gives the full five again. No code can be tried
+  wrongly more than five times, so a guesser's chance per code is the same as
+  before these lanes existed.
+- What remains possible: a caller who shares the user's public address (same
+  Wi-Fi, or the same mobile-carrier gateway) is the same source and can use up
+  that user's attempts, cooldown and trusted allowance. A single address is
+  enough to keep the open lane of a phone full, and a flood from many
+  addresses can also fill the warehouse cap. If either happens, add a
+  Cloudflare WAF rate rule on `/functions/v1/operator-otp/request` and
+  `/verify`.
+
+**Clearing one phone's counters.** When a user cannot get a code because
+someone else has used up the limits of their number, run on the server (the
+number is the user's 10-digit mobile):
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres \
+  -c "SELECT warehouse_security.reset_otp_limits('9XXXXXXXXX')"
+```
+
+It prints how many counted codes it cleared and the user can request a code at
+once; only `supabase_admin` may run it, no app role can. It clears the
+per-phone counts only (not the per-source or warehouse limits, and not the
+60 s cooldown), leaves codes already sent valid and keeps the phone's trusted
+sources. If the requests continue, the limits fill again within the hour: put
+the WAF rule in place first, then clear. Each clearing allows up to 30 further
+SMS to that number.
+
+- A send that MSG91 did not accept (outage, rejection, timeout) is not counted
+  against the phone or the warehouse cap, so a provider outage does not lock
+  users out; a number MSG91 calls invalid stays counted. The per-source count
+  is kept either way.
+- While the unknown-number share of the warehouse cap is used up, a known and
+  an unknown number get different answers, so a caller can tell during that
+  time whether a number is registered. A used-up open lane answers the same
+  for both.
+- The name typed by a new user is shown in Enrollment Review. Letters of any
+  script, digits, spaces and `. , ' & ( ) / -` are kept, cut to 30 characters;
+  a name with anything else (markup, a link) is stored as "New customer".
+
+Change a cap with, for example,
+`UPDATE warehouse_security.auth_config SET value='500' WHERE key='otp_global_hourly_cap'`
+(as `supabase_admin`). The unknown-number share can never exceed the warehouse
+cap. The trusted reserve can never exceed the per-phone cap; a reserve equal
+to the cap closes the open lane, so only trusted sources get codes.
+
+**Sessions.** The access token lives one hour (`JWT_EXP`); the app renews it
+with a refresh token that is replaced at every renewal and is valid for 7 days
+from sign-in. If the app repeats a renewal within 60 seconds because the answer
+was lost on a slow network, it receives the same new token again
+(`refresh_grace_seconds` in `warehouse_security.auth_config`, 0 to 300). A
+replaced refresh token that is presented later, or one from an earlier
+generation, means two devices hold tokens of one session: the session is ended
+for both and the user signs in again. The database log then carries
+`Refresh token reuse: session ... revoked`.
+
 Disabling a user (`update_user_status(false)`) revokes their sessions; enabling
 them again re-approves a disabled or rejected profile.
+
+**The last administrator.** The only active administrator cannot delete their
+own account, and an administrator cannot be deactivated or given another role
+when no other active administrator would remain. If a warehouse nevertheless
+has no administrator who can sign in (for example one deleted before this
+rule existed), rerun the setup command with `--admin-phone` and `--admin-name`:
+when no approved, active administrator exists, setup makes the profile with
+that phone an administrator again, or creates one. An existing profile keeps
+its name. Setup still refuses to act when another administrator is active.
 
 **Replacing MSG91 credentials.** Write the new values to a mode-0600 provider
 file and rerun the same setup command with `--provider-env` pointing at it.
@@ -412,12 +511,32 @@ run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`,
 `db:backup`, `db:restore`, `backup-disk.sh sync`, `backup-usb.sh run`,
-`test:recovery`, `retention:*`, `test:gateway-dns`)
+`test:recovery`, `retention:*`, `test:gateway-dns`, `test:pooler`,
+`test:monitoring`, `test:cups`, and `scripts/migrate.sh` when run by itself)
 takes an exclusive per-state lock on `config/operator.lock` before touching
 Docker. A second command for the same state fails immediately with "Another
 operator command ... is running for this state." Wait for the first to finish;
 never delete the lock file to force a run. The automatic USB backup is the one
 exception that waits: it retries for up to 15 minutes, then records a failure.
+
+## Retention
+
+Nothing is deleted on a timer. Run the retention command yourself, or from the
+same scheduler as your backups:
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run retention:preview   # counts only
+npm run retention:apply
+```
+
+It removes expired sign-in records and old security logs from the database
+(`warehouse_maintenance.retention_policy`), and generated PDF files older than
+7 days from the private `documents` bucket (the PDFs are removed through the
+Storage API, so the storage container must be running; see
+[PDF_GENERATION.md](PDF_GENERATION.md)). Business records and photos are never
+removed by it.
 
 ## Rotate signing keys
 
@@ -468,8 +587,8 @@ sign out (Settings → Sign Out) and sign in again after a rotation.
 
 ## Backup and restore
 
-`npm run db:backup -- /absolute/destination` writes a private
-`warehouse-backup-v4` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
+`npm run db:backup -- /absolute/destination` writes a private, signed
+`warehouse-backup-v5` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
 It stops ingress and every write-facing service for the capture and restarts
 only the services that were running. The directory contains:
 
@@ -483,8 +602,9 @@ only the services that were running. The directory contains:
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
+| `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 
-The backup is **unencrypted** and contains every credential of the instance.
+The backup directory is **unencrypted** and contains every credential of the instance.
 Keep it mode 0700/0600 on protected storage. `db:backup` warns when the
 destination shares a filesystem with `data/`: a backup on the same disk does not
 survive loss of that disk. Copy every retained backup to an operator-provided
@@ -494,14 +614,84 @@ custom configuration and the pgsodium root key) is not part of the backup and
 is preserved by `stop.sh`; never use `down -v` on a production instance.
 Optional CUPS and monitoring volumes are not in this core backup.
 
-`npm run db:verify-restore -- /path/to/backup` accepts v1 to v4 backups. It
-checks every checksum, rejects absolute paths, `..` segments and links in the
+`npm run db:verify-restore -- /path/to/backup` accepts v1 to v5 backups. It
+checks every checksum and the signature first (see [Backup key](#backup-key)),
+rejects absolute paths, `..` segments and links in the
 storage archive, proves that every catalogued object is a file in the archive
 (extra files are reported as a warning), restores both dumps into a disposable
-`--network none` container on tmpfs with `--exit-on-error`, replays the archived
+`--network none` container with `--exit-on-error`, replays the archived
 ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
-instance.
+instance. Backups written before v5 carry no signature: the verifier, `db:restore`
+and `db:restore-host` refuse them unless you add `--allow-unsigned`, which prints
+a warning and proves nothing about where the backup came from.
+
+The disposable database is sized from the backup: the two dumps times 10, the
+same again (up to 1 GiB) for the write-ahead log, plus 256 MiB, and never less
+than 768 MiB. It lives in memory when that much memory is available, otherwise
+in a temporary directory under `$WAREHOUSE_STATE_DIR` that is removed
+afterwards; the command prints the size and the place it chose, checks free
+space first, and when it does not fit it stops with the numbers instead of a
+restore error. Override when needed:
+
+| Variable | Meaning |
+| --- | --- |
+| `WAREHOUSE_VERIFY_DATA_MB` | Size of the disposable data directory in MiB. |
+| `WAREHOUSE_VERIFY_SIZE_FACTOR` | Multiplier applied to the dump size (default 10). |
+| `WAREHOUSE_VERIFY_STORAGE` | `auto` (default), `tmpfs` or `disk`. |
+| `WAREHOUSE_VERIFY_SCRATCH_DIR` | Parent of the disk-backed directory (default `$WAREHOUSE_STATE_DIR`). |
+| `WAREHOUSE_VERIFY_MEMORY_MB` | Memory limit of the container. |
+
+A failed verification leaves the container log, its state and the database
+sessions in `$WAREHOUSE_STATE_DIR/diagnostics/verify-restore-<utc>-<id>/`
+(`WAREHOUSE_DIAGNOSTICS_DIR` overrides the place) before the container is
+removed. The log can contain rows of the backup; keep the directory private and
+delete it when the problem is understood.
+
+### Backup key
+
+`config/backup.key` in the state directory (mode 0600) is a random 256-bit key.
+`setup.sh` creates it; on an installation made before signed backups, the next
+`setup.sh` run or the next `db:backup` creates it and says so. It is used for
+three things:
+
+- every backup is **signed** with it (`SHA256SUMS.hmac`). `db:verify-restore`,
+  `db:restore` and `db:restore-host` check the signature before they read
+  anything else from the backup. Plain checksums only detect damage; anyone who
+  can write to a backup drive can regenerate them, and a restore replays the
+  dump as the database superuser and adopts the backup's `compose.env`. The
+  signature is what tells your backup from an edited one;
+- a USB drive is **enrolled** with it (see [USB backup drive](#usb-backup-drive));
+- USB archives are **encrypted** with it when you switch encryption on.
+
+The key is never written into a backup and must never be stored on the backup
+drive. **Keep a copy away from the server and away from the drive**: a
+password manager, or a file on a different device kept somewhere else.
+
+```bash
+cat "$WAREHOUSE_STATE_DIR/config/backup.key"     # 64 hexadecimal characters; copy them exactly
+```
+
+What the copy is for: after the host is lost, `db:restore-host` refuses a backup
+unless you give it the key (`--backup-key FILE`), and an encrypted archive
+cannot be opened at all without it. Without the key, a signed backup can only
+be restored with `--allow-unsigned`, on your own judgement that the drive never
+left your hands; an encrypted archive is lost. Check your copy once: put it in
+a file and run
+`WAREHOUSE_BACKUP_KEY_FILE=/path/to/copy npm run db:verify-restore -- /path/to/backup`.
+
+The restored installation keeps the same key. If the key itself may have been
+disclosed: move `config/backup.key` aside
+(keep it with the old backups, which only verify with it), take a new
+`db:backup` (it creates a new key), store the new copy, and enroll each USB
+drive again. On each drive, also move the archives written before the change
+(`warehouse-<utc>.tar*` with their `.sha256` and `.hmac` files) into another
+folder, for example `warehouse-backups/<state name>/old-key-<date>/`: they
+carry signatures of the old key, and as long as an older backup is still under
+`backups/` the USB run would report its archive as "not signed with the current
+backup key" on every attach. Do the same after a `db:restore-host
+--allow-unsigned` that was run without the key (its first backup creates a new
+one).
 
 ### USB backup drive
 
@@ -511,16 +701,23 @@ which the operator attaches; exFAT is readable by a Linux host and by the Linux
 VM of a [Windows host](#windows-host-with-linux-vm), so a restore works on
 either. The drive is never partitioned or formatted, and other files on it are
 left alone; backups go under `warehouse-backups/<state name>/` as one `.tar`
-archive (file modes kept inside) plus a `.tar.sha256` file per backup.
+archive (file modes kept inside) per backup, with a `.tar.sha256` checksum and
+a `.tar.hmac` signature made with the [backup key](#backup-key). With
+encryption switched on the archive is `.tar.enc` instead (see below).
 
 The operator's only job is to **attach the drive**; the host does the rest.
 `scripts/backup-usb.sh` installs a udev rule and a systemd unit once; after
 that, attaching an **enrolled** drive takes a fresh `db:backup` (write-facing
 services stop briefly), writes each backup not yet on the drive, reads every new
 archive back from the drive and compares checksums, runs `db:verify-restore` on
-the newest archive extracted from the drive, and unmounts the drive. Only
-enrolled drives (identified by their filesystem UUID) trigger a run, so a
-stranger's USB stick never receives the credentials.
+the newest archive extracted from the drive, and unmounts the drive. Only an
+**enrolled** drive receives anything. Enrolling writes a small marker file,
+`warehouse-backups/.drive-enrolment`, onto the drive: a signature made with the
+backup key over the drive's filesystem UUID, its partition UUID and this
+installation's identity. Before a run takes a backup or copies a byte it
+recomputes that signature for the drive in front of it. The exFAT volume serial
+alone no longer enrols a drive (it is 32 bits and can be chosen when
+formatting), so a stick that imitates the serial of your drive receives nothing.
 
 1. Set it up once, as the installation user with `sudo`, with the drive attached
    (on VMware connect it to the VM under Removable Devices first). Find the
@@ -543,12 +740,17 @@ stranger's USB stick never receives the credentials.
    script, while USB backup is set up. It copies its root helper to
    `/usr/local/libexec/warehouse-usb-backup`, writes
    `/etc/warehouse-usb-backup.conf`, the enrolled-drive list
-   `/etc/warehouse-usb-backup.drives`,
+   `/etc/warehouse-usb-backup.drives` (root only, mode 0600),
    `/etc/udev/rules.d/90-warehouse-usb-backup.rules` and the
    `warehouse-usb-backup@.service` unit. Add `--daily` for a drive that stays
-   attached (a daily timer starts the same run), and `--no-fresh-backup` to copy
-   only existing backups. Enroll a second drive for rotation with
-   `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`. **Run setup again
+   attached (a daily timer starts the same run), `--no-fresh-backup` to copy
+   only existing backups, and `--encrypt` to encrypt the archives (below).
+   A later setup run that does not name one of these keeps what you chose;
+   switch one back with `--no-daily`, `--fresh-backup` or `--no-encrypt`.
+   Enroll a second drive for rotation with
+   `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`; enrolling needs
+   the backup key, so take one `npm run db:backup` first on an installation
+   that has none yet. **Run setup again
    after updating the checkout** (see [Rerun and upgrade](#rerun-and-upgrade);
    `setup.sh` runs first) so the installed helper matches it (`status` warns
    when it does not); `sudo bash scripts/backup-usb.sh uninstall` removes
@@ -575,18 +777,43 @@ Nothing is ever deleted from the drive or from `backups/`; remove old archives
 yourself. A run that finds an archive that no longer matches its checksum
 reports it and leaves it alone.
 
-The archives are **not encrypted** and contain `compose.env`, which holds every
-credential of the instance, and, after `tunnel.sh adopt`, the tunnel
+**Encryption is off unless you switch it on.** By default the archives are
+**not encrypted** and contain `compose.env`, which holds every
+credential of the instance, the whole customer database, and, after
+`tunnel.sh adopt`, the tunnel
 credential: whoever holds the drive could run a connector for your hostname and
 receive part of the phones' traffic, sign-in codes included. Keep the drive
-locked away. If it is ever lost, act at once: run `./rotate-keys.sh --yes`,
+locked away.
+
+To encrypt, first store a copy of the [backup key](#backup-key) away from the
+server and the drive, then run setup again with `--encrypt`:
+
+```bash
+sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --encrypt
+```
+
+From the next run on, each new archive is written as `warehouse-<utc>.tar.enc`
+(AES-256, key derived from the backup key, with a signed checksum next to it)
+and the run verifies the restore from the encrypted copy. A lost drive then
+gives away nothing without the key, and a lost key makes the encrypted archives
+unrecoverable, which is why encryption is not the default. It is covered by
+automated tests that really encrypt and decrypt an archive, with the database
+replay simulated; it has not yet been through a lost-host drill on real
+containers. Until you have done one lost-host restore from an encrypted archive
+yourself, keep at least one other copy you know you can restore. Archives already on the drive stay as they are; the run
+names them in a warning until you delete them. Run setup without `--encrypt` to
+switch it off again.
+
+If an unencrypted drive is ever lost, act at once: run `./rotate-keys.sh --yes`,
 rotate the MSG91 key, and replace the tunnel credential (for a dashboard
 tunnel, refresh its token in the Cloudflare dashboard; for a locally managed
 tunnel, create a new tunnel, route the hostname to it with `route dns
 --overwrite-dns` and delete the old one), then
 `mv "$WAREHOUSE_STATE_DIR/config/tunnel" <private place>`, `tunnel.sh adopt`
-the new credential, `sudo bash scripts/tunnel.sh install-service`, and take a
-new backup. A drive kept on site is
+the new credential, `sudo bash scripts/tunnel.sh install-service`, replace the
+passwords listed under
+[Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
+and take a new backup. A drive kept on site is
 local custody only; taking it (or a second drive in rotation) to another
 location is what protects against loss of the host, theft or fire.
 
@@ -676,19 +903,22 @@ does, and the acceptance ledger keeps that open.
    `/srv/warehouse-backups/<state name>/`, checks `SHA256SUMS` on the copy and
    runs `db:verify-restore` against it (`--skip-verify-restore` omits that
    step). It never overwrites or deletes anything: a corrupt existing copy is
-   reported and left alone, and retention is manual.
+   reported and left alone, and retention is manual. An unsigned backup from
+   before format v5 is copied and checksum-verified, and the command says that
+   its restore verification was skipped.
 
-The copies contain `compose.env`, which holds every credential of the instance,
-so the disk itself must be physically controlled. `nofail` lets the host boot if
+The copies are signed but **not encrypted** (the key would sit on the system
+disk of the same machine) and contain `compose.env`, which holds every
+credential of the instance, so the disk itself must be physically controlled. `nofail` lets the host boot if
 the disk is missing; `status` then reports it as not mounted and `sync` refuses
 to write into the empty mount point.
 
 ### In-place restore of the same instance
 
 `npm run db:restore -- --yes /path/to/backup` replaces the installed database
-and stored objects with a v4 backup **of the same instance**. Restoring onto a
-replacement host is not covered by this guide yet; the acceptance ledger keeps
-it open.
+and stored objects with a signed v5 backup **of the same instance** (an
+unsigned v4 backup only with `--allow-unsigned`). For a replacement host see
+[Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive).
 
 ```bash
 cd /path/to/installed/backend
@@ -706,7 +936,9 @@ fresh `db:backup` immediately beforehand and restore that one.
 
 The restore refuses, without touching anything, unless all of the following hold:
 `--yes` is given; no other operator command holds the state lock; `compose ps -q`
-is empty (run `stop.sh` first); the backup is `warehouse-backup-v4`; the backup's
+is empty (run `stop.sh` first); the backup's checksums and its signature under
+this installation's `config/backup.key` are valid; the backup is
+`warehouse-backup-v5` (or v4 with `--allow-unsigned`); the backup's
 `instance.json` equals `public/instance.json`; the backup's `compose.env` equals
 `config/compose.env`, or `--restore-config` is given and the backup names the
 same project and state paths; and `db:verify-restore` passes for the backup.
@@ -716,8 +948,9 @@ It then moves `data/db` and `data/storage` to `data/db.pre-restore-<utc>` and
 storage archive, optionally replaces `config/compose.env` (keeping
 `config/compose.env.pre-restore-<utc>`), initializes a fresh cluster with
 `compose up -d --wait db`, recreates missing roles from `roles.txt` as `NOLOGIN`,
-recreates the `postgres` database from `template1` (the same template the
-verifier restores into), replays `database.dump` by section with
+recreates the `postgres` database from `template0` (the same template the
+verifier restores into; `template1` is not used because a session attached to
+it right after start-up makes `CREATE DATABASE` fail), replays `database.dump` by section with
 `--exit-on-error` and the archived owners (event triggers are replayed last,
 owned by the restoring superuser, because PostgreSQL requires a superuser owner
 and the archived owner is not one in this image), repairs the pg_graphql
@@ -765,7 +998,7 @@ backup. Phones keep working without selecting the server again. Everything
 recorded after the backup is lost.
 
 > **Status:** `db:restore-host` is exercised in CI by a lost-host drill on real
-> containers (fresh backup, containers and Docker volume removed, restore into a
+> containers (fresh backup, containers and database volume removed, restore into a
 > different path, identical fingerprint). Record the result of your first drill
 > on a real new host. The tunnel credential comes back too when the backup was
 > taken after `tunnel.sh adopt` (step 6).
@@ -777,7 +1010,9 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
-`cloudflared`, your user in the `docker` group) and the USB drive. Backups taken
+`cloudflared`, your user in the `docker` group), the USB drive, and **your
+copy of the [backup key](#backup-key)** in a file on the new host (for example
+`~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
 after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
@@ -796,7 +1031,7 @@ different warehouse.
    DRIVE="/media/$USER/<label>"
    ls "$DRIVE"/warehouse-backups/*/                       # one folder per installation
    cd "$DRIVE/warehouse-backups/<state name>"
-   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK
+   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK (.tar.enc.sha256 for an encrypted archive)
    ```
 
 3. **Restore.** Choose the state directory for this host. The original path is
@@ -807,17 +1042,32 @@ different warehouse.
    ```bash
    export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
    sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$WAREHOUSE_STATE_DIR")"
-   npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --yes \
+   npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --backup-key ~/backup.key --yes \
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
 
-   `--yes` confirms that the original host is permanently off. The command first
-   checks, without creating anything: the archive against its `.tar.sha256` and
-   its contents (only the backup folder, no links), the backup's own checksums,
-   that this checkout contains every migration the backup applied (otherwise it
-   names the `source_commit` to check out), that no container of this
-   installation exists on the host, the host prerequisites and 10 GiB of free
-   space. It then creates the state from the backup's `compose.env` and
+   `--yes` confirms that the original host is permanently off. The command
+   checks all of the following before it creates the state. First the archive,
+   unopened: against its `.sha256`, and its signature file (`.hmac`) against
+   your key. An archive without a `.hmac` file is not opened; copy the `.hmac`
+   from the drive with the archive (only an archive from before format v5, or
+   one you packed yourself, has none, and needs `--allow-unsigned`). The
+   archive is then unpacked into a temporary folder next to the new state
+   (an encrypted `.tar.enc` is decrypted with the same key; the folder is
+   removed again if anything fails) and the backup inside is checked: its
+   signature against your key, its contents (only the backup folder, no links,
+   exactly the signed files) and its own checksums. Then: that this checkout contains every migration the backup applied (otherwise it
+   names the `source_commit` to check out), that no container and no
+   database volume of this installation exists on the host (a left-over
+   `<project>_db-config` volume would hand the restored database the previous
+   cluster's configuration and key material; the message names the
+   `docker volume rm` command; monitoring and print-spool volumes hold no
+   restored state, are reported and kept), the host prerequisites and 10 GiB of free
+   space. A backup that fails the signature check was changed after it was
+   written or belongs to another installation: do not restore it. A backup
+   written before format v5 has no signature and is accepted only with
+   `--allow-unsigned` (then `--backup-key` may be left out); use that only for
+   a drive that never left your custody. It then creates the state from the backup's `compose.env` and
    `instance.json`, changing only the three state-path lines, keeps a copy of the
    backup under `backups/`, and runs the in-place restore: a new database from
    the pinned image, replay of both databases and the stored files, integrity
@@ -853,12 +1103,66 @@ different warehouse.
 7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
-8. **Rotate if the drive may have been exposed.** The archives hold every key in
-   plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
+8. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
+   key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
-   [Replacing MSG91 credentials](#authentication-and-otp-limits), and replace
-   the tunnel credential (see [USB backup drive](#usb-backup-drive)), then take a
-   new backup.
+   [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
+   the tunnel credential (see [USB backup drive](#usb-backup-drive)) and the
+   passwords under
+   [Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
+   then take a new backup.
+
+### Secrets that rotate-keys does not change
+
+`rotate-keys.sh` replaces the JWT secret and the two API keys derived from it.
+`compose.env`, and so every unencrypted backup, holds more. After a backup
+medium was exposed, these stay valid until you change them by hand. None of
+them is reachable from the internet through the tunnel: they matter to someone
+who also reaches the host or its network.
+
+| Secret | What it opens | How to replace it |
+| --- | --- | --- |
+| `DASHBOARD_PASSWORD` | Nothing in this release: it is passed to the gateway container, but the gateway configuration (`docker/kong.yml`) has no route that asks for it. | Manual, below, so that a later route never trusts a disclosed value. |
+| `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
+| `GRAFANA_ADMIN_PASS` | Grafana (monitoring profile). | Manual, below; Grafana keeps its own copy. |
+| `POSTGRES_PASSWORD` | Every database login, superuser included, from inside the Compose network or the host. | No supported procedure yet; see below. |
+| `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Realtime and pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
+
+These procedures are written from the service definitions and are **not
+exercised by CI**. Take a `db:backup` first and check with
+`node scripts/doctor.mjs --local` afterwards.
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run db:backup
+new="$(openssl rand -hex 32)"
+# Replace one line of the private configuration, keeping its mode (repeat per secret):
+sed -i "s/^DASHBOARD_PASSWORD=.*/DASHBOARD_PASSWORD=$new/" "$WAREHOUSE_STATE_DIR/config/compose.env"
+bash scripts/compose.sh up -d --force-recreate --wait kong            # DASHBOARD_PASSWORD
+bash scripts/compose.sh --profile printing up -d --force-recreate cups   # CUPS_ADMIN_PASSWORD, if you run printing
+node scripts/doctor.mjs --local
+```
+
+Grafana stores the administrator password in its own database on first start,
+so changing `compose.env` alone does nothing. Change it in Grafana (profile menu,
+Change password, signed in as the administrator), then set
+`GRAFANA_ADMIN_PASS` in `compose.env` to the same value so the two do not drift.
+
+`POSTGRES_PASSWORD` is shared by every service role, is stored a second time
+inside the database (the Realtime tenant and the pooler tenant keep their own
+encrypted copies), and `SECRET_KEY_BASE` and `VAULT_ENC_KEY` protect those
+copies. Changing them means altering seven database roles, clearing both stored
+tenants and recreating every service in one step. That is not scripted and has
+not been rehearsed, so this guide does not give a procedure that could leave
+the database unreachable. Until one exists: these values cannot be used from
+outside the host and its Docker network (the database publishes no port and the
+gateway listens on loopback only); keep the host's logins and network closed,
+and if you must replace them now, rehearse on a copy first: restore the newest
+backup onto a spare machine with `db:restore-host`, try the change there, and
+only then repeat it on the real host. Splitting this one password into
+per-role passwords, with a rotation command, is planned; the design and its
+rehearsal steps are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-shared-value-and-the-plan-to-split-it).
 
 ## Rerun and upgrade
 
@@ -883,6 +1187,28 @@ node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
+The last line keeps the USB choices of your earlier setup (`--encrypt`,
+`--daily`, `--no-fresh-backup`); it prints them, so check that line.
+
+**Upgrading to the release with signed backups (format v5).** Do these once,
+in this order, after the commands above:
+
+1. `setup.sh` created `config/backup.key`. Copy it somewhere away from this
+   machine and from the backup drive now (see [Backup key](#backup-key)).
+2. Take a new backup: `npm run db:backup`. Backups from before the upgrade are
+   unsigned; `db:verify-restore`, `db:restore` and `db:restore-host` accept
+   them only with `--allow-unsigned`.
+3. USB drive: with each drive attached, enroll it again
+   (`sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`). A drive
+   enrolled by an earlier release is refused until then, and nothing is copied
+   to it: the setup command above names each such drive, and from then on
+   `bash scripts/backup-usb.sh status` and `npm run doctor` show a failed USB
+   backup with the `enroll` command until a run succeeds. Then unplug the drive,
+   plug it in again and check `status`.
+4. Decide about `--encrypt` for the USB archives (see
+   [USB backup drive](#usb-backup-drive)).
+5. A lost-host restore now needs `--backup-key`; update your own recovery notes.
+
 Update the checkout under `umask 022`, as for the first clone. Git writes the
 files it changes with the current umask: Ubuntu's default `0002` makes them
 group-writable, which the root-run backup helpers refuse, and `077` makes them
@@ -890,6 +1216,15 @@ unreadable by the containers. `setup.sh` restores the modes of every tracked
 file on each run, and `bash scripts/checkout-permissions.sh` does the same on
 its own, for example after a `git pull` or `git checkout` made without
 `umask 022`.
+
+**Migration 42 and tables of your own.** Migration 42 closes direct writes on
+the template's nineteen business tables and verifies only those. A table you
+added to the `public` schema, and any grant or row policy on it, is left as it
+is and does not stop the upgrade. The migration stops with
+`authenticated still holds a direct write on: <table>` or
+`Unexpected write policy on a business table: <table>.<policy>` only when one
+of the nineteen tables itself carries an extra write policy; drop that policy
+or make it `FOR SELECT`, then rerun.
 
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the
@@ -1006,6 +1341,18 @@ problems seen so far and their causes:
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
+- **USB run failed: `matches its checksum but was not signed with the current
+  backup key`** — the archive is intact but its signature is from another key.
+  After you replaced the backup key this is expected for the older archives:
+  move them into another folder on the drive (see [Backup key](#backup-key)).
+  If you did not replace the key, someone rewrote the archive and its checksum
+  on the drive: do not use it, delete it, and the next run writes it again.
+- **USB run failed: `carries no valid signature of this installation's backup
+  key; it was not opened`** — the drive holds an archive newer than every
+  archive this installation signed. Right after upgrading from a release with
+  unsigned archives, take a new backup (`npm run db:backup`, or just attach
+  the drive when fresh backups are on). Otherwise somebody put the file there:
+  remove it. The run still verifies the newest archive it signed itself.
 - **USB run failed: `does not match its checksum; it was not overwritten`** — an
   archive on the drive is damaged. Copy the drive's other files elsewhere, run
   `sha256sum -c` on each `.tar.sha256` to see which, and replace the drive if
@@ -1028,8 +1375,11 @@ problems seen so far and their causes:
   it had started writing. Nothing is undone or wiped automatically. Run
   `status` to see how far it got (a disk labelled `warehouse-backup` but not
   mounted is "partitioned but not finished") and finish or clean up by hand.
-- **`An admin already exists with a different phone`** — the state directory
-  belongs to another installation; use an empty one.
+- **`An admin already exists with a different phone`** — an active
+  administrator with another phone exists: the state directory belongs to
+  another installation (use an empty one), or you gave the wrong
+  `--admin-phone`. An administrator who was deleted or disabled does not cause
+  this; see [the last administrator](#authentication-and-otp-limits).
 - **OTP accepted by the API but not received** — verify the Flow ID (not the
   DLT template ID), the `OTP` variable name and the sender/entity approval in
   the MSG91 console. The per-phone, per-IP and warehouse-wide caps above return

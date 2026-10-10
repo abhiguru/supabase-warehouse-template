@@ -33,3 +33,16 @@ test('public URL preserves device-reachable address, rejects credentials and abs
   assert.throws(() => publicBaseUrl('http://user:password@example.com'));
   assert.throws(() => publicBaseUrl('file:///tmp/test'));
 });
+test('functions behind sign-in refuse the public anon key and the service key at the router', async () => {
+  const { verifySignedInRequest } = await import('../functions/_shared/jwt.ts');
+  const oldDeno = globalThis.Deno;
+  globalThis.Deno = { env: { get: key => ({ JWT_SECRET: secret })[key] } };
+  const request = async payload => new Request('http://example.test/get-config', { headers: { Authorization: `Bearer ${await sign(payload)}` } });
+  try {
+    await assert.rejects(verifySignedInRequest(await request({ role: 'anon' })), { status: 401, message: 'User access token required' });
+    await assert.rejects(verifySignedInRequest(new Request('http://example.test/get-config')), { status: 401 });
+    assert.equal((await verifySignedInRequest(await request({ role: 'authenticated' }))).role, 'authenticated');
+    // The service key is for calls between containers, never a user of a function.
+    await assert.rejects(verifySignedInRequest(await request({ role: 'service_role' })), { status: 401, message: 'User access token required' });
+  } finally { globalThis.Deno = oldDeno; }
+});

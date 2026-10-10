@@ -63,6 +63,45 @@ DO $$ BEGIN
   RAISE EXCEPTION 'preferred language: the table accepted an unknown value';
 EXCEPTION WHEN check_violation THEN NULL; END $$;
 
+-- A disabled profile cannot read or write while its session row still exists.
+-- (update_user_status(false) also removes the sessions; this is the profile check alone.)
+UPDATE public.user_profiles SET active = false WHERE mobile = '919888888664';
+SELECT set_config('request.jwt.claims', :'customer_claims', true);
+SET LOCAL ROLE authenticated;
+DO $$ BEGIN
+  PERFORM public.set_my_language('en');
+  RAISE EXCEPTION 'preferred language: a disabled profile could write';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+DO $$ BEGIN
+  PERFORM public.get_my_language();
+  RAISE EXCEPTION 'preferred language: a disabled profile could read';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+DO $$ BEGIN
+  PERFORM public.check_session();
+  RAISE EXCEPTION 'preferred language: the request hook let a disabled profile through';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+RESET ROLE;
+SELECT pg_temp.language_assert(pg_temp.stored('9888888664') = 'gu', 'a disabled profile changed nothing');
+UPDATE public.user_profiles SET active = true WHERE mobile = '919888888664';
+
+-- A profile whose enrollment is not approved never reaches an RPC: PostgREST
+-- runs public.check_session before every request and it refuses the session.
+-- own_profile_id() itself does not look at the enrollment state.
+UPDATE public.user_profiles SET enrollment_status = 'pending' WHERE mobile = '919888888664';
+SELECT set_config('request.jwt.claims', :'customer_claims', true);
+SET LOCAL ROLE authenticated;
+DO $$ BEGIN
+  PERFORM public.check_session();
+  RAISE EXCEPTION 'preferred language: the request hook let a pending profile through';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+RESET ROLE;
+UPDATE public.user_profiles SET enrollment_status = 'approved' WHERE mobile = '919888888664';
+SELECT set_config('request.jwt.claims', :'customer_claims', true);
+SET LOCAL ROLE authenticated;
+SELECT public.check_session();
+SELECT pg_temp.language_assert(public.get_my_language()->>'language' = 'gu', 'the approved, active profile reads again');
+RESET ROLE;
+
 -- A session that has ended cannot read or write.
 DELETE FROM warehouse_security.refresh_sessions WHERE id = (:'customer_claims'::jsonb->>'session_id')::uuid;
 SELECT set_config('request.jwt.claims', :'customer_claims', true);

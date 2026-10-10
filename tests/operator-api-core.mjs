@@ -174,6 +174,19 @@ const saved = good(await rpc('save_invoice', adminToken, { p_invoice_data: {
   items: dispatchLines.map(line => ({ disp_trl_id: line.id, charge: 5, tax: 5, labour_rate: 2 })),
 } }), 'save invoice');
 assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total`, adminToken)).data[0].total, 998);
+// Migration 42: the administrator has no direct table write either, so the
+// server totals and stock arithmetic cannot be bypassed with a table call.
+for (const [path, body, method] of [
+  [`/rest/v1/invoice?id=eq.${saved.invoice_id}`, { total: 1, tax_amount: 0, labour: 0 }, 'PATCH'],
+  [`/rest/v1/invoice_trl?invoice_id=eq.${saved.invoice_id}`, { charge: 1 }, 'PATCH'],
+  [`/rest/v1/goodsreceived_trl?id=eq.${stock}`, { stock: 999 }, 'PATCH'],
+  [`/rest/v1/dispatch_trl?id=eq.${dispatchLines[0].id}`, undefined, 'DELETE'],
+  [`/rest/v1/orders?customer_id=eq.${a}`, { note: 'Direct write' }, 'PATCH'],
+]) {
+  assert.equal((await api(path, adminToken, body, method)).status, 403, `administrator direct ${method} refused: ${path.split('?')[0]}`);
+}
+assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total`, adminToken)).data[0].total, 998, 'refused direct write left the total');
+assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${stock}&select=stock`, adminToken)).data[0].stock, 0, 'refused direct write left the stock');
 async function document(name, body) {
   const response = await api(`/functions/v1/${name}`, tokenA, body);
   const data = good(response, name);
@@ -206,7 +219,10 @@ assert.equal(raceResults.filter(result => result.ok && result.data?.success === 
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${raceStock}&select=stock`, adminToken)).data[0].stock, 3,
   'concurrent stock balance is 3');
 const refreshed = good(await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token }), 'refresh');
-assert.equal((await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token })).data?.success, false, 'old refresh cannot replay');
+// Migration 44: a retry of the rotation just made gets the same successor, so a
+// lost answer does not sign the user out; replay after the grace period ends
+// the session (tests/refresh_reuse.sql).
+assert.equal((await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token })).data?.refresh_token, refreshed.refresh_token, 'immediate refresh retry returns the same successor');
 assert.equal((await rpc('logout_session', anon, { p_refresh_token: refreshed.refresh_token })).data, true, 'logout');
 assert.ok(!(await api('/rest/v1/customers?select=id', refreshed.access_token)).ok, 'logged-out access rejected');
 console.log('PASS isolated HTTP identity, roles, A/B lists and mutations, Storage upload privacy/retry, catalog, pricing, cart, receipt, stock, dispatch retry/concurrency, invalid quantities, invoice, signed PDFs, refresh/replay, and logout');

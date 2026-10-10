@@ -151,13 +151,18 @@ SELECT pg_temp.core_assert(:'staff_recent'::jsonb->>'success'='true',
 -- probe could never fail because authenticated has no EXECUTE on the guard.
 SELECT pg_temp.core_denied(format('SELECT public.delete_invoice(%L::uuid)',:'saved'::jsonb->>'invoice_id'));
 SELECT pg_temp.core_denied(format('SELECT public.update_user_role(%L::uuid,''admin''::public.user_role)',:'admin_profile'));
-SELECT pg_temp.core_denied(format('SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>''monthly'',p_unit_price=>1,p_weight_min=>0,p_weight_max=>1,p_labour_rate=>0,p_effective_from=>''2026-01-01'')',:'item_id'));
-SELECT pg_temp.core_denied('SELECT public.get_item_storage_prices()');
-SELECT pg_temp.core_denied(format('SELECT public.get_item_storage_prices(%L::jsonb)',jsonb_build_object('customer_id',:'customer_id')::text));
+-- Migration 45 (owner decision, 2026-10-11) supersedes the pricing refusal of
+-- migration 23: staff read the price list through the RPC, for every customer
+-- and for one. Staff price writes are proven in tests/role_allowlist.sql; the
+-- price table itself stays closed to staff (asserted below).
+SELECT pg_temp.core_assert(public.get_item_storage_prices()->>'success'='true'
+ AND public.get_item_storage_prices()::text LIKE '%Core Demo Potatoes%','staff read the price list: '||public.get_item_storage_prices()::text);
+SELECT pg_temp.core_assert(public.get_item_storage_prices(jsonb_build_object('customer_ids',jsonb_build_array(:'customer_id')))->>'success'='true',
+ 'staff read one customer''s prices');
 RESET ROLE;
 SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid AND deleted_at IS NULL),'denied deletion leaves the invoice');
 SELECT pg_temp.core_assert((SELECT role='admin' FROM public.user_profiles WHERE id=:'admin_profile'::uuid),'denied role change leaves the administrator');
-SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.item_storage_prices),'denied pricing mutation leaves one price');
+SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.item_storage_prices),'reading the price list changes no price');
 SET LOCAL ROLE authenticated;
 
 
@@ -170,12 +175,16 @@ SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.invoice_trl t
  JOIN public.dispatch_trl d ON d.id=t.disp_trl_id JOIN public.goodsreceived_trl g ON g.id=d.gr_trl_id
  WHERE t.invoice_id=(:'saved'::jsonb->>'invoice_id')::uuid),'caller-RLS PDF line joins complete');
 SELECT pg_temp.core_assert((SELECT count(*)=0 FROM public.item_storage_prices),'no direct pricing read grant');
-DO $$ DECLARE tbl text; affected integer; BEGIN
+-- Migration 42: no role writes these tables directly, so the statement is
+-- refused outright instead of matching no row.
+DO $$ DECLARE tbl text; refused boolean; BEGIN
  FOREACH tbl IN ARRAY ARRAY['dispatch','dispatch_trl','invoice','invoice_trl'] LOOP
-  EXECUTE format('UPDATE public.%I SET id=id',tbl); GET DIAGNOSTICS affected=ROW_COUNT;
-  PERFORM pg_temp.core_assert(affected=0,'staff direct update denied: '||tbl);
-  EXECUTE format('DELETE FROM public.%I',tbl); GET DIAGNOSTICS affected=ROW_COUNT;
-  PERFORM pg_temp.core_assert(affected=0,'staff direct delete denied: '||tbl);
+  refused := false;
+  BEGIN EXECUTE format('UPDATE public.%I SET id=id',tbl); EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+  PERFORM pg_temp.core_assert(refused,'staff direct update denied: '||tbl);
+  refused := false;
+  BEGIN EXECUTE format('DELETE FROM public.%I',tbl); EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+  PERFORM pg_temp.core_assert(refused,'staff direct delete denied: '||tbl);
  END LOOP;
 END $$;
 RESET ROLE;
