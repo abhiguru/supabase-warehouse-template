@@ -37,6 +37,10 @@
 - Migration 37: the dispatch list's `date_from` / `date_to` are moments in time,
   not whole days in the database's time zone, so "up to 7 Oct" includes all of
   7 Oct for the person asking. A plain date still means the start of that day.
+- Migration 38: the language a person chose in the app is kept on their profile.
+  `user_profiles.preferred_language` holds `en`, `gu` or NULL; `set_my_language(p_language)`
+  stores the caller's own choice (NULL clears it) and `get_my_language()` returns it.
+  Both need a signed-in, active account with a valid session. Server text stays English.
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
