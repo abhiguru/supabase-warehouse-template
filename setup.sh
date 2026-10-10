@@ -59,7 +59,7 @@ bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postg
 # and access policies. This starts only storage and its internal dependencies.
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 storage
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-storage.sql"
-EXISTING_ADMIN="$(bash "$ROOT/scripts/compose.sh" exec -T db psql -X -A -t -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND mobile='$ADMIN_PHONE') THEN 'match' WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin') THEN 'different' ELSE 'none' END")"
+EXISTING_ADMIN="$(bash "$ROOT/scripts/compose.sh" exec -T db psql -X -A -t -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT warehouse_security.installer_admin_state('$ADMIN_PHONE')")"
 if [[ "$EXISTING_ADMIN" == none ]]; then
   bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v phone="$ADMIN_PHONE" -v name="$ADMIN_NAME" < "$ROOT/scripts/bootstrap-admin.sql"
 elif [[ "$EXISTING_ADMIN" != match ]]; then

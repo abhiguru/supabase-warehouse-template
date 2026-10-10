@@ -8,6 +8,8 @@
 --    keep a chosen phone from signing in; unknown numbers get the smaller part
 --    of the warehouse SMS budget; new access requests are bounded per source
 --    and per day and their names are checked.
+-- 3. Administrators: the last active administrator cannot be deleted,
+--    deactivated or demoted, and the installer can restore one.
 -- The limits are described in docs/OPERATOR_INSTALL.md.
 
 -- ---------------------------------------------------------------------------
@@ -414,4 +416,137 @@ BEGIN
 END $$;
 REVOKE EXECUTE ON FUNCTION public.operator_verify_otp(text,text,text,text,inet) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.operator_verify_otp(text,text,text,text,inet) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- 3. The last active administrator
+-- ---------------------------------------------------------------------------
+-- True when an approved, active administrator other than p_profile exists.
+-- Serialized with bootstrap_first_admin so two concurrent changes cannot each
+-- see the other administrator as still present.
+CREATE FUNCTION warehouse_security.other_active_admin_exists(p_profile uuid) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(71043);
+  RETURN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND active
+    AND enrollment_status='approved' AND id IS DISTINCT FROM p_profile);
+END $$;
+REVOKE ALL ON FUNCTION warehouse_security.other_active_admin_exists(uuid) FROM PUBLIC, anon, authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.delete_user_account() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE profile_id uuid; profile_role text;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc('delete_user_account','{}'::jsonb);
+  SELECT id, role::text INTO STRICT profile_id, profile_role FROM public.user_profiles WHERE auth_user_id=auth.uid() AND active;
+  IF profile_role='admin' AND NOT warehouse_security.other_active_admin_exists(profile_id) THEN
+    RETURN jsonb_build_object('success',false,'code','LAST_ADMIN',
+      'error','The only administrator cannot delete this account. Make another user an administrator first.',
+      'message','The only administrator cannot delete this account. Make another user an administrator first.');
+  END IF;
+  DELETE FROM public.users_customers_new WHERE user_profile_id=profile_id;
+  DELETE FROM public.user_session_activity WHERE user_id=profile_id;
+  DELETE FROM warehouse_security.refresh_sessions WHERE user_id=auth.uid();
+  UPDATE public.user_profiles SET name='Deleted User',display_name='Deleted User',active=false,
+    mobile='DEL'||left(replace(profile_id::text,'-',''),12),mobile_verified=false,mobile_verified_at=NULL
+    WHERE id=profile_id;
+  RETURN jsonb_build_object('success',true,'message','Account deleted');
+END $$;
+
+DO $patch$
+DECLARE fn regprocedure := 'public.update_user_status(uuid,boolean)'::regprocedure;
+  definition text; marker text; replacement text; occurrences integer;
+BEGIN
+  definition := pg_get_functiondef(fn);
+  marker := $m$    -- Update the status and keep the operator enrollment state consistent
+$m$;
+  replacement := $r$    -- The warehouse must keep one administrator who can sign in
+    IF NOT p_active AND v_target_role = 'admin' AND NOT warehouse_security.other_active_admin_exists(v_target_id) THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'LAST_ADMIN',
+            'message', 'The last active administrator cannot be deactivated'
+        );
+    END IF;
+
+    -- Update the status and keep the operator enrollment state consistent
+$r$;
+  occurrences := (length(definition)-length(replace(definition,marker,'')))/length(marker);
+  IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one status update in update_user_status, found %', occurrences; END IF;
+  EXECUTE replace(definition,marker,replacement);
+END $patch$;
+
+DO $patch$
+DECLARE fn regprocedure := 'public.update_user_role(uuid,public.user_role)'::regprocedure;
+  definition text; marker text; replacement text; occurrences integer;
+BEGIN
+  definition := pg_get_functiondef(fn);
+  marker := $m$    -- Update the role
+$m$;
+  replacement := $r$    -- The warehouse must keep one administrator who can sign in
+    IF v_old_role = 'admin' AND NOT warehouse_security.other_active_admin_exists(v_target_id) THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'LAST_ADMIN',
+            'message', 'The last active administrator cannot be given another role'
+        );
+    END IF;
+
+    -- Update the role
+$r$;
+  occurrences := (length(definition)-length(replace(definition,marker,'')))/length(marker);
+  IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one role update in update_user_role, found %', occurrences; END IF;
+  EXECUTE replace(definition,marker,replacement);
+END $patch$;
+
+-- The installer's check counted any administrator row, so a warehouse whose
+-- only administrator was deleted or disabled could never get another. Count
+-- only one who can sign in, and restore the profile of the given phone when it
+-- already exists.
+CREATE OR REPLACE FUNCTION warehouse_security.bootstrap_first_admin(p_phone text, p_name text) RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE result uuid; phone text;
+BEGIN
+  IF session_user <> 'supabase_admin' THEN RAISE EXCEPTION 'Installer only' USING ERRCODE='42501'; END IF;
+  PERFORM pg_advisory_xact_lock(71043);
+  IF EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND active AND enrollment_status='approved') THEN
+    RAISE EXCEPTION 'An administrator already exists';
+  END IF;
+  phone := warehouse_security.normalize_phone(p_phone);
+  IF nullif(btrim(p_name),'') IS NULL THEN RAISE EXCEPTION 'Administrator name is required'; END IF;
+  UPDATE public.user_profiles SET role='admin',active=true,enrollment_status='approved',updated_at=now()
+    WHERE mobile=phone RETURNING auth_user_id INTO result;
+  IF result IS NULL THEN
+    INSERT INTO public.user_profiles(auth_user_id,mobile,name,display_name,role,active,mobile_verified,enrollment_status)
+    VALUES (gen_random_uuid(),phone,left(btrim(p_name),30),left(btrim(p_name),30),'admin',true,false,'approved')
+    RETURNING auth_user_id INTO result;
+  END IF;
+  RETURN result;
+END $$;
+
+-- What setup.sh needs to know before it creates or restores the administrator.
+CREATE FUNCTION warehouse_security.installer_admin_state(p_phone text) RETURNS text
+LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
+  SELECT CASE
+    WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND active AND enrollment_status='approved'
+      AND mobile=warehouse_security.normalize_phone(p_phone)) THEN 'match'
+    WHEN EXISTS (SELECT 1 FROM public.user_profiles WHERE role='admin' AND active AND enrollment_status='approved') THEN 'different'
+    ELSE 'none' END;
+$$;
+REVOKE ALL ON FUNCTION warehouse_security.installer_admin_state(text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION warehouse_security.installer_admin_state(text) TO supabase_admin;
+
+-- operator_review_enrollment: with no active role the old comparison was NULL
+-- and did not refuse. IS DISTINCT FROM refuses it without relying on the
+-- PostgREST session hook having run first.
+DO $patch$
+DECLARE fn regprocedure := 'public.operator_review_enrollment(uuid,text,uuid[])'::regprocedure;
+  definition text; marker text; replacement text; occurrences integer;
+BEGIN
+  definition := pg_get_functiondef(fn);
+  marker := $m$IF auth.jwt()->>'role'<>'authenticated' OR warehouse_security.active_role()<>'admin' THEN$m$;
+  replacement := $r$IF auth.jwt()->>'role' IS DISTINCT FROM 'authenticated' OR warehouse_security.active_role() IS DISTINCT FROM 'admin' THEN$r$;
+  occurrences := (length(definition)-length(replace(definition,marker,'')))/length(marker);
+  IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one administrator check in operator_review_enrollment, found %', occurrences; END IF;
+  EXECUTE replace(definition,marker,replacement);
+END $patch$;
 NOTIFY pgrst, 'reload schema';

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — the last administrator cannot be removed (2026-10-11)
+
+- Migration 44: `delete_user_account` refuses the only active administrator
+  (`{success:false, code:'LAST_ADMIN'}` with a sentence in `error` and
+  `message`); `update_user_status` and `update_user_role` answer
+  `error:'LAST_ADMIN'` when the change would leave no active administrator.
+  Before, the only administrator could delete the own account and nothing
+  short of editing the database could create another.
+- Recovery: `setup.sh` and `warehouse_security.bootstrap_first_admin` now look
+  for an approved, **active** administrator. When there is none, a setup rerun
+  makes the profile with `--admin-phone` an administrator again, or creates
+  one. See "The last administrator" in `docs/OPERATOR_INSTALL.md`.
+- `operator_review_enrollment` refuses a caller with no active role by itself
+  (it relied on the PostgREST session hook having refused first).
+- Tests: new `tests/admin_guards.sql`.
+
 ## Unreleased — OTP limits a stranger cannot turn against a user (2026-10-11)
 
 - Migration 44 changes the OTP limits; the table is in
