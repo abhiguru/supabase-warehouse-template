@@ -19,6 +19,11 @@
 - Migration 34: a receipt or dispatch number made only of spaces, or an empty
   receipt number, is refused (`save_grn` answers with its "required" message;
   both tables carry a NOT VALID check, so existing records still migrate).
+- Migration 35: quick search on the receipt lists. `get_all_grn_items` and
+  `get_customer_grn_items` accept `p_filters.search`; every word must match the
+  receipt number, customer, item, package, rack or vehicle number
+  (case-insensitive; `%` and `_` are literal). `gr_no_from` / `gr_no_to` now
+  compare in document order, so B9..B10 is a real range.
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
