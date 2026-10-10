@@ -44,6 +44,15 @@
 - Documents: text in Gujarati (a customer or item name) is set in Noto Sans Gujarati, to
   match the sans-serif page. It was already drawn correctly, in the serif face.
 
+## Unreleased — invoice discount reason and author (2026-10-09)
+
+- Migration 30: a changed invoice discount records its reason, the profile that
+  set it and the time (`discount_reason`, `discount_set_by`, `discount_set_at`).
+  Staff must give a reason (`discount_reason` in the invoice data) for any
+  discount; administrators and supervisors may leave it empty. Applies to both
+  `save_invoice` signatures and `update_invoice`. Apps that let staff set a
+  discount must send the reason; see `docs/INVOICE_RULES.md`.
+
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
 - `doctor --host-preflight` (run by `setup.sh`) now refuses a fresh install

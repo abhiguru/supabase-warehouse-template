@@ -49,7 +49,12 @@ derives them from the saved lines:
 - header total = ceiling of (sum of line bases + header tax − stored discount).
 
 `discount` remains an input and is preserved as sent (negative values are
-surcharges); a discount larger than the invoice amount is rejected. The
+surcharges); a discount larger than the invoice amount is rejected. Whenever the
+discount changes, the invoice records `discount_reason` (sent as
+`discount_reason` in the invoice data), `discount_set_by` and `discount_set_at`
+(migration 30). Staff must give a reason for every discount change;
+administrators and supervisors may leave it empty. An edit that keeps the
+discount keeps its recorded reason and author. The
 three-argument path still validates that the submitted header numbers are
 non-negative before they are discarded. Every save validates line ownership,
 GRN/customer consistency and dispatch references and rolls the whole save back
