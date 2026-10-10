@@ -109,3 +109,20 @@ test('operator probes run in a container that shares a network with their target
   assert.doesNotMatch(read('health-check.sh'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
 });
+
+test('every service has bounded logs, and imgproxy cannot write to stored files', { skip }, () => {
+  const { services } = renderedCompose();
+  for (const [service, definition] of Object.entries(services)) {
+    assert.deepEqual(definition.logging, { driver: 'json-file', options: { 'max-file': '3', 'max-size': '10m' } }, `${service} logs are unbounded`);
+  }
+  const mount = service => services[service].volumes.find(volume => volume.target === '/var/lib/storage');
+  assert.equal(mount('imgproxy').read_only, true);
+  assert.notEqual(mount('storage').read_only, true);
+  assert.equal(mount('imgproxy').source, mount('storage').source);
+});
+
+test('the pooler registers only a database role that exists', () => {
+  const pooler = read('docker/volumes/pooler/pooler.exs');
+  assert.deepEqual([...pooler.matchAll(/"db_user" => "([a-z_]+)"/g)].map(match => match[1]), ['pgbouncer']);
+  assert.match(read('docker/volumes/db/roles.sql'), /ALTER USER pgbouncer WITH PASSWORD/);
+});

@@ -254,7 +254,8 @@ services:
       context: ./imgproxy
     restart: unless-stopped
     volumes:
-      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
+      # imgproxy only reads stored images; the storage service writes them.
+      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:ro,z
     healthcheck:
       test: ["CMD", "imgproxy", "health"]
       timeout: 5s
