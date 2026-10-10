@@ -99,7 +99,7 @@ SELECT pg_temp.order_assert(jsonb_array_length(public.search_customer_items_for_
 SELECT pg_temp.order_assert(jsonb_array_length(public.search_customer_items_for_order('12',:'customer_a'::uuid)->'items')=1,'exact weight search');
 
 -- Removal goes through the recorded RPC only.
-DELETE FROM public.order_items WHERE id=:'item_a'::uuid;
+SELECT pg_temp.order_denied($s$DELETE FROM public.order_items WHERE id='$s$||:'item_a'||$s$' RETURNING NULL::jsonb$s$,'direct customer delete');
 SELECT pg_temp.order_assert(EXISTS (SELECT 1 FROM public.order_items WHERE id=:'item_a'::uuid),'direct customer delete has no effect');
 SELECT pg_temp.order_assert(public.remove_item_from_order(:'item_a'::uuid)->>'success'='true','remove through RPC');
 SELECT pg_temp.order_assert(NOT EXISTS (SELECT 1 FROM public.order_items WHERE id=:'item_a'::uuid),'item removed');

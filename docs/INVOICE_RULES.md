@@ -45,7 +45,11 @@ Since migration 24 the header money columns are server-computed for every
 save path (`save_invoice(jsonb)`, `save_invoice(uuid,jsonb,jsonb[])` and
 `update_invoice`) and for every role. Client-supplied `labour`, `tax_amount`
 and `total` are ignored; `warehouse_security.recalculate_invoice_header`
-derives them from the saved lines:
+derives them from the saved lines. Those three RPCs and `delete_invoice` are the
+only ways an app session changes an invoice: since migration 42 no role, the
+administrator and supervisor included, can insert, update or delete `invoice`
+or `invoice_trl` rows with a direct table call, so "for every role" holds for
+the whole API and not only for the RPC paths. The header is derived as follows:
 
 - line base = storage + labour exactly as in the preview above, using each
   saved line's `charge`, `labour_rate`, `tax` and `duration`;

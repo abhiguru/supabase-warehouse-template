@@ -321,3 +321,43 @@ dispatch carries one customer's lots. Migration 39 enforces this for every role:
 Records saved before migration 39 are not checked or repaired.
 `tests/dispatch_lot_ownership.sql` proves the rule and the dispatch-edit
 refusals of migration 25 (invoiced lines, insufficient stock).
+
+## No direct table writes for any role, 10 October 2026
+
+Until migration 42 administrators and supervisors could insert, update and
+delete rows of the nineteen business tables with a plain table call
+(`PATCH /rest/v1/invoice`, `PATCH /rest/v1/goodsreceived_trl`,
+`POST /rest/v1/stock_movements`, `DELETE /rest/v1/dispatch_trl`), which went
+around the server-computed invoice totals, the rate and discount rules, the
+stock checks, the one-customer-per-dispatch rule and the dependency checks of
+the delete RPCs. The owner decided to remove that path and keep the reads.
+
+Migration 42 revokes INSERT, UPDATE and DELETE on `customers`, `items`,
+`item_storage_prices`, `goodsreceived`, `goodsreceived_trl`, `dispatch`,
+`dispatch_trl`, `invoice`, `invoice_trl`, `payments`, `orders`, `order_items`,
+`grn_images`, `dispatch_images`, `stock_movements`, `print_jobs`,
+`sensor_devices`, `sensor_readings` and `sensor_health_events` from the app's
+database role and makes the administrator/supervisor policy on each read-only.
+A direct write now answers HTTP 403 for every role. Consequences:
+
+- Every change to these tables by an app session goes through a guarded RPC
+  (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`,
+  `update_dispatch_smart`, `save_invoice`, `update_invoice`, the `delete_*`
+  RPCs, the customer, item, price, image and cart RPCs). Their role rules are
+  unchanged.
+- An order's note, priority and requested date are changed with
+  `update_order_metadata(p_order_id, p_note, p_priority,
+  p_requested_dispatch_date)`, now granted. Administrators and supervisors only;
+  each change is written to the order history.
+- `payments`, `stock_movements`, `print_jobs` and the three sensor tables have
+  no write RPC. They are written by the server side only (Edge functions with
+  the service key, operator scripts, Studio), as before.
+- The staff and customer read policies of migrations 3, 18, 22 and 28 and the
+  own-profile grant `UPDATE(name, display_name)` on `user_profiles` are
+  unchanged.
+
+`tests/direct_write_guard.sql` proves the refusals for administrator,
+supervisor, staff and customer on all nineteen tables, the unchanged reads, and
+that the RPC paths still apply their rules (a changed line rate recomputes the
+header, an out-of-range rate and a dispatch above the stock are refused, the
+delete RPCs keep their dependency checks).

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — business tables are written only through the guarded RPCs (2026-10-10)
+
+- Migration 42: administrators and supervisors can no longer insert, update or
+  delete rows of the business tables with a direct table call
+  (`/rest/v1/<table>`); the request answers HTTP 403. Before, one such call
+  could set an invoice total, a line rate, a discount or a lot's stock, or
+  delete dispatch lines, without the server totals, rate limits, stock checks
+  and dependency checks the RPCs apply. Reads are unchanged for every role.
+  The tables: `customers`, `items`, `item_storage_prices`, `goodsreceived`,
+  `goodsreceived_trl`, `dispatch`, `dispatch_trl`, `invoice`, `invoice_trl`,
+  `payments`, `orders`, `order_items`, `grn_images`, `dispatch_images`,
+  `stock_movements`, `print_jobs`, `sensor_devices`, `sensor_readings`,
+  `sensor_health_events`.
+- **Action for API clients:** anything that wrote these tables directly with an
+  administrator or supervisor session must call the RPC instead
+  (`safe_delete_customer` / `restore_customer` / `update_customer`,
+  `update_invoice`, `update_grn`, `update_dispatch_smart`, the `delete_*` RPCs).
+  Edge functions using the service key, operator scripts and Studio are not
+  affected.
+- Migration 42: `update_order_metadata(p_order_id, p_note, p_priority,
+  p_requested_dispatch_date)` is granted to signed-in users. Administrators and
+  supervisors only; each change is written to the order history. It replaces a
+  direct update of an order's note.
+- The own-profile grant `UPDATE(name, display_name)` on `user_profiles` is
+  unchanged.
+- Tests: new `tests/direct_write_guard.sql`. `tests/staff_grn_access.sql`,
+  `tests/staff_dispatch_invoice_access.sql` and `tests/order_screen.sql` now
+  expect a refusal where a direct write used to match no row. The HTTP drivers
+  `tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs` and
+  `tests/review-core.mjs` use the RPCs instead of direct writes.
+
 ## Unreleased — invoice line rules: rate ranges, one invoice per dispatch line, India dates, discount history (2026-10-10)
 
 - Migration 41: `save_invoice` (both signatures) and `update_invoice` refuse a

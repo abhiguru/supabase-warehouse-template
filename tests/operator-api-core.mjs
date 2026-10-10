@@ -174,6 +174,19 @@ const saved = good(await rpc('save_invoice', adminToken, { p_invoice_data: {
   items: dispatchLines.map(line => ({ disp_trl_id: line.id, charge: 5, tax: 5, labour_rate: 2 })),
 } }), 'save invoice');
 assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total`, adminToken)).data[0].total, 998);
+// Migration 42: the administrator has no direct table write either, so the
+// server totals and stock arithmetic cannot be bypassed with a table call.
+for (const [path, body, method] of [
+  [`/rest/v1/invoice?id=eq.${saved.invoice_id}`, { total: 1, tax_amount: 0, labour: 0 }, 'PATCH'],
+  [`/rest/v1/invoice_trl?invoice_id=eq.${saved.invoice_id}`, { charge: 1 }, 'PATCH'],
+  [`/rest/v1/goodsreceived_trl?id=eq.${stock}`, { stock: 999 }, 'PATCH'],
+  [`/rest/v1/dispatch_trl?id=eq.${dispatchLines[0].id}`, undefined, 'DELETE'],
+  [`/rest/v1/orders?customer_id=eq.${a}`, { note: 'Direct write' }, 'PATCH'],
+]) {
+  assert.equal((await api(path, adminToken, body, method)).status, 403, `administrator direct ${method} refused: ${path.split('?')[0]}`);
+}
+assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total`, adminToken)).data[0].total, 998, 'refused direct write left the total');
+assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${stock}&select=stock`, adminToken)).data[0].stock, 0, 'refused direct write left the stock');
 async function document(name, body) {
   const response = await api(`/functions/v1/${name}`, tokenA, body);
   const data = good(response, name);

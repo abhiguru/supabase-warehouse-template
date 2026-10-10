@@ -170,12 +170,16 @@ SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.invoice_trl t
  JOIN public.dispatch_trl d ON d.id=t.disp_trl_id JOIN public.goodsreceived_trl g ON g.id=d.gr_trl_id
  WHERE t.invoice_id=(:'saved'::jsonb->>'invoice_id')::uuid),'caller-RLS PDF line joins complete');
 SELECT pg_temp.core_assert((SELECT count(*)=0 FROM public.item_storage_prices),'no direct pricing read grant');
-DO $$ DECLARE tbl text; affected integer; BEGIN
+-- Migration 42: no role writes these tables directly, so the statement is
+-- refused outright instead of matching no row.
+DO $$ DECLARE tbl text; refused boolean; BEGIN
  FOREACH tbl IN ARRAY ARRAY['dispatch','dispatch_trl','invoice','invoice_trl'] LOOP
-  EXECUTE format('UPDATE public.%I SET id=id',tbl); GET DIAGNOSTICS affected=ROW_COUNT;
-  PERFORM pg_temp.core_assert(affected=0,'staff direct update denied: '||tbl);
-  EXECUTE format('DELETE FROM public.%I',tbl); GET DIAGNOSTICS affected=ROW_COUNT;
-  PERFORM pg_temp.core_assert(affected=0,'staff direct delete denied: '||tbl);
+  refused := false;
+  BEGIN EXECUTE format('UPDATE public.%I SET id=id',tbl); EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+  PERFORM pg_temp.core_assert(refused,'staff direct update denied: '||tbl);
+  refused := false;
+  BEGIN EXECUTE format('DELETE FROM public.%I',tbl); EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+  PERFORM pg_temp.core_assert(refused,'staff direct delete denied: '||tbl);
  END LOOP;
 END $$;
 RESET ROLE;
