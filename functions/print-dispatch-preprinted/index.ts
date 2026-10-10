@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 
@@ -409,7 +409,7 @@ serve(async (req) => {
     console.log('print-dispatch-preprinted: Generated content, length:', printContent.length, 'bytes');
 
     // Import IPP and send to printer in RAW mode
-    const ipp = await import("npm:ipp");
+    const ipp = await import("npm:ipp@2.0.1");
     const printer = ipp.Printer("http://cups:631/printers/LQ1310_RAW");
 
     const Buffer = (await import("node:buffer")).Buffer;
