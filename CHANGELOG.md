@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — function router refuses the anon key; PDF footer escapes its values (2026-10-11)
+
+- The function router answers 401 "User access token required" for every
+  function except `hello`, `get-public-config` and `operator-otp` when the
+  caller presents the public anon key. Each of those functions already refused
+  it in its own code; the router check covers a function added later without
+  one.
+- `createFooterHtml` escapes the company name, document type and number. Its
+  only caller passes fixed text, so no output changes.
+- Tests: `tests/jwt.test.mjs`, new `tests/gotenberg-footer.test.mjs`.
+
 ## Unreleased — the auth and access test runs again (2026-10-11)
 
 - `tests/auth_and_access.sql` was never run by `tests/migrations.sh` and used

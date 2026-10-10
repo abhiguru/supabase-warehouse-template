@@ -23,3 +23,11 @@ export async function verifyRequest(req: Request) {
     throw { status: 401, message: 'Invalid or expired access token' };
   }
 }
+
+// For functions behind sign-in. The public anon key is a correctly signed
+// token, so the signature alone does not show that a user is signed in.
+export async function verifySignedInRequest(req: Request) {
+  const payload = await verifyRequest(req);
+  if (payload.role === 'anon') throw { status: 401, message: 'User access token required' };
+  return payload;
+}

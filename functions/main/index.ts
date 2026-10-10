@@ -1,5 +1,5 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
-import { verifyRequest } from '../_shared/jwt.ts';
+import { verifySignedInRequest } from '../_shared/jwt.ts';
 import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 
@@ -16,7 +16,9 @@ serve(async (req: Request) => {
   }
   if (!allowed.has(name)) return new Response('Function not found', { status: 404, headers: corsHeaders });
   try {
-    if (!publicFunctions.has(name)) await verifyRequest(req);
+    // Each function still checks its caller itself; this keeps the anon key out
+    // of any function added later without that check.
+    if (!publicFunctions.has(name)) await verifySignedInRequest(req);
     const envVars = Object.entries(Deno.env.toObject());
     if (name === 'get-public-config') {
       const path = Deno.env.get('INSTANCE_MANIFEST_PATH');
