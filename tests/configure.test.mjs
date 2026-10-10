@@ -34,6 +34,8 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     assert.equal(readFileSync(manifestPath, 'utf8').includes('real-provider-key'), false);
     const env = readEnv(envPath);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+    // Only secrets a service reads are generated; the template carries no key nothing consumes.
+    for (const unused of ['LOGFLARE_API_KEY', 'LOGFLARE_PUBLIC_ACCESS_TOKEN', 'DOCKER_SOCKET_LOCATION', 'ENABLE_PROM_METRICS', 'GOTRUE_EXTERNAL_GOOGLE_ENABLED']) assert.equal(unused in env, false, unused);
     for (const secret of ['POSTGRES_PASSWORD', 'DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) assert.match(env[secret], /^[0-9a-f]{64}$/, secret);
     // The backup key is created with the state, private, and is not a compose variable.
     const keyPath = join(stateDir, 'config/backup.key');

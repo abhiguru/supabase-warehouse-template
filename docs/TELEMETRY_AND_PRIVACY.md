@@ -15,7 +15,7 @@ Telemetry is strictly opt-in and disabled by default:
 - **Empty DSN by Default**: In `.env.example`, `EXPO_PUBLIC_SENTRY_DSN` is blank. If unconfigured, Sentry is never initialized.
 - **Development Mode Isolation**: Sentry is deactivated during local development (`enabled: !__DEV__ && !!SENTRY_DSN`), ensuring local debugging data never leaves the developer's machine.
 - **Performance Tracing Disabled**: `tracesSampleRate: 0` disables performance sampling, preventing unnecessary network transmissions and runtime overhead.
-- **No Default PII**: `sendDefaultPii: false` instructs the native SDK not to collect device-level identifiers, Wi-Fi networks, or IP addresses.
+- **No Default PII**: `sendDefaultPii: false` stops the SDK from attaching the client IP address and its other default user data. It does **not** remove the SDK's device, operating-system and app contexts: an event still carries the device model, OS version and build, locale and time zone, app id, release and build number, and figures such as free memory and boot time. The redaction pipeline below does not touch those contexts, and `user.id` is kept on purpose, so an event can identify a handset. Tell users so before enabling a DSN.
 - **Breadcrumb Buffer Limit**: `maxBreadcrumbs: 50` caps the in-memory history to prevent excessive context accumulation.
 
 ---
