@@ -41,16 +41,36 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 5);
   // Every route that needs only the public key or no key at all is limited per
   // client address, except storage (see docs/CONTAINER_SECURITY.md).
-  const limits = { 'rest-v1': [300, 6000], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [300, 6000], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
+  // The socket route has a per-minute limit only (null): see the next test.
+  const limits = { 'rest-v1': [300, 6000], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
   for (const [service, [minute, hour]] of Object.entries(limits)) {
     const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
     assert.ok(rateLimit, `${service} has no rate limit`);
-    assert.match(rateLimit, new RegExp(`minute: ${minute}\\n\\s+hour: ${hour}\\n\\s+policy: local\\n\\s+fault_tolerant: true\\n[\\s\\S]*limit_by: ip\\n`), `${service} rate limit`);
+    const hourLine = hour === null ? '' : `hour: ${hour}\\n\\s+`;
+    assert.match(rateLimit, new RegExp(`minute: ${minute}\\n\\s+${hourLine}policy: local\\n\\s+fault_tolerant: true\\n[\\s\\S]*limit_by: ip\\n`), `${service} rate limit`);
   }
   assert.doesNotMatch(serviceBlock('storage-v1'), /rate-limiting/);
   for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'graphql-v1': 2, 'realtime-v1-rest': 2, 'storage-v1': 50, 'functions-v1': 10 })) {
     assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
   }
+});
+
+test('the Realtime socket limit cannot lock a facility out after a Realtime outage', () => {
+  // Every phone on the facility network reaches the gateway from one public address, and Kong
+  // counts each failed upgrade. The app opens one socket per live order screen (at most two at
+  // once per phone) and realtime-js retries after 1, 2, 5 and 10 s, then every 10 s
+  // (docs/CONTAINER_SECURITY.md, Realtime socket limit).
+  const devices = 100, socketsPerDevice = 2;
+  const retryDelays = [1, 2, 5, 10], steadyDelay = 10;
+  let at = 0, firstMinute = 0;
+  for (let attempt = 0; ; attempt += 1) { at += retryDelays[attempt] ?? steadyDelay; if (at > 60) break; firstMinute += 1; }
+  assert.equal(firstMinute, 8);
+  const rateLimit = serviceBlock('realtime-v1-ws').split('- name: rate-limiting')[1].split('      - name: ')[0];
+  const minute = Number(rateLimit.match(/^\s+minute: (\d+)$/m)[1]);
+  assert.ok(minute >= devices * socketsPerDevice * firstMinute, `a whole facility retrying (${devices * socketsPerDevice * firstMinute} a minute) stays under the limit of ${minute}`);
+  // A window longer than a minute is what turned an outage into a lockout: the retries of the
+  // outage would use it up, and reconnects would be refused until it rolled over.
+  assert.doesNotMatch(rateLimit, /^\s+(hour|day|month|year):/m);
 });
 
 test('gateway exports the request metrics the alert rules query', () => {

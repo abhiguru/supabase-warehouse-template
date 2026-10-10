@@ -63,6 +63,13 @@ No migration. Operator actions are named in each item.
   and then rejected. Setup now writes the key to a temporary file and links it
   into place, replaces an empty key file, and refuses, without touching it, a
   key file whose content is not a key.
+- **The Realtime socket limit can no longer lock a facility out.** The limit
+  added on this branch (300 a minute, 6000 an hour per client address) counts
+  failed connection attempts, and every phone of a facility shares one
+  address: during a Realtime outage 50 phones used the hourly budget in 20
+  minutes and were then refused until the hour ended. The socket route now has
+  1800 attempts a minute and no hourly window, sized for 100 phones
+  (arithmetic in `docs/CONTAINER_SECURITY.md`, "Realtime socket limit").
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 

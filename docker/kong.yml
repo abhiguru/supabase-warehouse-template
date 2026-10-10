@@ -193,12 +193,16 @@ services:
           hide_credentials: false
       - name: rate-limiting
         config:
-          minute: 300
-          hour: 6000
+          # Counts connection attempts, failed ones included: the limit applies
+          # to the upgrade request, not to messages on an open socket. All
+          # phones of a facility share one address, so the number covers a
+          # whole facility reconnecting at once (100 phones x 2 sockets x 8
+          # attempts in the first minute = 1600). There is no hourly window on
+          # purpose: the retries of an outage would use it up and lock the
+          # facility out afterwards. See docs/CONTAINER_SECURITY.md.
+          minute: 1800
           policy: local
           fault_tolerant: true
-          # Counts connection attempts: the limit applies to the upgrade request,
-          # not to messages on an open socket.
           limit_by: ip
       - name: acl
         config:

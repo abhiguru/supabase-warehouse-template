@@ -625,9 +625,10 @@ document names a different one.
 ## Gateway limits and metrics (2026-10-11)
 
 - The GraphQL route and both Realtime routes had the public-key check but no
-  rate limit. They now have the REST route's limit (300 requests a minute and
-  6000 an hour per client address); on the WebSocket route it counts
-  connection attempts, not messages. The Realtime HTTP route also has a 2 MB
+  rate limit. GraphQL and the Realtime HTTP route now have the REST route's
+  limit (300 requests a minute and 6000 an hour per client address). The
+  Realtime socket route has its own limit, 1800 connection attempts a minute
+  and no hourly window (next section). The Realtime HTTP route also has a 2 MB
   body limit.
 - The storage route still has no rate limit. A list screen loads one image per
   row and every phone at a facility shares one public address, so a limit low
@@ -643,6 +644,45 @@ document names a different one.
 - These gateway changes were checked by parsing the evaluated file and by
   reading the plugin schemas in the pinned Kong image. Kong itself has not
   loaded the file.
+
+### Realtime socket limit
+
+The first version of the socket limit was the REST numbers, 300 a minute and
+6000 an hour per client address. That could lock a whole facility out of
+Realtime after an outage, so it was replaced. The reasoning:
+
+- **One address per facility.** Kong limits by `CF-Connecting-IP`. Every
+  phone on the facility network leaves through the same router, so the whole
+  facility is one client address and shares one counter. (Phones on mobile
+  data have their own, or a carrier-shared, address.)
+- **Failed attempts count.** The limit applies to the upgrade request before
+  it is passed on. When Realtime is down or restarting and the gateway is up,
+  each retry is counted and then answered 502.
+- **How the app retries.** `src/services/order-live-updates.ts` in the app
+  opens one socket per live order screen (order list, supervisor queue, an
+  open order), only while the app is in the foreground and online; a phone
+  holds one, at most two at a time. The Realtime client retries a lost socket
+  after 1, 2, 5 and 10 seconds and then every 10 seconds: 8 attempts in the
+  first minute, 6 a minute after that, for as long as the outage lasts.
+- **The arithmetic for 100 phones.** 100 phones x 2 sockets = 200 sockets:
+  1600 attempts in the first minute, 1200 a minute afterwards, 72,000 an hour.
+  Under the old limit a facility of 50 phones with one socket each (300 a
+  minute) used the 6000-an-hour budget in 20 minutes; from then on every
+  connection attempt of the facility was refused until the hour ended, also
+  after Realtime was back.
+- **The limit now.** 1800 attempts a minute per address, above the 1600 of a
+  full facility's worst minute, and no hourly window. A per-minute window
+  cannot lock anyone out: a refused attempt is retried 10 seconds later, and
+  the counter starts again within the minute. What it still stops is one
+  address opening sockets faster than 30 a second.
+- **What this does not cover.** A facility with more than about 100 phones in
+  the foreground at once would see some attempts refused in the first minute
+  of an outage and reconnect a little later; raise `minute` in
+  `docker/kong.yml` and the numbers in `tests/gateway-config.test.mjs`
+  together. The REST and GraphQL limits were not changed here; they have the
+  same one-address-per-facility property (see the storage note above) and
+  need request counts from a running facility. As with the other gateway
+  changes, Kong has not loaded this file on a running stack.
 
 ## Database passwords: one shared value, and the plan to split it
 
