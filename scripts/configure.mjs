@@ -38,6 +38,19 @@ function replaceFileAtomically(path, text) {
   try { renameSync(stage, path); } catch (error) { rmSync(stage, { force: true }); throw error; }
 }
 
+// The backup key signs every backup (scripts/backup-key.sh) and is never part
+// of one: the operator keeps a copy off the machine for a lost-host restore.
+export function createBackupKey(configDir) {
+  const path = join(configDir, 'backup.key');
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (st) {
+    if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('config/backup.key must be an owned regular file with mode 0600.');
+    return false;
+  }
+  writeFileSync(path, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
+  return true;
+}
+
 export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, faultAfterManifest = false } = {}) {
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
@@ -76,7 +89,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
       }
-      return { created: false, state, manifest, providerUpdated };
+      // An installation made before signed backups gets its backup key here;
+      // an existing key is never replaced.
+      const backupKeyCreated = createBackupKey(join(state, 'config'));
+      return { created: false, state, manifest, providerUpdated, backupKeyCreated };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -107,9 +123,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     writeFileSync(join(stage, 'public/instance.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o644, flag: 'wx' });
     if (faultAfterManifest) throw new Error('Injected failure after manifest staging.');
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
+    createBackupKey(join(stage, 'config'));
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest };
+  return { created: true, state, manifest, backupKeyCreated: true };
 }
 
 export function parseConfigureArgs(args) {
@@ -128,5 +145,6 @@ if (isMain(import.meta.url)) {
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : 'Preserved existing operator state unchanged.');
+    if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }

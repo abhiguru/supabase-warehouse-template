@@ -1,6 +1,7 @@
 // Shared fixtures for the backup, verify-restore and in-place restore tests.
 // Everything runs against a fake `docker` on PATH; no container is started.
-import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,12 +12,23 @@ export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n') =>
   `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\n` +
   `WAREHOUSE_STORAGE_PATH=${state}/data/storage\nWAREHOUSE_MANIFEST_PATH=${state}/public/instance.json\n${extra}`;
 
+// A fixed fictional backup key; the state fixture holds it as config/backup.key.
+export const backupKey = '5a'.repeat(16) + '0f'.repeat(16);
+// Signs with Node's HMAC, independently of the shell implementation in scripts/backup-key.sh.
+export const hmacHex = (key, label, data) => createHmac('sha256', Buffer.from(key, 'hex')).update(`${label}\n`).update(data).digest('hex');
+export function signBackup(dir, key = backupKey) {
+  writeFileSync(join(dir, 'SHA256SUMS.hmac'), `warehouse-backup-hmac-v1 ${hmacHex(key, 'warehouse-backup-manifest-v1', readFileSync(join(dir, 'SHA256SUMS')))}\n`, { mode: 0o600 });
+  return dir;
+}
+export function writeKey(path, key = backupKey) { writeFileSync(path, `${key}\n`, { mode: 0o600 }); return path; }
+
 export function makeState(scratch, { env } = {}) {
   const state = join(scratch, 'state');
   mkdirSync(state, { mode: 0o700 });
   for (const path of ['config', 'public', 'data', 'data/db', 'data/storage']) mkdirSync(join(state, path), { mode: 0o700 });
   writeFileSync(join(state, 'config/compose.env'), env ?? composeEnv(state), { mode: 0o600 });
   writeFileSync(join(state, 'public/instance.json'), instanceJson);
+  writeKey(join(state, 'config/backup.key'));
   writeFileSync(join(state, 'data/db/PG_VERSION'), '15\n');
   writeFileSync(join(state, 'data/storage/current-object'), 'current object data');
   return state;
@@ -25,7 +37,8 @@ export function makeState(scratch, { env } = {}) {
 // A backup directory as scripts/backup.sh writes it. `objects` are catalog
 // entries (<bucket>/<name>/<version>); `files` are archive paths relative to
 // the storage root, defaulting to the tenant-prefixed layout of every object.
-export function makeBackup(dir, { format = 'warehouse-backup-v4', instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n',
+// v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
+export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n',
   objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
@@ -42,7 +55,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v4', instance = ins
     'metadata.txt': `format=${format}\ncreated_at_utc=20260101T000000Z\n`,
     'compose.env': env, 'instance.json': instance, 'roles.txt': 'postgres\nsupabase_admin\nsupabase_realtime_admin\n',
   };
-  if (format === 'warehouse-backup-v4') {
+  if (format === 'warehouse-backup-v4' || format === 'warehouse-backup-v5') {
     content['_supabase.dump'] = 'fake supabase dump\n';
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
   }
@@ -51,6 +64,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v4', instance = ins
   const sums = spawnSync('sha256sum', listed, { cwd: dir, encoding: 'utf8' });
   if (sums.status !== 0) throw new Error(sums.stderr);
   writeFileSync(join(dir, 'SHA256SUMS'), sums.stdout, { mode: 0o600 });
+  if (format === 'warehouse-backup-v5' && key) signBackup(dir, key);
   return dir;
 }
 
@@ -58,6 +72,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v4', instance = ins
 // verify-restore.sh; `docker compose` serves compose.sh callers. The catalog
 // query returns FAKE_CATALOG_FILE, psql reads of the restored databases return
 // the fixed integrity text, and the final full `up` fails when FAKE_FAIL_START=yes.
+// FAKE_FAIL_CREATEDB=yes makes the disposable createdb fail the way a busy template does.
 export function fakeDocker(bin) {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   writeFileSync(join(bin, 'docker'), `#!/bin/sh
@@ -65,7 +80,8 @@ printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
   ps) exit 0 ;;
   run) printf 'deadbeefcafe\\n' ;;
-  cp|rm) exit 0 ;;
+  cp|rm|volume) exit 0 ;;
+  logs) printf 'fake container log line\\n'; if [ "$FAKE_LOG_NO_SPACE" = yes ]; then printf 'ERROR:  could not extend file "base/1/2": No space left on device\\n'; fi ;;
   inspect)
     case "$3" in
       *State.Health.Status*) printf 'healthy\\n' ;;
@@ -74,6 +90,8 @@ case "$1" in
   exec)
     case "$*" in
       *' pg_isready '*) exit 0 ;;
+      *pg_stat_activity*) printf '41|client backend|template1|idle\\n' ;;
+      *' createdb '*) if [ "$FAKE_FAIL_CREATEDB" = yes ]; then echo 'createdb: error: database creation failed: ERROR:  source database is being accessed by other users' >&2; exit 1; fi ;;
       *'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
       *' psql '*' -d warehouse_restore') printf 'fake integrity\\n' ;;
     esac ;;

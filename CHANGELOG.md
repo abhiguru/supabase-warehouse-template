@@ -1,5 +1,80 @@
 # Changelog
 
+## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
+
+**Operators must act after this upgrade** (details in `docs/OPERATOR_INSTALL.md`,
+"Rerun and upgrade" and "Backup key"):
+
+1. `setup.sh` (or the first `db:backup`) creates `config/backup.key` in the
+   state. Copy it somewhere away from the server and from the backup drive. A
+   lost-host restore refuses without it.
+2. Take a new backup. Backups are now format `warehouse-backup-v5` and signed;
+   older ones are accepted by `db:verify-restore`, `db:restore` and
+   `db:restore-host` only with `--allow-unsigned`.
+3. Enroll every USB backup drive again
+   (`sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`, after running
+   its `setup` again). A drive enrolled by an earlier release receives nothing
+   until then.
+4. `npm run db:restore-host` now takes `--backup-key FILE`.
+
+- **Backups are signed.** `SHA256SUMS.hmac` is an HMAC-SHA256 of `SHA256SUMS`
+  under the backup key. The verifier, the in-place restore and the lost-host
+  restore check it, and that the backup holds exactly the listed files, before
+  they read anything else. Until now a backup was trusted on plain checksums
+  that anyone with the drive could regenerate, and a restore replays the dump
+  as the database superuser and adopts the backup's `compose.env`. A wrong
+  signature is refused even with `--allow-unsigned`.
+- **A USB drive is enrolled by a signed marker, not by its volume serial.**
+  The 32-bit exFAT serial was the only check and stood in two world-readable
+  files, so a stick formatted with that serial received every credential.
+  `enroll` now writes `warehouse-backups/.drive-enrolment`, an HMAC over the
+  filesystem UUID, the partition UUID and the instance id; `run` takes no
+  backup and copies nothing unless it verifies. The enrolment list is mode
+  0600 and binds both UUIDs.
+- **USB archives can be encrypted** (`backup-usb.sh setup --encrypt`, or
+  `WAREHOUSE_BACKUP_ENCRYPT=1` for `run`): AES-256-CTR with a key derived from
+  the backup key, written as `.tar.enc` with a signed checksum.
+  `db:restore-host` opens such an archive with `--backup-key`. This is **off by
+  default**: a lost key makes the archives unrecoverable, and the encrypted
+  path is covered by tests with real encryption but a simulated database, not
+  yet by a restore drill on real containers. Backup-disk copies are not
+  encrypted. Archives are signed (`.tar.hmac`) in both modes.
+- **The restore verifier no longer fails at random.** It created its databases
+  from `template1` the moment the server answered, and a start-up session
+  attached to `template1` made `createdb` fail (CI, 2026-10-09). It and
+  `db:restore` now use `template0`. `tests/migrations.sh` ends with a drill on
+  real containers that holds a session on `template1` while the verifier runs.
+- **The restore verifier grows with the database.** It was fixed at 1 GiB of
+  memory and a 768 MiB data directory, and `db:restore` requires it, so a
+  database past that size could no longer be restored. The data directory is
+  now sized from the dumps, placed in memory when it fits and otherwise in a
+  temporary directory under the state, with a free-space check and a message
+  that names the numbers. `WAREHOUSE_VERIFY_DATA_MB`, `_SIZE_FACTOR`,
+  `_STORAGE`, `_SCRATCH_DIR` and `_MEMORY_MB` override it.
+- A failed verification keeps the container log, its state and the database
+  sessions under `diagnostics/` in the state before the container is removed.
+- The verifier and the migration test run the database image by the digest the
+  production image is built from; `metadata.txt` records it, and records
+  `source_commit=unknown` instead of an empty value outside a git checkout.
+- `db:restore-host` refuses a host that still has a Docker volume of the
+  project (`<project>_db-config` would give the restored database the old
+  cluster's configuration and key material).
+- `test:pooler`, `test:monitoring`, `test:cups` and a stand-alone
+  `scripts/migrate.sh` take the operator lock, so they cannot start or build
+  services while a backup or restore is running.
+- CI checks the syntax of every tracked shell script, including the two that
+  run inside images.
+- `.env.example` and the generated `compose.env` no longer carry variables
+  nothing reads (four Logflare tokens, the Google sign-in block,
+  `DOCKER_SOCKET_LOCATION`, `ENABLE_PROM_METRICS`,
+  `POOLER_PROXY_PORT_TRANSACTION`). Existing installations keep their lines;
+  they are harmless.
+- Documentation: which secrets `rotate-keys.sh` does not change and what to do
+  about each (`docs/OPERATOR_INSTALL.md`, "Secrets that rotate-keys does not
+  change"). There is still no rotation for `POSTGRES_PASSWORD`,
+  `SECRET_KEY_BASE` and `VAULT_ENC_KEY`. `docs/TELEMETRY_AND_PRIVACY.md` now
+  says what a Sentry event still contains with `sendDefaultPii: false`.
+
 ## Unreleased — the server admits what the app offers to each role (2026-10-11)
 
 Owner decision: where the app shows a screen to a role and the server refused

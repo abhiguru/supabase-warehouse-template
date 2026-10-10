@@ -478,7 +478,8 @@ run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`,
 `db:backup`, `db:restore`, `backup-disk.sh sync`, `backup-usb.sh run`,
-`test:recovery`, `retention:*`, `test:gateway-dns`)
+`test:recovery`, `retention:*`, `test:gateway-dns`, `test:pooler`,
+`test:monitoring`, `test:cups`, and `scripts/migrate.sh` when run by itself)
 takes an exclusive per-state lock on `config/operator.lock` before touching
 Docker. A second command for the same state fails immediately with "Another
 operator command ... is running for this state." Wait for the first to finish;
@@ -553,8 +554,8 @@ sign out (Settings → Sign Out) and sign in again after a rotation.
 
 ## Backup and restore
 
-`npm run db:backup -- /absolute/destination` writes a private
-`warehouse-backup-v4` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
+`npm run db:backup -- /absolute/destination` writes a private, signed
+`warehouse-backup-v5` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
 It stops ingress and every write-facing service for the capture and restarts
 only the services that were running. The directory contains:
 
@@ -568,8 +569,9 @@ only the services that were running. The directory contains:
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
+| `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 
-The backup is **unencrypted** and contains every credential of the instance.
+The backup directory is **unencrypted** and contains every credential of the instance.
 Keep it mode 0700/0600 on protected storage. `db:backup` warns when the
 destination shares a filesystem with `data/`: a backup on the same disk does not
 survive loss of that disk. Copy every retained backup to an operator-provided
@@ -579,14 +581,77 @@ custom configuration and the pgsodium root key) is not part of the backup and
 is preserved by `stop.sh`; never use `down -v` on a production instance.
 Optional CUPS and monitoring volumes are not in this core backup.
 
-`npm run db:verify-restore -- /path/to/backup` accepts v1 to v4 backups. It
-checks every checksum, rejects absolute paths, `..` segments and links in the
+`npm run db:verify-restore -- /path/to/backup` accepts v1 to v5 backups. It
+checks every checksum and the signature first (see [Backup key](#backup-key)),
+rejects absolute paths, `..` segments and links in the
 storage archive, proves that every catalogued object is a file in the archive
 (extra files are reported as a warning), restores both dumps into a disposable
-`--network none` container on tmpfs with `--exit-on-error`, replays the archived
+`--network none` container with `--exit-on-error`, replays the archived
 ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
-instance.
+instance. Backups written before v5 carry no signature: the verifier, `db:restore`
+and `db:restore-host` refuse them unless you add `--allow-unsigned`, which prints
+a warning and proves nothing about where the backup came from.
+
+The disposable database is sized from the backup: the two dumps times 10, the
+same again (up to 1 GiB) for the write-ahead log, plus 256 MiB, and never less
+than 768 MiB. It lives in memory when that much memory is available, otherwise
+in a temporary directory under `$WAREHOUSE_STATE_DIR` that is removed
+afterwards; the command prints the size and the place it chose, checks free
+space first, and when it does not fit it stops with the numbers instead of a
+restore error. Override when needed:
+
+| Variable | Meaning |
+| --- | --- |
+| `WAREHOUSE_VERIFY_DATA_MB` | Size of the disposable data directory in MiB. |
+| `WAREHOUSE_VERIFY_SIZE_FACTOR` | Multiplier applied to the dump size (default 10). |
+| `WAREHOUSE_VERIFY_STORAGE` | `auto` (default), `tmpfs` or `disk`. |
+| `WAREHOUSE_VERIFY_SCRATCH_DIR` | Parent of the disk-backed directory (default `$WAREHOUSE_STATE_DIR`). |
+| `WAREHOUSE_VERIFY_MEMORY_MB` | Memory limit of the container. |
+
+A failed verification leaves the container log, its state and the database
+sessions in `$WAREHOUSE_STATE_DIR/diagnostics/verify-restore-<utc>-<id>/`
+(`WAREHOUSE_DIAGNOSTICS_DIR` overrides the place) before the container is
+removed. The log can contain rows of the backup; keep the directory private and
+delete it when the problem is understood.
+
+### Backup key
+
+`config/backup.key` in the state directory (mode 0600) is a random 256-bit key.
+`setup.sh` creates it; on an installation made before signed backups, the next
+`setup.sh` run or the next `db:backup` creates it and says so. It is used for
+three things:
+
+- every backup is **signed** with it (`SHA256SUMS.hmac`). `db:verify-restore`,
+  `db:restore` and `db:restore-host` check the signature before they read
+  anything else from the backup. Plain checksums only detect damage; anyone who
+  can write to a backup drive can regenerate them, and a restore replays the
+  dump as the database superuser and adopts the backup's `compose.env`. The
+  signature is what tells your backup from an edited one;
+- a USB drive is **enrolled** with it (see [USB backup drive](#usb-backup-drive));
+- USB archives are **encrypted** with it when you switch encryption on.
+
+The key is never written into a backup and must never be stored on the backup
+drive. **Keep a copy away from the server and away from the drive**: a
+password manager, or a file on a different device kept somewhere else.
+
+```bash
+cat "$WAREHOUSE_STATE_DIR/config/backup.key"     # 64 hexadecimal characters; copy them exactly
+```
+
+What the copy is for: after the host is lost, `db:restore-host` refuses a backup
+unless you give it the key (`--backup-key FILE`), and an encrypted archive
+cannot be opened at all without it. Without the key, a signed backup can only
+be restored with `--allow-unsigned`, on your own judgement that the drive never
+left your hands; an encrypted archive is lost. Check your copy once: put it in
+a file and run
+`WAREHOUSE_BACKUP_KEY_FILE=/path/to/copy npm run db:verify-restore -- /path/to/backup`.
+
+The restored installation keeps the same key. If the key itself may have been
+disclosed: move `config/backup.key` aside
+(keep it with the old backups, which only verify with it), take a new
+`db:backup` (it creates a new key), store the new copy, and enroll each USB
+drive again.
 
 ### USB backup drive
 
@@ -596,16 +661,23 @@ which the operator attaches; exFAT is readable by a Linux host and by the Linux
 VM of a [Windows host](#windows-host-with-linux-vm), so a restore works on
 either. The drive is never partitioned or formatted, and other files on it are
 left alone; backups go under `warehouse-backups/<state name>/` as one `.tar`
-archive (file modes kept inside) plus a `.tar.sha256` file per backup.
+archive (file modes kept inside) per backup, with a `.tar.sha256` checksum and
+a `.tar.hmac` signature made with the [backup key](#backup-key). With
+encryption switched on the archive is `.tar.enc` instead (see below).
 
 The operator's only job is to **attach the drive**; the host does the rest.
 `scripts/backup-usb.sh` installs a udev rule and a systemd unit once; after
 that, attaching an **enrolled** drive takes a fresh `db:backup` (write-facing
 services stop briefly), writes each backup not yet on the drive, reads every new
 archive back from the drive and compares checksums, runs `db:verify-restore` on
-the newest archive extracted from the drive, and unmounts the drive. Only
-enrolled drives (identified by their filesystem UUID) trigger a run, so a
-stranger's USB stick never receives the credentials.
+the newest archive extracted from the drive, and unmounts the drive. Only an
+**enrolled** drive receives anything. Enrolling writes a small marker file,
+`warehouse-backups/.drive-enrolment`, onto the drive: a signature made with the
+backup key over the drive's filesystem UUID, its partition UUID and this
+installation's identity. Before a run takes a backup or copies a byte it
+recomputes that signature for the drive in front of it. The exFAT volume serial
+alone no longer enrols a drive (it is 32 bits and can be chosen when
+formatting), so a stick that imitates the serial of your drive receives nothing.
 
 1. Set it up once, as the installation user with `sudo`, with the drive attached
    (on VMware connect it to the VM under Removable Devices first). Find the
@@ -628,12 +700,15 @@ stranger's USB stick never receives the credentials.
    script, while USB backup is set up. It copies its root helper to
    `/usr/local/libexec/warehouse-usb-backup`, writes
    `/etc/warehouse-usb-backup.conf`, the enrolled-drive list
-   `/etc/warehouse-usb-backup.drives`,
+   `/etc/warehouse-usb-backup.drives` (root only, mode 0600),
    `/etc/udev/rules.d/90-warehouse-usb-backup.rules` and the
    `warehouse-usb-backup@.service` unit. Add `--daily` for a drive that stays
-   attached (a daily timer starts the same run), and `--no-fresh-backup` to copy
-   only existing backups. Enroll a second drive for rotation with
-   `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`. **Run setup again
+   attached (a daily timer starts the same run), `--no-fresh-backup` to copy
+   only existing backups, and `--encrypt` to encrypt the archives (below).
+   Enroll a second drive for rotation with
+   `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`; enrolling needs
+   the backup key, so take one `npm run db:backup` first on an installation
+   that has none yet. **Run setup again
    after updating the checkout** (see [Rerun and upgrade](#rerun-and-upgrade);
    `setup.sh` runs first) so the installed helper matches it (`status` warns
    when it does not); `sudo bash scripts/backup-usb.sh uninstall` removes
@@ -660,18 +735,43 @@ Nothing is ever deleted from the drive or from `backups/`; remove old archives
 yourself. A run that finds an archive that no longer matches its checksum
 reports it and leaves it alone.
 
-The archives are **not encrypted** and contain `compose.env`, which holds every
-credential of the instance, and, after `tunnel.sh adopt`, the tunnel
+**Encryption is off unless you switch it on.** By default the archives are
+**not encrypted** and contain `compose.env`, which holds every
+credential of the instance, the whole customer database, and, after
+`tunnel.sh adopt`, the tunnel
 credential: whoever holds the drive could run a connector for your hostname and
 receive part of the phones' traffic, sign-in codes included. Keep the drive
-locked away. If it is ever lost, act at once: run `./rotate-keys.sh --yes`,
+locked away.
+
+To encrypt, first store a copy of the [backup key](#backup-key) away from the
+server and the drive, then run setup again with `--encrypt`:
+
+```bash
+sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --encrypt
+```
+
+From the next run on, each new archive is written as `warehouse-<utc>.tar.enc`
+(AES-256, key derived from the backup key, with a signed checksum next to it)
+and the run verifies the restore from the encrypted copy. A lost drive then
+gives away nothing without the key, and a lost key makes the encrypted archives
+unrecoverable, which is why encryption is not the default. It is covered by
+automated tests that really encrypt and decrypt an archive, with the database
+replay simulated; it has not yet been through a lost-host drill on real
+containers. Until you have done one lost-host restore from an encrypted archive
+yourself, keep at least one other copy you know you can restore. Archives already on the drive stay as they are; the run
+names them in a warning until you delete them. Run setup without `--encrypt` to
+switch it off again.
+
+If an unencrypted drive is ever lost, act at once: run `./rotate-keys.sh --yes`,
 rotate the MSG91 key, and replace the tunnel credential (for a dashboard
 tunnel, refresh its token in the Cloudflare dashboard; for a locally managed
 tunnel, create a new tunnel, route the hostname to it with `route dns
 --overwrite-dns` and delete the old one), then
 `mv "$WAREHOUSE_STATE_DIR/config/tunnel" <private place>`, `tunnel.sh adopt`
-the new credential, `sudo bash scripts/tunnel.sh install-service`, and take a
-new backup. A drive kept on site is
+the new credential, `sudo bash scripts/tunnel.sh install-service`, replace the
+passwords listed under
+[Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
+and take a new backup. A drive kept on site is
 local custody only; taking it (or a second drive in rotation) to another
 location is what protects against loss of the host, theft or fire.
 
@@ -761,19 +861,22 @@ does, and the acceptance ledger keeps that open.
    `/srv/warehouse-backups/<state name>/`, checks `SHA256SUMS` on the copy and
    runs `db:verify-restore` against it (`--skip-verify-restore` omits that
    step). It never overwrites or deletes anything: a corrupt existing copy is
-   reported and left alone, and retention is manual.
+   reported and left alone, and retention is manual. An unsigned backup from
+   before format v5 is copied and checksum-verified, and the command says that
+   its restore verification was skipped.
 
-The copies contain `compose.env`, which holds every credential of the instance,
-so the disk itself must be physically controlled. `nofail` lets the host boot if
+The copies are signed but **not encrypted** (the key would sit on the system
+disk of the same machine) and contain `compose.env`, which holds every
+credential of the instance, so the disk itself must be physically controlled. `nofail` lets the host boot if
 the disk is missing; `status` then reports it as not mounted and `sync` refuses
 to write into the empty mount point.
 
 ### In-place restore of the same instance
 
 `npm run db:restore -- --yes /path/to/backup` replaces the installed database
-and stored objects with a v4 backup **of the same instance**. Restoring onto a
-replacement host is not covered by this guide yet; the acceptance ledger keeps
-it open.
+and stored objects with a signed v5 backup **of the same instance** (an
+unsigned v4 backup only with `--allow-unsigned`). For a replacement host see
+[Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive).
 
 ```bash
 cd /path/to/installed/backend
@@ -791,7 +894,9 @@ fresh `db:backup` immediately beforehand and restore that one.
 
 The restore refuses, without touching anything, unless all of the following hold:
 `--yes` is given; no other operator command holds the state lock; `compose ps -q`
-is empty (run `stop.sh` first); the backup is `warehouse-backup-v4`; the backup's
+is empty (run `stop.sh` first); the backup's checksums and its signature under
+this installation's `config/backup.key` are valid; the backup is
+`warehouse-backup-v5` (or v4 with `--allow-unsigned`); the backup's
 `instance.json` equals `public/instance.json`; the backup's `compose.env` equals
 `config/compose.env`, or `--restore-config` is given and the backup names the
 same project and state paths; and `db:verify-restore` passes for the backup.
@@ -801,8 +906,9 @@ It then moves `data/db` and `data/storage` to `data/db.pre-restore-<utc>` and
 storage archive, optionally replaces `config/compose.env` (keeping
 `config/compose.env.pre-restore-<utc>`), initializes a fresh cluster with
 `compose up -d --wait db`, recreates missing roles from `roles.txt` as `NOLOGIN`,
-recreates the `postgres` database from `template1` (the same template the
-verifier restores into), replays `database.dump` by section with
+recreates the `postgres` database from `template0` (the same template the
+verifier restores into; `template1` is not used because a session attached to
+it right after start-up makes `CREATE DATABASE` fail), replays `database.dump` by section with
 `--exit-on-error` and the archived owners (event triggers are replayed last,
 owned by the restoring superuser, because PostgreSQL requires a superuser owner
 and the archived owner is not one in this image), repairs the pg_graphql
@@ -862,7 +968,9 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
-`cloudflared`, your user in the `docker` group) and the USB drive. Backups taken
+`cloudflared`, your user in the `docker` group), the USB drive, and **your
+copy of the [backup key](#backup-key)** in a file on the new host (for example
+`~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
 after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
@@ -881,7 +989,7 @@ different warehouse.
    DRIVE="/media/$USER/<label>"
    ls "$DRIVE"/warehouse-backups/*/                       # one folder per installation
    cd "$DRIVE/warehouse-backups/<state name>"
-   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK
+   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK (.tar.enc.sha256 for an encrypted archive)
    ```
 
 3. **Restore.** Choose the state directory for this host. The original path is
@@ -892,17 +1000,26 @@ different warehouse.
    ```bash
    export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
    sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$WAREHOUSE_STATE_DIR")"
-   npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --yes \
+   npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --backup-key ~/backup.key --yes \
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
 
    `--yes` confirms that the original host is permanently off. The command first
-   checks, without creating anything: the archive against its `.tar.sha256` and
-   its contents (only the backup folder, no links), the backup's own checksums,
+   checks, without creating anything: the archive against its `.sha256`, the
+   archive signature and the backup signature against your key (an encrypted
+   `.tar.enc` is decrypted with the same key), its contents (only the backup
+   folder, no links, exactly the signed files), the backup's own checksums,
    that this checkout contains every migration the backup applied (otherwise it
-   names the `source_commit` to check out), that no container of this
-   installation exists on the host, the host prerequisites and 10 GiB of free
-   space. It then creates the state from the backup's `compose.env` and
+   names the `source_commit` to check out), that no container and no Docker
+   volume of this installation exists on the host (a left-over
+   `<project>_db-config` volume would hand the restored database the previous
+   cluster's configuration and key material; the message names the
+   `docker volume rm` command), the host prerequisites and 10 GiB of free
+   space. A backup that fails the signature check was changed after it was
+   written or belongs to another installation: do not restore it. A backup
+   written before format v5 has no signature and is accepted only with
+   `--allow-unsigned` (then `--backup-key` may be left out); use that only for
+   a drive that never left your custody. It then creates the state from the backup's `compose.env` and
    `instance.json`, changing only the three state-path lines, keeps a copy of the
    backup under `backups/`, and runs the in-place restore: a new database from
    the pinned image, replay of both databases and the stored files, integrity
@@ -938,12 +1055,65 @@ different warehouse.
 7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
-8. **Rotate if the drive may have been exposed.** The archives hold every key in
-   plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
+8. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
+   key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
-   [Replacing MSG91 credentials](#authentication-and-otp-limits), and replace
-   the tunnel credential (see [USB backup drive](#usb-backup-drive)), then take a
-   new backup.
+   [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
+   the tunnel credential (see [USB backup drive](#usb-backup-drive)) and the
+   passwords under
+   [Secrets that rotate-keys does not change](#secrets-that-rotate-keys-does-not-change),
+   then take a new backup.
+
+### Secrets that rotate-keys does not change
+
+`rotate-keys.sh` replaces the JWT secret and the two API keys derived from it.
+`compose.env`, and so every unencrypted backup, holds more. After a backup
+medium was exposed, these stay valid until you change them by hand. None of
+them is reachable from the internet through the tunnel: they matter to someone
+who also reaches the host or its network.
+
+| Secret | What it opens | How to replace it |
+| --- | --- | --- |
+| `DASHBOARD_PASSWORD` | Nothing in this release: it is passed to the gateway container, but the gateway configuration (`docker/kong.yml`) has no route that asks for it. | Manual, below, so that a later route never trusts a disclosed value. |
+| `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
+| `GRAFANA_ADMIN_PASS` | Grafana (monitoring profile). | Manual, below; Grafana keeps its own copy. |
+| `POSTGRES_PASSWORD` | Every database login, superuser included, from inside the Compose network or the host. | No supported procedure yet; see below. |
+| `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Realtime and pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
+
+These procedures are written from the service definitions and are **not
+exercised by CI**. Take a `db:backup` first and check with
+`node scripts/doctor.mjs --local` afterwards.
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run db:backup
+new="$(openssl rand -hex 32)"
+# Replace one line of the private configuration, keeping its mode (repeat per secret):
+sed -i "s/^DASHBOARD_PASSWORD=.*/DASHBOARD_PASSWORD=$new/" "$WAREHOUSE_STATE_DIR/config/compose.env"
+bash scripts/compose.sh up -d --force-recreate --wait kong            # DASHBOARD_PASSWORD
+bash scripts/compose.sh --profile printing up -d --force-recreate cups   # CUPS_ADMIN_PASSWORD, if you run printing
+node scripts/doctor.mjs --local
+```
+
+Grafana stores the administrator password in its own database on first start,
+so changing `compose.env` alone does nothing. Change it in Grafana (profile menu,
+Change password, signed in as the administrator), then set
+`GRAFANA_ADMIN_PASS` in `compose.env` to the same value so the two do not drift.
+
+`POSTGRES_PASSWORD` is shared by every service role, is stored a second time
+inside the database (the Realtime tenant and the pooler tenant keep their own
+encrypted copies), and `SECRET_KEY_BASE` and `VAULT_ENC_KEY` protect those
+copies. Changing them means altering seven database roles, clearing both stored
+tenants and recreating every service in one step. That is not scripted and has
+not been rehearsed, so this guide does not give a procedure that could leave
+the database unreachable. Until one exists: these values cannot be used from
+outside the host and its Docker network (the database publishes no port and the
+gateway listens on loopback only); keep the host's logins and network closed,
+and if you must replace them now, rehearse on a copy first: restore the newest
+backup onto a spare machine with `db:restore-host`, try the change there, and
+only then repeat it on the real host. Splitting this one password into
+per-role passwords, with a rotation command, is planned separately.
 
 ## Rerun and upgrade
 
@@ -967,6 +1137,22 @@ bash setup.sh --operator ...           # the same inputs as the installation
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
+
+**Upgrading to the release with signed backups (format v5).** Do these once,
+in this order, after the commands above:
+
+1. `setup.sh` created `config/backup.key`. Copy it somewhere away from this
+   machine and from the backup drive now (see [Backup key](#backup-key)).
+2. Take a new backup: `npm run db:backup`. Backups from before the upgrade are
+   unsigned; `db:verify-restore`, `db:restore` and `db:restore-host` accept
+   them only with `--allow-unsigned`.
+3. USB drive: with each drive attached, enroll it again
+   (`sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`). A drive
+   enrolled by an earlier release is refused until then, and nothing is copied
+   to it. Then unplug it and plug it in again and check `status`.
+4. Decide about `--encrypt` for the USB archives (see
+   [USB backup drive](#usb-backup-drive)).
+5. A lost-host restore now needs `--backup-key`; update your own recovery notes.
 
 Update the checkout under `umask 022`, as for the first clone. Git writes the
 files it changes with the current umask: Ubuntu's default `0002` makes them

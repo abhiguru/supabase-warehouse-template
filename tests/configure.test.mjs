@@ -34,6 +34,23 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     assert.equal(readFileSync(manifestPath, 'utf8').includes('real-provider-key'), false);
     const env = readEnv(envPath);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+    for (const secret of ['POSTGRES_PASSWORD', 'DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) assert.match(env[secret], /^[0-9a-f]{64}$/, secret);
+    // The backup key is created with the state, private, and is not a compose variable.
+    const keyPath = join(stateDir, 'config/backup.key');
+    assert.match(readFileSync(keyPath, 'utf8'), /^[0-9a-f]{64}\n$/);
+    assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+    assert.equal(readFileSync(envPath, 'utf8').includes(readFileSync(keyPath, 'utf8').trim()), false);
+    const keyBefore = readFileSync(keyPath, 'utf8');
+    assert.equal(configure(root, options).backupKeyCreated, false, 'a rerun keeps the key');
+    assert.equal(readFileSync(keyPath, 'utf8'), keyBefore);
+    // An installation from before signed backups gets its key on the next setup run.
+    rmSync(keyPath);
+    assert.equal(configure(root, options).backupKeyCreated, true);
+    assert.match(readFileSync(keyPath, 'utf8'), /^[0-9a-f]{64}\n$/);
+    assert.deepEqual(readFileSync(envPath), before, 'creating the key leaves compose.env untouched');
+    chmodSync(keyPath, 0o644);
+    assert.throws(() => configure(root, options), /backup\.key must be an owned regular file with mode 0600/);
+    chmodSync(keyPath, 0o600);
     assert.throws(() => validateOperatorEnv({ ...env, ANON_KEY: env.SERVICE_ROLE_KEY }, stateDir), /Invalid ANON_KEY/);
     assert.throws(() => validateOperatorEnv({ ...env, JWT_SECRET: '0'.repeat(96) }, stateDir), /Invalid ANON_KEY/);
     assert.throws(() => validateOperatorEnv({ ...env, WAREHOUSE_PROJECT_NAME: 'warehouse-other' }, stateDir), /project differs/);
@@ -82,7 +99,7 @@ test('rerun with a changed provider file replaces only the provider lines atomic
     assert.equal(updated.created, false);
     assert.equal(updated.providerUpdated, true);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')), ['compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
     const after = readFileSync(envPath, 'utf8');
     const afterEnv = readEnv(envPath);
     assert.equal(afterEnv.MSG91_AUTH_KEY, 'second-provider-key');

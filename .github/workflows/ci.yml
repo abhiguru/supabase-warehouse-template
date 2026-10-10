@@ -27,7 +27,13 @@ jobs:
         run: npm run check:container-dependencies
       - name: Shell syntax
         run: |
-          for script in *.sh scripts/*.sh tests/*.sh; do bash -n "$script"; done
+          # Every tracked script, including the ones that run inside images.
+          for script in $(git ls-files '*.sh'); do
+            case "$(head -n 1 "$script")" in
+              '#!/bin/sh'*) sh -n "$script" ;;
+              *) bash -n "$script" ;;
+            esac
+          done
   migrations:
     runs-on: ubuntu-latest
     needs: validate
@@ -213,6 +219,8 @@ jobs:
             "$tunnel_id" "$RUNNER_TEMP/tunnel-ci/tunnel.json" > "$RUNNER_TEMP/tunnel-ci/config.yml"
           bash scripts/tunnel.sh adopt --config "$RUNNER_TEMP/tunnel-ci/config.yml"
           npm run db:backup -- /tmp/warehouse-ci-lost-host-backup
+          # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
+          install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
           project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
           # Lose the host: no containers and no Docker volume of this installation remain;
@@ -220,9 +228,14 @@ jobs:
           bash scripts/compose.sh --profile '*' down
           docker volume rm "${project}_db-config"
           restored="$RUNNER_TEMP/core-backend-test-20260930"
-          npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup
+          if npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup; then
+            echo 'restore-host accepted a backup without the backup key' >&2; exit 1
+          fi
+          test ! -e "$restored"
+          npm run db:restore-host -- --state-dir "$restored" --backup-key "$RUNNER_TEMP/backup-key-copy" --yes /tmp/warehouse-ci-lost-host-backup
           echo "WAREHOUSE_STATE_DIR=$restored" >> "$GITHUB_ENV"
           export WAREHOUSE_STATE_DIR="$restored"
+          cmp "$RUNNER_TEMP/backup-key-copy" "$restored/config/backup.key"
           node scripts/doctor.mjs --local
           cmp "$RUNNER_TEMP/tunnel-ci/tunnel.json" "$restored/config/tunnel/credentials.json"
           grep -qx "credentials-file: $restored/config/tunnel/credentials.json" "$restored/config/tunnel/config.yml"

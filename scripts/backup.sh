@@ -13,6 +13,12 @@ state="${WAREHOUSE_STATE_DIR:-}"
 compose config --quiet
 exec 9>"$state/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
+# shellcheck source=scripts/backup-key.sh
+source "$ROOT/scripts/backup-key.sh"
+backup_key_ensure "$state"
+backup_key_load "$state/config/backup.key"
+# Recorded before anything is stopped; a source archive without .git has no commit.
+source_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 mkdir -p "$state/backups"
 destination="${1:-${WAREHOUSE_BACKUP_DIR:-$state/backups/warehouse-$timestamp}}"
 if [[ "$destination" != /* || -e "$destination" || -L "$destination" || "$(realpath -m "$destination")" == "$state/data"/* ]]; then
@@ -95,16 +101,19 @@ if [[ -d "$state/config/tunnel" && ! -L "$state/config/tunnel" ]]; then
 fi
 
 cat > "$stage/metadata.txt" <<EOF
-format=warehouse-backup-v4
+format=warehouse-backup-v5
 created_at_utc=$timestamp
-source_commit=$(git -C "$ROOT" rev-parse HEAD)
-database_image=supabase/postgres:15.8.1.060
+source_commit=${source_commit:-unknown}
+database_image=supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc
 consistency=write-facing services stopped during database/storage capture
 EOF
 (cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${tunnel_files[@]}" > SHA256SUMS)
+# The signature covers SHA256SUMS and so every file; the key itself is never copied into the backup.
+backup_sign_dir "$stage" "$BACKUP_KEY"
 find "$stage" -mindepth 1 -type f -exec chmod 600 {} +
 find "$stage" -mindepth 1 -type d -exec chmod 700 {} +
 mv "$stage" "$destination"
 if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
 echo "Backup created at $destination"
 echo 'Treat this directory as sensitive and test every retained backup with db:verify-restore.'
+echo "It is signed with $state/config/backup.key; keep a copy of that key away from this machine and from the backup drive."

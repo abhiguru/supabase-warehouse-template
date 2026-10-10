@@ -14,7 +14,8 @@ docker run -d --name "$container" --label purpose=warehouse-migration-test \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
-  -e POSTGRES_PASSWORD=disposable-test-database-only supabase/postgres:15.8.1.060 >/dev/null
+  -e POSTGRES_PASSWORD=disposable-test-database-only \
+  supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
@@ -95,4 +96,9 @@ migration_files=("$ROOT"/migrations/*.sql)
 [[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "${#migration_files[@]}" ]] || {
   echo 'Migration mismatch changed the ledger.' >&2; exit 1;
 }
+
+# Backup verification on real containers: this database is dumped into a signed
+# backup and replayed by scripts/verify-restore.sh, once with a session attached to
+# template1 and once with the disk-backed data directory.
+bash "$ROOT/tests/verify-restore-drill.sh" "$container"
 echo 'Migration reruns, checksum mismatch rejection, retention, and operator auth configuration passed.'

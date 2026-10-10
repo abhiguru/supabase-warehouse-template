@@ -87,7 +87,7 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.match(result.stdout, /sign in again/);
     const after = readEnv(f.envPath);
     assert.equal(statSync(f.envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['compose.env', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
     assert.match(after.JWT_SECRET, /^[0-9a-f]{96}$/);
     assert.notEqual(after.JWT_SECRET, before.JWT_SECRET);
     assert.notEqual(after.ANON_KEY, before.ANON_KEY);
@@ -120,7 +120,7 @@ test('a failing SQL step leaves the configuration untouched and recreates nothin
     const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...f.env, FAKE_DOCKER_FAIL: 'psql' }, timeout: 120000 });
     assert.notEqual(result.status, 0);
     assert.deepEqual(readFileSync(f.envPath), before);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['compose.env', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
     const calls = readFileSync(f.log, 'utf8');
     assert.match(calls, /exec -T db psql/);
     assert.equal(calls.includes('--force-recreate'), false);

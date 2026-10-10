@@ -413,11 +413,14 @@ cmd_sync() {
     mv -T -- "$STAGE" "$target"; STAGE=''
     copied=$((copied + 1)); echo "Copied and checksum-verified: $backup_name"
     if ((verify)); then
-      if ! bash "$ROOT/scripts/verify-restore.sh" "$target"; then sync_fail "restore verification of the copy of $backup_name failed (the checksum-verified copy was kept)."; fi
+      if [[ ! -f "$target/SHA256SUMS.hmac" ]]; then
+        # Backups written before format v5 are unsigned; the verifier refuses them unless told otherwise.
+        echo "Note: $backup_name is an unsigned backup from an earlier release; it was copied and checksum-verified, but its restore verification was skipped. To run it yourself: npm run db:verify-restore -- --allow-unsigned $target"
+      elif ! bash "$ROOT/scripts/verify-restore.sh" "$target"; then sync_fail "restore verification of the copy of $backup_name failed (the checksum-verified copy was kept)."; fi
     fi
   done < <(find "$from" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | sort)
   echo "Summary: copied=$copied already-present=$skipped failed=$FAILED. Nothing is ever deleted from either side; remove old backups yourself."
-  echo 'WARNING: the copies contain compose.env, which holds every credential of this instance. Keep the disk physically controlled.'
+  echo 'WARNING: the copies are not encrypted and contain compose.env, which holds every credential of this instance. Keep the disk physically controlled.'
   echo 'A second disk in the same host is local custody only: it does not replace an encrypted off-host copy.'
   ((FAILED == 0)) || exit 1
 }
