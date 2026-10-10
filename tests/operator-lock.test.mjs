@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +41,10 @@ test('every operator command refuses to run while another holds the state lock',
       ['scripts/recovery-check.sh', []],
       ['scripts/retention.sh', ['preview']],
       ['scripts/gateway-dns-check.sh', []],
+      ['scripts/pooler-check.sh', []],
+      ['scripts/monitoring-check.sh', []],
+      ['scripts/cups-check.sh', []],
+      ['scripts/migrate.sh', ['--operator']],
     ];
     for (const [script, args] of commands) {
       const result = spawnSync('bash', [join(root, script), ...args], {
@@ -76,5 +80,32 @@ test('lock helper validates the state path before locking and refuses direct exe
     const direct = spawnSync('bash', [join(root, 'scripts/operator-lock.sh')], { encoding: 'utf8' });
     assert.notEqual(direct.status, 0);
     assert.match(direct.stderr, /sourced helper/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('migrate runs under the lock its caller holds and takes the lock when run alone', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-lock-migrate-'));
+  const state = fakeState(scratch);
+  const bin = join(scratch, 'bin');
+  const log = join(scratch, 'docker.log');
+  mkdirSync(bin);
+  // While migrate runs, the fake docker reports whether the state lock is free.
+  writeFileSync(join(bin, 'docker'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$*" in *'exec -T db psql'*) cat >/dev/null; if flock -n "$WAREHOUSE_STATE_DIR/config/operator.lock" true 9>&-; then echo free >> "$FAKE_DOCKER_LOG"; else echo held >> "$FAKE_DOCKER_LOG"; fi ;; esac
+exit 0
+`, { mode: 0o700 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log };
+  try {
+    writeFileSync(log, '');
+    const alone = spawnSync('bash', [join(root, 'scripts/migrate.sh'), '--operator'], { encoding: 'utf8', env });
+    assert.equal(alone.status, 0, alone.stderr);
+    assert.match(readFileSync(log, 'utf8'), /exec -T db psql[^\n]*\nheld\n/, 'run alone, migrate holds the lock while it talks to the database');
+    // As setup.sh and restore.sh call it: the lock is already held on descriptor 9.
+    writeFileSync(log, '');
+    const nested = spawnSync('bash', ['-c', 'exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 || exit 9; bash "$1" --operator', '_', join(root, 'scripts/migrate.sh')], { encoding: 'utf8', env });
+    assert.equal(nested.status, 0, nested.stderr);
+    assert.match(readFileSync(log, 'utf8'), /exec -T db psql[^\n]*\nheld\n/);
+    assert.doesNotMatch(nested.stderr, /Another operator/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

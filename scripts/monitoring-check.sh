@@ -2,6 +2,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+# Builds and starts the monitoring profile: one operator command at a time per state.
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
+state="$(operator_state)"
+operator_lock "$state"
 
 compose --profile monitoring build prometheus alertmanager
 compose --profile monitoring run --rm --no-deps --entrypoint promtool prometheus \
