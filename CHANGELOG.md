@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — generated PDFs expire (2026-10-10)
+
+- Every `generate-*-pdf` request stores a new file in the private `documents`
+  bucket and nothing removed it, so the bucket grew with every request.
+  `npm run retention:apply` now also removes generated PDFs older than the new
+  `generated_documents` retention policy (7 days by default; the download link
+  lives one hour). `npm run retention:preview` prints how many it would remove.
+- Migration 43 adds the policy row and
+  `warehouse_maintenance.expired_generated_documents()`, which names the
+  expired files. `scripts/retention.sh` deletes them through the Storage API
+  from inside the storage container (`scripts/remove-expired-documents.cjs`),
+  because deleting the `storage.objects` row alone leaves the file on disk,
+  then checks that none remain. Only names the PDF functions produce
+  (`<kind>/<document id>/<uuid>.pdf`) are removed.
+- **Action for operators:** retention is still a command you run; schedule
+  `npm run retention:apply` (for example daily, with the backups). See
+  `docs/PDF_GENERATION.md`.
+- Tests: `tests/retention.sql` (which files are named),
+  new `tests/retention-documents.test.mjs` (the Storage API call and the
+  command's preview/apply steps, against stand-ins). The deletion was not run
+  against a live Storage container in this change.
+
 ## Unreleased — an image is confirmed only for a file in its own document's folder (2026-10-10)
 
 - Migration 43: `upload_grn_image` and the `p_images` lists of `save_grn` and

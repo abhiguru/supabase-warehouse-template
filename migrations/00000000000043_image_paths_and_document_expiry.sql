@@ -395,4 +395,31 @@ BEGIN
   END IF;
 END $legacy$;
 
+-- Generated PDFs expire (review, 2026-10-10).
+--
+-- Every generate-*-pdf call stores a new object <kind>/<document id>/<uuid>.pdf
+-- in the private documents bucket and hands out a link that is valid for one
+-- hour (functions/_shared/document-pdf.ts). Nothing removed the object. The
+-- retention command now removes the ones older than this policy. A file is
+-- freed only through the Storage API, so the database only names the expired
+-- objects and scripts/retention.sh deletes them with the service key.
+INSERT INTO warehouse_maintenance.retention_policy(key, days, description) VALUES
+  ('generated_documents', 7, 'Generated PDF files in the documents bucket (their links expire after one hour)');
+
+-- Only names the PDF functions produce; a file an operator put in the bucket
+-- under another name is never listed.
+CREATE FUNCTION warehouse_maintenance.expired_generated_documents(p_now timestamptz DEFAULT now())
+RETURNS SETOF text
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, warehouse_maintenance
+AS $$
+  SELECT o.name FROM storage.objects o
+  WHERE o.bucket_id = 'documents'
+    AND o.created_at < p_now - make_interval(days => (SELECT days FROM warehouse_maintenance.retention_policy WHERE key = 'generated_documents'))
+    AND o.name ~ '^(grn|dispatch|invoice|stock)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$'
+  ORDER BY o.created_at, o.name
+$$;
+REVOKE ALL ON FUNCTION warehouse_maintenance.expired_generated_documents(timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION warehouse_maintenance.expired_generated_documents(timestamptz) TO service_role;
+
 NOTIFY pgrst, 'reload schema';

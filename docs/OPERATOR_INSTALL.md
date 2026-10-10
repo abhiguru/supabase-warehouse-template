@@ -419,6 +419,25 @@ operator command ... is running for this state." Wait for the first to finish;
 never delete the lock file to force a run. The automatic USB backup is the one
 exception that waits: it retries for up to 15 minutes, then records a failure.
 
+## Retention
+
+Nothing is deleted on a timer. Run the retention command yourself, or from the
+same scheduler as your backups:
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run retention:preview   # counts only
+npm run retention:apply
+```
+
+It removes expired sign-in records and old security logs from the database
+(`warehouse_maintenance.retention_policy`), and generated PDF files older than
+7 days from the private `documents` bucket (the PDFs are removed through the
+Storage API, so the storage container must be running; see
+[PDF_GENERATION.md](PDF_GENERATION.md)). Business records and photos are never
+removed by it.
+
 ## Rotate signing keys
 
 Rotate when the JWT secret, anon key or service key may have been exposed, when
