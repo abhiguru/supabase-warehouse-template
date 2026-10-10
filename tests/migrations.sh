@@ -87,6 +87,10 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 # receipt rule under two users acting at the same moment.
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
+# Migration 42: its closing check stays strict for the nineteen business tables
+# and lets an operator's own table in `public` through.
+bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
+
 # Applied migration history is immutable: changing an old file must fail closed.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
 trap 'rm -rf "$scratch"; cleanup' EXIT
