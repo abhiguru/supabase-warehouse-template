@@ -956,7 +956,7 @@ backup. Phones keep working without selecting the server again. Everything
 recorded after the backup is lost.
 
 > **Status:** `db:restore-host` is exercised in CI by a lost-host drill on real
-> containers (fresh backup, containers and Docker volume removed, restore into a
+> containers (fresh backup, containers and database volume removed, restore into a
 > different path, identical fingerprint). Record the result of your first drill
 > on a real new host. The tunnel credential comes back too when the backup was
 > taken after `tunnel.sh adopt` (step 6).
@@ -1010,11 +1010,12 @@ different warehouse.
    `.tar.enc` is decrypted with the same key), its contents (only the backup
    folder, no links, exactly the signed files), the backup's own checksums,
    that this checkout contains every migration the backup applied (otherwise it
-   names the `source_commit` to check out), that no container and no Docker
-   volume of this installation exists on the host (a left-over
+   names the `source_commit` to check out), that no container and no
+   database volume of this installation exists on the host (a left-over
    `<project>_db-config` volume would hand the restored database the previous
    cluster's configuration and key material; the message names the
-   `docker volume rm` command), the host prerequisites and 10 GiB of free
+   `docker volume rm` command; monitoring and print-spool volumes hold no
+   restored state, are reported and kept), the host prerequisites and 10 GiB of free
    space. A backup that fails the signature check was changed after it was
    written or belongs to another installation: do not restore it. A backup
    written before format v5 has no signature and is accepted only with

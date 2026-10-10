@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
+import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -48,11 +49,12 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   const log = join(scratch, 'restore.log'); writeFileSync(log, '');
   const dockerLog = join(scratch, 'docker.log'); writeFileSync(dockerLog, '');
   const bin = fakeDocker(join(scratch, 'bin'));
-  // Containers of the project exist only when FAKE_PROJECT_EXISTS=yes.
+  // Containers of the project exist only when FAKE_PROJECT_EXISTS=yes; FAKE_VOLUMES
+  // lists the Docker volumes the host still has (space-separated, as `docker volume ls -q`).
   const wrap = join(scratch, 'wrap'); mkdirSync(wrap);
   writeFileSync(join(wrap, 'docker'), `#!/bin/sh
 if [ "$1" = ps ] && [ "$FAKE_PROJECT_EXISTS" = yes ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo 0123456789ab; exit 0; fi
-if [ "$1" = volume ] && [ "$FAKE_VOLUME_EXISTS" = yes ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo warehouse-backup-test_db-config; exit 0; fi
+if [ "$1" = volume ] && [ -n "$FAKE_VOLUMES" ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\\n' $FAKE_VOLUMES; exit 0; fi
 exec ${bin}/docker "$@"
 `, { mode: 0o755 });
   // `key` is the file passed as --backup-key; null leaves the option out.
@@ -190,14 +192,39 @@ test('restore-host opens an encrypted archive with the backup key and refuses it
   } finally { clean(f); }
 });
 
-test('restore-host refuses a host that still has a Docker volume of the project', () => {
+// What a host that ran the monitoring and printing profiles keeps after `compose down`.
+const OTHER_VOLUMES = ['prometheus_data', 'grafana_data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
+
+test('restore-host refuses a host that still has the database configuration volume, and names only that volume', () => {
   const f = fixture('warehouse-restore-host-volume-');
   try {
-    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUME_EXISTS: 'yes' });
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: ['warehouse-backup-test_prometheus_data', 'warehouse-backup-test_db-config', 'warehouse-backup-test_cups-spool'].join(' ') });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /Docker volumes of warehouse-backup-test remain[\s\S]*docker volume rm warehouse-backup-test_db-config/);
+    assert.match(result.stderr, /Docker volume warehouse-backup-test_db-config of the previous database remains[\s\S]*docker volume rm warehouse-backup-test_db-config$/m);
+    assert.doesNotMatch(result.stderr, /docker volume rm.*(prometheus_data|cups-spool)/, 'the operator is not told to delete monitoring history or the print spool');
     nothingCreated(f, result);
   } finally { clean(f); }
+});
+
+test('restore-host is not stopped by monitoring and printing volumes, which hold no restored state', () => {
+  const f = fixture('warehouse-restore-host-other-volumes-');
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: OTHER_VOLUMES.join(' ') });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, new RegExp(`Kept the Docker volumes ${OTHER_VOLUMES.join(', ')}`));
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
+  } finally { clean(f); }
+});
+
+test('the volumes restore-host refuses are exactly the named volumes of the services whose data a restore replaces', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const declared = readFileSync(join(repo, 'scripts/restore-host.sh'), 'utf8').match(/^STATE_VOLUMES=\(([^)]*)\)$/m);
+  assert.ok(declared, 'restore-host.sh declares STATE_VOLUMES');
+  // restore.sh replays the database (data/db) and the stored files (data/storage).
+  const { services, volumes } = renderedCompose();
+  const named = ['db', 'storage'].flatMap(service => (services[service].volumes ?? []).filter(mount => mount.type === 'volume').map(mount => mount.source));
+  assert.deepEqual(declared[1].split(/\s+/).filter(Boolean).sort(), [...new Set(named)].sort());
+  // The realistic left-overs used above are real volumes of this Compose project.
+  for (const name of OTHER_VOLUMES) assert.ok(name.replace('warehouse-backup-test_', '') in volumes, name);
 });
 
 test('restore-host takes a USB archive after checking it, and accepts an existing empty state directory', () => {

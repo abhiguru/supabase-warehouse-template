@@ -126,11 +126,27 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 
 # 4. A new host has no trace of this installation's containers.
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ]] || die "Refusing: containers of $project already exist on this host. This is not a fresh host for this installation (use npm run db:restore on the original state instead)."
-# Nor any of its Docker volumes: <project>_db-config holds the previous cluster's
-# custom configuration and pgsodium root key, is not part of a backup, and would
-# otherwise be reused silently by the restored database.
-volumes="$(docker volume ls -q --filter "name=^${project}_" | tr '\n' ' ')"
-[[ -z "${volumes// /}" ]] || die "Refusing: Docker volumes of $project remain on this host: ${volumes% }. The restored database would reuse their old configuration and key material. If the previous installation on this host is really gone, remove them with: docker volume rm ${volumes% }"
+# Nor the Docker volume that carries database state. The restore replaces the
+# database (data/db) and the stored files (data/storage); the one named volume
+# those services mount, <project>_db-config, holds the previous cluster's custom
+# configuration and pgsodium root key, is not part of a backup, and would
+# otherwise be reused silently by the restored database. Other volumes of the
+# project (metric history and dashboards of the monitoring profile, the print
+# spool) hold nothing a restore replaces, so they do not stop it.
+# tests/restore-host.test.mjs compares this list with the Compose files.
+STATE_VOLUMES=(db-config)
+blocking=() kept=()
+present="$(docker volume ls -q --filter "name=^${project}_")"
+while IFS= read -r volume; do
+  [[ -n "$volume" ]] || continue
+  if [[ " ${STATE_VOLUMES[*]} " == *" ${volume#"${project}_"} "* ]]; then blocking+=("$volume"); else kept+=("$volume"); fi
+done <<<"$present"
+((${#blocking[@]} == 0)) || die "Refusing: the Docker volume ${blocking[*]} of the previous database remains on this host. The restored database would reuse its old configuration and key material. If the previous installation on this host is really gone, remove it with:
+  docker volume rm ${blocking[*]}"
+if ((${#kept[@]})); then
+  list="$(printf '%s, ' "${kept[@]}")"
+  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, dashboards, print spool) and are reused as they are."
+fi
 
 # 5. Build the state beside its final path and rename it into place, as setup does.
 stage="$(mktemp -d -- "$state.restoring-XXXXXX")"

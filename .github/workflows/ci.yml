@@ -230,8 +230,10 @@ jobs:
           install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
           project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
-          # Lose the host: no containers and no Docker volume of this installation remain;
-          # only the backup is carried over. The old state stays where it is, unused.
+          # Lose the host: no containers and no database volume of this installation remain;
+          # only the backup is carried over. The old state stays where it is, unused, and so
+          # does the Prometheus volume the monitoring step created: it holds no restored
+          # state, and restore-host must not be stopped by it.
           bash scripts/compose.sh --profile '*' down
           docker volume rm "${project}_db-config"
           restored="$RUNNER_TEMP/core-backend-test-20260930"

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — backup, restore and gateway follow-ups from the infrastructure review (2026-10-11)
+
+No migration. Operator actions are named in each item.
+
+- **A lost-host restore is no longer stopped by monitoring or print-spool
+  volumes.** `db:restore-host` refused any left-over `<project>_*` Docker
+  volume, so a host that had run the monitoring profile (and the CI lost-host
+  drill itself) was refused and told to delete metric history. It now refuses
+  only `<project>_db-config`, the one named volume of the services whose data
+  a restore replaces, and reports the others as kept.
+  `tests/restore-host.test.mjs` compares that list with the Compose files.
+
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 
 Migration 46. No role gains or loses a function; nothing needs an operator's
