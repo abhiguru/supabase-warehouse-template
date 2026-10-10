@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — receipts sort by number in every accepted form (2026-10-10)
+
+- Migration 31: `get_all_grn_items` and `get_grn_list` sort by receipt number with
+  one key for every form `gr_no` accepts. One-letter prefixes keep their order
+  (X, Y, Z, then A onward); numbers compare as numbers at any length, so A10000
+  follows A9999; other forms (two-letter prefixes, digits only, separators) sort
+  by prefix and then number. Before, every form other than a letter plus digits
+  came back in ascending text order whichever direction was requested, and
+  five-digit numbers collided with the next letter. No request or response changes.
+
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
 - `doctor --host-preflight` (run by `setup.sh`) now refuses a fresh install
