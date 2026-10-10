@@ -9,6 +9,9 @@
   by prefix and then number. Before, every form other than a letter plus digits
   came back in ascending text order whichever direction was requested, and
   five-digit numbers collided with the next letter. No request or response changes.
+- Migration 32: `get_customer_grn_items` sorts by number with the same key, so
+  customer accounts and warehouse roles see one order (it compared numbers as
+  plain text: B10 before B9).
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 

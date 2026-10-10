@@ -36,6 +36,11 @@ BEGIN
       AND (prosrc LIKE '%* 10000%' OR prosrc NOT LIKE '%document_number_sort_key%')) THEN
     RAISE EXCEPTION 'receipt list functions do not use the document number key';
   END IF;
+  -- The customer list uses the same key in both directions (migration 32).
+  IF (SELECT (length(prosrc) - length(replace(prosrc, 'document_number_sort_key(gr_no) COLLATE "C"', ''))) / length('document_number_sort_key(gr_no) COLLATE "C"')
+        FROM pg_proc WHERE oid = 'public.get_customer_grn_items(uuid,timestamptz,timestamptz,jsonb,text,text,integer,integer)'::regprocedure) <> 2 THEN
+    RAISE EXCEPTION 'customer receipt list does not use the document number key';
+  END IF;
   IF has_function_privilege('authenticated', 'warehouse_security.document_number_sort_key(text)', 'execute')
      OR has_function_privilege('anon', 'warehouse_security.document_number_sort_key(text)', 'execute') THEN
     RAISE EXCEPTION 'sort key helper must not be callable by API roles';
