@@ -150,7 +150,9 @@ SELECT pg_temp.grn_assert(public.save_invoice('{}'::jsonb)->>'success'='false' A
  public.save_invoice('{}'::jsonb)::text LIKE '%Invoice requires at least one dispatch line%',
  'authorized staff malformed invoice rejected by business validation');
 SELECT pg_temp.grn_denied('SELECT public.create_customer(''Forbidden New Customer'',''9888888859'')');
-SELECT pg_temp.grn_denied(format('SELECT public.delete_grn_image(%L::uuid)',:'upload'::jsonb->>'image_id'));
+-- Migration 45 (owner decision, 2026-10-11): staff may remove a confirmed
+-- photo of a receipt they can edit; tests/role_allowlist.sql proves that and
+-- its limits. The photo is kept here; a customer account is still refused below.
 -- Migration 42: no role writes these tables directly, so the statement is
 -- refused outright instead of matching no row.
 DO $$ DECLARE refused boolean; BEGIN
@@ -172,6 +174,7 @@ SELECT pg_temp.grn_assert((SELECT count(*)=0 FROM public.goodsreceived WHERE gr_
 SELECT pg_temp.grn_denied(format('SELECT public.get_grn_details(%L::uuid)',:'grn_b'));
 SELECT pg_temp.grn_denied('SELECT public.get_grn_list()');
 SELECT pg_temp.grn_denied(format('SELECT public.update_grn(%L::uuid,p_note=>''Forbidden'')',:'grn_a'));
+SELECT pg_temp.grn_denied(format('SELECT public.delete_grn_image(%L::uuid)',:'upload'::jsonb->>'image_id'));
 RESET ROLE;
 SAVEPOINT supervisor_deletion;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);

@@ -29,7 +29,7 @@ BEGIN
     AND table_schema = 'public'
     AND NOT (
       privilege_type = 'SELECT'
-      AND table_name IN ('feature_flags', 'printer_status')
+      AND table_name = 'feature_flags'
     );
 
   IF bad_grants IS NOT NULL THEN

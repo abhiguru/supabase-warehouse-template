@@ -240,7 +240,11 @@ SELECT pg_temp.guard_visible() AS staff_sees \gset
 SELECT pg_temp.guard_assert((SELECT bool_and(:'staff_sees'::jsonb->t = :'actual'::jsonb->t)
   FROM unnest(ARRAY['customers','goodsreceived','goodsreceived_trl','dispatch','dispatch_trl','invoice','invoice_trl','items']) AS t),
  'staff still reads customers, receipts, dispatches, invoices and the catalog: ' || :'staff_sees');
-SELECT pg_temp.guard_assert((:'staff_sees'::jsonb->>'item_storage_prices')::int=0 AND (:'staff_sees'::jsonb->>'orders')::int=0,'staff still has no direct price or order read');
+-- Migration 45 gives staff a row read on orders (the live queue); the price
+-- and order-line tables stay closed to them.
+SELECT pg_temp.guard_assert((:'staff_sees'::jsonb->>'item_storage_prices')::int=0 AND (:'staff_sees'::jsonb->>'order_items')::int=0
+  AND :'staff_sees'::jsonb->'orders' = :'actual'::jsonb->'orders' AND (:'actual'::jsonb->>'order_items')::int>0,
+ 'staff read orders, and still no price or order line directly: ' || :'staff_sees');
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SET LOCAL ROLE authenticated;

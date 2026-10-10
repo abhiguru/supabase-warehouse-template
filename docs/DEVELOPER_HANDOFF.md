@@ -87,7 +87,7 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 - Append-only: add `migrations/000000000000NN_<topic>.sql` with the next number and a leading comment that says what changed and why. Never edit an applied file; the ledger stores checksums and refuses changed files.
 - Patch an existing function body with a `DO $$ ... $$` block that reads the current definition, counts the expected marker text, `RAISE EXCEPTION`s when the marker is missing or found more than once, and only then replaces it. A silent no-op is a bug.
 - End every migration that changes the API surface with `NOTIFY pgrst, 'reload schema';` as the last statement.
-- Grant staff access only through the explicit RPC allowlist and prove each change in `tests/*.sql` with the real guarded RPCs (see `tests/staff_dispatch_invoice_access.sql`), not with a probe that cannot fail.
+- Grant staff access only through the explicit RPC allowlist and prove each change in `tests/*.sql` with the real guarded RPCs (see `tests/staff_dispatch_invoice_access.sql`), not with a probe that cannot fail. Every function granted to `authenticated` must be classified in the table at the top of `tests/role_allowlist.sql` (staff yes/no, customer any/own/no); the test fails for a granted function it does not know and calls every refused one.
 
 ## CI (`.github/workflows/ci.yml`)
 

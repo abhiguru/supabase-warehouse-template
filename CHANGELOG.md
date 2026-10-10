@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — the server admits what the app offers to each role (2026-10-11)
+
+Owner decision: where the app shows a screen to a role and the server refused
+its RPCs, the server allowlist is widened so the screen works. Migration 45;
+the full list and the role table are in `docs/STAFF_GRN_POLICY.md`, "The server
+admits what the app offers".
+
+- **Staff can now read and change item prices** (`get_item_storage_prices`,
+  `create_`, `update_`, `delete_` and `find_or_create_item_storage_price`).
+  This supersedes the refusal of migration 23. A price change is not written to
+  a history table.
+- Staff can run the reports the app shows them, for all customers and for one
+  (`get_all_stock_summary`, `get_customer_stock_summary`,
+  `get_all_customer_activity_summary`, `get_customer_activity_detail`,
+  `get_customer_dispatch_activity`, `get_stock_aging_report`,
+  `get_item_wise_stock_list`), and read sensors (`get_sensor_polling_data`,
+  `get_sensor_history`). The operations dashboard stays with administrators and
+  supervisors.
+- Staff can remove a photo in the receipt and dispatch edit forms
+  (`delete_grn_image`, `delete_dispatch_image`): a confirmed photo, or one the
+  caller registered, of a document that is not deleted. They can then delete
+  the file, but only a file that no image row names any more
+  (`scripts/configure-storage.sql`, applied by a setup rerun).
+- Staff get order changes live: a read policy on `orders`.
+- Supervisors can change the role, the active status and the customer
+  assignments of users who are not administrators. They cannot target an
+  administrator or themselves and cannot grant the administrator role. The
+  last-administrator rule of migration 44 is unchanged.
+- **Customer accounts are not widened.** Every all-customers report, pricing
+  and sensors stay refused, also for an account assigned to several customers.
+  `get_stock_aging_report` and `get_item_wise_stock_list` are admitted for a
+  customer account only with the id of an assigned customer.
+- **Behaviour change:** `get_grn_details` and `get_dispatch_details` no longer
+  give a customer account the supervisor's `mobile` and `role` in
+  `supervisor_details`; the name stays. No owner decision was given; this is
+  the privacy-safe default and can be reversed.
+- `get_supervisors` lists active profiles only.
+- `get_customer_dispatch_activity`, `get_customer_stock_summary`,
+  `get_operations_dashboard` and `get_recent_dispatched_orders` read the
+  caller's role from the profile, not from the token.
+- `printer_status` can no longer be read with the public key; signed-in
+  administrators, supervisors and staff read it. `feature_flags` stays public.
+- `find_or_create_item_storage_price` refused every role under operator
+  sign-in; fixed.
+- Tests: new `tests/role_allowlist.sql` classifies every function the app role
+  may execute and calls each one a customer account or staff may not use,
+  expecting the guard's refusal, so a function granted later fails until it is
+  classified. `tests/staff_dispatch_invoice_access.sql`,
+  `tests/staff_grn_access.sql` and `tests/direct_write_guard.sql` were changed
+  where they asserted the old pricing, photo and order-read refusals;
+  `tests/security_baseline.sql` no longer allows an anonymous grant on
+  `printer_status`.
+
 ## Unreleased — function router refuses the anon key; PDF footer escapes its values (2026-10-11)
 
 - The function router answers 401 "User access token required" for every
