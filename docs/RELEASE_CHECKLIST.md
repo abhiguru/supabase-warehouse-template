@@ -1,5 +1,27 @@
 # Open-source release checklist
 
+## Mobile contract before a release
+
+The `contract` CI job checks this backend against one commit of the app,
+`MOBILE_REF` in `.github/workflows/ci.yml`. The pin does not move by itself and
+the job compares names only, so before every release of either repository:
+
+- [ ] Set `MOBILE_REF` to the full 40-character SHA of the app commit being
+      released (a pushed commit of `abhiguru/rn-warehouse-template`), in the same
+      pull request as any backend change that commit needs.
+- [ ] With that app commit checked out and its `node_modules` installed, run the
+      live comparison against a running stack of this backend commit:
+      `WAREHOUSE_STATE_DIR=<state> node scripts/check-mobile-contract.mjs <app checkout> --live`.
+      It must report no missing RPC, table or function and no `mismatches`
+      (overloads, argument names and the grant to signed-in users).
+- [ ] Record the backend and app commit pair in the pull request.
+
+Open on 2026-10-11: `MOBILE_REF` is `97ddf3c`, 51 commits behind the app head
+reviewed on 2026-10-10 (`13f8844`), and the app's fixes from that review are not
+pushed yet. The static check passes at both heads; the live comparison has not
+been run for the newer app commit. Bump the pin and run the step above once the
+app branch is pushed.
+
 ## Post-release local-readiness follow-up — 2026-09-22
 
 - [x] Complete provider-independent backup/restore, owned-service recovery,

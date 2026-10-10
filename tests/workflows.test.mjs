@@ -17,3 +17,21 @@ test('workflow actions are referenced by commit, with the release in a comment',
   assert.ok(count >= 13, 'workflow steps were read');
   assert.match(readFileSync(new URL('../.github/dependabot.yml', import.meta.url), 'utf8'), /package-ecosystem: github-actions/);
 });
+
+test('the mobile companion is pinned once, by full commit, and the contract job uses that pin', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  // One declaration: a second one (or a job-level override) would hide which commit was checked.
+  const pins = ci.split('\n').filter(line => /^\s*MOBILE_REF\s*:/.test(line));
+  assert.equal(pins.length, 1, 'MOBILE_REF is declared exactly once');
+  // A branch, a tag or a short hash can come to mean other code; 40 hex digits cannot.
+  assert.match(pins[0], /^  MOBILE_REF: [0-9a-f]{40}$/, `MOBILE_REF must be a full commit SHA: ${pins[0].trim()}`);
+  // Every checkout of the app takes its ref from the pin, never from a name written in the step.
+  const checkouts = ci.split(/\n\s*- uses: actions\/checkout@/).slice(1).map(step => step.split(/\n\s*- /)[0]);
+  const mobile = checkouts.filter(step => /repository: abhiguru\/rn-warehouse-template/.test(step));
+  assert.ok(mobile.length >= 1, 'the contract job checks out the app');
+  for (const step of mobile) assert.match(step, /\n\s*ref: \$\{\{ env\.MOBILE_REF \}\}\n/, 'the app is checked out at MOBILE_REF');
+  // The release step that moves the pin and runs the live comparison stays documented.
+  const checklist = readFileSync(new URL('../docs/RELEASE_CHECKLIST.md', import.meta.url), 'utf8');
+  assert.match(checklist, /## Mobile contract before a release/);
+  assert.match(checklist, /check-mobile-contract\.mjs [^\n]*--live/);
+});

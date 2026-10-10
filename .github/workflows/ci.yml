@@ -7,8 +7,15 @@ on:
 permissions:
   contents: read
 env:
-  # Operator mobile companion commit tested by the contract job. Bump it when
-  # the mobile branch moves; see CONTRIBUTING.md "Mobile companion pin".
+  # MOBILE_REF is the one commit of abhiguru/rn-warehouse-template that the
+  # contract job checks this backend against. It is always a full 40-character
+  # SHA (tests/workflows.test.mjs refuses a branch, a tag or a short hash) and
+  # it does not follow the app by itself: bump it together with every mobile
+  # release, and whenever a change here needs a change in the app. The job
+  # compares names only; overloads, argument names and grants are compared by
+  # `check-mobile-contract.mjs --live` against a running stack, which is a step
+  # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
+  # CONTRIBUTING.md "Mobile companion pin".
   MOBILE_REF: 97ddf3c4e1d01698cf9c9cee9dc279d5136f95b1
 jobs:
   validate:
