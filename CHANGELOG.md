@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — container networks, function environment and pinned dependencies (2026-10-11)
+
+None of the changes in this entry has run on a started stack yet; each was
+checked with the unit tests and `docker compose config` named in
+`docs/CONTAINER_SECURITY.md`, "Changes awaiting a first run". The
+`operator-install` CI job is their first run on real containers.
+
+- **A function's worker receives only the variables it reads.** The router
+  copied the whole container environment into every worker, so the three
+  functions that take no token (`hello`, `get-public-config`, `operator-otp`)
+  held the token-signing secret. `functions/main/worker-env.ts` now lists the
+  names per function and `tests/worker-env.test.mjs` compares each list with
+  the `Deno.env.get()` calls the function and its shared modules make.
+  `SUPABASE_DB_URL`, a superuser database address that no function read, is
+  removed from the functions container.
+
 ## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
 
 **Operators must act after this upgrade** (details in `docs/OPERATOR_INSTALL.md`,
