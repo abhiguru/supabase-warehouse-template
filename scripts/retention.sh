@@ -19,7 +19,7 @@ compose exec -T db psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
 expired="$(mktemp)"
 trap 'rm -f "$expired"' EXIT
 days="$(query "SELECT days FROM warehouse_maintenance.retention_policy WHERE key='generated_documents'")"
-query "SELECT name FROM warehouse_maintenance.expired_generated_documents(now())" > "$expired"
+query "SELECT name FROM warehouse_maintenance.expired_generated_documents(now()) AS name" > "$expired"
 count="$(grep -c . "$expired" || true)"
 echo "Generated documents older than $days days: $count"
 if [[ "$apply" == true && "$count" -gt 0 ]]; then

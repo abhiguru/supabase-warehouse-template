@@ -91,6 +91,9 @@ bash "$ROOT/tests/concurrent_rules.sh" "$container"
 # and lets an operator's own table in `public` through.
 bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
 
+# scripts/retention.sh: every statement it sends is one this database accepts.
+bash "$ROOT/tests/retention_queries.sh" "$container"
+
 # Applied migration history is immutable: changing an old file must fail closed.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
 trap 'rm -rf "$scratch"; cleanup' EXIT
