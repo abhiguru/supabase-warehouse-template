@@ -167,7 +167,7 @@ function numberToIndianWords(num: number): string {
   }
 
   const lakhs = Math.floor(num / 100000);
-  const remainder = num % 100000;
+  let remainder = num % 100000;
   let result = convertBelowThousand(lakhs) + ' Lakh';
 
   if (remainder >= 1000) {

@@ -53,6 +53,10 @@ checked with the unit tests and `docker compose config` named in
   (`docs/CONTAINER_SECURITY.md`, "Image pins"). `THIRD_PARTY_NOTICES.md` and
   `docs/ATTRIBUTION_REVIEW.md` now name PostgREST v16.4 and edge-runtime
   v1.77.4, and a test fails when they drift from Compose and the Dockerfiles.
+- The quantity-in-words fallback of the two pre-printed slip functions threw
+  for 1,01,000 and above (it assigned to a constant). The functions are still
+  refused with 503 by the router; `tests/print-number-words.test.mjs` runs the
+  fallback.
 
 ## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
 
