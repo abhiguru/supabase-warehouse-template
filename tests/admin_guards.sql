@@ -63,8 +63,9 @@ SELECT pg_temp.admin_assert(:'deleted_supervisor'::jsonb->>'success'='true','a s
 
 -- Status and role changes refuse to leave the warehouse without an administrator.
 -- An administrator cannot target the own profile, so one call can only reach the
--- rule when two administrators act on each other at the same moment; the rule
--- itself and its presence in both functions are checked here.
+-- rule when two administrators act on each other at the same moment. That is
+-- run with two sessions in tests/concurrent_rules.sh; the rule itself and its
+-- presence in both functions are checked here.
 SELECT pg_temp.admin_assert(NOT warehouse_security.other_active_admin_exists(:'profile_a'::uuid)
   AND warehouse_security.other_active_admin_exists(:'profile_b'::uuid)
   AND warehouse_security.other_active_admin_exists(NULL),'only an approved, active administrator counts');

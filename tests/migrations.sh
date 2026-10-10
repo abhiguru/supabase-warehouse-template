@@ -83,6 +83,10 @@ done
 # must each survive a concurrent writer of the same lot.
 bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 
+# Migrations 41, 44 and 46: the last-administrator rule and the one-invoice-per-
+# receipt rule under two users acting at the same moment.
+bash "$ROOT/tests/concurrent_rules.sh" "$container"
+
 # Applied migration history is immutable: changing an old file must fail closed.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
 trap 'rm -rf "$scratch"; cleanup' EXIT
