@@ -361,3 +361,56 @@ supervisor, staff and customer on all nineteen tables, the unchanged reads, and
 that the RPC paths still apply their rules (a changed line rate recomputes the
 header, an out-of-range rate and a dispatch above the stock are refused, the
 delete RPCs keep their dependency checks).
+
+## An image belongs to its own document's folder, 10 October 2026
+
+A customer can download a stored photo when a confirmed `grn_images` or
+`dispatch_images` row of one of that customer's documents names the file
+(`scripts/configure-storage.sql`). Until migration 43 three RPCs wrote such a
+row with whatever path the caller sent, as confirmed and without looking in the
+bucket: `upload_grn_image`, and the `p_images` list of `save_grn` and of
+`update_grn`. One staff call for customer B's receipt naming customer A's file
+made A's photo readable by B; a path that was never uploaded left a confirmed
+row with no file.
+
+Since migration 43 the database accepts a path only when all of these hold,
+whichever RPC attaches it:
+
+- it lies in the folder the register RPCs issue for that document:
+  `headers/<grn id>/...` or `items/<grn id>/...` in `grn-images`,
+  `<dispatch id>/...` in `dispatch-images`;
+- a file with that name is in the bucket;
+- no other image row carries the path (a unique index keeps it so, unless
+  older rows already share a path);
+- an item photo's line belongs to the receipt.
+
+What that means for each entry point:
+
+- `register_*_image_upload` issues the path and writes a pending row, as
+  before; an item photo for a line of another receipt is refused
+  (`ITEM_NOT_IN_GRN`). Dispatch paths now carry a random part instead of a
+  timestamp.
+- `confirm_*_image_upload` confirms only after the file was uploaded to the
+  registered path (`IMAGE_NOT_VERIFIED` otherwise).
+- `update_grn` keeps the images already on the receipt, named by id (or by
+  their path). An id of another receipt's image no longer re-links that image.
+  Any other entry is a new attachment and must pass the rule.
+- `save_grn` creates the receipt id itself, so no file can be in its folder
+  yet: a `p_images` entry is refused. Photos of a new receipt are registered
+  after the save, which is what the app does.
+- `upload_grn_image` (and `upload_dispatch_image`, which is not part of the
+  granted API) attach a file that is already in the document's folder. Only
+  administrators and supervisors can put a file there without a registered
+  row, so staff have nothing to attach through it.
+- A row inserted without a status is `pending`. Customers read confirmed image
+  rows only; the row of a pending upload, with its upload token, is no longer
+  visible to the document's customer.
+
+Rows saved before migration 43 are not changed. The migration prints a warning
+with the number of rows whose path is outside their document's folder; list
+them as the database owner with
+`SELECT * FROM warehouse_maintenance.misplaced_image_paths();` and remove the
+ones that should not be there with `delete_grn_image` / `delete_dispatch_image`.
+`tests/image_path_rules.sql` proves the refusals at every entry point, the
+unchanged register/upload/confirm flow and `update_grn` answer, and what each
+customer can read.

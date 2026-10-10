@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — an image is confirmed only for a file in its own document's folder (2026-10-10)
+
+- Migration 43: `upload_grn_image` and the `p_images` lists of `save_grn` and
+  `update_grn` no longer write a confirmed image row for any path the caller
+  sends. A path is accepted only if it lies in that document's folder
+  (`headers/<grn id>/`, `items/<grn id>/`, `<dispatch id>/`), a file with that
+  name is in the bucket, no other image row carries it, and an item photo's
+  line belongs to the receipt. Before, one staff call could attach customer A's
+  photo to customer B's receipt, which let B download it, or leave a confirmed
+  row with no file.
+- `confirm_grn_image_upload` and `confirm_dispatch_image_upload` answer
+  `IMAGE_NOT_VERIFIED` until the file is uploaded to the registered path.
+  `register_grn_image_upload` refuses a line of another receipt
+  (`ITEM_NOT_IN_GRN`). `update_grn` no longer re-links an image of another
+  receipt named by id. Dispatch photo paths carry a random part instead of a
+  timestamp. `upload_dispatch_image` gets the same checks and the RPC guard.
+- An image row inserted without a status is `pending`. Customers read confirmed
+  image rows only; a pending row and its upload token are no longer visible to
+  the document's customer.
+- The app's flow is unchanged: register, upload to the issued path, confirm;
+  `update_grn` still answers `item_mapping` and `grn.images`.
+- **Action for operators:** existing rows are not changed. If the migration
+  warns about rows outside their document's folder, list them with
+  `SELECT * FROM warehouse_maintenance.misplaced_image_paths();` and delete the
+  ones that should not be there. See `docs/STAFF_GRN_POLICY.md`.
+- Tests: new `tests/image_path_rules.sql`.
+
 ## Unreleased — business tables are written only through the guarded RPCs (2026-10-10)
 
 - Migration 42: administrators and supervisors can no longer insert, update or
