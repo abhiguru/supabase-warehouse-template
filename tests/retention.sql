@@ -40,6 +40,34 @@ BEGIN
 END $$;
 ROLLBACK;
 
+-- Retention is an operator job: no API role can run it or reach its schema.
+BEGIN;
+DO $$
+DECLARE api_role text;
+BEGIN
+  FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF has_function_privilege(api_role, 'warehouse_maintenance.run_database_retention(timestamptz,boolean)', 'EXECUTE')
+       OR has_schema_privilege(api_role, 'warehouse_maintenance', 'USAGE') THEN
+      RAISE EXCEPTION 'Role % can reach the retention function', api_role;
+    END IF;
+  END LOOP;
+  INSERT INTO public.idempotency_keys(idempotency_key, rpc_function, response, expires_at)
+  VALUES ('retention-role-check', 'test', '{}', now() - interval '1 minute');
+  FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    BEGIN
+      EXECUTE format('SET LOCAL ROLE %I', api_role);
+      PERFORM warehouse_maintenance.run_database_retention(now(), true);
+      RESET ROLE;
+      RAISE EXCEPTION 'Role % ran retention', api_role USING ERRCODE = 'P0001';
+    EXCEPTION WHEN insufficient_privilege THEN RESET ROLE;
+    END;
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM public.idempotency_keys WHERE idempotency_key = 'retention-role-check') THEN
+    RAISE EXCEPTION 'A refused retention call deleted a row';
+  END IF;
+END $$;
+ROLLBACK;
+
 -- Migration 43: generated PDFs older than the generated_documents policy are
 -- named for scripts/retention.sh, which deletes them through the Storage API
 -- (tests/retention-documents.test.mjs). Only names the PDF functions produce
@@ -76,4 +104,4 @@ BEGIN
   IF (SELECT count(*) FROM storage.objects WHERE bucket_id = 'documents') <> 4 THEN RAISE EXCEPTION 'Listing changed stored objects'; END IF;
 END $$;
 ROLLBACK;
-SELECT 'retention preview/apply boundary and expired generated documents passed' AS result;
+SELECT 'retention preview/apply boundary, refusal for API roles and expired generated documents passed' AS result;

@@ -247,6 +247,17 @@ SELECT pg_temp.img_assert((SELECT count(*)=3 AND bool_and(status='confirmed' AND
  'customer B reads the confirmed image rows only: no pending row, no upload token');
 SELECT pg_temp.img_assert(pg_temp.img_refused(format('SELECT public.confirm_grn_image_upload(%L::uuid,%L::uuid)',
  :'reg_b_pending'::jsonb->>'image_id',:'reg_b_pending'::jsonb->>'upload_token'),'%Staff access required%'),'a customer cannot confirm an upload');
+-- A customer account writes to neither image bucket, not even into its own document's folder.
+SELECT pg_temp.img_assert(pg_temp.img_refused(format('INSERT INTO storage.objects(bucket_id,name) VALUES (%L,%L)','grn-images','headers/'||:'grn_b'||'/by-customer.webp'),
+ '%row-level security%'),'a customer cannot add a file to the receipt image bucket');
+SELECT pg_temp.img_assert(pg_temp.img_refused(format('INSERT INTO storage.objects(bucket_id,name) VALUES (%L,%L)','dispatch-images',:'dispatch_b'||'/by-customer.webp'),
+ '%row-level security%'),'a customer cannot add a file to the dispatch image bucket');
+DO $$ DECLARE affected integer; BEGIN
+  UPDATE storage.objects SET name=name||'.moved' WHERE bucket_id IN ('grn-images','dispatch-images'); GET DIAGNOSTICS affected=ROW_COUNT;
+  PERFORM pg_temp.img_assert(affected=0,'a customer cannot rename a stored image');
+  DELETE FROM storage.objects WHERE bucket_id IN ('grn-images','dispatch-images'); GET DIAGNOSTICS affected=ROW_COUNT;
+  PERFORM pg_temp.img_assert(affected=0,'a customer cannot delete a stored image');
+END $$;
 RESET ROLE;
 
 -- 6. Rows that were not checked, and rows from before the rule.

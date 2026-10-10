@@ -313,6 +313,18 @@ SELECT pg_temp.rule_assert((SELECT count(*)=3 AND bool_and(inv_no=20261043 AND i
 -- zero rates on the three-argument path, so the surcharge is the whole total).
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
+-- Without a reason staff cannot give one on either save path, and nothing is stored.
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25}'::jsonb,
+ pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)),'A reason is required for an invoice discount'),
+ 'one-argument save: staff discount on a new invoice without a reason refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"  "}'::jsonb,
+ pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)),'A reason is required for an invoice discount'),
+ 'three-argument save: staff discount on a new invoice with a blank reason refused');
+RESET ROLE;
+SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=20261045)
+ AND (SELECT count(*)=3 FROM public.invoice_discount_history),'the refused saves stored no invoice and no history row');
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"Handling"}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)) AS saved_b \gset
 SELECT pg_temp.rule_assert(:'saved_b'::jsonb->>'success'='true','three-argument save: zero rates accepted: ' || :'saved_b');
@@ -434,5 +446,15 @@ SELECT pg_temp.rule_assert((SELECT total=998 FROM public.invoice WHERE id=(:'thi
  AND (SELECT count(*)=1 FROM public.invoice WHERE gr_id=:'grn_a'::uuid),'one invoice of 998 for the receipt');
 SELECT pg_temp.rule_assert((SELECT count(*)=4 FROM public.invoice_discount_history WHERE invoice_id=:'invoice_a'::uuid),
  'the deleted invoice''s discount history is kept');
+-- A reason longer than 500 characters is cut to 500 on the invoice and in the history.
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || jsonb_build_object('inv_no',20261045,'discount',-7,
+ 'discount_reason',repeat('Long reason ',50)),:'b_items'::jsonb)->>'success'='true','staff sets a surcharge with a 600-character reason');
+RESET ROLE;
+SELECT pg_temp.rule_assert((SELECT discount=-7 AND length(discount_reason)=500 AND discount_reason=left(repeat('Long reason ',50),500)
+ FROM public.invoice WHERE id=:'invoice_b'::uuid)
+ AND (SELECT count(*)=1 AND bool_and(length(reason)=500) FROM public.invoice_discount_history
+   WHERE invoice_id=:'invoice_b'::uuid AND new_discount=-7),'a long reason is stored cut to 500 characters');
 ROLLBACK;
 \echo 'Invoice line rate ranges, single invoicing, India-date durations, discount history and detail checks passed.'

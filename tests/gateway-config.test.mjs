@@ -86,6 +86,14 @@ test('gateway configuration survives the entrypoint that fills in its variables'
   assert.deepEqual([...new Set([...kong.matchAll(/\$\{([A-Z_]+)\}/g)].map(match => match[1]))].sort(), Object.keys(values).sort());
 });
 
+test('every REST request passes the session check before its function runs', () => {
+  // public.check_session refuses an ended session and a profile that is disabled or
+  // not approved. Functions that resolve the caller themselves (own_profile_id in
+  // migration 38 checks active only) rely on it for the enrollment state; see
+  // tests/preferred_language.sql.
+  assert.match(compose, /\n\s+PGRST_DB_PRE_REQUEST: public\.check_session\n/);
+});
+
 test('ingress is Cloudflare Tunnel only', () => {
   assert.ok(!existsSync(deploy('Caddyfile.example')), 'Caddy example must not ship');
   assert.ok(existsSync(deploy('cloudflared-config.example.yml')));
