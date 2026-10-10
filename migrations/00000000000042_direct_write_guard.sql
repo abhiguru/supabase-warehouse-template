@@ -44,14 +44,20 @@ END $revoke$;
 REVOKE ALL ON FUNCTION public.update_order_metadata(uuid, text, text, timestamp without time zone) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.update_order_metadata(uuid, text, text, timestamp without time zone) TO authenticated, service_role;
 
--- Fail the migration rather than leave a half-closed surface.
+-- Fail the migration rather than leave a half-closed surface. Only the nineteen
+-- business tables are checked: a table an operator added to `public` is theirs
+-- to grant and must not block the upgrade.
 DO $verify$
-DECLARE leftover text;
+DECLARE
+  leftover text;
+  business_tables CONSTANT text[] := ARRAY['customers','items','item_storage_prices','goodsreceived','goodsreceived_trl',
+    'dispatch','dispatch_trl','invoice','invoice_trl','payments','orders','order_items','grn_images','dispatch_images',
+    'stock_movements','print_jobs','sensor_devices','sensor_readings','sensor_health_events'];
 BEGIN
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO leftover
   FROM pg_class c
   WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p')
-    AND c.relname <> 'user_profiles'
+    AND c.relname = ANY (business_tables)
     AND (has_any_column_privilege('authenticated', c.oid, 'INSERT,UPDATE')
       OR has_table_privilege('authenticated', c.oid, 'DELETE,TRUNCATE'));
   IF leftover IS NOT NULL THEN
@@ -60,9 +66,9 @@ BEGIN
   SELECT string_agg(tablename || '.' || policyname, ', ' ORDER BY tablename, policyname) INTO leftover
   FROM pg_policies
   WHERE schemaname='public' AND cmd <> 'SELECT'
-    AND NOT (tablename='user_profiles' AND policyname='starter_profile_update');
+    AND tablename = ANY (business_tables);
   IF leftover IS NOT NULL THEN
-    RAISE EXCEPTION 'Unexpected write policy on a public table: %', leftover;
+    RAISE EXCEPTION 'Unexpected write policy on a business table: %', leftover;
   END IF;
 END $verify$;
 

@@ -1217,33 +1217,14 @@ file on each run, and `bash scripts/checkout-permissions.sh` does the same on
 its own, for example after a `git pull` or `git checkout` made without
 `umask 022`.
 
-**Before upgrading past migration 42: tables of your own.** Migration 42
-stops with `authenticated still holds a direct write on: <table>` or
-`Unexpected write policy on a public table: <table>.<policy>` when the
-`public` schema holds a table that the template did not create and that the
-`authenticated` role may write, or one with a row policy for anything but
-`SELECT`. Nothing is changed when it stops, but no later migration is applied
-until the object is dealt with. Check before the upgrade (as `supabase_admin`);
-both queries must return no row:
-
-```sql
-SELECT c.relname FROM pg_class c
-WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r','p')
-  AND c.relname NOT IN ('user_profiles','customers','items','item_storage_prices',
-    'goodsreceived','goodsreceived_trl','dispatch','dispatch_trl','invoice','invoice_trl',
-    'payments','orders','order_items','grn_images','dispatch_images','stock_movements',
-    'print_jobs','sensor_devices','sensor_readings','sensor_health_events')
-  AND (has_any_column_privilege('authenticated', c.oid, 'INSERT,UPDATE')
-    OR has_table_privilege('authenticated', c.oid, 'DELETE,TRUNCATE'));
-SELECT tablename, policyname FROM pg_policies
-WHERE schemaname = 'public' AND cmd <> 'SELECT'
-  AND NOT (tablename = 'user_profiles' AND policyname = 'starter_profile_update');
-```
-
-For a table the first query names, revoke the write from `authenticated` or
-move the table to a schema of your own; for a policy the second names, drop it
-or make it `FOR SELECT`. Writes by the app go through functions, as for the
-template's own tables.
+**Migration 42 and tables of your own.** Migration 42 closes direct writes on
+the template's nineteen business tables and verifies only those. A table you
+added to the `public` schema, and any grant or row policy on it, is left as it
+is and does not stop the upgrade. The migration stops with
+`authenticated still holds a direct write on: <table>` or
+`Unexpected write policy on a business table: <table>.<policy>` only when one
+of the nineteen tables itself carries an extra write policy; drop that policy
+or make it `FOR SELECT`, then rerun.
 
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the
