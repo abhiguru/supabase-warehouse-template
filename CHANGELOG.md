@@ -65,6 +65,8 @@ checked with the unit tests and `docker compose config` named in
   build time, as the other recipes do. Studio's Next.js and simple-git
   advisories are in the application and remain
   (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").
+- GitHub Actions steps name a commit (`actions/checkout` v7.0.1,
+  `actions/setup-node` v6.5.0) instead of a movable major tag.
 
 ## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
 
