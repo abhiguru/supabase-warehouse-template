@@ -24,10 +24,11 @@ export async function verifyRequest(req: Request) {
   }
 }
 
-// For functions behind sign-in. The public anon key is a correctly signed
-// token, so the signature alone does not show that a user is signed in.
+// For functions behind sign-in. The public anon key and the service key are
+// correctly signed tokens, so the signature alone does not show that a user is
+// signed in; only a user's access token carries the role 'authenticated'.
 export async function verifySignedInRequest(req: Request) {
   const payload = await verifyRequest(req);
-  if (payload.role === 'anon') throw { status: 401, message: 'User access token required' };
+  if (payload.role !== 'authenticated') throw { status: 401, message: 'User access token required' };
   return payload;
 }

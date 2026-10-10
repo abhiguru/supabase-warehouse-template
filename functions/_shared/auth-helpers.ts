@@ -13,9 +13,8 @@ export interface AuthError { status: number; message: string }
 
 export async function validateUserAccess(req: Request): Promise<UserProfile> {
   const payload = await verifyRequest(req);
-  if (payload.role === 'service_role') {
-    return { id: 'service_role', auth_user_id: 'service_role', name: 'Service', display_name: 'Service', mobile: '', role: 'admin', active: true };
-  }
+  // Only a signed-in user's token passes. The service key is for calls between
+  // containers; it names no profile and has no session that could be revoked.
   if (payload.role !== 'authenticated' || typeof payload.sub !== 'string' ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.sub)) {
     throw { status: 401, message: 'User access token required' };

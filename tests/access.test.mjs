@@ -18,6 +18,9 @@ test('profile lookup requires signed user token; inactive/customer roles cannot 
   try {
     await assert.rejects(validateUserAccess(new Request('http://example.test')), { status: 401 });
     await assert.rejects(validateUserAccess(await request('anon')), { status: 401 });
+    // The service key is not a user: no synthetic administrator profile, and no profile lookup.
+    await assert.rejects(validateUserAccess(await request('service_role')), { status: 401, message: 'User access token required' });
+    await assert.rejects(validatePrintAccess(await request('service_role')), { status: 401 });
     assert.equal(calls, 0);
     await assert.rejects(validatePrintAccess(await request()), { status: 403 });
     profile = { ...profile, role: 'admin', active: false };
