@@ -77,14 +77,6 @@ fi
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 
-if tar -tzf "$backup/storage.tar.gz" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-  echo 'Unsafe path in storage archive.' >&2
-  exit 1
-fi
-if tar -tvzf "$backup/storage.tar.gz" | grep -Eq '^[lh]'; then
-  echo 'Storage archive contains a link; refusing unsafe extraction.' >&2
-  exit 1
-fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-restore.XXXXXX")
 container="warehouse-restore-$(openssl rand -hex 6)"
 created=false
@@ -127,6 +119,21 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+# The storage archive is listed, never unpacked: restore.sh does the extraction,
+# and SHA256SUMS already vouches for its bytes. Each listing is read to its end.
+# A `tar | grep -q` pipeline under pipefail answers "no match" when grep stops at
+# an early match and tar dies of SIGPIPE, which let a link through.
+tar -tzf "$backup/storage.tar.gz" > "$scratch/archive_names.txt"
+if grep -Eq '(^/|(^|/)\.\.(/|$))' "$scratch/archive_names.txt"; then
+  echo 'Unsafe path in storage archive.' >&2
+  exit 1
+fi
+entry_types="$(tar -tvzf "$backup/storage.tar.gz" | cut -c1 | LC_ALL=C sort -u | tr -d '\n')"
+if [[ -n "${entry_types//[d-]/}" ]]; then
+  echo 'Storage archive contains a link or special file; refusing unsafe extraction.' >&2
+  exit 1
+fi
 
 # Size the disposable database from the backup. The restored cluster holds the
 # initialized image, both databases with their rebuilt indexes and the WAL the
@@ -179,7 +186,7 @@ if [[ "$has_supabase" == true ]]; then
   # Every catalogued object must be present in the archive. Storage keeps files
   # under a tenant prefix, so a catalog entry is matched as a path suffix.
   # Archive files without a catalog entry are reported but do not fail.
-  tar -tzf "$backup/storage.tar.gz" | sed -n 's#^\./##; /[^/]$/p' > "$scratch/archive_files.txt"
+  sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
   awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt" '
     FILENAME == ARGV[1] { if (length($0)) want[$0] = 1; next }
     {
@@ -202,7 +209,7 @@ if [[ "$has_supabase" == true ]]; then
     sort "$scratch/extra_files.txt" | head -n 20 >&2
   fi
 fi
-tar -xzf "$backup/storage.tar.gz" -C "$scratch"
+rm -f -- "$scratch/archive_names.txt"
 
 if [[ "$storage" == disk ]]; then
   disk_dir="$(mktemp -d "$scratch_parent/.verify-restore.XXXXXX")"

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
 import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -427,5 +427,59 @@ test('a backup is authenticated before its SHA256SUMS is used: an unsigned or fo
     writeFileSync(join(damaged, 'database.dump'), 'bit rot\n');
     result = verify(damaged, scratch);
     assert.notEqual(result.status, 0); assert.match(result.stderr, /does not match its SHA256SUMS/); assert.equal(result.calls, '');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// Replaces the storage archive of a fixture backup with `tar ARGS` run in a tree of `count`
+// long-named files, so that its listing is far larger than a pipe buffer, and signs it again.
+function bigArchive(backup, scratch, count, prepare, tarArgs) {
+  const tree = join(scratch, `tree-${count}-${readdirSync(scratch).length}`);
+  mkdirSync(tree);
+  const made = spawnSync('bash', ['-c', `set -e; cd "$1"; seq -f 'object-%06g-${'x'.repeat(60)}' 1 ${count} | xargs touch`, 'sh', tree], { encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  prepare(tree);
+  const tar = spawnSync('tar', ['--sort=name', '-C', tree, '-czf', join(backup, 'storage.tar.gz'), ...tarArgs, '.'], { encoding: 'utf8' });
+  assert.equal(tar.status, 0, tar.stderr);
+  assert.equal(spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }).status, 0);
+  signBackup(backup);
+}
+
+test('restore verifier finds a link or an escaping path that comes early in a long archive listing', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-early-'));
+  try {
+    // The link sorts first, followed by about 1.5 MB of listing: a check that stops reading
+    // at the first match must not let the interrupted lister turn the answer into "safe".
+    const linked = makeBackup(join(scratch, 'linked'));
+    bigArchive(linked, scratch, 20000, tree => symlinkSync('/etc/passwd', join(tree, '000-link')), []);
+    let result = verify(linked, scratch);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Storage archive contains a link/);
+    assert.equal(result.calls, '', 'no container is started');
+    const escaping = makeBackup(join(scratch, 'escaping'));
+    bigArchive(escaping, scratch, 20000, tree => writeFileSync(join(tree, '000-first'), 'x'), ['-P', '--transform', 's,^\\./000-first$,../escape,']);
+    assert.match(spawnSync('tar', ['-tzf', join(escaping, 'storage.tar.gz')], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout, /^\.\.\/escape$/m, 'the fixture archive holds the escaping path');
+    result = verify(escaping, scratch);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Unsafe path in storage archive/);
+    assert.equal(result.calls, '');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier lists the storage archive and never unpacks it', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-nounpack-'));
+  try {
+    const backup = makeBackup(join(scratch, 'backup'), { objects: ['documents/a.pdf/v1', 'customer-images/c1/photo.jpg/v7'] });
+    const temp = join(scratch, 'tmp'); mkdirSync(temp);
+    // A docker stand-in that records every file under TMPDIR at the moment the container starts.
+    const real = fakeDocker(join(scratch, 'bin'));
+    const wrap = join(scratch, 'wrap'); mkdirSync(wrap);
+    writeFileSync(join(wrap, 'docker'), `#!/bin/sh\nif [ "$1" = run ]; then find "$TMPDIR" -type f > "$TMP_LISTING"; fi\nexec ${real}/docker "$@"\n`, { mode: 0o755 });
+    const listing = join(scratch, 'tmp-listing.txt');
+    const result = verify(backup, scratch, { PATH: `${wrap}:${process.env.PATH}`, TMPDIR: temp, TMP_LISTING: listing });
+    assert.equal(result.status, 0, result.stderr);
+    const files = readFileSync(listing, 'utf8');
+    assert.match(files, /archive_files\.txt/, 'the listing was taken while the verifier was at work');
+    assert.doesNotMatch(files, /a\.pdf|photo\.jpg/, 'no stored object was written to the temporary directory');
+    assert.deepEqual(readdirSync(temp), [], 'the temporary directory is removed');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

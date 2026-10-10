@@ -25,6 +25,16 @@ No migration. Operator actions are named in each item.
   run after it. For a backup accepted with `--allow-unsigned` the list is
   refused when a line names an absolute path or one with `..`, or when the
   backup contains a link.
+- **Restore verification no longer unpacks the stored files.**
+  `db:verify-restore` (and so every USB run and every `db:restore`) extracted
+  the whole storage archive into `/tmp` and never read it, so a facility with
+  more photos than free space on the root filesystem could not verify a backup,
+  or filled the disk under the running stack. The archive is now only listed.
+- **The storage-archive safety checks read the whole listing.** With an early
+  link or `..` path in a long listing, the check stopped reading, the lister
+  was killed by the closed pipe, and under `pipefail` the answer became "safe".
+  This mattered for backups accepted with `--allow-unsigned`. The check now
+  also refuses device and other special entries, not only links.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 
