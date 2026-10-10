@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { IPPPrinterState, mapPrinterStateToStatus } from '../_shared/ipp-types.ts'
 import type { IPPPrinterAttributes } from '../_shared/ipp-types.ts'
+import { validPrinterName, printerStatusFailure } from '../_shared/printer-name.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -31,6 +32,9 @@ serve(async (req) => {
     const userProfile = await validatePrintAccess(req, supabase);
 
     const { printer_name = 'default' } = await req.json().catch(() => ({}));
+    if (!validPrinterName(printer_name)) {
+      throw { status: 400, message: 'Invalid printer name' };
+    }
 
     console.log(`get-printer-status: User ${userProfile.name} checking printer: ${printer_name}`);
 
@@ -89,16 +93,7 @@ serve(async (req) => {
       return createAuthErrorResponse(error, corsHeaders);
     }
 
-    let errorMessage = error.message;
-    let errorStatus = 500;
-
-    if (error.message?.includes('ECONNREFUSED')) {
-      errorMessage = 'Cannot connect to printer. Check if CUPS service is running.';
-      errorStatus = 503;
-    } else if (error.message?.includes('not found')) {
-      errorMessage = 'Printer not found. Check printer name.';
-      errorStatus = 404;
-    }
+    const { status: errorStatus, message: errorMessage } = printerStatusFailure(error);
 
     return new Response(
       JSON.stringify({ success: false, status: 'error', error: errorMessage, timestamp: new Date().toISOString() }, null, 2),

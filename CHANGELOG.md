@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — printer status check validates the printer name (2026-10-10)
+
+- `get-printer-status` (still answered with 503 by the function router until
+  printing is configured) accepts only a CUPS queue name
+  (`[a-zA-Z0-9_-]`, 1 to 127 characters) as `printer_name`, as `print-via-ipp`
+  does; before, the value went into the CUPS URL path unchecked. An error that
+  is neither "cannot connect" nor "printer not found" is answered as
+  `Printer status unavailable`; the detail stays in the server log.
+- Tests: new `tests/printer-name.test.mjs`.
+
 ## Unreleased — generated PDFs expire (2026-10-10)
 
 - Every `generate-*-pdf` request stores a new file in the private `documents`
