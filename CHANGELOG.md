@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — a replayed refresh token ends the session; a retried renewal does not (2026-10-11)
+
+- Migration 44: `refresh_jwt_token` now tells a retry from reuse. A refresh
+  token that was already replaced and is presented again within 60 seconds
+  (`refresh_grace_seconds` in `warehouse_security.auth_config`, 0 to 300) gets
+  the same successor again with a newly signed access token, so an app whose
+  first answer was lost on a slow network is not signed out. Presented later,
+  or when it is two generations old, it is reuse: the session is deleted, the
+  token that was current stops working and the database log carries
+  `Refresh token reuse: session ... revoked`. Before, the replay was refused
+  but a session held by whoever had rotated the stolen token stayed alive for
+  up to 7 days.
+- The answer shape is unchanged: `{success, access_token, refresh_token,
+  expires_at, expires_in, token_type}` or `{success:false, message:'Invalid
+  refresh token'}`.
+- The table still stores hashes only. The successor is kept encrypted under a
+  key derived from the replaced token, so it can be returned only to a caller
+  who presents that token.
+- Tests: new `tests/refresh_reuse.sql` (rotation, retry inside the grace
+  period, replay after it, old generations, logout with a pre-rotation token,
+  forged and expired tokens); `tests/operator_auth.sql` and the CI drill
+  `tests/operator-api-core.mjs` now expect the retry answer. The drill was not
+  run against a live stack in this change.
+
 ## Unreleased — printer status check validates the printer name (2026-10-10)
 
 - `get-printer-status` (still answered with 503 by the function router until

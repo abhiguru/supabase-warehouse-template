@@ -219,7 +219,10 @@ assert.equal(raceResults.filter(result => result.ok && result.data?.success === 
 assert.equal((await api(`/rest/v1/goodsreceived_trl?id=eq.${raceStock}&select=stock`, adminToken)).data[0].stock, 3,
   'concurrent stock balance is 3');
 const refreshed = good(await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token }), 'refresh');
-assert.equal((await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token })).data?.success, false, 'old refresh cannot replay');
+// Migration 44: a retry of the rotation just made gets the same successor, so a
+// lost answer does not sign the user out; replay after the grace period ends
+// the session (tests/refresh_reuse.sql).
+assert.equal((await rpc('refresh_jwt_token', anon, { p_refresh_token: sessionA.refresh_token })).data?.refresh_token, refreshed.refresh_token, 'immediate refresh retry returns the same successor');
 assert.equal((await rpc('logout_session', anon, { p_refresh_token: refreshed.refresh_token })).data, true, 'logout');
 assert.ok(!(await api('/rest/v1/customers?select=id', refreshed.access_token)).ok, 'logged-out access rejected');
 console.log('PASS isolated HTTP identity, roles, A/B lists and mutations, Storage upload privacy/retry, catalog, pricing, cart, receipt, stock, dispatch retry/concurrency, invalid quantities, invoice, signed PDFs, refresh/replay, and logout');

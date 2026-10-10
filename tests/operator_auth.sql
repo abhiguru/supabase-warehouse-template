@@ -54,7 +54,16 @@ SELECT pg_temp.assert_true(:'admin_login'::jsonb#>>'{data,action}'='login','veri
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888801',:'challenge'::jsonb#>>'{data,otp_code}')->>'success')='false','OTP replay denied');
 SELECT public.refresh_jwt_token(:'admin_login'::jsonb#>>'{data,session,refresh_token}') AS admin_refresh \gset
 SELECT pg_temp.assert_true(:'admin_refresh'::jsonb->>'success'='true','operator session refreshes');
+-- Migration 44: a retry of the rotation just made returns the same successor;
+-- once the grace period is over the old token is reuse and ends the session
+-- (tests/refresh_reuse.sql covers the rest).
+SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_login'::jsonb#>>'{data,session,refresh_token}')->>'refresh_token')
+  =(:'admin_refresh'::jsonb->>'refresh_token'),'refresh token rotates; an immediate retry gets the same successor');
+SAVEPOINT refresh_replay;
+UPDATE warehouse_security.consumed_refresh_tokens SET consumed_at=now()-interval '61 seconds';
 SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_login'::jsonb#>>'{data,session,refresh_token}')->>'success')='false','refresh token rotates and cannot replay');
+SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_refresh'::jsonb->>'refresh_token')->>'success')='false','a replayed refresh token ends the session');
+ROLLBACK TO SAVEPOINT refresh_replay;
 
 SELECT public.operator_prepare_otp('9888888804') AS failed_delivery \gset
 SELECT public.operator_finish_otp((:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid,false,'provider_auth');
