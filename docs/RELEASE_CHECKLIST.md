@@ -228,9 +228,10 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Static and live companion contract checks cover 94 RPC names and 129 typed
       calls with 0 missing names or mismatches, including effective signatures and
       grants against the running demo.
-      `tests/auth_and_access.sql` enforces that anonymous function execution
-      is restricted strictly to the 5 authentication endpoints (`send_otp`, `verify_otp_or_register`, `refresh_jwt_token`,
-      `logout_session`, `check_session`).
+      `tests/auth_and_access.sql` (run by `tests/migrations.sh` since 2026-10-11, against the operator OTP flow)
+      enforces that anonymous function execution is restricted strictly to `refresh_jwt_token`,
+      `logout_session` and `check_session`; the demo `send_otp` and `verify_otp_or_register` are no longer
+      executable by any app role.
 
 - [x] Verify cross-customer denial for confirmed Storage images and the source-demo
       GRN/customer-image lifecycle. Live API coverage exercises stored bytes rather

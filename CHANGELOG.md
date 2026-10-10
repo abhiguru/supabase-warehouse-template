@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — the auth and access test runs again (2026-10-11)
+
+- `tests/auth_and_access.sql` was never run by `tests/migrations.sh` and used
+  the demo sign-in that migration 15 turned off. It now signs in through the
+  operator OTP flow and is registered. Its assertions held against the current
+  schema; only the test was out of date. It is the only place that checks the
+  list of functions an anonymous caller may run (now `refresh_jwt_token`,
+  `logout_session`, `check_session`), that every materialized view is
+  populated, and the GRN and dispatch number suggestions. It also checks the
+  stock report RPCs for customer and administrator.
+- `tests/security_baseline.sql` now also fails when a `SECURITY DEFINER`
+  function an app role can call has no `search_path`, when a new one without
+  `search_path` appears at all (the baseline has 48 that no app role can call),
+  when an exposed table has RLS but no policy, or when an app role can reach
+  the private schemas.
+
 ## Unreleased — the last administrator cannot be removed (2026-10-11)
 
 - Migration 44: `delete_user_account` refuses the only active administrator
