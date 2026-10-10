@@ -7,6 +7,20 @@ checked with the unit tests and `docker compose config` named in
 `docs/CONTAINER_SECURITY.md`, "Changes awaiting a first run". The
 `operator-install` CI job is their first run on real containers.
 
+- **Containers are on three networks instead of one.** postgres-meta runs any
+  SQL as the database superuser for whoever can connect to it, and Studio
+  forwards SQL to it without a login; both were reachable from every
+  container. They are now on an `admin` network with the database only. The
+  database is on a `database` network with the services that connect to it;
+  Kong, the function runtime, Gotenberg, imgproxy, CUPS and Prometheus can no
+  longer open a connection to it. `health-check.sh` and
+  `scripts/gateway-dns-check.sh` probe the gateway from the `storage`
+  container, because Studio is no longer on the gateway's network; for the
+  same reason Studio's panels that call the gateway do not work.
+  `tests/compose-networks.test.mjs` renders the Compose configuration and
+  asserts which services share a network and that each service still reaches
+  every host it is configured to call. See `docs/ARCHITECTURE.md` and
+  `docs/CONTAINER_SECURITY.md`, "Network boundaries".
 - **A function's worker receives only the variables it reads.** The router
   copied the whole container environment into every worker, so the three
   functions that take no token (`hello`, `get-public-config`, `operator-otp`)

@@ -500,3 +500,45 @@ the pilot setup notes (archived with the private pilot evidence, see
 [HISTORY.md](HISTORY.md)) for versions, commands and limits. No running container changed. Historical image
 findings above are not cleared by npm audit; the deferred image/security and
 production gates remain separate. Fresh CI/container integration is pending.
+
+## Network boundaries (2026-10-11)
+
+Until this change every service shared one Compose network. postgres-meta
+answers on `meta:8080` without a credential and runs any SQL as
+`supabase_admin`, and Studio (no login) forwards SQL to it, so a foothold in
+any container, for example in the Chromium that renders PDFs, was superuser
+SQL. The project now has three networks; the table is in
+[ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks).
+
+- `meta` is reachable from `studio` and `db` only; `studio` from `meta` and
+  `db` only.
+- `db` is reachable from the services that hold a database connection (rest,
+  realtime, storage, supavisor, the disabled auth service, postgres-exporter,
+  grafana) and from the admin pair. Kong, the function runtime, Gotenberg,
+  imgproxy, CUPS, Prometheus, Alertmanager, node-exporter and cAdvisor cannot
+  connect to it.
+- Operator probes follow the same rule: `health-check.sh` and
+  `scripts/gateway-dns-check.sh` call the gateway from the `storage` container
+  (they used Studio), and postgres-meta from Studio.
+
+What this does not do:
+
+- Services on `default` still reach each other without Kong's limits
+  (`functions:9000`, `imgproxy:5001`, `storage:5000`, `rest:3000`,
+  `prometheus:9090`). PostgREST, Storage and the functions check tokens
+  themselves; imgproxy and Prometheus do not.
+- A service on `database` can open a connection to PostgreSQL; what it can do
+  there is still decided by one shared password (next section).
+- The networks are ordinary bridges, not `internal: true`: the database needs
+  outbound HTTPS for the SMS provider, and Studio and postgres-meta were left
+  with the outbound access they had. Making `admin` internal is a possible
+  later step and needs a run on real containers.
+- Studio's Storage, Auth and API panels call `http://kong:8000`, which Studio
+  can no longer reach. No operator procedure uses Studio's interface and no
+  host port is published for it. Attaching Studio to `default` to use those
+  panels reopens the path this change closes.
+
+Each install now creates three Docker networks instead of one. A host that
+runs many Compose projects can exhaust Docker's default address pools
+(about 30 networks); `docker network prune` removes unused ones.
+

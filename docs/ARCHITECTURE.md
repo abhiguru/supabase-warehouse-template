@@ -1,37 +1,42 @@
 # Architecture
 
-## Container Diagram
+## Containers and networks
+
+The Compose project has three networks. A container resolves and reaches
+another only on a network both are attached to
+(`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts this
+table from the rendered configuration).
 
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │                  Docker Network                  │
-                    │                  172.20.0.0/24                   │
-                    │                                                 │
- Client ──────────▶ │  ┌────────────────────┐                        │
-                    │  │ Kong (.2)          │                         │
-                    │  │ API Gateway :8000  │                         │
-                    │  └──┬──┬──┬──┬──┬────┘                         │
-                    │     │  │  │  │  │                               │
-                    │     │  │  │  │  └──▶ Studio (.15) :3000        │
-                    │     │  │  │  └─────▶ Meta (.14) :8080          │
-                    │     │  │  └────────▶ Storage (.11) :5000       │
-                    │     │  └───────────▶ Functions (.12) :9000     │
-                    │     └──────────────▶ REST (.10) :3000          │
-                    │                          │                      │
-                    │                          ▼                      │
-                    │                    ┌──────────┐                 │
-                    │                    │ DB (.3)  │                 │
-                    │                    │ PG :5432 │                 │
-                    │                    └──────────┘                 │
-                    │                                                 │
-                    │  Optional:                                      │
-                    │  ┌─────────────┐ ┌──────────┐ ┌─────────────┐ │
-                    │  │ Gotenberg   │ │ CUPS     │ │ Prometheus  │ │
-                    │  │ (.24) :3000 │ │ (.23)    │ │ + Grafana   │ │
-                    │  └─────────────┘ │ :631     │ │ monitoring  │ │
-                    │                  └──────────┘ └─────────────┘ │
-                    └─────────────────────────────────────────────────┘
+ cloudflared ──▶ 127.0.0.1:18000
+                      │
+              ┌───────▼────────────────── default ──────────────────────────┐
+              │  Kong :8000 ──▶ REST :3000   Realtime :4000   Storage :5000 │
+              │            └──▶ Functions :9000 ──▶ Gotenberg :3000         │
+              │  imgproxy :5001 (from Storage)      CUPS :631 (profile)     │
+              │  Prometheus, Alertmanager, exporters, Grafana (profile)     │
+              └────────────────────┬────────────────────────────────────────┘
+                 REST, Realtime, Storage, Postgres exporter, Grafana
+              ┌────────────────────▼────── database ────────────────────────┐
+              │  PostgreSQL :5432            Supavisor (profile)            │
+              └────────────────────┬────────────────────────────────────────┘
+              ┌────────────────────▼────── admin ───────────────────────────┐
+              │  PostgreSQL        postgres-meta :8080        Studio :3000  │
+              └─────────────────────────────────────────────────────────────┘
 ```
+
+| Network | Attached services | Purpose |
+|---|---|---|
+| `default` | kong, rest, realtime, storage, imgproxy, functions, gotenberg, cups, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor, grafana | The gateway and everything it or a function calls; monitoring scrapes |
+| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter, grafana | Connections to PostgreSQL |
+| `admin` | db, meta, studio | postgres-meta and Studio, which run SQL without a login |
+
+Kong, the function runtime, Gotenberg, imgproxy, CUPS and Prometheus are on
+`default` only: they cannot open a connection to PostgreSQL, postgres-meta or
+Studio. Studio is on `admin` only, so its panels that call the API gateway do
+not work; it is kept for the metadata acceptance check. Only Kong publishes a
+host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed
+container address.
 
 ## Request Flow
 
@@ -55,24 +60,3 @@ Client → Kong → PostgREST → send_otp() → Twilio/MSG91
 Client → Kong → PostgREST → verify_otp_or_register() → JWT token
 Client → Kong (with JWT) → PostgREST → Data (RLS enforced)
 ```
-
-## Static IP Assignments
-
-| Service | IP | Port |
-|---------|-----|------|
-| Kong | 172.20.0.2 | 8000 |
-| DB | 172.20.0.3 | 5432 |
-| REST | 172.20.0.10 | 3000 |
-| Storage | 172.20.0.11 | 5000 |
-| Functions | 172.20.0.12 | 9000 |
-| Analytics | 172.20.0.13 | 4000 |
-| Meta | 172.20.0.14 | 8080 |
-| Studio | 172.20.0.15 | 3000 |
-| Realtime | 172.20.0.16 | 4000 |
-| imgproxy | 172.20.0.20 | 5001 |
-| Vector | 172.20.0.21 | - |
-| Supavisor | 172.20.0.22 | 5432 |
-| CUPS | 172.20.0.23 | 631 |
-| Gotenberg | 172.20.0.24 | 3000 |
-
-Static IPs are used to populate Kong's `/etc/hosts` via `extra_hosts`, providing instant DNS resolution and eliminating the 4-second cold-start delay from Kong's internal DNS resolver.

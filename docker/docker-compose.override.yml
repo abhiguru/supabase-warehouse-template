@@ -214,6 +214,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
+    networks: [default, database]
     environment:
       DATA_SOURCE_NAME: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres?sslmode=disable"
     depends_on:
@@ -266,6 +267,8 @@ services:
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
+    # Prometheus on the default network, the PostgreSQL datasource on database.
+    networks: [default, database]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASS:-changeme}
