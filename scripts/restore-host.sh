@@ -9,7 +9,8 @@
 #   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes BACKUP
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
-# written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it).
+# written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
+# an archive without a `.hmac` is unpacked only with --allow-unsigned).
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. An unsigned backup written
@@ -73,13 +74,13 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   [[ -f "$archive.sha256" ]] || die "Missing checksum file $archive.sha256; refusing an unverified archive."
   (cd "$(dirname -- "$archive")" && sha256sum -c --quiet -- "$file.sha256") || die "The archive does not match $file.sha256; choose another backup."
   # The archive signature covers its checksum, so it is checked before the archive is opened.
-  if [[ -n "$BACKUP_KEY" ]]; then
-    # A plain archive made by hand has none; the signed backup inside it is checked below either way.
-    if [[ -e "$archive.hmac" ]]; then
-      backup_check_archive "$archive" "$BACKUP_KEY" || die "Refusing: the signature of $file does not match the backup key. The archive was changed, or it belongs to another installation or an earlier key."
-    elif [[ "$file" == *.enc ]]; then
-      die "Refusing: the encrypted archive $file has no signature file ($file.hmac); it cannot be trusted."
-    fi
+  # Without one, nothing vouches for the archive until the backup inside it has been unpacked.
+  if [[ -n "$BACKUP_KEY" && -e "$archive.hmac" ]]; then
+    backup_check_archive "$archive" "$BACKUP_KEY" || die "Refusing: the signature of $file does not match the backup key. The archive was changed, or it belongs to another installation or an earlier key."
+  elif [[ -n "$BACKUP_KEY" && "$file" == *.enc ]]; then
+    die "Refusing: the encrypted archive $file has no signature file ($file.hmac); it cannot be trusted."
+  elif [[ "$allow_unsigned" != true ]]; then
+    die "Refusing: the archive $file has no signature file ($file.hmac), so it cannot be checked before it is unpacked. Copy the .hmac file from the drive together with the archive. An archive written before format v5, or one you packed yourself, has none: for that pass --allow-unsigned as well (a signed backup inside it is still checked against the key)."
   fi
   scratch="$(mktemp -d -- "$parent/.restore-host.XXXXXX")"
   if [[ "$file" == *.enc ]]; then

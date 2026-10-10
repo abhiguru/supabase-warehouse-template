@@ -234,10 +234,13 @@ test('restore-host takes a USB archive after checking it, and accepts an existin
     writeFileSync(`${tar}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
     const forged = f.run(['--yes', '--state-dir', f.state, tar]);
     assert.equal(forged.status, 1); assert.match(forged.stderr, /signature of .*\.tar does not match the backup key/); nothingCreated(f, forged);
-    // An archive copied by hand has no .hmac file; the signed backup inside it is still checked.
+    // Without its .hmac file the archive cannot be checked before it is unpacked, so it is not unpacked.
     rmSync(`${tar}.hmac`);
+    const unsigned = f.run(['--yes', '--state-dir', f.state, tar]);
+    assert.equal(unsigned.status, 1); assert.match(unsigned.stderr, /has no signature file \(.*\.tar\.hmac\)[\s\S]*--allow-unsigned/); nothingCreated(f, unsigned);
+    // An archive packed by hand is taken with --allow-unsigned; the signed backup inside it is still checked.
     mkdirSync(f.state, { mode: 0o700 });
-    const result = f.run(['--yes', '--state-dir', f.state, tar]);
+    const result = f.run(['--yes', '--allow-unsigned', '--state-dir', f.state, tar]);
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.equal(readFileSync(join(f.state, 'public/instance.json'), 'utf8'), instanceJson);
     assert.ok(existsSync(join(f.state, 'backups', NAME, 'database.dump')));

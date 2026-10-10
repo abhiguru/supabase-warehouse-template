@@ -1004,12 +1004,17 @@ different warehouse.
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
 
-   `--yes` confirms that the original host is permanently off. The command first
-   checks, without creating anything: the archive against its `.sha256`, the
-   archive signature and the backup signature against your key (an encrypted
-   `.tar.enc` is decrypted with the same key), its contents (only the backup
-   folder, no links, exactly the signed files), the backup's own checksums,
-   that this checkout contains every migration the backup applied (otherwise it
+   `--yes` confirms that the original host is permanently off. The command
+   checks all of the following before it creates the state. First the archive,
+   unopened: against its `.sha256`, and its signature file (`.hmac`) against
+   your key. An archive without a `.hmac` file is not opened; copy the `.hmac`
+   from the drive with the archive (only an archive from before format v5, or
+   one you packed yourself, has none, and needs `--allow-unsigned`). The
+   archive is then unpacked into a temporary folder next to the new state
+   (an encrypted `.tar.enc` is decrypted with the same key; the folder is
+   removed again if anything fails) and the backup inside is checked: its
+   signature against your key, its contents (only the backup folder, no links,
+   exactly the signed files) and its own checksums. Then: that this checkout contains every migration the backup applied (otherwise it
    names the `source_commit` to check out), that no container and no
    database volume of this installation exists on the host (a left-over
    `<project>_db-config` volume would hand the restored database the previous

@@ -11,6 +11,13 @@ No migration. Operator actions are named in each item.
   only `<project>_db-config`, the one named volume of the services whose data
   a restore replaces, and reports the others as kept.
   `tests/restore-host.test.mjs` compares that list with the Compose files.
+- **`db:restore-host` no longer unpacks an archive that has no signature
+  file.** A `.tar` without its `.hmac` was unpacked next to the new state
+  before anything in it had been checked against the backup key. It is now
+  refused unless `--allow-unsigned` is given (the signed backup inside is
+  still checked). **Operator action:** copy the `.hmac` file from the drive
+  together with the `.tar` and its `.sha256`. The restore section of
+  `docs/OPERATOR_INSTALL.md` now states the real order of the checks.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 
