@@ -41,6 +41,8 @@
   `user_profiles.preferred_language` holds `en`, `gu` or NULL; `set_my_language(p_language)`
   stores the caller's own choice (NULL clears it) and `get_my_language()` returns it.
   Both need a signed-in, active account with a valid session. Server text stays English.
+- Documents: text in Gujarati (a customer or item name) is set in Noto Sans Gujarati, to
+  match the sans-serif page. It was already drawn correctly, in the serif face.
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
