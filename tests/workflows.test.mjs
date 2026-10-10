@@ -35,3 +35,22 @@ test('the mobile companion is pinned once, by full commit, and the contract job 
   assert.match(checklist, /## Mobile contract before a release/);
   assert.match(checklist, /check-mobile-contract\.mjs [^\n]*--live/);
 });
+
+test('the operator-install job runs retention:apply against the real Storage API as its last use of the stack', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-install:'));
+  const steps = job.split(/\n      - /).slice(1);
+  const index = steps.findIndex(step => /npm run retention:apply/.test(step));
+  assert.ok(index >= 0, 'a step runs retention:apply');
+  const step = steps[index];
+  // An object is made old enough first; without that the run deletes nothing and proves nothing.
+  assert.match(step, /UPDATE storage\.objects SET created_at/);
+  assert.match(step, /expired_generated_documents\(now\(\)\)"\)" = 1/);
+  // Both halves of a Storage API delete are checked: the catalog row and the stored file.
+  assert.ok(step.indexOf('npm run retention:apply') < step.indexOf("FROM storage.objects WHERE bucket_id = 'documents' AND name ="), 'the row is counted after the run');
+  assert.match(step, /\/var\/lib\/storage\/stub\/stub\/documents\//);
+  // It deletes a document, so no step that reads documents or compares fingerprints may follow it.
+  const later = steps.slice(index + 1);
+  assert.equal(later.length, 1, 'only the stop step follows');
+  assert.match(later[0], /^name: Stop only this checkout's operator project\n\s+if: always\(\)/);
+});

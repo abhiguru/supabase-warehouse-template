@@ -70,6 +70,12 @@ No migration. Operator actions are named in each item.
   minutes and were then refused until the hour ended. The socket route now has
   1800 attempts a minute and no hourly window, sized for 100 phones
   (arithmetic in `docs/CONTAINER_SECURITY.md`, "Realtime socket limit").
+- **CI runs `retention:apply` against the real Storage API.** The removal of
+  expired generated PDFs had only met a stand-in server, and CI ran the
+  preview. The operator-install job now ages one generated PDF in SQL, runs
+  `retention:apply` as its last step and requires the catalog row and the
+  stored file to be gone. The step was written without a running stack; its
+  first CI run is the check of the Storage API call.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 

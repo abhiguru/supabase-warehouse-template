@@ -260,6 +260,23 @@ jobs:
             -c "DELETE FROM public.otp_rate_limits WHERE phone_number = '919888888872'"
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
         working-directory: backend
+      - name: Retention removes an expired document through the Storage API
+        run: |
+          # The last step that uses the stack: it deletes a document, so nothing that reads
+          # documents or compares fingerprints may come after it. One generated PDF is made
+          # older than the generated_documents policy; retention:apply must then remove its
+          # catalog row and its file through the real Storage API.
+          query() { bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "$1"; }
+          stored() { bash scripts/compose.sh exec -T storage sh -c 'find "/var/lib/storage/stub/stub/documents/$1" -type f 2>/dev/null | wc -l' sh "$name"; }
+          name="$(query "SELECT name FROM storage.objects WHERE bucket_id = 'documents' AND name LIKE '%.pdf' ORDER BY created_at, name LIMIT 1")"
+          test -n "$name"
+          query "UPDATE storage.objects SET created_at = now() - interval '400 days' WHERE bucket_id = 'documents' AND name = '$name'"
+          test "$(query "SELECT count(*) FROM warehouse_maintenance.expired_generated_documents(now())")" = 1
+          test "$(stored)" -ge 1
+          npm run retention:apply
+          test "$(query "SELECT count(*) FROM storage.objects WHERE bucket_id = 'documents' AND name = '$name'")" = 0
+          test "$(stored)" -eq 0
+        working-directory: backend
       - name: Stop only this checkout's operator project
         if: always()
         run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
