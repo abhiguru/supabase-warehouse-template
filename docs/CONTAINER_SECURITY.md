@@ -321,6 +321,10 @@ image findings or replace a full monitoring acceptance test.
 
 ## Remaining scan-coverage dependency: PostgREST
 
+Compose has referenced `postgrest/postgrest:v16.4` since 2026-10-08. Everything
+below was established for the v14.17 image and has not been repeated for
+v16.4; the scan-coverage gap is assumed, not re-measured, for the new image.
+
 Trivy detects no OS or language package results in the static PostgREST v14.17
 image. `docker buildx imagetools inspect --format '{{json .SBOM}}'
 postgrest/postgrest:v14.17` returned an empty object during this review. The
@@ -541,4 +545,78 @@ What this does not do:
 Each install now creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
+
+## Edge function modules (2026-10-11)
+
+The functions load three remote modules when a worker first starts: the Deno
+standard library 0.192.0 from deno.land, and supabase-js 2.39.0 and jose 5.10.0
+from esm.sh. The printing functions, which the router refuses with 503, import
+`npm:ipp@2.0.1` on demand.
+
+- `functions/import_map.json` is the one list of those URLs.
+  `tests/edge-imports.test.mjs` fails on any remote import that is not in the
+  list, on a list entry without an exact version, on a list entry nothing
+  imports, and on an `npm:` import without an exact version.
+- supabase-js was imported at 2.39.0 by the functions that run (configuration
+  and PDFs) and at 2.39.3 by the printing functions that do not. All now use
+  2.39.0, so no running function changed version.
+- The unit tests verify tokens with jose 5.10.0, the release the runtime
+  loads (`package.json` pins it; Dependabot version updates for it are held so
+  the two move together). They ran on jose 6 before.
+
+Still open:
+
+- **No lock file.** A URL pins the top-level version only; esm.sh resolves that
+  module's own dependencies when it serves it, and nothing checks content
+  hashes. The module cache lives in the container and is refetched after the
+  container is recreated. To close this, on a machine with the Deno release
+  that matches the edge runtime in `docker/edge-runtime/Dockerfile`:
+
+  ```bash
+  cd functions
+  deno cache --lock=deno.lock --frozen=false --import-map=import_map.json \
+    main/index.ts hello/index.ts get-public-config/index.ts operator-otp/index.ts \
+    get-config/index.ts generate-*-pdf/index.ts
+  git add deno.lock
+  ```
+
+  Then make the runtime refuse a module that is not in the lock. How the
+  pinned edge-runtime release takes a lock file (a `deno.json` beside the
+  functions with `"lock": {"frozen": true}`, or a start-up flag) is not
+  recorded in this repository and was not tested, so no such setting is
+  committed. Confirm it against that release, start the stack, call
+  `get-public-config`, `operator-otp`, `get-config` and one PDF function, and
+  only then commit the setting. A second option that needs no runtime support
+  is to vendor the three modules under `functions/vendor/` and point the
+  import map at the files.
+- **The functions import by full URL, not through the import map's names.**
+  `functions/_shared/jwt.ts` is loaded by the main service as well as by the
+  workers, and only the workers are given the import map
+  (`functions/main/index.ts`). Switching to bare names therefore needs the
+  main service to receive the map too, and a failure there leaves the
+  functions container unhealthy. It needs a run on the edge runtime first.
+- jose 5 to 6 and supabase-js 2.39 to a current 2.x release are version
+  moves for the same run.
+
+## Image pins (2026-10-11)
+
+Every service image is either built from a Dockerfile whose `FROM` lines carry
+a digest, or referenced with a digest in Compose, with one exception:
+
+| Image | State |
+|---|---|
+| `kong:3.9.3-ubuntu` | Pinned to `sha256:12972ce1ab6396083e56e7d46fce084836c98cc819344bef44a1f583ec3ab191`, the multi-platform index (linux/amd64 and linux/arm64) published for that tag on 2026-09-16, read from a local copy of the image and confirmed against the registry. Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
+| `postgrest/postgrest:v16.4` | **Tag only.** The image was not available locally to read a digest from. On a host that has pulled it: `docker image inspect --format '{{index .RepoDigests 0}}' postgrest/postgrest:v16.4`, confirm with `docker buildx imagetools inspect` that the digest is an index covering amd64 and arm64, write it after the tag in `docker/docker-compose.yml`, and remove the exception in `tests/gateway-config.test.mjs`. |
+
+Kong still has no recipe of its own, so its Ubuntu packages are as old as the
+pinned build; the pin makes that explicit instead of leaving it to whichever
+build a host pulled first. A `docker/kong/Dockerfile` with an
+`apt-get upgrade` step, as Realtime and Supavisor have, would need a build and
+a gateway run and is not part of this change.
+
+`THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` named PostgREST
+v14.17 and edge-runtime v1.76.2 after Compose and the Dockerfile had moved to
+v16.4 and v1.77.4. They are corrected, and `tests/gateway-config.test.mjs` now
+reads the versions from Compose and the Dockerfiles and fails when either
+document names a different one.
 

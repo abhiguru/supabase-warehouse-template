@@ -29,6 +29,18 @@ checked with the unit tests and `docker compose config` named in
   the `Deno.env.get()` calls the function and its shared modules make.
   `SUPABASE_DB_URL`, a superuser database address that no function read, is
   removed from the functions container.
+- **Edge function modules are pinned in one list.** Five imports of `npm:ipp`
+  had no version, supabase-js was imported at two versions, and
+  `functions/import_map.json` listed versions that no file imported. Every
+  remote import is now an exact version listed in the import map
+  (`tests/edge-imports.test.mjs`); the functions that run keep the versions
+  they had. The unit tests verify tokens with jose 5.10.0, the release the
+  runtime loads, instead of jose 6. There is still no `deno.lock`; the steps
+  are in `docs/CONTAINER_SECURITY.md`, "Edge function modules".
+- **Kong is pinned by digest.** PostgREST v16.4 is still referenced by tag
+  (`docs/CONTAINER_SECURITY.md`, "Image pins"). `THIRD_PARTY_NOTICES.md` and
+  `docs/ATTRIBUTION_REVIEW.md` now name PostgREST v16.4 and edge-runtime
+  v1.77.4, and a test fails when they drift from Compose and the Dockerfiles.
 
 ## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
 

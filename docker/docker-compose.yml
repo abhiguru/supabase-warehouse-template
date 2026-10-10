@@ -45,7 +45,7 @@ services:
       NEXT_PUBLIC_ENABLE_LOGS: false
 
   kong:
-    image: kong:3.9.3-ubuntu
+    image: kong:3.9.3-ubuntu@sha256:12972ce1ab6396083e56e7d46fce084836c98cc819344bef44a1f583ec3ab191
     restart: unless-stopped
     # Kong's resolver can wait on an inherited, unavailable search domain even
     # when Docker has answered the bare service alias. Resolve Compose aliases
@@ -155,6 +155,7 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
+    # No digest yet: see docs/CONTAINER_SECURITY.md, "Image pins".
     image: postgrest/postgrest:v16.4
     restart: unless-stopped
     networks: [default, database]
