@@ -132,9 +132,11 @@ test('restore verifier requires the v4 catalog files before starting a container
   try {
     const backup = makeBackup(join(scratch, 'backup'));
     rmSync(join(backup, '_supabase.dump'));
-    const result = spawnSync('bash', [new URL('../scripts/verify-restore.sh', import.meta.url).pathname, backup], { encoding: 'utf8' });
+    // The signature is checked before the checksums, so the verifier needs the key to get as far as the file set.
+    const result = verify(backup, scratch);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /sha256sum|_supabase\.dump/);
+    assert.match(result.stderr, /not exactly the files its signed SHA256SUMS lists|_supabase\.dump/);
+    assert.equal(result.calls, '', 'no container is started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -394,5 +396,36 @@ test('restore verifier names the numbers when the disposable database does not f
     mkdirSync(join(parent, 'config')); writeKey(join(parent, 'config/backup.key'));
     result = verify(backup, scratch, { ...huge, WAREHOUSE_STATE_DIR: parent });
     assert.match(result.stderr, new RegExp(`MiB are free in ${parent}`));
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a backup is authenticated before its SHA256SUMS is used: an unsigned or forged list cannot name files outside the backup', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-order-'));
+  const sums = 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt';
+  try {
+    writeFileSync(join(scratch, 'outside.txt'), 'not part of any backup\n');
+    // A signed backup whose list was rewritten to point outside: the signature fails first and the file is never opened.
+    const forged = makeBackup(join(scratch, 'forged'));
+    assert.equal(spawnSync('sh', ['-c', `{ ${sums}; printf '%s  ../absent-outside.txt\\n' "$(printf x | sha256sum | cut -d' ' -f1)"; } > SHA256SUMS`], { cwd: forged }).status, 0);
+    let result = verify(forged, scratch);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /signature of this backup does not match the backup key/);
+    assert.doesNotMatch(result.stderr, /absent-outside|does not match its SHA256SUMS/, 'sha256sum never ran on the unauthenticated list');
+    assert.equal(result.calls, '');
+    // An unsigned backup accepted with --allow-unsigned: the list may still name only files inside the backup.
+    for (const [label, path] of [['parent', '../outside.txt'], ['absolute', join(scratch, 'outside.txt')]]) {
+      const unsigned = makeBackup(join(scratch, `unsigned-${label}`), { format: 'warehouse-backup-v4' });
+      assert.equal(spawnSync('sh', ['-c', `{ ${sums}; sha256sum "$1"; } > SHA256SUMS`, 'sh', path], { cwd: unsigned }).status, 0);
+      assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: unsigned }).status, 0, 'the plain checksums accept the outside file');
+      result = verify(unsigned, scratch, {}, ['--allow-unsigned']);
+      assert.notEqual(result.status, 0, label);
+      assert.match(result.stderr, /SHA256SUMS names a path outside the backup/, label);
+      assert.equal(result.calls, '', label);
+    }
+    // A damaged signed backup is still caught by its checksums, after the signature.
+    const damaged = makeBackup(join(scratch, 'damaged'));
+    writeFileSync(join(damaged, 'database.dump'), 'bit rot\n');
+    result = verify(damaged, scratch);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /does not match its SHA256SUMS/); assert.equal(result.calls, '');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

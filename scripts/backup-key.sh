@@ -9,7 +9,7 @@
 #   backup_key_load FILE              read and validate a key into BACKUP_KEY
 #   backup_hmac KEY LABEL < data      HMAC-SHA256 as hexadecimal
 #   backup_sign_dir DIR KEY           write SHA256SUMS.hmac for a backup directory
-#   backup_authenticate DIR ALLOW     verify checksums and signature; ALLOW=true accepts an unsigned backup
+#   backup_authenticate DIR ALLOW     verify signature, then checksums; ALLOW=true accepts an unsigned backup
 #   backup_sign_archive FILE KEY      write FILE.hmac over FILE.sha256
 #   backup_check_archive FILE KEY     verify FILE.hmac
 #   backup_encrypt KEY / backup_decrypt KEY   stdin to stdout, AES-256-CTR
@@ -95,16 +95,33 @@ Continue only if the medium never left your custody.
 MSG
 }
 
-# Checks SHA256SUMS, then the signature made with the backup key. A signed
-# backup must also contain exactly the files its SHA256SUMS lists. Nothing in
-# the backup is parsed, loaded or executed by the callers before this passes.
+# Runs SHA256SUMS over a backup directory. The list is made to name only files
+# inside the backup first: `sha256sum -c` opens whatever path a line gives it.
+backup_checksums() {
+  local dir="$1"
+  if grep -Evq '^[0-9a-f]{64}  [^/]' "$dir/SHA256SUMS" || grep -Eq '^[0-9a-f]{64}  (.*/)?\.\.(/|$)' "$dir/SHA256SUMS"; then
+    echo 'Refusing: SHA256SUMS names a path outside the backup, or has a line that is not a checksum.' >&2; return 1
+  fi
+  if [[ -n "$(cd "$dir" && find . -mindepth 1 ! -type f ! -type d -print -quit)" ]]; then
+    echo 'Refusing: the backup contains a link or special file.' >&2; return 1
+  fi
+  (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || { echo 'Refusing: the backup does not match its SHA256SUMS.' >&2; return 1; }
+}
+
+# Checks the signature made with the backup key over SHA256SUMS, then that the
+# backup contains exactly the files that list names, then the checksums. The
+# signature comes first: SHA256SUMS is not used, and nothing in the backup is
+# parsed, loaded or executed by the callers, before it passes. Only a backup
+# accepted without a signature (ALLOW=true) has its checksums run unauthenticated.
 backup_authenticate() {
   local dir="$1" allow="${2:-false}" keyfile recorded expected listed present
   BACKUP_SIGNED=false
   [[ -f "$dir/SHA256SUMS" && ! -L "$dir/SHA256SUMS" ]] || { echo 'Incomplete backup: missing SHA256SUMS' >&2; return 1; }
-  (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || { echo 'Refusing: the backup does not match its SHA256SUMS.' >&2; return 1; }
   if [[ ! -e "$dir/$BACKUP_SIGNATURE_FILE" && ! -L "$dir/$BACKUP_SIGNATURE_FILE" ]]; then
-    if [[ "$allow" == true ]]; then backup_unsigned_warning "this backup carries no signature ($BACKUP_SIGNATURE_FILE)."; return 0; fi
+    if [[ "$allow" == true ]]; then
+      backup_checksums "$dir" || return 1
+      backup_unsigned_warning "this backup carries no signature ($BACKUP_SIGNATURE_FILE)."; return 0
+    fi
     cat >&2 <<MSG
 Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE).
 Backups written before format warehouse-backup-v5 are unsigned. If this one never left your
@@ -114,7 +131,10 @@ MSG
   fi
   [[ -f "$dir/$BACKUP_SIGNATURE_FILE" && ! -L "$dir/$BACKUP_SIGNATURE_FILE" ]] || { echo "Refusing: $BACKUP_SIGNATURE_FILE is not a regular file." >&2; return 1; }
   if ! keyfile="$(backup_key_path)" || [[ ! -e "$keyfile" ]]; then
-    if [[ "$allow" == true ]]; then backup_unsigned_warning 'no backup key is available, so the signature of this backup was NOT checked.'; return 0; fi
+    if [[ "$allow" == true ]]; then
+      backup_checksums "$dir" || return 1
+      backup_unsigned_warning 'no backup key is available, so the signature of this backup was NOT checked.'; return 0
+    fi
     cat >&2 <<MSG
 Refusing: no backup key is available to check the signature of this backup.
 Set WAREHOUSE_STATE_DIR to the installation that wrote it, or WAREHOUSE_BACKUP_KEY_FILE to your copy of its
@@ -141,6 +161,7 @@ MSG
   if [[ "$listed" != "$present" || "$(wc -l < "$dir/SHA256SUMS")" != "$(grep -c . <<<"$listed")" ]]; then
     echo 'Refusing: the files in the backup are not exactly the files its signed SHA256SUMS lists.' >&2; return 1
   fi
+  backup_checksums "$dir" || return 1
   BACKUP_SIGNED=true
 }
 

@@ -18,6 +18,13 @@ No migration. Operator actions are named in each item.
   still checked). **Operator action:** copy the `.hmac` file from the drive
   together with the `.tar` and its `.sha256`. The restore section of
   `docs/OPERATOR_INSTALL.md` now states the real order of the checks.
+- **A backup's signature is checked before its checksum list is used.**
+  `sha256sum -c SHA256SUMS` ran first, on a list nobody had vouched for, and
+  opens whatever path a line names (a file outside the backup, a device that
+  never ends). The signature over the list is now checked first; the checksums
+  run after it. For a backup accepted with `--allow-unsigned` the list is
+  refused when a line names an absolute path or one with `..`, or when the
+  backup contains a link.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 

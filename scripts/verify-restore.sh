@@ -34,7 +34,7 @@ for file in database.dump storage.tar.gz integrity.txt metadata.txt SHA256SUMS; 
 done
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
-# Checksums and signature come first: nothing below reads the backup before this passes.
+# Signature, then checksums: nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
 has_roles=false

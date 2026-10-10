@@ -103,7 +103,7 @@ fi
 for file in metadata.txt compose.env instance.json integrity.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || die "Incomplete backup: missing $file"
 done
-# Checksums and signature first: compose.env from the backup becomes this host's configuration.
+# Signature and checksums first: compose.env from the backup becomes this host's configuration.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null)"
 [[ "$format" == warehouse-backup-v5 || ( "$format" == warehouse-backup-v4 && "$allow_unsigned" == true ) ]] || die "Refusing: restore-host requires a warehouse-backup-v5 backup (or an unsigned warehouse-backup-v4 with --allow-unsigned); this one is '${format:-unknown}'."
