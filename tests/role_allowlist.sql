@@ -237,8 +237,14 @@ SELECT pg_temp.ra_assert((SELECT count(*)=1 AND bool_and(cmd='SELECT' AND roles=
   FROM pg_policies WHERE schemaname='public' AND tablename='orders' AND policyname='starter_order_staff_read'),
  'staff order policy is read-only');
 SELECT pg_temp.ra_assert(has_function_privilege('authenticated','warehouse_security.image_file_unreferenced(text,text)','EXECUTE')
-  AND NOT has_function_privilege('anon','warehouse_security.image_file_unreferenced(text,text)','EXECUTE'),
- 'the storage helper is for signed-in sessions only');
+  AND NOT has_function_privilege('anon','warehouse_security.image_file_unreferenced(text,text)','EXECUTE')
+  AND has_function_privilege('authenticated','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE')
+  AND NOT has_function_privilege('anon','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE'),
+ 'the storage helpers are for signed-in sessions only');
+SELECT pg_temp.ra_assert((SELECT count(*)=2 AND bool_and(qual LIKE '%staff_may_remove_image_file(bucket_id, name)%')
+  FROM pg_policies WHERE schemaname='storage' AND tablename='objects'
+    AND policyname IN ('starter_staff_removed_image_read','starter_staff_removed_image_delete')),
+ 'both staff photo-removal policies use the narrowed helper');
 
 -- ---------------------------------------------------------------------------
 -- Fixture accounts and documents
@@ -258,11 +264,15 @@ INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment
  (gen_random_uuid(),'919888888934','Role Matrix Staff','staff',true,'approved'),
  (gen_random_uuid(),'919888888935','Role Matrix Two Customers','customer',true,'approved'),
  (gen_random_uuid(),'919888888936','Role Matrix Former Staff','staff',false,'disabled'),
- (gen_random_uuid(),'919888888937','Role Matrix Managed Person','customer',true,'approved');
+ (gen_random_uuid(),'919888888937','Role Matrix Managed Person','customer',true,'approved'),
+ (gen_random_uuid(),'919888888938','Role Matrix Rejected Request','customer',false,'rejected'),
+ (gen_random_uuid(),'919888888939','Role Matrix Pending Request','customer',false,'pending');
 SELECT id AS admin2_profile FROM public.user_profiles WHERE mobile='919888888932' \gset
 SELECT id AS supervisor_profile FROM public.user_profiles WHERE mobile='919888888933' \gset
 SELECT id AS staff_profile FROM public.user_profiles WHERE mobile='919888888934' \gset
 SELECT id AS managed_profile FROM public.user_profiles WHERE mobile='919888888937' \gset
+SELECT id AS rejected_profile FROM public.user_profiles WHERE mobile='919888888938' \gset
+SELECT id AS pending_profile FROM public.user_profiles WHERE mobile='919888888939' \gset
 SELECT pg_temp.ra_login('9888888931') AS admin_claims \gset
 SELECT pg_temp.ra_login('9888888933') AS supervisor_claims \gset
 SELECT pg_temp.ra_login('9888888934') AS staff_claims \gset
@@ -333,6 +343,15 @@ SELECT public.register_grn_image_upload(:'grn_a'::uuid,'header','a-pending.webp'
 RESET ROLE;
 INSERT INTO storage.objects(bucket_id,name) VALUES ('grn-images',:'img_pending'::jsonb->>'storage_path');
 UPDATE public.goodsreceived SET deleted_at=now() WHERE id=:'grn_x'::uuid;
+-- Files no image row names that staff must not reach (migration 47): in the
+-- folder of the deleted receipt, outside any document folder, in the folder of
+-- a dispatch that does not exist, and one the legacy header column of RMA names.
+SELECT 'headers/'||:'grn_x'||'/left-behind.webp' AS orphan_deleted, 'stray/left-behind.webp' AS orphan_stray,
+       gen_random_uuid()::text||'/left-behind.webp' AS orphan_dispatch, 'headers/'||:'grn_a'||'/legacy.webp' AS orphan_legacy \gset
+INSERT INTO storage.objects(bucket_id,name) VALUES ('grn-images',:'orphan_deleted'),('grn-images',:'orphan_stray'),
+ ('dispatch-images',:'orphan_dispatch'),('grn-images',:'orphan_legacy');
+UPDATE public.goodsreceived SET gr_image_url=:'orphan_legacy' WHERE id=:'grn_a'::uuid;
+SELECT set_config('test.protected_orphans',:'orphan_deleted'||','||:'orphan_stray'||','||:'orphan_dispatch'||','||:'orphan_legacy',true);
 INSERT INTO public.sensor_devices(device_name,mac_address,location) VALUES ('Role Matrix Chamber','AA:BB:CC:00:00:45','Chamber 1');
 SELECT id AS sensor_id FROM public.sensor_devices WHERE device_name='Role Matrix Chamber' \gset
 INSERT INTO public.printer_status(printer_name,status,last_error) VALUES ('role-matrix-printer','error','fictional error text');
@@ -516,6 +535,12 @@ SELECT public.get_supervisors() AS picker \gset
 SELECT pg_temp.ra_assert(:'picker'::jsonb->>'success'='true' AND :'picker'::jsonb::text LIKE '%Role Matrix Supervisor%'
  AND :'picker'::jsonb::text LIKE '%Role Matrix Staff%' AND :'picker'::jsonb::text NOT LIKE '%Role Matrix Former Staff%',
  'the supervisor picker leaves out a deactivated profile: '||:'picker');
+-- Staff pick a colleague by name; the mobile number is not in their answer (migration 47).
+SELECT pg_temp.ra_assert(:'picker'::text NOT LIKE '%9198888889%'
+ AND (SELECT bool_and(NOT person ? 'phone' AND NOT person ? 'mobile' AND person ?& ARRAY['id','name','display_name','role'])
+        AND count(*)>=4 FROM jsonb_array_elements(:'picker'::jsonb->'data') AS person)
+ AND (SELECT person->>'role'='supervisor' FROM jsonb_array_elements(:'picker'::jsonb->'data') AS person WHERE person->>'name'='Role Matrix Supervisor'),
+ 'staff receive id, name, display_name and role of each colleague and no mobile number: '||:'picker');
 -- Photo removal. Refused: a photo of a deleted receipt, and an upload another
 -- person has registered and not confirmed.
 SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.delete_grn_image(%L::uuid)',:'img_x'::jsonb->>'image_id')),
@@ -525,10 +550,14 @@ SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.delete_grn_ima
 SELECT pg_temp.ra_assert(public.delete_grn_image(gen_random_uuid())->>'success'='false'
  AND NOT pg_temp.ra_refused(format('SELECT public.delete_grn_image(%L::uuid)',gen_random_uuid())),
  'an unknown photo id is answered as not found, not as a refusal');
--- Before the row is removed its file cannot be deleted by staff.
+-- Before the row is removed its file cannot be deleted by staff. Neither can
+-- an unnamed file of a deleted receipt, of no document, or one the legacy
+-- header column names; staff do not see those files either.
 DO $$ DECLARE affected integer; BEGIN
  DELETE FROM storage.objects WHERE bucket_id IN ('grn-images','dispatch-images'); GET DIAGNOSTICS affected=ROW_COUNT;
- PERFORM pg_temp.ra_assert(affected=0,'staff cannot delete a file an image row still names');
+ PERFORM pg_temp.ra_assert(affected=0,'staff cannot delete a file an image row still names, nor a file outside a live document, deleted '||affected);
+ PERFORM pg_temp.ra_assert((SELECT count(*)=0 FROM storage.objects WHERE name=ANY(string_to_array(current_setting('test.protected_orphans'),','))),
+  'staff cannot read an unnamed file of a deleted receipt or outside a document folder');
 END $$;
 SELECT public.delete_grn_image((:'img_a1'::jsonb->>'image_id')::uuid) AS removed_grn_photo \gset
 SELECT pg_temp.ra_assert(:'removed_grn_photo'::jsonb->>'success'='true'
@@ -549,6 +578,7 @@ END $$;
 RESET ROLE;
 SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM storage.objects WHERE name=ANY(string_to_array(current_setting('test.removed_paths'),',')))
  AND (SELECT count(*)=3 FROM storage.objects WHERE name IN (:'img_a2'::jsonb->>'storage_path',:'img_x'::jsonb->>'storage_path',:'img_pending'::jsonb->>'storage_path'))
+ AND (SELECT count(*)=4 FROM storage.objects WHERE name=ANY(string_to_array(current_setting('test.protected_orphans'),',')))
  AND (SELECT count(*)=0 FROM public.grn_images WHERE id=(:'img_a1'::jsonb->>'image_id')::uuid)
  AND (SELECT count(*)=0 FROM public.dispatch_images WHERE id=(:'img_da'::jsonb->>'image_id')::uuid)
  AND (SELECT count(*)=3 FROM public.grn_images WHERE id IN ((:'img_a2'::jsonb->>'image_id')::uuid,(:'img_x'::jsonb->>'image_id')::uuid,(:'img_pending'::jsonb->>'image_id')::uuid)),
@@ -565,6 +595,25 @@ SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.get_customer_s
  AND pg_temp.ra_refused('SELECT public.get_operations_dashboard(CURRENT_DATE-30,CURRENT_DATE)')
  AND pg_temp.ra_refused('SELECT public.get_recent_dispatched_orders(10,0)'),
  'a customer session with an administrator claim is still a customer');
+-- The storage helpers answer staff only (migration 47): nobody else learns from
+-- them whether a path is in use.
+SELECT pg_temp.ra_assert(NOT warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
+ AND NOT warehouse_security.image_file_unreferenced('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp'),
+ 'a customer account gets false from the storage helpers for a free path in a live folder');
+RESET ROLE;
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.ra_assert(warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
+ AND warehouse_security.image_file_unreferenced('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
+ AND warehouse_security.staff_may_remove_image_file('grn-images','items/'||:'grn_a'||'/never-uploaded.webp')
+ AND warehouse_security.staff_may_remove_image_file('dispatch-images',:'dispatch_a'||'/never-uploaded.webp')
+ AND NOT warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_x'||'/never-uploaded.webp')
+ AND NOT warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_a')
+ AND NOT warehouse_security.staff_may_remove_image_file('grn-images','other/'||:'grn_a'||'/never-uploaded.webp')
+ AND NOT warehouse_security.staff_may_remove_image_file('dispatch-images','headers/'||:'grn_a'||'/never-uploaded.webp')
+ AND NOT warehouse_security.staff_may_remove_image_file('grn-images',:'img_a2'::jsonb->>'storage_path')
+ AND NOT warehouse_security.staff_may_remove_image_file('customer-images',:'grn_a'||'/never-uploaded.webp'),
+ 'for staff a free path counts only inside the folder of a live receipt or dispatch');
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
@@ -573,6 +622,10 @@ RESET ROLE;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert(warehouse_security.active_role()='supervisor','actual supervisor role');
+-- The picker keeps the mobile number for supervisors and administrators.
+SELECT pg_temp.ra_assert((SELECT person->>'phone'='919888888934' AND person->>'role'='staff'
+  FROM jsonb_array_elements(public.get_supervisors()->'data') AS person WHERE person->>'name'='Role Matrix Staff'),
+ 'a supervisor still receives a colleague''s mobile number from the picker');
 SELECT public.get_users_list() AS supervisor_users \gset
 SELECT pg_temp.ra_assert(:'supervisor_users'::jsonb->>'success'='true'
  AND :'supervisor_users'::jsonb::text LIKE '%Role Matrix Managed Person%'
@@ -601,8 +654,44 @@ SELECT public.update_user_role(:'managed_profile'::uuid,'customer') AS s_role_ba
 SELECT pg_temp.ra_assert(:'s_role_back'::jsonb->>'success'='true','supervisor changes the role back: '||:'s_role_back');
 SELECT public.update_user_status(:'managed_profile'::uuid,false) AS s_off \gset
 SELECT pg_temp.ra_assert(:'s_off'::jsonb->>'success'='true','supervisor deactivates a user: '||:'s_off');
+-- Giving access back is an administrator's decision (migration 47): the
+-- deactivated profile is 'disabled', a state a supervisor cannot change.
 SELECT public.update_user_status(:'managed_profile'::uuid,true) AS s_on \gset
-SELECT pg_temp.ra_assert(:'s_on'::jsonb->>'success'='true','supervisor reactivates a user: '||:'s_on');
+SELECT public.update_user_role(:'managed_profile'::uuid,'staff') AS s_role_disabled \gset
+SELECT pg_temp.ra_assert(:'s_on'::jsonb->>'success'='false' AND :'s_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
+ AND :'s_on'::jsonb->>'message'='Only an administrator can change a user whose access is not approved'
+ AND :'s_role_disabled'::jsonb->>'success'='false' AND :'s_role_disabled'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED',
+ 'supervisor cannot reactivate a user or change the role of a deactivated one: '||:'s_on'||:'s_role_disabled');
+-- A rejected access request stays rejected, and a pending one stays reviewable.
+SELECT public.update_user_status(:'rejected_profile'::uuid,true) AS s_rejected_on \gset
+SELECT public.update_user_role(:'rejected_profile'::uuid,'supervisor') AS s_rejected_role \gset
+SELECT public.update_user_status(:'pending_profile'::uuid,true) AS s_pending_on \gset
+SELECT public.update_user_role(:'pending_profile'::uuid,'staff') AS s_pending_role \gset
+SELECT pg_temp.ra_assert(:'s_rejected_on'::jsonb->>'success'='false' AND :'s_rejected_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
+ AND :'s_rejected_role'::jsonb->>'success'='false' AND :'s_rejected_role'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED',
+ 'supervisor cannot re-approve a rejected access request or give it a role: '||:'s_rejected_on'||:'s_rejected_role');
+SELECT pg_temp.ra_assert(:'s_pending_on'::jsonb->>'success'='false' AND :'s_pending_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
+ AND :'s_pending_role'::jsonb->>'success'='false' AND :'s_pending_role'::jsonb->>'error'='ENROLLMENT_PENDING',
+ 'supervisor cannot activate a pending access request or change its role: '||:'s_pending_on'||:'s_pending_role');
+RESET ROLE;
+SELECT pg_temp.ra_assert((SELECT NOT active AND enrollment_status='disabled' AND role='customer' FROM public.user_profiles WHERE id=:'managed_profile'::uuid)
+ AND (SELECT NOT active AND enrollment_status='rejected' AND role='customer' FROM public.user_profiles WHERE id=:'rejected_profile'::uuid)
+ AND (SELECT NOT active AND enrollment_status='pending' AND role='customer' FROM public.user_profiles WHERE id=:'pending_profile'::uuid),
+ 'the refused changes left the three profiles as they were');
+-- The administrator gives access back; a pending request keeps its role for the administrator too.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_user_role(:'pending_profile'::uuid,'staff') AS a_pending_role \gset
+SELECT pg_temp.ra_assert(:'a_pending_role'::jsonb->>'success'='false' AND :'a_pending_role'::jsonb->>'error'='ENROLLMENT_PENDING'
+ AND :'a_pending_role'::jsonb->>'message'='Review the access request before changing the role',
+ 'the role of a pending access request cannot be changed before the review: '||:'a_pending_role');
+SELECT pg_temp.ra_assert(public.operator_review_enrollment(:'pending_profile'::uuid,'rejected')->>'success'='true',
+ 'the pending access request is still reviewable');
+SELECT pg_temp.ra_assert(public.update_user_status(:'managed_profile'::uuid,true)->>'success'='true',
+ 'administrator reactivates the user the supervisor deactivated');
+RESET ROLE;
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert(public.assign_customer_to_user('919888888937',:'gamma'::uuid,'by supervisor'),'supervisor assigns a customer');
 RESET ROLE;
 SELECT pg_temp.ra_assert((SELECT role='customer' AND active AND enrollment_status='approved' FROM public.user_profiles WHERE id=:'managed_profile'::uuid)

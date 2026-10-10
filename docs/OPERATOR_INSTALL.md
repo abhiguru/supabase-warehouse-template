@@ -191,57 +191,89 @@ used about 24 codes. Limits enforced by the database:
 - Expired OTPs are cleaned up by `pg_cron`; sessions are HS256 JWTs signed with
   the instance's `JWT_SECRET`.
 
-Anyone can ask for a code for any number, so the limits are built so that a
-stranger cannot use them to keep a real user out. A phone is **known** when it
-has an approved, active profile; a **source** is the caller's address
-(Cloudflare's `CF-Connecting-IP`).
+Anyone can ask for a code for any number. The limits therefore have a fixed
+order of priority: first, a code cannot be guessed more than five times;
+second, one phone is not sent more than 30 SMS in 24 hours; third, inside
+those two bounds, a stranger cannot keep a real user from signing in on a
+network that user has signed in from before. A phone is **known** when it has
+an approved, active profile; a **source** is the caller's address
+(Cloudflare's `CF-Connecting-IP`); a source is **trusted** for a known phone
+when a sign-in for that phone was completed from it in the last 90 days (the
+last five such sources are kept).
 
 | Limit | Value | Applies to | When it is reached |
 | --- | --- | --- | --- |
-| Open lane | 5 per hour and 20 per day per phone, any source | every phone | Unknown phone: 429 "Too many OTP requests. Try again later.". Known phone: moves to the slow lane |
-| Slow lane | one code every 15 minutes per phone | known phones whose open lane is used up | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
-| Trusted lane | 5 per hour per phone and source, not counted in the open lane | known phones, from a source that completed a sign-in for that phone in the last 90 days (the last five sources are kept) | 429 "Too many OTP requests. Try again later." |
+| Per phone, all sends | `otp_phone_daily_cap`, default 30 in any 24 hours, every source and lane together | every phone | 429 "Too many OTP requests. Try again later." |
+| Open lane | 5 per hour per phone, and the daily cap less the trusted reserve (30 − 10 = 20) in any 24 hours, shared by all sources that are not trusted | every request that is not from a trusted source | same 429 |
+| Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
 | Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
 | Warehouse cap | `otp_global_hourly_cap`, default 300 per hour | every request | same 429 |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
-| Wrong codes, requester | 5 per issued code | verifications from the source that requested the code | 400 "Invalid or expired OTP" |
-| Wrong codes, others | 5 per issued code, shared | verifications from any other source | 400 "Invalid or expired OTP" |
+| Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
 | Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
 | New access requests | 3 per source and `enrollment_daily_cap` (default 30) for the warehouse, per 24 hours | a verified number that has no profile yet | No SMS is sent for a number that would exceed it (429 "Too many OTP requests..."); a verification that exceeds it answers 429 "Too many new access requests. Try again tomorrow." |
 
 What this means in practice:
 
-- The open-lane counters are **fixed windows**, not sliding ones: a window opens
-  at the first request after the previous one has expired and lasts one hour
-  (one day), so a phone whose requests straddle a boundary can receive up to
-  about ten open-lane codes within sixty minutes. The window limit is checked
-  before the cooldown, and a refused request sends no SMS.
-- Someone who requests codes for the administrator's number uses up the open
-  lane only. The administrator still gets a code every 15 minutes from anywhere
-  (slow lane), and up to 5 per hour from an address they have signed in from
-  before (trusted lane), which strangers cannot use up.
-- Someone who guesses codes for another person's number uses up the shared
-  budget of five. The person who requested the code keeps their own five
-  attempts, as long as they verify from the address they requested it from. A
+- The hourly open-lane counter is a **fixed window**, not a sliding one: a
+  window opens at the first request after the previous one has expired and
+  lasts one hour, so a phone whose requests straddle a boundary can receive up
+  to ten open-lane codes within sixty minutes. The 24 hour counts are sliding:
+  each code stops counting 24 hours after it was requested. The limits are
+  checked before the cooldown, and a refused request sends no SMS.
+- No phone is sent more than 30 codes in any 24 hours, whoever asks. Of these,
+  sources that are not trusted can cause at most 20.
+- Someone who requests codes for the administrator's number from one address
+  or from many uses up the open lane: 5 an hour, 20 in 24 hours. **While that
+  goes on, the administrator can still get a code on a network they have
+  signed in from before** (trusted lane, 5 an hour, at least 10 in 24 hours
+  that nobody else can use), **but may get none from a brand-new network** (a
+  new SIM, a carrier address that changed, another Wi-Fi) until the attack
+  stops, the window passes, or the operator clears the phone's counters (next
+  paragraph). The trusted sources of one phone share the reserve between them.
+- Someone who guesses codes for another person's number can use up two of the
+  five attempts of each code. The person who requested the code keeps at least
+  three, as long as they verify from the address they requested it from. A
   phone that changes network between request and verification (Wi-Fi to mobile
-  data) falls into the shared budget; requesting a new code on the new network
-  restores the separate budget. No code can be tried more than ten times.
+  data) counts as another source and has the two shared attempts; requesting a
+  new code on the new network gives the full five again. No code can be tried
+  wrongly more than five times, so a guesser's chance per code is the same as
+  before these lanes existed.
 - What remains possible: a caller who shares the user's public address (same
-  Wi-Fi, or the same mobile-carrier gateway) is the same source and can still
-  use up that user's attempts and cooldown. A flood from many addresses can
-  still fill the slow lane's 15 minute slot or the warehouse cap; the trusted
-  lane then serves only users on a network they have signed in from. If that
-  happens, add a Cloudflare WAF rate rule on
-  `/functions/v1/operator-otp/request` and `/verify`.
+  Wi-Fi, or the same mobile-carrier gateway) is the same source and can use up
+  that user's attempts, cooldown and trusted allowance. A single address is
+  enough to keep the open lane of a phone full, and a flood from many
+  addresses can also fill the warehouse cap. If either happens, add a
+  Cloudflare WAF rate rule on `/functions/v1/operator-otp/request` and
+  `/verify`.
+
+**Clearing one phone's counters.** When a user cannot get a code because
+someone else has used up the limits of their number, run on the server (the
+number is the user's 10-digit mobile):
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres \
+  -c "SELECT warehouse_security.reset_otp_limits('9XXXXXXXXX')"
+```
+
+It prints how many counted codes it cleared and the user can request a code at
+once; only `supabase_admin` may run it, no app role can. It clears the
+per-phone counts only (not the per-source or warehouse limits, and not the
+60 s cooldown), leaves codes already sent valid and keeps the phone's trusted
+sources. If the requests continue, the limits fill again within the hour: put
+the WAF rule in place first, then clear. Each clearing allows up to 30 further
+SMS to that number.
+
 - A send that MSG91 did not accept (outage, rejection, timeout) is not counted
   against the phone or the warehouse cap, so a provider outage does not lock
   users out; a number MSG91 calls invalid stays counted. The per-source count
   is kept either way.
-- While the unknown-number share or the open lane is used up, a known and an
-  unknown number get different answers, so a caller can tell during that time
-  whether a number is registered. Each such check costs them an SMS to the real
-  user.
+- While the unknown-number share of the warehouse cap is used up, a known and
+  an unknown number get different answers, so a caller can tell during that
+  time whether a number is registered. A used-up open lane answers the same
+  for both.
 - The name typed by a new user is shown in Enrollment Review. Letters of any
   script, digits, spaces and `. , ' & ( ) / -` are kept, cut to 30 characters;
   a name with anything else (markup, a link) is stored as "New customer".
@@ -249,7 +281,8 @@ What this means in practice:
 Change a cap with, for example,
 `UPDATE warehouse_security.auth_config SET value='500' WHERE key='otp_global_hourly_cap'`
 (as `supabase_admin`). The unknown-number share can never exceed the warehouse
-cap.
+cap. The trusted reserve can never exceed the per-phone cap; a reserve equal
+to the cap closes the open lane, so only trusted sources get codes.
 
 **Sessions.** The access token lives one hour (`JWT_EXP`); the app renews it
 with a refresh token that is replaced at every renewal and is valid for 7 days
@@ -1183,6 +1216,34 @@ unreadable by the containers. `setup.sh` restores the modes of every tracked
 file on each run, and `bash scripts/checkout-permissions.sh` does the same on
 its own, for example after a `git pull` or `git checkout` made without
 `umask 022`.
+
+**Before upgrading past migration 42: tables of your own.** Migration 42
+stops with `authenticated still holds a direct write on: <table>` or
+`Unexpected write policy on a public table: <table>.<policy>` when the
+`public` schema holds a table that the template did not create and that the
+`authenticated` role may write, or one with a row policy for anything but
+`SELECT`. Nothing is changed when it stops, but no later migration is applied
+until the object is dealt with. Check before the upgrade (as `supabase_admin`);
+both queries must return no row:
+
+```sql
+SELECT c.relname FROM pg_class c
+WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r','p')
+  AND c.relname NOT IN ('user_profiles','customers','items','item_storage_prices',
+    'goodsreceived','goodsreceived_trl','dispatch','dispatch_trl','invoice','invoice_trl',
+    'payments','orders','order_items','grn_images','dispatch_images','stock_movements',
+    'print_jobs','sensor_devices','sensor_readings','sensor_health_events')
+  AND (has_any_column_privilege('authenticated', c.oid, 'INSERT,UPDATE')
+    OR has_table_privilege('authenticated', c.oid, 'DELETE,TRUNCATE'));
+SELECT tablename, policyname FROM pg_policies
+WHERE schemaname = 'public' AND cmd <> 'SELECT'
+  AND NOT (tablename = 'user_profiles' AND policyname = 'starter_profile_update');
+```
+
+For a table the first query names, revoke the write from `authenticated` or
+move the table to a schema of your own; for a policy the second names, drop it
+or make it `FOR SELECT`. Writes by the app go through functions, as for the
+template's own tables.
 
 The rerun applies only the migrations the ledger has not seen (append-only and
 checksum-verified; a changed applied file is refused) and recreates the

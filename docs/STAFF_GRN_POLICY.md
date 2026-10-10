@@ -486,8 +486,11 @@ dispatch that is not deleted (the documents staff can already edit), when the
 photo is confirmed or the caller registered it. Another person's unconfirmed
 upload is refused, as for `cancel_*_image_upload`. After the row is removed the
 app deletes the file; staff may read and delete a file in the `grn-images` and
-`dispatch-images` buckets only once no image row names it
-(`scripts/configure-storage.sql`). A file a document still shows cannot be
+`dispatch-images` buckets only when it lies in the folder of a receipt or
+dispatch that is not deleted and no image row names it
+(`scripts/configure-storage.sql`; narrowed by migration 47, which before
+covered every unnamed file, the photos of deleted documents included). A file a
+document still shows, and any file of a deleted document, cannot be read,
 deleted or overwritten by staff.
 
 **Staff — live order queue.** A read policy on `orders`
@@ -505,8 +508,17 @@ RPCs were open already). A supervisor:
 - cannot review enrollment requests (`operator_review_enrollment` stays with
   administrators).
 
-A supervisor can make another user a supervisor, and can deactivate or
-reactivate any user who is not an administrator. The last-administrator rule of
+A supervisor can make another user a supervisor and can deactivate any user who
+is not an administrator. Since migration 47 a supervisor acts only on a profile
+whose access request is approved: a deactivated, rejected or pending profile is
+answered with `ENROLLMENT_NOT_APPROVED` ("Only an administrator can change a
+user whose access is not approved"), for the status and for the role. Giving
+access back is therefore an administrator's action, also for a user the
+supervisor deactivated. Before, `update_user_status(true)` let a supervisor
+re-approve a request an administrator had rejected. For every caller, the role
+of a pending request cannot be changed before the review (`ENROLLMENT_PENDING`,
+"Review the access request before changing the role"); a role other than
+customer made the request unreviewable. The last-administrator rule of
 migration 44 is unchanged.
 
 ### What was not opened
@@ -533,8 +545,10 @@ several customers calls once per customer.
   identifier) and `role` go to administrators, supervisors and staff. There was
   no owner decision on this; it is the privacy-safe default and the owner can
   reverse it (the app then shows the Call action to customers again).
-- **Supervisor picker.** `get_supervisors` lists active profiles only. It still
-  returns the mobile number, which both pickers show.
+- **Supervisor picker.** `get_supervisors` lists active profiles only. Since
+  migration 47 each row is `id`, `name`, `display_name` and `role`; `phone` is
+  added for administrators and supervisors only. Staff, who pick a colleague by
+  name, no longer receive every colleague's mobile number.
 - **Role from the database.** `get_customer_dispatch_activity`,
   `get_customer_stock_summary`, `get_operations_dashboard` and
   `get_recent_dispatched_orders` took the caller's role from the token, where
@@ -568,7 +582,9 @@ several customers calls once per customer.
 | Sensors | yes | yes | **yes** | no |
 | Customers and items: create, edit, delete | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
-| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator | no | no |
+| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47) | no | no |
+| Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
+| Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
 | Review enrollment requests | yes | no | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
@@ -668,3 +684,41 @@ Not changed: document numbers are still suggested by `get_next_*_number` and
 chosen by the client, so two people saving at once can still collide on a
 number and the second gets the duplicate-number refusal; and the RPCs still
 return PostgreSQL's own message text for an unexpected error.
+
+## Review follow-ups, 11 October 2026 (migration 47)
+
+Migration 47 narrows three things migration 45 opened (described where they
+are listed above: the supervisor picker, user management by supervisors, and
+the photo files staff may remove) and adds one parameter. It opens nothing.
+
+### `update_grn` takes an idempotency key
+
+`update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
+NULL`. With a key, a save that is repeated by the same user for the same
+receipt within 24 hours changes nothing and returns the answer of the first
+save with `"idempotent": true` added, as `save_grn` does. The key is stored in
+`idempotency_keys` under the function name `update_grn`; a key that another
+user or another function stored is neither replayed nor overwritten, and the
+same key for another receipt is treated as a new save. Only successful saves
+are stored. Without the key the function behaves as before, so an app build
+that does not send it keeps working; there is still exactly one `update_grn`.
+
+What the key changes: without it, a second save after a lost answer removes the
+line the first save added (the app does not know its id yet) and adds it again
+as a new row. That is one line, not two, but under a new id, and it fails with
+"Cannot delete item" if the first row was dispatched in between.
+
+### Still open from the first review
+
+- **Names and dates on a receipt.** Migration 46 takes `customer_name` from the
+  customer record. `sender_name` and `supervisor_name` are still stored as the
+  client sends them, and any date is accepted, past or future. Binding the two
+  names needs a decision on which name of the record to store (`name` or
+  `display_name`), and a limit on dates needs one on how far back a receipt may
+  be entered.
+- **A role change and the token.** The server takes the caller's role from the
+  profile on every request (migration 45), so a changed role applies at once.
+  `update_user_role` does not end the user's sessions: the `user_role` claim
+  inside the access token keeps the old role until the token is renewed (at
+  most `JWT_EXP`, one hour by default). Nothing on the server reads that
+  claim; an app that reads it shows the old role until then.

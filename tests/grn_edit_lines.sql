@@ -36,6 +36,7 @@ SELECT warehouse_security.bootstrap_first_admin('9888888851','Edit Line Administ
 SELECT id AS admin_profile FROM public.user_profiles WHERE auth_user_id=:'admin_user'::uuid \gset
 INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status) VALUES
  (gen_random_uuid(),'919888888852','Edit Line Staff','staff',true,'approved');
+SELECT id AS staff_profile FROM public.user_profiles WHERE mobile='919888888852' \gset
 SELECT pg_temp.edit_login('9888888851') AS admin_claims \gset
 SELECT pg_temp.edit_login('9888888852') AS staff_claims \gset
 
@@ -141,5 +142,91 @@ SELECT pg_temp.edit_assert((SELECT count(*)=0 FROM public.goodsreceived_trl WHER
  AND (SELECT count(*)=2 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid),'two lines remain');
 SELECT pg_temp.edit_assert((SELECT sum(current_stock)=75 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_id'::uuid),
  'the customer stock summary follows (40 + 35)');
+
+-- Migration 47: an edit sent with p_idempotency_key is applied once. The app
+-- saves again when the answer was lost. Without a key the second save removes
+-- the line the first one added (the app does not know its id) and adds it
+-- again as a new row; with the key the first row and its id stay.
+SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn')
+ AND (SELECT proargnames[cardinality(proargnames)]='p_idempotency_key' AND pronargdefaults=16 FROM pg_proc
+        WHERE pronamespace='public'::regnamespace AND proname='update_grn')
+ AND (SELECT has_function_privilege('authenticated',oid,'EXECUTE') AND has_function_privilege('service_role',oid,'EXECUTE')
+        AND NOT has_function_privilege('anon',oid,'EXECUTE') FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
+ 'one update_grn exists; the key is its last parameter, optional like every parameter but the receipt id, and the grants are as before');
+SELECT jsonb_build_array(:'line_50'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,
+ jsonb_build_object('item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',7,'weight',12,'rack','R4','package_mark','RETRY')) AS retry_items \gset
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Saved once',p_items=>:'retry_items'::jsonb,p_idempotency_key=>'edit-line-retry') AS first_save \gset
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Saved once',p_items=>:'retry_items'::jsonb,p_idempotency_key=>'edit-line-retry') AS second_save \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'first_save'::jsonb->>'success'='true' AND :'first_save'::jsonb#>>'{stats,items_added}'='1'
+ AND NOT :'first_save'::jsonb ? 'idempotent','the first save with a key is applied: ' || :'first_save');
+SELECT pg_temp.edit_assert(:'second_save'::jsonb->>'idempotent'='true'
+ AND :'second_save'::jsonb - 'idempotent' = :'first_save'::jsonb,
+ 'the repeated save answers with the stored result: ' || :'second_save');
+SELECT pg_temp.edit_assert((SELECT count(*)=3 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid)
+ AND (SELECT count(*)=1 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid AND package_mark='RETRY'),
+ 'the repeated save does not add the line again');
+SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(rpc_function='update_grn' AND created_by=:'staff_profile'::uuid
+   AND expires_at BETWEEN now()+interval '23 hours 59 minutes' AND now()+interval '24 hours')
+ FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry'),'the key is kept for 24 hours for its function and user');
+SELECT (:'first_save'::jsonb#>>'{item_mapping,0,grn_trl_item_id}') AS lot_retry \gset
+SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM public.goodsreceived_trl WHERE id=:'lot_retry'::uuid AND package_mark='RETRY'),
+ 'the line of the first save is still the stored row');
+SET LOCAL ROLE authenticated;
+-- Without a key every save is applied, as before (the build that sends no key):
+-- the added line is removed and added again under a new id.
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_items=>:'retry_items'::jsonb) AS no_key \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'no_key'::jsonb#>>'{stats,items_added}'='1' AND :'no_key'::jsonb#>>'{stats,items_deleted}'='1'
+ AND NOT :'no_key'::jsonb ? 'idempotent' AND :'no_key'::jsonb#>>'{item_mapping,0,grn_trl_item_id}'<>:'lot_retry'
+ AND (SELECT count(*)=0 FROM public.goodsreceived_trl WHERE id=:'lot_retry'::uuid)
+ AND (SELECT count(*)=1 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid AND package_mark='RETRY'),
+ 'a save without a key is applied each time and replaces the added line: ' || :'no_key');
+SELECT jsonb_build_object('id',:'no_key'::jsonb#>>'{item_mapping,0,grn_trl_item_id}','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',7,'weight',12,'rack','R4','package_mark','RETRY') AS line_retry \gset
+-- Another user's key, and the key of another function, are not replayed and not taken over.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Other user',p_items=>jsonb_build_array(:'line_50'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_retry'::jsonb),
+ p_idempotency_key=>'edit-line-retry') AS other_user \gset
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Other function',p_items=>jsonb_build_array(:'line_50'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,:'line_retry'::jsonb),
+ p_idempotency_key=>'edit-line-1') AS other_function \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(:'other_user'::jsonb->>'success'='true' AND NOT :'other_user'::jsonb ? 'idempotent'
+ AND :'other_user'::jsonb#>>'{stats,items_updated}'='3' AND :'other_user'::jsonb#>>'{grn,note}'='Other user'
+ AND :'other_function'::jsonb->>'success'='true' AND NOT :'other_function'::jsonb ? 'idempotent'
+ AND (SELECT note='Other function' FROM public.goodsreceived WHERE id=:'grn_id'::uuid),
+ 'a key stored by another user or by another function is not replayed: ' || :'other_user');
+SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(created_by=:'staff_profile'::uuid AND response->>'message'='GRN updated successfully')
+   FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry')
+ AND (SELECT count(*)=1 AND bool_and(rpc_function='save_grn') FROM public.idempotency_keys WHERE idempotency_key='edit-line-1'),
+ 'and neither stored key is taken over');
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+-- The stored result is replayed as it was, also after the receipt has changed.
+SELECT pg_temp.edit_assert(public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Saved once',p_items=>:'retry_items'::jsonb,p_idempotency_key=>'edit-line-retry')
+ - 'idempotent' = :'first_save'::jsonb,'the first user''s key still answers with its stored result');
+-- The same key for another receipt is a different edit: applied, not replayed.
+SELECT pg_temp.edit_assert(public.save_grn(p_gr_no=>'EDL2',p_date=>'2026-04-02T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
+ p_customer_name=>'Edit Line Customer',p_items=>jsonb_build_array(
+  jsonb_build_object('item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',5,'weight',10,'rack','R5')))->>'success'='true','receipt EDL2');
+SELECT id AS grn_two FROM public.goodsreceived WHERE gr_no='EDL2' \gset
+SELECT id AS lot_two FROM public.goodsreceived_trl WHERE gr_id=:'grn_two'::uuid \gset
+SELECT public.update_grn(p_grn_id=>:'grn_two'::uuid,p_note=>'Second receipt',p_items=>jsonb_build_array(
+ jsonb_build_object('id',:'lot_two','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',5,'weight',10,'rack','R5')),
+ p_idempotency_key=>'edit-line-retry') AS other_receipt \gset
+SELECT pg_temp.edit_assert(:'other_receipt'::jsonb->>'success'='true' AND NOT :'other_receipt'::jsonb ? 'idempotent'
+ AND :'other_receipt'::jsonb#>>'{grn,id}'=:'grn_two' AND :'other_receipt'::jsonb#>>'{grn,note}'='Second receipt',
+ 'the same key for another receipt is applied to that receipt: ' || :'other_receipt');
+RESET ROLE;
+-- An expired key is applied again.
+UPDATE public.idempotency_keys SET expires_at=now()-interval '1 second' WHERE idempotency_key='edit-line-retry';
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_two'::uuid,p_note=>'After expiry',p_items=>jsonb_build_array(
+ jsonb_build_object('id',:'lot_two','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',5,'weight',10,'rack','R5')),
+ p_idempotency_key=>'edit-line-retry') AS after_expiry \gset
+RESET ROLE;
+SELECT pg_temp.edit_assert(NOT :'after_expiry'::jsonb ? 'idempotent' AND (SELECT note='After expiry' FROM public.goodsreceived WHERE id=:'grn_two'::uuid),
+ 'a key past its 24 hours is applied again: ' || :'after_expiry');
 ROLLBACK;
-\echo 'GRN edit: adding a line, dispatched-lot quantity and removal guards passed.'
+\echo 'GRN edit: adding a line, dispatched-lot quantity and removal guards, and the idempotency key passed.'

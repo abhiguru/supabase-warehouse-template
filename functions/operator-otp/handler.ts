@@ -38,7 +38,7 @@ function failure(result: { code?: string; retry_at?: string }): Response {
     : code === 'invalid_otp' ? 'Invalid or expired OTP'
     : code === 'invalid_token' ? 'Enrollment session expired. Sign in again.'
     : code === 'unavailable' ? 'OTP service unavailable' : 'Invalid request';
-  // The cooldown can be the 60 s resend wait or the 15 minute slow lane; say which.
+  // Say how long the 60 s resend wait still lasts; the app shows it.
   const retryAt = code === 'resend_cooldown' && typeof result.retry_at === 'string' ? Date.parse(result.retry_at) : NaN;
   if (Number.isFinite(retryAt)) {
     const seconds = Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));

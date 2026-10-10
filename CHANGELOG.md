@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
+
+Migration 47. **Operator action:** rerun `setup.sh` as for every upgrade (it
+applies the migration and the storage policies); read the new OTP limits in
+`docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits".
+
+- **OTP limits rebalanced.** The lanes of migration 44 kept a known phone from
+  being locked out, but one address could still hold the phone's single
+  "slow lane" slot, a known phone could be sent about 116 SMS a day (20
+  before), and a code could be tried ten times (5 before). Now, in this order
+  of priority: a code can be tried wrongly **5 times in all** (other sources
+  than the requester share 2 of the 5, so the requester keeps at least 3); one
+  phone is sent at most **30 codes in any 24 hours** (`otp_phone_daily_cap`);
+  and inside those bounds sources that have signed in for the phone keep **10
+  of the 30** for themselves (`otp_trusted_daily_reserve`), so sources that
+  have not share 20 a day and 5 an hour. The slow lane is gone: a used-up
+  limit answers 429 "Too many OTP requests. Try again later."; only the 60 s
+  resend cooldown still answers "Please wait before requesting another OTP."
+  with `retry_after_seconds`.
+  **Consequence:** while someone keeps requesting codes for a user's number,
+  that user can still sign in from a network they have used before, but may
+  get no code from a brand-new network until the requests stop or the operator
+  runs `SELECT warehouse_security.reset_otp_limits('<mobile>')` (new; steps in
+  the same section, with the Cloudflare WAF rule).
+- **`get_supervisors` no longer gives staff every colleague's mobile number.**
+  Each row is `id`, `name`, `display_name`, `role`; `phone` is added for
+  administrators and supervisors only. The app picks by name and does not
+  show the number.
+- **A supervisor can no longer re-approve a rejected access request.**
+  `update_user_status` and `update_user_role` refuse a supervisor when the
+  target's access request is not approved (`ENROLLMENT_NOT_APPROVED`). A
+  supervisor still deactivates a user; **giving access back is now an
+  administrator's action**, also for a user the supervisor deactivated.
+  `update_user_role` refuses, for every caller, to change the role of a
+  pending request (`ENROLLMENT_PENDING`), which made it unreviewable.
+- **Staff can remove only the photo files of live documents.** The storage
+  policies of migration 45 let staff read and delete every file no image row
+  names, which included all photos of deleted receipts and dispatches. They
+  now cover such a file only inside the folder of a receipt or dispatch that
+  is not deleted. The migration applies the rule at once;
+  `scripts/configure-storage.sql` (run by `setup.sh`) names the new helper.
+- **`update_grn` takes an optional `p_idempotency_key`.** The same key from
+  the same user for the same receipt within 24 hours returns the stored answer
+  with `"idempotent": true` and changes nothing. Without the key nothing
+  changes for the current app build. A repeated save without a key did not
+  duplicate an added line, as the review had it: it removed the line and added
+  it again under a new id; the key keeps the first row.
+- **Two-session tests** (`tests/concurrent_rules.sh`, run by
+  `tests/migrations.sh`): two administrators deactivating and demoting each
+  other, and two users invoicing one receipt. These rules were asserted
+  before only by the function's source text or by two calls in one session.
+- **Upgrade note for installations with tables of their own.** Migration 42
+  stops when `public` holds a table of the operator's that `authenticated`
+  may write. The migration is not changed (applied migrations are
+  checksum-locked); `docs/OPERATOR_INSTALL.md`, "Rerun and upgrade", now has
+  the two queries to run before upgrading and what to do with a hit.
+- **Record corrected** (`docs/STAFF_GRN_POLICY.md`, "Still open from the first
+  review"): a receipt still stores the client's `sender_name`,
+  `supervisor_name` and any date; and a role change still leaves the old
+  `user_role` claim in the access token until it is renewed, which only an
+  app that reads the claim would notice.
+
+Changed answers: `operator_prepare_otp` no longer answers `resend_cooldown`
+with a 15 minute `retry_at`; `get_supervisors` rows gain `display_name` and
+`role` and lose `phone` for staff; `update_user_status` / `update_user_role`
+gain the errors `ENROLLMENT_NOT_APPROVED` and `ENROLLMENT_PENDING`;
+`update_grn` gains `p_idempotency_key` and, on a replay, `"idempotent": true`.
+
 ## Unreleased — backup, restore and gateway follow-ups from the infrastructure review (2026-10-11)
 
 No migration. Operator actions are named in each item.
