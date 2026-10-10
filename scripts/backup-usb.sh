@@ -129,10 +129,14 @@ do_enroll() {
   mp="$(findmnt -n -o TARGET -S "/dev/$name" 2>/dev/null | head -n1 || true)"
   if [[ -z "$mp" ]]; then mp="$(mount_private "$name")"; ours=1; fi
   mac="$(enrolment_hmac "$BACKUP_KEY" "$instance")" || die 'Could not sign the enrolment marker.'
-  mkdir -p -- "$mp/$TOP"
   tmp="$mp/$TOP/$ENROLMENT.partial"
-  printf 'warehouse-usb-enrolment-v1\nfs_uuid=%s\npart_uuid=%s\ninstance_id=%s\nhmac=%s\n' "$D_UUID" "$D_PARTUUID" "$instance" "$mac" > "$tmp"
-  mv -f -- "$tmp" "$mp/$TOP/$ENROLMENT"
+  if ! { mkdir -p -- "$mp/$TOP" &&
+         printf 'warehouse-usb-enrolment-v1\nfs_uuid=%s\npart_uuid=%s\ninstance_id=%s\nhmac=%s\n' "$D_UUID" "$D_PARTUUID" "$instance" "$mac" > "$tmp" &&
+         mv -f -- "$tmp" "$mp/$TOP/$ENROLMENT"; }; then
+    # Never leave the drive mounted by a failed enrolment.
+    if ((ours)); then umount -- "$mp" || true; rmdir -- "$mp" 2>/dev/null || true; fi
+    die "Could not write the enrolment marker onto /dev/$name; the drive was not enrolled."
+  fi
   sync -f "$mp/$TOP/$ENROLMENT" 2>/dev/null || sync
   if ((ours)); then umount -- "$mp"; rmdir -- "$mp" 2>/dev/null || true; fi
   # One line per drive; a line left by an earlier release (the bare volume serial) is replaced.

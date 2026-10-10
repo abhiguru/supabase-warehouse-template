@@ -352,6 +352,17 @@ test('setup refuses a writable script, enroll refuses unsuitable drives and does
     assert.match(f.calls(), new RegExp(`^mount -t exfat -o nosuid,nodev,noexec,uid=\\d+,gid=\\d+,fmask=0177,dmask=0077,errors=remount-ro /dev/sdb1 ${f.runDir}/sdb1$`, 'm'));
     assert.match(f.calls(), new RegExp(`^umount -- ${f.runDir}/sdb1$`, 'm'));
     assert.match(readFileSync(join(f.runDir, 'sdb1/warehouse-backups/.drive-enrolment'), 'utf8'), /^hmac=[0-9a-f]{64}$/m);
+    // A drive that cannot be written is released again and is not enrolled.
+    rmSync(join(f.runDir, 'sdb1/warehouse-backups'), { recursive: true });
+    writeFileSync(join(f.runDir, 'sdb1/warehouse-backups'), 'a file where the folder should be');
+    writeFileSync(join(f.etc, 'warehouse-usb-backup.drives'), '');
+    writeFileSync(join(f.scratch, 'tools.log'), '');
+    const unwritable = f.asRoot(['enroll', '--device', 'sdb1']);
+    assert.equal(unwritable.status, 1);
+    assert.match(unwritable.stderr, /Could not write the enrolment marker onto \/dev\/sdb1; the drive was not enrolled/);
+    assert.match(f.calls(), new RegExp(`^umount -- ${f.runDir}/sdb1$`, 'm'), 'the private mount is released');
+    assert.equal(readFileSync(join(f.etc, 'warehouse-usb-backup.drives'), 'utf8'), '');
+    rmSync(join(f.runDir, 'sdb1'), { recursive: true, force: true });
     // Without the backup key there is nothing to sign the marker with.
     rmSync(join(f.state, 'config/backup.key'));
     const noKey = f.asRoot(['enroll', '--device', 'sdb1']);
