@@ -173,7 +173,6 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=15d'
       - '--storage.tsdb.retention.size=500MB'
-      - '--web.enable-lifecycle'
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

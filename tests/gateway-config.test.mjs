@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const kong = readFileSync(new URL('../docker/kong.yml', import.meta.url), 'utf8');
 const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
 const deploy = name => new URL(`../deploy/${name}`, import.meta.url);
+// One service's entry in kong.yml, up to the next service.
+const serviceBlock = name => {
+  const start = kong.indexOf(`\n  - name: ${name}\n`);
+  assert.ok(start > 0, `${name} is not a gateway service`);
+  const next = kong.slice(start + 1).search(/\n  (?:- name: |## )/);
+  return kong.slice(start, next < 0 ? undefined : start + 1 + next);
+};
 
 test('gateway uses an exact configured browser origin and payload limits', () => {
   assert.ok(kong.includes('origins: [${CORS_ALLOWED_ORIGIN}]'));
@@ -29,13 +37,53 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   assert.ok(compose.includes('KONG_REAL_IP_HEADER: CF-Connecting-IP'));
   assert.ok(compose.includes('KONG_REAL_IP_RECURSIVE: "off"'));
   assert.ok(compose.includes('KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"'));
-  assert.equal((kong.match(/name: rate-limiting/g) || []).length, 2);
-  assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 2);
-  for (const service of ['rest-v1', 'functions-v1']) {
-    const block = kong.slice(kong.indexOf(`- name: ${service}\n`));
-    const rateLimit = block.slice(block.indexOf('name: rate-limiting'), block.indexOf('name: rate-limiting') + 400);
-    assert.match(rateLimit, /policy: local[\s\S]*limit_by: ip/, `${service} rate limit is not keyed by client IP`);
+  assert.equal((kong.match(/name: rate-limiting/g) || []).length, 5);
+  assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 5);
+  // Every route that needs only the public key or no key at all is limited per
+  // client address, except storage (see docs/CONTAINER_SECURITY.md).
+  const limits = { 'rest-v1': [300, 6000], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [300, 6000], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
+  for (const [service, [minute, hour]] of Object.entries(limits)) {
+    const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
+    assert.ok(rateLimit, `${service} has no rate limit`);
+    assert.match(rateLimit, new RegExp(`minute: ${minute}\\n\\s+hour: ${hour}\\n\\s+policy: local\\n\\s+fault_tolerant: true\\n[\\s\\S]*limit_by: ip\\n`), `${service} rate limit`);
   }
+  assert.doesNotMatch(serviceBlock('storage-v1'), /rate-limiting/);
+  for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'graphql-v1': 2, 'realtime-v1-rest': 2, 'storage-v1': 50, 'functions-v1': 10 })) {
+    assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
+  }
+});
+
+test('gateway exports the request metrics the alert rules query', () => {
+  // Kong 3 exports per-request series only when the plugin is enabled and these switches are on.
+  const global = kong.slice(kong.indexOf('\nplugins:\n'), kong.indexOf('\nservices:\n'));
+  assert.match(global, /\n  - name: prometheus\n    config:\n      status_code_metrics: true\n      latency_metrics: true\n      per_consumer: false\n/);
+  for (const file of ['docker-compose.yml', 'docker-compose.override.yml']) {
+    assert.match(readFileSync(new URL(`../docker/${file}`, import.meta.url), 'utf8'), /KONG_PLUGINS: \S*\bprometheus\b/, `${file} does not load the plugin`);
+  }
+  const rules = readFileSync(new URL('../docker/alert-rules.yml', import.meta.url), 'utf8');
+  const expressions = [...rules.matchAll(/^\s+expr: (.+)$/gm)].map(match => match[1]);
+  assert.doesNotMatch(expressions.join('\n'), /kong_http_status|kong_latency_bucket/, 'Kong 2 metric names are not exported by Kong 3');
+  const expression = alert => new RegExp(`- alert: ${alert}\\n(?:\\s+#.*\\n)*\\s+expr: (.+)\\n`).exec(rules)?.[1];
+  assert.equal(expression('APIHighErrorRate'), 'sum(rate(kong_http_requests_total{code=~"5.."}[5m])) / sum(rate(kong_http_requests_total[5m])) > 0.05');
+  assert.equal(expression('APIHighLatency'), 'histogram_quantile(0.95, sum(rate(kong_request_latency_ms_bucket[5m])) by (le, service)) > 2000');
+  assert.equal(expression('ScrapeTargetDown'), 'up{job!="kong"} == 0');
+  assert.equal(expression('APIDown'), 'up{job="kong"} == 0');
+  // Every job Prometheus scrapes is covered by one of the two.
+  const jobs = [...readFileSync(new URL('../docker/prometheus.yml', import.meta.url), 'utf8').matchAll(/job_name: '([a-z-]+)'/g)].map(match => match[1]);
+  assert.deepEqual(jobs.sort(), ['cadvisor', 'kong', 'node', 'postgres', 'prometheus']);
+  assert.match(readFileSync(new URL('../scripts/monitoring-check.sh', import.meta.url), 'utf8'), /kong_http_requests_total/, 'monitoring check does not require gateway request metrics');
+});
+
+test('gateway configuration survives the entrypoint that fills in its variables', () => {
+  // The entrypoint evaluates the file as a double-quoted shell string
+  // (docker-compose.yml), so a double quote, backtick, backslash or a dollar
+  // sign outside ${NAME} in kong.yml, even in a comment, changes the result.
+  const values = { SUPABASE_ANON_KEY: 'unit.anon.key', SUPABASE_SERVICE_KEY: 'unit.service.key', CORS_ALLOWED_ORIGIN: 'https://app.example.test' };
+  assert.ok(compose.includes(String.raw`entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && `), 'entrypoint changed; revisit this test');
+  const rendered = spawnSync('bash', ['-c', 'eval "echo \\"$(cat "$1")\\""', 'render', new URL('../docker/kong.yml', import.meta.url).pathname], { encoding: 'utf8', env: { PATH: process.env.PATH, ...values } });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.equal(rendered.stdout, kong.replace(/\$\{([A-Z_]+)\}/g, (_, name) => values[name]).replace(/\n*$/, '\n'));
+  assert.deepEqual([...new Set([...kong.matchAll(/\$\{([A-Z_]+)\}/g)].map(match => match[1]))].sort(), Object.keys(values).sort());
 });
 
 test('ingress is Cloudflare Tunnel only', () => {

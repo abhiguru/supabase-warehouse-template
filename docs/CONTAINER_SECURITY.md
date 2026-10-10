@@ -620,3 +620,25 @@ v16.4 and v1.77.4. They are corrected, and `tests/gateway-config.test.mjs` now
 reads the versions from Compose and the Dockerfiles and fails when either
 document names a different one.
 
+## Gateway limits and metrics (2026-10-11)
+
+- The GraphQL route and both Realtime routes had the public-key check but no
+  rate limit. They now have the REST route's limit (300 requests a minute and
+  6000 an hour per client address); on the WebSocket route it counts
+  connection attempts, not messages. The Realtime HTTP route also has a 2 MB
+  body limit.
+- The storage route still has no rate limit. A list screen loads one image per
+  row and every phone at a facility shares one public address, so a limit low
+  enough to matter could refuse ordinary use; it needs request counts from a
+  running facility before a number is chosen.
+- The Prometheus plugin is enabled for all routes (see
+  [MONITORING.md](MONITORING.md)). Its series are served on the status
+  listener (port 8100, inside the Compose project only), not on the proxy port.
+- `docker/kong.yml` is filled in by a shell `eval` in the gateway entrypoint,
+  so a double quote, backtick or backslash anywhere in the file, comments
+  included, is silently altered. `tests/gateway-config.test.mjs` now runs the
+  same evaluation and compares the result; it found one such comment.
+- These gateway changes were checked by parsing the evaluated file and by
+  reading the plugin schemas in the pinned Kong image. Kong itself has not
+  loaded the file.
+

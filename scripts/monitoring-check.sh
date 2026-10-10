@@ -36,6 +36,20 @@ for ((i=0; i<30; i++)); do
 done
 [[ "$targets_ready" == true ]] || { echo 'One or more monitoring scrape targets remained down.' >&2; exit 1; }
 
+# The gateway must export per-request series, not only node-level ones: the API
+# alert rules have nothing to evaluate without them. Send one request through
+# the gateway from a container on its network, then wait for a scrape.
+compose exec -T storage node -e "fetch('http://kong:8000/functions/v1/hello').then(r=>r.arrayBuffer())" >/dev/null 2>&1 || true
+gateway_metrics=false
+for ((i=0; i<30; i++)); do
+  series=$(compose --profile monitoring exec -T prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(kong_http_requests_total)' || true)
+  if node -e "const r=JSON.parse(process.argv[1]).data.result;if(!(r.length===1&&Number(r[0].value[1])>0))process.exit(1)" "$series" 2>/dev/null; then
+    gateway_metrics=true; break
+  fi
+  sleep 2
+done
+[[ "$gateway_metrics" == true ]] || { echo 'Prometheus has no gateway request metrics (kong_http_requests_total).' >&2; exit 1; }
+
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 compose --profile monitoring exec -T alertmanager wget -qO- --header='Content-Type: application/json' \
   --post-data="[{\"labels\":{\"alertname\":\"WarehouseSynthetic\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"local delivery test\"},\"startsAt\":\"$now\"}]" \

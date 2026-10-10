@@ -21,6 +21,18 @@ checked with the unit tests and `docker compose config` named in
   asserts which services share a network and that each service still reaches
   every host it is configured to call. See `docs/ARCHITECTURE.md` and
   `docs/CONTAINER_SECURITY.md`, "Network boundaries".
+- **The API alert rules can fire.** They queried Kong 2 metric names and the
+  gateway's Prometheus plugin was loaded but never enabled, so there were no
+  request metrics at all. `docker/kong.yml` enables the plugin with status-code
+  and latency metrics, the two rules use `kong_http_requests_total` and
+  `kong_request_latency_ms_bucket`, and `npm run test:monitoring` fails when
+  Prometheus holds no gateway request series. New rules: any scrape target
+  down, and low space on a second disk. There is still no backup-age rule,
+  because nothing exports a backup metric (`docs/MONITORING.md`). Prometheus
+  no longer accepts shutdown and reload requests over HTTP.
+- **GraphQL and Realtime routes are rate-limited** per client address like the
+  REST route (300 a minute, 6000 an hour); the Realtime HTTP route has a 2 MB
+  body limit. The storage route is unchanged.
 - **A function's worker receives only the variables it reads.** The router
   copied the whole container environment into every worker, so the three
   functions that take no token (`hello`, `get-public-config`, `operator-otp`)
