@@ -135,6 +135,17 @@ dispositions and the owner inputs.
   closed; that work does not explain the separate 500.
   The dated readiness evidence is archived (see [HISTORY.md](HISTORY.md)).
 
+- **Review of 2026-10-10, container and dependency findings.** Done in the
+  2026-10-11 changelog entry: network separation, per-function environment,
+  pinned function modules, Kong digest, working API alerts. Open, each with
+  its steps in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md): one database
+  password for every role ("Database passwords"), no `deno.lock` ("Edge
+  function modules"), PostgREST digest ("Image pins"), and the list under
+  "Open items with their steps" (Go builders, Studio application advisories,
+  Chromium switches, `pg_net` grants, container privileges, scheduled scan).
+  The committed changes have not run on started containers; see "Changes
+  awaiting a first run".
+
 ## Operator inputs and later acceptance
 
 | # | Work and required owner input | Next action and acceptance evidence |
@@ -164,7 +175,10 @@ public demo exposure, or publication of rebuilt third-party container binaries.
 
 `docker/edge-runtime/Dockerfile` upgrades only Debian's PCRE2 library and checks
 the minimum fixed version. `docker/realtime/Dockerfile` applies Debian package
-updates while retaining the digest-pinned Realtime application. Package indexes
+updates while retaining the digest-pinned Realtime application; the Studio,
+Supavisor and CUPS recipes do the same for their bases. Kong is referenced by
+digest; PostgREST v16.4 by tag only. The Go builder images (1.27.0 and 1.27.1)
+are behind the patch release that fixes three standard-library advisories. Package indexes
 remain live: rebuild and rescan when deploying; Docker layer cache is not proof
 of current patch status. These Dockerfiles are source build instructions, not
 published container binaries. Upstream notices remain in the base image.

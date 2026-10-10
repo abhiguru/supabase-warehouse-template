@@ -1113,7 +1113,8 @@ gateway listens on loopback only); keep the host's logins and network closed,
 and if you must replace them now, rehearse on a copy first: restore the newest
 backup onto a spare machine with `db:restore-host`, try the change there, and
 only then repeat it on the real host. Splitting this one password into
-per-role passwords, with a rotation command, is planned separately.
+per-role passwords, with a rotation command, is planned; the design and its
+rehearsal steps are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-shared-value-and-the-plan-to-split-it).
 
 ## Rerun and upgrade
 
