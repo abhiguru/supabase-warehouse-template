@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
+
+Migration 46. No role gains or loses a function; nothing needs an operator's
+action. Details in `docs/STAFF_GRN_POLICY.md`, "One lock order and stricter
+document input".
+
+- **Saving a dispatch no longer deadlocks with an edit of the same receipt.**
+  A receipt edit takes the list-refresh lock and then its rows; creating,
+  editing or deleting a dispatch locked the rows first and the refresh lock
+  afterwards, so the two could wait for each other and one of them failed with
+  "deadlock detected" (the edit of a dispatch or receipt was never retried).
+  Every function that writes a customer, receipt or dispatch now takes the
+  refresh lock before it locks a row. `tests/grn_edit_lock_order.sh` runs the
+  dispatch-against-receipt-edit case with two sessions; without the migration
+  it ends in the deadlock.
+- **Receipt and dispatch input the app already refuses is refused by the
+  server too:** a receipt line with quantity 0 or less or a negative weight; a
+  dispatch edit with quantity 0, a fractional quantity or a lot that does not
+  exist (such a line used to be stored, or silently dropped); a receipt or
+  dispatch number made of tabs, no-break spaces or other invisible characters.
+  A blank dispatch number at creation is now the validation error
+  `disp_no is required`, not a database error.
+- **A receipt carries the customer record's name.** `save_grn` stored whatever
+  name the client sent next to the customer id, and every list shows and
+  searches that name. The name now comes from the customer record at creation
+  and when a receipt moves to another customer.
+- **An idempotency key answers only its own function and user.** Dispatch
+  creation answered with whatever any function or user had stored under the
+  key, and `save_grn` with another user's receipt. A dispatch key is also kept
+  for the 24 hours it is honoured; it used to expire, and be removed by
+  retention, after one hour.
+- **The Package, Rack, Item, Customer and Receipt-number filters of the receipt
+  lists are literal.** `%` and `_` were wildcards there (typing `PKG_50` also
+  found `PKG-50`), and a trailing `\` matched nothing.
+- **Deleting a receipt leaves a trace in the order history** of every cart that
+  lost a line (`grn_deleted`, the lines at quantity 0).
+- `delete_dispatch_with_order_cleanup` checks for administrator or supervisor in
+  its own body as well as in the guard. Four internal dispatch functions that
+  nothing called are dropped.
+- **Edge functions no longer accept the service key as a user.** A request
+  carrying the service key was treated as an administrator by every function
+  behind sign-in. The router and `validateUserAccess` now accept a signed-in
+  user's token only; nothing in this repository called a function with the
+  service key.
+- Tests that could not fail were rewritten: the list tests now read the order
+  and the pages the list functions return (they sorted the result themselves),
+  the customer refusals expect the refusal (any outcome passed, and the list of
+  "other customers" was read through the customer's own row filter), and the
+  language test covers a disabled profile. New assertions: retention cannot be
+  run by an API role, a customer account cannot write to the image buckets,
+  receipt lists filter by moment, and Gujarati or full-width digits in a number
+  sort after ordinary ones.
+- `MOBILE_REF` in CI is still the app commit of 2026-10-08 (51 commits behind
+  the app head reviewed on 2026-10-10); a test now refuses anything but a full
+  commit there, and `docs/RELEASE_CHECKLIST.md` starts with the step that moves
+  it and runs the live contract comparison.
+
 ## Unreleased — container networks, function environment and pinned dependencies (2026-10-11)
 
 None of the changes in this entry has run on a started stack yet; each was

@@ -11,7 +11,11 @@ DECLARE
     'M0500',
     -- every other form, by prefix, then number
     '7', '00077', '12345', ' A77', '2026/01', 'ABCD', 'DV0001', 'DV0010', 'DV0101', 'DV0200',
-    'G 14', 'G-12', 'G/13', 'É0001', 'जी01'];
+    'G 14', 'G-12', 'G/13',
+    -- only 0-9 count as the number: a Gujarati or full-width digit is part of the prefix,
+    -- so such a number comes after the same prefix with ordinary digits
+    'SRB9', 'SRB10', 'SRB૯', 'SRB９',
+    'É0001', 'जी01'];
   ascending text[];
   descending text[];
   reversed text[];
@@ -52,8 +56,14 @@ BEGIN
   IF (SELECT count(*) FROM pg_constraint WHERE conname IN ('goodsreceived_gr_no_not_blank', 'dispatch_disp_no_not_blank')) <> 2 THEN
     RAISE EXCEPTION 'blank-number checks are missing';
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'save_grn' AND prosrc LIKE '%NULLIF(btrim(p_gr_no), '''') IS NULL%') THEN
+  -- tests/document_write_consistency.sql saves blank numbers of every kind (migration 46).
+  IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'save_grn' AND prosrc LIKE '%warehouse_security.is_blank_text(p_gr_no)%') THEN
     RAISE EXCEPTION 'save_grn accepts a blank number';
+  END IF;
+  -- A number in other digits has no numeric part, so it is outside every number range.
+  IF (warehouse_security.document_number_sort_key('SRB૯') COLLATE "C") >= (warehouse_security.document_number_sort_key('SRB1') COLLATE "C")
+     AND (warehouse_security.document_number_sort_key('SRB૯') COLLATE "C") <= (warehouse_security.document_number_sort_key('SRB999999') COLLATE "C") THEN
+    RAISE EXCEPTION 'a number in Gujarati digits is inside the range of ordinary numbers';
   END IF;
   IF has_function_privilege('authenticated', 'warehouse_security.document_number_sort_key(text)', 'execute')
      OR has_function_privilege('anon', 'warehouse_security.document_number_sort_key(text)', 'execute') THEN

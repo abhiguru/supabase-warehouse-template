@@ -582,3 +582,89 @@ customer's id, so a function granted later fails the test until it is
 classified. `tests/staff_dispatch_invoice_access.sql` and
 `tests/staff_grn_access.sql` were changed where they asserted the old pricing
 and photo refusals.
+
+## One lock order and stricter document input, 11 October 2026
+
+Migration 46 changes how the document RPCs take their locks and what they
+accept. It adds no role and opens nothing.
+
+### Lock order
+
+Every write to `customers`, `goodsreceived`, `goodsreceived_trl`, `dispatch` or
+`dispatch_trl` ends by refreshing the list views under advisory lock 71040
+(migrations 4, 19 and 20). The statement trigger takes that lock *after* the
+statement has locked its rows. `update_grn` takes it before its first write
+(migration 26), so a receipt edit (lock, then rows) and a dispatch of the same
+lot being created, edited or deleted (rows, then lock) could wait for each
+other; PostgreSQL ended that by failing one of the two with "deadlock
+detected". Migration 39 added a second pair: a dispatch edit key-share locked
+the receipt before its header update took the lock.
+
+The rule now: **every function an API role may call that writes one of those
+five tables takes lock 71040 before it locks any row.** That is `save_grn`,
+`update_grn`, `delete_grn_safe`, both `create_dispatch_with_stock_check`
+wrappers (in the body they share), `update_dispatch_smart`,
+`delete_dispatch_with_order_cleanup`, both `save_invoice` functions,
+`update_invoice`, `delete_invoice`, `create_customer`, `update_customer`,
+`restore_customer` and `safe_delete_customer`. Document writes were already
+serialized by that lock from their first write to their commit; they are now
+serialized from their start. `tests/document_write_consistency.sql` fails for a
+granted function that writes one of the tables without taking the lock, and
+`tests/grn_edit_lock_order.sh` runs three two-session cases on real rows (a
+receipt edit against a lock holder, a dispatch being created against a receipt
+edit of the same lot, a dispatch edit against a lock holder). The cart RPCs
+write `orders` and `order_items` only, which have no refresh trigger, and do not
+take the lock.
+
+### Input rules
+
+These are the rules the app's forms already apply; the server did not.
+
+- A receipt line needs a quantity above zero and a weight that is not negative
+  (`save_grn`, `update_grn`). A weight of 0 still means "not recorded".
+- A dispatch edit needs, for every line, a lot that exists and a whole quantity
+  above zero. `update_dispatch_smart` stored a line of quantity 0 and silently
+  dropped a line whose lot did not exist. An empty list still removes every
+  line.
+- A receipt or dispatch number made only of white space or invisible characters
+  (tab, no-break space, zero-width space and the like) is blank: refused by
+  `save_grn`, `update_grn`, dispatch creation (as the validation error
+  `disp_no is required`), `update_dispatch_smart` and by the two table checks,
+  which stay `NOT VALID` so that an installation holding such a number still
+  migrates.
+- A receipt's `customer_name` is taken from the customer record when the
+  receipt is created and when it moves to another customer. The name the client
+  sends is ignored; a later rename of the customer still does not rewrite old
+  receipts. Sender and supervisor names and the receipt date are stored as sent.
+- An idempotency key answers only the function and the user that stored it.
+  `save_grn` keeps a key for one hour and dispatch creation for 24 hours; the
+  stored row now expires at the same moment, so retention no longer removes a
+  dispatch key that would still be honoured.
+- The field filters of the receipt lists (`item_name`, `customer_name`,
+  `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
+  in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
+  search.
+
+### Other changes of migration 46
+
+- `delete_grn_safe` removes the cart lines of the receipt's lots, as before, and
+  now records them in the order history: one `order_revisions` entry with the
+  action `grn_deleted` per order, the removed lines at quantity 0.
+- `delete_dispatch_with_order_cleanup` asks `is_admin_or_supervisor_strict()` in
+  its body. It used the helper that also admits staff and, failing that, let
+  through anyone assigned to the dispatch's customer; only the guard in front
+  refused them.
+- Four internal dispatch functions that nothing called and no role could
+  execute are dropped: `create_dispatch_with_stock_check_2arg_internal(jsonb,
+  jsonb[])`, `..._internal_3param(jsonb,jsonb[],integer)`,
+  `..._internal_4param(jsonb,jsonb[],boolean,integer)` and
+  `..._internal(jsonb,jsonb[],boolean)`. The first was the only code that
+  soft-deleted an order, which `get_or_create_cart` cannot recover from (the
+  one-cart-per-customer index is unconditional). No RPC sets
+  `orders.deleted_at` now, and no app role can write the table directly
+  (migration 42).
+
+Not changed: document numbers are still suggested by `get_next_*_number` and
+chosen by the client, so two people saving at once can still collide on a
+number and the second gets the duplicate-number refusal; and the RPCs still
+return PostgreSQL's own message text for an unexpected error.

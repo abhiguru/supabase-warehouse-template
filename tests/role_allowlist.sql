@@ -203,9 +203,10 @@ SELECT pg_temp.ra_assert((SELECT array_agg(p.proname::text ORDER BY p.proname)=A
 -- is_admin_or_supervisor() is true for staff as well, so it keeps staff out of
 -- nothing. These are the granted functions that call it; the five that staff
 -- may run are meant to treat staff like a supervisor, and the staff sweep
--- below proves the guard refuses the others.
+-- below proves the guard refuses the others. delete_dispatch_with_order_cleanup
+-- left this list in migration 46: its body asks is_admin_or_supervisor_strict().
 SELECT pg_temp.ra_assert((SELECT array_agg(DISTINCT p.proname::text ORDER BY p.proname::text)=ARRAY['assign_customer_to_user','create_customer','create_item',
-    'delete_dispatch_with_order_cleanup','delete_item_safe','get_item_wise_stock_list','get_order_change_log',
+    'delete_item_safe','get_item_wise_stock_list','get_order_change_log',
     'get_order_with_items','get_orders_list','remove_customer_assignment','search_customer_items_for_order',
     'update_customer','update_item']
   FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND has_function_privilege('authenticated',p.oid,'EXECUTE')
@@ -214,7 +215,7 @@ SELECT pg_temp.ra_assert((SELECT array_agg(DISTINCT p.proname::text ORDER BY p.p
 SELECT pg_temp.ra_assert((SELECT bool_and(c.staff = (c.name IN ('get_item_wise_stock_list','get_order_change_log',
     'get_order_with_items','get_orders_list','search_customer_items_for_order')))
   FROM ra_rpc c WHERE c.name IN ('assign_customer_to_user','create_customer','create_item',
-    'delete_dispatch_with_order_cleanup','delete_item_safe','get_item_wise_stock_list','get_order_change_log',
+    'delete_item_safe','get_item_wise_stock_list','get_order_change_log',
     'get_order_with_items','get_orders_list','remove_customer_assignment','search_customer_items_for_order',
     'update_customer','update_item')),'only the five order and stock reads among them are open to staff');
 -- No report body takes the caller's role from the token any more.

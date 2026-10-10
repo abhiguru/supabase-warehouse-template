@@ -41,7 +41,7 @@ test_files=(
   "$ROOT/tests/direct_write_guard.sql" "$ROOT/tests/image_path_rules.sql"
   "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
   "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
-  "$ROOT/tests/role_allowlist.sql"
+  "$ROOT/tests/role_allowlist.sql" "$ROOT/tests/document_write_consistency.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -79,7 +79,8 @@ SQL
   }
 done
 
-# Migration 26: a GRN edit must survive a concurrent writer holding the refresh lock.
+# Migrations 26 and 46: a GRN edit, a dispatch being created and a dispatch edit
+# must each survive a concurrent writer of the same lot.
 bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 
 # Applied migration history is immutable: changing an old file must fail closed.
