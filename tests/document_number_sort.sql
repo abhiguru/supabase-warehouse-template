@@ -41,6 +41,20 @@ BEGIN
         FROM pg_proc WHERE oid = 'public.get_customer_grn_items(uuid,timestamptz,timestamptz,jsonb,text,text,integer,integer)'::regprocedure) <> 2 THEN
     RAISE EXCEPTION 'customer receipt list does not use the document number key';
   END IF;
+  -- The dispatch list uses the key everywhere it orders by number (migration 33).
+  IF EXISTS (SELECT 1 FROM pg_proc
+      WHERE oid = 'public.get_dispatch_list_with_items(uuid,jsonb,text,text,integer,integer,boolean)'::regprocedure
+        AND (prosrc LIKE '%* 100000%'
+          OR (length(prosrc) - length(replace(prosrc, 'document_number_sort_key(disp_no)', ''))) / length('document_number_sort_key(disp_no)') <> 5)) THEN
+    RAISE EXCEPTION 'dispatch list does not use the document number key in all five places';
+  END IF;
+  -- Blank numbers are refused on both tables and by save_grn (migration 34).
+  IF (SELECT count(*) FROM pg_constraint WHERE conname IN ('goodsreceived_gr_no_not_blank', 'dispatch_disp_no_not_blank')) <> 2 THEN
+    RAISE EXCEPTION 'blank-number checks are missing';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'save_grn' AND prosrc LIKE '%NULLIF(btrim(p_gr_no), '''') IS NULL%') THEN
+    RAISE EXCEPTION 'save_grn accepts a blank number';
+  END IF;
   IF has_function_privilege('authenticated', 'warehouse_security.document_number_sort_key(text)', 'execute')
      OR has_function_privilege('anon', 'warehouse_security.document_number_sort_key(text)', 'execute') THEN
     RAISE EXCEPTION 'sort key helper must not be callable by API roles';

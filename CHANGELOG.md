@@ -12,6 +12,13 @@
 - Migration 32: `get_customer_grn_items` sorts by number with the same key, so
   customer accounts and warehouse roles see one order (it compared numbers as
   plain text: B10 before B9).
+- Migration 33: `get_dispatch_list_with_items` sorts by dispatch number with the
+  same key. Same-day dispatches follow the requested direction, and every order
+  ends in the key, so paging cannot repeat or skip a dispatch. CLR numbers now
+  sort after the one-letter prefixes.
+- Migration 34: a receipt or dispatch number made only of spaces, or an empty
+  receipt number, is refused (`save_grn` answers with its "required" message;
+  both tables carry a NOT VALID check, so existing records still migrate).
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
