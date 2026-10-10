@@ -35,6 +35,29 @@ No migration. Operator actions are named in each item.
   was killed by the closed pipe, and under `pipefail` the answer became "safe".
   This mattered for backups accepted with `--allow-unsigned`. The check now
   also refuses device and other special entries, not only links.
+- **Running USB setup again no longer switches encryption or the daily timer
+  off.** The documented upgrade step is `backup-usb.sh setup --state DIR` with
+  no other option, and that rewrote the configuration with encryption off and
+  disabled the timer, so later archives were plain `.tar` files holding every
+  credential. A setup run now keeps the stored choices; `--no-encrypt`,
+  `--no-daily` and `--fresh-backup` change them. **Operator action:** if an
+  earlier setup rerun switched your daily timer off, run setup once with
+  `--daily`; setup prints the choices in effect.
+- **A USB drive enrolled by the previous release shows up as a failed backup
+  at once.** Such a drive is refused before the backup run starts, so nothing
+  was recorded and `status` and `doctor` kept showing the last success for
+  seven days while no backup reached the drive. The refusal is now recorded as
+  a failed run with the `enroll` command, both when the drive is attached and
+  when setup finds its old line.
+- **The USB run opens only archives it can prove are its own.** A later-dated
+  `.tar` with a matching checksum and no signature became "the newest backup",
+  was unpacked into the state directory and replaced the genuine newest backup
+  in the restore check. Such a file is now reported and never opened, and the
+  newest signed archive is verified as before.
+- **An archive signed with a replaced backup key is named as that**, apart from
+  a damaged archive, and the key-replacement steps in
+  `docs/OPERATOR_INSTALL.md` now say to move the older archives aside on the
+  drive; without that every later run ended as failed.
 
 ## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
 

@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Copy verified backups to an operator-attached exFAT USB drive, automatically when it is attached.
-#   setup --state DIR [--enroll DEV] [--daily] [--no-fresh-backup] [--encrypt]
-#                          root (sudo): install the udev rule, systemd units and root helper; enroll a drive
+#   setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt]
+#                          root (sudo): install the udev rule, systemd units and root helper; enroll a drive.
+#                          Run again after every checkout update: an option that is not given keeps the
+#                          value the previous setup stored.
 #   enroll --device DEV    root: allow another drive (writes a signed enrolment marker onto it)
 #   uninstall              root: remove the rule, units, helper and configuration; drives are untouched
 #   status                 installation user, read-only: installation, enrolled drives, last result
 #   run --device NAME      installation user (the service runs this): fresh backup, copy, verify, record
 #   mount NAME | unmount NAME | scan
 #                          root, run by systemd from the installed helper copy
+#   refused NAME UUID TEXT internal: the root helper, as the installation user, records a drive it did not mount
 # Only enrolled drives receive a backup. Enrolment is not the volume serial alone, which is 32 bits
 # and can be copied: enroll writes warehouse-backups/.drive-enrolment onto the drive, an HMAC made
 # with the backup key (<state>/config/backup.key) over the filesystem UUID, the partition UUID and
@@ -39,7 +42,7 @@ TMPDIRS=()
 
 die() { LAST_ERR="$*"; echo "$*" >&2; exit 1; }
 usage() {
-  die 'Usage: backup-usb.sh setup --state DIR [--enroll DEV] [--daily] [--no-fresh-backup] [--encrypt] | enroll --device DEV | uninstall | status | run --device NAME | mount NAME | unmount NAME | scan'
+  die 'Usage: backup-usb.sh setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt] | enroll --device DEV | uninstall | status | run --device NAME | mount NAME | unmount NAME | scan'
 }
 kv() { sed -n "s/.*\\b$2=\"\\([^\"]*\\)\".*/\\1/p" <<<"$1" | head -n1; }
 conf_get() { [[ -f "$CONF" ]] || return 0; sed -n "s/^$1=//p" "$CONF" | head -n1; }
@@ -69,11 +72,28 @@ probe_drive() {
 }
 # The root-only list holds one "<filesystem UUID> <partition UUID>" line per enrolled drive.
 enrolled() { [[ -f "$DRIVES" ]] && grep -qxF -- "$D_UUID $D_PARTUUID" "$DRIVES"; }
+# The mount step runs as root before `run` starts, so a drive refused there would leave no
+# trace outside the journal while status and doctor kept showing the last success. The
+# refusal is recorded where they read it, written as the installation user (the state
+# directory is that user's; root does not write into it).
+record_refusal() {
+  local name="$1" message="$2" uid gid
+  uid="$(conf_get UID)"; gid="$(conf_get GID)"
+  [[ "$uid" =~ ^[1-9][0-9]*$ && "$gid" =~ ^[0-9]+$ ]] || return 0
+  setpriv --reuid "$uid" --regid "$gid" --clear-groups -- /bin/bash "$SELF" refused "$name" "$D_UUID" "$message" ||
+    echo 'Could not record this in the installation state; bash scripts/backup-usb.sh status will not show it.' >&2
+}
 not_enrolled() {
+  local message
   if [[ -f "$DRIVES" ]] && grep -qxF -- "$D_UUID" "$DRIVES"; then
-    die "Drive $D_UUID (/dev/$1) was enrolled by an earlier release, by its volume serial only. Enroll it again: sudo bash scripts/backup-usb.sh enroll --device /dev/$1"
+    message="Drive $D_UUID (/dev/$1) was enrolled by an earlier release, by its volume serial only. Enroll it again: sudo bash scripts/backup-usb.sh enroll --device /dev/$1"
+  elif [[ -f "$DRIVES" ]] && grep -q -- "^$D_UUID " "$DRIVES"; then
+    message="Drive $D_UUID (/dev/$1) is not enrolled; $2 An enrolled drive has this volume serial but another partition. If this is your drive, enroll it again: sudo bash scripts/backup-usb.sh enroll --device /dev/$1"
+  else
+    die "Drive $D_UUID (/dev/$1) is not enrolled; $2"
   fi
-  die "Drive $D_UUID (/dev/$1) is not enrolled; $2"
+  record_refusal "$1" "$message"
+  die "$message"
 }
 load_backup_key_lib() {
   local lib="$ROOT/scripts/backup-key.sh"
@@ -149,15 +169,27 @@ do_enroll() {
 
 safe_path() { [[ "$1" == /* && "$1" != *[[:space:]%\\\"\']* ]] || die "$2 must be an absolute path without spaces, quotes or %: $1"; }
 
+# The value given on the command line, else the one the previous setup stored, else the default.
+kept_setting() {
+  local stored
+  stored="$(conf_get "$2")"
+  if [[ -n "$1" ]]; then printf '%s\n' "$1"
+  elif [[ "$stored" == yes || "$stored" == no ]]; then printf '%s\n' "$stored"
+  else printf '%s\n' "$3"; fi
+}
+
 cmd_setup() {
-  local state='' enroll='' daily=no fresh=yes encrypt=no uid gid user group old
+  local state='' enroll='' daily='' fresh='' encrypt='' uid gid user group old legacy
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
       --enroll) (($# > 1)) || usage; enroll="$2"; shift 2 ;;
       --daily) daily=yes; shift ;;
+      --no-daily) daily=no; shift ;;
+      --fresh-backup) fresh=yes; shift ;;
       --no-fresh-backup) fresh=no; shift ;;
       --encrypt) encrypt=yes; shift ;;
+      --no-encrypt) encrypt=no; shift ;;
       *) usage ;;
     esac
   done
@@ -175,6 +207,9 @@ cmd_setup() {
   [[ "$(stat -c %a -- "$SELF")" =~ ^[0-7][0145][0145]$ && "$(stat -c %a -- "$ROOT/scripts")" =~ ^[0-7][0145][0145]$ ]] || die "$SELF or its directory is group- or world-writable (a git pull under umask 0002 does this). As $user run: bash $ROOT/scripts/checkout-permissions.sh, then this setup again."
   old="$(conf_get STATE)"
   [[ -z "$old" || "$old" == "$state" ]] || die "USB backup is already set up for $old; run uninstall first."
+  # Setup is run again after every checkout update, usually with nothing but --state.
+  # That must not switch encryption or the daily timer off: only a named option changes a choice.
+  daily="$(kept_setting "$daily" DAILY no)"; fresh="$(kept_setting "$fresh" FRESH_BACKUP yes)"; encrypt="$(kept_setting "$encrypt" ENCRYPT no)"
 
   # System directories created here must stay world-readable: under umask 077 a new
   # /usr/local/libexec became 0700, and the Docker CLI, which searches
@@ -238,10 +273,17 @@ EOF
   else
     echo 'Archives are NOT encrypted. Run setup again with --encrypt to encrypt them with the backup key (keep a copy of the key off this machine first).'
   fi
+  # Lines of one column were written by a release that enrolled a drive by its volume serial alone.
+  legacy="$(grep -E '^[A-Za-z0-9-]+$' "$DRIVES" || true)"
+  while IFS= read -r D_UUID; do
+    [[ -n "$D_UUID" ]] || continue
+    echo "WARNING: drive $D_UUID was enrolled by an earlier release and is no longer accepted. Nothing is copied to it until you attach it and run: sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1"
+    record_refusal '' "Drive $D_UUID was enrolled by an earlier release and is no longer accepted; nothing is copied to it. Attach it and enroll it again: sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1"
+  done <<<"$legacy"
   [[ -s "$DRIVES" ]] || echo 'No drive is enrolled yet: attach the exFAT USB drive and run: sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1'
   echo "From now on, attaching an enrolled drive runs the backup; it is unmounted when done."
   echo "Watch a run:  journalctl -f -u '$UNIT@*'      Last result:  bash scripts/backup-usb.sh status"
-  echo 'After updating this checkout, run setup again so the installed root helper matches it.'
+  echo 'After updating this checkout, run setup again so the installed root helper matches it; the choices above are kept unless you name another (--no-encrypt, --no-daily, --fresh-backup).'
 }
 
 cmd_enroll() {
@@ -329,9 +371,11 @@ media_hash() {
 }
 # An archive is good when it matches its checksum and, where it has one, its signature.
 # Archives written before signing have no .hmac file; an encrypted archive always needs one.
+# Returns 1 when the bytes do not match the checksum, 2 when they do and only the signature
+# is not one of the current backup key (a replaced key, or a rewritten archive and checksum).
 archive_ok() {
   [[ -f "$1.sha256" ]] && [[ "$(media_hash "$1")" == "$(cut -d' ' -f1 "$1.sha256")" ]] || return 1
-  if [[ -e "$1.hmac" || "$1" == *.enc ]]; then backup_check_archive "$1" "$BACKUP_KEY" || return 1; fi
+  if [[ -e "$1.hmac" || "$1" == *.enc ]]; then backup_check_archive "$1" "$BACKUP_KEY" || return 2; fi
 }
 
 record() {
@@ -365,7 +409,7 @@ on_run_exit() {
 }
 
 cmd_run() {
-  local name mp data_mm mp_mm label b n archive need avail hash newest tmp instance_id id_file marker recorded suffix other plain=0
+  local name mp data_mm mp_mm label b n archive need avail hash newest candidate unsigned first_unsigned tmp instance_id id_file marker recorded suffix other plain=0 state
   while (($#)); do case "$1" in --device) (($# > 1)) || usage; DEVICE="$2"; shift 2 ;; *) usage ;; esac; done
   [[ -n "$DEVICE" ]] || usage
   [[ "$(id -u)" != 0 ]] || die 'run copies as the installation user, never as root.'
@@ -429,7 +473,9 @@ cmd_run() {
     # An archive written before the encryption setting changed still counts as this backup.
     [[ -e "$archive" || ! -e "$DEST/$n.$other" ]] || archive="$DEST/$n.$other"
     if [[ -e "$archive" ]]; then
-      if archive_ok "$archive"; then PRESENT=$((PRESENT + 1)); echo "Already on the drive and verified: ${archive##*/}"
+      state=0; archive_ok "$archive" || state=$?
+      if ((state == 0)); then PRESENT=$((PRESENT + 1)); echo "Already on the drive and verified: ${archive##*/}"
+      elif ((state == 2)); then fail "the archive of $n on the drive matches its checksum but was not signed with the current backup key; it was not overwritten. If you replaced the backup key, move the archives written before that into another folder on the drive (they verify only with the old key); otherwise the archive was changed on the drive"
       else fail "the archive of $n on the drive does not match its checksum or signature; it was not overwritten"; fi
       continue
     fi
@@ -457,10 +503,21 @@ cmd_run() {
     COPIED=$((COPIED + 1)); echo "Copied and verified from the drive: ${archive##*/}"
   done < <(find "$STATE/backups" -mindepth 1 -maxdepth 1 -type d -name 'warehouse-*' 2>/dev/null | sort)
 
-  newest="$(find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.tar' -o -name 'warehouse-*.tar.enc' \) -printf '%f\n' | sort | tail -n1)"
+  # The restore check opens the newest archive this installation signed. An archive
+  # without a valid signature is never unpacked: anyone holding the drive can add a
+  # later-dated file with a matching checksum, and it must neither be opened nor take
+  # the place of the genuine newest backup.
+  newest=''; n=''; unsigned=0; first_unsigned=''
+  while IFS= read -r candidate; do
+    if backup_check_archive "$DEST/$candidate" "$BACKUP_KEY"; then newest="$candidate"; break; fi
+    unsigned=$((unsigned + 1)); [[ -n "$first_unsigned" ]] || first_unsigned="$candidate"
+  done < <(find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.tar' -o -name 'warehouse-*.tar.enc' \) -printf '%f\n' | sort -r)
+  if ((unsigned)); then
+    fail "the archive $first_unsigned on the drive carries no valid signature of this installation's backup key; it was not opened ($unsigned such archive(s) are newer than every archive this installation signed). An earlier release wrote unsigned archives: take a new backup with npm run db:backup. Otherwise remove them from the drive unless you put them there"
+  fi
   n="${newest%.enc}"; n="${n%.tar}"
   if [[ -z "$newest" ]]; then
-    fail 'there is no backup on the drive; take one with npm run db:backup'
+    ((unsigned)) || fail 'there is no backup on the drive; take one with npm run db:backup'
   elif [[ "${WAREHOUSE_USB_BACKUP_VERIFY_RESTORE:-yes}" != no ]]; then
     tmp="$(mktemp -d "$STATE/.usb-verify.XXXXXX")"; TMPDIRS+=("$tmp")
     if archive_ok "$DEST/$newest" &&
@@ -486,6 +543,18 @@ cmd_run() {
   fi
   if ((FAILED)); then record failed "$FAILURES"; exit 1; fi
   record ok "copied $COPIED, already present $PRESENT, restore verified $n"
+}
+
+# Internal: called by the root helper through setpriv, as the installation user.
+cmd_refused() {
+  local name="${1:-}" uuid="${2:-}" message="${3:-}"
+  [[ "$(id -u)" != 0 ]] || die 'refused records as the installation user, never as root.'
+  STATE="$(conf_get STATE)"
+  [[ -n "$STATE" && -d "$STATE/config" && ! -L "$STATE/config" && -O "$STATE/config" ]] || die "$CONF names no operator state of this user."
+  [[ "$uuid" =~ ^[A-Za-z0-9-]+$ && -n "$message" ]] || usage
+  [[ -z "$name" ]] || DEVICE="/dev/$(kname "$name")"
+  RESULT_FILE="$STATE/config/usb-backup.last"; D_UUID="$uuid"
+  record failed "$message"
 }
 
 cmd_status() {
@@ -534,6 +603,7 @@ case "$sub" in
   unmount) cmd_unmount "$@" ;;
   scan) cmd_scan "$@" ;;
   run) cmd_run "$@" ;;
+  refused) cmd_refused "$@" ;;
   status) cmd_status "$@" ;;
   -h|--help|help) usage ;;
   *) usage ;;

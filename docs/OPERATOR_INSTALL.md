@@ -651,7 +651,14 @@ The restored installation keeps the same key. If the key itself may have been
 disclosed: move `config/backup.key` aside
 (keep it with the old backups, which only verify with it), take a new
 `db:backup` (it creates a new key), store the new copy, and enroll each USB
-drive again.
+drive again. On each drive, also move the archives written before the change
+(`warehouse-<utc>.tar*` with their `.sha256` and `.hmac` files) into another
+folder, for example `warehouse-backups/<state name>/old-key-<date>/`: they
+carry signatures of the old key, and as long as an older backup is still under
+`backups/` the USB run would report its archive as "not signed with the current
+backup key" on every attach. Do the same after a `db:restore-host
+--allow-unsigned` that was run without the key (its first backup creates a new
+one).
 
 ### USB backup drive
 
@@ -705,6 +712,8 @@ formatting), so a stick that imitates the serial of your drive receives nothing.
    `warehouse-usb-backup@.service` unit. Add `--daily` for a drive that stays
    attached (a daily timer starts the same run), `--no-fresh-backup` to copy
    only existing backups, and `--encrypt` to encrypt the archives (below).
+   A later setup run that does not name one of these keeps what you chose;
+   switch one back with `--no-daily`, `--fresh-backup` or `--no-encrypt`.
    Enroll a second drive for rotation with
    `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`; enrolling needs
    the backup key, so take one `npm run db:backup` first on an installation
@@ -1145,6 +1154,9 @@ node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
+The last line keeps the USB choices of your earlier setup (`--encrypt`,
+`--daily`, `--no-fresh-backup`); it prints them, so check that line.
+
 **Upgrading to the release with signed backups (format v5).** Do these once,
 in this order, after the commands above:
 
@@ -1156,7 +1168,10 @@ in this order, after the commands above:
 3. USB drive: with each drive attached, enroll it again
    (`sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`). A drive
    enrolled by an earlier release is refused until then, and nothing is copied
-   to it. Then unplug it and plug it in again and check `status`.
+   to it: the setup command above names each such drive, and from then on
+   `bash scripts/backup-usb.sh status` and `npm run doctor` show a failed USB
+   backup with the `enroll` command until a run succeeds. Then unplug the drive,
+   plug it in again and check `status`.
 4. Decide about `--encrypt` for the USB archives (see
    [USB backup drive](#usb-backup-drive)).
 5. A lost-host restore now needs `--backup-key`; update your own recovery notes.
@@ -1284,6 +1299,18 @@ problems seen so far and their causes:
 - **`backup-usb.sh`: `Could not unmount …`** — a file manager window or terminal
   is using the drive; close it and run
   `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
+- **USB run failed: `matches its checksum but was not signed with the current
+  backup key`** — the archive is intact but its signature is from another key.
+  After you replaced the backup key this is expected for the older archives:
+  move them into another folder on the drive (see [Backup key](#backup-key)).
+  If you did not replace the key, someone rewrote the archive and its checksum
+  on the drive: do not use it, delete it, and the next run writes it again.
+- **USB run failed: `carries no valid signature of this installation's backup
+  key; it was not opened`** — the drive holds an archive newer than every
+  archive this installation signed. Right after upgrading from a release with
+  unsigned archives, take a new backup (`npm run db:backup`, or just attach
+  the drive when fresh backups are on). Otherwise somebody put the file there:
+  remove it. The run still verifies the newest archive it signed itself.
 - **USB run failed: `does not match its checksum; it was not overwritten`** — an
   archive on the drive is damaged. Copy the drive's other files elsewhere, run
   `sha256sum -c` on each `.tar.sha256` to see which, and replace the drive if
