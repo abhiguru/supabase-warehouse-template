@@ -24,6 +24,16 @@
   receipt number, customer, item, package, rack or vehicle number
   (case-insensitive; `%` and `_` are literal). `gr_no_from` / `gr_no_to` now
   compare in document order, so B9..B10 is a real range.
+- Migration 36: quick search on the dispatch, invoice and order lists, and the
+  filters those lists showed but did not apply.
+  `get_dispatch_list_with_items` accepts `p_filters.search` (dispatch number,
+  customer, vehicle number, or the item, package, rack or receipt number of a
+  line) and `p_filters.package_mark`; `disp_no_from` / `disp_no_to` follow
+  document order. `get_invoices_list` gains `p_search` (invoice number, also as
+  `2026-12` or `2026-0012`, customer, receipt number), `p_date_from`,
+  `p_date_to` and `p_customer_ids`. `get_orders_list` gains `p_search` (customer
+  name or city, or the item, package or receipt number of a pending line). The
+  new parameters are optional, so current app versions keep working.
 
 ## Unreleased — fresh-install preflight checks the state parent (2026-10-09)
 
