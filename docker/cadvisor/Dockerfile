@@ -1,4 +1,4 @@
-FROM golang:1.27.0-bookworm@sha256:ded31c68586d2e49e760acc2e65a884b23d032e9bbbed0ae0c55abd3fcaf4452 AS build
+FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/google/cadvisor/tar.gz/refs/tags/v0.60.6 -o /tmp/source.tar.gz \
     && echo 'de7a92116fcad156fd5792da486b164224c3989e2f71041612a20c54cef4e2f7  /tmp/source.tar.gz' | sha256sum -c - \

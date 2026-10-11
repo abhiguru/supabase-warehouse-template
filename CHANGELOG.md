@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — Go 1.27.2 builders, refreshed Kong digest and CI action (2026-10-11)
+
+No migration. **Operator action:** none beyond the usual rebuild on the next
+upgrade (`setup.sh` builds the images).
+
+- **Go builders (review finding X5-4).** All ten `FROM golang:` lines use
+  `golang:1.27.2-bookworm` by digest; they used 1.27.0 and 1.27.1, behind
+  three fixed HIGH standard-library advisories. CI builds nine of the recipes;
+  the Auth recipe (a disabled service) was built by hand. `npm run
+  scan:images` has not been rerun on the rebuilt images
+  (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").
+- **Kong** stays `3.9.3-ubuntu`; the pin moves to the index the registry
+  serves for the rebuilt tag (`sha256:92035d16...`, amd64 and arm64).
+- `pino-pretty` 13.2.0 in the postgres-meta lock file; `actions/setup-node`
+  v7.1.0 in both workflows.
+- These replace Dependabot pull requests 40, 41, 42, 44, 46, 49, 51 and 53.
+  Left open for a decision: Grafana 13.2.3 (#45; the recipe's plugin pins,
+  check script and scan numbers name 13.2.2) and the major updates (#9, #43,
+  #47, #48, #50, #52).
+
 ## Unreleased — owner decisions of 2026-10-11
 
 Migration 48 and `docker/kong.yml`. **Operator action:** rerun `setup.sh` as
