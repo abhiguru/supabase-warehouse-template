@@ -104,6 +104,35 @@ storage without duration or labour; storage and labour rounded separately; line
 tax rounded on that base), so its lines differ from the header only by the
 header's single tax ceiling.
 
+## Invoice numbers
+
+An invoice number is unique within its financial year (`inv_fin_year`, the
+calendar year in which the year from 1 April to 31 March starts: 2026 for April
+2026 to March 2027). The client chooses the number; the server suggests one
+(owner decision of 2026-10-11, migration 48):
+
+`get_next_invoice_number(p_fin_year integer DEFAULT NULL)` returns, as plain
+digits, the highest number among that year's invoices that are not deleted,
+plus 1, and `1` for a year that has none, so numbering starts again each
+April. Numbers below 1 in the data do not count. Without a year (or with NULL)
+it uses the financial year of today's date in India (`Asia/Kolkata`), which
+turns at 18:30 UTC on 31 March. The app passes the financial year of the
+invoice date. Before migration 48 the function took no argument and returned
+the highest number over all years plus 1.
+
+When the year's highest number is 2147483647, the largest an invoice number can
+be, the call is refused with `No invoice number is left in financial year
+<year>` (SQLSTATE `WH409`); before, one such invoice made the suggestion fail
+for every year with "integer out of range". The user can still type a free
+number. The suggestion is not a reservation: two people saving at once can get
+the same number, and the second save is refused by the unique constraint.
+
+A soft-deleted invoice (`deleted_at` set) is not counted, but the unique
+constraint still holds its number, so a suggestion can be refused at save when
+the year's highest number belongs to such a row. No RPC an app role may call
+soft-deletes an invoice (`delete_invoice` removes the row), so this arises only
+from rows written with the service key or the database owner.
+
 ## Reproducible fixture
 
 Receive 100 bags of 10 kg on 2026-04-01. Dispatch 20 on 2026-05-02, leaving

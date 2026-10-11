@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — owner decisions of 2026-10-11
+
+Migration 48. **Operator action:** rerun `setup.sh` as for every upgrade. The
+app build that follows these decisions is needed for the per-year invoice
+number; an older build keeps working and gets the number for the current
+financial year.
+
+- **The suggested invoice number is per financial year.**
+  `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` replaces the
+  no-argument function (one signature; a call without an argument still
+  works). It returns the highest number among that year's invoices that are
+  not deleted, plus 1, and `1` for a year without invoices; numbers below 1 are
+  ignored. Without a year it uses the financial year of today in India. Before,
+  it returned the highest number of all years plus 1, so April continued the
+  old year's numbers. An invoice numbered 2147483647 no longer breaks the
+  suggestion for every year with "integer out of range": only that year is
+  refused, with `No invoice number is left in financial year <year>`
+  (`WH409`). Guard and grants are unchanged. `docs/INVOICE_RULES.md`, "Invoice
+  numbers"; `tests/invoice_number_per_year.sql`.
+
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 
 Migration 47. **Operator action:** rerun `setup.sh` as for every upgrade (it
