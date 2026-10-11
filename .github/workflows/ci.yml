@@ -16,7 +16,7 @@ env:
   # `check-mobile-contract.mjs --live` against a running stack, which is a step
   # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
   # CONTRIBUTING.md "Mobile companion pin".
-  MOBILE_REF: 97ddf3c4e1d01698cf9c9cee9dc279d5136f95b1
+  MOBILE_REF: 474f30cfb5237858f6f90c2d5f17b2af062b8d7a
 jobs:
   validate:
     runs-on: ubuntu-latest
