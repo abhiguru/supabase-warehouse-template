@@ -108,13 +108,17 @@ and a reason already stored on it is kept.
   one public address and so one counter: the old limit gave 100 phones 3
   requests a minute and 60 an hour each, and once the hour was used up every
   phone was refused until it ended. The new one gives them 18 a minute each
-  and cannot lock anyone out for longer than the rest of a minute.
+  and cannot lock anyone out for longer than the rest of a minute. It is
+  1800 per fixed minute, about 30 a second on average, with no per-second
+  brake: one address may use a minute's budget in a burst.
   **Consequence:** this is also the only gateway brake on the RPCs that need
   no sign-in (`refresh_jwt_token`, `logout_session`, `check_session`); one
   address may now send 108,000 requests an hour where it could send 6000. The
-  OTP limits are unaffected. The other routes are unchanged; the functions
-  route (100 a minute, 2000 an hour per address) has the same hourly lock-out
-  for a facility behind one address and was left for a decision.
+  OTP limits are unaffected. The other routes are unchanged. **The functions
+  route was left with its hourly cap** (100 a minute, 2000 an hour per
+  address): it has the same hourly lock-out for a facility behind one address,
+  but it is also the gateway's per-address brake on OTP requests, so it is
+  left for the owner to decide.
   `docs/CONTAINER_SECURITY.md`, "REST request limit", has the arithmetic and a
   table of every route; `tests/gateway-config.test.mjs` pins both. Kong has
   not loaded the file on a running stack.
