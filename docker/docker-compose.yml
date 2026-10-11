@@ -286,7 +286,12 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # The service has a quarter of a CPU. On a busy host its start, and the
+      # node process of the probe itself, can take longer than 30 seconds; with
+      # that start period it was reported unhealthy 90 seconds after a start
+      # (seen twice in CI, 2026-10-11) and the backup or restore that had
+      # restarted it failed. Failed probes do not count during the start period.
+      start_period: 120s
     depends_on:
       db:
         condition: service_healthy
