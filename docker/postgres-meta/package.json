@@ -48,7 +48,7 @@
     "@sentry/node": "10.75.2",
     "@sentry/profiling-node": "10.75.2",
     "@sinclair/typebox": "^0.31.25",
-    "@supabase/postgrest-typegen": "0.2.0",
+    "@supabase/postgrest-typegen": "0.4.0",
     "close-with-grace": "^2.1.0",
     "crypto-js": "^4.0.0",
     "fastify": "5.12.5",
