@@ -108,7 +108,13 @@ jobs:
 
   operator-install:
     name: Isolated operator installation
-    runs-on: ubuntu-latest
+    # The owner's runner VM, which keeps Docker's build cache between runs: about
+    # 18 of this job's 30 minutes on a hosted runner are image builds from
+    # scratch. The VM runs one job at a time and removes every container, volume
+    # and state directory after each job, so the fixed ports and /tmp paths
+    # below do not collide. This job is not a required check: when the VM is
+    # down it waits, and merging is not blocked.
+    runs-on: [self-hosted, linux, x64, warehouse-vm]
     timeout-minutes: 45
     needs: validate
     steps:
