@@ -8,10 +8,13 @@ import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson
 
 // Runs scripts/restore.sh from a private copy of the operator scripts against a
 // fake docker; returns the result together with every docker invocation.
-function restore(scratch, args, env = {}) {
+// `prepare` may change the private copy of the scripts before the run.
+function restore(scratch, args, env = {}, prepare = () => {}) {
   const log = join(scratch, 'docker.log');
   writeFileSync(log, '');
-  const result = spawnSync('bash', [join(scriptRoot(scratch), 'scripts/restore.sh'), ...args], {
+  const root = scriptRoot(scratch);
+  prepare(root);
+  const result = spawnSync('bash', [join(root, 'scripts/restore.sh'), ...args], {
     encoding: 'utf8', env: { ...process.env, PATH: `${fakeDocker(join(scratch, 'bin'))}:${process.env.PATH}`,
       WAREHOUSE_STATE_DIR: join(scratch, 'state'), FAKE_DOCKER_LOG: log, ...env },
   });
@@ -145,6 +148,22 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     assert.equal(recreated.length, 2);
     for (const line of recreated) assert.match(line, /CREATE DATABASE (postgres|_supabase) OWNER postgres TEMPLATE template0$/, line);
     assert.doesNotMatch(calls, /template1/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a restore whose services do not start names the unhealthy ones and shows their last log lines', () => {
+  const { scratch, backup } = fixture('warehouse-restore-start-');
+  try {
+    // The migration step needs the whole checkout; here it is stood in for so the start is reached.
+    const noMigrations = root => writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o700 });
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' }, noMigrations);
+    assert.notEqual(result.status, 0, 'the injected start failure propagates');
+    assert.match(result.stderr, /Restore failed during: start services/);
+    assert.match(result.stderr, /Service meta is running \(unhealthy\)\. Its last log lines:\nfake log of meta\n/);
+    assert.match(result.stderr, /Service studio is exited\. Its last log lines:\nfake log of studio\n/);
+    assert.doesNotMatch(result.stderr, /Service (db|rest) is/, 'healthy services and services without a health check are left out');
+    assert.ok(result.stderr.indexOf('fake log of studio') < result.stderr.indexOf('Restore failed during'), 'the logs come before the rollback text');
+    assert.match(result.stderr, /Rollback: bash stop\.sh/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
