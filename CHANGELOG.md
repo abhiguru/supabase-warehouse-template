@@ -38,6 +38,20 @@ financial year.
   it is, and staff who edit it must enter a reason at that edit. **For API
   clients:** an edit has to send the stored reason back to keep it.
   `docs/INVOICE_RULES.md`; `tests/zero_charge_reason.sql`.
+- **Every price change is recorded.** Staff have been able to create, change
+  and delete item prices since migration 45, with nothing kept of what a price
+  was or who changed it. A trigger on `item_storage_prices` now writes one row
+  to the new append-only `item_price_history` for every insert, update and
+  delete, whichever RPC made it: time, profile and role (from the session; none
+  for a write with the service key or in the database), price, item and
+  customer with their names, the action and the values before and after. New
+  RPC `get_item_price_history(p_customer_id uuid DEFAULT NULL, p_item_id uuid
+  DEFAULT NULL, p_limit integer DEFAULT 50, p_offset integer DEFAULT 0)`
+  returns `{success, data, pagination}`, newest first, to administrators and
+  supervisors; staff and customer accounts are refused and cannot read the
+  table either. The record starts with this migration. No app screen yet.
+  `docs/STAFF_GRN_POLICY.md`, "Every price change is recorded";
+  `tests/item_price_history.sql`.
 
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 
@@ -394,7 +408,8 @@ admits what the app offers".
 - **Staff can now read and change item prices** (`get_item_storage_prices`,
   `create_`, `update_`, `delete_` and `find_or_create_item_storage_price`).
   This supersedes the refusal of migration 23. A price change is not written to
-  a history table.
+  a history table. (It is since migration 48: see "owner decisions of
+  2026-10-11" above.)
 - Staff can run the reports the app shows them, for all customers and for one
   (`get_all_stock_summary`, `get_customer_stock_summary`,
   `get_all_customer_activity_summary`, `get_customer_activity_detail`,

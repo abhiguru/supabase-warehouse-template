@@ -473,10 +473,12 @@ already.) The operations dashboard is not shown to staff by the app and
 **Staff — item pricing, read and write. This is a material change: staff can
 change what customers are charged.** `get_item_storage_prices` (every
 customer's prices), `create_item_storage_price`, `update_item_storage_price`,
-`delete_item_storage_price` and `find_or_create_item_storage_price`. A price
-change is not written to a history table; the invoice discount history of
-migration 41 does not cover it. The `item_storage_prices` table itself stays
-closed to staff: they read prices through the RPC.
+`delete_item_storage_price` and `find_or_create_item_storage_price`. When
+migration 45 opened this, a price change was not recorded anywhere. **Since
+migration 48 every insert, update and delete of a price is written to
+`item_price_history`**, with the profile that made it (last section); staff do
+not read that history. The `item_storage_prices` table itself stays closed to
+staff: they read prices through the RPC.
 
 **Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
 sensor tables stay closed to staff.
@@ -580,6 +582,7 @@ several customers calls once per customer.
 | Operations dashboard | yes | yes | no | no |
 | Item pricing: read | yes | yes | **yes** | no |
 | Item pricing: add, change, delete | yes | yes | **yes** | no |
+| Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
 | Customers and items: create, edit, delete | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
@@ -747,6 +750,33 @@ covers each path and role.
 Before this decision zero was already an accepted charge (migration 41) and
 staff could enter it without a word. The discount reason of migration 30 is a
 separate rule and unchanged.
+
+### Every price change is recorded
+
+Staff keep the price RPCs that migration 45 gave them. What was missing was a
+record: a changed or deleted price left no trace of what it had been or who
+changed it. Now **every insert, update and delete of `item_storage_prices`
+writes one row to `item_price_history`**: when, the profile and its role, the
+price, its item and customer (ids and names as they were), the action
+(`insert`, `update` or `delete`) and the price before and after. A trigger on
+the table writes it, so `create_item_storage_price`,
+`update_item_storage_price`, `delete_item_storage_price` and
+`find_or_create_item_storage_price` are all covered, as is a write with the
+service key or by an operator in the database (recorded without a profile). A
+save that changes no value is still a row: it records who saved. A refused
+write leaves none.
+
+The history is append-only (no role is granted a write, and a trigger refuses
+changes and deletes even for the database owner) and has no foreign keys, so a
+price, an item or a profile can still be deleted afterwards.
+
+**Administrators and supervisors read it**, with
+`get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest
+first; all four arguments optional; `{success, data, pagination}`) or from the
+table. **Staff and customer accounts cannot**: the guard refuses the RPC
+(`Staff access required`) and the table's row policy shows them no row. The
+app has no screen for the history yet. The record starts with migration 48;
+prices created before it have no insert row. `tests/item_price_history.sql`.
 
 ### Invoice number per financial year
 

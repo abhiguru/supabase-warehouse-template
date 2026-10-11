@@ -5,6 +5,9 @@
 -- 3. An invoice line may have a storage charge of 0, with a reason: staff must
 --    give one, administrators and supervisors may leave it empty; who and when
 --    is recorded on the invoice and every change in an append-only history.
+-- 5. Staff may create, change and delete item prices (migration 45). Every
+--    insert, update and delete of a price is now recorded in an append-only
+--    history that administrators and supervisors can read.
 --
 -- No existing row is validated or changed: an invoice that already has a
 -- zero-charge line and no reason stays as it is and meets the rule when staff
@@ -263,5 +266,133 @@ BEGIN
   IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one discount record in get_invoice_detail, found %', occurrences; END IF;
   EXECUTE replace(definition,marker,replacement);
 END $patch$;
+
+-- ---------------------------------------------------------------------------
+-- 5. Price history
+-- ---------------------------------------------------------------------------
+-- One row per insert, update and delete of item_storage_prices. Like the two
+-- invoice histories it has no foreign key, so a price, an item, a customer or
+-- a profile can still be deleted and the record stays; the names are stored
+-- with the row for that reason. old_values / new_values are the price row as
+-- it was and as it is, without its three ids (which are columns here) and
+-- without created_at / created_by (which no write changes).
+CREATE TABLE public.item_price_history (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  price_id uuid NOT NULL,
+  item_id uuid,
+  item_name text,
+  customer_id uuid,
+  customer_name text,
+  action text NOT NULL CHECK (action IN ('insert','update','delete')),
+  old_values jsonb,
+  new_values jsonb,
+  changed_by uuid,
+  changed_by_role text,
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE public.item_price_history IS
+  'Append-only record of every insert, update and delete of item_storage_prices (migration 48). Read it with get_item_price_history.';
+COMMENT ON COLUMN public.item_price_history.price_id IS 'item_storage_prices.id of the price; the row may be gone.';
+COMMENT ON COLUMN public.item_price_history.customer_id IS 'NULL for a default price, which applies to every customer.';
+COMMENT ON COLUMN public.item_price_history.old_values IS 'The price before the change; NULL for an insert.';
+COMMENT ON COLUMN public.item_price_history.new_values IS 'The price after the change; NULL for a delete.';
+COMMENT ON COLUMN public.item_price_history.changed_by IS 'user_profiles.id of the session that made the change; NULL for a write with the service key or by the database owner.';
+CREATE INDEX item_price_history_customer_idx ON public.item_price_history (customer_id, id);
+CREATE INDEX item_price_history_item_idx ON public.item_price_history (item_id, id);
+ALTER TABLE public.item_price_history ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.item_price_history FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON public.item_price_history TO authenticated, service_role;
+CREATE POLICY starter_staff ON public.item_price_history FOR SELECT TO authenticated
+  USING (warehouse_security.active_role() IN ('admin','supervisor'));
+CREATE TRIGGER item_price_history_append_only BEFORE UPDATE OR DELETE ON public.item_price_history
+  FOR EACH ROW EXECUTE FUNCTION warehouse_security.history_append_only();
+CREATE TRIGGER item_price_history_no_truncate BEFORE TRUNCATE ON public.item_price_history
+  FOR EACH STATEMENT EXECUTE FUNCTION warehouse_security.history_append_only();
+
+-- A row trigger on the table covers every path at once: the five guarded
+-- price RPCs (both create and both update signatures, delete, find-or-create)
+-- and a write with the service key or by the database owner. The author is the
+-- session's profile, never a value the client sends.
+CREATE FUNCTION warehouse_security.record_item_price_change() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+  kept_out constant text[] := ARRAY['id','item_id','customer_id','created_at','created_by'];
+  price public.item_storage_prices;
+  before_change jsonb; after_change jsonb;
+BEGIN
+  IF TG_OP = 'DELETE' THEN price := OLD; ELSE price := NEW; END IF;
+  IF TG_OP <> 'INSERT' THEN before_change := to_jsonb(OLD) - kept_out; END IF;
+  IF TG_OP <> 'DELETE' THEN after_change := to_jsonb(NEW) - kept_out; END IF;
+  INSERT INTO public.item_price_history
+    (price_id, item_id, item_name, customer_id, customer_name, action, old_values, new_values, changed_by, changed_by_role)
+  VALUES (price.id, price.item_id, (SELECT i.name FROM public.items i WHERE i.id = price.item_id),
+    price.customer_id, (SELECT c.name FROM public.customers c WHERE c.id = price.customer_id),
+    lower(TG_OP), before_change, after_change,
+    (SELECT p.id FROM public.user_profiles p WHERE p.auth_user_id = auth.uid()), warehouse_security.active_role());
+  RETURN NULL;
+END $$;
+REVOKE ALL ON FUNCTION warehouse_security.record_item_price_change() FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER item_price_history_record AFTER INSERT OR UPDATE OR DELETE ON public.item_storage_prices
+  FOR EACH ROW EXECUTE FUNCTION warehouse_security.record_item_price_change();
+
+-- The history, newest first, for administrators and supervisors. The guard
+-- admits those two roles to every RPC and refuses staff and customer accounts
+-- any name that is not on their lists, so this one needs no entry there.
+-- Without a customer or an item the history is not filtered; a page is 1 to
+-- 200 rows.
+CREATE FUNCTION public.get_item_price_history(p_customer_id uuid DEFAULT NULL, p_item_id uuid DEFAULT NULL,
+  p_limit integer DEFAULT 50, p_offset integer DEFAULT 0) RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, extensions, utils, pg_temp AS $$
+DECLARE
+    v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 50), 1), 200);
+    v_offset integer := GREATEST(COALESCE(p_offset, 0), 0);
+    v_total integer;
+    v_data jsonb;
+BEGIN
+    PERFORM warehouse_security.authorize_rpc('get_item_price_history', jsonb_build_object('p_customer_id', p_customer_id));
+
+    SELECT count(*) INTO v_total
+    FROM item_price_history h
+    WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id)
+      AND (p_item_id IS NULL OR h.item_id = p_item_id);
+
+    SELECT COALESCE(jsonb_agg(page.row_data ORDER BY page.id DESC), '[]'::jsonb) INTO v_data
+    FROM (
+        SELECT h.id, jsonb_build_object(
+            'id', h.id,
+            'changed_at', h.changed_at,
+            'action', h.action,
+            'price_id', h.price_id,
+            'item_id', h.item_id,
+            'item_name', h.item_name,
+            'customer_id', h.customer_id,
+            'customer_name', h.customer_name,
+            'old_values', h.old_values,
+            'new_values', h.new_values,
+            'changed_by', h.changed_by,
+            'changed_by_name', (SELECT p.name FROM user_profiles p WHERE p.id = h.changed_by),
+            'changed_by_role', h.changed_by_role
+        ) AS row_data
+        FROM item_price_history h
+        WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id)
+          AND (p_item_id IS NULL OR h.item_id = p_item_id)
+        ORDER BY h.id DESC
+        LIMIT v_limit OFFSET v_offset
+    ) page;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'data', v_data,
+        'pagination', jsonb_build_object(
+            'total', v_total,
+            'limit', v_limit,
+            'offset', v_offset,
+            'has_more', (v_offset + v_limit) < v_total
+        )
+    );
+END;
+$$;
+REVOKE ALL ON FUNCTION public.get_item_price_history(uuid, uuid, integer, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_item_price_history(uuid, uuid, integer, integer) TO authenticated, service_role;
 
 NOTIFY pgrst, 'reload schema';
