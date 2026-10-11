@@ -40,7 +40,7 @@ docker network create --internal "$network" >/dev/null
 docker run --rm -d --name "$prometheus" --network "$network" --network-alias prometheus \
   --read-only --tmpfs /prometheus:rw,uid=65534,gid=65534 \
   --mount "type=bind,src=$report_dir/prometheus.yml,dst=/etc/prometheus/prometheus.yml,readonly" \
-  prom/prometheus:v3.14.0 >/dev/null
+  prom/prometheus:v3.15.0 >/dev/null
 docker run --rm -d --name "$postgres" --network "$network" --network-alias db \
   --tmpfs /var/lib/postgresql/data:rw,mode=0700 \
   -e POSTGRES_PASSWORD=ephemeral-test-only postgres:16-alpine >/dev/null

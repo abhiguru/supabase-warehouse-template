@@ -33,3 +33,20 @@ test('the disposable databases use the image digest the production database is b
     for (const ref of refs) assert.equal(ref, pinned, `${script} must reference ${pinned}`);
   }
 });
+
+test('the Prometheus recipe compiles the release its runtime image is tagged with', () => {
+  // The recipe puts its own build of Prometheus into the publisher's image. An
+  // update of the FROM line alone would leave the old release running under a
+  // new tag, so the source, the UI archive, the version string and the fixture
+  // of the Grafana check move together.
+  const recipe = readFileSync(join(root, 'docker/prometheus/Dockerfile'), 'utf8');
+  const version = recipe.match(/^FROM prom\/prometheus:v(\d+\.\d+\.\d+)@sha256:[0-9a-f]{64}$/m)[1];
+  assert.ok(recipe.includes(`/prometheus/prometheus/tar.gz/refs/tags/v${version} `), 'source tag');
+  assert.ok(recipe.includes(`/releases/download/v${version}/prometheus-web-ui-${version}.tar.gz `), 'UI archive');
+  const stamped = recipe.match(/version\.Version=[^\s']+/g) || [];
+  assert.equal(stamped.length, 2);
+  for (const stamp of stamped) assert.equal(stamp, `version.Version=${version}-warehouse.1`);
+  const fixture = readFileSync(join(root, 'scripts/grafana-check.sh'), 'utf8').match(/prom\/prometheus:\S+/g) || [];
+  assert.deepEqual(fixture, [`prom/prometheus:v${version}`]);
+  assert.ok(readFileSync(join(root, 'docs/CONTAINER_SECURITY.md'), 'utf8').includes(`| Prometheus | ${version} |`));
+});
