@@ -912,13 +912,40 @@ building an image or starting the stack.
   `golang:1.27.2-bookworm@sha256:5cf287a7...`, the multi-platform index the
   registry serves for that tag, read with `docker buildx imagetools inspect`.
   They used 1.27.0 and 1.27.1, which were behind three fixed HIGH
-  standard-library advisories. Each recipe runs `go mod verify` and its
-  selected tests during the build. CI builds nine of them; the Auth recipe
-  belongs to a disabled service that CI does not build, and was built once by
-  hand on 2026-10-11. Still to do:
-  `npm run scan:images` on the rebuilt images, to confirm the three findings
-  are gone. The Gotenberg server binary is the publisher's and is not rebuilt
-  by any recipe.
+  standard-library advisories (CVE-2026-78667, CVE-2026-78669,
+  CVE-2026-97031). Each recipe runs `go mod verify` and its selected tests
+  during the build. CI builds nine of them; the Auth recipe belongs to a
+  disabled service that CI does not build, and was built once by hand on
+  2026-10-11.
+  **Scan of 2026-10-11** (Trivy 0.74.0 with the flags of
+  `scripts/scan-images.sh`, on the nine images of these recipes built from
+  commit `bc2b110`; not the full `npm run scan:images` gate): no
+  standard-library finding is left in the binaries the recipes build
+  (alertmanager, amtool, auth, cadvisor, gosu, wal-g, imgproxy,
+  node_exporter, postgres_exporter, prometheus, promtool). The three
+  advisories remain in `/usr/bin/gotenberg`, which is the publisher's binary
+  built with Go 1.27.1 and is not rebuilt by any recipe; they go away with a
+  Gotenberg tag built on a fixed Go.
+- **`golang.org/x/net` in every Go binary (HIGH, found by the scan of
+  2026-10-11).** CVE-2026-78669 (HTTP/2) is fixed in `golang.org/x/net`
+  0.60.0. The module is at v0.58.0 in alertmanager, amtool, auth, cadvisor,
+  wal-g, imgproxy, prometheus, promtool and the publisher's gotenberg binary,
+  and at v0.57.0 in node_exporter and postgres_exporter. For each recipe that
+  carries its own `go.mod` and `go.sum` (`docker/{alertmanager,cadvisor/cmd,imgproxy,node-exporter,postgres-exporter,prometheus}`
+  and `docker/postgres/walg.go.*`; the Auth recipe edits the upstream
+  manifest in its Dockerfile): in the upstream source at the recipe's tag,
+  with the recipe's `go.mod` in place, run `go get golang.org/x/net@v0.60.0`,
+  copy the changed `go.mod` and `go.sum` back, build (the build runs
+  `go mod verify` and the selected tests), then scan the image again.
+- **A cached build hides or shows operating-system findings.** In the same scan
+  the imgproxy and Gotenberg images first showed fixed HIGH findings in
+  Ubuntu's and Debian's OpenSSL packages (CVE-2026-84782) and 116 in Debian's
+  `chromium` packages. Both recipes already run `apt-get upgrade`; the layer
+  had been reused from an earlier build. Rebuilt with `--no-cache`, both
+  images have no operating-system finding left: imgproxy keeps the one
+  `golang.org/x/net` finding, Gotenberg that and the three standard-library
+  findings of its publisher binary. Build with `--no-cache` (or `--pull` and
+  a pruned cache) before reading scan numbers or deploying.
 - **Studio application advisories.** The recipe now applies Debian updates,
   which addresses the operating-system findings at build time. The Next.js
   and simple-git advisories are in the publisher's application and need a

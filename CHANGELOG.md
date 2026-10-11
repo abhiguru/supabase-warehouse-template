@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — scan of the Go-based images after the 1.27.2 builders (2026-10-11)
+
+Documentation only (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").
+
+- The nine images whose recipes have a Go build stage were built from
+  `bc2b110` and scanned with Trivy 0.74.0. The three standard-library
+  advisories are gone from every binary the recipes build. They remain in the
+  publisher's Gotenberg binary, which no recipe rebuilds.
+- New open item: `golang.org/x/net` below 0.60.0 (CVE-2026-78669, HIGH) in
+  every Go binary; the steps are listed.
+- Operating-system findings seen at first in imgproxy and Gotenberg came from
+  a reused `apt-get upgrade` layer and disappear with a `--no-cache` build.
+
 ## Unreleased — Go 1.27.2 builders, refreshed Kong digest and CI action (2026-10-11)
 
 No migration. **Operator action:** none beyond the usual rebuild on the next
