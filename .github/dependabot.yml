@@ -20,6 +20,16 @@ updates:
       - "/docker/storage"
     schedule:
       interval: weekly
+    # One pull request for the week's minor and patch updates of both
+    # manifests: each pull request rebuilds the images in CI, and the install
+    # job runs one at a time.
+    groups:
+      recipe-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
     ignore:
       # These two manifests are the dependency sets of upstream applications
       # that the recipes build from a pinned source tag. A new major of one of

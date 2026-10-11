@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — dependency updates, Prometheus 3.15.0 (2026-10-12)
+
+Image recipes only. **Operator action:** none beyond the usual upgrade; the
+setup rerun rebuilds the four images whose recipes changed (Prometheus, the
+print service, the metadata service and storage).
+
+- **Prometheus 3.15.0** (was 3.14.0). The recipe compiles Prometheus from
+  source into the publisher's image, so the source tag, the UI archive, both
+  checksums, the version string and `go.mod`/`go.sum` moved together with the
+  image. `golang.org/x/net` stays at v0.60.0 and `golang.org/x/crypto` is
+  v0.57.0, both above what the release pins. The release's workspace file
+  already asks for Go 1.26, so the recipe no longer edits it.
+- A new unit test fails when the image tag of that recipe changes without the
+  source it compiles. Dependabot proposed exactly that (the image alone), which
+  would have left 3.14.0 running under a 3.15.0 tag.
+- The print service's `ubuntu:22.04` base moves to the current digest.
+- Minor and patch updates in the two recipe manifests: `@fastify/swagger`
+  9.9.1 (both), and in `docker/postgres-meta` `@fastify/cors` 11.3.1,
+  `@sentry/node` 10.76.2, `@types/pg` 8.23.1 and `prettier-plugin-sql` 0.20.0.
+- Dependabot now proposes the minor and patch updates of those two manifests
+  as one pull request a week, not one per package.
+
 ## Unreleased — metadata service: longer start allowance (2026-10-12)
 
 `docker/docker-compose.yml` and two scripts. **Operator action:** none; the
