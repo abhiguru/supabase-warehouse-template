@@ -625,11 +625,12 @@ document names a different one.
 ## Gateway limits and metrics (2026-10-11)
 
 - The GraphQL route and both Realtime routes had the public-key check but no
-  rate limit. GraphQL and the Realtime HTTP route now have the REST route's
-  limit (300 requests a minute and 6000 an hour per client address). The
-  Realtime socket route has its own limit, 1800 connection attempts a minute
-  and no hourly window (next section). The Realtime HTTP route also has a 2 MB
-  body limit.
+  rate limit. GraphQL and the Realtime HTTP route now have 300 requests a
+  minute and 6000 an hour per client address, which was the REST route's limit
+  at the time (the REST route itself was raised later the same day, see "REST
+  request limit" below). The Realtime socket route has its own limit, 1800
+  connection attempts a minute and no hourly window (next section). The
+  Realtime HTTP route also has a 2 MB body limit.
 - The storage route still has no rate limit. A list screen loads one image per
   row and every phone at a facility shares one public address, so a limit low
   enough to matter could refuse ordinary use; it needs request counts from a
@@ -680,9 +681,64 @@ Realtime after an outage, so it was replaced. The reasoning:
   of an outage and reconnect a little later; raise `minute` in
   `docker/kong.yml` and the numbers in `tests/gateway-config.test.mjs`
   together. The REST and GraphQL limits were not changed here; they have the
-  same one-address-per-facility property (see the storage note above) and
-  need request counts from a running facility. As with the other gateway
-  changes, Kong has not loaded this file on a running stack.
+  same one-address-per-facility property (see the storage note above). The
+  REST limit was changed afterwards by an owner decision (next section). As
+  with the other gateway changes, Kong has not loaded this file on a running
+  stack.
+
+### REST request limit
+
+Owner decision of 2026-10-11: the REST route (`/rest/v1/`, every RPC and table
+read of the app) allows **1800 requests a minute per client address and has no
+hourly window**, like the socket route. It was 300 a minute and 6000 an hour.
+
+- **Whose budget it is.** As above: Kong limits by `CF-Connecting-IP`, and
+  every phone on the facility network has the same public address. The number
+  is the budget of the whole facility, not of one phone.
+- **The old limit, for 100 phones.** 300 a minute is 3 requests a minute for
+  each phone, 5 a second for the facility. 6000 an hour is 60 requests an hour
+  for each phone. At the full per-minute rate the hour was used up in 20
+  minutes (6000 / 300); from then on every request of every phone at the
+  facility was answered 429 until the hour ended, whatever the phone was
+  doing, renewing its session included (`refresh_jwt_token` uses this route).
+- **The limit now.** 1800 a minute is 18 requests a minute for each of 100
+  phones working in the same minute, 30 a second for the facility. With no
+  window longer than a minute, a busy spell cannot lock anyone out afterwards:
+  a refused request can be sent again within the minute.
+- **What counts.** Each request counts when it arrives, before it is passed
+  on, so requests answered with an error count too, and so do the retries
+  while PostgREST is restarting. That is why the hourly window is gone and not
+  merely raised.
+- **What the limit still stops, and what it stops less.** One address sending
+  more than 30 requests a second. It is the only brake at the gateway on a
+  signed-in client that loops and on the three RPCs that need no sign-in
+  (`refresh_jwt_token`, `logout_session`, `check_session`); for those one
+  address may now send 108,000 requests in an hour where it could send 6000.
+  The OTP limits are not affected: they are counted in the database and on the
+  functions route (`docs/OPERATOR_INSTALL.md`, "Authentication and OTP
+  limits").
+- **Where the number comes from.** It is the owner's decision. It was not
+  derived from request counts of a running facility; how many requests one app
+  screen makes has not been measured. A facility with many more than 100
+  phones working at once can raise `minute` in `docker/kong.yml` and the
+  numbers in `tests/gateway-config.test.mjs` together.
+- **The other routes** keep their limits; all of them count per client
+  address, so each is likewise one budget for a whole facility:
+
+  | Route | Limit per address | Used by the app | Note |
+  |---|---|---|---|
+  | `/rest/v1/` | 1800 a minute | every RPC and table read | this section |
+  | `/realtime/v1/` (socket) | 1800 attempts a minute | live order screens | previous section |
+  | `/functions/v1/` | 100 a minute, 2000 an hour | OTP sign-in, the four PDF functions, the two configuration reads, printer status | **Same hourly lock-out as REST had.** For 100 phones that is 1 request a minute and 20 an hour each. Not changed: no decision was taken on it, and this limit is also the per-address brake on OTP requests. |
+  | `/graphql/v1` | 300 a minute, 6000 an hour | not used | no change needed |
+  | `/realtime/v1/api` | 300 a minute, 6000 an hour | not used | no change needed |
+  | `/storage/v1/` | none | photos | see the storage note above |
+
+- A running gateway keeps the limits it started with: `docker/kong.yml` is
+  read when the gateway container starts. As with the other gateway changes,
+  Kong has not loaded this file on a running stack; the check is
+  `tests/gateway-config.test.mjs`, which pins the table above and the
+  arithmetic.
 
 ## Database passwords: one shared value, and the plan to split it
 

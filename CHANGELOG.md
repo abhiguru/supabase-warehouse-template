@@ -2,10 +2,13 @@
 
 ## Unreleased — owner decisions of 2026-10-11
 
-Migration 48. **Operator action:** rerun `setup.sh` as for every upgrade. The
-app build that follows these decisions is needed for the per-year invoice
-number; an older build keeps working and gets the number for the current
-financial year.
+Migration 48 and `docker/kong.yml`. **Operator action:** rerun `setup.sh` as
+for every upgrade, and restart the gateway container if the rerun did not
+recreate it (it reads `docker/kong.yml` when it starts; until then the old
+request limit applies). Use the app build that follows these decisions: an
+older build still gets a suggested invoice number (for the current financial
+year), but it does not send a zero-charge reason, so staff using it are
+refused when they save an invoice that has a line with a charge of 0.
 
 - **The suggested invoice number is per financial year.**
   `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` replaces the
@@ -52,6 +55,29 @@ financial year.
   table either. The record starts with this migration. No app screen yet.
   `docs/STAFF_GRN_POLICY.md`, "Every price change is recorded";
   `tests/item_price_history.sql`.
+- **The REST request limit is 1800 a minute per client address, with no hourly
+  window** (was 300 a minute and 6000 an hour). All phones of a facility share
+  one public address and so one counter: the old limit gave 100 phones 3
+  requests a minute and 60 an hour each, and once the hour was used up every
+  phone was refused until it ended. The new one gives them 18 a minute each
+  and cannot lock anyone out for longer than the rest of a minute.
+  **Consequence:** this is also the only gateway brake on the RPCs that need
+  no sign-in (`refresh_jwt_token`, `logout_session`, `check_session`); one
+  address may now send 108,000 requests an hour where it could send 6000. The
+  OTP limits are unaffected. The other routes are unchanged; the functions
+  route (100 a minute, 2000 an hour per address) has the same hourly lock-out
+  for a facility behind one address and was left for a decision.
+  `docs/CONTAINER_SECURITY.md`, "REST request limit", has the arithmetic and a
+  table of every route; `tests/gateway-config.test.mjs` pins both. Kong has
+  not loaded the file on a running stack.
+
+New and changed answers: `get_next_invoice_number` takes `p_fin_year` and can
+raise `No invoice number is left in financial year <year>` (`WH409`);
+`save_invoice` (both signatures) and `update_invoice` read `zero_charge_reason`
+and can refuse with `Enter a reason for the zero charge` (22023);
+`get_invoice_detail` adds `zero_charge_reason`, `zero_charge_set_by`,
+`zero_charge_set_by_name` and `zero_charge_set_at` for the warehouse roles;
+`get_item_price_history` is new.
 
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 

@@ -114,8 +114,13 @@ services:
           hide_credentials: true
       - name: rate-limiting
         config:
-          minute: 300
-          hour: 6000
+          # Owner decision of 2026-10-11. All phones of a facility share one
+          # address, so this is the budget of a whole facility: 18 requests a
+          # minute for each of 100 phones working at once, 30 a second in
+          # all. There is no hourly window on purpose: a busy hour would use
+          # it up and every phone would be refused until it ended. See
+          # docs/CONTAINER_SECURITY.md, REST request limit.
+          minute: 1800
           policy: local
           fault_tolerant: true
           # Client address from CF-Connecting-IP (KONG_REAL_IP_HEADER), so one

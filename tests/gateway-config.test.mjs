@@ -41,8 +41,8 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 5);
   // Every route that needs only the public key or no key at all is limited per
   // client address, except storage (see docs/CONTAINER_SECURITY.md).
-  // The socket route has a per-minute limit only (null): see the next test.
-  const limits = { 'rest-v1': [300, 6000], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
+  // The REST and socket routes have a per-minute limit only (null): see the next two tests.
+  const limits = { 'rest-v1': [1800, null], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
   for (const [service, [minute, hour]] of Object.entries(limits)) {
     const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
     assert.ok(rateLimit, `${service} has no rate limit`);
@@ -53,6 +53,23 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'graphql-v1': 2, 'realtime-v1-rest': 2, 'storage-v1': 50, 'functions-v1': 10 })) {
     assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
   }
+});
+
+test('the REST limit leaves a whole facility room to work and cannot lock it out for an hour', () => {
+  // Every phone on the facility network reaches the gateway from one public address, so the
+  // facility shares one counter (docs/CONTAINER_SECURITY.md, REST request limit; owner decision
+  // of 2026-10-11). The old limit of 300 a minute and 6000 an hour gave 100 phones 3 requests a
+  // minute each and 60 an hour each, and once the hour was used up every phone was refused
+  // until it ended.
+  const devices = 100;
+  const rateLimit = serviceBlock('rest-v1').split('- name: rate-limiting')[1].split('      - name: ')[0];
+  const minute = Number(rateLimit.match(/^\s+minute: (\d+)$/m)[1]);
+  assert.equal(minute, 1800);
+  assert.equal(minute / devices, 18, 'requests a minute for each of 100 phones working at once');
+  assert.equal(minute / 60, 30, 'requests a second from one address before the limit answers 429');
+  // No window longer than a minute: a refused request can be sent again within the minute.
+  assert.doesNotMatch(rateLimit, /^\s+(second|hour|day|month|year):/m);
+  assert.match(rateLimit, /^\s+limit_by: ip$/m);
 });
 
 test('the Realtime socket limit cannot lock a facility out after a Realtime outage', () => {
