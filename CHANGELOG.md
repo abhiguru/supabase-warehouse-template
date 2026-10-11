@@ -8,7 +8,9 @@ recreate it (it reads `docker/kong.yml` when it starts; until then the old
 request limit applies). Use the app build that follows these decisions: an
 older build still gets a suggested invoice number (for the current financial
 year), but it does not send a zero-charge reason, so staff using it are
-refused when they save an invoice that has a line with a charge of 0.
+refused when they save an invoice that has a line with a charge of 0. An
+administrator or supervisor on an older build can still save such an invoice,
+and a reason already stored on it is kept.
 
 - **The suggested invoice number is per financial year.**
   `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` replaces the
@@ -39,7 +41,11 @@ refused when they save an invoice that has a line with a charge of 0.
   changed by the migration; an invoice that already has a zero-charge line and
   no reason can be read and can be edited by an administrator or supervisor as
   it is, and staff who edit it must enter a reason at that edit. **For API
-  clients:** an edit has to send the stored reason back to keep it.
+  clients:** staff must send the reason on every save. For an administrator or
+  supervisor a request that has the `zero_charge_reason` key states the reason
+  (`null` or a blank value clears a stored one, which is recorded), and a
+  request without the key keeps the stored reason, so an edit from an older
+  app build does not erase what staff entered.
   `docs/INVOICE_RULES.md`; `tests/zero_charge_reason.sql`.
 - **A customer account can no longer read the internal reasons from the
   `invoice` table.** `get_invoice_detail` kept `discount_reason`,

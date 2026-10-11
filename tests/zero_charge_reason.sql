@@ -306,16 +306,57 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_
  'a changed set of zero-charge lines is recorded: '||pg_temp.zc_history(:'invoice_a'::uuid)::text);
 SELECT pg_temp.zc_assert((SELECT h.new_lines=ARRAY[(:'a_items'::jsonb#>>'{0,disp_trl_id}')::uuid] FROM public.invoice_zero_charge_history h
   WHERE h.invoice_id=:'invoice_a'::uuid ORDER BY h.id DESC LIMIT 1),'the history names the line that still has a zero charge');
--- The administrator saves without sending the reason: allowed, and the reason
--- is cleared (the app sends the stored reason back to keep it).
+-- The administrator saves a request that has no zero_charge_reason key at all
+-- (an older app build, or a client that does not know the field): the stored
+-- reason is kept, and as the zero-charge lines are the same nothing is
+-- recorded. Staff are different: they must send the reason on every save (the
+-- refused edit above), also when one is stored.
+UPDATE public.invoice SET zero_charge_set_at='2026-01-01T00:00:00Z' WHERE id=:'invoice_a'::uuid;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb,
- pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','administrator edit without the reason');
+SELECT pg_temp.zc_assert(NOT (:'a_header'::jsonb ? 'zero_charge_reason')
+ AND pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"edit without the key"}'::jsonb,
+ pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','administrator edit without the reason key');
+RESET ROLE;
+SELECT pg_temp.zc_assert((SELECT notes='edit without the key' FROM public.invoice WHERE id=:'invoice_a'::uuid)
+ AND pg_temp.zc_record(:'invoice_a'::uuid)=jsonb_build_object('reason','Trial consignment, agreed by phone','by',:'supervisor_profile','at','2026-01-01T00:00:00+00:00'::timestamptz)
+ AND jsonb_array_length(pg_temp.zc_history(:'invoice_a'::uuid))=3,
+ 'a request without the reason key keeps the stored reason, its author and time: '||pg_temp.zc_record(:'invoice_a'::uuid)::text);
+-- The key sent as null (what the app sends for an empty field) clears the
+-- reason, and that is recorded.
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":null}'::jsonb,
+ pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','administrator edit with the reason sent as null');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_object('reason',NULL,'by',:'admin_profile')
- AND pg_temp.zc_history(:'invoice_a'::uuid)->3=jsonb_build_array('Trial consignment, agreed by phone',NULL,1,1,:'admin_profile','admin'),
- 'an administrator who sends no reason clears it, and that is recorded: '||pg_temp.zc_history(:'invoice_a'::uuid)::text);
+ AND (SELECT zero_charge_set_at=now() FROM public.invoice WHERE id=:'invoice_a'::uuid)
+ AND pg_temp.zc_history(:'invoice_a'::uuid)->3=jsonb_build_array('Trial consignment, agreed by phone',NULL,1,1,:'admin_profile','admin')
+ AND jsonb_array_length(pg_temp.zc_history(:'invoice_a'::uuid))=4,
+ 'an administrator who sends the reason as null clears it, and that is recorded: '||pg_temp.zc_history(:'invoice_a'::uuid)::text);
+-- The same on ZCF, whose zero charge the supervisor entered without a reason.
+-- The supervisor adds one; the administrator's edit without the key keeps it
+-- although the request is otherwise complete; a reason sent blank clears it.
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":20261106,"zero_charge_reason":"Promotional lot"}'::jsonb,
+ pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','the supervisor adds a reason to ZCF');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":20261106,"notes":"no key","discount":0}'::jsonb,
+ pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0,"labour_rate":3}'::jsonb))->>'success'='true','administrator edit of ZCF without the reason key');
+RESET ROLE;
+SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_object('reason','Promotional lot','by',:'supervisor_profile')
+ AND (SELECT notes='no key' FROM public.invoice WHERE id=:'invoice_f'::uuid)
+ AND pg_temp.zc_history(:'invoice_f'::uuid)=jsonb_build_array(jsonb_build_array(NULL,NULL,0,1,:'supervisor_profile','supervisor'),
+   jsonb_build_array(NULL,'Promotional lot',1,1,:'supervisor_profile','supervisor')),
+ 'ZCF keeps the supervisor''s reason through an edit without the key: '||pg_temp.zc_history(:'invoice_f'::uuid)::text);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || jsonb_build_object('inv_no',20261106,'zero_charge_reason',U&' \00A0\200B '),
+ pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','administrator edit of ZCF with a blank reason');
+RESET ROLE;
+SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_object('reason',NULL,'by',:'admin_profile')
+ AND pg_temp.zc_history(:'invoice_f'::uuid)->2=jsonb_build_array('Promotional lot',NULL,1,1,:'admin_profile','admin')
+ AND jsonb_array_length(pg_temp.zc_history(:'invoice_f'::uuid))=3,
+ 'a reason sent blank clears it, and that is recorded: '||pg_temp.zc_history(:'invoice_f'::uuid)::text);
 -- Staff gives every line its price and still sends a reason: no zero-charge
 -- line is left, so the reason is stored as NULL; the removal is a change.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
@@ -438,7 +479,7 @@ SELECT pg_temp.zc_assert(:'detail_customer'::jsonb->>'success'='true' AND (:'det
 SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice_zero_charge_history),'a customer account cannot read the history');
 RESET ROLE;
 SELECT count(*) AS history_rows FROM public.invoice_zero_charge_history \gset
-SELECT pg_temp.zc_assert(:history_rows=12,'twelve changes were recorded in all, found '||:history_rows);
+SELECT pg_temp.zc_assert(:history_rows=14,'fourteen changes were recorded in all, found '||:history_rows);
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice_zero_charge_history),'staff cannot read the history');

@@ -183,11 +183,18 @@ END $patch$;
 -- read where the header fields are: in p_invoice_data itself (both
 -- three-argument paths, and the one-argument path as the app's fields are
 -- sent) or in its "header" object (one-argument path).
+--
+-- reason_sent tells a request that has the key zero_charge_reason, whatever
+-- its value (null and "" included), from one that does not have it: an older
+-- app build, or a client that does not know the field. The first states the
+-- reason; the second says nothing about it (recalculate_invoice_header).
 CREATE FUNCTION warehouse_security.note_zero_charge_request(p_invoice_id uuid, p_invoice_data jsonb) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 BEGIN
   PERFORM set_config('warehouse.zero_charge_request', jsonb_build_object(
     'invoice_id', p_invoice_id,
+    'reason_sent', COALESCE((SELECT bool_or(jsonb_typeof(place) = 'object' AND place ? 'zero_charge_reason')
+                             FROM (VALUES (p_invoice_data), (p_invoice_data->'header'), (p_invoice_data#>'{data,header}')) AS places(place)), false),
     'reason', COALESCE(p_invoice_data->>'zero_charge_reason', p_invoice_data#>>'{header,zero_charge_reason}',
                        p_invoice_data#>>'{data,header,zero_charge_reason}'),
     'lines_before', COALESCE((SELECT jsonb_agg(it.disp_trl_id) FROM public.invoice_trl it
@@ -266,7 +273,15 @@ BEGIN
     zero_before := ARRAY(SELECT line::uuid FROM jsonb_array_elements_text(request->'lines_before') AS line ORDER BY line::uuid);
   END IF;
   IF cardinality(zero_now) > 0 THEN
-    reason_now := left(warehouse_security.trimmed_reason(request->>'reason'), 500);
+    -- A request that has the reason key states the reason: null or blank
+    -- clears it. A request without the key says nothing about it, so an
+    -- administrator's or supervisor's edit from a client that does not know
+    -- the field keeps what is stored. Staff must state it on every save.
+    IF COALESCE((request->>'reason_sent')::boolean, false) THEN
+      reason_now := left(warehouse_security.trimmed_reason(request->>'reason'), 500);
+    ELSIF caller_role IS DISTINCT FROM 'staff' THEN
+      reason_now := reason_before;
+    END IF;
     IF reason_now IS NULL AND caller_role = 'staff' THEN
       RAISE EXCEPTION 'Enter a reason for the zero charge' USING ERRCODE = '22023';
     END IF;

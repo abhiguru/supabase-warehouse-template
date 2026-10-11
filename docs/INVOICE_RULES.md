@@ -96,10 +96,21 @@ The invoice records `zero_charge_reason`, `zero_charge_set_by` and
 the reason or the set of zero-charge lines changes: a first zero charge, a
 reworded reason, a line gaining or losing its zero charge, and the removal of
 the last zero charge (which leaves the reason NULL and the person who removed
-it as the author). An edit that changes neither keeps them. Because the reason
-is taken from each request, **an edit must send the stored reason back to keep
-it**: an administrator or supervisor who sends none clears it (recorded as a
-change), and staff who send none are refused. Every change is appended to
+it as the author). An edit that changes neither keeps them. What an edit does
+to a stored reason depends on whether the request has the `zero_charge_reason`
+key at all:
+
+| The request | Staff | Administrator, supervisor |
+|---|---|---|
+| has the key with a reason | stored | stored |
+| has the key as `null`, `""` or blank | refused | **the stored reason is cleared** (recorded as a change) |
+| does not have the key | refused, also when a reason is stored | **the stored reason is kept** |
+
+A request without the key comes from an older app build or a client that does
+not know the field; it says nothing about the reason, so it must not erase
+what staff entered. The app sends the key on every save, as `null` when the
+field is empty. With no zero-charge line left the reason is NULL in every
+case. Every change is appended to
 `invoice_zero_charge_history` (invoice, number, customer, old and new reason,
 the dispatch lines with a zero charge before and after, the author's profile,
 name and role, time), which administrators and supervisors can read, nobody
