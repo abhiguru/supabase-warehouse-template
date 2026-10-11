@@ -14,6 +14,27 @@ after the upgrade (`bash scripts/compose.sh restart kong`); it reads
   the one that acts. The OTP limits in the database are unchanged.
   `docs/CONTAINER_SECURITY.md`, "REST request limit";
   `tests/gateway-config.test.mjs`.
+## Unreleased — Dependabot no longer proposes majors that cannot be taken as they are (2026-10-11)
+
+Repository maintenance; nothing changes for an installation.
+
+- Six of Dependabot's pull requests were major updates that would not have
+  been safe to merge although most of them passed CI:
+  - `darthsim/imgproxy` v4 changed the runtime image only, while the recipe
+    still compiles the v3.31.4 source: a v3 binary on v4 libraries.
+  - `@supabase/postgrest-typegen` 0.4 makes its formatter an optional peer
+    dependency that postgres-meta v0.99.0 does not install, and no check calls
+    the type generator.
+  - TypeScript 7, `fastify-metrics` 14 and `@sentry/node` 11 are majors in the
+    dependency set of an upstream application built from a pinned source tag;
+    `npm audit` reports nothing for that set, so there is no security reason
+    to carry more patches to its source. The Sentry one failed CI.
+  - Ubuntu 26.04 for the print service changes CUPS and its drivers, which CI
+    cannot check without a printer; 22.04 is supported and the recipe applies
+    its updates at build time.
+- `.github/dependabot.yml` now ignores version updates of those kinds, each
+  with its reason. Every ignore entry names its update types, so security
+  updates are still proposed; `tests/workflows.test.mjs` checks that.
 
 ## Unreleased — Grafana 13.2.3 (2026-10-11)
 

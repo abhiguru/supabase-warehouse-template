@@ -20,11 +20,43 @@ updates:
       - "/docker/storage"
     schedule:
       interval: weekly
+    ignore:
+      # These two manifests are the dependency sets of upstream applications
+      # that the recipes build from a pinned source tag. A new major of one of
+      # their dependencies needs changes to that source, which this repository
+      # would have to carry as a patch (fastify5.patch and vitest4.patch are two
+      # such patches, both taken for a security fix). Majors are therefore taken
+      # with a security reason or when the upstream tag moves, by hand. Security
+      # updates are still proposed.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+      # A 0.x package: its minors break too. 0.3.0 made the formatter an
+      # optional peer dependency, which postgres-meta v0.99.0 does not install,
+      # and no CI check calls the type generator.
+      - dependency-name: "@supabase/postgrest-typegen"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   - package-ecosystem: docker
     directories:
       - "/docker/*"
     schedule:
       interval: weekly
+    ignore:
+      # The recipe compiles imgproxy from a source tag and puts that binary into
+      # this runtime image (docker/imgproxy/Dockerfile). A new major of the image
+      # alone would pair a v3 binary with v4 libraries, and still start. Move the
+      # source tag, its checksum, the build base, go.mod and this image together.
+      - dependency-name: darthsim/imgproxy
+        update-types:
+          - "version-update:semver-major"
+      # The print service's base (docker/cups/Dockerfile). A new Ubuntu release
+      # changes CUPS and its printer drivers, and CI can only check that CUPS
+      # starts, not that a printer prints. Move it with a printer at hand.
+      - dependency-name: ubuntu
+        update-types:
+          - "version-update:semver-major"
   - package-ecosystem: docker-compose
     directory: "/docker"
     schedule:
