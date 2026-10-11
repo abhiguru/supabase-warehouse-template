@@ -67,3 +67,23 @@ test('no workflow names a self-hosted runner; operator-install takes its runner 
   const job = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
   assert.match(job, /\n    runs-on: \$\{\{ fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/);
 });
+
+test('every Dependabot ignore entry names the update types it ignores', () => {
+  // An entry with a name alone would also stop Dependabot's security pull
+  // requests for that dependency; one with update-types stops version updates only.
+  const lines = readFileSync(new URL('../.github/dependabot.yml', import.meta.url), 'utf8').split('\n');
+  let entries = 0;
+  lines.forEach((line, index) => {
+    const match = /^(\s*)- dependency-name:/.exec(line);
+    if (!match) return;
+    const indent = match[1].length;
+    const body = [];
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() && next.match(/^\s*/)[0].length <= indent) break;
+      body.push(next);
+    }
+    assert.match(body.join('\n'), /^\s+update-types:\n(?:\s+- "version-update:semver-(?:major|minor|patch)"\n?)+/, `dependabot.yml:${index + 1} ${line.trim()}`);
+    entries += 1;
+  });
+  assert.equal(entries, 5, 'every ignore entry was read');
+});
