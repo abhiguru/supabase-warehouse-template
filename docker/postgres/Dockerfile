@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS gosu
+FROM golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66 AS gosu
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/tianon/gosu/tar.gz/refs/tags/1.19 -o /tmp/source.tar.gz \
     && echo 'cd9719b775dbfedae53923c9b0dc792b66d42c51e0b36652ed6f747fbadc0164  /tmp/source.tar.gz' | sha256sum -c - \
@@ -9,7 +9,7 @@ RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     --mount=type=cache,id=warehouse-security-go-build,target=/root/.cache/go-build \
     go mod download && go mod verify \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -trimpath -ldflags='-X main.Version=1.19-warehouse.1' -o /out/gosu .
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS walg
+FROM golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66 AS walg
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/wal-g/wal-g/tar.gz/refs/tags/v3.0.9 -o /tmp/source.tar.gz \
     && echo 'b06bc26c4865c07d0c269101910f63c7eedd03790b7c054a7da0980a7a9cc31d  /tmp/source.tar.gz' | sha256sum -c - \
