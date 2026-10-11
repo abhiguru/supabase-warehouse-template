@@ -42,7 +42,7 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   // Every route that needs only the public key or no key at all is limited per
   // client address, except storage (see docs/CONTAINER_SECURITY.md).
   // The REST and socket routes have a per-minute limit only (null): see the next two tests.
-  const limits = { 'rest-v1': [1800, null], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
+  const limits = { 'rest-v1': [1800, null], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 6000] };
   for (const [service, [minute, hour]] of Object.entries(limits)) {
     const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
     assert.ok(rateLimit, `${service} has no rate limit`);

@@ -768,30 +768,26 @@ hourly window**, like the socket route. It was 300 a minute and 6000 an hour.
   |---|---|---|---|
   | `/rest/v1/` | 1800 a minute | every RPC and table read | this section |
   | `/realtime/v1/` (socket) | 1800 attempts a minute | live order screens | previous section |
-  | `/functions/v1/` | 100 a minute, 2000 an hour | OTP sign-in, the four PDF functions, the two configuration reads, printer status | **Same hourly lock-out as REST had.** For 100 phones that is 1 request a minute and 20 an hour each. **Left with its hourly cap**: no decision was taken on it, and it is the gateway's per-address brake on OTP requests (see below the table). |
+  | `/functions/v1/` | 100 a minute, 6000 an hour | OTP sign-in, the four PDF functions, the two configuration reads, printer status | Owner decision of 2026-10-11: the hourly cap was 2000 and is now what the minute limit adds up to in an hour. See the next point. |
   | `/graphql/v1` | 300 a minute, 6000 an hour | not used | no change needed |
   | `/realtime/v1/api` | 300 a minute, 6000 an hour | not used | no change needed |
   | `/storage/v1/` | none | photos | see the storage note above |
 
-- **The functions route still has an hourly cap. It was left as it is, and
-  that is open for a decision.** `/functions/v1/` allows 100 requests a minute
-  and 2000 an hour per client address. For a facility behind one address this
-  is the lock-out the REST route had: 100 phones get 1 request a minute and 20
-  an hour each, and once 2000 requests are used inside an hour, every phone at
-  the facility is refused OTP sign-in, the PDF documents, the configuration
-  reads and printer status until the hour ends. It was not changed with the
-  REST route for two reasons. The owner's decision named the REST limit only.
-  And this limit is the gateway's brake per address on OTP requests: every
-  request for a code and every attempt to verify one comes through this
-  route, and the gateway stops an address at 100 a minute and 2000 an hour
-  before the function runs. The database has its own OTP limits per source
-  address (30 codes sent an hour, 20 failed verifications an hour;
-  `docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits"), so removing
-  the hourly window would not by itself allow more SMS; it would allow one
-  address to make the OTP function run 6000 times an hour where it can now
-  make it run 2000 times. Choices for the owner: leave it; drop the hourly
-  window and keep 100 a minute; or raise both numbers. Until then a large
-  facility that prints many documents in one hour can reach the cap.
+- **The functions route: 100 a minute, 6000 an hour (owner decision of
+  2026-10-11).** Until then `/functions/v1/` allowed 2000 requests an hour per
+  client address. For a facility behind one address that was the lock-out the
+  REST route had: once 2000 requests were used inside an hour, every phone
+  there was refused OTP sign-in, the PDF documents, the configuration reads
+  and printer status until the hour ended. The owner chose to keep 100 a
+  minute and raise the hourly cap to 6000. 6000 is exactly 100 a minute for
+  sixty minutes, so the hourly window can no longer refuse an address that
+  stays within the minute limit; the minute limit is the one that acts. The
+  window stays in the file as a stated ceiling. This route is also the
+  gateway's brake per address on OTP requests: an address can now make the OTP
+  function run up to 6000 times an hour where it could make it run 2000
+  times. That does not allow more SMS: the database has its own OTP limits per
+  source address (30 codes sent an hour, 20 failed verifications an hour;
+  `docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits").
 - A running gateway keeps the limits it started with: `docker/kong.yml` is
   read when the gateway container starts. As with the other gateway changes,
   Kong has not loaded this file on a running stack; the check is

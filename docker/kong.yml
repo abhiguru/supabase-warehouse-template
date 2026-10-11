@@ -310,8 +310,12 @@ services:
           allowed_payload_size: 10
       - name: rate-limiting
         config:
+          # Owner decision of 2026-10-11: 100 a minute stays, the hourly cap goes
+          # from 2000 to 6000. 6000 is what 100 a minute adds up to in an hour,
+          # so the hourly window no longer refuses a facility that stays within
+          # the minute limit. See docs/CONTAINER_SECURITY.md, REST request limit.
           minute: 100
-          hour: 2000
+          hour: 6000
           policy: local
           fault_tolerant: true
           limit_by: ip
