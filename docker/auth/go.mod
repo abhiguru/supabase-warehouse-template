@@ -28,7 +28,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
 )
@@ -79,7 +79,7 @@ require (
 	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	golang.org/x/mod v0.40.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 )
@@ -176,10 +176,10 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20230811145659-89c5cff77bcb
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.41.0
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/text v0.42.0
 	golang.org/x/time v0.9.0
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
