@@ -17,9 +17,11 @@ the job compares names only, so before every release of either repository:
 - [ ] Record the backend and app commit pair in the pull request.
 
 On 2026-10-11 `MOBILE_REF` moved to `7b7c43a`, the app `main` that carries the
-fixes from the 2026-10-10 review (it was `97ddf3c`). The static check passes at
-that commit; the live comparison (`--live` against a running stack) has not been
-run for it yet.
+fixes from the 2026-10-10 review (it was `97ddf3c`), and later the same day to
+`34ea9a4`, the app `main` with the owner decisions of 2026-10-11 (it needs
+migration 48). For the pair backend `498d53d` and app `34ea9a4` the static check
+passes and the live comparison, run against the development stack on migration
+48, reports 93 RPC names, none missing, and no mismatches.
 
 ## Post-release local-readiness follow-up — 2026-09-22
 
