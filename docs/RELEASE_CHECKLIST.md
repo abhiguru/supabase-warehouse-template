@@ -16,7 +16,7 @@ the job compares names only, so before every release of either repository:
       (overloads, argument names and the grant to signed-in users).
 - [ ] Record the backend and app commit pair in the pull request.
 
-On 2026-10-11 `MOBILE_REF` moved to `474f30c`, the app `main` that carries the
+On 2026-10-11 `MOBILE_REF` moved to `7b7c43a`, the app `main` that carries the
 fixes from the 2026-10-10 review (it was `97ddf3c`). The static check passes at
 that commit; the live comparison (`--live` against a running stack) has not been
 run for it yet.
