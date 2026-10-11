@@ -51,6 +51,9 @@ if [[ -z "$LOCKED" ]]; then
 fi
 node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
+# `up` builds only a missing image. Rebuild those whose recipes changed, so that
+# an upgraded checkout does not keep the images of the first installation.
+bash "$ROOT/scripts/build-images.sh"
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"

@@ -1185,7 +1185,6 @@ npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 bash scripts/backup-disk.sh sync       # only if you use a backup disk
 (umask 022; git pull --ff-only)
-bash scripts/compose.sh build          # rebuild the images whose recipes changed
 bash setup.sh --operator ...           # the same inputs as the installation
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
@@ -1194,21 +1193,35 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
 
-**Do not leave out the build line.** `setup.sh` and `start.sh` start the
-images that already exist on the host and build only an image that is
-missing. Without `compose.sh build`, a change to a recipe under `docker/`
-(a patched Go toolchain, a fixed library, updated operating-system packages)
-stays in the checkout and the services keep running the old image; setup
-still ends with "healthy". The build takes well under a minute when no recipe
-changed, because Docker reuses its build cache, and needs the network when
-one did. Setup then replaces only the containers whose image changed. If you
-run optional services, name their profiles so that their images are rebuilt
-too, for example `bash scripts/compose.sh --profile monitoring build`
-(`printing` and `pooler` likewise). The cache also keeps the operating-system
-packages of the day an image was first built: now and then, and before
-reading scan numbers, build with `--no-cache`
+**Setup rebuilds the images whose recipes changed.** Before it starts
+anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
+image recipe (the files under its `docker/` build directory, its Dockerfile
+and build arguments) with a record of what it built last
+(`config/image-recipes.sha256` in the state directory) and rebuilds the images
+that differ; setup's start then replaces only the containers whose image
+changed. What to expect:
+
+- The first setup rerun after this behaviour arrived finds no record and
+  rebuilds every image in use once. That needs the network and can take a
+  good while on a small machine; later reruns print "Images match their
+  recipes; nothing to rebuild." and need no network.
+- A build needs the network when a recipe changed. If it fails, setup stops
+  before anything is started or stopped, and the services keep running on
+  the images they had. Run setup again when the network is back.
+- Images of optional services (`monitoring`, `printing`, `pooler`) are
+  rebuilt only if they already exist on the host, that is, if you use them.
+- `start.sh` never builds: a host that restarts offline starts what it has.
+- A setup from a release before this one did not rebuild anything: it kept
+  every image of the first installation, and recipe changes never reached
+  the running services. If you stay on such a release, run
+  `bash scripts/compose.sh build` before the setup rerun.
+
+The build cache also keeps the operating-system packages of the day an image
+was first built. Now and then, and before reading scan numbers, rebuild
+without it: `bash scripts/build-images.sh --no-cache`, then `bash start.sh`
 ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md), "Open items with their
-steps").
+steps"). `bash scripts/build-images.sh --all` rebuilds everything in use with
+the cache.
 
 **Upgrading to the release with signed backups (format v5).** Do these once,
 in this order, after the commands above:
