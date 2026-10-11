@@ -85,6 +85,12 @@ three save paths, after the lines are saved:
 - A line saved without a charge is billed as 0 and counts as a zero charge.
   (The three-argument save refuses a missing charge before that; the other two
   paths accept it.)
+- What counts is the stored charge, which has two decimals. A charge that
+  rounds to 0.00 (0.004, -0.004), a zero sent as text (`"0.00"`), a `null`
+  charge and a zero sent as `unit_price` (the alias the one-argument save and
+  the edit accept when `charge` is missing) are zero charges like `0`. A charge
+  of 0.005 is stored as 0.01 and needs no reason. `tests/zero_charge_reason.sql`
+  tries each spelling on each path.
 - A charge below 0 or above 999999 is still refused, with the range message
   above. A zero **duration** is a different matter and unchanged: the
   three-argument save refuses a line sent with a duration below 0.01

@@ -409,6 +409,86 @@ SELECT pg_temp.zc_assert((SELECT discount=-10 AND discount_reason='Handling' AND
  AND (SELECT count(*)=1 FROM public.invoice_discount_history WHERE invoice_id=:'invoice_b'::uuid)
  AND jsonb_array_length(pg_temp.zc_history(:'invoice_b'::uuid))=1,'both records are kept, each in its own history');
 
+-- Every spelling of a zero charge, on every path, as staff. What counts is the
+-- stored NUMERIC(12,2) value, so a charge that rounds to 0.00, a zero sent as
+-- text, a null or missing charge and the `unit_price` alias are zero charges
+-- like 0 itself: without a reason staff are refused, with one the save goes
+-- through. The three-argument save validates the line first and refuses a
+-- missing, null or negative charge and the alias as invalid, with or without a
+-- reason, so none of them reaches the table by that path. A charge of 0.005
+-- is stored as 0.01 and needs no reason.
+-- Each call runs in a subtransaction that is rolled back, so nothing is kept:
+-- new invoices are tried on the receipt ZCG, edits on the ZCD invoice.
+CREATE FUNCTION pg_temp.zc_try(statement text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE answer jsonb;
+BEGIN
+  BEGIN
+    EXECUTE statement INTO answer;
+    RAISE EXCEPTION USING ERRCODE='ZC000', MESSAGE=answer::text;
+  EXCEPTION WHEN SQLSTATE 'ZC000' THEN answer := SQLERRM::jsonb;
+  END;
+  RETURN CASE WHEN answer->>'success'='true' THEN 'saved'
+    WHEN answer->>'error' IN ('Enter a reason for the zero charge','Database error: Enter a reason for the zero charge (SQLState: 22023)') THEN 'reason'
+    WHEN answer->>'error'='Invalid invoice items' THEN 'invalid'
+    ELSE answer::text END;
+END $$;
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(warehouse_security.active_role()='staff','actual staff role');
+SELECT pg_temp.zc_assert(outcome.without_reason=expected.without_reason AND outcome.with_reason=replace(expected.without_reason,'reason','saved'),
+  path.name||', charge '||spelling.label||': without a reason '||outcome.without_reason||' (expected '||expected.without_reason
+  ||'), with a reason '||outcome.with_reason||' (expected '||replace(expected.without_reason,'reason','saved')||')')
+FROM (VALUES
+  ('0',                          '{"charge":0}'::jsonb,                  'reason','reason', 'reason'),
+  ('"0"',                        '{"charge":"0"}',                       'reason','reason', 'reason'),
+  ('"0.00"',                     '{"charge":"0.00"}',                    'reason','reason', 'reason'),
+  ('-0',                         '{"charge":-0}',                        'reason','reason', 'reason'),
+  ('0.004',                      '{"charge":0.004}',                     'reason','reason', 'reason'),
+  ('0.0049',                     '{"charge":0.0049}',                    'reason','reason', 'reason'),
+  ('-0.004',                     '{"charge":-0.004}',                    'reason','invalid','reason'),
+  ('null',                       '{"charge":null}',                      'reason','invalid','reason'),
+  ('absent',                     '{}',                                   'reason','invalid','reason'),
+  ('""',                         '{"charge":""}',                        'reason','invalid','reason'),
+  ('absent, unit_price 0',       '{"unit_price":0}',                     'reason','invalid','reason'),
+  ('absent, unit_price "0.00"',  '{"unit_price":"0.00"}',                'reason','invalid','reason'),
+  ('null, unit_price 0',         '{"charge":null,"unit_price":0}',       'reason','invalid','reason'),
+  ('"", unit_price 0.004',       '{"charge":"","unit_price":0.004}',     'reason','invalid','reason'),
+  ('0.005',                      '{"charge":0.005}',                     'saved', 'saved',  'saved'),
+  ('0.01',                       '{"charge":0.01}',                      'saved', 'saved',  'saved'),
+  ('absent, unit_price 0.01',    '{"unit_price":0.01}',                  'saved', 'invalid','saved'),
+  ('absent, unit_price 5',       '{"unit_price":5}',                     'saved', 'invalid','saved')
+ ) AS spelling(label,rates,save1,save3,update)
+CROSS JOIN LATERAL (VALUES
+  ('one-argument save',  spelling.save1, 'SELECT pg_temp.zc_save1(%1$L::jsonb,%2$L::jsonb)'),
+  ('three-argument save',spelling.save3, 'SELECT pg_temp.zc_save3(%1$L::jsonb,%2$L::jsonb)'),
+  ('edit',               spelling.update,'SELECT pg_temp.zc_update(%5$L::uuid,%3$L::jsonb,%4$L::jsonb)')
+ ) AS path(name,expected,call)
+CROSS JOIN LATERAL (SELECT path.expected AS without_reason) AS expected
+CROSS JOIN LATERAL (SELECT
+  pg_temp.zc_try(format(path.call,
+    (:'g_header'::jsonb || '{"inv_no":20261108}'::jsonb)::text,
+    (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'g_items'::jsonb) item)::text,
+    (:'d_header'::jsonb || '{"inv_no":20261104}'::jsonb)::text,
+    (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'d_items'::jsonb) item)::text, :'invoice_d')) AS without_reason,
+  pg_temp.zc_try(format(path.call,
+    (:'g_header'::jsonb || '{"inv_no":20261108,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
+    (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'g_items'::jsonb) item)::text,
+    (:'d_header'::jsonb || '{"inv_no":20261104,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
+    (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'d_items'::jsonb) item)::text, :'invoice_d')) AS with_reason
+ ) AS outcome;
+-- A reason sent as null or blank is no reason for staff, whatever the spelling.
+SELECT pg_temp.zc_assert(pg_temp.zc_try(format('SELECT pg_temp.zc_update(%L::uuid,%L::jsonb,%L::jsonb)',:'invoice_d',
+   (:'d_header'::jsonb || '{"inv_no":20261104}'::jsonb || reason.sent)::text,
+   pg_temp.zc_rates(:'d_items'::jsonb,'{"charge":"0.00"}'::jsonb)::text))='reason','staff edit with the reason sent as '||reason.sent::text||' is refused')
+FROM (VALUES ('{"zero_charge_reason":null}'::jsonb),('{"zero_charge_reason":""}'),('{"zero_charge_reason":"  "}')) AS reason(sent);
+RESET ROLE;
+-- None of the trials was kept.
+SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=20261108)
+ AND (SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_g'::uuid)
+ AND (SELECT length(zero_charge_reason)=500 FROM public.invoice WHERE id=:'invoice_d'::uuid)
+ AND (SELECT count(*)=1 FROM public.invoice_zero_charge_history WHERE invoice_id=:'invoice_d'::uuid),
+ 'the trials left no invoice for ZCG and the ZCD invoice as it was');
+
 -- ---------------------------------------------------------------------------
 -- 4. An invoice from before the rule: a zero-charge line and no reason
 -- ---------------------------------------------------------------------------
