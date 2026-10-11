@@ -11,9 +11,16 @@
 --    recorded in an append-only history that administrators and supervisors
 --    can read.
 --
--- No existing row is validated or changed: an invoice that already has a
--- zero-charge line and no reason stays as it is and meets the rule when staff
--- next edit it.
+-- With them, from the review of this migration:
+--  * the discount record and the zero-charge record of an invoice are not read
+--    from the table by an app role any more (column-level SELECT on invoice);
+--  * the three histories (discount, zero charge, item price) store their
+--    author's name as it was at the change.
+--
+-- No existing business row is validated or changed: an invoice that already
+-- has a zero-charge line and no reason stays as it is and meets the rule when
+-- staff next edit it. The one write to existing data is the author's name
+-- that the rows of invoice_discount_history receive.
 --
 -- (Decision 6, the request limit of the REST route, is docker/kong.yml.)
 

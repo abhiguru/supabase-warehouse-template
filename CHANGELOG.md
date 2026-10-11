@@ -136,13 +136,18 @@ and a reason already stored on it is kept.
   backup that recorded more history rows than its dump holds is refused),
   `tests/history-backup-coverage.test.mjs`.
 
-New and changed answers: `get_next_invoice_number` takes `p_fin_year` and can
-raise `No invoice number is left in financial year <year>` (`WH409`);
-`save_invoice` (both signatures) and `update_invoice` read `zero_charge_reason`
-and can refuse with `Enter a reason for the zero charge` (22023);
-`get_invoice_detail` adds `zero_charge_reason`, `zero_charge_set_by`,
-`zero_charge_set_by_name` and `zero_charge_set_at` for the warehouse roles;
-`get_item_price_history` is new.
+New and changed answers: `get_next_invoice_number` takes `p_fin_year`, counts
+soft-deleted invoices of the year and can raise `No invoice number is left in
+financial year <year>` (`WH409`); `save_invoice` (both signatures) and
+`update_invoice` read `zero_charge_reason` and can refuse with `Enter a reason
+for the zero charge` (22023), and for an administrator or supervisor an edit
+without that key keeps the stored reason; `get_invoice_detail` adds
+`zero_charge_reason`, `zero_charge_set_by`, `zero_charge_set_by_name` and
+`zero_charge_set_at` for the warehouse roles, and its `discount_set_by_name`
+and `zero_charge_set_by_name` are the names stored at the change;
+`get_item_price_history` is new (its `action` can be `truncate`, with
+`price_id` null); `GET /rest/v1/invoice` must name its columns and cannot
+name the six internal ones.
 
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 
