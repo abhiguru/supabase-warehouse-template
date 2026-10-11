@@ -974,16 +974,20 @@ building an image or starting the stack.
   `golang.org/x/net` finding, Gotenberg that and the three standard-library
   findings of its publisher binary. Build with `--no-cache` (or `--pull` and
   a pruned cache) before reading scan numbers or deploying.
-- **Studio application advisories.** The recipe now applies Debian updates,
-  which addresses the operating-system findings at build time. The Next.js
-  and simple-git advisories are in the publisher's application and need a
-  Studio tag that ships fixed versions (the review named next 16.3.6 and
-  simple-git 4.0.1 as the first fixed releases); change the tag and digest in
-  `docker/studio/Dockerfile`, then `npm run test:studio`. Until then the
-  exposure is bounded by the network change: only postgres-meta and the
-  database can reach Studio. The scan numbers in the table near the top of
-  this page are from 2026-09-22 and an older tag; they have not been
-  re-measured.
+- **Studio application advisories.** The recipe applies Debian updates, which
+  addresses the operating-system findings at build time. On 2026-10-12 the
+  tag moved from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`. Scanned
+  with Trivy (HIGH and CRITICAL, a `--no-cache` build), findings that have a
+  fixed release went from eight to six: the Critical Next.js advisory
+  (GHSA-vcvr-r3jv-pc5j, next 16.3.5) and the High sharp advisory are gone.
+  Left in the publisher's application: simple-git 3.36.0 (one Critical, two
+  High; fixed in 4.0.1), `@simple-git/argv-parser` 1.1.1 (Critical; 2.0.1),
+  next 16.3.6 (High; 16.3.8) and `@modelcontextprotocol/sdk` 1.29.0 (High;
+  1.31.0). They need a later Studio tag; change the tag and digest in
+  `docker/studio/Dockerfile` and the notices, then `npm run test:studio`.
+  Until then the exposure is bounded by the network change: only
+  postgres-meta and the database can reach Studio. The scan numbers in the
+  table near the top of this page are from 2026-09-22 and an older tag.
 - **Edge runtime and Storage operating-system packages.**
   `docker/edge-runtime/Dockerfile` upgrades one package; replacing that with a
   full `apt-get upgrade` (keeping the PCRE2 version check) and adding

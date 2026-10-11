@@ -62,7 +62,7 @@ redistributing them. Versions are the ones pinned in
 | Supabase Realtime | v2.143.1 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
-| Supabase Studio | 2026.09.21-sha-512201d (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
+| Supabase Studio | 2026.10.05-sha-94b8b06 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
 | Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`) | MIT | https://github.com/gotenberg/gotenberg |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
 | Grafana | 13.2.3 (`grafana/grafana:13.2.3`) | AGPL-3.0 | https://github.com/grafana/grafana |

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Studio 2026.10.05 (2026-10-12)
+
+`docker/studio/Dockerfile`. **Operator action:** none beyond the usual
+upgrade; the setup rerun rebuilds the Studio image.
+
+- Studio moves from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`. The
+  new tag ships next 16.3.6 and a fixed sharp, which closes one Critical and
+  one High finding; six findings with a fixed release remain in the
+  publisher's application (simple-git, its argument parser, next and the MCP
+  SDK), listed in `docs/CONTAINER_SECURITY.md` under "Open items".
+- The new image adds two more links to pnpm (`pn`, `pnx`); the recipe removes
+  them with the other package-manager tools.
+
 ## Unreleased — Realtime v2.143.1; PostgreSQL 15.19 image held (2026-10-12)
 
 `docker/realtime/Dockerfile`. **Operator action:** none beyond the usual
