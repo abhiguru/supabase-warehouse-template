@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS build
+FROM golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/pdfcpu/pdfcpu/tar.gz/refs/tags/v0.15.0 -o /tmp/source.tar.gz \
     && echo '69924a7363ea19b4f3d4799ebf78bcabfec75a735c9569983a6e2834b5e8c6b3  /tmp/source.tar.gz' | sha256sum -c - \
