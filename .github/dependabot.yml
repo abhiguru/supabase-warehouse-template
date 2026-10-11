@@ -52,11 +52,29 @@ updates:
         update-types:
           - "version-update:semver-major"
       # The print service's base (docker/cups/Dockerfile). A new Ubuntu release
+      # (22.10 counts as a minor of 22.04, and is not a long-term release)
       # changes CUPS and its printer drivers, and CI can only check that CUPS
       # starts, not that a printer prints. Move it with a printer at hand.
       - dependency-name: ubuntu
         update-types:
           - "version-update:semver-major"
+          - "version-update:semver-minor"
+      # The build base of the same recipe: it goes with the imgproxy source tag.
+      - dependency-name: imgproxy/imgproxy-base
+        update-types:
+          - "version-update:semver-major"
+      # A new PostgreSQL major needs a planned upgrade of every installation's
+      # data directory, not a changed line in a recipe.
+      - dependency-name: supabase/postgres
+        update-types:
+          - "version-update:semver-major"
+      # The recipe builds postgres-meta from the source of the same tag, with
+      # this repository's manifest and two patches (docker/postgres-meta). A new
+      # tag moves the source checksum, the manifest and the patches together.
+      - dependency-name: supabase/postgres-meta
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   - package-ecosystem: docker-compose
     directory: "/docker"
     schedule:

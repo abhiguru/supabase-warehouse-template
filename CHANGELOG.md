@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Dependabot: four more holds (2026-10-12)
+
+Repository maintenance. After the rules of 2026-10-11 Dependabot proposed the
+next versions it was still allowed to: Ubuntu 22.10 for the print service (a
+release that is not long-term), the imgproxy build base v4, PostgreSQL 17 and
+the postgres-meta v0.100.0 image. Each needs a planned upgrade (a matching
+source tag, or a data directory upgrade for PostgreSQL), so
+`.github/dependabot.yml` holds these version updates too, each with its
+reason. Security updates are still proposed.
+
 ## Unreleased — Dependabot no longer proposes majors that cannot be taken as they are (2026-10-11)
 
 Repository maintenance; nothing changes for an installation.
