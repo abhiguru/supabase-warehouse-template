@@ -111,10 +111,23 @@ for path in "$old_db" "$old_storage" "$old_config"; do
 done
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-inplace-restore.XXXXXX")"
 phase='prepare'
+# Why the start failed: every service that is not running and healthy, with its
+# last log lines. `up --wait` itself only names the container.
+show_unhealthy_services() {
+  local rows service state health
+  rows="$(compose ps --all --format '{{.Service}} {{.State}} {{.Health}}' 2>/dev/null)" || return 0
+  while read -r service state health; do
+    [[ -n "$service" ]] || continue
+    if [[ "$state" == running && ( -z "$health" || "$health" == healthy ) ]]; then continue; fi
+    echo "Service $service is ${state}${health:+ ($health)}. Its last log lines:" >&2
+    compose logs --no-color --tail 30 "$service" 1>&2 || true
+  done <<< "$rows"
+}
 finish() {
   status=$?
   trap - EXIT
   rm -rf "$scratch"
+  if ((status != 0)) && [[ "$phase" == 'start services' ]]; then show_unhealthy_services || true; fi
   if ((status != 0)) && [[ "$phase" != done ]]; then
     cat >&2 <<MSG
 Restore failed during: $phase

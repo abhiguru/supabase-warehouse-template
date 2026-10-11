@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — a restore whose services do not start says which and why (2026-10-11)
+
+- `scripts/restore.sh` (also behind `restore-host`): when the final start
+  fails, the script now lists every service that is not running and healthy
+  and prints its last 30 log lines, before the rollback instructions. Until
+  now the only clue was Compose's one line, for example
+  `container ...-meta-1 is unhealthy`. Seen in CI on 2026-10-11, where the
+  lost-host drill failed once on that line with nothing to diagnose it from;
+  the cause of that one failure is not known. `tests/restore.test.mjs`.
+  No migration; nothing to do on an installed system.
+
 ## Unreleased — owner decisions of 2026-10-11
 
 Migration 48 and `docker/kong.yml`. **Operator action:** rerun `setup.sh` as

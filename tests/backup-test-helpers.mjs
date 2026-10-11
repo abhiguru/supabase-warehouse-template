@@ -71,7 +71,8 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKe
 // Fake docker for restore flows. Plain `docker run/exec/cp` serve
 // verify-restore.sh; `docker compose` serves compose.sh callers. The catalog
 // query returns FAKE_CATALOG_FILE, psql reads of the restored databases return
-// the fixed integrity text, and the final full `up` fails when FAKE_FAIL_START=yes.
+// the fixed integrity text, and the final full `up` fails when FAKE_FAIL_START=yes;
+// `compose ps --all` then lists one unhealthy service, whose log has one line.
 // FAKE_FAIL_CREATEDB=yes makes the disposable createdb fail the way a busy template does.
 export function fakeDocker(bin) {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
@@ -98,6 +99,8 @@ case "$1" in
   compose)
     case "$*" in
       *' ps -q') if [ "$FAKE_RUNNING" = yes ]; then printf 'abcdef123456\\n'; fi ;;
+      *' ps --all --format '*) printf 'db running healthy\\nrest running \\nmeta running unhealthy\\nstudio exited \\n' ;;
+      *' logs --no-color --tail 30 '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | sed 's/.* //')" ;;
       *' up -d --wait --wait-timeout 180') if [ "$FAKE_FAIL_START" = yes ]; then exit 7; fi ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
       *'exec -T db psql'*' -d postgres') printf 'fake integrity\\n' ;;
