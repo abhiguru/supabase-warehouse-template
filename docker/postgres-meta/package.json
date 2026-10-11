@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@fastify/cors": "11.3.0",
-    "@fastify/swagger": "9.9.0",
+    "@fastify/swagger": "9.9.1",
     "@fastify/type-provider-typebox": "^5.0.0",
     "@sentry/node": "10.75.2",
     "@sentry/profiling-node": "10.75.2",
