@@ -45,7 +45,10 @@ Nothing of it is implemented yet.
   the newest migration that redefines it), and business data is written only through
   those RPCs: no app role, administrator included, can insert, update or delete a
   business table directly (migration 42). Direct table reads remain, limited by the row
-  policies. What supervisors, staff and customers may do is in
+  policies; on `invoice` the six internal columns (discount and zero-charge reason,
+  author and time) are not readable from the table, so a read names its columns
+  (migration 48; [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Internal columns").
+  What supervisors, staff and customers may do is in
   [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table in its last
   section; `tests/role_allowlist.sql` classifies every granted function);
   invoice amounts in
