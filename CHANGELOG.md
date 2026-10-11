@@ -1,9 +1,36 @@
 # Changelog
 
+## Unreleased — an upgrade rebuilds the images (2026-10-11)
+
+Documentation only. **Operator action on every upgrade:** after `git pull`,
+run `bash scripts/compose.sh build` (with `--profile monitoring`, `printing`
+or `pooler` for the optional services you run), then the setup rerun.
+
+- `setup.sh` and `start.sh` start the images that exist on the host and build
+  only a missing one, so the documented upgrade (`git pull`, setup rerun) left
+  every locally built image as it was at the first installation: recipe
+  changes under `docker/`, the Go 1.27.2 builders and `golang.org/x/net`
+  0.60.0 among them, never reached a running installation, and setup still
+  reported "healthy". Found on the development instance on 2026-10-11: after
+  a setup rerun at `2b9a870` the database image was still the one built on
+  2026-09-22. With the build step the changed images were rebuilt, setup's
+  start replaced those containers, the data was intact and the database image
+  had no fixed HIGH or CRITICAL finding.
+- `docs/OPERATOR_INSTALL.md`, "Rerun and upgrade", has the build line and the
+  reason. An installation upgraded from v0.3.0 to v0.4.0 without the build
+  step still runs the functions runtime 1.76.2 instead of 1.77.4 and lacks
+  the dependency and operating-system updates of the storage, metadata and
+  Studio recipes. Whether v0.4.0 behaves differently on those old images was
+  not tested.
+- Not changed: setup does not rebuild by itself. Doing so on every rerun
+  would make a rerun need the network, and a long full build, whenever the
+  build cache has been pruned.
+
 ## Unreleased — golang.org/x/net 0.60.0 in the Go-based images (2026-10-11)
 
-No migration. **Operator action:** none beyond the usual rebuild on the next
-upgrade (`setup.sh` builds the images).
+No migration. **Operator action:** run `bash scripts/compose.sh build` before
+the setup rerun; without it the services keep their old images (see "An
+upgrade rebuilds the images" above).
 
 - CVE-2026-78669 (HTTP/2, HIGH) was in every Go binary the recipes build
   (`golang.org/x/net` v0.57.0 or v0.58.0). The module files of the eight
@@ -31,8 +58,9 @@ Documentation only (`docs/CONTAINER_SECURITY.md`, "Open items with their steps")
 
 ## Unreleased — Go 1.27.2 builders, refreshed Kong digest and CI action (2026-10-11)
 
-No migration. **Operator action:** none beyond the usual rebuild on the next
-upgrade (`setup.sh` builds the images).
+No migration. **Operator action:** run `bash scripts/compose.sh build` before
+the setup rerun; without it the services keep their old images (see "An
+upgrade rebuilds the images" above).
 
 - **Go builders (review finding X5-4).** All ten `FROM golang:` lines use
   `golang:1.27.2-bookworm` by digest; they used 1.27.0 and 1.27.1, behind

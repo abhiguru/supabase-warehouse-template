@@ -1185,6 +1185,7 @@ npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 bash scripts/backup-disk.sh sync       # only if you use a backup disk
 (umask 022; git pull --ff-only)
+bash scripts/compose.sh build          # rebuild the images whose recipes changed
 bash setup.sh --operator ...           # the same inputs as the installation
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
@@ -1192,6 +1193,22 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
+
+**Do not leave out the build line.** `setup.sh` and `start.sh` start the
+images that already exist on the host and build only an image that is
+missing. Without `compose.sh build`, a change to a recipe under `docker/`
+(a patched Go toolchain, a fixed library, updated operating-system packages)
+stays in the checkout and the services keep running the old image; setup
+still ends with "healthy". The build takes well under a minute when no recipe
+changed, because Docker reuses its build cache, and needs the network when
+one did. Setup then replaces only the containers whose image changed. If you
+run optional services, name their profiles so that their images are rebuilt
+too, for example `bash scripts/compose.sh --profile monitoring build`
+(`printing` and `pooler` likewise). The cache also keeps the operating-system
+packages of the day an image was first built: now and then, and before
+reading scan numbers, build with `--no-cache`
+([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md), "Open items with their
+steps").
 
 **Upgrading to the release with signed backups (format v5).** Do these once,
 in this order, after the commands above:
