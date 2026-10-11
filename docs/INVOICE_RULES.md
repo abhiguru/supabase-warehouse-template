@@ -222,9 +222,9 @@ calendar year in which the year from 1 April to 31 March starts: 2026 for April
 (owner decision of 2026-10-11, migration 48):
 
 `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` returns, as plain
-digits, the highest number among that year's invoices that are not deleted,
-plus 1, and `1` for a year that has none, so numbering starts again each
-April. Numbers below 1 in the data do not count. Without a year (or with NULL)
+digits, the highest number among that year's invoice rows plus 1, and `1` for
+a year that has none, so numbering starts again each April. Numbers below 1 in
+the data do not count. Without a year (or with NULL)
 it uses the financial year of today's date in India (`Asia/Kolkata`), which
 turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date. Before migration 48 the function took no argument and returned
@@ -237,11 +237,18 @@ for every year with "integer out of range". The user can still type a free
 number. The suggestion is not a reservation: two people saving at once can get
 the same number, and the second save is refused by the unique constraint.
 
-A soft-deleted invoice (`deleted_at` set) is not counted, but the unique
-constraint still holds its number, so a suggestion can be refused at save when
-the year's highest number belongs to such a row. No RPC an app role may call
-soft-deletes an invoice (`delete_invoice` removes the row), so this arises only
-from rows written with the service key or the database owner.
+**Which rows count.** Every invoice row of the year, also a soft-deleted one
+(`deleted_at` set). The unique constraint `unique_inv_no_per_year` is on
+`(inv_fin_year, inv_no)` without a condition, so the number of a soft-deleted
+invoice is still reserved and cannot be saved again; a suggestion that ignored
+such a row would be refused at every save until someone typed a higher number.
+The owner's decision reads "highest number in that year + 1"; counting the
+reserved numbers is what makes the suggestion one that can be saved. No RPC an
+app role may call soft-deletes an invoice: `delete_invoice` removes the row,
+and the number of a removed invoice is free again, so deleting the year's
+last invoice makes its number the next suggestion. Soft-deleted rows come only
+from the service key, an operator in the database or earlier data. If such a
+row holds 2147483647, its year is refused as above.
 
 ## Reproducible fixture
 

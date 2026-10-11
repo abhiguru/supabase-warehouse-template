@@ -1,7 +1,8 @@
 -- Owner decisions of 2026-10-11.
 --
 -- 2. The suggested next invoice number is per financial year: the highest
---    number of that year plus 1, starting at 1.
+--    number of that year plus 1, starting at 1. (Every invoice row of the year
+--    counts, a soft-deleted one too: its number is still reserved.)
 -- 3. An invoice line may have a storage charge of 0, with a reason: staff must
 --    give one, administrators and supervisors may leave it empty; who and when
 --    is recorded on the invoice and every change in an append-only history.
@@ -34,9 +35,13 @@ REVOKE ALL ON FUNCTION warehouse_security.financial_year(date) FROM PUBLIC, anon
 -- Guard name, security and grants are those of the function it replaces, so
 -- the allowlists of warehouse_security.authorize_rpc need no change.
 --
--- A soft-deleted invoice (deleted_at set; no granted RPC does that,
--- delete_invoice removes the row) is not counted, as decided, although the
--- unique constraint unique_inv_no_per_year still holds its number.
+-- The maximum is taken over every invoice row of the year, a soft-deleted one
+-- (deleted_at set) included: unique_inv_no_per_year is UNIQUE (inv_fin_year,
+-- inv_no) with no condition, so the number of such a row cannot be given
+-- again, and a suggestion that ignored it would be refused at every save
+-- until someone typed a higher number by hand. No granted RPC soft-deletes an
+-- invoice (delete_invoice removes the row, which frees its number); such rows
+-- come from the service key, an operator or earlier data.
 --
 -- get_next_invoice_number_with_year() is left as it is: no app role may
 -- execute it, and its own handler already turns the overflow into an error
@@ -53,7 +58,7 @@ BEGIN
 
     SELECT MAX(inv_no) INTO v_max_no
     FROM invoice
-    WHERE inv_fin_year = v_fin_year AND deleted_at IS NULL AND inv_no >= 1;
+    WHERE inv_fin_year = v_fin_year AND inv_no >= 1;
 
     IF v_max_no = 2147483647 THEN
         RAISE EXCEPTION 'No invoice number is left in financial year %', v_fin_year USING ERRCODE = 'WH409';

@@ -1,6 +1,7 @@
 -- Migration 48, owner decision 2 of 2026-10-11: the suggested next invoice
 -- number is per financial year. get_next_invoice_number(p_fin_year) returns the
--- highest number of that year's invoices that are not deleted, plus 1; 1 for a
+-- highest number of that year's invoice rows plus 1, soft-deleted rows
+-- included because the unique constraint still reserves their numbers; 1 for a
 -- year without invoices; numbers below 1 do not count; the year defaults to the
 -- financial year of today in India; and when the year's highest number is the
 -- largest an invoice number can be, the answer is a WH409 refusal instead of
@@ -55,14 +56,15 @@ SELECT jsonb_build_object('role','authenticated','sub',auth_user_id) AS former_c
 
 -- Invoices, written by the database owner: only year, number and deleted_at
 -- matter here. Years far from today so that no other row is in them.
---   2090  7 and 54 live, 60 deleted, 0 and -3 below the range   -> 55
+--   2090  7 and 54 live, 60 deleted, 0 and -3 below the range   -> 61
 --   2091  nothing                                               -> 1
---   2092  9, deleted                                            -> 1
+--   2092  9, deleted                                            -> 10
 --   2093  0 and -5 only                                         -> 1
 --   2094  2147483647 live                                       -> refused
---   2095  3 live, 2147483647 deleted                            -> 4
+--   2095  3 live, 2147483647 deleted                            -> refused
+--   2096  8 live, 2 deleted                                     -> 9
 -- and 4242 in the financial year of today in India.
-SELECT pg_temp.num_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year BETWEEN 2090 AND 2095),'the fixture years are empty');
+SELECT pg_temp.num_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year BETWEEN 2090 AND 2096),'the fixture years are empty');
 SELECT today, EXTRACT(YEAR FROM today)::integer - CASE WHEN EXTRACT(MONTH FROM today) >= 4 THEN 0 ELSE 1 END AS this_year
  FROM (SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date AS today) india \gset
 SELECT pg_temp.num_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year=:this_year AND inv_no>=4242),
@@ -73,6 +75,7 @@ SELECT f.fin_year,f.number,gen_random_uuid(),'YEARNO',gen_random_uuid(),'Year Nu
 FROM (VALUES (2090,7,false),(2090,54,false),(2090,60,true),(2090,0,false),(2090,-3,false),
              (2092,9,true),(2093,0,false),(2093,-5,false),
              (2094,2147483647,false),(2095,3,false),(2095,2147483647,true),
+             (2096,8,false),(2096,2,true),
              (:this_year,4242,false)) AS f(fin_year,number,deleted);
 
 -- One function, one optional argument, returning text; the old no-argument
@@ -100,12 +103,12 @@ SELECT pg_temp.num_assert(warehouse_security.active_role()='staff','actual staff
 SELECT pg_temp.num_assert(pg_temp.num_call(statement)->>'answer'=expected,
   label||': '||statement||' -> '||pg_temp.num_call(statement)::text||', expected '||expected)
 FROM (VALUES
- ('highest live number of the year plus 1; deleted, zero and negative numbers ignored','SELECT public.get_next_invoice_number(2090)','55'),
- ('the argument by name, as the app sends it','SELECT public.get_next_invoice_number(p_fin_year => 2090)','55'),
+ ('highest number of the year plus 1, a soft-deleted invoice''s number included; zero and negative numbers ignored','SELECT public.get_next_invoice_number(2090)','61'),
+ ('the argument by name, as the app sends it','SELECT public.get_next_invoice_number(p_fin_year => 2090)','61'),
  ('a year without invoices starts at 1','SELECT public.get_next_invoice_number(2091)','1'),
- ('a year whose only invoice is deleted starts at 1','SELECT public.get_next_invoice_number(2092)','1'),
+ ('a year whose only invoice is soft-deleted continues after its number','SELECT public.get_next_invoice_number(2092)','10'),
  ('a year with only numbers below 1 starts at 1','SELECT public.get_next_invoice_number(2093)','1'),
- ('a deleted invoice with the largest number does not block the year','SELECT public.get_next_invoice_number(2095)','4'),
+ ('a soft-deleted invoice below the highest number changes nothing','SELECT public.get_next_invoice_number(2096)','9'),
  ('no argument: the financial year of today in India','SELECT public.get_next_invoice_number()','4243'),
  ('NULL: the financial year of today in India','SELECT public.get_next_invoice_number(NULL)','4243'),
  ('this financial year by number','SELECT public.get_next_invoice_number('||:this_year||')','4243')
@@ -117,9 +120,41 @@ SELECT pg_temp.num_assert(:'full_year'::jsonb->>'raised'='No invoice number is l
  AND :'full_year'::jsonb->>'state'='WH409','a full year is refused with WH409: '||:'full_year');
 -- One full year does not affect another (before, the maximum was taken over
 -- every invoice, so one such number broke the suggestion for all years).
-SELECT pg_temp.num_assert(public.get_next_invoice_number(2090)='55' AND public.get_next_invoice_number()='4243',
+SELECT pg_temp.num_assert(public.get_next_invoice_number(2090)='61' AND public.get_next_invoice_number()='4243',
  'other years still answer while 2094 is full');
+-- A soft-deleted invoice holds the largest number: that year is full too,
+-- because the number after it does not exist and its own cannot be reused.
+SELECT pg_temp.num_assert(pg_temp.num_call('SELECT public.get_next_invoice_number(2095)')
+ =jsonb_build_object('raised','No invoice number is left in financial year 2095','state','WH409'),
+ 'a year whose largest number belongs to a soft-deleted invoice is refused: '||pg_temp.num_call('SELECT public.get_next_invoice_number(2095)')::text);
 RESET ROLE;
+
+-- Why soft-deleted rows count: the unique constraint covers every row of the
+-- year, deleted or not, so their numbers cannot be given again. The number the
+-- function suggests can always be saved; the number of a soft-deleted invoice
+-- cannot. (If the constraint ever becomes partial, the function's rule has to
+-- follow it, and this assertion says so.)
+SELECT pg_temp.num_assert((SELECT pg_get_constraintdef(oid)='UNIQUE (inv_fin_year, inv_no)' FROM pg_constraint
+  WHERE conrelid='public.invoice'::regclass AND conname='unique_inv_no_per_year'),
+ 'unique_inv_no_per_year covers every invoice row of a year, soft-deleted ones included');
+CREATE FUNCTION pg_temp.num_insert(fin_year integer, number integer) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount)
+    VALUES (fin_year,number,gen_random_uuid(),'YEARNO',gen_random_uuid(),'Year Number Customer',now(),0,0,0,0);
+  EXCEPTION WHEN unique_violation THEN RETURN 'taken: '||SQLERRM; END;
+  RETURN 'saved';
+END $$;
+SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
+SELECT pg_temp.num_assert(pg_temp.num_insert(2090,60)='taken: duplicate key value violates unique constraint "unique_inv_no_per_year"'
+ AND pg_temp.num_insert(2092,9)='taken: duplicate key value violates unique constraint "unique_inv_no_per_year"',
+ 'the number of a soft-deleted invoice cannot be used again: '||pg_temp.num_insert(2090,60));
+SELECT pg_temp.num_assert(pg_temp.num_insert(f.fin_year,public.get_next_invoice_number(f.fin_year)::integer)='saved',
+ 'the suggested number of '||f.fin_year||' can be saved')
+FROM (VALUES (2090),(2091),(2092),(2093),(2096)) AS f(fin_year);
+SELECT pg_temp.num_assert(public.get_next_invoice_number(f.fin_year)::integer=f.then_next,
+ 'after that save the suggestion for '||f.fin_year||' is '||f.then_next||', found '||public.get_next_invoice_number(f.fin_year))
+FROM (VALUES (2090,62),(2091,2),(2092,11),(2093,2),(2096,10)) AS f(fin_year,then_next);
 
 -- Which year "today" is in. April to March, named by the year it starts in;
 -- the day is the calendar date in India, so the year turns at 18:30 UTC on
@@ -140,9 +175,9 @@ SELECT pg_temp.num_assert(warehouse_security.financial_year(:'today'::date)=:thi
 -- customer account and a deactivated profile are refused by the guard.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.num_assert(warehouse_security.active_role()='admin' AND public.get_next_invoice_number(2090)='55','the administrator is answered');
+SELECT pg_temp.num_assert(warehouse_security.active_role()='admin' AND public.get_next_invoice_number(2090)='62','the administrator is answered');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SELECT pg_temp.num_assert(warehouse_security.active_role()='supervisor' AND public.get_next_invoice_number(2090)='55','the supervisor is answered');
+SELECT pg_temp.num_assert(warehouse_security.active_role()='supervisor' AND public.get_next_invoice_number(2090)='62','the supervisor is answered');
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SELECT pg_temp.num_assert(warehouse_security.active_role()='customer','actual customer role');
 SELECT pg_temp.num_assert(pg_temp.num_call(statement)=jsonb_build_object('raised','Staff access required','state','42501'),
@@ -158,7 +193,7 @@ SELECT pg_temp.num_assert(pg_temp.num_call('SELECT public.get_next_invoice_numbe
 RESET ROLE;
 SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
 SET LOCAL ROLE service_role;
-SELECT pg_temp.num_assert(public.get_next_invoice_number(2090)='55','the service role is answered');
+SELECT pg_temp.num_assert(public.get_next_invoice_number(2090)='62','the service role is answered');
 RESET ROLE;
 ROLLBACK;
 \echo 'Next invoice number per financial year, India date, full-year refusal and role checks passed.'

@@ -15,9 +15,13 @@ and a reason already stored on it is kept.
 - **The suggested invoice number is per financial year.**
   `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` replaces the
   no-argument function (one signature; a call without an argument still
-  works). It returns the highest number among that year's invoices that are
-  not deleted, plus 1, and `1` for a year without invoices; numbers below 1 are
-  ignored. Without a year it uses the financial year of today in India. Before,
+  works). It returns the highest number among that year's invoice rows plus
+  1, and `1` for a year without invoices; numbers below 1 are ignored. A
+  soft-deleted invoice (`deleted_at` set; written only with the service key or
+  in the database) counts, because the unique constraint still reserves its
+  number and a suggestion that ignored it could never be saved; an invoice
+  removed with `delete_invoice` frees its number. Without a year it uses the
+  financial year of today in India. Before,
   it returned the highest number of all years plus 1, so April continued the
   old year's numbers. An invoice numbered 2147483647 no longer breaks the
   suggestion for every year with "integer out of range": only that year is
