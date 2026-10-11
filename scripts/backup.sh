@@ -31,12 +31,15 @@ if [[ "$(stat -c %d "$parent")" == "$(stat -c %d "$state/data")" ]]; then
   echo "Warning: $parent shares a filesystem with $state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage." >&2
 fi
 stage="$(mktemp -d "$parent/.warehouse-backup-staging.XXXXXXXX")"
+# shellcheck source=scripts/service-diagnostics.sh
+. "$ROOT/scripts/service-diagnostics.sh"
 restart=()
 cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
     if ! compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
+      show_unhealthy_services || true
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
     fi

@@ -21,7 +21,10 @@ fixes from the 2026-10-10 review (it was `97ddf3c`), and later the same day to
 `34ea9a4`, the app `main` with the owner decisions of 2026-10-11 (it needs
 migration 48). For the pair backend `498d53d` and app `34ea9a4` the static check
 passes and the live comparison, run against the development stack on migration
-48, reports 93 RPC names, none missing, and no mismatches.
+48, reports 93 RPC names, none missing, and no mismatches. On 2026-10-12 the pin moved
+to `d8af378`, the app `main` with the price history screen; for backend `f30833e`
+and that app commit the static check passes and the live comparison reports 94
+RPC names, none missing, and no mismatches.
 
 ## Post-release local-readiness follow-up — 2026-09-22
 

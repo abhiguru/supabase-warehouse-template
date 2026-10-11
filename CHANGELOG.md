@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — metadata service: longer start allowance (2026-10-12)
+
+`docker/docker-compose.yml` and two scripts. **Operator action:** none; the
+next start applies the new health check.
+
+- The metadata service (`meta`, a quarter of a CPU) was reported unhealthy 90
+  seconds after a start twice in CI, once in the lost-host restore and once
+  when a backup restarted the services, and the drill failed. Its health check
+  now has a start period of 120 seconds instead of 30. The cause is inferred
+  from the timing and the CPU limit; no log of a failing start exists yet.
+- For the next time: a backup whose services do not restart cleanly now lists
+  the services that are not healthy with their last log lines, as a restore
+  already does (`scripts/service-diagnostics.sh`, shared by both).
+
+## Unreleased — Dependabot: four more holds (2026-10-12)
+
+Repository maintenance. After the rules of 2026-10-11 Dependabot proposed the
+next versions it was still allowed to: Ubuntu 22.10 for the print service (a
+release that is not long-term), the imgproxy build base v4, PostgreSQL 17 and
+the postgres-meta v0.100.0 image. Each needs a planned upgrade (a matching
+source tag, or a data directory upgrade for PostgreSQL), so
+`.github/dependabot.yml` holds these version updates too, each with its
+reason. Security updates are still proposed.
+
 ## Unreleased — functions route: hourly cap 6000 (2026-10-11)
 
 `docker/kong.yml` only. **Operator action:** restart the gateway container
