@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — golang.org/x/net 0.60.0 in the Go-based images (2026-10-11)
+
+No migration. **Operator action:** none beyond the usual rebuild on the next
+upgrade (`setup.sh` builds the images).
+
+- CVE-2026-78669 (HTTP/2, HIGH) was in every Go binary the recipes build
+  (`golang.org/x/net` v0.57.0 or v0.58.0). The module files of the eight
+  recipes now select v0.60.0; only `golang.org/x/*` versions and the `go` line
+  changed. The Prometheus recipe sets the Go version of the upstream workspace
+  file to match.
+- Built and scanned (Trivy 0.74.0): alertmanager, auth, cadvisor, the database
+  image (wal-g, gosu), imgproxy, node-exporter, postgres-exporter and
+  prometheus have no fixed HIGH or CRITICAL finding left. The publisher's
+  Gotenberg binary, which no recipe rebuilds, still has four.
+  `docs/CONTAINER_SECURITY.md`, "Open items with their steps".
+
 ## Unreleased — scan of the Go-based images after the 1.27.2 builders (2026-10-11)
 
 Documentation only (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").

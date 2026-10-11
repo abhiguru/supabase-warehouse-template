@@ -9,7 +9,8 @@ RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload
 COPY go.mod go.sum ./
 RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     --mount=type=cache,id=warehouse-security-go-build,target=/root/.cache/go-build \
-    go mod download && go mod verify \
+    go work edit -go=1.26.0 \
+    && go mod download && go mod verify \
     && bash scripts/compress_assets.sh \
     && go test -p=2 ./config \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -tags=builtinassets -trimpath -ldflags='-X github.com/prometheus/common/version.Version=3.14.0-warehouse.1' -o /out/prometheus ./cmd/prometheus \

@@ -926,17 +926,22 @@ building an image or starting the stack.
   advisories remain in `/usr/bin/gotenberg`, which is the publisher's binary
   built with Go 1.27.1 and is not rebuilt by any recipe; they go away with a
   Gotenberg tag built on a fixed Go.
-- **`golang.org/x/net` in every Go binary (HIGH, found by the scan of
-  2026-10-11).** CVE-2026-78669 (HTTP/2) is fixed in `golang.org/x/net`
-  0.60.0. The module is at v0.58.0 in alertmanager, amtool, auth, cadvisor,
-  wal-g, imgproxy, prometheus, promtool and the publisher's gotenberg binary,
-  and at v0.57.0 in node_exporter and postgres_exporter. For each recipe that
-  carries its own `go.mod` and `go.sum` (`docker/{alertmanager,cadvisor/cmd,imgproxy,node-exporter,postgres-exporter,prometheus}`
-  and `docker/postgres/walg.go.*`; the Auth recipe edits the upstream
-  manifest in its Dockerfile): in the upstream source at the recipe's tag,
-  with the recipe's `go.mod` in place, run `go get golang.org/x/net@v0.60.0`,
-  copy the changed `go.mod` and `go.sum` back, build (the build runs
-  `go mod verify` and the selected tests), then scan the image again.
+- **`golang.org/x/net` 0.60.0: done on 2026-10-11.** The scan above found
+  CVE-2026-78669 (HTTP/2, HIGH; fixed in `golang.org/x/net` 0.60.0) in every
+  Go binary: the module was at v0.58.0 in alertmanager, amtool, auth,
+  cadvisor, wal-g, imgproxy, prometheus and promtool, and at v0.57.0 in
+  node_exporter and postgres_exporter. The module files of the eight recipes
+  (`docker/{alertmanager,auth,cadvisor/cmd,imgproxy,node-exporter,postgres-exporter,prometheus}/go.{mod,sum}`
+  and `docker/postgres/walg.go.{mod,sum}`) were regenerated with
+  `go get golang.org/x/net@v0.60.0` in the upstream source at each recipe's
+  tag; only `golang.org/x/*` versions and the `go` line (now 1.26.0, which
+  the module requires) changed. The Prometheus recipe also runs
+  `go work edit -go=1.26.0`, because the upstream workspace file names Go
+  1.25.8 and the build refuses the mismatch. All eight images were built and
+  scanned again the same day: each binary reports Go 1.27.2 and
+  `golang.org/x/net` v0.60.0, and no fixed HIGH or CRITICAL finding is left
+  in any of the eight images. The publisher's Gotenberg binary still carries
+  this finding and the three standard-library ones.
 - **A cached build hides or shows operating-system findings.** In the same scan
   the imgproxy and Gotenberg images first showed fixed HIGH findings in
   Ubuntu's and Debian's OpenSSL packages (CVE-2026-84782) and 116 in Debian's
