@@ -17,8 +17,11 @@ print service, the metadata service and storage).
   would have left 3.14.0 running under a 3.15.0 tag.
 - The print service's `ubuntu:22.04` base moves to the current digest.
 - Minor and patch updates in the two recipe manifests: `@fastify/swagger`
-  9.9.1 (both), and in `docker/postgres-meta` `@fastify/cors` 11.3.1,
-  `@sentry/node` 10.76.2, `@types/pg` 8.23.1 and `prettier-plugin-sql` 0.20.0.
+  9.9.1 (both), and in `docker/postgres-meta` `@fastify/cors` 11.3.1 and
+  `prettier-plugin-sql` 0.20.0.
+- Not taken: `@types/pg` 8.23.1 and `@sentry/node` 10.76.2. Each fails the
+  type check of the postgres-meta source the recipe builds, so the image does
+  not build. `.github/dependabot.yml` now holds their minor updates.
 - Dependabot now proposes the minor and patch updates of those two manifests
   as one pull request a week, not one per package.
 

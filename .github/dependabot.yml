@@ -48,6 +48,18 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+      # Both fail the type check of postgres-meta v0.99.0, which the recipe runs
+      # (found on 2026-10-12 with @types/pg 8.23.1 and @sentry/node 10.76.2):
+      # the newer types no longer accept that source. They move with the
+      # upstream tag. Patch updates are still proposed.
+      - dependency-name: "@types/pg"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "@sentry/node"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   - package-ecosystem: docker
     directories:
       - "/docker/*"
