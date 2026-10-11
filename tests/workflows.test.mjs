@@ -64,6 +64,6 @@ test('no workflow names a self-hosted runner; operator-install takes its runner 
     for (const line of runsOn) assert.doesNotMatch(line, /self-hosted/, `${file}: ${line.trim()}`);
   }
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const job = ci.slice(ci.indexOf('\n  operator-install:')).split(/\n  [a-z-]+:\n/)[0];
+  const job = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
   assert.match(job, /\n    runs-on: \$\{\{ fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/);
 });
