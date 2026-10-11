@@ -15,7 +15,7 @@ RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     && go test -p=2 ./config \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -tags=builtinassets -trimpath -ldflags='-X github.com/prometheus/common/version.Version=3.14.0-warehouse.1' -o /out/prometheus ./cmd/prometheus \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -tags=builtinassets -trimpath -ldflags='-X github.com/prometheus/common/version.Version=3.14.0-warehouse.1' -o /out/promtool ./cmd/promtool
-FROM prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+FROM prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
 COPY --from=build /out/prometheus /bin/prometheus
 COPY --from=build /out/promtool /bin/promtool
 COPY --from=build /src/LICENSE /src/NOTICE /usr/share/doc/warehouse-prometheus/
