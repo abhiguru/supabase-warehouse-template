@@ -93,6 +93,10 @@ bash "$ROOT/tests/concurrent_rules.sh" "$container"
 # and lets an operator's own table in `public` through.
 bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
 
+# Migration 48: the author-name backfill of invoice_discount_history, on rows
+# as an installation that had discounts before the upgrade holds them.
+bash "$ROOT/tests/history_author_backfill.sh" "$container"
+
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
 

@@ -110,6 +110,7 @@ SELECT pg_temp.ph_assert(pg_temp.ph_rows()=jsonb_build_array(jsonb_build_array('
  'the insert is recorded for the staff member: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillies'::uuid AND h.item_name='Price History Chillies'
  AND h.customer_id=:'north'::uuid AND h.customer_name='Price History North' AND h.changed_at=now() AND h.old_values IS NULL
+ AND h.changed_by_name='Price History Staff'
  AND h.new_values @> '{"price_type":"monthly","unit_price":5,"unit_price_monthly":5,"unit_price_one_time":0,"weight_min":0,"weight_max":100,"labour_rate":2,"tax_percent":5,"effective_from":"2026-01-01","effective_to":null}'::jsonb
  AND NOT h.new_values ?| ARRAY['id','item_id','customer_id','created_at','created_by'],
  'the row names the price, the item and the customer and holds the new values: '||to_jsonb(h)::text)
@@ -123,6 +124,7 @@ RESET ROLE;
 SELECT pg_temp.ph_assert(pg_temp.ph_rows()->1=jsonb_build_array('update',5,8,:'supervisor_profile','supervisor') AND jsonb_array_length(pg_temp.ph_rows())=2,
  'the update is recorded for the supervisor: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillies'::uuid AND h.customer_id=:'north'::uuid
+ AND h.changed_by_name='Price History Supervisor'
  AND h.old_values @> '{"unit_price":5,"labour_rate":2,"effective_to":null}'::jsonb
  AND h.new_values @> '{"unit_price":8,"unit_price_monthly":8,"labour_rate":3,"effective_to":"2026-12-31","price_type":"monthly"}'::jsonb,
  'the row holds the old and the new values: '||to_jsonb(h)::text)
@@ -180,7 +182,7 @@ INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price
  VALUES (:'chillies'::uuid,NULL,'monthly',4,0,4,0,100,1,5,'2026-01-01');
 RESET ROLE;
 SELECT pg_temp.ph_assert(pg_temp.ph_rows()->4=jsonb_build_array('insert',NULL,4,NULL,NULL)
- AND (SELECT h.customer_id IS NULL AND h.customer_name IS NULL AND h.item_name='Price History Chillies' FROM pg_temp.ph_last() h),
+ AND (SELECT h.customer_id IS NULL AND h.customer_name IS NULL AND h.item_name='Price History Chillies' AND h.changed_by_name IS NULL FROM pg_temp.ph_last() h),
  'an operator''s write is recorded without a profile: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(pg_get_triggerdef(t.oid) LIKE '%AFTER INSERT OR DELETE OR UPDATE ON public.item_storage_prices FOR EACH ROW%',
  'the record is a row trigger on the table, so no write path goes around it: '||pg_get_triggerdef(t.oid))
@@ -310,8 +312,43 @@ SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.items WHERE id=:'turmeri
 SET LOCAL ROLE authenticated;
 SELECT public.get_item_price_history(p_item_id=>:'turmeric'::uuid) AS after_removal \gset
 SELECT pg_temp.ph_assert(:'after_removal'::jsonb#>>'{data,1,item_name}'='Price History Turmeric' AND :'after_removal'::jsonb#>>'{data,1,changed_by}'=:'staff2_profile'
- AND :'after_removal'::jsonb#>'{data,1,changed_by_name}'='null' AND :'after_removal'::jsonb#>>'{data,0,changed_by_name}'='Price History Administrator',
- 'the RPC still names the item; a removed profile has no name any more: '||:'after_removal');
+ AND :'after_removal'::jsonb#>>'{data,1,changed_by_name}'='Price History Second Staff' AND :'after_removal'::jsonb#>>'{data,0,changed_by_name}'='Price History Administrator',
+ 'the RPC still names the item and the removed profile: '||:'after_removal');
+RESET ROLE;
+
+-- ---------------------------------------------------------------------------
+-- 5. The author's name is the one at the time of the change
+-- ---------------------------------------------------------------------------
+-- delete_user_account, which every signed-in user may call for the own
+-- account, renames the profile to "Deleted User". The staff member who created
+-- North's price and the supervisor who changed it delete their accounts: the
+-- history still names them, with the role each had.
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.ph_assert(public.delete_user_account()->>'success'='true','the staff member deletes the own account');
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SELECT pg_temp.ph_assert(public.delete_user_account()->>'success'='true','the supervisor deletes the own account');
+RESET ROLE;
+SELECT pg_temp.ph_assert((SELECT count(*)=2 AND bool_and(name='Deleted User' AND NOT active) FROM public.user_profiles
+  WHERE id IN (:'staff_profile'::uuid,:'supervisor_profile'::uuid)),'both profiles are renamed to Deleted User');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_item_price_history(p_customer_id=>:'north'::uuid) AS after_deletion \gset
+SELECT pg_temp.ph_assert((SELECT jsonb_agg(jsonb_build_array(r->'action',r->'changed_by',r->'changed_by_name',r->'changed_by_role'))
+   FROM jsonb_array_elements(:'after_deletion'::jsonb->'data') r)
+ = jsonb_build_array(
+    jsonb_build_array('delete',:'admin_profile','Price History Administrator','admin'),
+    jsonb_build_array('update',:'supervisor_profile','Price History Supervisor','supervisor'),
+    jsonb_build_array('insert',:'staff_profile','Price History Staff','staff')),
+ 'the history names its authors after they deleted their accounts: '||:'after_deletion');
+RESET ROLE;
+-- A row without a stored name shows the profile's present name.
+INSERT INTO public.item_price_history(price_id,item_id,item_name,action,changed_by,changed_by_role)
+ VALUES (gen_random_uuid(),:'chillies'::uuid,'Price History Chillies','insert',:'admin_profile'::uuid,'admin');
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.ph_assert(public.get_item_price_history(p_limit=>1)#>>'{data,0,changed_by_name}'='Price History Administrator'
+ AND (SELECT h.changed_by_name IS NULL FROM public.item_price_history h ORDER BY h.id DESC LIMIT 1),
+ 'without a stored name the profile''s present name is shown');
 RESET ROLE;
 ROLLBACK;
 \echo 'Item price history: one row per insert, update and delete, the reading RPC, role and append-only checks passed.'

@@ -99,9 +99,14 @@ COMMENT ON COLUMN public.invoice.zero_charge_set_at IS 'When zero_charge_set_by 
 
 -- One row per change of the reason or of the set of zero-charge lines, kept
 -- when the invoice is edited again or deleted. Shaped like
--- invoice_discount_history (migration 41), which is left as it is: no foreign
--- keys, written only by recalculate_invoice_header below, read by
--- administrators and supervisors like the invoice table itself.
+-- invoice_discount_history (migration 41): no foreign keys, written only by
+-- recalculate_invoice_header below, read by administrators and supervisors
+-- like the invoice table itself.
+--
+-- The author is stored as a profile id, and also by name and role as they were
+-- at the change: any signed-in user can turn the own profile's name into
+-- "Deleted User" with delete_user_account, and a record of who did something
+-- must not be emptied by the person it names.
 CREATE TABLE public.invoice_zero_charge_history (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   invoice_id uuid NOT NULL,
@@ -113,6 +118,7 @@ CREATE TABLE public.invoice_zero_charge_history (
   old_lines uuid[] NOT NULL,
   new_lines uuid[] NOT NULL,
   changed_by uuid,
+  changed_by_name text,
   changed_by_role text,
   changed_at timestamptz NOT NULL DEFAULT now()
 );
@@ -121,6 +127,7 @@ COMMENT ON TABLE public.invoice_zero_charge_history IS
 COMMENT ON COLUMN public.invoice_zero_charge_history.old_lines IS 'dispatch_trl.id of the lines that had a zero charge before the change.';
 COMMENT ON COLUMN public.invoice_zero_charge_history.new_lines IS 'dispatch_trl.id of the lines that have a zero charge after it.';
 COMMENT ON COLUMN public.invoice_zero_charge_history.changed_by IS 'user_profiles.id of the account that made the change.';
+COMMENT ON COLUMN public.invoice_zero_charge_history.changed_by_name IS 'That account''s name when it made the change; kept when the account is renamed or deleted.';
 CREATE INDEX invoice_zero_charge_history_invoice_idx ON public.invoice_zero_charge_history (invoice_id, id);
 ALTER TABLE public.invoice_zero_charge_history ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.invoice_zero_charge_history FROM PUBLIC, anon, authenticated, service_role;
@@ -131,6 +138,43 @@ CREATE TRIGGER invoice_zero_charge_history_append_only BEFORE UPDATE OR DELETE O
   FOR EACH ROW EXECUTE FUNCTION warehouse_security.history_append_only();
 CREATE TRIGGER invoice_zero_charge_history_no_truncate BEFORE TRUNCATE ON public.invoice_zero_charge_history
   FOR EACH STATEMENT EXECUTE FUNCTION warehouse_security.history_append_only();
+
+-- The discount history of migration 41 names its author by profile id only,
+-- with the same weakness. It gets the same column. Rows that exist at this
+-- upgrade are given the name their author's profile has now, which is the
+-- best that is left (an account already deleted reads "Deleted User"); the
+-- table refuses every UPDATE, so its append-only trigger is switched off for
+-- this one statement. tests/history_author_backfill.sh runs this block.
+ALTER TABLE public.invoice_discount_history ADD COLUMN changed_by_name text;
+COMMENT ON COLUMN public.invoice_discount_history.changed_by_name IS
+  'That account''s name when it changed the discount; kept when the account is renamed or deleted. Rows from before migration 48 hold the name the profile had at that upgrade.';
+DO $backfill$
+BEGIN
+  ALTER TABLE public.invoice_discount_history DISABLE TRIGGER invoice_discount_history_append_only;
+  UPDATE public.invoice_discount_history h SET changed_by_name = p.name
+    FROM public.user_profiles p WHERE p.id = h.changed_by AND h.changed_by_name IS NULL;
+  ALTER TABLE public.invoice_discount_history ENABLE TRIGGER invoice_discount_history_append_only;
+END $backfill$;
+
+-- From now on the discount trigger stores the name with the row. Its function
+-- is patched, not written out again, so that this file does not repeat the
+-- invisible characters of migration 41's trim class.
+DO $patch$
+DECLARE fn regprocedure := 'warehouse_security.invoice_discount_audit()'::regprocedure;
+  definition text; occurrences integer;
+  columns constant text := $m$reason, changed_by, changed_by_role, changed_at)$m$;
+  row_values constant text := $m$NEW.discount_reason, NEW.discount_set_by, warehouse_security.active_role(), NEW.discount_set_at);$m$;
+BEGIN
+  definition := pg_get_functiondef(fn);
+  occurrences := (length(definition)-length(replace(definition,columns,'')))/length(columns);
+  IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one history column list in invoice_discount_audit, found %', occurrences; END IF;
+  occurrences := (length(definition)-length(replace(definition,row_values,'')))/length(row_values);
+  IF occurrences <> 1 THEN RAISE EXCEPTION 'Expected one history value list in invoice_discount_audit, found %', occurrences; END IF;
+  EXECUTE replace(replace(definition, columns, $r$reason, changed_by, changed_by_name, changed_by_role, changed_at)$r$),
+    row_values, $r$NEW.discount_reason, NEW.discount_set_by,
+    (SELECT p.name FROM public.user_profiles p WHERE p.id = NEW.discount_set_by),
+    warehouse_security.active_role(), NEW.discount_set_at);$r$);
+END $patch$;
 
 -- Called by each save RPC right after its guard, before it writes: keeps for
 -- the rest of the transaction the reason the request sent and, for an edit,
@@ -237,9 +281,11 @@ BEGIN
   WHERE id=p_invoice_id;
   IF zero_changed THEN
     INSERT INTO public.invoice_zero_charge_history
-      (invoice_id, inv_fin_year, inv_no, customer_id, old_reason, new_reason, old_lines, new_lines, changed_by, changed_by_role, changed_at)
+      (invoice_id, inv_fin_year, inv_no, customer_id, old_reason, new_reason, old_lines, new_lines,
+       changed_by, changed_by_name, changed_by_role, changed_at)
     SELECT i.id, i.inv_fin_year, i.inv_no, i.customer_id, reason_before, reason_now, zero_before, zero_now,
-           i.zero_charge_set_by, caller_role, i.zero_charge_set_at
+           i.zero_charge_set_by, (SELECT p.name FROM public.user_profiles p WHERE p.id = i.zero_charge_set_by),
+           caller_role, i.zero_charge_set_at
     FROM public.invoice i WHERE i.id=p_invoice_id;
   END IF;
   RETURN jsonb_build_object('subtotal',subtotal,'labour',labour_total,'tax',tax_total,'total_tax',tax_total,
@@ -249,17 +295,31 @@ REVOKE ALL ON FUNCTION warehouse_security.recalculate_invoice_header(uuid) FROM 
 
 -- The invoice the app opens for editing carries the zero-charge record beside
 -- the discount record: to the warehouse roles, not to a customer account.
+--
+-- Both author names are the ones stored with the change: the history row of
+-- the change the invoice shows (same invoice, same time; the newest if one
+-- transaction made several). The profile's present name is used only when no
+-- name was stored: a history row from before this migration whose author
+-- could not be named, or an invoice row written in the database.
 DO $patch$
 DECLARE fn regprocedure := 'public.get_invoice_detail(uuid)'::regprocedure;
   definition text; marker text; replacement text; occurrences integer;
 BEGIN
   definition := pg_get_functiondef(fn);
-  marker := $m$            'discount_set_at', i.discount_set_at)
+  marker := $m$            'discount_set_by_name', (SELECT p.name FROM user_profiles p WHERE p.id = i.discount_set_by),
+            'discount_set_at', i.discount_set_at)
         ELSE '{}'::jsonb END$m$;
-  replacement := $r$            'discount_set_at', i.discount_set_at,
+  replacement := $r$            'discount_set_by_name', COALESCE(
+                (SELECT h.changed_by_name FROM invoice_discount_history h
+                  WHERE h.invoice_id = i.id AND h.changed_at = i.discount_set_at ORDER BY h.id DESC LIMIT 1),
+                (SELECT p.name FROM user_profiles p WHERE p.id = i.discount_set_by)),
+            'discount_set_at', i.discount_set_at,
             'zero_charge_reason', i.zero_charge_reason,
             'zero_charge_set_by', i.zero_charge_set_by,
-            'zero_charge_set_by_name', (SELECT p.name FROM user_profiles p WHERE p.id = i.zero_charge_set_by),
+            'zero_charge_set_by_name', COALESCE(
+                (SELECT h.changed_by_name FROM invoice_zero_charge_history h
+                  WHERE h.invoice_id = i.id AND h.changed_at = i.zero_charge_set_at ORDER BY h.id DESC LIMIT 1),
+                (SELECT p.name FROM user_profiles p WHERE p.id = i.zero_charge_set_by)),
             'zero_charge_set_at', i.zero_charge_set_at)
         ELSE '{}'::jsonb END$r$;
   occurrences := (length(definition)-length(replace(definition,marker,'')))/length(marker);
@@ -310,8 +370,9 @@ END $columns$;
 -- ---------------------------------------------------------------------------
 -- One row per insert, update and delete of item_storage_prices. Like the two
 -- invoice histories it has no foreign key, so a price, an item, a customer or
--- a profile can still be deleted and the record stays; the names are stored
--- with the row for that reason. old_values / new_values are the price row as
+-- a profile can still be deleted and the record stays; the names (of the item,
+-- the customer and the author) are stored with the row for that reason, as
+-- they were at the change. old_values / new_values are the price row as
 -- it was and as it is, without its three ids (which are columns here) and
 -- without created_at / created_by (which no write changes).
 CREATE TABLE public.item_price_history (
@@ -325,6 +386,7 @@ CREATE TABLE public.item_price_history (
   old_values jsonb,
   new_values jsonb,
   changed_by uuid,
+  changed_by_name text,
   changed_by_role text,
   changed_at timestamptz NOT NULL DEFAULT now()
 );
@@ -335,6 +397,7 @@ COMMENT ON COLUMN public.item_price_history.customer_id IS 'NULL for a default p
 COMMENT ON COLUMN public.item_price_history.old_values IS 'The price before the change; NULL for an insert.';
 COMMENT ON COLUMN public.item_price_history.new_values IS 'The price after the change; NULL for a delete.';
 COMMENT ON COLUMN public.item_price_history.changed_by IS 'user_profiles.id of the session that made the change; NULL for a write with the service key or by the database owner.';
+COMMENT ON COLUMN public.item_price_history.changed_by_name IS 'That profile''s name when it made the change; kept when the account is renamed or deleted.';
 CREATE INDEX item_price_history_customer_idx ON public.item_price_history (customer_id, id);
 CREATE INDEX item_price_history_item_idx ON public.item_price_history (item_id, id);
 ALTER TABLE public.item_price_history ENABLE ROW LEVEL SECURITY;
@@ -357,16 +420,19 @@ DECLARE
   kept_out constant text[] := ARRAY['id','item_id','customer_id','created_at','created_by'];
   price public.item_storage_prices;
   before_change jsonb; after_change jsonb;
+  author_id uuid; author_name text;
 BEGIN
+  SELECT p.id, p.name INTO author_id, author_name FROM public.user_profiles p WHERE p.auth_user_id = auth.uid();
   IF TG_OP = 'DELETE' THEN price := OLD; ELSE price := NEW; END IF;
   IF TG_OP <> 'INSERT' THEN before_change := to_jsonb(OLD) - kept_out; END IF;
   IF TG_OP <> 'DELETE' THEN after_change := to_jsonb(NEW) - kept_out; END IF;
   INSERT INTO public.item_price_history
-    (price_id, item_id, item_name, customer_id, customer_name, action, old_values, new_values, changed_by, changed_by_role)
+    (price_id, item_id, item_name, customer_id, customer_name, action, old_values, new_values,
+     changed_by, changed_by_name, changed_by_role)
   VALUES (price.id, price.item_id, (SELECT i.name FROM public.items i WHERE i.id = price.item_id),
     price.customer_id, (SELECT c.name FROM public.customers c WHERE c.id = price.customer_id),
     lower(TG_OP), before_change, after_change,
-    (SELECT p.id FROM public.user_profiles p WHERE p.auth_user_id = auth.uid()), warehouse_security.active_role());
+    author_id, author_name, warehouse_security.active_role());
   RETURN NULL;
 END $$;
 REVOKE ALL ON FUNCTION warehouse_security.record_item_price_change() FROM PUBLIC, anon, authenticated, service_role;
@@ -377,7 +443,8 @@ CREATE TRIGGER item_price_history_record AFTER INSERT OR UPDATE OR DELETE ON pub
 -- admits those two roles to every RPC and refuses staff and customer accounts
 -- any name that is not on their lists, so this one needs no entry there.
 -- Without a customer or an item the history is not filtered; a page is 1 to
--- 200 rows.
+-- 200 rows. changed_by_name is the name stored with the row; a row that has
+-- none shows the profile's present name.
 CREATE FUNCTION public.get_item_price_history(p_customer_id uuid DEFAULT NULL, p_item_id uuid DEFAULT NULL,
   p_limit integer DEFAULT 50, p_offset integer DEFAULT 0) RETURNS jsonb
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, extensions, utils, pg_temp AS $$
@@ -408,7 +475,7 @@ BEGIN
             'old_values', h.old_values,
             'new_values', h.new_values,
             'changed_by', h.changed_by,
-            'changed_by_name', (SELECT p.name FROM user_profiles p WHERE p.id = h.changed_by),
+            'changed_by_name', COALESCE(h.changed_by_name, (SELECT p.name FROM user_profiles p WHERE p.id = h.changed_by)),
             'changed_by_role', h.changed_by_role
         ) AS row_data
         FROM item_price_history h

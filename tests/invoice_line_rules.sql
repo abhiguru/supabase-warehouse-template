@@ -310,6 +310,11 @@ SELECT pg_temp.rule_assert((SELECT jsonb_agg(jsonb_build_array(h.old_discount,h.
  'three changes, three history rows: ' || COALESCE((SELECT jsonb_agg(to_jsonb(h) ORDER BY h.id)::text FROM public.invoice_discount_history h),'none'));
 SELECT pg_temp.rule_assert((SELECT count(*)=3 AND bool_and(inv_no=20261043 AND inv_fin_year=2026 AND customer_id=:'customer_id'::uuid AND changed_at IS NOT NULL)
  FROM public.invoice_discount_history),'history rows carry the invoice number and customer, and nothing else was written');
+-- Each row keeps the author's name as it was at the change (migration 48), so
+-- the record still names the person after the account is renamed or deleted.
+SELECT pg_temp.rule_assert((SELECT array_agg(h.changed_by_name ORDER BY h.id) FROM public.invoice_discount_history h WHERE h.invoice_id=:'invoice_a'::uuid)
+ = ARRAY['Line Rule Staff','Line Rule Staff',(SELECT name::text FROM public.user_profiles WHERE id=:'admin_profile'::uuid)],
+ 'each discount history row holds its author''s name: ' || COALESCE((SELECT jsonb_agg(h.changed_by_name ORDER BY h.id)::text FROM public.invoice_discount_history h),'none'));
 -- A discount given when the invoice is first saved is a change too (RULB,
 -- zero rates on the three-argument path, so the surcharge is the whole total).
 SELECT set_config('request.jwt.claims',:'staff_claims',true);

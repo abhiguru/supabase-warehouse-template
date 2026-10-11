@@ -101,10 +101,11 @@ is taken from each request, **an edit must send the stored reason back to keep
 it**: an administrator or supervisor who sends none clears it (recorded as a
 change), and staff who send none are refused. Every change is appended to
 `invoice_zero_charge_history` (invoice, number, customer, old and new reason,
-the dispatch lines with a zero charge before and after, profile, role, time),
-which administrators and supervisors can read, nobody can change, and which
-stays when the invoice is deleted. `invoice_discount_history` is unchanged; a
-discount and a zero charge each need their own reason. `get_invoice_detail`
+the dispatch lines with a zero charge before and after, the author's profile,
+name and role, time), which administrators and supervisors can read, nobody
+can change, and which stays when the invoice is deleted. A discount and a zero
+charge each need their own reason and have their own history.
+`get_invoice_detail`
 returns `zero_charge_reason`, `zero_charge_set_by`, `zero_charge_set_by_name`
 and `zero_charge_set_at` beside the discount record, to administrators,
 supervisors and staff and not to a customer account. The RPC is the only way
@@ -128,9 +129,18 @@ space or invisible characters (tab, no-break space, zero-width space) counts as
 empty, and surrounding white space is removed. An edit that keeps the discount
 keeps its recorded reason and author. The three columns hold the last change
 only; every change is also appended to `invoice_discount_history` (invoice,
-number, customer, old and new discount, reason, profile, role, time), which
-administrators and supervisors can read and nobody can change, and which stays
-when the invoice is deleted. `get_invoice_detail` returns `discount_reason`,
+number, customer, old and new discount, reason, the author's profile, name and
+role, time), which administrators and supervisors can read and nobody can
+change, and which stays when the invoice is deleted. Both histories store the
+author's name and role as they were at the change (`changed_by_name`,
+`changed_by_role`; the name since migration 48), and `discount_set_by_name` and
+`zero_charge_set_by_name` are that stored name: an account that is renamed, or
+deleted by its owner with `delete_user_account` (which turns the profile's
+name into "Deleted User"), stays named in the record of what it did. Only a
+record without a stored name shows the profile's present name: discount
+history rows from before migration 48 were given the name their author's
+profile had at the upgrade, and a row whose author had no profile left then
+has none. `get_invoice_detail` returns `discount_reason`,
 `discount_set_by`, `discount_set_by_name` and `discount_set_at` to
 administrators, supervisors and staff; a customer account does not receive
 them, from the RPC or from the table ("Internal columns" below).

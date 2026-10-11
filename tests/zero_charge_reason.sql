@@ -345,6 +345,10 @@ SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb
 RESET ROLE;
 SELECT pg_temp.zc_assert(jsonb_array_length(pg_temp.zc_history(:'invoice_a'::uuid))=5
  AND pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_object('reason',NULL,'by',:'staff_profile'),'no zero charge, no further record');
+-- Each history row holds its author's name as it was at the change.
+SELECT pg_temp.zc_assert((SELECT array_agg(h.changed_by_name ORDER BY h.id) FROM public.invoice_zero_charge_history h WHERE h.invoice_id=:'invoice_a'::uuid)
+ = ARRAY['Zero Charge Staff','Zero Charge Second Staff','Zero Charge Supervisor','Zero Charge Administrator','Zero Charge Staff'],
+ 'each history row holds its author''s name: '||(SELECT jsonb_agg(h.changed_by_name ORDER BY h.id)::text FROM public.invoice_zero_charge_history h WHERE h.invoice_id=:'invoice_a'::uuid));
 SELECT pg_temp.zc_assert((SELECT length(zero_charge_reason)=500 AND zero_charge_reason=left(repeat('Long reason ',50),500) AND zero_charge_set_by=:'staff_profile'::uuid
   FROM public.invoice WHERE id=:'invoice_d'::uuid)
  AND (SELECT count(*)=1 AND bool_and(length(new_reason)=500 AND old_reason IS NULL AND cardinality(old_lines)=0 AND cardinality(new_lines)=1)
@@ -464,7 +468,53 @@ SELECT pg_temp.zc_assert(pg_temp.zc_raises('TRUNCATE public.invoice_zero_charge_
 SELECT pg_temp.zc_assert((SELECT zero_charge_set_by=:'staff2_profile'::uuid FROM public.invoice WHERE id=:'invoice_c'::uuid),'ZCC''s zero charge was last set by the second staff member');
 DELETE FROM public.user_profiles WHERE id=:'staff2_profile'::uuid;
 SELECT pg_temp.zc_assert((SELECT zero_charge_set_by IS NULL AND zero_charge_reason='Owner agreed' AND zero_charge_set_at IS NOT NULL FROM public.invoice WHERE id=:'invoice_c'::uuid)
- AND (SELECT count(*)=2 FROM public.invoice_zero_charge_history WHERE changed_by=:'staff2_profile'::uuid),
- 'a removed profile leaves the reason on the invoice and its rows in the history');
+ AND (SELECT count(*)=2 AND bool_and(changed_by_name='Zero Charge Second Staff') FROM public.invoice_zero_charge_history WHERE changed_by=:'staff2_profile'::uuid),
+ 'a removed profile leaves the reason on the invoice and its rows, with its name, in the history');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(public.get_invoice_detail(:'invoice_c'::uuid)#>'{invoice,zero_charge_set_by}'='null'
+ AND public.get_invoice_detail(:'invoice_c'::uuid)#>>'{invoice,zero_charge_set_by_name}'='Zero Charge Second Staff',
+ 'the invoice still names who set the zero charge after the profile row is gone: '||(public.get_invoice_detail(:'invoice_c'::uuid)->'invoice')::text);
+RESET ROLE;
+
+-- ---------------------------------------------------------------------------
+-- 7. The author's name is the one at the time of the change
+-- ---------------------------------------------------------------------------
+-- delete_user_account, which every signed-in user may call for the own
+-- account, renames the profile to "Deleted User". The first staff member set
+-- ZCG's zero charge and ZCB's discount, then deletes the account: both records
+-- and both histories still name the person.
+SELECT pg_temp.zc_assert((SELECT zero_charge_set_by=:'staff_profile'::uuid FROM public.invoice WHERE id=:'invoice_g'::uuid)
+ AND (SELECT discount_set_by=:'staff_profile'::uuid FROM public.invoice WHERE id=:'invoice_b'::uuid),'the first staff member is the author of both records');
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(public.delete_user_account()->>'success'='true','the staff member deletes the own account');
+RESET ROLE;
+SELECT pg_temp.zc_assert((SELECT name='Deleted User' AND NOT active FROM public.user_profiles WHERE id=:'staff_profile'::uuid),'the profile is renamed to Deleted User');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_invoice_detail(:'invoice_g'::uuid)->'invoice' AS g_after, public.get_invoice_detail(:'invoice_b'::uuid)->'invoice' AS b_after \gset
+SELECT pg_temp.zc_assert(:'g_after'::jsonb->>'zero_charge_set_by'=:'staff_profile' AND :'g_after'::jsonb->>'zero_charge_set_by_name'='Zero Charge Staff',
+ 'the zero-charge record keeps the name of a deleted account: '||:'g_after');
+SELECT pg_temp.zc_assert(:'b_after'::jsonb->>'discount_set_by'=:'staff_profile' AND :'b_after'::jsonb->>'discount_set_by_name'='Zero Charge Staff',
+ 'the discount record keeps the name of a deleted account: '||:'b_after');
+SELECT pg_temp.zc_assert((SELECT count(*)>=4 AND bool_and(h.changed_by_name='Zero Charge Staff' AND h.changed_by_role='staff')
+   FROM public.invoice_zero_charge_history h WHERE h.changed_by=:'staff_profile'::uuid)
+ AND (SELECT count(*)=1 AND bool_and(h.changed_by_name='Zero Charge Staff' AND h.changed_by_role='staff')
+   FROM public.invoice_discount_history h WHERE h.changed_by=:'staff_profile'::uuid),
+ 'both histories keep the name and the role the author had');
+RESET ROLE;
+-- A record without a stored name (a history row from before migration 48 that
+-- the upgrade could not name, or an invoice row written in the database)
+-- shows the profile's present name.
+INSERT INTO public.invoice_zero_charge_history(invoice_id,old_lines,new_lines,changed_by,changed_by_role,changed_at)
+ VALUES (:'invoice_e'::uuid,'{}','{}',:'supervisor_profile'::uuid,'supervisor','2025-06-01T00:00:00Z');
+UPDATE public.invoice SET zero_charge_set_by=:'supervisor_profile'::uuid, zero_charge_set_at='2025-06-01T00:00:00Z' WHERE id=:'invoice_e'::uuid;
+UPDATE public.invoice SET zero_charge_set_by=:'supervisor_profile'::uuid, zero_charge_set_at='2025-07-01T00:00:00Z' WHERE id=:'invoice_f'::uuid;
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.zc_assert(public.get_invoice_detail(:'invoice_e'::uuid)#>>'{invoice,zero_charge_set_by_name}'='Zero Charge Supervisor'
+ AND public.get_invoice_detail(:'invoice_f'::uuid)#>>'{invoice,zero_charge_set_by_name}'='Zero Charge Supervisor',
+ 'without a stored name the profile''s present name is shown');
+RESET ROLE;
 ROLLBACK;
-\echo 'Zero-charge reason on all three invoice save paths, per role, its record, history and detail checks passed.'
+\echo 'Zero-charge reason on all three invoice save paths, per role, its record, history, detail and author-name checks passed.'

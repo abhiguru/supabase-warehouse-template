@@ -779,7 +779,8 @@ unchanged. [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
 Staff keep the price RPCs that migration 45 gave them. What was missing was a
 record: a changed or deleted price left no trace of what it had been or who
 changed it. Now **every insert, update and delete of `item_storage_prices`
-writes one row to `item_price_history`**: when, the profile and its role, the
+writes one row to `item_price_history`**: when, the profile with its name and
+role as they were, the
 price, its item and customer (ids and names as they were), the action
 (`insert`, `update` or `delete`) and the price before and after. A trigger on
 the table writes it, so `create_item_storage_price`,
@@ -792,6 +793,15 @@ write leaves none.
 The history is append-only (no role is granted a write, and a trigger refuses
 changes and deletes even for the database owner) and has no foreign keys, so a
 price, an item or a profile can still be deleted afterwards.
+
+**The author stays named.** Every signed-in user may delete the own account
+(`delete_user_account`), which renames the profile to "Deleted User". The
+price history, the zero-charge history and the discount history therefore
+store the author's name and role with each row (`changed_by_name`,
+`changed_by_role`), and `get_item_price_history` and `get_invoice_detail`
+return that stored name. Deleting an account no longer removes the person's
+name from the record of the prices, discounts and zero charges that person
+entered; it still removes the name everywhere else.
 
 **Administrators and supervisors read it**, with
 `get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest

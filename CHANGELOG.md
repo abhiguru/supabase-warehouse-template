@@ -58,6 +58,23 @@ refused when they save an invoice that has a line with a charge of 0.
   `tests/security_baseline.sql` fails until it is either granted or listed as
   internal. `docs/INVOICE_RULES.md`, "Internal columns";
   `tests/invoice_column_grants.sql`, `tests/document-columns.test.mjs`.
+- **The three histories keep the author's name.** `invoice_discount_history`
+  (migration 41), `invoice_zero_charge_history` and `item_price_history`
+  stored the author as a profile id and looked the name up when read, and any
+  signed-in user can rename the own profile to "Deleted User" with
+  `delete_user_account`, so the record of who changed a price or gave a
+  discount could be emptied by the person it names. Each history row now
+  stores `changed_by_name` beside `changed_by_role`, as they were at the
+  change, and `get_item_price_history` (`changed_by_name`) and
+  `get_invoice_detail` (`discount_set_by_name`, `zero_charge_set_by_name`)
+  return the stored name; the profile's present name is used only for a row
+  that has none. **Consequence for existing data:** discount history rows from
+  before this migration get the name their author's profile has at the
+  upgrade (an account already deleted reads "Deleted User"). **Consequence for
+  account deletion:** a deleted account's name stays in these three records.
+  `tests/zero_charge_reason.sql` (section 7), `tests/item_price_history.sql`
+  (section 5), `tests/invoice_line_rules.sql`,
+  `tests/history_author_backfill.sh`.
 - **Every price change is recorded.** Staff have been able to create, change
   and delete item prices since migration 45, with nothing kept of what a price
   was or who changed it. A trigger on `item_storage_prices` now writes one row
