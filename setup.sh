@@ -51,6 +51,9 @@ if [[ -z "$LOCKED" ]]; then
 fi
 node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
+# `up` builds only a missing image. Rebuild those whose recipes changed, so that
+# an upgraded checkout does not keep the images of the first installation.
+bash "$ROOT/scripts/build-images.sh"
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
@@ -69,5 +72,8 @@ fi
 COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" < "$ROOT/scripts/configure-operator.sql"
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
+# Optional services (monitoring, printing, pooler) are not part of that start.
+# Replace the running ones whose image or configuration changed.
+bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
 node "$ROOT/scripts/doctor.mjs" --local
 echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml, deploy/warehouse-tunnel.service.example), then run node scripts/doctor.mjs for external verification.'

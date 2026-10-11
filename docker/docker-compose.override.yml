@@ -276,8 +276,9 @@ services:
   grafana:
     image: warehouse-grafana:local
     build:
-      context: .
-      dockerfile: grafana/Dockerfile
+      # Its own directory: with the whole of docker/ as context, a change to any
+      # other recipe or configuration file would look like a changed Grafana recipe.
+      context: ./grafana
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]

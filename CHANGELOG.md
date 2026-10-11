@@ -1,9 +1,53 @@
 # Changelog
 
+## Unreleased — setup rebuilds the images whose recipes changed (2026-10-11)
+
+No migration. **Operator action:** none, but expect the first setup rerun
+after this change to rebuild every image in use once (it needs the network
+and takes a while); later reruns rebuild only what changed.
+
+- **What was wrong.** `setup.sh` and `start.sh` run `compose up`, which builds
+  only an image that is missing. The documented upgrade (`git pull`, setup
+  rerun) therefore left every locally built image as it was at the first
+  installation: recipe changes under `docker/`, the Go 1.27.2 builders and
+  `golang.org/x/net` 0.60.0 among them, never reached a running installation,
+  and setup still reported "healthy". Found on the development instance on
+  2026-10-11: after a setup rerun at `2b9a870` the database image was still
+  the one built on 2026-09-22.
+- **Now.** `setup.sh` runs the new `scripts/build-images.sh` before it starts
+  anything. It fingerprints each image recipe (every file under the build
+  directory, the Dockerfile path, target and build arguments), compares it
+  with `config/image-recipes.sha256` in the state directory and rebuilds the
+  images whose recipe differs, that are missing, that have no record, or
+  whose tag no longer names the image it built. A failed build stops setup
+  before it starts or stops anything and records nothing; an image that did
+  finish building is used at the next start of its service. `start.sh` still
+  never builds. `--all` rebuilds everything in use; `--no-cache` does so
+  without the build cache, for current operating-system packages.
+- **Optional services.** Monitoring, printing and pooler images are rebuilt
+  only where the installation has a container of them. Because setup and
+  `start.sh` start only the core services, both now end with
+  `build-images.sh --replace-optional`, which replaces the running optional
+  services whose image or configuration changed; until now nothing did, so a
+  running Prometheus kept its old image through every upgrade.
+- **Grafana** builds from `docker/grafana` instead of the whole `docker/`
+  directory (`docker/docker-compose.override.yml`, its Dockerfile,
+  `scripts/grafana-check.sh`), so that a change to another recipe is not
+  taken for a changed Grafana recipe. The same two files are copied into the
+  image as before.
+- `docs/OPERATOR_INSTALL.md`, "Rerun and upgrade"; `tests/build-images.test.mjs`.
+- An installation upgraded from v0.3.0 to v0.4.0 (whose setup does not
+  rebuild) still runs the functions runtime 1.76.2 instead of 1.77.4 and
+  lacks the dependency and operating-system updates of the storage, metadata
+  and Studio recipes, until `bash scripts/compose.sh build` or a setup rerun
+  from this change. Whether v0.4.0 behaves differently on those old images
+  was not tested.
+
 ## Unreleased — golang.org/x/net 0.60.0 in the Go-based images (2026-10-11)
 
-No migration. **Operator action:** none beyond the usual rebuild on the next
-upgrade (`setup.sh` builds the images).
+No migration. **Operator action:** none beyond the setup rerun, which rebuilds
+the changed images (see "setup rebuilds the images whose recipes changed"
+above).
 
 - CVE-2026-78669 (HTTP/2, HIGH) was in every Go binary the recipes build
   (`golang.org/x/net` v0.57.0 or v0.58.0). The module files of the eight
@@ -31,8 +75,9 @@ Documentation only (`docs/CONTAINER_SECURITY.md`, "Open items with their steps")
 
 ## Unreleased — Go 1.27.2 builders, refreshed Kong digest and CI action (2026-10-11)
 
-No migration. **Operator action:** none beyond the usual rebuild on the next
-upgrade (`setup.sh` builds the images).
+No migration. **Operator action:** none beyond the setup rerun, which rebuilds
+the changed images (see "setup rebuilds the images whose recipes changed"
+above).
 
 - **Go builders (review finding X5-4).** All ten `FROM golang:` lines use
   `golang:1.27.2-bookworm` by digest; they used 1.27.0 and 1.27.1, behind

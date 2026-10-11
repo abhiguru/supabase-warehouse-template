@@ -229,7 +229,7 @@ candidate, temporarily replace the three Tempo rows in `plugins.lock` with the
 Tempo versions and checksums above, then run from the repository root:
 
 ```sh
-docker build --no-cache --pull=false --platform linux/amd64 --build-arg TARGETARCH=amd64 -t warehouse-grafana-candidate:20260925 -f docker/grafana/Dockerfile docker
+docker build --no-cache --pull=false --platform linux/amd64 --build-arg TARGETARCH=amd64 -t warehouse-grafana-candidate:20260925 docker/grafana
 trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --list-all-pkgs --exit-code 0 --format json --output /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
 node scripts/validate-image-report.mjs /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
 bash scripts/grafana-check.sh
