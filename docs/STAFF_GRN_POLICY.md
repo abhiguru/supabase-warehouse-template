@@ -805,8 +805,9 @@ entered; it still removes the name everywhere else.
 
 **Administrators and supervisors read it**, with
 `get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest
-first; all four arguments optional; `{success, data, pagination}`) or from the
-table. **Staff and customer accounts cannot**: the guard refuses the RPC
+first; all four arguments optional; `{success, data, pagination}`; a page is 1
+to 200 rows, and an offset past the end, up to the largest integer, is an
+empty page) or from the table. **Staff and customer accounts cannot**: the guard refuses the RPC
 (`Staff access required`) and the table's row policy shows them no row. The
 app has no screen for the history yet. The record starts with migration 48;
 prices created before it have no insert row. `tests/item_price_history.sql`.

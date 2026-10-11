@@ -245,6 +245,17 @@ SELECT pg_temp.ph_assert((public.get_item_price_history(p_limit=>0)#>>'{paginati
  AND (public.get_item_price_history(p_limit=>100000)#>>'{pagination,limit}')::int=200
  AND public.get_item_price_history(NULL,NULL,NULL,NULL)->'pagination'='{"total":5,"limit":50,"offset":0,"has_more":false}'::jsonb
  AND (public.get_item_price_history(p_offset=>-3)#>>'{pagination,offset}')::int=0,'limit and offset are bounded');
+-- The largest offset an integer holds is an empty page, not "integer out of
+-- range": the offset is capped where offset + limit still fits.
+SELECT pg_temp.ph_assert(pg_temp.ph_call(statement)=jsonb_build_object('success',true,'data','[]'::jsonb,
+   'pagination',jsonb_build_object('total',5,'limit',page_limit,'offset',2147483447,'has_more',false)),
+ 'the largest offset is an empty page: '||statement||' -> '||pg_temp.ph_call(statement)::text)
+FROM (VALUES ('SELECT public.get_item_price_history(p_offset=>2147483647)',50),
+  ('SELECT public.get_item_price_history(p_limit=>200,p_offset=>2147483647)',200),
+  ('SELECT public.get_item_price_history(p_limit=>2147483647,p_offset=>2147483647)',200),
+  ('SELECT public.get_item_price_history(p_limit=>200,p_offset=>2147483448)',200)) AS s(statement,page_limit);
+SELECT pg_temp.ph_assert((public.get_item_price_history(p_limit=>200,p_offset=>2147483446)#>>'{pagination,offset}')::int=2147483446,
+ 'an offset below the cap is kept as sent');
 -- The supervisor reads it too, through the RPC and from the table.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SELECT pg_temp.ph_assert(warehouse_security.active_role()='supervisor' AND public.get_item_price_history()->'data'=:'everything'::jsonb->'data'

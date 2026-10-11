@@ -463,14 +463,16 @@ CREATE TRIGGER item_price_history_record AFTER INSERT OR UPDATE OR DELETE ON pub
 -- admits those two roles to every RPC and refuses staff and customer accounts
 -- any name that is not on their lists, so this one needs no entry there.
 -- Without a customer or an item the history is not filtered; a page is 1 to
--- 200 rows. changed_by_name is the name stored with the row; a row that has
--- none shows the profile's present name.
+-- 200 rows, and an offset past the end is an empty page. changed_by_name is
+-- the name stored with the row; a row that has none shows the profile's
+-- present name.
 CREATE FUNCTION public.get_item_price_history(p_customer_id uuid DEFAULT NULL, p_item_id uuid DEFAULT NULL,
   p_limit integer DEFAULT 50, p_offset integer DEFAULT 0) RETURNS jsonb
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, extensions, utils, pg_temp AS $$
 DECLARE
     v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 50), 1), 200);
-    v_offset integer := GREATEST(COALESCE(p_offset, 0), 0);
+    -- Capped where offset + limit still fits an integer (has_more adds them).
+    v_offset integer := LEAST(GREATEST(COALESCE(p_offset, 0), 0), 2147483647 - 200);
     v_total integer;
     v_data jsonb;
 BEGIN
