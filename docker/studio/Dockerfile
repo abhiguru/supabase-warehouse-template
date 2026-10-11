@@ -1,4 +1,4 @@
-FROM supabase/studio:2026.09.21-sha-512201d@sha256:fdb56cfa1705ff6b4a21656b82b3fb1abbd411c05b5574d56a681ae223b7804b
+FROM supabase/studio:2026.10.05-sha-94b8b06@sha256:d878dcd9dba73b66d1c2c19aeaf53d07704e71604d93013225be1d1c51475237
 # Debian 12 base, running as root: apply the distribution's security updates,
 # as the Realtime and Supavisor recipes do. The Next.js and simple-git findings
 # are in the application and need a newer publisher tag (CONTAINER_SECURITY.md).
