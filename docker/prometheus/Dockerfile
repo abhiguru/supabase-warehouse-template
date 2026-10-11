@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS build
+FROM golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/prometheus/prometheus/tar.gz/refs/tags/v3.14.0 -o /tmp/source.tar.gz \
     && echo '9294e72722fe8f90e54994ce36f331ea6176cb0edc4149cbf1d023bc89536505  /tmp/source.tar.gz' | sha256sum -c - \
