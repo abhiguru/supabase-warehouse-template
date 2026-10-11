@@ -123,6 +123,19 @@ and a reason already stored on it is kept.
   table of every route; `tests/gateway-config.test.mjs` pins both. Kong has
   not loaded the file on a running stack.
 
+- **A restore that loses a history no longer compares as identical.**
+  `scripts/data-fingerprint.sh` now fingerprints `invoice_discount_history`,
+  `invoice_zero_charge_history` and `item_price_history` with the business
+  tables, and `scripts/backup-integrity.sql` (the report `verify-restore.sh`
+  and `restore.sh` compare) counts the three tables and records the column
+  grant on `invoice`. **Operator note:** a fingerprint file taken before this
+  upgrade has three lines fewer; take a new one after upgrading. Backups taken
+  before migration 48 still verify and restore: the new report lines are
+  printed only for a database that has migration 48.
+  `tests/verify-restore-drill.sh` (the report with and without migration 48; a
+  backup that recorded more history rows than its dump holds is refused),
+  `tests/history-backup-coverage.test.mjs`.
+
 New and changed answers: `get_next_invoice_number` takes `p_fin_year` and can
 raise `No invoice number is left in financial year <year>` (`WH409`);
 `save_invoice` (both signatures) and `update_invoice` read `zero_charge_reason`
