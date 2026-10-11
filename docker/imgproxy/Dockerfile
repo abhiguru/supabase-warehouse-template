@@ -10,7 +10,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     --mount=type=cache,id=warehouse-security-go-build,target=/root/.cache/go-build \
     bash -c 'go mod download && go mod verify && CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -o /out/imgproxy .'
-FROM darthsim/imgproxy:v3.31.4@sha256:73c5dda13199745b0d2d00e4149d4a589c5b2e205dbf335ca05eca8276b54712
+FROM darthsim/imgproxy:v4.0.17@sha256:db0b4b9cd690c8b3590203dea300fb759a18c4ec2af7b37424f0bdef23ce317d
 USER root
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/imgproxy /opt/imgproxy/bin/imgproxy
