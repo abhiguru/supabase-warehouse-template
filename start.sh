@@ -10,4 +10,7 @@ STATE="$(realpath -m "$WAREHOUSE_STATE_DIR")"
 exec 9>"$STATE/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
+# Optional services (monitoring, printing, pooler) are not part of that start.
+# Replace the running ones whose image or configuration changed.
+bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
 node "$ROOT/scripts/doctor.mjs" --local

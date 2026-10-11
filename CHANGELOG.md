@@ -18,11 +18,23 @@ and takes a while); later reruns rebuild only what changed.
   anything. It fingerprints each image recipe (every file under the build
   directory, the Dockerfile path, target and build arguments), compares it
   with `config/image-recipes.sha256` in the state directory and rebuilds the
-  images that differ, are missing, or have no record. A failed build stops
-  setup before any service is touched. Optional services are rebuilt only
-  where their image exists. `start.sh` still never builds.
-  `--all` rebuilds everything in use; `--no-cache` does so without the build
-  cache, for current operating-system packages.
+  images whose recipe differs, that are missing, that have no record, or
+  whose tag no longer names the image it built. A failed build stops setup
+  before it starts or stops anything and records nothing; an image that did
+  finish building is used at the next start of its service. `start.sh` still
+  never builds. `--all` rebuilds everything in use; `--no-cache` does so
+  without the build cache, for current operating-system packages.
+- **Optional services.** Monitoring, printing and pooler images are rebuilt
+  only where the installation has a container of them. Because setup and
+  `start.sh` start only the core services, both now end with
+  `build-images.sh --replace-optional`, which replaces the running optional
+  services whose image or configuration changed; until now nothing did, so a
+  running Prometheus kept its old image through every upgrade.
+- **Grafana** builds from `docker/grafana` instead of the whole `docker/`
+  directory (`docker/docker-compose.override.yml`, its Dockerfile,
+  `scripts/grafana-check.sh`), so that a change to another recipe is not
+  taken for a changed Grafana recipe. The same two files are copied into the
+  image as before.
 - `docs/OPERATOR_INSTALL.md`, "Rerun and upgrade"; `tests/build-images.test.mjs`.
 - An installation upgraded from v0.3.0 to v0.4.0 (whose setup does not
   rebuild) still runs the functions runtime 1.76.2 instead of 1.77.4 and

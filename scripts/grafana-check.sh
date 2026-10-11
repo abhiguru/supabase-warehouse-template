@@ -20,7 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z ${GRAFANA_SMOKE_IMAGE:-} ]]; then
-  docker build --no-cache --pull=false -t "$image" -f "$root/docker/grafana/Dockerfile" "$root/docker"
+  docker build --no-cache --pull=false -t "$image" "$root/docker/grafana"
   built_image=true
 fi
 arch=$(docker image inspect --format '{{.Architecture}}' "$image")

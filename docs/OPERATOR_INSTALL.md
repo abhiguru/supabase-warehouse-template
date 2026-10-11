@@ -1196,25 +1196,35 @@ The last line keeps the USB choices of your earlier setup (`--encrypt`,
 **Setup rebuilds the images whose recipes changed.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
 image recipe (the files under its `docker/` build directory, its Dockerfile
-and build arguments) with a record of what it built last
-(`config/image-recipes.sha256` in the state directory) and rebuilds the images
-that differ; setup's start then replaces only the containers whose image
-changed. What to expect:
+path, build target and build arguments) with a record of what it built last
+(`config/image-recipes.sha256` in the state directory: the recipe's
+fingerprint and the ID of the image built from it) and rebuilds the images
+whose recipe differs or whose tag no longer names the image it built. Setup's
+start then replaces only the containers whose image changed. What to expect:
 
 - The first setup rerun after this behaviour arrived finds no record and
   rebuilds every image in use once. That needs the network and can take a
   good while on a small machine; later reruns print "Images match their
-  recipes; nothing to rebuild." and need no network.
+  recipes; nothing to rebuild." and need no network. A state directory made
+  by `restore-host` has no record either, so the first setup there rebuilds
+  once as well.
 - A build needs the network when a recipe changed. If it fails, setup stops
-  before anything is started or stopped, and the services keep running on
-  the images they had. Run setup again when the network is back.
-- Images of optional services (`monitoring`, `printing`, `pooler`) are
-  rebuilt only if they already exist on the host, that is, if you use them.
+  before it starts or stops anything and records nothing as built. Running
+  services stay as they are. An image that did finish building before the
+  failure is used the next time its service is started, so run setup again
+  when the network is back rather than leaving the installation half way.
+- Optional services (`monitoring`, `printing`, `pooler`) are rebuilt only if
+  this installation has a container of them. Setup and `start.sh` start only
+  the core services, so after their own start they replace the optional
+  services that are running and whose image or configuration changed. A
+  failure there is printed as a warning; the core services stay up.
 - `start.sh` never builds: a host that restarts offline starts what it has.
 - A setup from a release before this one did not rebuild anything: it kept
   every image of the first installation, and recipe changes never reached
   the running services. If you stay on such a release, run
-  `bash scripts/compose.sh build` before the setup rerun.
+  `bash scripts/compose.sh build` before the setup rerun (with
+  `--profile monitoring` and so on for optional services, and start those
+  again yourself).
 
 The build cache also keeps the operating-system packages of the day an image
 was first built. Now and then, and before reading scan numbers, rebuild
