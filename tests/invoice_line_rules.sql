@@ -146,9 +146,10 @@ SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE customer
 SELECT pg_temp.rule_assert((SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'refused saves leave the receipt uninvoiced');
 
 -- Zero rates stay a permitted input on the one-argument path: total 0, no
--- discount, so no discount record either.
+-- discount, so no discount record either. Since migration 48 staff give a
+-- reason for a zero charge (tests/zero_charge_reason.sql).
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041,"zero_charge_reason":"Nothing to charge"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)) AS zero \gset
 SELECT pg_temp.rule_assert(:'zero'::jsonb->>'success'='true','one-argument save: zero rates accepted: ' || :'zero');
 SELECT (:'zero'::jsonb->>'invoice_id') AS zero_invoice \gset
@@ -325,7 +326,7 @@ SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=2
  AND (SELECT count(*)=3 FROM public.invoice_discount_history),'the refused saves stored no invoice and no history row');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"Handling"}'::jsonb,
+SELECT pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"Handling","zero_charge_reason":"Handling only"}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)) AS saved_b \gset
 SELECT pg_temp.rule_assert(:'saved_b'::jsonb->>'success'='true','three-argument save: zero rates accepted: ' || :'saved_b');
 SELECT (:'saved_b'::jsonb->>'invoice_id') AS invoice_b \gset
@@ -382,7 +383,7 @@ RESET ROLE;
 -- duration and no labour, tax 5, total 105 (the old formula gave 147).
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"zero_charge_reason":"Handling only"}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb))->>'success'='true','edit: zero rates accepted');
 SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261045,"discount":0,"discount_reason":"Charged in the rates"}'::jsonb,
  :'b_items'::jsonb)->>'success'='true','edit of RULB to the price-list rates');

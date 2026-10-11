@@ -283,7 +283,8 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   every role and derive them from the saved lines and the stored `discount`
   (migration 24, see [INVOICE_RULES.md](INVOICE_RULES.md)). Line rates remain
   inputs within a range: charge and labour rate from 0 to 999999, tax from 0 to
-  100 (migration 41). A missing, duplicate or unrelated line rolls the whole
+  100 (migration 41). A charge of 0 needs a reason from staff (migration 48,
+  last section). A missing, duplicate or unrelated line rolls the whole
   save back.
 - **A dispatch line is invoiced once.** A save for a receipt that is already
   invoiced, or with a line that is on another invoice, is refused for every
@@ -722,3 +723,34 @@ as a new row. That is one line, not two, but under a new id, and it fails with
   inside the access token keeps the old role until the token is renewed (at
   most `JWT_EXP`, one hour by default). Nothing on the server reads that
   claim; an app that reads it shows the old role until then.
+
+## Owner decisions, 11 October 2026 (migration 48)
+
+The owner took nine decisions on 11 October 2026; these are the ones that
+change what a role may do on this server. Migration 48 implements them. No
+role is added and no RPC is opened to a role that did not have it.
+
+### Zero charge needs a reason from staff
+
+An invoice line may have a storage charge of 0. **Staff must give a reason**
+(`zero_charge_reason`) on every save of an invoice that has such a line, on all
+three save paths; administrators and supervisors may leave it empty. Without it
+staff are refused with `Enter a reason for the zero charge`. The invoice keeps
+the reason, the profile and the time of the last change, and every change is
+appended to `invoice_zero_charge_history`, which administrators and supervisors
+read and nobody can change; staff and customer accounts cannot read it. Staff
+see the last reason and its author through `get_invoice_detail`; a customer
+account does not. Details, and what happens to invoices saved before the rule,
+are in [INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql`
+covers each path and role.
+
+Before this decision zero was already an accepted charge (migration 41) and
+staff could enter it without a word. The discount reason of migration 30 is a
+separate rule and unchanged.
+
+### Invoice number per financial year
+
+`get_next_invoice_number` takes the financial year and counts within it
+([INVOICE_RULES.md](INVOICE_RULES.md), "Invoice numbers"). The roles are the
+same as before: administrators, supervisors and staff; a customer account is
+refused. `tests/invoice_number_per_year.sql`.

@@ -64,6 +64,59 @@ refused whole (`Invoice line charge must be between 0 and 999999`, `Invoice line
 labour rate must be between 0 and 999999`, `Invoice line tax must be between 0
 and 100`).
 
+A storage charge of 0 needs a reason (owner decision of 2026-10-11, migration
+48). The reason is sent as `zero_charge_reason` with the other header fields
+(in `p_invoice_data` on both three-argument paths; on the one-argument path
+there or in its `header` object). The rule is checked on every write, on all
+three save paths, after the lines are saved:
+
+- While at least one line of the invoice has a charge of 0, **staff must send
+  a reason that is not blank**, also when they edit an invoice whose zero
+  charge someone else entered. Administrators and supervisors may leave it
+  empty. The refusal is `Enter a reason for the zero charge` (SQLSTATE 22023),
+  in the same shape as the discount-reason refusal: `error` and `error_code`
+  from the three-argument paths, inside `Database error: … (SQLState: 22023)`
+  from the one-argument path.
+- The reason is trimmed like the discount reason (white space and invisible
+  characters around it are removed; a reason made only of them is blank) and
+  cut to 500 characters.
+- When no line has a zero charge, the reason is stored as NULL whatever was
+  sent.
+- A line saved without a charge is billed as 0 and counts as a zero charge.
+  (The three-argument save refuses a missing charge before that; the other two
+  paths accept it.)
+- A charge below 0 or above 999999 is still refused, with the range message
+  above. A zero **duration** is a different matter and unchanged: the
+  three-argument save refuses a line sent with a duration below 0.01
+  (`Invalid invoice items`), and every path stores the duration it computes
+  from the dates, which is at least one period.
+
+The invoice records `zero_charge_reason`, `zero_charge_set_by` and
+`zero_charge_set_at`. Author and time come from the session and are set when
+the reason or the set of zero-charge lines changes: a first zero charge, a
+reworded reason, a line gaining or losing its zero charge, and the removal of
+the last zero charge (which leaves the reason NULL and the person who removed
+it as the author). An edit that changes neither keeps them. Because the reason
+is taken from each request, **an edit must send the stored reason back to keep
+it**: an administrator or supervisor who sends none clears it (recorded as a
+change), and staff who send none are refused. Every change is appended to
+`invoice_zero_charge_history` (invoice, number, customer, old and new reason,
+the dispatch lines with a zero charge before and after, profile, role, time),
+which administrators and supervisors can read, nobody can change, and which
+stays when the invoice is deleted. `invoice_discount_history` is unchanged; a
+discount and a zero charge each need their own reason. `get_invoice_detail`
+returns `zero_charge_reason`, `zero_charge_set_by`, `zero_charge_set_by_name`
+and `zero_charge_set_at` beside the discount record, to administrators,
+supervisors and staff and not to a customer account. As with the discount
+columns, the three columns are part of the `invoice` row, which a customer
+account can read for its own invoices with a direct table call.
+
+Invoices saved before migration 48 are not checked and not changed. One that
+has a zero-charge line and no reason stays readable; when an administrator or
+supervisor edits it without touching the zero charge, nothing is recorded; when
+staff edit it, the rule applies at that edit, so they must enter a reason,
+which is then recorded with their profile.
+
 `discount` remains an input and is preserved as sent (negative values are
 surcharges); a discount larger than the invoice amount is rejected. Whenever the
 discount changes, the invoice records `discount_reason` (sent as

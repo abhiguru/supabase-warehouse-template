@@ -19,6 +19,25 @@ financial year.
   refused, with `No invoice number is left in financial year <year>`
   (`WH409`). Guard and grants are unchanged. `docs/INVOICE_RULES.md`, "Invoice
   numbers"; `tests/invoice_number_per_year.sql`.
+- **A zero storage charge needs a reason from staff.** The three invoice save
+  RPCs read `zero_charge_reason` from the invoice data. While a line of the
+  invoice has a charge of 0, staff must send a reason that is not blank, on a
+  new invoice and on every edit; administrators and supervisors may leave it
+  empty; with no zero-charge line the reason is stored as NULL. The refusal is
+  `Enter a reason for the zero charge` (SQLSTATE 22023, same shape as the
+  discount-reason refusal). The invoice records `zero_charge_reason`,
+  `zero_charge_set_by` and `zero_charge_set_at` when the reason or the set of
+  zero-charge lines changes, and each change is appended to the new
+  `invoice_zero_charge_history` (read by administrators and supervisors,
+  changed by nobody, kept when the invoice is deleted). `get_invoice_detail`
+  returns the three fields and `zero_charge_set_by_name` to administrators,
+  supervisors and staff. Charges outside 0 to 999999 and a zero duration are
+  refused as before. **Consequence for existing data:** nothing is checked or
+  changed by the migration; an invoice that already has a zero-charge line and
+  no reason can be read and can be edited by an administrator or supervisor as
+  it is, and staff who edit it must enter a reason at that edit. **For API
+  clients:** an edit has to send the stored reason back to keep it.
+  `docs/INVOICE_RULES.md`; `tests/zero_charge_reason.sql`.
 
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 
