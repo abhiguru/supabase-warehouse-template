@@ -16,11 +16,10 @@ the job compares names only, so before every release of either repository:
       (overloads, argument names and the grant to signed-in users).
 - [ ] Record the backend and app commit pair in the pull request.
 
-Open on 2026-10-11: `MOBILE_REF` is `97ddf3c`, 51 commits behind the app head
-reviewed on 2026-10-10 (`13f8844`), and the app's fixes from that review are not
-pushed yet. The static check passes at both heads; the live comparison has not
-been run for the newer app commit. Bump the pin and run the step above once the
-app branch is pushed.
+On 2026-10-11 `MOBILE_REF` moved to `474f30c`, the app `main` that carries the
+fixes from the 2026-10-10 review (it was `97ddf3c`). The static check passes at
+that commit; the live comparison (`--live` against a running stack) has not been
+run for it yet.
 
 ## Post-release local-readiness follow-up — 2026-09-22
 
