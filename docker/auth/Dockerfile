@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS build
+FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/supabase/auth/tar.gz/refs/tags/v2.196.0 -o /tmp/source.tar.gz \
     && echo 'ce391568d026220b216c60f98f5549980e46aa97a156f477d317752b8c0debfb  /tmp/source.tar.gz' | sha256sum -c - \

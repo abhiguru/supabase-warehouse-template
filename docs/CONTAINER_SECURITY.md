@@ -607,7 +607,7 @@ a digest, or referenced with a digest in Compose, with one exception:
 
 | Image | State |
 |---|---|
-| `kong:3.9.3-ubuntu` | Pinned to `sha256:12972ce1ab6396083e56e7d46fce084836c98cc819344bef44a1f583ec3ab191`, the multi-platform index (linux/amd64 and linux/arm64) published for that tag on 2026-09-16, read from a local copy of the image and confirmed against the registry. Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
+| `kong:3.9.3-ubuntu` | Pinned to `sha256:92035d16d7ff86b7bc12fb1d0090d29357d924238b1880f78735f3f2fea6b631`, the multi-platform index (linux/amd64 and linux/arm64) the registry serves for that tag on 2026-10-11, read with `docker buildx imagetools inspect`. The tag was rebuilt after the first pin (`sha256:12972ce1...`, the index of 2026-09-16). Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
 | `postgrest/postgrest:v16.4` | **Tag only.** The image was not available locally to read a digest from. On a host that has pulled it: `docker image inspect --format '{{index .RepoDigests 0}}' postgrest/postgrest:v16.4`, confirm with `docker buildx imagetools inspect` that the digest is an index covering amd64 and arm64, write it after the tag in `docker/docker-compose.yml`, and remove the exception in `tests/gateway-config.test.mjs`. |
 
 Kong still has no recipe of its own, so its Ubuntu packages are as old as the
@@ -906,19 +906,19 @@ On a disposable host, never on a facility:
 Each of these was left unchanged because the change cannot be checked without
 building an image or starting the stack.
 
-- **Go builders (three fixed HIGH standard-library advisories).** Ten `FROM
-  golang:` lines use 1.27.0 or 1.27.1: line 1 of
-  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter}/Dockerfile`
-  (`golang:1.27.0-bookworm@sha256:ded31c68...`), and line 1 of
-  `docker/{auth,gotenberg,imgproxy,prometheus,postgres}/Dockerfile` plus line
-  12 of `docker/postgres/Dockerfile` (`golang:1.27.1-bookworm@sha256:69a7b978...`).
-  Replace all ten with the patch release that fixes the advisories and its
-  digest (`docker pull golang:<version>-bookworm`, then `docker image inspect
-  --format '{{index .RepoDigests 0}}'`); the fixed image was not available
-  locally, so no digest could be read. Each recipe runs `go mod verify` and
-  its selected tests during the build; follow with `npm run scan:images`.
-  The Gotenberg server binary is the publisher's and is not rebuilt by any
-  recipe.
+- **Go builders: done on 2026-10-11.** All ten `FROM golang:` lines (line 1 of
+  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter,auth,gotenberg,imgproxy,prometheus,postgres}/Dockerfile`
+  and line 12 of `docker/postgres/Dockerfile`) now use
+  `golang:1.27.2-bookworm@sha256:5cf287a7...`, the multi-platform index the
+  registry serves for that tag, read with `docker buildx imagetools inspect`.
+  They used 1.27.0 and 1.27.1, which were behind three fixed HIGH
+  standard-library advisories. Each recipe runs `go mod verify` and its
+  selected tests during the build. CI builds nine of them; the Auth recipe
+  belongs to a disabled service that CI does not build, and was built once by
+  hand on 2026-10-11. Still to do:
+  `npm run scan:images` on the rebuilt images, to confirm the three findings
+  are gone. The Gotenberg server binary is the publisher's and is not rebuilt
+  by any recipe.
 - **Studio application advisories.** The recipe now applies Debian updates,
   which addresses the operating-system findings at build time. The Next.js
   and simple-git advisories are in the publisher's application and need a

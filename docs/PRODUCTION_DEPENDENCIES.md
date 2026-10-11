@@ -177,8 +177,9 @@ public demo exposure, or publication of rebuilt third-party container binaries.
 the minimum fixed version. `docker/realtime/Dockerfile` applies Debian package
 updates while retaining the digest-pinned Realtime application; the Studio,
 Supavisor and CUPS recipes do the same for their bases. Kong is referenced by
-digest; PostgREST v16.4 by tag only. The Go builder images (1.27.0 and 1.27.1)
-are behind the patch release that fixes three standard-library advisories. Package indexes
+digest; PostgREST v16.4 by tag only. The Go builder images are
+`golang:1.27.2-bookworm` by digest since 2026-10-11 (they were 1.27.0 and
+1.27.1, behind three fixed standard-library advisories). Package indexes
 remain live: rebuild and rescan when deploying; Docker layer cache is not proof
 of current patch status. These Dockerfiles are source build instructions, not
 published container binaries. Upstream notices remain in the base image.

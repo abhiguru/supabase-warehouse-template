@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS compiler
+FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS compiler
 FROM ghcr.io/imgproxy/imgproxy-base:v3.15.9@sha256:c5b6669b6167d69c8db4377ef24bc5c267f48c48d3b94c5253b99202b9052b5b AS build
 RUN rm -rf /usr/local/go
 COPY --from=compiler /usr/local/go /usr/local/go
