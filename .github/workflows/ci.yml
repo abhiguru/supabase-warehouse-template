@@ -108,13 +108,15 @@ jobs:
 
   operator-install:
     name: Isolated operator installation
-    # The owner's runner VM, which keeps Docker's build cache between runs: about
-    # 18 of this job's 30 minutes on a hosted runner are image builds from
-    # scratch. The VM runs one job at a time and removes every container, volume
-    # and state directory after each job, so the fixed ports and /tmp paths
-    # below do not collide. This job is not a required check: when the VM is
-    # down it waits, and merging is not blocked.
-    runs-on: [self-hosted, linux, x64, warehouse-vm]
+    # Where this job runs is the repository variable OPERATOR_INSTALL_RUNNER: a
+    # JSON value for runs-on, for example ["self-hosted","linux","x64","my-label"].
+    # Without the variable (a fork, for instance) it runs on a GitHub-hosted
+    # runner. A runner that keeps Docker's build cache between runs saves about
+    # half the time: on a hosted runner 18 of this job's 30 minutes are image
+    # builds from scratch. What such a runner must provide, and why it has to be
+    # an isolated machine, is in docs/DEVELOPER_HANDOFF.md, "A self-hosted runner
+    # for operator-install". This job is not a required check.
+    runs-on: ${{ fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     needs: validate
     steps:
