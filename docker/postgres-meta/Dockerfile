@@ -1,4 +1,4 @@
-FROM supabase/postgres-meta:v0.99.0@sha256:9a079ac1c94d89629262822a4bd1902d5b1be4adb464e5a0a8fd078aaed72158 AS build
+FROM supabase/postgres-meta:v0.100.0@sha256:145325b7e39f8ef4931d6e8cfd3f6f4d655de09d72a2ccc96d9513542c2202bd AS build
 USER root
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl patch && rm -rf /var/lib/apt/lists/* \
@@ -13,7 +13,7 @@ RUN patch -p1 < fastify5.patch \
     && npm exec -- vitest run test/app.test.ts test/admin-app.test.ts test/utils.test.ts --maxWorkers=1 --no-file-parallelism \
     && npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm ls --omit=dev
-FROM supabase/postgres-meta:v0.99.0@sha256:9a079ac1c94d89629262822a4bd1902d5b1be4adb464e5a0a8fd078aaed72158
+FROM supabase/postgres-meta:v0.100.0@sha256:145325b7e39f8ef4931d6e8cfd3f6f4d655de09d72a2ccc96d9513542c2202bd
 USER root
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/* \
     /usr/src/app/node_modules /usr/src/app/dist /usr/local/lib/node_modules/npm \
