@@ -108,7 +108,15 @@ jobs:
 
   operator-install:
     name: Isolated operator installation
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable OPERATOR_INSTALL_RUNNER: a
+    # JSON value for runs-on, for example ["self-hosted","linux","x64","my-label"].
+    # Without the variable (a fork, for instance) it runs on a GitHub-hosted
+    # runner. A runner that keeps Docker's build cache between runs saves about
+    # half the time: on a hosted runner 18 of this job's 30 minutes are image
+    # builds from scratch. What such a runner must provide, and why it has to be
+    # an isolated machine, is in docs/DEVELOPER_HANDOFF.md, "A self-hosted runner
+    # for operator-install". This job is not a required check.
+    runs-on: ${{ fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     needs: validate
     steps:

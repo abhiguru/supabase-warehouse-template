@@ -54,3 +54,16 @@ test('the operator-install job runs retention:apply against the real Storage API
   assert.equal(later.length, 1, 'only the stop step follows');
   assert.match(later[0], /^name: Stop only this checkout's operator project\n\s+if: always\(\)/);
 });
+
+test('no workflow names a self-hosted runner; operator-install takes its runner from a repository variable and falls back to a hosted one', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  for (const file of readdirSync(directory)) {
+    const runsOn = readFileSync(new URL(file, directory), 'utf8').split('\n').filter(line => /^\s*runs-on:/.test(line));
+    assert.ok(runsOn.length >= 1, `${file} has jobs`);
+    // A label written here would leave the job waiting for ever in every fork.
+    for (const line of runsOn) assert.doesNotMatch(line, /self-hosted/, `${file}: ${line.trim()}`);
+  }
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.match(job, /\n    runs-on: \$\{\{ fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/);
+});
