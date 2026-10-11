@@ -361,6 +361,8 @@ delete rows of the nineteen business tables with a plain table call
 around the server-computed invoice totals, the rate and discount rules, the
 stock checks, the one-customer-per-dispatch rule and the dependency checks of
 the delete RPCs. The owner decided to remove that path and keep the reads.
+(Since migration 48 the read of `invoice` is by named column and leaves six
+internal columns out; see the last section.)
 
 Migration 42 revokes INSERT, UPDATE and DELETE on `customers`, `items`,
 `item_storage_prices`, `goodsreceived`, `goodsreceived_trl`, `dispatch`,
@@ -741,15 +743,36 @@ three save paths; administrators and supervisors may leave it empty. Without it
 staff are refused with `Enter a reason for the zero charge`. The invoice keeps
 the reason, the profile and the time of the last change, and every change is
 appended to `invoice_zero_charge_history`, which administrators and supervisors
-read and nobody can change; staff and customer accounts cannot read it. Staff
-see the last reason and its author through `get_invoice_detail`; a customer
-account does not. Details, and what happens to invoices saved before the rule,
-are in [INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql`
-covers each path and role.
+read and nobody can change; staff and customer accounts cannot read it.
+Administrators, supervisors and staff see the last reason and its author
+through `get_invoice_detail`; a customer account does not, and cannot read
+them from the `invoice` table either (next subsection). Details, and what
+happens to invoices saved before the rule, are in
+[INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql` covers
+each path and role.
 
 Before this decision zero was already an accepted charge (migration 41) and
 staff could enter it without a word. The discount reason of migration 30 is a
 separate rule and unchanged.
+
+### The discount and zero-charge records are not read from the table
+
+As first written, this section said a customer account does not see the
+zero-charge reason. That was true of `get_invoice_detail` only: a customer
+account could read `zero_charge_reason`, `zero_charge_set_by` and
+`zero_charge_set_at`, and since migration 30 `discount_reason`,
+`discount_set_by` and `discount_set_at`, of its own invoices with
+`GET /rest/v1/invoice`. All app roles share one database role, so the table
+grant cannot tell a customer account from staff.
+
+Migration 48 therefore grants the app role SELECT on every column of `invoice`
+except those six. **For every role, administrator included, the six are read
+through `get_invoice_detail` only**, which gives them to administrators,
+supervisors and staff and not to a customer account. A direct read of
+`invoice` must name its columns (`select=*` is refused with HTTP 403), and a
+column added later is closed until a migration grants it. The row policies are
+unchanged. [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
+`tests/invoice_column_grants.sql`, `tests/security_baseline.sql`.
 
 ### Every price change is recorded
 

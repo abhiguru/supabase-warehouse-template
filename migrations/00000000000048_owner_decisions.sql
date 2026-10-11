@@ -267,6 +267,44 @@ BEGIN
   EXECUTE replace(definition,marker,replacement);
 END $patch$;
 
+-- The discount record (migration 30) and the zero-charge record above are for
+-- the warehouse roles. get_invoice_detail keeps them from a customer account,
+-- but every app role is the database role `authenticated`, which could SELECT
+-- every column of `invoice`, and the row policy shows a customer account its
+-- own invoices: GET /rest/v1/invoice?select=discount_reason,zero_charge_reason
+-- gave it the internal reasons and the authors' profile ids. The table-wide
+-- SELECT is therefore replaced by a SELECT on every column except those six.
+--
+-- Consequences:
+--  * No app role reads the six columns from the table any more, administrators
+--    included. Administrators, supervisors and staff get them from
+--    get_invoice_detail, which runs with its owner's rights. service_role and
+--    the database owner are unchanged.
+--  * A direct read has to name its columns: `select=*` on `invoice` (and an
+--    embedded `invoice(*)`) is refused with "permission denied for table
+--    invoice". The app reads invoices through RPCs only; the invoice PDF
+--    function names its columns (functions/_shared/document-columns.ts).
+--  * The column list is taken from the catalog here, once. A column that a
+--    later migration adds is NOT readable directly until that migration grants
+--    it: closed by default, not open by default. tests/security_baseline.sql
+--    fails for a column that is neither granted nor on its internal list, so
+--    the decision cannot be forgotten in either direction.
+DO $columns$
+DECLARE
+  internal constant name[] := ARRAY['discount_reason','discount_set_by','discount_set_at',
+    'zero_charge_reason','zero_charge_set_by','zero_charge_set_at'];
+  found integer; readable text;
+BEGIN
+  SELECT count(*) INTO found FROM pg_attribute
+    WHERE attrelid = 'public.invoice'::regclass AND attname = ANY (internal) AND NOT attisdropped;
+  IF found <> 6 THEN RAISE EXCEPTION 'Expected the six internal invoice columns, found %', found; END IF;
+  SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum) INTO readable FROM pg_attribute
+    WHERE attrelid = 'public.invoice'::regclass AND attnum > 0 AND NOT attisdropped AND attname <> ALL (internal);
+  -- A table-level REVOKE also removes any column-level grant of the same kind.
+  REVOKE SELECT ON public.invoice FROM PUBLIC, anon, authenticated;
+  EXECUTE format('GRANT SELECT (%s) ON public.invoice TO authenticated', readable);
+END $columns$;
+
 -- ---------------------------------------------------------------------------
 -- 5. Price history
 -- ---------------------------------------------------------------------------

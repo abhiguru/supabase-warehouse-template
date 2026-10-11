@@ -107,9 +107,10 @@ stays when the invoice is deleted. `invoice_discount_history` is unchanged; a
 discount and a zero charge each need their own reason. `get_invoice_detail`
 returns `zero_charge_reason`, `zero_charge_set_by`, `zero_charge_set_by_name`
 and `zero_charge_set_at` beside the discount record, to administrators,
-supervisors and staff and not to a customer account. As with the discount
-columns, the three columns are part of the `invoice` row, which a customer
-account can read for its own invoices with a direct table call.
+supervisors and staff and not to a customer account. The RPC is the only way
+an app session reads them: the three columns, like the three discount columns,
+are left out of the app role's SELECT on `invoice` (see "Internal columns"
+below).
 
 Invoices saved before migration 48 are not checked and not changed. One that
 has a zero-charge line and no reason stays readable; when an administrator or
@@ -132,7 +133,8 @@ administrators and supervisors can read and nobody can change, and which stays
 when the invoice is deleted. `get_invoice_detail` returns `discount_reason`,
 `discount_set_by`, `discount_set_by_name` and `discount_set_at` to
 administrators, supervisors and staff; a customer account does not receive
-them. `get_invoice_data` does not return them yet. The
+them, from the RPC or from the table ("Internal columns" below).
+`get_invoice_data` does not return them yet. The
 three-argument path still validates that the submitted header numbers are
 non-negative before they are discarded. Every save validates line ownership,
 GRN/customer consistency and dispatch references and rolls the whole save back
@@ -156,6 +158,40 @@ with the lines it has.
 storage without duration or labour; storage and labour rounded separately; line
 tax rounded on that base), so its lines differ from the header only by the
 header's single tax ceiling.
+
+## Internal columns
+
+Six columns of `invoice` are internal to the warehouse: `discount_reason`,
+`discount_set_by`, `discount_set_at`, `zero_charge_reason`,
+`zero_charge_set_by` and `zero_charge_set_at`. Until migration 48 a customer
+account could read them for its own invoices with a direct table call
+(`GET /rest/v1/invoice?select=discount_reason`), although `get_invoice_detail`
+hid them, because every app role is the one database role `authenticated` and
+that role could select the whole table.
+
+Since migration 48 the app role's SELECT on `invoice` is a grant on the other
+columns only:
+
+- **No app role reads the six columns from the table**, administrators
+  included. Administrators, supervisors and staff get them from
+  `get_invoice_detail`; a customer account does not get them at all. The
+  service key and the database owner read the table as before.
+- **A direct read of `invoice` has to name its columns.** `select=*` (also the
+  default when `select` is missing, and an embedded `invoice(*)`) is answered
+  HTTP 403, `permission denied for table invoice`, for every role. Filtering or
+  ordering by one of the six is refused the same way. Every other column is
+  read as before, within the row policies. The app reads invoices through RPCs;
+  the invoice PDF function names its columns
+  (`functions/_shared/document-columns.ts`).
+- **A column added to `invoice` later is closed until it is granted.** The
+  migration that adds it either runs `GRANT SELECT (column) ON public.invoice
+  TO authenticated` or adds the column to the internal list in
+  `tests/security_baseline.sql`; that test fails for a column that is neither,
+  so a new column is neither exposed nor hidden without a decision.
+
+`invoice_trl`, `invoice_discount_history` and `invoice_zero_charge_history` are
+unchanged. `tests/invoice_column_grants.sql` reads the table as a customer
+account, as staff, as supervisor, as administrator and with the service key.
 
 ## Invoice numbers
 

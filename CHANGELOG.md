@@ -41,6 +41,23 @@ refused when they save an invoice that has a line with a charge of 0.
   it is, and staff who edit it must enter a reason at that edit. **For API
   clients:** an edit has to send the stored reason back to keep it.
   `docs/INVOICE_RULES.md`; `tests/zero_charge_reason.sql`.
+- **A customer account can no longer read the internal reasons from the
+  `invoice` table.** `get_invoice_detail` kept `discount_reason`,
+  `discount_set_by`, `discount_set_at` (migration 30) and the three
+  `zero_charge_*` columns from a customer account, but a customer login could
+  read all six for its own invoices with `GET /rest/v1/invoice`, because every
+  app role is the one database role. Migration 48 replaces the app role's
+  SELECT on `invoice` by a SELECT on every other column. **For API clients:**
+  no app role, administrator included, reads those six columns from the table
+  any more (use `get_invoice_detail`); a direct read of `invoice` must name its
+  columns, and `select=*`, a missing `select` or an embedded `invoice(*)` is
+  answered HTTP 403 `permission denied for table invoice`. The app does not
+  read the table; the invoice PDF function now names its header columns
+  (`functions/_shared/document-columns.ts`). A column a later migration adds to
+  `invoice` is closed until that migration grants it, and
+  `tests/security_baseline.sql` fails until it is either granted or listed as
+  internal. `docs/INVOICE_RULES.md`, "Internal columns";
+  `tests/invoice_column_grants.sql`, `tests/document-columns.test.mjs`.
 - **Every price change is recorded.** Staff have been able to create, change
   and delete item prices since migration 45, with nothing kept of what a price
   was or who changed it. A trigger on `item_storage_prices` now writes one row
