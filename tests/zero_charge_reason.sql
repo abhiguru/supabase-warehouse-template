@@ -133,6 +133,20 @@ SELECT pg_temp.zc_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.
  AND (SELECT count(*)=0 FROM pg_constraint WHERE conrelid='public.invoice_zero_charge_history'::regclass AND contype='f'),
  'the history has row level security, no write grant and no foreign key');
 
+-- "Blank" means for this reason what it means for the discount reason: every
+-- character of the Basic Multilingual Plane is trimmed by one rule exactly when
+-- the other trims it (the class is read from migration 41's trigger function).
+SELECT pg_temp.zc_assert(discount.blank IS NOT NULL
+ AND (SELECT count(*)=0 FROM generate_series(1,65535) AS code
+      WHERE code NOT BETWEEN 55296 AND 57343
+        AND (warehouse_security.trimmed_reason(chr(code)) IS NULL) IS DISTINCT FROM (chr(code) ~ ('^' || discount.blank || '$')))
+ AND (SELECT count(*)>=25 FROM generate_series(1,65535) AS code
+      WHERE code NOT BETWEEN 55296 AND 57343 AND warehouse_security.trimmed_reason(chr(code)) IS NULL)
+ AND warehouse_security.trimmed_reason(U&' \00A0Kept \200B text\3000 ')=U&'Kept \200B text'
+ AND warehouse_security.trimmed_reason(NULL) IS NULL,
+ 'the zero-charge reason is trimmed of the same characters as the discount reason')
+FROM (SELECT substring(pg_get_functiondef('warehouse_security.invoice_discount_audit()'::regprocedure) from $re$blank constant text := '([^']+)'$re$) AS blank) discount;
+
 -- ---------------------------------------------------------------------------
 -- 1. Staff, new invoices: a zero charge needs a reason on both save paths
 -- ---------------------------------------------------------------------------
