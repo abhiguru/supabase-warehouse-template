@@ -19,7 +19,7 @@ own schema changes when it starts.
 - Dependabot, corrected after one day: the two recipe manifests
   (`docker/postgres-meta`, `docker/storage`) get security updates only. The
   weekly group added on 2026-10-12 proposed 44 minor and patch updates at
-  once and the images did not build with them. `supabase/storage-api` minor
+  once and the metadata image did not build with them. `supabase/storage-api` minor
   updates are held as well: a new tag needs the manifest rebuilt from it.
 
 ## Unreleased — dependency updates, Prometheus 3.15.0 (2026-10-12)
