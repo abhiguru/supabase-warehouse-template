@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — functions route: hourly cap 6000 (2026-10-11)
+
+`docker/kong.yml` only. **Operator action:** restart the gateway container
+after the upgrade (`bash scripts/compose.sh restart kong`); it reads
+`docker/kong.yml` when it starts, and a setup rerun does not restart it.
+
+- Owner decision: `/functions/v1/` keeps 100 requests a minute per client
+  address and its hourly cap goes from 2000 to 6000. A facility whose phones
+  share one address was refused sign-in codes, PDF documents and
+  configuration reads for the rest of the hour once 2000 requests were used.
+  6000 is what 100 a minute adds up to in an hour, so the minute limit is now
+  the one that acts. The OTP limits in the database are unchanged.
+  `docs/CONTAINER_SECURITY.md`, "REST request limit";
+  `tests/gateway-config.test.mjs`.
 ## Unreleased — Dependabot no longer proposes majors that cannot be taken as they are (2026-10-11)
 
 Repository maintenance; nothing changes for an installation.
