@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — Realtime v2.143.0; PostgreSQL 15.19 image held (2026-10-12)
+
+`docker/realtime/Dockerfile`. **Operator action:** none beyond the usual
+upgrade; the setup rerun rebuilds the Realtime image, and Realtime applies its
+own schema changes when it starts.
+
+- **Realtime v2.143.0** (was v2.134.10). The publisher's image now runs as
+  `nobody`; the recipe switches to root only for the package upgrade.
+- **Not taken: `supabase/postgres` 15.19.0.004.** It is not a newer build of
+  the image in use but a different one: Alpine in place of Ubuntu (the
+  recipe's `apt-get` step cannot run), another user id for `postgres` (100,
+  was 105, and an existing data directory belongs to 105), no `wal-g`, and the
+  migration tests stop on it because the Storage schema is missing. That is a
+  planned upgrade. Not examined: whether text sorts the same on both.
+  `.github/dependabot.yml` holds minor updates of that image with these
+  reasons. PostgreSQL stays at 15.8.
+
 ## Unreleased — dependency updates, Prometheus 3.15.0 (2026-10-12)
 
 Image recipes only. **Operator action:** none beyond the usual upgrade; the
