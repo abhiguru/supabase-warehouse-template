@@ -1,20 +1,47 @@
 #!/usr/bin/env bash
 # Restore a backup into a disposable, network-isolated database and compare integrity.
+#   npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP
+# The backup signature is checked first with the backup key
+# (WAREHOUSE_BACKUP_KEY_FILE, else $WAREHOUSE_STATE_DIR/config/backup.key).
+# Optional environment:
+#   WAREHOUSE_VERIFY_DATA_MB      size of the disposable data directory (default: from the dump sizes, at least 768)
+#   WAREHOUSE_VERIFY_SIZE_FACTOR  restored size estimate per dump byte (default 10)
+#   WAREHOUSE_VERIFY_MEMORY_MB    memory limit of the disposable container
+#   WAREHOUSE_VERIFY_STORAGE      auto (default: memory when it fits, else disk), tmpfs or disk
+#   WAREHOUSE_VERIFY_SCRATCH_DIR  parent of the disk-backed data directory (default: $WAREHOUSE_STATE_DIR)
+#   WAREHOUSE_DIAGNOSTICS_DIR     where a failed run leaves the container log (default: $WAREHOUSE_STATE_DIR/diagnostics)
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-backup="${1:-${WAREHOUSE_BACKUP_DIR:-}}"
-[[ -n "$backup" && -d "$backup" ]] || { echo 'Usage: npm run db:verify-restore -- PATH_TO_BACKUP' >&2; exit 1; }
+# Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
+IMAGE='supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc'
+usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP' >&2; exit 1; }
+allow_unsigned=false
+backup=''
+while (($#)); do
+  case "$1" in
+    --allow-unsigned) allow_unsigned=true ;;
+    -h|--help) usage ;;
+    -*) echo "Unknown option: $1" >&2; usage ;;
+    *) [[ -z "$backup" ]] || usage; backup="$1" ;;
+  esac
+  shift
+done
+[[ -n "$backup" ]] || backup="${WAREHOUSE_BACKUP_DIR:-}"
+[[ -n "$backup" && -d "$backup" ]] || usage
 for file in database.dump storage.tar.gz integrity.txt metadata.txt SHA256SUMS; do
   [[ -f "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
-(cd "$backup" && sha256sum -c SHA256SUMS)
+# shellcheck source=scripts/backup-key.sh
+source "$ROOT/scripts/backup-key.sh"
+# Signature, then checksums: nothing below reads the backup before this passes.
+backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
 has_roles=false
 has_supabase=false
 case "$format" in
   warehouse-backup-v1) ;;
-  warehouse-backup-v2|warehouse-backup-v3|warehouse-backup-v4)
+  warehouse-backup-v2|warehouse-backup-v3|warehouse-backup-v4|warehouse-backup-v5)
     for file in compose.env instance.json; do
       [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
       grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
@@ -24,7 +51,7 @@ case "$format" in
       [[ -f "$backup/roles.txt" && ! -L "$backup/roles.txt" ]] || { echo 'Incomplete backup: missing roles.txt' >&2; exit 1; }
       grep -Fq '  roles.txt' "$backup/SHA256SUMS" || { echo 'Backup checksum missing for roles.txt' >&2; exit 1; }
     fi
-    if [[ "$format" == warehouse-backup-v4 ]]; then
+    if [[ "$format" == warehouse-backup-v4 || "$format" == warehouse-backup-v5 ]]; then
       has_supabase=true
       for file in _supabase.dump storage_objects.txt; do
         [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
@@ -34,6 +61,10 @@ case "$format" in
     ;;
   *) echo 'Unsupported backup format.' >&2; exit 1 ;;
 esac
+# From v5 on every backup is signed; a v5 backup without a verified signature was tampered with or mislabelled.
+if [[ "$format" == warehouse-backup-v5 && "$BACKUP_SIGNED" != true && "$allow_unsigned" != true ]]; then
+  echo 'Refusing: a warehouse-backup-v5 backup must carry a valid signature.' >&2; exit 1
+fi
 # Optional tunnel credential (scripts/tunnel.sh): only known regular files, each checksummed.
 if [[ -e "$backup/tunnel" || -L "$backup/tunnel" ]]; then
   [[ -d "$backup/tunnel" && ! -L "$backup/tunnel" ]] || { echo 'Backup tunnel entry is not a directory.' >&2; exit 1; }
@@ -46,28 +77,116 @@ fi
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 
-if tar -tzf "$backup/storage.tar.gz" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-  echo 'Unsafe path in storage archive.' >&2
-  exit 1
-fi
-if tar -tvzf "$backup/storage.tar.gz" | grep -Eq '^[lh]'; then
-  echo 'Storage archive contains a link; refusing unsafe extraction.' >&2
-  exit 1
-fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-restore.XXXXXX")
 container="warehouse-restore-$(openssl rand -hex 6)"
 created=false
+disk_dir=''
+# A failed run keeps the evidence: the container log, its state and the database
+# sessions are saved before the disposable container is removed.
+save_diagnostics() {
+  local base dir
+  base="${WAREHOUSE_DIAGNOSTICS_DIR:-}"
+  if [[ -z "$base" && "${WAREHOUSE_STATE_DIR:-}" == /* && -d "${WAREHOUSE_STATE_DIR:-}" ]]; then base="$WAREHOUSE_STATE_DIR/diagnostics"; fi
+  [[ -n "$base" ]] || base="${TMPDIR:-/tmp}/warehouse-diagnostics"
+  dir="$base/verify-restore-$(date -u +%Y%m%dT%H%M%SZ)-${container#warehouse-restore-}"
+  mkdir -p -m 700 "$dir" 2>/dev/null || return 0
+  docker logs --tail 400 "$container" > "$dir/container.log" 2>&1 || true
+  docker inspect --format '{{json .State}}' "$container" > "$dir/container-state.json" 2>/dev/null || true
+  docker exec -e PGPASSWORD=disposable-restore-only "$container" psql -X -A -U supabase_admin -d postgres \
+    -c 'SELECT pid, backend_type, datname, usename, state, wait_event_type, wait_event, backend_start, left(query, 200) AS query FROM pg_stat_activity ORDER BY backend_start' \
+    > "$dir/pg_stat_activity.txt" 2>&1 || true
+  echo "Restore verification failed. Container log, state and database sessions were saved in $dir" >&2
+  if grep -Eq 'No space left on device|Check free disk space|could not extend file' "$dir/container.log" 2>/dev/null; then
+    echo "The disposable database ran out of space: its data directory was ${data_mb:-?} MiB (${sized:-default}) on ${storage:-?}. This says nothing about the backup. Repeat with a larger WAREHOUSE_VERIFY_DATA_MB or WAREHOUSE_VERIFY_SIZE_FACTOR." >&2
+  fi
+  echo 'Sessions at the time of the failure (pid|backend|database|state):' >&2
+  docker exec -e PGPASSWORD=disposable-restore-only "$container" psql -X -A -t -U supabase_admin -d postgres \
+    -c 'SELECT pid, backend_type, datname, state FROM pg_stat_activity ORDER BY backend_start' >&2 2>/dev/null || echo '  (the database did not answer)' >&2
+}
 cleanup() {
-  if [[ "$created" == true ]]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
+  local status=$?
+  trap - EXIT
+  if [[ "$created" == true ]]; then
+    if ((status != 0)); then save_diagnostics || true; fi
+    docker rm -f "$container" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$disk_dir" && -d "$disk_dir" ]]; then
+    # PostgreSQL files belong to the container's postgres user, so the image removes them.
+    docker run --rm --network none --user 0:0 --entrypoint /bin/rm -v "$disk_dir:/scratch" "$IMAGE" -rf /scratch/data >/dev/null 2>&1 || true
+    rm -rf -- "$disk_dir" 2>/dev/null || echo "Could not remove the disposable data directory $disk_dir; remove it with: sudo rm -rf $disk_dir" >&2
+  fi
   rm -rf "$scratch"
+  exit "$status"
 }
 trap cleanup EXIT
+
+# The storage archive is listed, never unpacked: restore.sh does the extraction,
+# and SHA256SUMS already vouches for its bytes. Each listing is read to its end.
+# A `tar | grep -q` pipeline under pipefail answers "no match" when grep stops at
+# an early match and tar dies of SIGPIPE, which let a link through.
+tar -tzf "$backup/storage.tar.gz" > "$scratch/archive_names.txt"
+if grep -Eq '(^/|(^|/)\.\.(/|$))' "$scratch/archive_names.txt"; then
+  echo 'Unsafe path in storage archive.' >&2
+  exit 1
+fi
+entry_types="$(tar -tvzf "$backup/storage.tar.gz" | cut -c1 | LC_ALL=C sort -u | tr -d '\n')"
+if [[ -n "${entry_types//[d-]/}" ]]; then
+  echo 'Storage archive contains a link or special file; refusing unsafe extraction.' >&2
+  exit 1
+fi
+
+# Size the disposable database from the backup. The restored cluster holds the
+# initialized image, both databases with their rebuilt indexes and the WAL the
+# load writes, so the dump size is multiplied and the WAL allowance added.
+natural() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "$1 must be a positive whole number: $2" >&2; exit 1; }; }
+mib() { echo $(( ($1 + 1048575) / 1048576 )); }
+dump_bytes="$(stat -c %s -- "$backup/database.dump")"
+if [[ "$has_supabase" == true ]]; then dump_bytes=$((dump_bytes + $(stat -c %s -- "$backup/_supabase.dump"))); fi
+dump_mb="$(mib "$dump_bytes")"
+factor="${WAREHOUSE_VERIFY_SIZE_FACTOR:-10}"; natural WAREHOUSE_VERIFY_SIZE_FACTOR "$factor"
+estimate_mb=$((dump_mb * factor))
+wal_mb=$((estimate_mb < 1024 ? estimate_mb : 1024))
+data_mb=$((256 + estimate_mb + wal_mb))
+((data_mb >= 768)) || data_mb=768
+sized="dumps of $dump_mb MiB x $factor, plus WAL and the empty cluster"
+if [[ -n "${WAREHOUSE_VERIFY_DATA_MB:-}" ]]; then natural WAREHOUSE_VERIFY_DATA_MB "$WAREHOUSE_VERIFY_DATA_MB"; data_mb="$WAREHOUSE_VERIFY_DATA_MB"; sized='WAREHOUSE_VERIFY_DATA_MB'; fi
+storage="${WAREHOUSE_VERIFY_STORAGE:-auto}"
+[[ "$storage" == auto || "$storage" == tmpfs || "$storage" == disk ]] || { echo "WAREHOUSE_VERIFY_STORAGE must be auto, tmpfs or disk: $storage" >&2; exit 1; }
+tmpfs_memory_mb=$((data_mb + 256))
+available_mb="$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || true)"
+[[ "$available_mb" =~ ^[0-9]+$ ]] || available_mb=0
+scratch_parent="${WAREHOUSE_VERIFY_SCRATCH_DIR:-}"
+if [[ -z "$scratch_parent" && "${WAREHOUSE_STATE_DIR:-}" == /* ]]; then scratch_parent="$WAREHOUSE_STATE_DIR"; fi
+if [[ "$storage" == auto ]]; then
+  if ((tmpfs_memory_mb <= available_mb)); then storage=tmpfs; else storage=disk; fi
+elif [[ "$storage" == tmpfs ]] && ((tmpfs_memory_mb > available_mb)); then
+  echo "Restore verification needs a $data_mb MiB in-memory database ($sized) and $tmpfs_memory_mb MiB of memory, but only $available_mb MiB are available. Use WAREHOUSE_VERIFY_STORAGE=disk, or free memory." >&2
+  exit 1
+fi
+if [[ "$storage" == tmpfs ]]; then
+  memory_mb="$tmpfs_memory_mb"
+  data_args=(--tmpfs "/var/lib/postgresql/data:rw,size=${data_mb}m")
+else
+  memory_mb=1024
+  if [[ -z "$scratch_parent" ]]; then
+    echo "Restore verification needs a $data_mb MiB database ($sized); $tmpfs_memory_mb MiB of memory are not available ($available_mb MiB free), and no directory is set for a disk-backed run. Set WAREHOUSE_STATE_DIR or WAREHOUSE_VERIFY_SCRATCH_DIR." >&2
+    exit 1
+  fi
+  [[ "$scratch_parent" == /* && -d "$scratch_parent" && -w "$scratch_parent" ]] || { echo "The directory for the disk-backed restore verification is not a writable absolute directory: $scratch_parent" >&2; exit 1; }
+  free_mb="$(df -B1M --output=avail -- "$scratch_parent" | tail -n1 | tr -d ' ')"
+  if ((free_mb < data_mb + 64)); then
+    echo "Restore verification needs $data_mb MiB for the disposable database ($sized) but only $free_mb MiB are free in $scratch_parent. Free space there, or point WAREHOUSE_VERIFY_SCRATCH_DIR at a directory with room." >&2
+    exit 1
+  fi
+fi
+if [[ -n "${WAREHOUSE_VERIFY_MEMORY_MB:-}" ]]; then natural WAREHOUSE_VERIFY_MEMORY_MB "$WAREHOUSE_VERIFY_MEMORY_MB"; memory_mb="$WAREHOUSE_VERIFY_MEMORY_MB"; fi
+echo "Restore verification: disposable database of $data_mb MiB ($sized) on $storage, memory limit $memory_mb MiB."
 
 if [[ "$has_supabase" == true ]]; then
   # Every catalogued object must be present in the archive. Storage keeps files
   # under a tenant prefix, so a catalog entry is matched as a path suffix.
   # Archive files without a catalog entry are reported but do not fail.
-  tar -tzf "$backup/storage.tar.gz" | sed -n 's#^\./##; /[^/]$/p' > "$scratch/archive_files.txt"
+  sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
   awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt" '
     FILENAME == ARGV[1] { if (length($0)) want[$0] = 1; next }
     {
@@ -90,22 +209,29 @@ if [[ "$has_supabase" == true ]]; then
     sort "$scratch/extra_files.txt" | head -n 20 >&2
   fi
 fi
-tar -xzf "$backup/storage.tar.gz" -C "$scratch"
+rm -f -- "$scratch/archive_names.txt"
 
+if [[ "$storage" == disk ]]; then
+  disk_dir="$(mktemp -d "$scratch_parent/.verify-restore.XXXXXX")"
+  mkdir -m 700 "$disk_dir/data"
+  data_args=(-v "$disk_dir/data:/var/lib/postgresql/data")
+fi
 docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test \
-  --network none --memory 1g --cpus 1 \
-  --tmpfs /var/lib/postgresql/data:rw,size=768m \
+  --network none --memory "${memory_mb}m" --cpus 1 \
+  "${data_args[@]}" \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=disabled -e APP_ENV=verification \
   -e POSTGRES_PASSWORD=disposable-restore-only \
-  supabase/postgres:15.8.1.060 >/dev/null
+  "$IMAGE" >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
   if docker exec "$container" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+  # A container that has already exited will not become ready.
+  [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != false ]] || break
   sleep 2
 done
-[[ "$ready" == true ]] || { echo 'Restore database did not start.' >&2; exit 1; }
+[[ "$ready" == true ]] || { echo "Restore database did not start (data directory of $data_mb MiB on $storage, memory limit $memory_mb MiB)." >&2; exit 1; }
 # The logical dump preserves ACLs, while Compose init scripts may add grant
 # targets that the bare pinned image lacks. Recreate absent names in this
 # disposable database so pg_restore verifies the original ACLs.
@@ -127,8 +253,11 @@ END $$;
 SQL
 fi
 docker cp "$backup/database.dump" "$container:/tmp/database.dump"
+# template0, never template1: the image's own start-up sessions attach to template1
+# and CREATE DATABASE refuses a template that anyone is connected to. template0
+# accepts no connections, and a dump restores completely into a copy of it.
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
-  -U supabase_admin -T template1 warehouse_restore
+  -U supabase_admin -T template0 warehouse_restore
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --clean --if-exists \
   --no-acl --section=pre-data --exit-on-error /tmp/database.dump
@@ -161,7 +290,7 @@ if [[ "$has_supabase" == true ]]; then
   # The pooler/analytics database must replay completely as well.
   docker cp "$backup/_supabase.dump" "$container:/tmp/_supabase.dump"
   docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
-    -U supabase_admin -T template1 _supabase_restore
+    -U supabase_admin -T template0 _supabase_restore
   docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
     -U supabase_admin -d _supabase_restore --no-owner --no-acl \
     --exit-on-error /tmp/_supabase.dump
@@ -178,4 +307,8 @@ if [[ "$has_supabase" == true ]]; then
     -c "$catalog_query" > "$scratch/storage_objects.txt"
   diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
 fi
-echo 'Backup checksums, storage archive safety, database restore, and integrity comparison passed.'
+if [[ "$BACKUP_SIGNED" == true ]]; then
+  echo 'Backup signature, checksums, storage archive safety, database restore, and integrity comparison passed.'
+else
+  echo 'Backup checksums, storage archive safety, database restore, and integrity comparison passed. The backup is UNSIGNED: its origin was not proven.'
+fi

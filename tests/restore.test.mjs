@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSy
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, signBackup } from './backup-test-helpers.mjs';
 
 // Runs scripts/restore.sh from a private copy of the operator scripts against a
 // fake docker; returns the result together with every docker invocation.
@@ -54,9 +54,13 @@ test('restore refuses while operator services are running', () => {
 test('restore refuses a v3 backup', () => {
   const { scratch, state, backup } = fixture('warehouse-restore-v3-', { format: 'warehouse-backup-v3' });
   try {
-    const result = restore(scratch, ['--yes', backup]);
+    let result = restore(scratch, ['--yes', backup]);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /requires format=warehouse-backup-v4.*warehouse-backup-v3/);
+    assert.match(result.stderr, /carries no signature/);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /);
+    result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /requires format=warehouse-backup-v5.*warehouse-backup-v3/);
     assert.doesNotMatch(result.calls, /run |up -d| cp /);
     untouched(state);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
@@ -96,6 +100,7 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     writeFileSync(join(backup, 'compose.env'), composeEnv(state, 'JWT_SECRET=old-secret\n'), { mode: 0o600 });
     const sums = spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup, encoding: 'utf8' });
     assert.equal(sums.status, 0, sums.stderr);
+    signBackup(backup);
     const result = restore(scratch, ['--yes', '--restore-config', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
     assert.notEqual(result.status, 0, 'the injected start failure propagates');
     assert.match(result.stderr, /Restore failed during: (migrations|start services)/);
@@ -135,5 +140,54 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     const removed = calls.search(/^rm -f warehouse-restore-[0-9a-f]{12}$/m);
     assert.ok(removed >= 0 && removed < at('up -d --wait --wait-timeout 180 db'), 'verification container removed before initialization');
     assert.ok(calls.split('\n').filter(line => line.endsWith('up -d --wait --wait-timeout 180')).length <= 1);
+    // Both databases are recreated from template0: a session on template1 right after start-up must not fail the restore.
+    const recreated = calls.split('\n').filter(line => line.includes('CREATE DATABASE'));
+    assert.equal(recreated.length, 2);
+    for (const line of recreated) assert.match(line, /CREATE DATABASE (postgres|_supabase) OWNER postgres TEMPLATE template0$/, line);
+    assert.doesNotMatch(calls, /template1/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore refuses a backup that is not signed with the key of this installation, before stopping or moving anything', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-signature-');
+  try {
+    // Edited and re-checksummed by someone without the key.
+    writeFileSync(join(backup, 'database.dump'), 'planted dump\n');
+    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
+    let result = restore(scratch, ['--yes', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /signature of this backup does not match the backup key/);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /);
+    result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
+    assert.notEqual(result.status, 0, 'a wrong signature is refused even with --allow-unsigned');
+    untouched(state);
+    // Signed by another installation's key.
+    const foreign = makeBackup(join(scratch, 'foreign'), { env: composeEnv(state), key: '77'.repeat(32) });
+    result = restore(scratch, ['--yes', foreign]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match the backup key/);
+    // The state lost its key: a signed backup cannot be checked, so it is refused.
+    signBackup(backup);
+    rmSync(join(state, 'config/backup.key'));
+    result = restore(scratch, ['--yes', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /no backup key is available/);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /);
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore takes an unsigned v4 backup only with --allow-unsigned and tells the verifier', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-v4-', { format: 'warehouse-backup-v4' });
+  try {
+    let result = restore(scratch, ['--yes', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /carries no signature[\s\S]*--allow-unsigned/);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /);
+    untouched(state);
+    result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
+    assert.match(result.stderr, /WARNING: this backup carries no signature/);
+    assert.match(result.calls, /^run -d --pull missing/m, 'the verifier ran');
+    assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

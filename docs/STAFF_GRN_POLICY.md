@@ -1,5 +1,10 @@
 # Staff GRN permissions and cache consistency
 
+This document is a dated record of role decisions. The current rules for every
+role are in the last section, [The server admits what the app offers, 11 October
+2026](#the-server-admits-what-the-app-offers-11-october-2026); where an earlier
+section says otherwise, a note marks it as superseded.
+
 The operator selected this policy on 3 October 2026: active, approved staff may
 view, create and edit warehouse GRNs. GRN deletion remains limited to admins
 and supervisors. Customers retain their assigned-customer read boundary.
@@ -16,6 +21,11 @@ registered storage objects. They can read confirmed GRN attachments. Confirmed
 image-object deletion/overwrite and unrelated buckets remain restricted. The
 existing cancellation RPC can remove pending metadata; storage deletion is
 still restricted and no new image-failure/retry acceptance is claimed.
+
+> Superseded in part on 11 October 2026 (migration 45): staff may remove a
+> confirmed photo with `delete_grn_image` / `delete_dispatch_image` and then
+> delete its file. A file that an image row still names cannot be deleted or
+> overwritten by staff.
 
 The mobile GRN activity report includes staff. Its GRN edit dispatch-presence
 helper uses the existing authorized GRN detail summary instead of a direct
@@ -112,6 +122,10 @@ migration 21 permits the existing create/read/update document RPCs for active
 staff and adjusts only the dispatch implementations' legacy role checks and
 invoiceable-GRN lookup. It does not change shared ownership helpers, direct
 table/storage policies, pricing mutations or destructive permissions.
+
+> Superseded in part on 11 October 2026 (migration 45): staff may now read and
+> change item prices and remove photos. Invoice deletion and role
+> administration stay refused for staff.
 
 The isolated regression found an independent dispatch-list error: a varchar[]
 materialized-view column was compared with a text[] GRN filter. The migration
@@ -258,17 +272,37 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   skips the staff role. Staff obtain prices only through
   `generate_invoice_data_for_grn_with_pricing` for a specific GRN. The table
   policy was already closed.
+  **Superseded on 11 October 2026 (migration 45):** the owner decided that
+  staff read the whole price list and may add, change and delete prices,
+  because the app offers them the pricing screens. The header of migration 23,
+  which calls the refusal deliberate, describes the rule that held from 8 to
+  11 October. The table policy is still closed; staff reach prices through the
+  RPCs only.
 - **Totals are server-computed.** `save_invoice` (both signatures) and
   `update_invoice` ignore client-supplied `labour`, `tax_amount` and `total` for
   every role and derive them from the saved lines and the stored `discount`
   (migration 24, see [INVOICE_RULES.md](INVOICE_RULES.md)). Line rates remain
-  inputs. A missing, duplicate or unrelated line rolls the whole save back.
+  inputs within a range: charge and labour rate from 0 to 999999, tax from 0 to
+  100 (migration 41). A missing, duplicate or unrelated line rolls the whole
+  save back.
+- **A dispatch line is invoiced once.** A save for a receipt that is already
+  invoiced, or with a line that is on another invoice, is refused for every
+  role (migration 41). Only an administrator or supervisor can free a receipt,
+  by deleting its invoice; an invoice with payments cannot be deleted.
+- **Discount changes are kept.** Besides the last reason and author on the
+  invoice, every change is appended to `invoice_discount_history`, readable by
+  administrators and supervisors only (migration 41).
 - **Edits may remove lines and images; whole documents cannot be deleted.**
   `update_grn` removes undispatched lines and unlisted images, `update_dispatch_smart`
   replaces dispatch lines and `update_invoice` replaces invoice lines. That is
   the accepted meaning of "edit". The explicit `delete_*` RPCs and direct table
   writes stay denied, which the test suite now proves through the real guarded
   RPCs rather than a direct probe that could never fail.
+  **Superseded in part on 11 October 2026 (migration 45):** of the explicit
+  delete RPCs, `delete_grn_image` and `delete_dispatch_image` are open to staff
+  within the rule given in the last section. `delete_grn_safe`,
+  `delete_dispatch_with_order_cleanup`, `delete_invoice` and the customer and
+  item deletes stay refused.
 - **Dispatch workflow completion.** Staff may call the dispatch GRN picker
   (`get_customer_grns_with_stock_dispatch_sorted`), the recent-dispatch feed
   (`get_recent_dispatched_orders`) and the dispatch photo RPCs
@@ -295,3 +329,396 @@ Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
 orders and order items stay denied for staff. Customers keep access to their
 own carts only, and can now read their own order history.
 `tests/order_screen.sql` proves both.
+
+Added on 11 October 2026 (migration 45): staff also have a read policy on the
+`orders` table. Without it Realtime delivered no order change to a staff
+session, so the queue did not refresh live although the RPCs answered.
+
+## One customer per dispatch, 10 October 2026
+
+Staff, supervisors and administrators may dispatch any customer's goods, but one
+dispatch carries one customer's lots. Migration 39 enforces this for every role:
+
+- `create_dispatch_with_stock_check` and `update_dispatch_smart` refuse a line
+  whose receipt belongs to another customer than the dispatch.
+- `update_dispatch_smart` lets the dispatch customer change only when every line
+  the edit leaves belongs to the new customer.
+- `update_grn` does not change the customer of a receipt that has dispatch
+  lines, an invoice or a line in an open cart. Its quantity and stock rules are
+  unchanged: a dispatched line keeps its quantity and cannot be removed.
+
+Records saved before migration 39 are not checked or repaired.
+`tests/dispatch_lot_ownership.sql` proves the rule and the dispatch-edit
+refusals of migration 25 (invoiced lines, insufficient stock).
+
+## No direct table writes for any role, 10 October 2026
+
+Until migration 42 administrators and supervisors could insert, update and
+delete rows of the nineteen business tables with a plain table call
+(`PATCH /rest/v1/invoice`, `PATCH /rest/v1/goodsreceived_trl`,
+`POST /rest/v1/stock_movements`, `DELETE /rest/v1/dispatch_trl`), which went
+around the server-computed invoice totals, the rate and discount rules, the
+stock checks, the one-customer-per-dispatch rule and the dependency checks of
+the delete RPCs. The owner decided to remove that path and keep the reads.
+
+Migration 42 revokes INSERT, UPDATE and DELETE on `customers`, `items`,
+`item_storage_prices`, `goodsreceived`, `goodsreceived_trl`, `dispatch`,
+`dispatch_trl`, `invoice`, `invoice_trl`, `payments`, `orders`, `order_items`,
+`grn_images`, `dispatch_images`, `stock_movements`, `print_jobs`,
+`sensor_devices`, `sensor_readings` and `sensor_health_events` from the app's
+database role and makes the administrator/supervisor policy on each read-only.
+A direct write now answers HTTP 403 for every role. Consequences:
+
+- Every change to these tables by an app session goes through a guarded RPC
+  (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`,
+  `update_dispatch_smart`, `save_invoice`, `update_invoice`, the `delete_*`
+  RPCs, the customer, item, price, image and cart RPCs). Their role rules are
+  unchanged.
+- An order's note, priority and requested date are changed with
+  `update_order_metadata(p_order_id, p_note, p_priority,
+  p_requested_dispatch_date)`, now granted. Administrators and supervisors only;
+  each change is written to the order history.
+- `payments`, `stock_movements`, `print_jobs` and the three sensor tables have
+  no write RPC. They are written by the server side only (Edge functions with
+  the service key, operator scripts, Studio), as before.
+- The staff and customer read policies of migrations 3, 18, 22 and 28 and the
+  own-profile grant `UPDATE(name, display_name)` on `user_profiles` are
+  unchanged.
+
+`tests/direct_write_guard.sql` proves the refusals for administrator,
+supervisor, staff and customer on all nineteen tables, the unchanged reads, and
+that the RPC paths still apply their rules (a changed line rate recomputes the
+header, an out-of-range rate and a dispatch above the stock are refused, the
+delete RPCs keep their dependency checks).
+
+## An image belongs to its own document's folder, 10 October 2026
+
+A customer can download a stored photo when a confirmed `grn_images` or
+`dispatch_images` row of one of that customer's documents names the file
+(`scripts/configure-storage.sql`). Until migration 43 three RPCs wrote such a
+row with whatever path the caller sent, as confirmed and without looking in the
+bucket: `upload_grn_image`, and the `p_images` list of `save_grn` and of
+`update_grn`. One staff call for customer B's receipt naming customer A's file
+made A's photo readable by B; a path that was never uploaded left a confirmed
+row with no file.
+
+Since migration 43 the database accepts a path only when all of these hold,
+whichever RPC attaches it:
+
+- it lies in the folder the register RPCs issue for that document:
+  `headers/<grn id>/...` or `items/<grn id>/...` in `grn-images`,
+  `<dispatch id>/...` in `dispatch-images`;
+- a file with that name is in the bucket;
+- no other image row carries the path (a unique index keeps it so, unless
+  older rows already share a path);
+- an item photo's line belongs to the receipt.
+
+What that means for each entry point:
+
+- `register_*_image_upload` issues the path and writes a pending row, as
+  before; an item photo for a line of another receipt is refused
+  (`ITEM_NOT_IN_GRN`). Dispatch paths now carry a random part instead of a
+  timestamp.
+- `confirm_*_image_upload` confirms only after the file was uploaded to the
+  registered path (`IMAGE_NOT_VERIFIED` otherwise).
+- `update_grn` keeps the images already on the receipt, named by id (or by
+  their path). An id of another receipt's image no longer re-links that image.
+  Any other entry is a new attachment and must pass the rule.
+- `save_grn` creates the receipt id itself, so no file can be in its folder
+  yet: a `p_images` entry is refused. Photos of a new receipt are registered
+  after the save, which is what the app does.
+- `upload_grn_image` (and `upload_dispatch_image`, which is not part of the
+  granted API) attach a file that is already in the document's folder. Only
+  administrators and supervisors can put a file there without a registered
+  row, so staff have nothing to attach through it.
+- A row inserted without a status is `pending`. Customers read confirmed image
+  rows only; the row of a pending upload, with its upload token, is no longer
+  visible to the document's customer.
+
+Rows saved before migration 43 are not changed. The migration prints a warning
+with the number of rows whose path is outside their document's folder; list
+them as the database owner with
+`SELECT * FROM warehouse_maintenance.misplaced_image_paths();` and remove the
+ones that should not be there with `delete_grn_image` / `delete_dispatch_image`.
+`tests/image_path_rules.sql` proves the refusals at every entry point, the
+unchanged register/upload/confirm flow and `update_grn` answer, and what each
+customer can read.
+
+## The server admits what the app offers, 11 October 2026
+
+The 10 October review found screens that the app shows to a role and whose RPCs
+the server refused, so the screen opened and then failed. The owner decided:
+**where the app offers a screen to a role, the server allowlist is widened so
+the screen works**, instead of hiding the screen. Migration 45 implements it and
+`tests/role_allowlist.sql` proves it. This supersedes the staff pricing refusal
+of 8 October (migration 23) and the administrator-only user management that
+held since migration 3; the notes in the sections above say where.
+
+The list below was taken from the app (the RPCs each screen calls and the role
+it is shown to), not from the review text.
+
+### What was opened, and to whom
+
+**Staff — reports.** Reports tab and the report screens, both the all-customers
+list and one customer:
+`get_all_stock_summary`, `get_customer_stock_summary`,
+`get_all_customer_activity_summary`, `get_customer_activity_detail`,
+`get_customer_dispatch_activity`, `get_stock_aging_report`,
+`get_item_wise_stock_list`. (`get_all_dispatch_activity`, `get_all_grn_activity`,
+`get_customer_grn_activity` and `get_customer_invoice_summary` were open
+already.) The operations dashboard is not shown to staff by the app and
+`get_operations_dashboard` stays with administrators and supervisors.
+
+**Staff — item pricing, read and write. This is a material change: staff can
+change what customers are charged.** `get_item_storage_prices` (every
+customer's prices), `create_item_storage_price`, `update_item_storage_price`,
+`delete_item_storage_price` and `find_or_create_item_storage_price`. A price
+change is not written to a history table; the invoice discount history of
+migration 41 does not cover it. The `item_storage_prices` table itself stays
+closed to staff: they read prices through the RPC.
+
+**Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
+sensor tables stay closed to staff.
+
+**Staff — photo removal in the receipt and dispatch edit forms.**
+`delete_grn_image` and `delete_dispatch_image`, for a photo of a receipt or
+dispatch that is not deleted (the documents staff can already edit), when the
+photo is confirmed or the caller registered it. Another person's unconfirmed
+upload is refused, as for `cancel_*_image_upload`. After the row is removed the
+app deletes the file; staff may read and delete a file in the `grn-images` and
+`dispatch-images` buckets only when it lies in the folder of a receipt or
+dispatch that is not deleted and no image row names it
+(`scripts/configure-storage.sql`; narrowed by migration 47, which before
+covered every unnamed file, the photos of deleted documents included). A file a
+document still shows, and any file of a deleted document, cannot be read,
+deleted or overwritten by staff.
+
+**Staff — live order queue.** A read policy on `orders`
+(`starter_order_staff_read`), matching what staff already read through the
+order RPCs. Orders are still written through the cart RPCs only.
+
+**Supervisors — user management.** `update_user_role`, `update_user_status`,
+`assign_customer_to_user` and `remove_customer_assignment` (the list and detail
+RPCs were open already). A supervisor:
+
+- cannot change an administrator's role, status or customer assignments, and
+  does not see administrators in the list;
+- cannot give anyone the administrator role;
+- cannot change the own role, status or customer assignments;
+- cannot review enrollment requests (`operator_review_enrollment` stays with
+  administrators).
+
+A supervisor can make another user a supervisor and can deactivate any user who
+is not an administrator. Since migration 47 a supervisor acts only on a profile
+whose access request is approved: a deactivated, rejected or pending profile is
+answered with `ENROLLMENT_NOT_APPROVED` ("Only an administrator can change a
+user whose access is not approved"), for the status and for the role. Giving
+access back is therefore an administrator's action, also for a user the
+supervisor deactivated. Before, `update_user_status(true)` let a supervisor
+re-approve a request an administrator had rejected. For every caller, the role
+of a pending request cannot be changed before the review (`ENROLLMENT_PENDING`,
+"Review the access request before changing the role"); a role other than
+customer made the request unreviewable. The last-administrator rule of
+migration 44 is unchanged.
+
+### What was not opened
+
+**Customer accounts are not widened to other customers' data.** A customer
+account, also one assigned to several customers, is refused every
+all-customers RPC (`get_all_stock_summary`, `get_all_customer_activity_summary`,
+`get_all_dispatch_activity`, `get_all_grn_activity`,
+`get_customer_invoice_summary` without a customer, `get_stock_aging_report` and
+`get_item_wise_stock_list` without a customer), pricing and sensors.
+
+The two stock reports that the app offers to customers and that take a
+customer id are admitted for a customer account **only with the id of an
+assigned customer**: `get_stock_aging_report(p_customer_uuid)` and
+`get_item_wise_stock_list(p_customer_id)`. Each call names one customer and the
+guard checks that id against the account's active assignments; an account with
+several customers calls once per customer.
+
+### Other changes of migration 45
+
+- **Supervisor contact details.** `get_grn_details` and `get_dispatch_details`
+  return `supervisor_details` to a customer account with `id`, `name` and
+  `display_name` only. `mobile` (which is also that person's sign-in
+  identifier) and `role` go to administrators, supervisors and staff. There was
+  no owner decision on this; it is the privacy-safe default and the owner can
+  reverse it (the app then shows the Call action to customers again).
+- **Supervisor picker.** `get_supervisors` lists active profiles only. Since
+  migration 47 each row is `id`, `name`, `display_name` and `role`; `phone` is
+  added for administrators and supervisors only. Staff, who pick a colleague by
+  name, no longer receive every colleague's mobile number.
+- **Role from the database.** `get_customer_dispatch_activity`,
+  `get_customer_stock_summary`, `get_operations_dashboard` and
+  `get_recent_dispatched_orders` took the caller's role from the token, where
+  it outlives a role change. They now read it from the profile, like the guard.
+  A role change still takes effect on the next request without signing the
+  user out.
+- **`printer_status`** is readable by signed-in administrators, supervisors and
+  staff only; it was readable with the public key. `feature_flags` stays
+  public.
+- **`find_or_create_item_storage_price`** refused every role (it looked the
+  caller up in a table that operator sign-in does not fill); it now works for
+  the roles that may write prices.
+- `is_admin_or_supervisor()` is true for staff as well, despite its name; it is
+  not what keeps staff out of anything, the guard is.
+  `tests/role_allowlist.sql` lists the granted functions that call it.
+
+### Roles after migration 45
+
+| Capability | Administrator | Supervisor | Staff | Customer account |
+|---|---|---|---|---|
+| Receipts, dispatches, invoices: create, read, edit | yes | yes | yes | read own |
+| Delete a receipt, dispatch or invoice | yes | yes | no | no |
+| Remove a photo in the edit forms | yes | yes | **yes** (confirmed or own, live document) | no |
+| Orders and queue through the RPCs | yes | yes | yes | own carts |
+| Live order queue (row read on `orders`) | yes | yes | **yes** | own |
+| Reports: all customers | yes | yes | **yes** | no |
+| Reports: one customer | yes | yes | **yes** | assigned customers (**now also stock aging and item-wise stock**) |
+| Operations dashboard | yes | yes | no | no |
+| Item pricing: read | yes | yes | **yes** | no |
+| Item pricing: add, change, delete | yes | yes | **yes** | no |
+| Sensors | yes | yes | **yes** | no |
+| Customers and items: create, edit, delete | yes | yes | no | no |
+| User list and details | yes | yes, without administrators | no | no |
+| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47) | no | no |
+| Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
+| Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
+| Review enrollment requests | yes | no | no | no |
+| Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
+| `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
+
+Bold marks what migration 45 changed.
+
+`tests/role_allowlist.sql` classifies every function the app role may execute
+(staff yes/no; customer any/own/no). It calls each one that a customer account
+or staff may not use and expects the guard's refusal, also with another
+customer's id, so a function granted later fails the test until it is
+classified. `tests/staff_dispatch_invoice_access.sql` and
+`tests/staff_grn_access.sql` were changed where they asserted the old pricing
+and photo refusals.
+
+## One lock order and stricter document input, 11 October 2026
+
+Migration 46 changes how the document RPCs take their locks and what they
+accept. It adds no role and opens nothing.
+
+### Lock order
+
+Every write to `customers`, `goodsreceived`, `goodsreceived_trl`, `dispatch` or
+`dispatch_trl` ends by refreshing the list views under advisory lock 71040
+(migrations 4, 19 and 20). The statement trigger takes that lock *after* the
+statement has locked its rows. `update_grn` takes it before its first write
+(migration 26), so a receipt edit (lock, then rows) and a dispatch of the same
+lot being created, edited or deleted (rows, then lock) could wait for each
+other; PostgreSQL ended that by failing one of the two with "deadlock
+detected". Migration 39 added a second pair: a dispatch edit key-share locked
+the receipt before its header update took the lock.
+
+The rule now: **every function an API role may call that writes one of those
+five tables takes lock 71040 before it locks any row.** That is `save_grn`,
+`update_grn`, `delete_grn_safe`, both `create_dispatch_with_stock_check`
+wrappers (in the body they share), `update_dispatch_smart`,
+`delete_dispatch_with_order_cleanup`, both `save_invoice` functions,
+`update_invoice`, `delete_invoice`, `create_customer`, `update_customer`,
+`restore_customer` and `safe_delete_customer`. Document writes were already
+serialized by that lock from their first write to their commit; they are now
+serialized from their start. `tests/document_write_consistency.sql` fails for a
+granted function that writes one of the tables without taking the lock, and
+`tests/grn_edit_lock_order.sh` runs three two-session cases on real rows (a
+receipt edit against a lock holder, a dispatch being created against a receipt
+edit of the same lot, a dispatch edit against a lock holder). The cart RPCs
+write `orders` and `order_items` only, which have no refresh trigger, and do not
+take the lock.
+
+### Input rules
+
+These are the rules the app's forms already apply; the server did not.
+
+- A receipt line needs a quantity above zero and a weight that is not negative
+  (`save_grn`, `update_grn`). A weight of 0 still means "not recorded".
+- A dispatch edit needs, for every line, a lot that exists and a whole quantity
+  above zero. `update_dispatch_smart` stored a line of quantity 0 and silently
+  dropped a line whose lot did not exist. An empty list still removes every
+  line.
+- A receipt or dispatch number made only of white space or invisible characters
+  (tab, no-break space, zero-width space and the like) is blank: refused by
+  `save_grn`, `update_grn`, dispatch creation (as the validation error
+  `disp_no is required`), `update_dispatch_smart` and by the two table checks,
+  which stay `NOT VALID` so that an installation holding such a number still
+  migrates.
+- A receipt's `customer_name` is taken from the customer record when the
+  receipt is created and when it moves to another customer. The name the client
+  sends is ignored; a later rename of the customer still does not rewrite old
+  receipts. Sender and supervisor names and the receipt date are stored as sent.
+- An idempotency key answers only the function and the user that stored it.
+  `save_grn` keeps a key for one hour and dispatch creation for 24 hours; the
+  stored row now expires at the same moment, so retention no longer removes a
+  dispatch key that would still be honoured.
+- The field filters of the receipt lists (`item_name`, `customer_name`,
+  `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
+  in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
+  search.
+
+### Other changes of migration 46
+
+- `delete_grn_safe` removes the cart lines of the receipt's lots, as before, and
+  now records them in the order history: one `order_revisions` entry with the
+  action `grn_deleted` per order, the removed lines at quantity 0.
+- `delete_dispatch_with_order_cleanup` asks `is_admin_or_supervisor_strict()` in
+  its body. It used the helper that also admits staff and, failing that, let
+  through anyone assigned to the dispatch's customer; only the guard in front
+  refused them.
+- Four internal dispatch functions that nothing called and no role could
+  execute are dropped: `create_dispatch_with_stock_check_2arg_internal(jsonb,
+  jsonb[])`, `..._internal_3param(jsonb,jsonb[],integer)`,
+  `..._internal_4param(jsonb,jsonb[],boolean,integer)` and
+  `..._internal(jsonb,jsonb[],boolean)`. The first was the only code that
+  soft-deleted an order, which `get_or_create_cart` cannot recover from (the
+  one-cart-per-customer index is unconditional). No RPC sets
+  `orders.deleted_at` now, and no app role can write the table directly
+  (migration 42).
+
+Not changed: document numbers are still suggested by `get_next_*_number` and
+chosen by the client, so two people saving at once can still collide on a
+number and the second gets the duplicate-number refusal; and the RPCs still
+return PostgreSQL's own message text for an unexpected error.
+
+## Review follow-ups, 11 October 2026 (migration 47)
+
+Migration 47 narrows three things migration 45 opened (described where they
+are listed above: the supervisor picker, user management by supervisors, and
+the photo files staff may remove) and adds one parameter. It opens nothing.
+
+### `update_grn` takes an idempotency key
+
+`update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
+NULL`. With a key, a save that is repeated by the same user for the same
+receipt within 24 hours changes nothing and returns the answer of the first
+save with `"idempotent": true` added, as `save_grn` does. The key is stored in
+`idempotency_keys` under the function name `update_grn`; a key that another
+user or another function stored is neither replayed nor overwritten, and the
+same key for another receipt is treated as a new save. Only successful saves
+are stored. Without the key the function behaves as before, so an app build
+that does not send it keeps working; there is still exactly one `update_grn`.
+
+What the key changes: without it, a second save after a lost answer removes the
+line the first save added (the app does not know its id yet) and adds it again
+as a new row. That is one line, not two, but under a new id, and it fails with
+"Cannot delete item" if the first row was dispatched in between.
+
+### Still open from the first review
+
+- **Names and dates on a receipt.** Migration 46 takes `customer_name` from the
+  customer record. `sender_name` and `supervisor_name` are still stored as the
+  client sends them, and any date is accepted, past or future. Binding the two
+  names needs a decision on which name of the record to store (`name` or
+  `display_name`), and a limit on dates needs one on how far back a receipt may
+  be entered.
+- **A role change and the token.** The server takes the caller's role from the
+  profile on every request (migration 45), so a changed role applies at once.
+  `update_user_role` does not end the user's sessions: the `user_role` claim
+  inside the access token keeps the old role until the token is renewed (at
+  most `JWT_EXP`, one hour by default). Nothing on the server reads that
+  claim; an app that reads it shows the old role until then.

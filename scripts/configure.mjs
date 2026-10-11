@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync, linkSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,30 @@ function replaceFileAtomically(path, text) {
   const stage = `${path}.${randomBytes(8).toString('hex')}`;
   writeFileSync(stage, text, { mode: 0o600, flag: 'wx' });
   try { renameSync(stage, path); } catch (error) { rmSync(stage, { force: true }); throw error; }
+}
+
+// The backup key signs every backup (scripts/backup-key.sh) and is never part
+// of one: the operator keeps a copy off the machine for a lost-host restore.
+// It is written to a temporary file and linked into place, so an interrupted
+// setup leaves no key file at all rather than an empty one that every later
+// command finds and then rejects.
+export function createBackupKey(configDir) {
+  const path = join(configDir, 'backup.key');
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (st) {
+    if (!st.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('config/backup.key must be an owned regular file with mode 0600.');
+    if (st.size > 0) {
+      if (!/^[0-9a-f]{64}\r?\n?$/.test(readFileSync(path, 'utf8'))) throw new Error('config/backup.key does not hold a backup key (64 hexadecimal characters on one line). Put your copy of the key back; if no backup was ever signed with this file, remove it and run setup again.');
+      return false;
+    }
+    // Empty: the remnant of a creation that was interrupted before this was atomic. It signed nothing.
+    rmSync(path);
+  }
+  const stage = join(configDir, `.backup.key.${randomBytes(8).toString('hex')}`);
+  writeFileSync(stage, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
+  // link, not rename: it fails instead of replacing a key that appeared in the meantime.
+  try { linkSync(stage, path); } finally { rmSync(stage, { force: true }); }
+  return true;
 }
 
 export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, faultAfterManifest = false } = {}) {
@@ -76,7 +100,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
       }
-      return { created: false, state, manifest, providerUpdated };
+      // An installation made before signed backups gets its backup key here;
+      // an existing key is never replaced.
+      const backupKeyCreated = createBackupKey(join(state, 'config'));
+      return { created: false, state, manifest, providerUpdated, backupKeyCreated };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -95,9 +122,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generateSigningKeys(),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider };
-  for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD',
-    'LOGFLARE_LOGGER_BACKEND_API_KEY', 'LOGFLARE_PUBLIC_ACCESS_TOKEN',
-    'LOGFLARE_PRIVATE_ACCESS_TOKEN', 'LOGFLARE_API_KEY']) values[key] = randomBytes(32).toString('hex');
+  for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
   mkdirSync(stage, { mode: 0o700 });
@@ -107,9 +132,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     writeFileSync(join(stage, 'public/instance.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o644, flag: 'wx' });
     if (faultAfterManifest) throw new Error('Injected failure after manifest staging.');
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
+    createBackupKey(join(stage, 'config'));
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest };
+  return { created: true, state, manifest, backupKeyCreated: true };
 }
 
 export function parseConfigureArgs(args) {
@@ -128,5 +154,6 @@ if (isMain(import.meta.url)) {
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : 'Preserved existing operator state unchanged.');
+    if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }

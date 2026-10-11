@@ -14,7 +14,8 @@ docker run -d --name "$container" --label purpose=warehouse-migration-test \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
-  -e POSTGRES_PASSWORD=disposable-test-database-only supabase/postgres:15.8.1.060 >/dev/null
+  -e POSTGRES_PASSWORD=disposable-test-database-only \
+  supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
@@ -35,7 +36,12 @@ test_files=(
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql"
   "$ROOT/tests/order_screen.sql" "$ROOT/tests/document_number_sort.sql" "$ROOT/tests/list_search.sql"
-  "$ROOT/tests/preferred_language.sql"
+  "$ROOT/tests/preferred_language.sql" "$ROOT/tests/dispatch_lot_ownership.sql"
+  "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/invoice_line_rules.sql"
+  "$ROOT/tests/direct_write_guard.sql" "$ROOT/tests/image_path_rules.sql"
+  "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
+  "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
+  "$ROOT/tests/role_allowlist.sql" "$ROOT/tests/document_write_consistency.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -73,8 +79,20 @@ SQL
   }
 done
 
-# Migration 26: a GRN edit must survive a concurrent writer holding the refresh lock.
+# Migrations 26 and 46: a GRN edit, a dispatch being created and a dispatch edit
+# must each survive a concurrent writer of the same lot.
 bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
+
+# Migrations 41, 44 and 46: the last-administrator rule and the one-invoice-per-
+# receipt rule under two users acting at the same moment.
+bash "$ROOT/tests/concurrent_rules.sh" "$container"
+
+# Migration 42: its closing check stays strict for the nineteen business tables
+# and lets an operator's own table in `public` through.
+bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
+
+# scripts/retention.sh: every statement it sends is one this database accepts.
+bash "$ROOT/tests/retention_queries.sh" "$container"
 
 # Applied migration history is immutable: changing an old file must fail closed.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
@@ -90,4 +108,9 @@ migration_files=("$ROOT"/migrations/*.sql)
 [[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "${#migration_files[@]}" ]] || {
   echo 'Migration mismatch changed the ledger.' >&2; exit 1;
 }
+
+# Backup verification on real containers: this database is dumped into a signed
+# backup and replayed by scripts/verify-restore.sh, once with a session attached to
+# template1 and once with the disk-backed data directory.
+bash "$ROOT/tests/verify-restore-drill.sh" "$container"
 echo 'Migration reruns, checksum mismatch rejection, retention, and operator auth configuration passed.'

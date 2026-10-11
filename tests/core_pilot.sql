@@ -72,14 +72,19 @@ SELECT pg_temp.core_assert(:'saved'::jsonb->>'success'='true','save invoice');
 SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND discount=0 AND labour=200 FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'saved header matches preview');
 -- Migration 24: header money is computed from the saved lines for every path;
 -- client totals are ignored, the discount is subtracted, tax ceilings once.
+-- Migration 41: a receipt is invoiced once, so each further save follows the
+-- deletion of the invoice before it.
+SELECT pg_temp.core_assert(public.delete_invoice((:'saved'::jsonb->>'invoice_id')::uuid)->>'success'='true','first invoice deleted before the next save');
 SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":20260931,"total":1,"tax_amount":0,"labour":999}'::jsonb) AS tampered \gset
 SELECT pg_temp.core_assert(:'tampered'::jsonb->>'success'='true','tampered totals still save: '||COALESCE(:'tampered'::jsonb->>'error',''));
 SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND labour=200 FROM public.invoice WHERE id=(:'tampered'::jsonb->>'invoice_id')::uuid),'server recomputes tampered header totals');
 SELECT pg_temp.core_assert((:'tampered'::jsonb#>>'{totals,total}')::numeric=998 AND (:'tampered'::jsonb#>>'{totals,tax}')::numeric=48,'save returns the computed totals');
+SELECT pg_temp.core_assert(public.delete_invoice((:'tampered'::jsonb->>'invoice_id')::uuid)->>'success'='true','second invoice deleted');
 SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":20260932,"discount":10,"total":1}'::jsonb) AS discounted \gset
 SELECT pg_temp.core_assert((SELECT total=988 AND discount=10 AND tax_amount=48 FROM public.invoice WHERE id=(:'discounted'::jsonb->>'invoice_id')::uuid),'stored discount reduces the computed total');
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',4.5,'labour_rate',2)) AS fractional_items
  FROM public.dispatch_trl t JOIN public.dispatch d ON d.id=t.disp_id WHERE d.disp_no IN ('COREA','COREB') \gset
+SELECT pg_temp.core_assert(public.delete_invoice((:'discounted'::jsonb->>'invoice_id')::uuid)->>'success'='true','third invoice deleted');
 SELECT public.save_invoice(:'invoice_data'::jsonb || jsonb_build_object('inv_no',20260933,'items',:'fractional_items'::jsonb)) AS fractional \gset
 SELECT pg_temp.core_assert((SELECT total=993 AND tax_amount=43 FROM public.invoice WHERE id=(:'fractional'::jsonb->>'invoice_id')::uuid),'fractional tax ceilings once at the header');
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'grn_item_id',t.gr_trl_id,'duration',1.5,'charge',5,'tax',5,'labour_rate',2)) AS typed_items
@@ -87,18 +92,19 @@ SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'grn_item_id',t.gr_trl_id
 SELECT jsonb_build_object('inv_no',20260934,'inv_fin_year',2026,'gr_id',:'grn_id','gr_no','COREA','customer_id',:'customer_id',
  'customer_name','Core Demo Customer A','inv_date','2026-05-02T12:00:00Z','total',1,'tax_amount',0,'labour',0,'discount',0,
  'duration_mode','legacy','notes','typed') AS typed_header \gset
+SELECT pg_temp.core_assert(public.delete_invoice((:'fractional'::jsonb->>'invoice_id')::uuid)->>'success'='true','fourth invoice deleted');
 SELECT public.save_invoice(NULL::uuid,:'typed_header'::jsonb,ARRAY(SELECT jsonb_array_elements(:'typed_items'::jsonb))) AS three_arg \gset
 SELECT pg_temp.core_assert(:'three_arg'::jsonb->>'success'='true','three-argument save: '||COALESCE(:'three_arg'::jsonb->>'error','')||' '||COALESCE(:'three_arg'::jsonb->>'validation_errors',''));
 SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND labour=200 FROM public.invoice WHERE id=(:'three_arg'::jsonb->>'invoice_id')::uuid),'three-argument save recomputes totals');
-SELECT public.update_invoice((:'saved'::jsonb->>'invoice_id')::uuid,:'typed_header'::jsonb || '{"inv_no":20260929,"total":5,"notes":"edited"}'::jsonb,
+SELECT public.update_invoice((:'three_arg'::jsonb->>'invoice_id')::uuid,:'typed_header'::jsonb || '{"total":5,"notes":"edited"}'::jsonb,
  ARRAY(SELECT jsonb_array_elements(:'typed_items'::jsonb))) AS edited \gset
 SELECT pg_temp.core_assert(:'edited'::jsonb->>'success'='true','invoice edit: '||COALESCE(:'edited'::jsonb->>'error','')||' '||COALESCE(:'edited'::jsonb->>'validation_errors',''));
-SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND labour=200 AND notes='edited' FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'invoice edit recomputes totals');
-SELECT public.update_invoice((:'saved'::jsonb->>'invoice_id')::uuid,:'typed_header'::jsonb || '{"inv_no":20260929,"notes":"bogus"}'::jsonb,
+SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND labour=200 AND notes='edited' FROM public.invoice WHERE id=(:'three_arg'::jsonb->>'invoice_id')::uuid),'invoice edit recomputes totals');
+SELECT public.update_invoice((:'three_arg'::jsonb->>'invoice_id')::uuid,:'typed_header'::jsonb || '{"notes":"bogus"}'::jsonb,
  ARRAY['{"disp_trl_id":"00000000-0000-4000-8000-000000000000","grn_item_id":"00000000-0000-4000-8000-000000000000","duration":1,"charge":1}'::jsonb]) AS bogus_edit \gset
 SELECT pg_temp.core_assert(:'bogus_edit'::jsonb->>'success'='false','bogus edit line denied');
-SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.invoice_trl WHERE invoice_id=(:'saved'::jsonb->>'invoice_id')::uuid),'failed edit keeps the lines');
-SELECT pg_temp.core_assert((SELECT total=998 AND notes='edited' FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'failed edit keeps the header');
+SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.invoice_trl WHERE invoice_id=(:'three_arg'::jsonb->>'invoice_id')::uuid),'failed edit keeps the lines');
+SELECT pg_temp.core_assert((SELECT total=998 AND notes='edited' FROM public.invoice WHERE id=(:'three_arg'::jsonb->>'invoice_id')::uuid),'failed edit keeps the header');
 SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":20260930,"items":[{"disp_trl_id":"00000000-0000-4000-8000-000000000000","charge":1}]}'::jsonb) AS invalid \gset
 SELECT pg_temp.core_assert(:'invalid'::jsonb->>'success'='false','invalid dispatch invoice denied');
 SELECT pg_temp.core_assert(NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=20260930),'invalid invoice rolls back header');

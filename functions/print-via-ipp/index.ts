@@ -4,7 +4,7 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { Buffer } from 'node:buffer'
 
 serve(async (req) => {

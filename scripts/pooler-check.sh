@@ -3,6 +3,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 source "$ROOT/scripts/pooler-readiness.sh"
+# Starts the pooler profile: must not interleave with a backup, which stops supavisor.
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
+state="$(operator_state)"
+operator_lock "$state"
 node "$ROOT/scripts/doctor.mjs" --preflight
 if ! compose --profile pooler up -d --wait --wait-timeout 120 supavisor; then
   node "$ROOT/scripts/service-diagnostics.mjs"

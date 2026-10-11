@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
 # Replace this instance's database and stored objects in place from a
-# warehouse-backup-v4 directory created by scripts/backup.sh on the same instance.
+# warehouse-backup-v5 directory created by scripts/backup.sh on the same instance.
 # Destructive by design: requires --yes, stopped services and a backup that passes
-# scripts/verify-restore.sh. The replaced data directories are kept for rollback.
+# scripts/verify-restore.sh, signature included. The replaced data directories are
+# kept for rollback. An unsigned warehouse-backup-v4 directory is accepted only
+# with --allow-unsigned.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config]' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]' >&2; exit 1; }
 
 confirm=false
 restore_config=false
 # --relocated is used by scripts/restore-host.sh, which built this state from the
 # backup itself: compose.env may then differ only in the three state-path lines.
 relocated=false
+allow_unsigned=false
 backup=''
 while (($#)); do
   case "$1" in
     --yes) confirm=true ;;
     --restore-config) restore_config=true ;;
     --relocated) relocated=true ;;
+    --allow-unsigned) allow_unsigned=true ;;
     -h|--help) usage ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
@@ -51,10 +55,20 @@ if [[ -n "$(compose --profile '*' ps -q)" ]]; then
   exit 1
 fi
 
-# 2. Only v4 backups carry owners, the _supabase database and the object catalog.
+# 2. The backup must be the one this installation wrote: checksums and the
+#    signature made with the backup key are checked before any of it is read.
+# shellcheck source=scripts/backup-key.sh
+source "$ROOT/scripts/backup-key.sh"
+[[ -n "${WAREHOUSE_BACKUP_KEY_FILE:-}" ]] || export WAREHOUSE_BACKUP_KEY_FILE="$state/config/backup.key"
+backup_authenticate "$backup" "$allow_unsigned" || exit 1
+# Only v4 and v5 backups carry owners, the _supabase database and the object catalog.
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
-if [[ "$format" != warehouse-backup-v4 ]]; then
-  echo "Refusing: in-place restore requires format=warehouse-backup-v4; this backup is '${format:-unknown}'. Older backups remain checkable with db:verify-restore." >&2
+if [[ "$format" != warehouse-backup-v5 && "$format" != warehouse-backup-v4 ]]; then
+  echo "Refusing: in-place restore requires format=warehouse-backup-v5 (or an unsigned warehouse-backup-v4 with --allow-unsigned); this backup is '${format:-unknown}'. Older backups remain checkable with db:verify-restore." >&2
+  exit 1
+fi
+if [[ "$BACKUP_SIGNED" != true && "$allow_unsigned" != true ]]; then
+  echo 'Refusing: the backup signature was not verified.' >&2
   exit 1
 fi
 for file in database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
@@ -84,7 +98,9 @@ fi
 
 # 3. The disposable restore proves checksums, archive safety, replay and integrity
 #    before anything here is touched.
-bash "$ROOT/scripts/verify-restore.sh" "$backup"
+verify_args=()
+if [[ "$allow_unsigned" == true ]]; then verify_args+=(--allow-unsigned); fi
+bash "$ROOT/scripts/verify-restore.sh" "${verify_args[@]}" "$backup"
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 old_db="$state/data/db.pre-restore-$ts"
@@ -171,13 +187,15 @@ SQL
 phase='recreate application database'
 # A clean restore into the freshly initialised database collides with the
 # image's event triggers (their functions cannot be dropped while the triggers
-# exist), so the application database is recreated from template1, the same
-# template verify-restore.sh restores into. Every non-extension object of the
+# exist), so the application database is recreated from template0, the same
+# template verify-restore.sh restores into. template1 is not used: a session
+# attached to it right after start-up makes CREATE DATABASE fail, and template0
+# accepts no connections. Every non-extension object of the
 # application database, including CREATE EXTENSION statements and the event
 # triggers, is in the dump; per-database settings are not, which is why
 # docker/volumes/db/jwt.sql is replayed below.
 db_psql -d _supabase -c 'DROP DATABASE postgres WITH (FORCE)' \
-  -c 'CREATE DATABASE postgres OWNER postgres TEMPLATE template1'
+  -c 'CREATE DATABASE postgres OWNER postgres TEMPLATE template0'
 phase='restore database'
 # Sections replay with the archived owners, as the storage service's own
 # migrations require. Event triggers are the exception: PostgreSQL only lets a
@@ -207,7 +225,7 @@ db_restore -d postgres -L /tmp/acl.list /tmp/database.dump
 phase='restore _supabase'
 # Same approach for the analytics/pooler database: recreate, then replay.
 db_psql -d postgres -c 'DROP DATABASE _supabase WITH (FORCE)' \
-  -c 'CREATE DATABASE _supabase OWNER postgres TEMPLATE template1'
+  -c 'CREATE DATABASE _supabase OWNER postgres TEMPLATE template0'
 db_restore -d _supabase /tmp/_supabase.dump
 phase='database settings'
 # ALTER DATABASE settings are not part of a logical dump; the init script reads

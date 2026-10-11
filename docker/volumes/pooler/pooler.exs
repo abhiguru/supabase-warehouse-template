@@ -6,12 +6,9 @@
     _ -> nil
   end
 
-# Main tenant with TWO users for pool isolation:
-# - pgbouncer: Transactional operations (GRN, Dispatch, Auth) - 50 connections
-# - pgbouncer_reporting: Heavy reporting queries (stock analysis) - 25 connections
-# Each user gets its own isolated connection pool within the same tenant
-reporting_pool_size = System.get_env("POOLER_REPORTING_POOL_SIZE") || "25"
-
+# One tenant with one pool user. An earlier version also registered a
+# pgbouncer_reporting user for a separate reporting pool, but no migration or
+# init script ever created that database role, so it could not log in.
 params = %{
   "external_id" => System.get_env("POOLER_TENANT_ID"),
   "db_host" => "db",
@@ -23,21 +20,12 @@ params = %{
   "default_pool_size" => System.get_env("POOLER_DEFAULT_POOL_SIZE"),
   "default_parameter_status" => %{"server_version" => version},
   "users" => [
-    # Primary user for transactional operations
     %{
       "db_user" => "pgbouncer",
       "db_password" => System.get_env("POSTGRES_PASSWORD"),
       "mode_type" => System.get_env("POOLER_POOL_MODE"),
       "pool_size" => System.get_env("POOLER_DEFAULT_POOL_SIZE"),
       "is_manager" => true
-    },
-    # Reporting user for heavy stock analysis queries (isolated pool)
-    %{
-      "db_user" => "pgbouncer_reporting",
-      "db_password" => System.get_env("POSTGRES_PASSWORD"),
-      "mode_type" => "transaction",
-      "pool_size" => reporting_pool_size,
-      "is_manager" => false
     }
   ]
 }

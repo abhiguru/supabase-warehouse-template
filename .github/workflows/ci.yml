@@ -7,17 +7,24 @@ on:
 permissions:
   contents: read
 env:
-  # Operator mobile companion commit tested by the contract job. Bump it when
-  # the mobile branch moves; see CONTRIBUTING.md "Mobile companion pin".
+  # MOBILE_REF is the one commit of abhiguru/rn-warehouse-template that the
+  # contract job checks this backend against. It is always a full 40-character
+  # SHA (tests/workflows.test.mjs refuses a branch, a tag or a short hash) and
+  # it does not follow the app by itself: bump it together with every mobile
+  # release, and whenever a change here needs a change in the app. The job
+  # compares names only; overloads, argument names and grants are compared by
+  # `check-mobile-contract.mjs --live` against a running stack, which is a step
+  # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
+  # CONTRIBUTING.md "Mobile companion pin".
   MOBILE_REF: 97ddf3c4e1d01698cf9c9cee9dc279d5136f95b1
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
           cache: npm
@@ -27,12 +34,18 @@ jobs:
         run: npm run check:container-dependencies
       - name: Shell syntax
         run: |
-          for script in *.sh scripts/*.sh tests/*.sh; do bash -n "$script"; done
+          # Every tracked script, including the ones that run inside images.
+          for script in $(git ls-files '*.sh'); do
+            case "$(head -n 1 "$script")" in
+              '#!/bin/sh'*) sh -n "$script" ;;
+              *) bash -n "$script" ;;
+            esac
+          done
   migrations:
     runs-on: ubuntu-latest
     needs: validate
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: bash tests/migrations.sh
@@ -48,10 +61,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     needs: validate
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
       - run: npm run test:grafana
@@ -60,11 +73,11 @@ jobs:
   contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: backend
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: abhiguru/rn-warehouse-template
           # Operator mobile companion, pinned to the tested commit.
@@ -75,7 +88,7 @@ jobs:
         run: |
           git -C backend log -1 --format='Backend %H'
           git -C mobile log -1 --format='Mobile %H'
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
       - run: npm ci
@@ -87,7 +100,7 @@ jobs:
     name: Redacted source and history scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -99,11 +112,11 @@ jobs:
     timeout-minutes: 45
     needs: validate
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: backend
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
       - run: npm ci
@@ -213,16 +226,25 @@ jobs:
             "$tunnel_id" "$RUNNER_TEMP/tunnel-ci/tunnel.json" > "$RUNNER_TEMP/tunnel-ci/config.yml"
           bash scripts/tunnel.sh adopt --config "$RUNNER_TEMP/tunnel-ci/config.yml"
           npm run db:backup -- /tmp/warehouse-ci-lost-host-backup
+          # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
+          install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
           project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
-          # Lose the host: no containers and no Docker volume of this installation remain;
-          # only the backup is carried over. The old state stays where it is, unused.
+          # Lose the host: no containers and no database volume of this installation remain;
+          # only the backup is carried over. The old state stays where it is, unused, and so
+          # does the Prometheus volume the monitoring step created: it holds no restored
+          # state, and restore-host must not be stopped by it.
           bash scripts/compose.sh --profile '*' down
           docker volume rm "${project}_db-config"
           restored="$RUNNER_TEMP/core-backend-test-20260930"
-          npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup
+          if npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup; then
+            echo 'restore-host accepted a backup without the backup key' >&2; exit 1
+          fi
+          test ! -e "$restored"
+          npm run db:restore-host -- --state-dir "$restored" --backup-key "$RUNNER_TEMP/backup-key-copy" --yes /tmp/warehouse-ci-lost-host-backup
           echo "WAREHOUSE_STATE_DIR=$restored" >> "$GITHUB_ENV"
           export WAREHOUSE_STATE_DIR="$restored"
+          cmp "$RUNNER_TEMP/backup-key-copy" "$restored/config/backup.key"
           node scripts/doctor.mjs --local
           cmp "$RUNNER_TEMP/tunnel-ci/tunnel.json" "$restored/config/tunnel/credentials.json"
           grep -qx "credentials-file: $restored/config/tunnel/credentials.json" "$restored/config/tunnel/config.yml"
@@ -237,6 +259,23 @@ jobs:
           bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
             -c "DELETE FROM public.otp_rate_limits WHERE phone_number = '919888888872'"
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
+        working-directory: backend
+      - name: Retention removes an expired document through the Storage API
+        run: |
+          # The last step that uses the stack: it deletes a document, so nothing that reads
+          # documents or compares fingerprints may come after it. One generated PDF is made
+          # older than the generated_documents policy; retention:apply must then remove its
+          # catalog row and its file through the real Storage API.
+          query() { bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "$1"; }
+          stored() { bash scripts/compose.sh exec -T storage sh -c 'find "/var/lib/storage/stub/stub/documents/$1" -type f 2>/dev/null | wc -l' sh "$name"; }
+          name="$(query "SELECT name FROM storage.objects WHERE bucket_id = 'documents' AND name LIKE '%.pdf' ORDER BY created_at, name LIMIT 1")"
+          test -n "$name"
+          query "UPDATE storage.objects SET created_at = now() - interval '400 days' WHERE bucket_id = 'documents' AND name = '$name'"
+          test "$(query "SELECT count(*) FROM warehouse_maintenance.expired_generated_documents(now())")" = 1
+          test "$(stored)" -ge 1
+          npm run retention:apply
+          test "$(query "SELECT count(*) FROM storage.objects WHERE bucket_id = 'documents' AND name = '$name'")" = 0
+          test "$(stored)" -eq 0
         working-directory: backend
       - name: Stop only this checkout's operator project
         if: always()

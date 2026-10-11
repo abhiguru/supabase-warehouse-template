@@ -22,11 +22,26 @@ acls:
     group: admin
 
 ###
+### Global plugins
+###
+plugins:
+  # Request counts by status code and latency histograms per service and
+  # route, read by the monitoring profile from the status listener (:8100).
+  # Kong 3 exports neither unless the plugin is enabled and both switches are
+  # on; docker/alert-rules.yml uses kong_http_requests_total and
+  # kong_request_latency_ms_bucket. No per-consumer label: two consumers only.
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      per_consumer: false
+
+###
 ### API Routes
 ###
 services:
   ## GoTrue Auth routes - DISABLED
-  ## To re-enable: uncomment these routes AND remove profiles: ["disabled"] from auth service
+  ## To re-enable: uncomment these routes AND remove the disabled profile from the auth service
   # - name: auth-v1-open
   #   url: http://auth:9999/verify
   #   routes:
@@ -136,6 +151,13 @@ services:
       - name: key-auth
         config:
           hide_credentials: true
+      - name: rate-limiting
+        config:
+          minute: 300
+          hour: 6000
+          policy: local
+          fault_tolerant: true
+          limit_by: ip
       - name: request-transformer
         config:
           add:
@@ -169,6 +191,19 @@ services:
       - name: key-auth
         config:
           hide_credentials: false
+      - name: rate-limiting
+        config:
+          # Counts connection attempts, failed ones included: the limit applies
+          # to the upgrade request, not to messages on an open socket. All
+          # phones of a facility share one address, so the number covers a
+          # whole facility reconnecting at once (100 phones x 2 sockets x 8
+          # attempts in the first minute = 1600). There is no hourly window on
+          # purpose: the retries of an outage would use it up and lock the
+          # facility out afterwards. See docs/CONTAINER_SECURITY.md.
+          minute: 1800
+          policy: local
+          fault_tolerant: true
+          limit_by: ip
       - name: acl
         config:
           hide_groups_header: true
@@ -192,9 +227,19 @@ services:
           headers: [Authorization, Content-Type, X-Client-Info, apikey]
           credentials: true
           max_age: 86400
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 2
       - name: key-auth
         config:
           hide_credentials: false
+      - name: rate-limiting
+        config:
+          minute: 300
+          hour: 6000
+          policy: local
+          fault_tolerant: true
+          limit_by: ip
       - name: acl
         config:
           hide_groups_header: true

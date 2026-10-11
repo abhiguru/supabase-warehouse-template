@@ -18,7 +18,7 @@ export async function getCUPSJobAttributes(
   cupsJobId: number
 ): Promise<IPPJobAttributes | null> {
   try {
-    const ipp = await import("npm:ipp");
+    const ipp = await import("npm:ipp@2.0.1");
     const printer = ipp.Printer(CUPS_PRINTER_URL);
 
     const msg: IPPGetJobAttributesMessage = {

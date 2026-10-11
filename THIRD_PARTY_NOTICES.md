@@ -16,10 +16,12 @@ The complete Apache License 2.0 text is included at
 `LICENSES/Apache-2.0.txt`.
 
 Runtime URL imports are not vendored in the source archive. Functions reference
-the Deno standard library 0.192.0 (MIT), Supabase JS/functions packages (MIT),
-and the optional `ipp` 2.0.1 package (MIT). The locked local development
-dependency `jose` 5.10.0 is MIT licensed by Filip Skokan; its installed license
-is `node_modules/jose/LICENSE.md`.
+the Deno standard library 0.192.0 (MIT), the Supabase JS 2.39.0 package (MIT),
+and the optional `ipp` 2.0.1 package (MIT). `jose` 5.10.0 (MIT, Filip Skokan)
+is a runtime URL import and, at the same version, the locked local development
+dependency the unit tests use; its installed license is
+`node_modules/jose/LICENSE.md`. The exact versions are listed in
+`functions/import_map.json`.
 
 The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
@@ -56,10 +58,10 @@ redistributing them. Versions are the ones pinned in
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
 | Kong Gateway (open source) | 3.9.3 (`kong:3.9.3-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
-| PostgREST | v14.17 (`postgrest/postgrest:v14.17`) | MIT | https://github.com/PostgREST/postgrest |
+| PostgREST | v16.4 (`postgrest/postgrest:v16.4`) | MIT | https://github.com/PostgREST/postgrest |
 | Supabase Realtime | v2.134.10 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
-| Supabase edge-runtime | v1.76.2 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
+| Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Supabase Studio | 2026.09.21-sha-512201d (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
 | Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`) | MIT | https://github.com/gotenberg/gotenberg |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
@@ -78,9 +80,10 @@ No third-party executable or source archive is committed or published here.
 The Grafana recipe uses the publisher's digest-pinned 13.2.2 image and
 copies no application or plugin files into the source repository; the plugins it
 installs are the publisher-signed releases listed in `docker/grafana/plugins.lock`
-with their own manifests and notices (see the Grafana section above). The PostgREST image remains the publisher's static v14.17 image; its
-verified release-binary identity and unresolved component inventory are
-recorded in [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md).
+with their own manifests and notices (see the Grafana section above). The PostgREST image is the publisher's static v16.4 image. The release-binary
+identity check and the unresolved component inventory recorded in
+[CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) were made for the earlier
+v14.17 image and have not been repeated for v16.4.
 
 Upstream license files were read from those source archives (Storage's license
 from its matching release tag). Their complete texts and available NOTICE files

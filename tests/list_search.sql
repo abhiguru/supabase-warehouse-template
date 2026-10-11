@@ -21,6 +21,13 @@ END $$;
 CREATE FUNCTION pg_temp.receipts(result jsonb) RETURNS text[] LANGUAGE sql AS $$
   SELECT COALESCE(array_agg(DISTINCT n ORDER BY n), '{}')
   FROM (SELECT x #>> '{}' AS n FROM jsonb_path_query(result, '$.**.gr_no') AS x) s WHERE n LIKE 'SRB%' $$;
+-- The same numbers in the order the function returned them. pg_temp.receipts sorts, so it
+-- compares sets and cannot see an order; this one keeps the response's own sequence.
+CREATE FUNCTION pg_temp.in_order(result jsonb, path jsonpath, wanted text) RETURNS text[] LANGUAGE sql AS $$
+  SELECT COALESCE(array_agg(n ORDER BY first_seen), '{}')
+  FROM (SELECT n, min(ord) AS first_seen
+        FROM (SELECT x #>> '{}' AS n, ord FROM jsonb_path_query(result, path) WITH ORDINALITY AS t(x, ord)) every_value
+        WHERE n LIKE wanted GROUP BY n) numbers $$;
 
 -- The helper itself.
 SELECT pg_temp.search_assert(warehouse_security.search_terms('  Lake   50%_x\ ') = ARRAY['%Lake%', '%50\%\_x\\%'], 'words are split and wildcards escaped');
@@ -40,6 +47,8 @@ SELECT pg_temp.search_login('9888888761') AS admin_claims \gset
 SELECT pg_temp.search_login('9888888764') AS customer_claims \gset
 INSERT INTO public.customers(name, mobile) VALUES ('Search Lakeview Spices', '9888888751') RETURNING id AS lakeview \gset
 INSERT INTO public.customers(name, mobile) VALUES ('Search Hilltop Mart', '9888888752') RETURNING id AS hilltop \gset
+SELECT set_config('test.search_hilltop', :'hilltop', true);
+SELECT set_config('test.search_lakeview', :'lakeview', true);
 INSERT INTO public.items(name, packaging) VALUES ('Search Garlic', 'Bag') RETURNING id AS garlic \gset
 INSERT INTO public.items(name, packaging) VALUES ('Search Onion', 'Bag') RETURNING id AS onion \gset
 INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
@@ -82,6 +91,28 @@ SELECT pg_temp.search_assert(pg_temp.staff('{"search": "garlic", "customer_ids":
 SELECT pg_temp.search_assert(pg_temp.staff('{"gr_no_from": "SRB9", "gr_no_to": "SRB10"}') = ARRAY['SRB10', 'SRB9'], 'range SRB9..SRB10');
 SELECT pg_temp.search_assert(pg_temp.staff('{"gr_no_from": "SRB10"}') = ARRAY['SRB10', 'SRB100'], 'from SRB10');
 SELECT pg_temp.search_assert(pg_temp.staff('{"gr_no_to": "SRB9"}') = ARRAY['SRB9'], 'up to SRB9');
+-- The order and the pages the functions return themselves (migrations 31 to 33): by number, 9 before 10 before 100.
+CREATE FUNCTION pg_temp.staff_page(direction text, page_size integer, skip integer) RETURNS text[] LANGUAGE sql AS $$
+  SELECT pg_temp.in_order(public.get_all_grn_items(p_filters => '{"search": "srb"}', p_sort_by => 'gr_no', p_sort_order => direction,
+    p_limit => page_size, p_offset => skip), '$.**.gr_no', 'SRB%') $$;
+SELECT pg_temp.search_assert(pg_temp.staff_page('asc', 100, 0) = ARRAY['SRB9', 'SRB10', 'SRB100'], 'staff list ascending by number: ' || pg_temp.staff_page('asc', 100, 0)::text);
+SELECT pg_temp.search_assert(pg_temp.staff_page('desc', 100, 0) = ARRAY['SRB100', 'SRB10', 'SRB9'], 'staff list descending by number: ' || pg_temp.staff_page('desc', 100, 0)::text);
+SELECT pg_temp.search_assert(pg_temp.staff_page('asc', 1, 0) = ARRAY['SRB9'] AND pg_temp.staff_page('asc', 1, 1) = ARRAY['SRB10']
+  AND pg_temp.staff_page('asc', 1, 2) = ARRAY['SRB100'] AND pg_temp.staff_page('asc', 1, 3) = '{}', 'staff list pages follow the same order, one receipt a page');
+SELECT pg_temp.search_assert(pg_temp.staff_page('desc', 2, 0) = ARRAY['SRB100', 'SRB10'] AND pg_temp.staff_page('desc', 2, 2) = ARRAY['SRB9'], 'staff list pages, descending');
+CREATE FUNCTION pg_temp.summary_page(direction text) RETURNS text[] LANGUAGE sql AS $$
+  SELECT pg_temp.in_order(public.get_grn_list(p_sort_by => 'gr_no', p_sort_order => direction, p_limit => 100, p_filters => '{"gr_no": "SRB"}'),
+    '$.**.gr_no', 'SRB%') $$;
+SELECT pg_temp.search_assert(pg_temp.summary_page('asc') = ARRAY['SRB9', 'SRB10', 'SRB100'], 'receipt summary list ascending by number: ' || pg_temp.summary_page('asc')::text);
+SELECT pg_temp.search_assert(pg_temp.summary_page('desc') = ARRAY['SRB100', 'SRB10', 'SRB9'], 'receipt summary list descending by number: ' || pg_temp.summary_page('desc')::text);
+-- Receipt dates are moments: SRB9 is three days old, SRB10 two, SRB100 one.
+CREATE FUNCTION pg_temp.staff_dated(date_from timestamptz, date_to timestamptz) RETURNS text[] LANGUAGE sql AS $$
+  SELECT pg_temp.receipts(public.get_all_grn_items(p_date_from => date_from, p_date_to => date_to, p_filters => '{"search": "srb"}', p_limit => 100)) $$;
+SELECT pg_temp.search_assert(pg_temp.staff_dated(now() - interval '36 hours', NULL) = ARRAY['SRB100'], 'staff list: from a moment');
+SELECT pg_temp.search_assert(pg_temp.staff_dated(NULL, now() - interval '36 hours') = ARRAY['SRB10', 'SRB9'], 'staff list: up to a moment, not the start of its day');
+SELECT pg_temp.search_assert(pg_temp.staff_dated(now() - interval '60 hours', now() - interval '36 hours') = ARRAY['SRB10'], 'staff list: between two moments');
+SELECT pg_temp.search_assert(pg_temp.staff_dated(now() - interval '1 day' - interval '1 second', now() - interval '1 day' + interval '1 second') = ARRAY['SRB100'],
+  'staff list: a receipt at the very end of the range is included');
 RESET ROLE;
 
 -- Customer list: same rule, own customers only.
@@ -94,12 +125,20 @@ SELECT pg_temp.search_assert(pg_temp.receipts(pg_temp.mine(:'lakeview', '{"searc
 SELECT pg_temp.search_assert(pg_temp.receipts(pg_temp.mine(:'lakeview', '{"search": "lakeview onion"}')) = ARRAY['SRB10'], 'customer search, two words');
 SELECT pg_temp.search_assert(pg_temp.receipts(pg_temp.mine(:'lakeview', '{"search": "hilltop"}')) = '{}', 'customer cannot find another customer by name');
 SELECT pg_temp.search_assert(pg_temp.receipts(pg_temp.mine(:'lakeview', '{"gr_no_from": "SRB9", "gr_no_to": "SRB10"}')) = ARRAY['SRB10', 'SRB9'], 'customer range in document order');
+SELECT pg_temp.search_assert(pg_temp.in_order(public.get_customer_grn_items(p_customer_id => :'lakeview', p_sort_by => 'gr_no', p_sort_order => 'desc', p_limit => 100, p_offset => 0),
+  '$.**.gr_no', 'SRB%') = ARRAY['SRB10', 'SRB9'], 'customer list descending by number');
+SELECT pg_temp.search_assert(pg_temp.in_order(pg_temp.mine(:'lakeview', '{}'), '$.**.gr_no', 'SRB%') = ARRAY['SRB9', 'SRB10'], 'customer list ascending by number');
+SELECT pg_temp.search_assert(pg_temp.receipts(public.get_customer_grn_items(p_customer_id => :'lakeview', p_date_from => now() - interval '60 hours', p_limit => 100, p_offset => 0)) = ARRAY['SRB10'],
+  'customer list: from a moment');
+SELECT pg_temp.search_assert(pg_temp.receipts(public.get_customer_grn_items(p_customer_id => :'lakeview', p_date_to => now() - interval '60 hours', p_limit => 100, p_offset => 0)) = ARRAY['SRB9'],
+  'customer list: up to a moment');
+-- Another customer's list is refused outright. The id comes from the fixture: read as this
+-- customer, public.customers holds only its own row.
+SELECT pg_temp.search_assert((SELECT count(*) = 0 FROM public.customers WHERE id = :'hilltop'), 'the customer account cannot read the other customer row');
 DO $$ DECLARE result jsonb; BEGIN
-  BEGIN
-    result := pg_temp.mine((SELECT id FROM public.customers WHERE name = 'Search Hilltop Mart'), '{"search": "garlic"}');
-    PERFORM pg_temp.search_assert(result->>'success' = 'false', 'another customer''s list must be refused');
-  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-END $$;
+  result := pg_temp.mine(current_setting('test.search_hilltop')::uuid, '{"search": "garlic"}');
+  RAISE EXCEPTION 'list search: another customer''s list was answered: %', left(result::text, 200) USING ERRCODE = 'P0001';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
 RESET ROLE;
 
 -- Dispatch, invoice and order lists (migration 36).
@@ -176,6 +215,12 @@ SELECT pg_temp.search_assert(pg_temp.dispatches('{"package_mark": "pkg", "search
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_from": "SDB9", "disp_no_to": "SDB10"}') = ARRAY['SDB10', 'SDB9'], 'dispatches: range SDB9..SDB10');
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_from": "SDB10"}') = ARRAY['SDB10', 'SDB100'], 'dispatches: from SDB10');
 SELECT pg_temp.search_assert(pg_temp.dispatches('{"disp_no_to": "SDB9"}') = ARRAY['SDB9'], 'dispatches: up to SDB9');
+CREATE FUNCTION pg_temp.dispatch_page(direction text, page integer, page_size integer) RETURNS text[] LANGUAGE sql AS $$
+  SELECT pg_temp.in_order(public.get_dispatch_list_with_items(p_filters => '{"search": "sdb"}', p_sort_by => 'disp_no', p_sort_order => direction,
+    p_page => page, p_limit => page_size), '$.data.dispatches[*].disp_no', 'SDB%') $$;
+SELECT pg_temp.search_assert(pg_temp.dispatch_page('asc', 1, 100) = ARRAY['SDB9', 'SDB10', 'SDB100'], 'dispatches ascending by number: ' || pg_temp.dispatch_page('asc', 1, 100)::text);
+SELECT pg_temp.search_assert(pg_temp.dispatch_page('desc', 1, 100) = ARRAY['SDB100', 'SDB10', 'SDB9'], 'dispatches descending by number: ' || pg_temp.dispatch_page('desc', 1, 100)::text);
+SELECT pg_temp.search_assert(pg_temp.dispatch_page('asc', 1, 2) = ARRAY['SDB9', 'SDB10'] AND pg_temp.dispatch_page('asc', 2, 2) = ARRAY['SDB100'], 'dispatch pages follow the same order');
 -- Dates are moments in time (migration 37): SDB9 is two days old, SDB10 one day, SDB100 new.
 SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_from', now() - interval '36 hours')) = ARRAY['SDB10', 'SDB100'], 'dispatches: from a moment');
 SELECT pg_temp.search_assert(pg_temp.dispatches(jsonb_build_object('date_to', now() - interval '1 minute')) = ARRAY['SDB10', 'SDB9'], 'dispatches: up to a moment, not the start of its day');
@@ -228,12 +273,17 @@ SELECT pg_temp.search_assert(public.get_dispatch_list_with_items(p_filters => '{
 SELECT pg_temp.search_assert(pg_temp.orders(NULL) = ARRAY['Search Lakeview Spices'], 'customer sees own cart');
 SELECT pg_temp.search_assert(pg_temp.orders('garlic') = ARRAY['Search Lakeview Spices'], 'customer order search by item');
 SELECT pg_temp.search_assert(pg_temp.orders('hilltop') = '{}' AND pg_temp.orders('rajkot') = '{}', 'customer cannot find another customer''s cart');
-DO $$ DECLARE listed text[]; BEGIN
-  BEGIN
-    listed := pg_temp.invoices(public.get_invoices_list(p_search => 'srb', p_customer_ids => (SELECT array_agg(id) FROM public.customers)));
-    PERFORM pg_temp.search_assert(NOT listed @> ARRAY['2026-120'], 'customer must not list another customer''s invoice');
-  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-END $$;
+-- The staff invoice list is refused to a customer account, whatever it asks for. The ids are
+-- the fixture's: a list read from public.customers as this customer would hold only its own.
+DO $$ DECLARE answer jsonb; BEGIN
+  answer := public.get_invoices_list(p_search => 'srb',
+    p_customer_ids => ARRAY[current_setting('test.search_hilltop')::uuid, current_setting('test.search_lakeview')::uuid]);
+  RAISE EXCEPTION 'list search: a customer account was answered by the staff invoice list: %', left(answer::text, 200) USING ERRCODE = 'P0001';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+DO $$ DECLARE answer jsonb; BEGIN
+  answer := public.get_invoices_list();
+  RAISE EXCEPTION 'list search: a customer account was answered by the staff invoice list: %', left(answer::text, 200) USING ERRCODE = 'P0001';
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
 RESET ROLE;
 ROLLBACK;
 SELECT 'list search, filters and document-order ranges passed' AS result;

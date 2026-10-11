@@ -1,5 +1,661 @@
 # Changelog
 
+## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
+
+Migration 47. **Operator action:** rerun `setup.sh` as for every upgrade (it
+applies the migration and the storage policies); read the new OTP limits in
+`docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits".
+
+- **OTP limits rebalanced.** The lanes of migration 44 kept a known phone from
+  being locked out, but one address could still hold the phone's single
+  "slow lane" slot, a known phone could be sent about 116 SMS a day (20
+  before), and a code could be tried ten times (5 before). Now, in this order
+  of priority: a code can be tried wrongly **5 times in all** (other sources
+  than the requester share 2 of the 5, so the requester keeps at least 3); one
+  phone is sent at most **30 codes in any 24 hours** (`otp_phone_daily_cap`);
+  and inside those bounds sources that have signed in for the phone keep **10
+  of the 30** for themselves (`otp_trusted_daily_reserve`), so sources that
+  have not share 20 a day and 5 an hour. The slow lane is gone: a used-up
+  limit answers 429 "Too many OTP requests. Try again later."; only the 60 s
+  resend cooldown still answers "Please wait before requesting another OTP."
+  with `retry_after_seconds`.
+  **Consequence:** while someone keeps requesting codes for a user's number,
+  that user can still sign in from a network they have used before, but may
+  get no code from a brand-new network until the requests stop or the operator
+  runs `SELECT warehouse_security.reset_otp_limits('<mobile>')` (new; steps in
+  the same section, with the Cloudflare WAF rule).
+- **`get_supervisors` no longer gives staff every colleague's mobile number.**
+  Each row is `id`, `name`, `display_name`, `role`; `phone` is added for
+  administrators and supervisors only. The app picks by name and does not
+  show the number.
+- **A supervisor can no longer re-approve a rejected access request.**
+  `update_user_status` and `update_user_role` refuse a supervisor when the
+  target's access request is not approved (`ENROLLMENT_NOT_APPROVED`). A
+  supervisor still deactivates a user; **giving access back is now an
+  administrator's action**, also for a user the supervisor deactivated.
+  `update_user_role` refuses, for every caller, to change the role of a
+  pending request (`ENROLLMENT_PENDING`), which made it unreviewable.
+- **Staff can remove only the photo files of live documents.** The storage
+  policies of migration 45 let staff read and delete every file no image row
+  names, which included all photos of deleted receipts and dispatches. They
+  now cover such a file only inside the folder of a receipt or dispatch that
+  is not deleted. The migration applies the rule at once;
+  `scripts/configure-storage.sql` (run by `setup.sh`) names the new helper.
+- **`update_grn` takes an optional `p_idempotency_key`.** The same key from
+  the same user for the same receipt within 24 hours returns the stored answer
+  with `"idempotent": true` and changes nothing. Without the key nothing
+  changes for the current app build. A repeated save without a key did not
+  duplicate an added line, as the review had it: it removed the line and added
+  it again under a new id; the key keeps the first row.
+- **Two-session tests** (`tests/concurrent_rules.sh`, run by
+  `tests/migrations.sh`): two administrators deactivating and demoting each
+  other, and two users invoicing one receipt. These rules were asserted
+  before only by the function's source text or by two calls in one session.
+- **Upgrade note for installations with tables of their own.** Migration 42
+  stops when `public` holds a table of the operator's that `authenticated`
+  may write. The migration is not changed (applied migrations are
+  checksum-locked); `docs/OPERATOR_INSTALL.md`, "Rerun and upgrade", now has
+  the two queries to run before upgrading and what to do with a hit.
+- **Record corrected** (`docs/STAFF_GRN_POLICY.md`, "Still open from the first
+  review"): a receipt still stores the client's `sender_name`,
+  `supervisor_name` and any date; and a role change still leaves the old
+  `user_role` claim in the access token until it is renewed, which only an
+  app that reads the claim would notice.
+
+Changed answers: `operator_prepare_otp` no longer answers `resend_cooldown`
+with a 15 minute `retry_at`; `get_supervisors` rows gain `display_name` and
+`role` and lose `phone` for staff; `update_user_status` / `update_user_role`
+gain the errors `ENROLLMENT_NOT_APPROVED` and `ENROLLMENT_PENDING`;
+`update_grn` gains `p_idempotency_key` and, on a replay, `"idempotent": true`.
+
+## Unreleased — backup, restore and gateway follow-ups from the infrastructure review (2026-10-11)
+
+No migration. Operator actions are named in each item.
+
+- **A lost-host restore is no longer stopped by monitoring or print-spool
+  volumes.** `db:restore-host` refused any left-over `<project>_*` Docker
+  volume, so a host that had run the monitoring profile (and the CI lost-host
+  drill itself) was refused and told to delete metric history. It now refuses
+  only `<project>_db-config`, the one named volume of the services whose data
+  a restore replaces, and reports the others as kept.
+  `tests/restore-host.test.mjs` compares that list with the Compose files.
+- **`db:restore-host` no longer unpacks an archive that has no signature
+  file.** A `.tar` without its `.hmac` was unpacked next to the new state
+  before anything in it had been checked against the backup key. It is now
+  refused unless `--allow-unsigned` is given (the signed backup inside is
+  still checked). **Operator action:** copy the `.hmac` file from the drive
+  together with the `.tar` and its `.sha256`. The restore section of
+  `docs/OPERATOR_INSTALL.md` now states the real order of the checks.
+- **A backup's signature is checked before its checksum list is used.**
+  `sha256sum -c SHA256SUMS` ran first, on a list nobody had vouched for, and
+  opens whatever path a line names (a file outside the backup, a device that
+  never ends). The signature over the list is now checked first; the checksums
+  run after it. For a backup accepted with `--allow-unsigned` the list is
+  refused when a line names an absolute path or one with `..`, or when the
+  backup contains a link.
+- **Restore verification no longer unpacks the stored files.**
+  `db:verify-restore` (and so every USB run and every `db:restore`) extracted
+  the whole storage archive into `/tmp` and never read it, so a facility with
+  more photos than free space on the root filesystem could not verify a backup,
+  or filled the disk under the running stack. The archive is now only listed.
+- **The storage-archive safety checks read the whole listing.** With an early
+  link or `..` path in a long listing, the check stopped reading, the lister
+  was killed by the closed pipe, and under `pipefail` the answer became "safe".
+  This mattered for backups accepted with `--allow-unsigned`. The check now
+  also refuses device and other special entries, not only links.
+- **Running USB setup again no longer switches encryption or the daily timer
+  off.** The documented upgrade step is `backup-usb.sh setup --state DIR` with
+  no other option, and that rewrote the configuration with encryption off and
+  disabled the timer, so later archives were plain `.tar` files holding every
+  credential. A setup run now keeps the stored choices; `--no-encrypt`,
+  `--no-daily` and `--fresh-backup` change them. **Operator action:** if an
+  earlier setup rerun switched your daily timer off, run setup once with
+  `--daily`; setup prints the choices in effect.
+- **A USB drive enrolled by the previous release shows up as a failed backup
+  at once.** Such a drive is refused before the backup run starts, so nothing
+  was recorded and `status` and `doctor` kept showing the last success for
+  seven days while no backup reached the drive. The refusal is now recorded as
+  a failed run with the `enroll` command, both when the drive is attached and
+  when setup finds its old line.
+- **The USB run opens only archives it can prove are its own.** A later-dated
+  `.tar` with a matching checksum and no signature became "the newest backup",
+  was unpacked into the state directory and replaced the genuine newest backup
+  in the restore check. Such a file is now reported and never opened, and the
+  newest signed archive is verified as before.
+- **An archive signed with a replaced backup key is named as that**, apart from
+  a damaged archive, and the key-replacement steps in
+  `docs/OPERATOR_INSTALL.md` now say to move the older archives aside on the
+  drive; without that every later run ended as failed.
+- **The backup key is created atomically.** An interrupted setup could leave
+  an empty `config/backup.key` that every later command accepted as present
+  and then rejected. Setup now writes the key to a temporary file and links it
+  into place, replaces an empty key file, and refuses, without touching it, a
+  key file whose content is not a key.
+- **The Realtime socket limit can no longer lock a facility out.** The limit
+  added on this branch (300 a minute, 6000 an hour per client address) counts
+  failed connection attempts, and every phone of a facility shares one
+  address: during a Realtime outage 50 phones used the hourly budget in 20
+  minutes and were then refused until the hour ended. The socket route now has
+  1800 attempts a minute and no hourly window, sized for 100 phones
+  (arithmetic in `docs/CONTAINER_SECURITY.md`, "Realtime socket limit").
+- **CI runs `retention:apply` against the real Storage API.** The removal of
+  expired generated PDFs had only met a stand-in server, and CI ran the
+  preview. The operator-install job now ages one generated PDF in SQL, runs
+  `retention:apply` as its last step and requires the catalog row and the
+  stored file to be gone. The step was written without a running stack; its
+  first CI run is the check of the Storage API call.
+
+## Unreleased — one lock order for document writes; stricter document input (2026-10-11)
+
+Migration 46. No role gains or loses a function; nothing needs an operator's
+action. Details in `docs/STAFF_GRN_POLICY.md`, "One lock order and stricter
+document input".
+
+- **Saving a dispatch no longer deadlocks with an edit of the same receipt.**
+  A receipt edit takes the list-refresh lock and then its rows; creating,
+  editing or deleting a dispatch locked the rows first and the refresh lock
+  afterwards, so the two could wait for each other and one of them failed with
+  "deadlock detected" (the edit of a dispatch or receipt was never retried).
+  Every function that writes a customer, receipt or dispatch now takes the
+  refresh lock before it locks a row. `tests/grn_edit_lock_order.sh` runs the
+  dispatch-against-receipt-edit case with two sessions; without the migration
+  it ends in the deadlock.
+- **Receipt and dispatch input the app already refuses is refused by the
+  server too:** a receipt line with quantity 0 or less or a negative weight; a
+  dispatch edit with quantity 0, a fractional quantity or a lot that does not
+  exist (such a line used to be stored, or silently dropped); a receipt or
+  dispatch number made of tabs, no-break spaces or other invisible characters.
+  A blank dispatch number at creation is now the validation error
+  `disp_no is required`, not a database error.
+- **A receipt carries the customer record's name.** `save_grn` stored whatever
+  name the client sent next to the customer id, and every list shows and
+  searches that name. The name now comes from the customer record at creation
+  and when a receipt moves to another customer.
+- **An idempotency key answers only its own function and user.** Dispatch
+  creation answered with whatever any function or user had stored under the
+  key, and `save_grn` with another user's receipt. A dispatch key is also kept
+  for the 24 hours it is honoured; it used to expire, and be removed by
+  retention, after one hour.
+- **The Package, Rack, Item, Customer and Receipt-number filters of the receipt
+  lists are literal.** `%` and `_` were wildcards there (typing `PKG_50` also
+  found `PKG-50`), and a trailing `\` matched nothing.
+- **Deleting a receipt leaves a trace in the order history** of every cart that
+  lost a line (`grn_deleted`, the lines at quantity 0).
+- `delete_dispatch_with_order_cleanup` checks for administrator or supervisor in
+  its own body as well as in the guard. Four internal dispatch functions that
+  nothing called are dropped.
+- **Edge functions no longer accept the service key as a user.** A request
+  carrying the service key was treated as an administrator by every function
+  behind sign-in. The router and `validateUserAccess` now accept a signed-in
+  user's token only; nothing in this repository called a function with the
+  service key.
+- Tests that could not fail were rewritten: the list tests now read the order
+  and the pages the list functions return (they sorted the result themselves),
+  the customer refusals expect the refusal (any outcome passed, and the list of
+  "other customers" was read through the customer's own row filter), and the
+  language test covers a disabled profile. New assertions: retention cannot be
+  run by an API role, a customer account cannot write to the image buckets,
+  receipt lists filter by moment, and Gujarati or full-width digits in a number
+  sort after ordinary ones.
+- `MOBILE_REF` in CI is still the app commit of 2026-10-08 (51 commits behind
+  the app head reviewed on 2026-10-10); a test now refuses anything but a full
+  commit there, and `docs/RELEASE_CHECKLIST.md` starts with the step that moves
+  it and runs the live contract comparison.
+
+## Unreleased — container networks, function environment and pinned dependencies (2026-10-11)
+
+None of the changes in this entry has run on a started stack yet; each was
+checked with the unit tests and `docker compose config` named in
+`docs/CONTAINER_SECURITY.md`, "Changes awaiting a first run". The
+`operator-install` CI job is their first run on real containers.
+
+- **Containers are on three networks instead of one.** postgres-meta runs any
+  SQL as the database superuser for whoever can connect to it, and Studio
+  forwards SQL to it without a login; both were reachable from every
+  container. They are now on an `admin` network with the database only. The
+  database is on a `database` network with the services that connect to it;
+  Kong, the function runtime, Gotenberg, imgproxy, CUPS and Prometheus can no
+  longer open a connection to it. `health-check.sh` and
+  `scripts/gateway-dns-check.sh` probe the gateway from the `storage`
+  container, because Studio is no longer on the gateway's network; for the
+  same reason Studio's panels that call the gateway do not work.
+  `tests/compose-networks.test.mjs` renders the Compose configuration and
+  asserts which services share a network and that each service still reaches
+  every host it is configured to call. See `docs/ARCHITECTURE.md` and
+  `docs/CONTAINER_SECURITY.md`, "Network boundaries".
+- **The API alert rules can fire.** They queried Kong 2 metric names and the
+  gateway's Prometheus plugin was loaded but never enabled, so there were no
+  request metrics at all. `docker/kong.yml` enables the plugin with status-code
+  and latency metrics, the two rules use `kong_http_requests_total` and
+  `kong_request_latency_ms_bucket`, and `npm run test:monitoring` fails when
+  Prometheus holds no gateway request series. New rules: any scrape target
+  down, and low space on a second disk. There is still no backup-age rule,
+  because nothing exports a backup metric (`docs/MONITORING.md`). Prometheus
+  no longer accepts shutdown and reload requests over HTTP.
+- **GraphQL and Realtime routes are rate-limited** per client address like the
+  REST route (300 a minute, 6000 an hour); the Realtime HTTP route has a 2 MB
+  body limit. The storage route is unchanged.
+- **A function's worker receives only the variables it reads.** The router
+  copied the whole container environment into every worker, so the three
+  functions that take no token (`hello`, `get-public-config`, `operator-otp`)
+  held the token-signing secret. `functions/main/worker-env.ts` now lists the
+  names per function and `tests/worker-env.test.mjs` compares each list with
+  the `Deno.env.get()` calls the function and its shared modules make.
+  `SUPABASE_DB_URL`, a superuser database address that no function read, is
+  removed from the functions container.
+- **Edge function modules are pinned in one list.** Five imports of `npm:ipp`
+  had no version, supabase-js was imported at two versions, and
+  `functions/import_map.json` listed versions that no file imported. Every
+  remote import is now an exact version listed in the import map
+  (`tests/edge-imports.test.mjs`); the functions that run keep the versions
+  they had. The unit tests verify tokens with jose 5.10.0, the release the
+  runtime loads, instead of jose 6. There is still no `deno.lock`; the steps
+  are in `docs/CONTAINER_SECURITY.md`, "Edge function modules".
+- **Kong is pinned by digest.** PostgREST v16.4 is still referenced by tag
+  (`docs/CONTAINER_SECURITY.md`, "Image pins"). `THIRD_PARTY_NOTICES.md` and
+  `docs/ATTRIBUTION_REVIEW.md` now name PostgREST v16.4 and edge-runtime
+  v1.77.4, and a test fails when they drift from Compose and the Dockerfiles.
+- The quantity-in-words fallback of the two pre-printed slip functions threw
+  for 1,01,000 and above (it assigned to a constant). The functions are still
+  refused with 503 by the router; `tests/print-number-words.test.mjs` runs the
+  fallback.
+- Every service's container log is capped at three 10 MB files; ten services
+  had no cap. imgproxy mounts the stored files read-only. The pooler no longer
+  registers a `pgbouncer_reporting` user that no database role backed, and
+  `POOLER_REPORTING_POOL_SIZE` is gone from `.env.example`.
+- The Studio and CUPS recipes apply their distribution's package updates at
+  build time, as the other recipes do. Studio's Next.js and simple-git
+  advisories are in the application and remain
+  (`docs/CONTAINER_SECURITY.md`, "Open items with their steps").
+- GitHub Actions steps name a commit (`actions/checkout` v7.0.1,
+  `actions/setup-node` v6.5.0) instead of a movable major tag.
+
+## Unreleased — signed backups, a restore verifier that does not flake or run out of room (2026-10-11)
+
+**Operators must act after this upgrade** (details in `docs/OPERATOR_INSTALL.md`,
+"Rerun and upgrade" and "Backup key"):
+
+1. `setup.sh` (or the first `db:backup`) creates `config/backup.key` in the
+   state. Copy it somewhere away from the server and from the backup drive. A
+   lost-host restore refuses without it.
+2. Take a new backup. Backups are now format `warehouse-backup-v5` and signed;
+   older ones are accepted by `db:verify-restore`, `db:restore` and
+   `db:restore-host` only with `--allow-unsigned`.
+3. Enroll every USB backup drive again
+   (`sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`, after running
+   its `setup` again). A drive enrolled by an earlier release receives nothing
+   until then.
+4. `npm run db:restore-host` now takes `--backup-key FILE`.
+
+- **Backups are signed.** `SHA256SUMS.hmac` is an HMAC-SHA256 of `SHA256SUMS`
+  under the backup key. The verifier, the in-place restore and the lost-host
+  restore check it, and that the backup holds exactly the listed files, before
+  they read anything else. Until now a backup was trusted on plain checksums
+  that anyone with the drive could regenerate, and a restore replays the dump
+  as the database superuser and adopts the backup's `compose.env`. A wrong
+  signature is refused even with `--allow-unsigned`.
+- **A USB drive is enrolled by a signed marker, not by its volume serial.**
+  The 32-bit exFAT serial was the only check and stood in two world-readable
+  files, so a stick formatted with that serial received every credential.
+  `enroll` now writes `warehouse-backups/.drive-enrolment`, an HMAC over the
+  filesystem UUID, the partition UUID and the instance id; `run` takes no
+  backup and copies nothing unless it verifies. The enrolment list is mode
+  0600 and binds both UUIDs.
+- **USB archives can be encrypted** (`backup-usb.sh setup --encrypt`, or
+  `WAREHOUSE_BACKUP_ENCRYPT=1` for `run`): AES-256-CTR with a key derived from
+  the backup key, written as `.tar.enc` with a signed checksum.
+  `db:restore-host` opens such an archive with `--backup-key`. This is **off by
+  default**: a lost key makes the archives unrecoverable, and the encrypted
+  path is covered by tests with real encryption but a simulated database, not
+  yet by a restore drill on real containers. Backup-disk copies are not
+  encrypted. Archives are signed (`.tar.hmac`) in both modes.
+- **The restore verifier no longer fails at random.** It created its databases
+  from `template1` the moment the server answered, and a start-up session
+  attached to `template1` made `createdb` fail (CI, 2026-10-09). It and
+  `db:restore` now use `template0`. `tests/migrations.sh` ends with a drill on
+  real containers that holds a session on `template1` while the verifier runs.
+- **The restore verifier grows with the database.** It was fixed at 1 GiB of
+  memory and a 768 MiB data directory, and `db:restore` requires it, so a
+  database past that size could no longer be restored. The data directory is
+  now sized from the dumps, placed in memory when it fits and otherwise in a
+  temporary directory under the state, with a free-space check and a message
+  that names the numbers. `WAREHOUSE_VERIFY_DATA_MB`, `_SIZE_FACTOR`,
+  `_STORAGE`, `_SCRATCH_DIR` and `_MEMORY_MB` override it.
+- A failed verification keeps the container log, its state and the database
+  sessions under `diagnostics/` in the state before the container is removed.
+- The verifier and the migration test run the database image by the digest the
+  production image is built from; `metadata.txt` records it, and records
+  `source_commit=unknown` instead of an empty value outside a git checkout.
+- `db:restore-host` refuses a host that still has a Docker volume of the
+  project (`<project>_db-config` would give the restored database the old
+  cluster's configuration and key material).
+- `test:pooler`, `test:monitoring`, `test:cups` and a stand-alone
+  `scripts/migrate.sh` take the operator lock, so they cannot start or build
+  services while a backup or restore is running.
+- CI checks the syntax of every tracked shell script, including the two that
+  run inside images.
+- `.env.example` and the generated `compose.env` no longer carry variables
+  nothing reads (four Logflare tokens, the Google sign-in block,
+  `DOCKER_SOCKET_LOCATION`, `ENABLE_PROM_METRICS`,
+  `POOLER_PROXY_PORT_TRANSACTION`). Existing installations keep their lines;
+  they are harmless.
+- Documentation: which secrets `rotate-keys.sh` does not change and what to do
+  about each (`docs/OPERATOR_INSTALL.md`, "Secrets that rotate-keys does not
+  change"). There is still no rotation for `POSTGRES_PASSWORD`,
+  `SECRET_KEY_BASE` and `VAULT_ENC_KEY`. `docs/TELEMETRY_AND_PRIVACY.md` now
+  says what a Sentry event still contains with `sendDefaultPii: false`.
+
+## Unreleased — the server admits what the app offers to each role (2026-10-11)
+
+Owner decision: where the app shows a screen to a role and the server refused
+its RPCs, the server allowlist is widened so the screen works. Migration 45;
+the full list and the role table are in `docs/STAFF_GRN_POLICY.md`, "The server
+admits what the app offers".
+
+- **Staff can now read and change item prices** (`get_item_storage_prices`,
+  `create_`, `update_`, `delete_` and `find_or_create_item_storage_price`).
+  This supersedes the refusal of migration 23. A price change is not written to
+  a history table.
+- Staff can run the reports the app shows them, for all customers and for one
+  (`get_all_stock_summary`, `get_customer_stock_summary`,
+  `get_all_customer_activity_summary`, `get_customer_activity_detail`,
+  `get_customer_dispatch_activity`, `get_stock_aging_report`,
+  `get_item_wise_stock_list`), and read sensors (`get_sensor_polling_data`,
+  `get_sensor_history`). The operations dashboard stays with administrators and
+  supervisors.
+- Staff can remove a photo in the receipt and dispatch edit forms
+  (`delete_grn_image`, `delete_dispatch_image`): a confirmed photo, or one the
+  caller registered, of a document that is not deleted. They can then delete
+  the file, but only a file that no image row names any more
+  (`scripts/configure-storage.sql`, applied by a setup rerun).
+- Staff get order changes live: a read policy on `orders`.
+- Supervisors can change the role, the active status and the customer
+  assignments of users who are not administrators. They cannot target an
+  administrator or themselves and cannot grant the administrator role. The
+  last-administrator rule of migration 44 is unchanged.
+- **Customer accounts are not widened.** Every all-customers report, pricing
+  and sensors stay refused, also for an account assigned to several customers.
+  `get_stock_aging_report` and `get_item_wise_stock_list` are admitted for a
+  customer account only with the id of an assigned customer.
+- **Behaviour change:** `get_grn_details` and `get_dispatch_details` no longer
+  give a customer account the supervisor's `mobile` and `role` in
+  `supervisor_details`; the name stays. No owner decision was given; this is
+  the privacy-safe default and can be reversed.
+- `get_supervisors` lists active profiles only.
+- `get_customer_dispatch_activity`, `get_customer_stock_summary`,
+  `get_operations_dashboard` and `get_recent_dispatched_orders` read the
+  caller's role from the profile, not from the token.
+- `printer_status` can no longer be read with the public key; signed-in
+  administrators, supervisors and staff read it. `feature_flags` stays public.
+- `find_or_create_item_storage_price` refused every role under operator
+  sign-in; fixed.
+- Tests: new `tests/role_allowlist.sql` classifies every function the app role
+  may execute and calls each one a customer account or staff may not use,
+  expecting the guard's refusal, so a function granted later fails until it is
+  classified. `tests/staff_dispatch_invoice_access.sql`,
+  `tests/staff_grn_access.sql` and `tests/direct_write_guard.sql` were changed
+  where they asserted the old pricing, photo and order-read refusals;
+  `tests/security_baseline.sql` no longer allows an anonymous grant on
+  `printer_status`.
+
+## Unreleased — function router refuses the anon key; PDF footer escapes its values (2026-10-11)
+
+- The function router answers 401 "User access token required" for every
+  function except `hello`, `get-public-config` and `operator-otp` when the
+  caller presents the public anon key. Each of those functions already refused
+  it in its own code; the router check covers a function added later without
+  one.
+- `createFooterHtml` escapes the company name, document type and number. Its
+  only caller passes fixed text, so no output changes.
+- Tests: `tests/jwt.test.mjs`, new `tests/gotenberg-footer.test.mjs`.
+
+## Unreleased — the auth and access test runs again (2026-10-11)
+
+- `tests/auth_and_access.sql` was never run by `tests/migrations.sh` and used
+  the demo sign-in that migration 15 turned off. It now signs in through the
+  operator OTP flow and is registered. Its assertions held against the current
+  schema; only the test was out of date. It is the only place that checks the
+  list of functions an anonymous caller may run (now `refresh_jwt_token`,
+  `logout_session`, `check_session`), that every materialized view is
+  populated, and the GRN and dispatch number suggestions. It also checks the
+  stock report RPCs for customer and administrator.
+- `tests/security_baseline.sql` now also fails when a `SECURITY DEFINER`
+  function an app role can call has no `search_path`, when a new one without
+  `search_path` appears at all (the baseline has 48 that no app role can call),
+  when an exposed table has RLS but no policy, or when an app role can reach
+  the private schemas.
+
+## Unreleased — the last administrator cannot be removed (2026-10-11)
+
+- Migration 44: `delete_user_account` refuses the only active administrator
+  (`{success:false, code:'LAST_ADMIN'}` with a sentence in `error` and
+  `message`); `update_user_status` and `update_user_role` answer
+  `error:'LAST_ADMIN'` when the change would leave no active administrator.
+  Before, the only administrator could delete the own account and nothing
+  short of editing the database could create another.
+- Recovery: `setup.sh` and `warehouse_security.bootstrap_first_admin` now look
+  for an approved, **active** administrator. When there is none, a setup rerun
+  makes the profile with `--admin-phone` an administrator again, or creates
+  one. See "The last administrator" in `docs/OPERATOR_INSTALL.md`.
+- `operator_review_enrollment` refuses a caller with no active role by itself
+  (it relied on the PostgREST session hook having refused first).
+- Tests: new `tests/admin_guards.sql`.
+
+## Unreleased — OTP limits a stranger cannot turn against a user (2026-10-11)
+
+- Migration 44 changes the OTP limits; the table is in
+  `docs/OPERATOR_INSTALL.md`, "Authentication and OTP limits". Before, anyone
+  could keep a chosen phone (the only administrator's included) from signing
+  in with five code requests an hour or five wrong guesses per code, and about
+  ten addresses could use up the warehouse cap for everybody.
+  - Wrong codes are counted on each issued code in two budgets of five: one for
+    the address that requested the code, one shared by all other addresses.
+    Each address is also limited to 20 failed verifications an hour.
+  - A phone with an approved, active profile is no longer refused after 5
+    requests an hour or 20 a day: it gets one code every 15 minutes instead,
+    and 5 an hour from an address it has signed in from before, which other
+    addresses cannot use up. Other phones keep the hard limit.
+  - The 60 s resend cooldown is per phone and address.
+  - Phones without an approved profile may use only `otp_unknown_hourly_cap`
+    (default 60) of the warehouse cap (`otp_global_hourly_cap`, default 300).
+  - A send MSG91 did not accept no longer counts against the phone or the
+    warehouse cap.
+  - New access requests are limited to 3 per address and
+    `enrollment_daily_cap` (default 30) per day, and the name a new user types
+    is checked (markup or links are replaced by "New customer").
+- `operator_verify_otp` takes the caller's address as a fifth argument; the
+  four-argument function is gone. Only the edge worker calls it.
+- The edge function answers two new cases: verification from an address over
+  its failure limit gets 429 "Too many OTP requests. Try again later.", and an
+  access request over the limit gets 429 "Too many new access requests. Try
+  again tomorrow.". A cooldown answer now carries `retry_after_seconds` and a
+  `Retry-After` header.
+- The edge function's request handling moved to
+  `functions/operator-otp/handler.ts` so it can be tested.
+- Tests: new `tests/otp_abuse_limits.sql` and
+  `tests/operator-otp-handler.test.mjs` (mode gate, routing, CF-Connecting-IP
+  checks, formats, status mapping, provider failure order).
+
+## Unreleased — a replayed refresh token ends the session; a retried renewal does not (2026-10-11)
+
+- Migration 44: `refresh_jwt_token` now tells a retry from reuse. A refresh
+  token that was already replaced and is presented again within 60 seconds
+  (`refresh_grace_seconds` in `warehouse_security.auth_config`, 0 to 300) gets
+  the same successor again with a newly signed access token, so an app whose
+  first answer was lost on a slow network is not signed out. Presented later,
+  or when it is two generations old, it is reuse: the session is deleted, the
+  token that was current stops working and the database log carries
+  `Refresh token reuse: session ... revoked`. Before, the replay was refused
+  but a session held by whoever had rotated the stolen token stayed alive for
+  up to 7 days.
+- The answer shape is unchanged: `{success, access_token, refresh_token,
+  expires_at, expires_in, token_type}` or `{success:false, message:'Invalid
+  refresh token'}`.
+- The table still stores hashes only. The successor is kept encrypted under a
+  key derived from the replaced token, so it can be returned only to a caller
+  who presents that token.
+- Tests: new `tests/refresh_reuse.sql` (rotation, retry inside the grace
+  period, replay after it, old generations, logout with a pre-rotation token,
+  forged and expired tokens); `tests/operator_auth.sql` and the CI drill
+  `tests/operator-api-core.mjs` now expect the retry answer. The drill was not
+  run against a live stack in this change.
+
+## Unreleased — printer status check validates the printer name (2026-10-10)
+
+- `get-printer-status` (still answered with 503 by the function router until
+  printing is configured) accepts only a CUPS queue name
+  (`[a-zA-Z0-9_-]`, 1 to 127 characters) as `printer_name`, as `print-via-ipp`
+  does; before, the value went into the CUPS URL path unchecked. An error that
+  is neither "cannot connect" nor "printer not found" is answered as
+  `Printer status unavailable`; the detail stays in the server log.
+- Tests: new `tests/printer-name.test.mjs`.
+
+## Unreleased — generated PDFs expire (2026-10-10)
+
+- Every `generate-*-pdf` request stores a new file in the private `documents`
+  bucket and nothing removed it, so the bucket grew with every request.
+  `npm run retention:apply` now also removes generated PDFs older than the new
+  `generated_documents` retention policy (7 days by default; the download link
+  lives one hour). `npm run retention:preview` prints how many it would remove.
+- Migration 43 adds the policy row and
+  `warehouse_maintenance.expired_generated_documents()`, which names the
+  expired files. `scripts/retention.sh` deletes them through the Storage API
+  from inside the storage container (`scripts/remove-expired-documents.cjs`),
+  because deleting the `storage.objects` row alone leaves the file on disk,
+  then checks that none remain. Only names the PDF functions produce
+  (`<kind>/<document id>/<uuid>.pdf`) are removed.
+- **Action for operators:** retention is still a command you run; schedule
+  `npm run retention:apply` (for example daily, with the backups). See
+  `docs/PDF_GENERATION.md`.
+- Tests: `tests/retention.sql` (which files are named),
+  new `tests/retention-documents.test.mjs` (the Storage API call and the
+  command's preview/apply steps, against stand-ins). The deletion was not run
+  against a live Storage container in this change.
+
+## Unreleased — an image is confirmed only for a file in its own document's folder (2026-10-10)
+
+- Migration 43: `upload_grn_image` and the `p_images` lists of `save_grn` and
+  `update_grn` no longer write a confirmed image row for any path the caller
+  sends. A path is accepted only if it lies in that document's folder
+  (`headers/<grn id>/`, `items/<grn id>/`, `<dispatch id>/`), a file with that
+  name is in the bucket, no other image row carries it, and an item photo's
+  line belongs to the receipt. Before, one staff call could attach customer A's
+  photo to customer B's receipt, which let B download it, or leave a confirmed
+  row with no file.
+- `confirm_grn_image_upload` and `confirm_dispatch_image_upload` answer
+  `IMAGE_NOT_VERIFIED` until the file is uploaded to the registered path.
+  `register_grn_image_upload` refuses a line of another receipt
+  (`ITEM_NOT_IN_GRN`). `update_grn` no longer re-links an image of another
+  receipt named by id. Dispatch photo paths carry a random part instead of a
+  timestamp. `upload_dispatch_image` gets the same checks and the RPC guard.
+- An image row inserted without a status is `pending`. Customers read confirmed
+  image rows only; a pending row and its upload token are no longer visible to
+  the document's customer.
+- The app's flow is unchanged: register, upload to the issued path, confirm;
+  `update_grn` still answers `item_mapping` and `grn.images`.
+- **Action for operators:** existing rows are not changed. If the migration
+  warns about rows outside their document's folder, list them with
+  `SELECT * FROM warehouse_maintenance.misplaced_image_paths();` and delete the
+  ones that should not be there. See `docs/STAFF_GRN_POLICY.md`.
+- Tests: new `tests/image_path_rules.sql`.
+
+## Unreleased — business tables are written only through the guarded RPCs (2026-10-10)
+
+- Migration 42: administrators and supervisors can no longer insert, update or
+  delete rows of the business tables with a direct table call
+  (`/rest/v1/<table>`); the request answers HTTP 403. Before, one such call
+  could set an invoice total, a line rate, a discount or a lot's stock, or
+  delete dispatch lines, without the server totals, rate limits, stock checks
+  and dependency checks the RPCs apply. Reads are unchanged for every role.
+  The tables: `customers`, `items`, `item_storage_prices`, `goodsreceived`,
+  `goodsreceived_trl`, `dispatch`, `dispatch_trl`, `invoice`, `invoice_trl`,
+  `payments`, `orders`, `order_items`, `grn_images`, `dispatch_images`,
+  `stock_movements`, `print_jobs`, `sensor_devices`, `sensor_readings`,
+  `sensor_health_events`.
+- **Action for API clients:** anything that wrote these tables directly with an
+  administrator or supervisor session must call the RPC instead
+  (`safe_delete_customer` / `restore_customer` / `update_customer`,
+  `update_invoice`, `update_grn`, `update_dispatch_smart`, the `delete_*` RPCs).
+  Edge functions using the service key, operator scripts and Studio are not
+  affected.
+- Migration 42: `update_order_metadata(p_order_id, p_note, p_priority,
+  p_requested_dispatch_date)` is granted to signed-in users. Administrators and
+  supervisors only; each change is written to the order history. It replaces a
+  direct update of an order's note.
+- The own-profile grant `UPDATE(name, display_name)` on `user_profiles` is
+  unchanged.
+- Tests: new `tests/direct_write_guard.sql`. `tests/staff_grn_access.sql`,
+  `tests/staff_dispatch_invoice_access.sql` and `tests/order_screen.sql` now
+  expect a refusal where a direct write used to match no row. The HTTP drivers
+  `tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs` and
+  `tests/review-core.mjs` use the RPCs instead of direct writes.
+
+## Unreleased — invoice line rules: rate ranges, one invoice per dispatch line, India dates, discount history (2026-10-10)
+
+- Migration 41: `save_invoice` (both signatures) and `update_invoice` refuse a
+  line whose `charge` or `labour_rate` is outside 0 to 999999 or whose `tax` is
+  outside 0 to 100 (`Invoice line charge must be between 0 and 999999`,
+  `Invoice line labour rate must be between 0 and 999999`, `Invoice line tax must
+  be between 0 and 100`). Zero rates are still accepted and a negative discount
+  is still a surcharge. Before, a negative labour rate or tax could bring an
+  invoice to nothing without a discount reason.
+- Migration 41: a dispatch line is invoiced once. A save for a receipt already
+  marked invoiced is refused (`GRN is already invoiced`, code `WH409`), as is a
+  line that is on another invoice (`A dispatch line is already on another
+  invoice`). `update_invoice` cannot move an invoice onto an invoiced receipt.
+  Before, a second save under a new invoice number billed the same lines twice.
+  After `delete_invoice` the receipt can be invoiced again.
+- Migration 41: billable days are counted between calendar dates in India
+  (`Asia/Kolkata`) in the preview and all save paths, not in the database
+  session's time zone. **Amounts change** for a receipt whose stored time falls
+  between 18:30 and 24:00 UTC (00:00 to 05:30 in India): it loses the extra day
+  it was given, which mattered at the 30/45/60-day steps. Saved invoices are not
+  recalculated; an invoice edited after the upgrade gets the corrected days.
+- Migration 41: every discount change is appended to the new
+  `invoice_discount_history` table (old and new discount, reason, profile, role,
+  time). It cannot be updated or deleted, administrators and supervisors read
+  it, and it stays when the invoice is deleted. A discount reason made only of
+  white space or invisible characters is treated as empty for staff.
+- Migration 41: `get_invoice_detail` returns `discount_reason`,
+  `discount_set_by`, `discount_set_by_name` and `discount_set_at` to
+  administrators, supervisors and staff (not to customer accounts).
+  `get_invoice_items_detailed` computes line tax and total as the header does;
+  a one-time line no longer includes duration and labour.
+- Migration 41: `delete_invoice` refuses an invoice that payments refer to
+  (`Cannot delete an invoice that has payments`).
+- Existing invoices are not validated or changed. Applying the migration prints
+  a warning with the number of dispatch lines that are already on more than one
+  invoice, if any.
+
+## Unreleased — a line can be added to an existing receipt (2026-10-10)
+
+- Migration 40: `update_grn` saves a line that has no `id` as a new line of the
+  receipt, with its whole quantity in stock, and reports it in `item_mapping`.
+  Before, every edit that added a line failed with `column "pricing_mode" of
+  relation "goodsreceived_trl" does not exist` and saved nothing: the insert named
+  a column the line table does not have. The pricing mode stays on the receipt
+  header (`p_pricing_mode`); a `pricing_mode` sent on a line is ignored.
+- No request or response changes. A photo attached to a line added during an
+  edit still needs the app to send the new line's id (`item_mapping`).
+
+## Unreleased — a dispatch carries only its own customer's lots (2026-10-10)
+
+- Migration 39: `create_dispatch_with_stock_check` and `update_dispatch_smart`
+  refuse a line whose receipt belongs to another customer than the dispatch
+  (`Item belongs to another customer: <item> (<receipt>)`, code `WH409`), for
+  every role. `update_dispatch_smart` also refuses a change of the dispatch
+  customer unless every line the edit leaves belongs to the new customer
+  (`Cannot change the dispatch customer: items belong to another customer: ...`).
+  Before, a dispatch for one customer could take another customer's stock and
+  show that customer's receipt details to the first.
+- Migration 39: `update_grn` refuses a change of the receipt's customer once the
+  receipt has dispatch lines, an invoice or a line in an open cart (error
+  `Cannot change the customer of a GRN that has dispatches, invoices or order
+  items`). Sending the present customer again is still an ordinary edit.
+- Existing records are not validated or changed. Applying the migration prints a
+  warning with the number of dispatch lines that already mix customers, if any;
+  such a dispatch can still be edited, but no further foreign line can be added.
+
 ## Unreleased — receipts sort by number in every accepted form (2026-10-10)
 
 - Migration 31: `get_all_grn_items` and `get_grn_list` sort by receipt number with

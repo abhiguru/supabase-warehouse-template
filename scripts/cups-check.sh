@@ -2,6 +2,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
+# Builds the printing image of this project: one operator command at a time per state.
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
+state="$(operator_state)"
+operator_lock "$state"
 compose --profile printing build cups
 image=$(compose --profile printing images -q cups)
 # A profile need not have a running container to have a built image.

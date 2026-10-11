@@ -2,46 +2,43 @@ import assert from 'node:assert/strict';
 
 const REVIEW_CUSTOMER_NAME = 'Example Customer — Access Review';
 
-async function deleteRows(api, adminToken, path, label) {
-  const response = await api(path, adminToken, undefined, 'DELETE');
-  assert.ok(response.ok, `${label}: HTTP ${response.status}`);
-}
-
-async function cleanupReviewCustomerFixtures(api, adminToken) {
+// Fixture cleanup goes through the delete RPCs, in dependency order: since
+// migration 42 no role writes the business tables directly. A dispatch delete
+// restores stock and removes its image rows; a receipt delete removes its
+// lines, stock movements, image rows and cart lines. Empty carts stay (there is
+// no order delete RPC) and are reused by the next run.
+async function cleanupReviewCustomerFixtures(api, rpc, success, adminToken) {
   const customerPath = `/rest/v1/customers?name=eq.${encodeURIComponent(REVIEW_CUSTOMER_NAME)}&select=id`;
   const customers = (await api(customerPath, adminToken)).data || [];
 
   for (const { id: customerId } of customers) {
     const invoices = (await api(`/rest/v1/invoice?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
     for (const { id } of invoices) {
-      await deleteRows(api, adminToken, `/rest/v1/invoice_trl?invoice_id=eq.${id}`, 'delete review invoice lines');
+      success(await rpc('delete_invoice', adminToken, { p_invoice_id: id }), 'delete review invoice');
     }
-    await deleteRows(api, adminToken, `/rest/v1/invoice?customer_id=eq.${customerId}`, 'delete review invoices');
 
     const dispatches = (await api(`/rest/v1/dispatch?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
     for (const { id } of dispatches) {
-      await deleteRows(api, adminToken, `/rest/v1/dispatch_images?dispatch_id=eq.${id}`, 'delete review dispatch images');
-      await deleteRows(api, adminToken, `/rest/v1/dispatch_trl?disp_id=eq.${id}`, 'delete review dispatch lines');
+      success(await rpc('delete_dispatch_with_order_cleanup', adminToken, { p_dispatch_id: id, p_user_id: null }), 'delete review dispatch');
     }
-    await deleteRows(api, adminToken, `/rest/v1/dispatch?customer_id=eq.${customerId}`, 'delete review dispatches');
 
     const orders = (await api(`/rest/v1/orders?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
     for (const { id } of orders) {
-      await deleteRows(api, adminToken, `/rest/v1/order_items?order_id=eq.${id}`, 'delete review order lines');
+      const lines = (await api(`/rest/v1/order_items?order_id=eq.${id}&select=id`, adminToken)).data || [];
+      for (const { id: lineId } of lines) {
+        success(await rpc('remove_item_from_order', adminToken, { p_order_item_id: lineId }), 'delete review order line');
+      }
     }
-    await deleteRows(api, adminToken, `/rest/v1/orders?customer_id=eq.${customerId}`, 'delete review orders');
 
     const grns = (await api(`/rest/v1/goodsreceived?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
     for (const { id } of grns) {
-      const items = (await api(`/rest/v1/goodsreceived_trl?gr_id=eq.${id}&select=id`, adminToken)).data || [];
-      for (const { id: itemId } of items) {
-        await deleteRows(api, adminToken, `/rest/v1/stock_movements?gr_trl_id=eq.${itemId}`, 'delete review stock movements');
-      }
-      await deleteRows(api, adminToken, `/rest/v1/grn_images?grn_id=eq.${id}`, 'delete review GRN images');
-      await deleteRows(api, adminToken, `/rest/v1/goodsreceived_trl?gr_id=eq.${id}`, 'delete review GRN lines');
+      success(await rpc('delete_grn_safe', adminToken, { p_grn_id: id }), 'delete review GRN');
     }
-    await deleteRows(api, adminToken, `/rest/v1/goodsreceived?customer_id=eq.${customerId}`, 'delete review GRNs');
-    await deleteRows(api, adminToken, `/rest/v1/item_storage_prices?customer_id=eq.${customerId}`, 'delete review prices');
+
+    const prices = (await api(`/rest/v1/item_storage_prices?customer_id=eq.${customerId}&select=id`, adminToken)).data || [];
+    for (const { id } of prices) {
+      success(await rpc('delete_item_storage_price', adminToken, { p_id: id }), 'delete review price');
+    }
   }
 }
 
@@ -56,7 +53,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
     await api(`/rest/v1/customers?name=eq.${encodeURIComponent(REVIEW_CUSTOMER_NAME)}&select=id,deleted_at`, adminToken)
   ).data || [];
   assert.ok(existingReviewCustomers.length <= 1, 'review fixture customer name is unique');
-  await cleanupReviewCustomerFixtures(api, adminToken);
+  await cleanupReviewCustomerFixtures(api, rpc, success, adminToken);
 
   let otherId;
   try {
@@ -132,7 +129,9 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   const cart = await rpc('get_or_create_cart', customerToken, { p_customer_id: customerId });
   assert.equal(typeof cart, 'string', 'cart response is a UUID scalar');
   assert.equal(await rpc('get_or_create_cart', customerToken, { p_customer_id: customerId }), cart, 'cart retry preserves identity');
-  assert.ok((await api(`/rest/v1/order_items?order_id=eq.${cart}`, customerToken, undefined, 'DELETE')).ok, 'reset fictional demo cart for this fixture');
+  for (const { id } of (await api(`/rest/v1/order_items?order_id=eq.${cart}&select=id`, customerToken)).data) {
+    success(await rpc('remove_item_from_order', customerToken, { p_order_item_id: id }), 'reset fictional demo cart for this fixture');
+  }
   const added = await rpc('add_item_to_order', customerToken, { p_order_id: cart, p_grn_item_id: grnItem, p_quantity: 7 });
   success(added, 'add order item');
   const item = (await api(`/rest/v1/order_items?order_id=eq.${cart}&grn_items_id=eq.${grnItem}&select=id,requested_quantity`, customerToken)).data[0];
@@ -146,7 +145,8 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   assert.ok(!forbiddenEdit.ok || forbiddenEdit.data?.success === false, 'cross-customer edit denied');
   assert.equal((await api(`/rest/v1/order_items?id=eq.${item.id}&select=requested_quantity`, customerToken)).data[0].requested_quantity, 9);
   assert.equal((await rpc('add_item_to_order', customerToken, { p_order_id: cart, p_grn_item_id: grnItem, p_quantity: 7 })).success, false, 'duplicate add rejected');
-  assert.ok((await api(`/rest/v1/order_items?id=eq.${item.id}&order_id=eq.${cart}`, customerToken, undefined, 'DELETE')).ok);
+  assert.equal((await api(`/rest/v1/order_items?id=eq.${item.id}`, customerToken, undefined, 'DELETE')).status, 403, 'direct cart line delete refused');
+  success(await rpc('remove_item_from_order', customerToken, { p_order_item_id: item.id }), 'remove order item');
   assert.equal((await api(`/rest/v1/order_items?id=eq.${item.id}`, customerToken)).data.length, 0);
   console.log('Customer order creation, retry, add/edit/list/delete and cross-customer denial passed.');
 
@@ -232,7 +232,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
         target_customer_id: otherId,
       });
     }
-    await cleanupReviewCustomerFixtures(api, adminToken);
+    await cleanupReviewCustomerFixtures(api, rpc, success, adminToken);
     if (otherId) {
       success(await rpc('safe_delete_customer', adminToken, {
         p_customer_id: otherId,

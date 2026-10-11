@@ -41,9 +41,14 @@ Nothing of it is implemented yet.
 
 - Operator install and upgrades: [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
   (`setup.sh --operator`, one Cloudflare Tunnel per installation, MSG91 SMS).
-- Every API call is guarded by `warehouse_security.authorize_rpc` (latest version in the
-  newest migration that redefines it); what staff and customers may do is in
-  [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md); invoice amounts in
+- Every business RPC is guarded by `warehouse_security.authorize_rpc` (latest version in
+  the newest migration that redefines it), and business data is written only through
+  those RPCs: no app role, administrator included, can insert, update or delete a
+  business table directly (migration 42). Direct table reads remain, limited by the row
+  policies. What supervisors, staff and customers may do is in
+  [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table in its last
+  section; `tests/role_allowlist.sql` classifies every granted function);
+  invoice amounts in
   [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md).
 
 ## Working rules

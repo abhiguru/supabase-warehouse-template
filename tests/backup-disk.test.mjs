@@ -399,6 +399,20 @@ test('sync copies every backup, verifies the copies and the restore, and warns a
   } finally { f.cleanup(); }
 });
 
+test('sync copies an unsigned backup from an earlier release but does not pretend to have verified its restore', () => {
+  const f = fixture('warehouse-sync-v4-');
+  try {
+    makeBackup(join(f.state, 'backups', 'warehouse-20251201T000000Z'), { env: composeEnv(f.state), format: 'warehouse-backup-v4' });
+    f.mountDisk();
+    const result = f.run(['sync'], syncEnv(f));
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.ok(existsSync(join(f.mount, 'state', 'warehouse-20251201T000000Z', 'SHA256SUMS')));
+    assert.match(result.stdout, /unsigned backup from an earlier release.*restore verification was skipped.*--allow-unsigned/);
+    assert.doesNotMatch(f.dockerCalls(), /run /, 'no restore verification ran');
+    assert.match(result.stdout, /copied=1 already-present=0 failed=0/);
+  } finally { f.cleanup(); }
+});
+
 test('sync --skip-verify-restore never calls docker', () => {
   const f = fixture('warehouse-sync-skip-');
   try {

@@ -46,6 +46,16 @@ groups:
           summary: "Low disk space"
           description: "Disk space below 20% on root filesystem"
 
+      - alert: DiskSpaceLowOtherFilesystem
+        # A second disk (database or backup volume) mounted beside the root filesystem.
+        expr: (node_filesystem_avail_bytes{mountpoint!="/",fstype=~"ext4|xfs|btrfs"} / node_filesystem_size_bytes{mountpoint!="/",fstype=~"ext4|xfs|btrfs"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.mountpoint }}"
+          description: "Less than 10% free on {{ $labels.mountpoint }}"
+
       - alert: PostgresDown
         expr: pg_up == 0
         for: 1m
@@ -115,7 +125,9 @@ groups:
   - name: api_alerts
     rules:
       - alert: APIHighLatency
-        expr: histogram_quantile(0.95, sum(rate(kong_latency_bucket{type="request"}[5m])) by (le, service)) > 2000
+        # Kong 3 metric names (prometheus plugin, enabled in kong.yml). Kong 2
+        # called these kong_latency_bucket{type="request"} and kong_http_status.
+        expr: histogram_quantile(0.95, sum(rate(kong_request_latency_ms_bucket[5m])) by (le, service)) > 2000
         for: 2m
         labels:
           severity: warning
@@ -124,7 +136,7 @@ groups:
           description: "95th percentile API latency above 2 seconds for service {{ $labels.service }}"
 
       - alert: APIHighErrorRate
-        expr: sum(rate(kong_http_status{code=~"5.."}[5m])) / sum(rate(kong_http_status[5m])) > 0.05
+        expr: sum(rate(kong_http_requests_total{code=~"5.."}[5m])) / sum(rate(kong_http_requests_total[5m])) > 0.05
         for: 2m
         labels:
           severity: warning
@@ -140,3 +152,13 @@ groups:
         annotations:
           summary: "API Gateway is down"
           description: "Kong API Gateway is not responding"
+
+      - alert: ScrapeTargetDown
+        # Every other scrape job in prometheus.yml; the gateway has APIDown above.
+        expr: up{job!="kong"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Monitoring target {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }} (job {{ $labels.job }})"

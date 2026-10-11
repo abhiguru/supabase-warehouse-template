@@ -1,12 +1,31 @@
+-- Sign-in, refresh, revocation and cross-customer access against the operator
+-- OTP flow. Runs only in migrations.sh's disposable, network-disabled database;
+-- every fixture row rolls back.
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.assert_true(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS DISTINCT FROM true THEN RAISE EXCEPTION 'FAILED: %',label; END IF; END $$;
+-- Requests a code, marks it delivered and verifies it; test.last_code keeps the code.
+CREATE FUNCTION pg_temp.operator_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE challenge jsonb;
+BEGIN
+  UPDATE public.otp_verifications SET created_at=created_at-interval '61 seconds'
+    WHERE phone_number=warehouse_security.normalize_phone(phone);
+  challenge := public.operator_prepare_otp(phone);
+  PERFORM pg_temp.assert_true(challenge->>'success'='true','challenge for '||phone);
+  PERFORM public.operator_finish_otp((challenge#>>'{data,request_id}')::uuid,true,'mock-provider-only');
+  PERFORM set_config('test.last_code',challenge#>>'{data,otp_code}',true);
+  RETURN public.operator_verify_otp(phone,challenge#>>'{data,otp_code}');
+END $$;
 
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
-  ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),('demo_auth_enabled','false');
-SELECT pg_temp.assert_true(NOT (public.send_otp('0000000001')->>'success')::boolean,'demo auth is disabled by default');
-UPDATE warehouse_security.auth_config SET value='true' WHERE key='demo_auth_enabled';
+  ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
+  ('auth_mode','operator'),('demo_auth_enabled','false')
+ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+SELECT pg_temp.assert_true(NOT (public.send_otp('0000000001')->>'success')::boolean,'demo auth is unavailable');
+SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.operator_verify_otp(text,text,text,text,inet)','EXECUTE'),
+  'anonymous callers reach OTP only through the edge function');
 INSERT INTO public.user_profiles(id,auth_user_id,name,display_name,mobile,role,active) VALUES
   ('11111111-0000-4000-8000-000000000001','11111111-0000-4000-8000-000000000011','Test Admin','Test Admin','910000000001','admin',true),
   ('11111111-0000-4000-8000-000000000002','11111111-0000-4000-8000-000000000012','Test Customer','Test Customer','910000000002','customer',true),
@@ -17,23 +36,30 @@ INSERT INTO public.customers(id,name) VALUES
 INSERT INTO public.users_customers_new(user_profile_id,customer_id,active) VALUES
   ('11111111-0000-4000-8000-000000000002','22222222-0000-4000-8000-000000000001',true);
 
-SET LOCAL ROLE anon;
-DO $$ DECLARE login jsonb; refreshed jsonb; BEGIN
-  PERFORM pg_temp.assert_true((public.send_otp('0000000002')->>'success')::boolean,'anonymous send OTP');
-  PERFORM pg_temp.assert_true(NOT (public.verify_otp_or_register('0000000002','654321')->>'success')::boolean,'wrong OTP denied');
-  login := public.verify_otp_or_register('0000000002','123456');
+DO $$ DECLARE login jsonb; challenge jsonb; BEGIN
+  challenge := public.operator_prepare_otp('0000000002');
+  PERFORM public.operator_finish_otp((challenge#>>'{data,request_id}')::uuid,true,'mock-provider-only');
+  PERFORM pg_temp.assert_true(public.operator_verify_otp('0000000002','not-otp')->>'code'='invalid_otp','wrong OTP denied');
+  login := pg_temp.operator_login('0000000002');
   PERFORM pg_temp.assert_true((login->>'success')::boolean,'correct OTP signs in');
   PERFORM pg_temp.assert_true(login#>>'{data,user,role}'='customer','customer role retained');
-  PERFORM pg_temp.assert_true(NOT (public.verify_otp_or_register('0000000002','123456')->>'success')::boolean,'OTP replay denied');
-  refreshed := public.refresh_jwt_token(login#>>'{data,session,refresh_token}');
-  PERFORM pg_temp.assert_true((refreshed->>'success')::boolean,'opaque refresh accepted');
-  PERFORM pg_temp.assert_true(refreshed->>'refresh_token'<>login#>>'{data,session,refresh_token}','refresh rotates its own session token');
-  PERFORM pg_temp.assert_true(NOT (public.refresh_jwt_token(login#>>'{data,session,refresh_token}')->>'success')::boolean,'old refresh replay denied');
-  -- Logout may have captured the old token immediately before refresh won the race.
+  PERFORM pg_temp.assert_true(NOT (public.operator_verify_otp('0000000002',current_setting('test.last_code'))->>'success')::boolean,'OTP replay denied');
   PERFORM set_config('test.refresh',login#>>'{data,session,refresh_token}',true);
+  PERFORM pg_temp.assert_true(pg_temp.operator_login('0000000003')->>'code'='account_unavailable','inactive account denied');
+END $$;
+
+SET LOCAL ROLE anon;
+DO $$ DECLARE refreshed jsonb; retried jsonb; BEGIN
+  refreshed := public.refresh_jwt_token(current_setting('test.refresh'));
+  PERFORM pg_temp.assert_true((refreshed->>'success')::boolean,'opaque refresh accepted');
+  PERFORM pg_temp.assert_true(refreshed->>'refresh_token'<>current_setting('test.refresh'),'refresh rotates its own session token');
+  -- A retry of the rotation just made (answer lost on a slow network) gets the
+  -- same successor; replay after the grace period is covered in refresh_reuse.sql.
+  retried := public.refresh_jwt_token(current_setting('test.refresh'));
+  PERFORM pg_temp.assert_true((retried->>'success')::boolean AND retried->>'refresh_token'=refreshed->>'refresh_token','immediate retry returns the same successor');
+  -- Logout may have captured the old token immediately before refresh won the
+  -- race: test.refresh still holds the pre-rotation token for the logout below.
   PERFORM pg_temp.assert_true(NOT (public.refresh_jwt_token(repeat('0',64))->>'success')::boolean,'forged refresh denied');
-  PERFORM public.send_otp('0000000003');
-  PERFORM pg_temp.assert_true(NOT (public.verify_otp_or_register('0000000003','123456')->>'success')::boolean,'inactive account denied');
   BEGIN PERFORM * FROM public.customers; RAISE EXCEPTION 'anonymous customer read allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN PERFORM * FROM public.jwt_config; RAISE EXCEPTION 'anonymous secret read allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN PERFORM public.get_users_list(); RAISE EXCEPTION 'anonymous staff RPC allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
@@ -61,6 +87,18 @@ DO $$ DECLARE result jsonb; BEGIN
     result := public.get_users_list();
     PERFORM pg_temp.assert_true(result->>'success'='false','customer staff RPC denied');
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  -- Report RPCs per role: the all-customer reports are for administrators and
+  -- supervisors; a customer reads only the own stock summary.
+  BEGIN
+    result := public.get_stock_aging_report();
+    PERFORM pg_temp.assert_true(result->>'success'='false' AND NOT result ? 'data','customer cannot run the all-customer aging report: '||result::text);
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN
+    result := public.get_item_wise_stock_list();
+    PERFORM pg_temp.assert_true(result->>'success'='false' AND NOT result ? 'data','customer cannot run the all-customer stock list: '||result::text);
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  result := public.get_customer_stock_summary('22222222-0000-4000-8000-000000000001');
+  PERFORM pg_temp.assert_true(result ? 'summary' AND result ? 'items','customer reads the own stock summary: '||result::text);
   PERFORM public.logout_session(current_setting('test.refresh'));
   BEGIN PERFORM public.check_session(); RAISE EXCEPTION 'revoked access session accepted'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   PERFORM pg_temp.assert_true((SELECT count(*)=0 FROM public.customers),'revoked session loses RLS access');
@@ -70,13 +108,16 @@ RESET ROLE;
 -- Number suggestions must tolerate custom IDs and compare numeric suffixes
 -- numerically. These explicit rows exist only inside this rolled-back test.
 DO $$ DECLARE login jsonb; claims jsonb; BEGIN
-  PERFORM public.send_otp('0000000001');
-  login := public.verify_otp_or_register('0000000001','123456');
+  login := pg_temp.operator_login('0000000001');
   PERFORM pg_temp.assert_true(login->>'success'='true','number fixture admin login');
   SELECT jsonb_build_object('role','authenticated','sub',user_id,'session_id',id) INTO claims
     FROM warehouse_security.refresh_sessions WHERE user_id='11111111-0000-4000-8000-000000000011';
   PERFORM set_config('request.jwt.claims',claims::text,true);
 END $$;
+SELECT pg_temp.assert_true(public.get_stock_aging_report()->>'success'='true'
+  AND public.get_item_wise_stock_list()->>'success'='true'
+  AND public.get_customer_stock_summary('22222222-0000-4000-8000-000000000002') ? 'summary',
+  'administrator runs the stock reports for any customer');
 INSERT INTO public.goodsreceived(gr_no,customer_id,created_at) VALUES
   ('AZCUSTOM','22222222-0000-4000-8000-000000000001',now());
 SELECT pg_temp.assert_true(public.get_next_grn_number()='A0001','custom-only GRNs keep initial numeric suggestion');
@@ -164,8 +205,7 @@ DO $$ DECLARE result jsonb; BEGIN
   PERFORM pg_temp.assert_true(result#>>'{data,items,0,item_name}'='Invoice detail item','detailed invoice joins item name');
 END $$;
 DO $$ DECLARE login jsonb; claims jsonb; BEGIN
-  PERFORM public.send_otp('0000000002');
-  login := public.verify_otp_or_register('0000000002','123456');
+  login := pg_temp.operator_login('0000000002');
   PERFORM pg_temp.assert_true(login->>'success'='true','customer obtains a fresh session for invoice authorization');
   SELECT jsonb_build_object('role','authenticated','sub',user_id,'session_id',id) INTO claims
     FROM warehouse_security.refresh_sessions
@@ -228,7 +268,7 @@ SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.get_next_di
 SELECT pg_temp.assert_true(NOT EXISTS (
   SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname='public' AND has_function_privilege('anon',p.oid,'EXECUTE')
-    AND p.proname NOT IN ('send_otp','verify_otp_or_register','refresh_jwt_token','logout_session','check_session')
+    AND p.proname NOT IN ('refresh_jwt_token','logout_session','check_session')
 ),'anonymous function allowlist');
 SELECT pg_temp.assert_true(NOT EXISTS (
   SELECT 1 FROM pg_matviews WHERE schemaname='public' AND NOT ispopulated

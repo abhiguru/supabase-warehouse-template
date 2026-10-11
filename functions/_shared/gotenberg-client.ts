@@ -7,6 +7,8 @@
  * @see https://gotenberg.dev/docs/routes
  */
 
+import { escapeHtml } from './document-html.ts';
+
 const GOTENBERG_URL = Deno.env.get('GOTENBERG_URL') || 'http://gotenberg:3000';
 
 const A4_WIDTH = 8.27;
@@ -126,8 +128,8 @@ export function createFooterHtml(companyName: string, docType: string, docNumber
 <body>
   <div class="footer-container">
     <div class="footer-text-content">
-      <div class="footer-left">${docType} #${docNumber}</div>
-      <div class="footer-center">${companyName}</div>
+      <div class="footer-left">${escapeHtml(docType)} #${escapeHtml(docNumber)}</div>
+      <div class="footer-center">${escapeHtml(companyName)}</div>
       <div class="footer-right">
         <span class="page-info">Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
       </div>

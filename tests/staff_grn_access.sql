@@ -150,14 +150,21 @@ SELECT pg_temp.grn_assert(public.save_invoice('{}'::jsonb)->>'success'='false' A
  public.save_invoice('{}'::jsonb)::text LIKE '%Invoice requires at least one dispatch line%',
  'authorized staff malformed invoice rejected by business validation');
 SELECT pg_temp.grn_denied('SELECT public.create_customer(''Forbidden New Customer'',''9888888859'')');
-SELECT pg_temp.grn_denied(format('SELECT public.delete_grn_image(%L::uuid)',:'upload'::jsonb->>'image_id'));
-DO $$ DECLARE affected integer; BEGIN
- DELETE FROM public.goodsreceived WHERE gr_no='STAFFB'; GET DIAGNOSTICS affected=ROW_COUNT;
- PERFORM pg_temp.grn_assert(affected=0,'staff cannot directly delete GRN');
- UPDATE public.goodsreceived SET deleted_at=now() WHERE gr_no='STAFFB'; GET DIAGNOSTICS affected=ROW_COUNT;
- PERFORM pg_temp.grn_assert(affected=0,'staff cannot directly soft-delete GRN');
- UPDATE public.goodsreceived_trl SET stock=999; GET DIAGNOSTICS affected=ROW_COUNT;
- PERFORM pg_temp.grn_assert(affected=0,'staff cannot bypass stock checks');
+-- Migration 45 (owner decision, 2026-10-11): staff may remove a confirmed
+-- photo of a receipt they can edit; tests/role_allowlist.sql proves that and
+-- its limits. The photo is kept here; a customer account is still refused below.
+-- Migration 42: no role writes these tables directly, so the statement is
+-- refused outright instead of matching no row.
+DO $$ DECLARE refused boolean; BEGIN
+ refused := false;
+ BEGIN DELETE FROM public.goodsreceived WHERE gr_no='STAFFB'; EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+ PERFORM pg_temp.grn_assert(refused,'staff cannot directly delete GRN');
+ refused := false;
+ BEGIN UPDATE public.goodsreceived SET deleted_at=now() WHERE gr_no='STAFFB'; EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+ PERFORM pg_temp.grn_assert(refused,'staff cannot directly soft-delete GRN');
+ refused := false;
+ BEGIN UPDATE public.goodsreceived_trl SET stock=999; EXCEPTION WHEN insufficient_privilege THEN refused := true; END;
+ PERFORM pg_temp.grn_assert(refused,'staff cannot bypass stock checks');
 END $$;
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
@@ -167,6 +174,7 @@ SELECT pg_temp.grn_assert((SELECT count(*)=0 FROM public.goodsreceived WHERE gr_
 SELECT pg_temp.grn_denied(format('SELECT public.get_grn_details(%L::uuid)',:'grn_b'));
 SELECT pg_temp.grn_denied('SELECT public.get_grn_list()');
 SELECT pg_temp.grn_denied(format('SELECT public.update_grn(%L::uuid,p_note=>''Forbidden'')',:'grn_a'));
+SELECT pg_temp.grn_denied(format('SELECT public.delete_grn_image(%L::uuid)',:'upload'::jsonb->>'image_id'));
 RESET ROLE;
 SAVEPOINT supervisor_deletion;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);

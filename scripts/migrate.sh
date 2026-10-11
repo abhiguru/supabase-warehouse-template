@@ -2,6 +2,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash "$ROOT/scripts/check-readiness.sh" "${1:-}"
+# setup.sh and restore.sh run this under their own lock; run alone, it takes the lock.
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
+state="$(operator_state)"
+operator_lock_or_inherited "$state"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 # All migrations share one database session and advisory lock. Changed applied files fail closed.
 node "$ROOT/scripts/migration-plan.mjs" |
