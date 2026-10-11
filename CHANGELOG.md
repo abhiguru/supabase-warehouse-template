@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — the operator-install CI job can run on a self-hosted runner (2026-10-11)
+
+CI only; nothing changes for an installation.
+
+- `operator-install` takes `runs-on` from the repository variable
+  `OPERATOR_INSTALL_RUNNER` and falls back to `ubuntu-latest` without it, so a
+  fork is unaffected. In this repository the variable names the owner's
+  runner machine, which keeps Docker's build cache: the job took 29.7 minutes
+  on a hosted runner and 15.0 minutes there (second run in a row). Every
+  other job, the three required checks among them, stays on hosted runners.
+- `docs/DEVELOPER_HANDOFF.md`, "A self-hosted runner for operator-install":
+  what the runner must provide (one job at a time, a cleanup after every
+  job) and why it must be an isolated machine with nothing of value on it.
+  `tests/workflows.test.mjs` refuses a self-hosted label written into a
+  workflow.
+
 ## Unreleased — setup rebuilds the images whose recipes changed (2026-10-11)
 
 No migration. **Operator action:** none, but expect the first setup rerun

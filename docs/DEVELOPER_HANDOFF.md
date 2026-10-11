@@ -114,6 +114,25 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 
 `release.yml` runs on any `v*` tag: the release readiness gate (`scripts/check-release.sh`), tests, `npm audit` and Compose validation against generated operator state. Publishing a release stays manual.
 
+### A self-hosted runner for `operator-install`
+
+`operator-install` is the only job that can run outside GitHub's hosted runners. Its `runs-on` is the repository variable `OPERATOR_INSTALL_RUNNER` (Settings, Secrets and variables, Actions, Variables), a JSON value such as `["self-hosted","linux","x64","warehouse-vm"]`. Without the variable the job runs on `ubuntu-latest`, so a fork needs nothing. The job is not a required check: when the runner is offline the job waits (GitHub gives up on a job after 24 hours in the queue) and merging is not blocked. To go back to hosted runners, delete the variable.
+
+Why: on a hosted runner about 18 of the job's 30 minutes are image builds from scratch. On a runner that keeps Docker's build cache, the job took 15.0 minutes (measured 2026-10-11, second run in a row).
+
+What the runner must provide:
+
+- Linux x86-64 with Docker Engine and its compose and buildx plugins; the runner account is in the `docker` group. The job uses no `sudo` and installs its own Node.
+- **One job at a time on that Docker daemon.** The job publishes fixed ports on loopback (18000, 3000, 15432, 15433, 54325, 8080, 4000, and 8100), creates the network `10.233.245.0/24` and writes fixed paths under `/tmp`.
+- **A cleanup after every job and before the runner starts**, because a hosted runner is a new machine every time and this one is not: remove all containers, all volumes and unused networks, the paths `/tmp/warehouse-ci-*`, and the contents of the runner's temporary directory (`_work/_temp`). The state directory in there holds files owned by the containers' users, so removing it needs root; the runner's job-completed hook (`ACTIONS_RUNNER_HOOK_JOB_COMPLETED`) is the place. Keep the images and the build cache: they are the point.
+- Enough disk for the images and the cache (tens of gigabytes), with pruning only when the disk fills.
+
+Security, which decides where such a runner may live:
+
+- This repository is public and the job needs Docker, which is as good as root on the runner. Code from a pull request, or from the install script of a dependency, runs there. Use a dedicated machine that holds nothing of value (no credentials, no keys, no other services), that cannot reach your other machines, and that you can delete and rebuild.
+- Require approval before workflows run for pull requests from all outside contributors (Settings, Actions, General). Pull requests opened by Dependabot come from inside the repository and need no approval.
+- Keep the workflow token read-only and give the repository no Actions secrets that this job could read. Never point a release or deployment job at this runner.
+
 ## Mobile companion pin
 
 `env.MOBILE_REF` at the top of `ci.yml` is the full SHA of the `abhiguru/rn-warehouse-template` commit the `contract` job checks out. When a change here alters an endpoint, response shape or manifest field the app consumes, or when the mobile branch moves: run `node scripts/check-mobile-contract.mjs <mobile checkout>` at the new mobile commit, set `MOBILE_REF` to that 40-character SHA (never a branch or tag; `tests/workflows.test.mjs` checks the form), and record the backend/mobile pair in the pull request. The job compares names only; before a release also run the check with `--live` against a running stack (`RELEASE_CHECKLIST.md`, "Mobile contract before a release"). Do not merge a backend change that needs a mobile change until the mobile commit exists and the pin points at it.
