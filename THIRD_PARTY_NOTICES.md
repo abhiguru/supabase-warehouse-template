@@ -34,7 +34,7 @@ Grafana is licensed under the GNU Affero General Public License v3.0
 (upstream: https://github.com/grafana/grafana; the complete licence text is
 vendored at `LICENSES/grafana/LICENSE`, see `LICENSES/grafana/README.md`).
 `docker/grafana/Dockerfile` builds the local `warehouse-grafana:local` image
-from the publisher's digest-pinned `grafana/grafana:13.2.2` image: it upgrades
+from the publisher's digest-pinned `grafana/grafana:13.2.3` image: it upgrades
 two Alpine libraries and replaces the bundled plugins with publisher-signed,
 checksum-pinned releases (`plugins.lock`, `install-plugins.sh`). No Grafana
 source is modified or vendored here; the earlier core-rebuild research and its
@@ -65,7 +65,7 @@ redistributing them. Versions are the ones pinned in
 | Supabase Studio | 2026.09.21-sha-512201d (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
 | Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`) | MIT | https://github.com/gotenberg/gotenberg |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
-| Grafana | 13.2.2 (`grafana/grafana:13.2.2`) | AGPL-3.0 | https://github.com/grafana/grafana |
+| Grafana | 13.2.3 (`grafana/grafana:13.2.3`) | AGPL-3.0 | https://github.com/grafana/grafana |
 
 ## Maintained container source recipes (2026-09-22)
 
@@ -77,7 +77,7 @@ are copied from the upstream versions listed in
 security updates. Recipe URLs and SHA-256 checksums identify the source archives.
 No third-party executable or source archive is committed or published here.
 
-The Grafana recipe uses the publisher's digest-pinned 13.2.2 image and
+The Grafana recipe uses the publisher's digest-pinned 13.2.3 image and
 copies no application or plugin files into the source repository; the plugins it
 installs are the publisher-signed releases listed in `docker/grafana/plugins.lock`
 with their own manifests and notices (see the Grafana section above). The PostgREST image is the publisher's static v16.4 image. The release-binary

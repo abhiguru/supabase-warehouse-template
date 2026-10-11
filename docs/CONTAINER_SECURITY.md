@@ -319,6 +319,33 @@ provisioning, and query checks on native amd64 and arm64 runners. These checks
 cover the two provisioned datasource paths; they do not clear the remaining
 image findings or replace a full monitoring acceptance test.
 
+**2026-10-11 move to Grafana 13.2.3:** 13.2.3 is the publisher's security
+release of 2026-09-29 (CVE-2026-13719, CVE-2026-13720, CVE-2026-81841). The
+recipe's base is now `grafana/grafana:13.2.3` by digest
+(`sha256:b28bae15...`, the index for amd64, arm64 and arm/v7, read with
+`docker buildx imagetools inspect`). On this base the recipe's own patches
+change nothing: the image already carries OpenSSL 3.5.8-r0 and exactly the
+four plugin versions of `docker/grafana/plugins.lock` (pyroscope 13.0.6,
+opentsdb 13.0.3, prometheus 13.2.1, zipkin 12.4.8; 13.2.2 shipped 13.0.4,
+13.0.1, 13.1.7 and 12.4.6). They stay in the recipe as pins, so a later base
+cannot fall behind them unnoticed. The four unused plugins are still removed.
+`npm run test:grafana` passed on amd64 on the rebuilt image (health and
+version, nine publisher signatures, provisioning, live Prometheus and
+PostgreSQL queries); CI repeats it on amd64 and arm64.
+
+A Trivy 0.74.0 scan of the two recipe images built the same day, with the
+flags of `scripts/scan-images.sh`, found 43 fixed HIGH findings on the 13.2.2
+recipe and 42 on the 13.2.3 recipe, no CRITICAL in either. All of them are in
+the publisher's Go executables (the Grafana server and nine plugin backends),
+which no recipe rebuilds: three Go standard-library advisories per executable
+(CVE-2026-78667, CVE-2026-78669, CVE-2026-97031; Go 1.26.6 and 1.26.7),
+`golang.org/x/net` v0.58.0 in each (CVE-2026-78669), and gRPC v1.83.1 in the
+PostgreSQL and Prometheus plugins (CVE-2026-84445). The one finding that went
+away is Thrift in the Grafana server (CVE-2026-43871). The three advisories
+that 13.2.3 fixes are in the Grafana application and are not among Trivy's
+findings for either image. The remaining findings need a Grafana release
+built with a fixed Go; the scan gate stays failed for this image until then.
+
 ## Remaining scan-coverage dependency: PostgREST
 
 Compose has referenced `postgrest/postgrest:v16.4` since 2026-10-08. Everything
