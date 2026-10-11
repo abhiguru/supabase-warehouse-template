@@ -76,12 +76,16 @@ GRANT EXECUTE ON FUNCTION public.get_next_invoice_number(integer) TO authenticat
 -- ---------------------------------------------------------------------------
 -- A reason without the white space and invisible characters around it, NULL
 -- when nothing is left. The character class is the one migration 41 gave the
--- discount reason, written with escapes so that this file holds no invisible
+-- discount reason. Migration 41 holds those characters themselves (no-break
+-- space, soft hyphen, zero-width space and so on), where no editor or diff
+-- shows them; here each is written as a \uXXXX escape of the regular
+-- expression, so that this file is plain ASCII. tests/migration-text.test.mjs
+-- checks both, tests/zero_charge_reason.sql that the two rules agree on every
 -- character.
 CREATE FUNCTION warehouse_security.trimmed_reason(reason text) RETURNS text
 LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
   SELECT NULLIF(regexp_replace(COALESCE(reason, ''),
-    '^[\s\u0085 ­ ᠎ -‏ -  -⁤　﻿]+|[\s\u0085 ­ ᠎ -‏ -  -⁤　﻿]+$',
+    '^[\s\u0085\u00A0\u00AD\u1680\u180E\u2000-\u200F\u2028-\u202F\u205F-\u2064\u3000\uFEFF]+|[\s\u0085\u00A0\u00AD\u1680\u180E\u2000-\u200F\u2028-\u202F\u205F-\u2064\u3000\uFEFF]+$',
     '', 'g'), '')
 $$;
 REVOKE ALL ON FUNCTION warehouse_security.trimmed_reason(text) FROM PUBLIC, anon, authenticated, service_role;
