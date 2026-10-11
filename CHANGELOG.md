@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — Grafana 13.2.3 (2026-10-11)
+
+No migration. **Operator action:** none beyond the setup rerun if you run the
+monitoring profile; setup rebuilds the Grafana image and replaces the running
+container.
+
+- The Grafana recipe moves from 13.2.2 to 13.2.3, the publisher's security
+  release of 2026-09-29 (CVE-2026-13719, CVE-2026-13720, CVE-2026-81841), by
+  digest. The check script, the notices, the licence note and the attribution
+  review name the new version.
+- On 13.2.3 the recipe's OpenSSL upgrade and its four plugin replacements
+  change nothing, because the base already has those versions; they stay as
+  pins.
+- Scan of the rebuilt image: 42 fixed HIGH findings (43 before), none
+  CRITICAL, all in the publisher's Go executables, which need a Grafana
+  release built with a fixed Go. `docs/CONTAINER_SECURITY.md`, "Grafana OS
+  patch and remaining publisher dependency".
+- Replaces Dependabot's pull request 45, which changed the base image only and
+  failed the notices test.
+
 ## Unreleased — the operator-install CI job can run on a self-hosted runner (2026-10-11)
 
 CI only; nothing changes for an installation.
