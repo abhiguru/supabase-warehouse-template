@@ -7,8 +7,9 @@
 --    give one, administrators and supervisors may leave it empty; who and when
 --    is recorded on the invoice and every change in an append-only history.
 -- 5. Staff may create, change and delete item prices (migration 45). Every
---    insert, update and delete of a price is now recorded in an append-only
---    history that administrators and supervisors can read.
+--    insert, update and delete of a price (and a TRUNCATE of the table) is now
+--    recorded in an append-only history that administrators and supervisors
+--    can read.
 --
 -- No existing row is validated or changed: an invoice that already has a
 -- zero-charge line and no reason stays as it is and meets the rule when staff
@@ -388,21 +389,24 @@ END $columns$;
 -- ---------------------------------------------------------------------------
 -- 5. Price history
 -- ---------------------------------------------------------------------------
--- One row per insert, update and delete of item_storage_prices. Like the two
+-- One row per insert, update and delete of item_storage_prices, and one per
+-- TRUNCATE of the table. Like the two
 -- invoice histories it has no foreign key, so a price, an item, a customer or
 -- a profile can still be deleted and the record stays; the names (of the item,
 -- the customer and the author) are stored with the row for that reason, as
 -- they were at the change. old_values / new_values are the price row as
 -- it was and as it is, without its three ids (which are columns here) and
--- without created_at / created_by (which no write changes).
+-- without created_at / created_by (which no write changes). A truncate row
+-- names no price: it says in old_values how many prices were removed.
 CREATE TABLE public.item_price_history (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  price_id uuid NOT NULL,
+  price_id uuid,
   item_id uuid,
   item_name text,
   customer_id uuid,
   customer_name text,
-  action text NOT NULL CHECK (action IN ('insert','update','delete')),
+  action text NOT NULL CHECK (action IN ('insert','update','delete','truncate')),
+  CONSTRAINT item_price_history_names_its_price CHECK (action = 'truncate' OR price_id IS NOT NULL),
   old_values jsonb,
   new_values jsonb,
   changed_by uuid,
@@ -411,10 +415,10 @@ CREATE TABLE public.item_price_history (
   changed_at timestamptz NOT NULL DEFAULT now()
 );
 COMMENT ON TABLE public.item_price_history IS
-  'Append-only record of every insert, update and delete of item_storage_prices (migration 48). Read it with get_item_price_history.';
-COMMENT ON COLUMN public.item_price_history.price_id IS 'item_storage_prices.id of the price; the row may be gone.';
+  'Append-only record of every insert, update, delete and truncate of item_storage_prices (migration 48). Read it with get_item_price_history.';
+COMMENT ON COLUMN public.item_price_history.price_id IS 'item_storage_prices.id of the price; the row may be gone. NULL for a truncate, which removes every price.';
 COMMENT ON COLUMN public.item_price_history.customer_id IS 'NULL for a default price, which applies to every customer.';
-COMMENT ON COLUMN public.item_price_history.old_values IS 'The price before the change; NULL for an insert.';
+COMMENT ON COLUMN public.item_price_history.old_values IS 'The price before the change; NULL for an insert. For a truncate, {"rows": n}: how many prices the table held.';
 COMMENT ON COLUMN public.item_price_history.new_values IS 'The price after the change; NULL for a delete.';
 COMMENT ON COLUMN public.item_price_history.changed_by IS 'user_profiles.id of the session that made the change; NULL for a write with the service key or by the database owner.';
 COMMENT ON COLUMN public.item_price_history.changed_by_name IS 'That profile''s name when it made the change; kept when the account is renamed or deleted.';
@@ -459,10 +463,31 @@ REVOKE ALL ON FUNCTION warehouse_security.record_item_price_change() FROM PUBLIC
 CREATE TRIGGER item_price_history_record AFTER INSERT OR UPDATE OR DELETE ON public.item_storage_prices
   FOR EACH ROW EXECUTE FUNCTION warehouse_security.record_item_price_change();
 
+-- A row trigger does not fire for TRUNCATE, which the service role and the
+-- database owner may run on the table (no app role may: migration 42). Their
+-- privilege is left as it is; a statement trigger records the truncate
+-- instead: one row with how many prices went and, if the statement ran inside
+-- an app session, that session's profile.
+CREATE FUNCTION warehouse_security.record_item_price_truncate() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE author_id uuid; author_name text;
+BEGIN
+  SELECT p.id, p.name INTO author_id, author_name FROM public.user_profiles p WHERE p.auth_user_id = auth.uid();
+  INSERT INTO public.item_price_history (action, old_values, changed_by, changed_by_name, changed_by_role)
+  VALUES ('truncate', jsonb_build_object('rows', (SELECT count(*) FROM public.item_storage_prices)),
+    author_id, author_name, warehouse_security.active_role());
+  RETURN NULL;
+END $$;
+REVOKE ALL ON FUNCTION warehouse_security.record_item_price_truncate() FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER item_price_history_record_truncate BEFORE TRUNCATE ON public.item_storage_prices
+  FOR EACH STATEMENT EXECUTE FUNCTION warehouse_security.record_item_price_truncate();
+
 -- The history, newest first, for administrators and supervisors. The guard
 -- admits those two roles to every RPC and refuses staff and customer accounts
 -- any name that is not on their lists, so this one needs no entry there.
--- Without a customer or an item the history is not filtered; a page is 1 to
+-- Without a customer or an item the history is not filtered; with one, a
+-- truncate is still listed, since it removed that customer's or item's prices
+-- with all the others. A page is 1 to
 -- 200 rows, and an offset past the end is an empty page. changed_by_name is
 -- the name stored with the row; a row that has none shows the profile's
 -- present name.
@@ -480,8 +505,8 @@ BEGIN
 
     SELECT count(*) INTO v_total
     FROM item_price_history h
-    WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id)
-      AND (p_item_id IS NULL OR h.item_id = p_item_id);
+    WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id OR h.action = 'truncate')
+      AND (p_item_id IS NULL OR h.item_id = p_item_id OR h.action = 'truncate');
 
     SELECT COALESCE(jsonb_agg(page.row_data ORDER BY page.id DESC), '[]'::jsonb) INTO v_data
     FROM (
@@ -501,8 +526,8 @@ BEGIN
             'changed_by_role', h.changed_by_role
         ) AS row_data
         FROM item_price_history h
-        WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id)
-          AND (p_item_id IS NULL OR h.item_id = p_item_id)
+        WHERE (p_customer_id IS NULL OR h.customer_id = p_customer_id OR h.action = 'truncate')
+          AND (p_item_id IS NULL OR h.item_id = p_item_id OR h.action = 'truncate')
         ORDER BY h.id DESC
         LIMIT v_limit OFFSET v_offset
     ) page;

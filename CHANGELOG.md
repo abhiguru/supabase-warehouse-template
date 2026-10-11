@@ -96,7 +96,11 @@ and a reason already stored on it is kept.
   DEFAULT NULL, p_limit integer DEFAULT 50, p_offset integer DEFAULT 0)`
   returns `{success, data, pagination}`, newest first, to administrators and
   supervisors; staff and customer accounts are refused and cannot read the
-  table either. The record starts with this migration. No app screen yet.
+  table either. A `TRUNCATE` of the price table (service key or database
+  owner only) is recorded as one row with the action `truncate` and the number
+  of prices removed, and is listed under every customer and item filter. A
+  page is 1 to 200 rows; an offset past the end is an empty page. The record
+  starts with this migration. No app screen yet.
   `docs/STAFF_GRN_POLICY.md`, "Every price change is recorded";
   `tests/item_price_history.sql`.
 - **The REST request limit is 1800 a minute per client address, with no hourly

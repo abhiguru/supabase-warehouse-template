@@ -361,5 +361,71 @@ SELECT pg_temp.ph_assert(public.get_item_price_history(p_limit=>1)#>>'{data,0,ch
  AND (SELECT h.changed_by_name IS NULL FROM public.item_price_history h ORDER BY h.id DESC LIMIT 1),
  'without a stored name the profile''s present name is shown');
 RESET ROLE;
+
+-- ---------------------------------------------------------------------------
+-- 6. TRUNCATE of the price table is recorded too
+-- ---------------------------------------------------------------------------
+-- A row trigger does not fire for TRUNCATE, and the service role and the
+-- database owner may truncate the table (no app role may, and PostgREST has no
+-- such verb). A statement trigger writes one row: the action, how many prices
+-- were removed, and the session's profile if there is one.
+SELECT pg_temp.ph_assert(pg_get_triggerdef(t.oid) LIKE '%BEFORE TRUNCATE ON public.item_storage_prices FOR EACH STATEMENT%'
+ AND (SELECT p.prosecdef FROM pg_proc p WHERE p.oid=t.tgfoid),
+ 'a statement trigger records a TRUNCATE of the price table: '||COALESCE(pg_get_triggerdef(t.oid),'no trigger item_price_history_record_truncate'))
+FROM (SELECT (SELECT g.oid FROM pg_trigger g WHERE g.tgrelid='public.item_storage_prices'::regclass AND g.tgname='item_price_history_record_truncate') AS oid,
+             (SELECT g.tgfoid FROM pg_trigger g WHERE g.tgrelid='public.item_storage_prices'::regclass AND g.tgname='item_price_history_record_truncate') AS tgfoid) t;
+SELECT pg_temp.ph_assert(has_table_privilege('service_role','public.item_storage_prices','TRUNCATE')
+ AND NOT has_table_privilege('authenticated','public.item_storage_prices','TRUNCATE')
+ AND NOT has_table_privilege('anon','public.item_storage_prices','TRUNCATE'),
+ 'the service role may still truncate the price table; the app role and anonymous callers may not');
+SELECT count(*) AS prices_before FROM public.item_storage_prices \gset
+SELECT count(*) AS history_before FROM public.item_price_history \gset
+SELECT pg_temp.ph_assert(:prices_before>=1,'the price table holds prices before the truncate');
+-- As the table owner, outside any app session.
+SELECT set_config('request.jwt.claims','{}',true);
+TRUNCATE public.item_storage_prices;
+SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_storage_prices)
+ AND (SELECT count(*)=:history_before+1 FROM public.item_price_history)
+ AND h.action='truncate' AND h.price_id IS NULL AND h.item_id IS NULL AND h.item_name IS NULL AND h.customer_id IS NULL AND h.customer_name IS NULL
+ AND h.old_values=jsonb_build_object('rows',:prices_before) AND h.new_values IS NULL
+ AND h.changed_by IS NULL AND h.changed_by_name IS NULL AND h.changed_by_role IS NULL AND h.changed_at=now(),
+ 'the owner''s TRUNCATE leaves one row that says how many prices went: '||to_jsonb(h)::text)
+FROM pg_temp.ph_last() h;
+-- With the service key, the case of the review finding; and the author is
+-- taken from the session when there is one.
+INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,unit_price_one_time,unit_price_monthly,weight_min,weight_max,labour_rate,tax_percent,effective_from)
+ VALUES (:'chillies'::uuid,NULL,'monthly',4,0,4,0,100,1,5,'2026-01-01'),(:'chillies'::uuid,:'north'::uuid,'monthly',6,0,6,0,100,1,5,'2026-01-01');
+SELECT set_config('request.jwt.claims','{"role":"service_role"}',true);
+SET LOCAL ROLE service_role;
+TRUNCATE public.item_storage_prices;
+RESET ROLE;
+SELECT pg_temp.ph_assert(h.action='truncate' AND h.old_values='{"rows":2}'::jsonb AND h.changed_by IS NULL
+ AND (SELECT count(*)=0 FROM public.item_storage_prices),
+ 'a TRUNCATE with the service key is recorded: '||to_jsonb(h)::text)
+FROM pg_temp.ph_last() h;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+TRUNCATE public.item_storage_prices;
+SELECT pg_temp.ph_assert(h.action='truncate' AND h.old_values='{"rows":0}'::jsonb AND h.changed_by=:'admin_profile'::uuid
+ AND h.changed_by_name='Price History Administrator' AND h.changed_by_role='admin',
+ 'a TRUNCATE inside a session names the session''s profile: '||to_jsonb(h)::text)
+FROM pg_temp.ph_last() h;
+-- An app session cannot truncate, and a refused TRUNCATE leaves no row.
+SELECT count(*) AS history_after FROM public.item_price_history \gset
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.ph_assert(pg_temp.ph_raises('TRUNCATE public.item_storage_prices','permission denied%'),'the administrator''s app session cannot truncate the price table');
+-- The RPC shows a truncate in the whole history and in every customer's and
+-- item's history, since it removed all of their prices.
+SELECT pg_temp.ph_assert((SELECT jsonb_agg(r->'action') FROM jsonb_array_elements(public.get_item_price_history(p_limit=>4)->'data') r)
+   ='["truncate","truncate","insert","insert"]'::jsonb
+ AND public.get_item_price_history(p_limit=>1)#>'{data,0}' @> jsonb_build_object('action','truncate','price_id',NULL,'item_id',NULL,'customer_id',NULL,
+   'old_values','{"rows":0}'::jsonb,'new_values',NULL,'changed_by',:'admin_profile','changed_by_name','Price History Administrator','changed_by_role','admin')
+ AND (SELECT count(*)=3 FROM jsonb_array_elements(public.get_item_price_history(p_customer_id=>:'south'::uuid)->'data') r WHERE r->>'action'='truncate')
+ AND (public.get_item_price_history(p_customer_id=>:'south'::uuid)#>>'{pagination,total}')::int=5
+ AND (SELECT count(*)=3 FROM jsonb_array_elements(public.get_item_price_history(p_item_id=>:'turmeric'::uuid)->'data') r WHERE r->>'action'='truncate')
+ AND (SELECT count(*)=3 FROM jsonb_array_elements(public.get_item_price_history(:'north'::uuid,:'chillies'::uuid)->'data') r WHERE r->>'action'='truncate')
+ AND (SELECT count(*)=3 FROM jsonb_array_elements(public.get_item_price_history(gen_random_uuid())->'data') r),
+ 'the RPC lists a truncate in the whole history and under every customer and item');
+RESET ROLE;
+SELECT pg_temp.ph_assert((SELECT count(*)=:history_after FROM public.item_price_history),'a refused TRUNCATE leaves no history row');
 ROLLBACK;
-\echo 'Item price history: one row per insert, update and delete, the reading RPC, role and append-only checks passed.'
+\echo 'Item price history: one row per insert, update, delete and truncate, the stored author name, the reading RPC, role and append-only checks passed.'

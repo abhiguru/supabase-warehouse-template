@@ -782,13 +782,22 @@ changed it. Now **every insert, update and delete of `item_storage_prices`
 writes one row to `item_price_history`**: when, the profile with its name and
 role as they were, the
 price, its item and customer (ids and names as they were), the action
-(`insert`, `update` or `delete`) and the price before and after. A trigger on
+(`insert`, `update` or `delete`; `truncate` is described below) and the price
+before and after. A trigger on
 the table writes it, so `create_item_storage_price`,
 `update_item_storage_price`, `delete_item_storage_price` and
 `find_or_create_item_storage_price` are all covered, as is a write with the
 service key or by an operator in the database (recorded without a profile). A
 save that changes no value is still a row: it records who saved. A refused
 write leaves none.
+
+`TRUNCATE` of the price table, which no app role may run but the service key
+and the database owner may, does not go through the row trigger. A statement
+trigger records it as one row with the action `truncate`, no price, item or
+customer, and `old_values` = `{"rows": n}`, the number of prices removed; the
+prices themselves are not copied into the row. `get_item_price_history` lists
+a truncate under every customer and item filter, since it removed their
+prices with all the others.
 
 The history is append-only (no role is granted a write, and a trigger refuses
 changes and deletes even for the database owner) and has no foreign keys, so a
