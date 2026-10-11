@@ -119,7 +119,9 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('create_customer',false,'no'),('update_customer',false,'no'),('safe_delete_customer',false,'no'),('restore_customer',false,'no'),
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
- ('update_order_metadata',false,'no');
+ ('update_order_metadata',false,'no'),
+ -- the price history of migration 48: staff change prices but do not read it
+ ('get_item_price_history',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.
@@ -517,6 +519,11 @@ SELECT pg_temp.ra_assert((SELECT unit_price=8 FROM public.item_storage_prices WH
  AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE id=:'gamma_price'::uuid)
  AND (SELECT count(*)=1 FROM public.item_storage_prices WHERE customer_id=:'beta'::uuid),
  'the staff price changes are stored');
+-- Each of the four is in the price history under the staff profile (migration
+-- 48; tests/item_price_history.sql has the details).
+SELECT pg_temp.ra_assert((SELECT array_agg(h.action ORDER BY h.id)=ARRAY['insert','update','insert','delete']
+  FROM public.item_price_history h WHERE h.changed_by=:'staff_profile'::uuid AND h.changed_by_role='staff'),
+ 'the staff price changes are in the price history');
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM public.item_storage_prices),'the price table itself stays closed to staff; prices are read through the RPC');
 -- The order queue: staff read every order row (what Realtime checks), still

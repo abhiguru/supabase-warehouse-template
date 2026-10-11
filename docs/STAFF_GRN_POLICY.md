@@ -283,7 +283,8 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   every role and derive them from the saved lines and the stored `discount`
   (migration 24, see [INVOICE_RULES.md](INVOICE_RULES.md)). Line rates remain
   inputs within a range: charge and labour rate from 0 to 999999, tax from 0 to
-  100 (migration 41). A missing, duplicate or unrelated line rolls the whole
+  100 (migration 41). A charge of 0 needs a reason from staff (migration 48,
+  last section). A missing, duplicate or unrelated line rolls the whole
   save back.
 - **A dispatch line is invoiced once.** A save for a receipt that is already
   invoiced, or with a line that is on another invoice, is refused for every
@@ -360,6 +361,8 @@ delete rows of the nineteen business tables with a plain table call
 around the server-computed invoice totals, the rate and discount rules, the
 stock checks, the one-customer-per-dispatch rule and the dependency checks of
 the delete RPCs. The owner decided to remove that path and keep the reads.
+(Since migration 48 the read of `invoice` is by named column and leaves six
+internal columns out; see the last section.)
 
 Migration 42 revokes INSERT, UPDATE and DELETE on `customers`, `items`,
 `item_storage_prices`, `goodsreceived`, `goodsreceived_trl`, `dispatch`,
@@ -472,10 +475,12 @@ already.) The operations dashboard is not shown to staff by the app and
 **Staff — item pricing, read and write. This is a material change: staff can
 change what customers are charged.** `get_item_storage_prices` (every
 customer's prices), `create_item_storage_price`, `update_item_storage_price`,
-`delete_item_storage_price` and `find_or_create_item_storage_price`. A price
-change is not written to a history table; the invoice discount history of
-migration 41 does not cover it. The `item_storage_prices` table itself stays
-closed to staff: they read prices through the RPC.
+`delete_item_storage_price` and `find_or_create_item_storage_price`. When
+migration 45 opened this, a price change was not recorded anywhere. **Since
+migration 48 every insert, update and delete of a price is written to
+`item_price_history`**, with the profile that made it (last section); staff do
+not read that history. The `item_storage_prices` table itself stays closed to
+staff: they read prices through the RPC.
 
 **Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
 sensor tables stay closed to staff.
@@ -579,6 +584,7 @@ several customers calls once per customer.
 | Operations dashboard | yes | yes | no | no |
 | Item pricing: read | yes | yes | **yes** | no |
 | Item pricing: add, change, delete | yes | yes | **yes** | no |
+| Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
 | Customers and items: create, edit, delete | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
@@ -722,3 +728,102 @@ as a new row. That is one line, not two, but under a new id, and it fails with
   inside the access token keeps the old role until the token is renewed (at
   most `JWT_EXP`, one hour by default). Nothing on the server reads that
   claim; an app that reads it shows the old role until then.
+
+## Owner decisions, 11 October 2026 (migration 48)
+
+The owner took nine decisions on 11 October 2026; these are the ones that
+change what a role may do on this server. Migration 48 implements them. No
+role is added and no RPC is opened to a role that did not have it.
+
+### Zero charge needs a reason from staff
+
+An invoice line may have a storage charge of 0. **Staff must give a reason**
+(`zero_charge_reason`) on every save of an invoice that has such a line, on all
+three save paths; administrators and supervisors may leave it empty. Without it
+staff are refused with `Enter a reason for the zero charge`. The invoice keeps
+the reason, the profile and the time of the last change, and every change is
+appended to `invoice_zero_charge_history`, which administrators and supervisors
+read and nobody can change; staff and customer accounts cannot read it.
+Administrators, supervisors and staff see the last reason and its author
+through `get_invoice_detail`; a customer account does not, and cannot read
+them from the `invoice` table either (next subsection). Details, and what
+happens to invoices saved before the rule, are in
+[INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql` covers
+each path and role.
+
+Before this decision zero was already an accepted charge (migration 41) and
+staff could enter it without a word. The discount reason of migration 30 is a
+separate rule and unchanged.
+
+### The discount and zero-charge records are not read from the table
+
+As first written, this section said a customer account does not see the
+zero-charge reason. That was true of `get_invoice_detail` only: a customer
+account could read `zero_charge_reason`, `zero_charge_set_by` and
+`zero_charge_set_at`, and since migration 30 `discount_reason`,
+`discount_set_by` and `discount_set_at`, of its own invoices with
+`GET /rest/v1/invoice`. All app roles share one database role, so the table
+grant cannot tell a customer account from staff.
+
+Migration 48 therefore grants the app role SELECT on every column of `invoice`
+except those six. **For every role, administrator included, the six are read
+through `get_invoice_detail` only**, which gives them to administrators,
+supervisors and staff and not to a customer account. A direct read of
+`invoice` must name its columns (`select=*` is refused with HTTP 403), and a
+column added later is closed until a migration grants it. The row policies are
+unchanged. [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
+`tests/invoice_column_grants.sql`, `tests/security_baseline.sql`.
+
+### Every price change is recorded
+
+Staff keep the price RPCs that migration 45 gave them. What was missing was a
+record: a changed or deleted price left no trace of what it had been or who
+changed it. Now **every insert, update and delete of `item_storage_prices`
+writes one row to `item_price_history`**: when, the profile with its name and
+role as they were, the
+price, its item and customer (ids and names as they were), the action
+(`insert`, `update` or `delete`; `truncate` is described below) and the price
+before and after. A trigger on
+the table writes it, so `create_item_storage_price`,
+`update_item_storage_price`, `delete_item_storage_price` and
+`find_or_create_item_storage_price` are all covered, as is a write with the
+service key or by an operator in the database (recorded without a profile). A
+save that changes no value is still a row: it records who saved. A refused
+write leaves none.
+
+`TRUNCATE` of the price table, which no app role may run but the service key
+and the database owner may, does not go through the row trigger. A statement
+trigger records it as one row with the action `truncate`, no price, item or
+customer, and `old_values` = `{"rows": n}`, the number of prices removed; the
+prices themselves are not copied into the row. `get_item_price_history` lists
+a truncate under every customer and item filter, since it removed their
+prices with all the others.
+
+The history is append-only (no role is granted a write, and a trigger refuses
+changes and deletes even for the database owner) and has no foreign keys, so a
+price, an item or a profile can still be deleted afterwards.
+
+**The author stays named.** Every signed-in user may delete the own account
+(`delete_user_account`), which renames the profile to "Deleted User". The
+price history, the zero-charge history and the discount history therefore
+store the author's name and role with each row (`changed_by_name`,
+`changed_by_role`), and `get_item_price_history` and `get_invoice_detail`
+return that stored name. Deleting an account no longer removes the person's
+name from the record of the prices, discounts and zero charges that person
+entered; it still removes the name everywhere else.
+
+**Administrators and supervisors read it**, with
+`get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest
+first; all four arguments optional; `{success, data, pagination}`; a page is 1
+to 200 rows, and an offset past the end, up to the largest integer, is an
+empty page) or from the table. **Staff and customer accounts cannot**: the guard refuses the RPC
+(`Staff access required`) and the table's row policy shows them no row. The
+app has no screen for the history yet. The record starts with migration 48;
+prices created before it have no insert row. `tests/item_price_history.sql`.
+
+### Invoice number per financial year
+
+`get_next_invoice_number` takes the financial year and counts within it
+([INVOICE_RULES.md](INVOICE_RULES.md), "Invoice numbers"). The roles are the
+same as before: administrators, supervisors and staff; a customer account is
+refused. `tests/invoice_number_per_year.sql`.

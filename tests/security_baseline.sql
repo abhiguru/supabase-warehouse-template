@@ -9,6 +9,8 @@ DECLARE
   unpinned_total integer;
   rls_without_policy text;
   private_reachable text;
+  anon_columns text;
+  invoice_columns text;
 BEGIN
   SELECT string_agg(format('%I.%I (%I)', schemaname, tablename, policyname), ', ')
     INTO bad_policies
@@ -36,6 +38,19 @@ BEGIN
     RAISE EXCEPTION 'Unexpected anonymous table grant: %', bad_grants;
   END IF;
 
+  -- A grant on single columns is not in role_table_grants; it exposes a table
+  -- all the same.
+  SELECT string_agg(DISTINCT format('%I.%I', table_schema, table_name), ', ')
+    INTO anon_columns
+  FROM information_schema.column_privileges
+  WHERE grantee = 'anon'
+    AND table_schema = 'public'
+    AND NOT (privilege_type = 'SELECT' AND table_name = 'feature_flags');
+
+  IF anon_columns IS NOT NULL THEN
+    RAISE EXCEPTION 'Unexpected anonymous column grant: %', anon_columns;
+  END IF;
+
   SELECT string_agg(format('%I.%I', n.nspname, c.relname), ', ')
     INTO rls_disabled
   FROM pg_class c
@@ -43,13 +58,20 @@ BEGIN
   WHERE n.nspname = 'public'
     AND c.relkind = 'r'
     AND NOT c.relrowsecurity
-    AND EXISTS (
+    AND (EXISTS (
       SELECT 1
       FROM information_schema.role_table_grants g
       WHERE g.table_schema = n.nspname
         AND g.table_name = c.relname
         AND g.grantee IN ('anon', 'authenticated')
-    );
+    ) OR EXISTS (
+      -- a table granted by column only (invoice, migration 48) is exposed too
+      SELECT 1
+      FROM information_schema.column_privileges g
+      WHERE g.table_schema = n.nspname
+        AND g.table_name = c.relname
+        AND g.grantee IN ('anon', 'authenticated')
+    ));
 
   IF rls_disabled IS NOT NULL THEN
     RAISE EXCEPTION 'RLS is disabled on an exposed table: %', rls_disabled;
@@ -94,13 +116,20 @@ BEGIN
     AND c.relkind IN ('r', 'p')
     AND c.relrowsecurity
     AND NOT EXISTS (SELECT 1 FROM pg_policy pol WHERE pol.polrelid = c.oid)
-    AND EXISTS (
+    AND (EXISTS (
       SELECT 1
       FROM information_schema.role_table_grants g
       WHERE g.table_schema = n.nspname
         AND g.table_name = c.relname
         AND g.grantee IN ('anon', 'authenticated')
-    );
+    ) OR EXISTS (
+      -- a table granted by column only (invoice, migration 48) is exposed too
+      SELECT 1
+      FROM information_schema.column_privileges g
+      WHERE g.table_schema = n.nspname
+        AND g.table_name = c.relname
+        AND g.grantee IN ('anon', 'authenticated')
+    ));
 
   IF rls_without_policy IS NOT NULL THEN
     RAISE EXCEPTION 'Exposed table has RLS but no policy: %', rls_without_policy;
@@ -124,6 +153,31 @@ BEGIN
 
   IF private_reachable IS NOT NULL THEN
     RAISE EXCEPTION 'Private schema object reachable by an app role: %', private_reachable;
+  END IF;
+
+  -- invoice is granted to the app role column by column (migration 48): the
+  -- discount record and the zero-charge record are internal, and a customer
+  -- account reads its own invoice rows. Every column is either readable or on
+  -- this list. A migration that adds a column must decide: GRANT SELECT (column)
+  -- to authenticated, or add it here. Until it does, the column is not readable
+  -- directly and this check fails.
+  SELECT string_agg(a.attname, ', ' ORDER BY a.attnum)
+    INTO invoice_columns
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.invoice'::regclass
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+    AND has_column_privilege('authenticated', a.attrelid, a.attnum, 'SELECT')
+        = (a.attname IN ('discount_reason', 'discount_set_by', 'discount_set_at',
+                         'zero_charge_reason', 'zero_charge_set_by', 'zero_charge_set_at'));
+
+  IF invoice_columns IS NOT NULL THEN
+    RAISE EXCEPTION 'invoice column readable by the app role although internal, or neither readable nor listed as internal: %', invoice_columns;
+  END IF;
+
+  IF has_any_column_privilege('anon', 'public.invoice', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.invoice', 'SELECT') THEN
+    RAISE EXCEPTION 'invoice must have no anonymous read and no table-wide SELECT for the app role';
   END IF;
 END
 $$;

@@ -42,6 +42,8 @@ test_files=(
   "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
   "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
   "$ROOT/tests/role_allowlist.sql" "$ROOT/tests/document_write_consistency.sql"
+  "$ROOT/tests/invoice_number_per_year.sql" "$ROOT/tests/zero_charge_reason.sql"
+  "$ROOT/tests/item_price_history.sql" "$ROOT/tests/invoice_column_grants.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -90,6 +92,10 @@ bash "$ROOT/tests/concurrent_rules.sh" "$container"
 # Migration 42: its closing check stays strict for the nineteen business tables
 # and lets an operator's own table in `public` through.
 bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
+
+# Migration 48: the author-name backfill of invoice_discount_history, on rows
+# as an installation that had discounts before the upgrade holds them.
+bash "$ROOT/tests/history_author_backfill.sh" "$container"
 
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"

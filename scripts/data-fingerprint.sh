@@ -9,9 +9,12 @@ compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 [[ -n "${WAREHOUSE_STATE_DIR:-}" ]] || { echo 'Set WAREHOUSE_STATE_DIR to the installed operator state.' >&2; exit 1; }
 
 # Tables that change on their own (OTPs, rate limits, idempotency keys, audit log,
-# materialized views, queues) are left out; everything an operator enters is in.
+# materialized views, queues) are left out; everything an operator enters is in,
+# and so are the three append-only histories of what was entered (discounts, zero
+# charges, item prices), which must come back from a restore row for row.
 tables=(customers users_customers_new items item_storage_prices goodsreceived goodsreceived_trl
-  grn_images dispatch dispatch_trl dispatch_images invoice invoice_trl stock_movements user_profiles)
+  grn_images dispatch dispatch_trl dispatch_images invoice invoice_trl stock_movements user_profiles
+  invoice_discount_history invoice_zero_charge_history item_price_history)
 sql=''
 for t in "${tables[@]}"; do
   sql+="SELECT 'table public.$t rows=' || count(*) || ' sha256=' || encode(sha256(convert_to(coalesce(string_agg(r::text, E'\n' ORDER BY r::text), ''), 'UTF8')), 'hex') FROM public.$t r;"$'\n'

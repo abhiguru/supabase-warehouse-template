@@ -598,7 +598,7 @@ only the services that were running. The directory contains:
 | `_supabase.dump` | `pg_dump --format=custom` of the `_supabase` database (pooler and analytics schemas). |
 | `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
@@ -831,8 +831,11 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 ```
 
 It prints a row count and a SHA-256 for every business table (customers, items,
-prices, GRNs, dispatches, invoices, stock movements, users), the storage catalog
-and the stored files. It holds no secrets; keep a copy off the host (for
+prices, GRNs, dispatches, invoices, stock movements, users), for the three
+append-only histories (invoice discounts, zero charges, item prices), the
+storage catalog and the stored files. A fingerprint taken before the upgrade to
+migration 48 has no lines for the histories and cannot be compared with one
+taken after it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for
 example next to the archive on the drive). After a restore the same command
 must print identical lines.
 

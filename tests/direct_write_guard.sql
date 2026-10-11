@@ -65,9 +65,10 @@ CREATE FUNCTION pg_temp.guard_login(phone text) RETURNS jsonb LANGUAGE plpgsql A
  END $$;
 
 -- 1. Catalog. The shared role has no direct write on any public table except
--- the two profile columns; reads and service_role are untouched.
+-- the two profile columns; reads and service_role are untouched. (A read is a
+-- SELECT on the table or, for invoice since migration 48, on its columns.)
 SELECT pg_temp.guard_assert((SELECT bool_and(
-   has_table_privilege('authenticated',format('public.%I',t)::regclass,'SELECT')
+   has_any_column_privilege('authenticated',format('public.%I',t)::regclass,'SELECT')
    AND NOT has_any_column_privilege('authenticated',format('public.%I',t)::regclass,'INSERT,UPDATE')
    AND NOT has_table_privilege('authenticated',format('public.%I',t)::regclass,'DELETE,TRUNCATE')
    AND NOT has_any_column_privilege('anon',format('public.%I',t)::regclass,'SELECT,INSERT,UPDATE')

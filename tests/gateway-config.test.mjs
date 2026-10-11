@@ -41,8 +41,8 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 5);
   // Every route that needs only the public key or no key at all is limited per
   // client address, except storage (see docs/CONTAINER_SECURITY.md).
-  // The socket route has a per-minute limit only (null): see the next test.
-  const limits = { 'rest-v1': [300, 6000], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
+  // The REST and socket routes have a per-minute limit only (null): see the next two tests.
+  const limits = { 'rest-v1': [1800, null], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 2000] };
   for (const [service, [minute, hour]] of Object.entries(limits)) {
     const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
     assert.ok(rateLimit, `${service} has no rate limit`);
@@ -53,6 +53,48 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'graphql-v1': 2, 'realtime-v1-rest': 2, 'storage-v1': 50, 'functions-v1': 10 })) {
     assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
   }
+});
+
+test('the REST limit leaves a whole facility room to work and cannot lock it out for an hour', () => {
+  // Every phone on the facility network reaches the gateway from one public address, so the
+  // facility shares one counter (docs/CONTAINER_SECURITY.md, REST request limit; owner decision
+  // of 2026-10-11). The old limit of 300 a minute and 6000 an hour gave 100 phones 3 requests a
+  // minute each and 60 an hour each, and once the hour was used up every phone was refused
+  // until it ended.
+  const devices = 100;
+  const rateLimit = serviceBlock('rest-v1').split('- name: rate-limiting')[1].split('      - name: ')[0];
+  const minute = Number(rateLimit.match(/^\s+minute: (\d+)$/m)[1]);
+  assert.equal(minute, 1800);
+  assert.equal(minute / devices, 18, 'requests a minute for each of 100 phones working at once');
+  // The only window is the minute. Nothing longer: a refused request can be sent again when the
+  // next minute starts. Nothing shorter either: there is no per-second brake (next test).
+  assert.doesNotMatch(rateLimit, /^\s+(second|hour|day|month|year):/m);
+  assert.match(rateLimit, /^\s+limit_by: ip$/m);
+});
+
+test('the per-minute limits are described as a budget per fixed minute, not as a ceiling per second', () => {
+  // Kong's rate-limiting plugin counts in fixed windows. 1800 a minute is about 30 a second on
+  // average, but one address may send all 1800 in the first second of a minute and 1800 more
+  // when the next minute starts. Wording such as "stops more than 30 requests a second" promises
+  // a brake the gateway does not have.
+  const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
+  const section = (from, to) => { const start = docs.indexOf(from); assert.ok(start > 0, from); return docs.slice(start, docs.indexOf(to, start + from.length)); };
+  const restComment = serviceBlock('rest-v1').split('- name: rate-limiting')[1].split('minute: 1800')[0];
+  const texts = {
+    'docker/kong.yml, rest-v1': restComment,
+    'docs/CONTAINER_SECURITY.md, REST request limit': section('### REST request limit', '\n## '),
+    'docs/CONTAINER_SECURITY.md, Realtime socket limit': section('- **The limit now.** 1800 attempts a minute', '- **What this does not cover.**'),
+  };
+  for (const [where, text] of Object.entries(texts)) {
+    const plain = text.replace(/^\s*#\s?/gm, '').replace(/\s+/g, ' ');
+    assert.match(plain, /fixed minute/, `${where} does not say the window is a fixed minute`);
+    assert.match(plain, /about 30 a second on average/, `${where} does not call 30 a second an average`);
+    assert.match(plain, /no per-second brake/, `${where} does not say there is no per-second brake`);
+    assert.doesNotMatch(plain, /(more than|faster than) 30 (requests )?a second/, `${where} promises a per-second ceiling`);
+    assert.doesNotMatch(plain, /(sent|starts) again within the minute/, `${where} says a refused request can be repeated within the same minute`);
+  }
+  // No route has a per-second window; if one is added, the wording above has to change with it.
+  assert.doesNotMatch(kong, /^\s+second: \d+$/m);
 });
 
 test('the Realtime socket limit cannot lock a facility out after a Realtime outage', () => {

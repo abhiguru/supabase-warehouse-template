@@ -1,5 +1,154 @@
 # Changelog
 
+## Unreleased — owner decisions of 2026-10-11
+
+Migration 48 and `docker/kong.yml`. **Operator action:** rerun `setup.sh` as
+for every upgrade, and restart the gateway container if the rerun did not
+recreate it (it reads `docker/kong.yml` when it starts; until then the old
+request limit applies). Use the app build that follows these decisions: an
+older build still gets a suggested invoice number (for the current financial
+year), but it does not send a zero-charge reason, so staff using it are
+refused when they save an invoice that has a line with a charge of 0. An
+administrator or supervisor on an older build can still save such an invoice,
+and a reason already stored on it is kept.
+
+- **The suggested invoice number is per financial year.**
+  `get_next_invoice_number(p_fin_year integer DEFAULT NULL)` replaces the
+  no-argument function (one signature; a call without an argument still
+  works). It returns the highest number among that year's invoice rows plus
+  1, and `1` for a year without invoices; numbers below 1 are ignored. A
+  soft-deleted invoice (`deleted_at` set; written only with the service key or
+  in the database) counts, because the unique constraint still reserves its
+  number and a suggestion that ignored it could never be saved; an invoice
+  removed with `delete_invoice` frees its number. Without a year it uses the
+  financial year of today in India. Before,
+  it returned the highest number of all years plus 1, so April continued the
+  old year's numbers. An invoice numbered 2147483647 no longer breaks the
+  suggestion for every year with "integer out of range": only that year is
+  refused, with `No invoice number is left in financial year <year>`
+  (`WH409`). Guard and grants are unchanged. `docs/INVOICE_RULES.md`, "Invoice
+  numbers"; `tests/invoice_number_per_year.sql`.
+- **A zero storage charge needs a reason from staff.** The three invoice save
+  RPCs read `zero_charge_reason` from the invoice data. While a line of the
+  invoice has a charge of 0, staff must send a reason that is not blank, on a
+  new invoice and on every edit; administrators and supervisors may leave it
+  empty; with no zero-charge line the reason is stored as NULL. The refusal is
+  `Enter a reason for the zero charge` (SQLSTATE 22023, same shape as the
+  discount-reason refusal). The invoice records `zero_charge_reason`,
+  `zero_charge_set_by` and `zero_charge_set_at` when the reason or the set of
+  zero-charge lines changes, and each change is appended to the new
+  `invoice_zero_charge_history` (read by administrators and supervisors,
+  changed by nobody, kept when the invoice is deleted). `get_invoice_detail`
+  returns the three fields and `zero_charge_set_by_name` to administrators,
+  supervisors and staff. Charges outside 0 to 999999 and a zero duration are
+  refused as before. **Consequence for existing data:** nothing is checked or
+  changed by the migration; an invoice that already has a zero-charge line and
+  no reason can be read and can be edited by an administrator or supervisor as
+  it is, and staff who edit it must enter a reason at that edit. **For API
+  clients:** staff must send the reason on every save. For an administrator or
+  supervisor a request that has the `zero_charge_reason` key states the reason
+  (`null` or a blank value clears a stored one, which is recorded), and a
+  request without the key keeps the stored reason, so an edit from an older
+  app build does not erase what staff entered.
+  `docs/INVOICE_RULES.md`; `tests/zero_charge_reason.sql`.
+- **A customer account can no longer read the internal reasons from the
+  `invoice` table.** `get_invoice_detail` kept `discount_reason`,
+  `discount_set_by`, `discount_set_at` (migration 30) and the three
+  `zero_charge_*` columns from a customer account, but a customer login could
+  read all six for its own invoices with `GET /rest/v1/invoice`, because every
+  app role is the one database role. Migration 48 replaces the app role's
+  SELECT on `invoice` by a SELECT on every other column. **For API clients:**
+  no app role, administrator included, reads those six columns from the table
+  any more (use `get_invoice_detail`); a direct read of `invoice` must name its
+  columns, and `select=*`, a missing `select` or an embedded `invoice(*)` is
+  answered HTTP 403 `permission denied for table invoice`. The app does not
+  read the table; the invoice PDF function now names its header columns
+  (`functions/_shared/document-columns.ts`). A column a later migration adds to
+  `invoice` is closed until that migration grants it, and
+  `tests/security_baseline.sql` fails until it is either granted or listed as
+  internal. `docs/INVOICE_RULES.md`, "Internal columns";
+  `tests/invoice_column_grants.sql`, `tests/document-columns.test.mjs`.
+- **The three histories keep the author's name.** `invoice_discount_history`
+  (migration 41), `invoice_zero_charge_history` and `item_price_history`
+  stored the author as a profile id and looked the name up when read, and any
+  signed-in user can rename the own profile to "Deleted User" with
+  `delete_user_account`, so the record of who changed a price or gave a
+  discount could be emptied by the person it names. Each history row now
+  stores `changed_by_name` beside `changed_by_role`, as they were at the
+  change, and `get_item_price_history` (`changed_by_name`) and
+  `get_invoice_detail` (`discount_set_by_name`, `zero_charge_set_by_name`)
+  return the stored name; the profile's present name is used only for a row
+  that has none. **Consequence for existing data:** discount history rows from
+  before this migration get the name their author's profile has at the
+  upgrade (an account already deleted reads "Deleted User"). **Consequence for
+  account deletion:** a deleted account's name stays in these three records.
+  `tests/zero_charge_reason.sql` (section 7), `tests/item_price_history.sql`
+  (section 5), `tests/invoice_line_rules.sql`,
+  `tests/history_author_backfill.sh`.
+- **Every price change is recorded.** Staff have been able to create, change
+  and delete item prices since migration 45, with nothing kept of what a price
+  was or who changed it. A trigger on `item_storage_prices` now writes one row
+  to the new append-only `item_price_history` for every insert, update and
+  delete, whichever RPC made it: time, profile and role (from the session; none
+  for a write with the service key or in the database), price, item and
+  customer with their names, the action and the values before and after. New
+  RPC `get_item_price_history(p_customer_id uuid DEFAULT NULL, p_item_id uuid
+  DEFAULT NULL, p_limit integer DEFAULT 50, p_offset integer DEFAULT 0)`
+  returns `{success, data, pagination}`, newest first, to administrators and
+  supervisors; staff and customer accounts are refused and cannot read the
+  table either. A `TRUNCATE` of the price table (service key or database
+  owner only) is recorded as one row with the action `truncate` and the number
+  of prices removed, and is listed under every customer and item filter. A
+  page is 1 to 200 rows; an offset past the end is an empty page. The record
+  starts with this migration. No app screen yet.
+  `docs/STAFF_GRN_POLICY.md`, "Every price change is recorded";
+  `tests/item_price_history.sql`.
+- **The REST request limit is 1800 a minute per client address, with no hourly
+  window** (was 300 a minute and 6000 an hour). All phones of a facility share
+  one public address and so one counter: the old limit gave 100 phones 3
+  requests a minute and 60 an hour each, and once the hour was used up every
+  phone was refused until it ended. The new one gives them 18 a minute each
+  and cannot lock anyone out for longer than the rest of a minute. It is
+  1800 per fixed minute, about 30 a second on average, with no per-second
+  brake: one address may use a minute's budget in a burst.
+  **Consequence:** this is also the only gateway brake on the RPCs that need
+  no sign-in (`refresh_jwt_token`, `logout_session`, `check_session`); one
+  address may now send 108,000 requests an hour where it could send 6000. The
+  OTP limits are unaffected. The other routes are unchanged. **The functions
+  route was left with its hourly cap** (100 a minute, 2000 an hour per
+  address): it has the same hourly lock-out for a facility behind one address,
+  but it is also the gateway's per-address brake on OTP requests, so it is
+  left for the owner to decide.
+  `docs/CONTAINER_SECURITY.md`, "REST request limit", has the arithmetic and a
+  table of every route; `tests/gateway-config.test.mjs` pins both. Kong has
+  not loaded the file on a running stack.
+
+- **A restore that loses a history no longer compares as identical.**
+  `scripts/data-fingerprint.sh` now fingerprints `invoice_discount_history`,
+  `invoice_zero_charge_history` and `item_price_history` with the business
+  tables, and `scripts/backup-integrity.sql` (the report `verify-restore.sh`
+  and `restore.sh` compare) counts the three tables and records the column
+  grant on `invoice`. **Operator note:** a fingerprint file taken before this
+  upgrade has three lines fewer; take a new one after upgrading. Backups taken
+  before migration 48 still verify and restore: the new report lines are
+  printed only for a database that has migration 48.
+  `tests/verify-restore-drill.sh` (the report with and without migration 48; a
+  backup that recorded more history rows than its dump holds is refused),
+  `tests/history-backup-coverage.test.mjs`.
+
+New and changed answers: `get_next_invoice_number` takes `p_fin_year`, counts
+soft-deleted invoices of the year and can raise `No invoice number is left in
+financial year <year>` (`WH409`); `save_invoice` (both signatures) and
+`update_invoice` read `zero_charge_reason` and can refuse with `Enter a reason
+for the zero charge` (22023), and for an administrator or supervisor an edit
+without that key keeps the stored reason; `get_invoice_detail` adds
+`zero_charge_reason`, `zero_charge_set_by`, `zero_charge_set_by_name` and
+`zero_charge_set_at` for the warehouse roles, and its `discount_set_by_name`
+and `zero_charge_set_by_name` are the names stored at the change;
+`get_item_price_history` is new (its `action` can be `truncate`, with
+`price_id` null); `GET /rest/v1/invoice` must name its columns and cannot
+name the six internal ones.
+
 ## Unreleased — follow-ups to the review of migrations 39 to 46 (2026-10-11)
 
 Migration 47. **Operator action:** rerun `setup.sh` as for every upgrade (it
@@ -355,7 +504,8 @@ admits what the app offers".
 - **Staff can now read and change item prices** (`get_item_storage_prices`,
   `create_`, `update_`, `delete_` and `find_or_create_item_storage_price`).
   This supersedes the refusal of migration 23. A price change is not written to
-  a history table.
+  a history table. (It is since migration 48: see "owner decisions of
+  2026-10-11" above.)
 - Staff can run the reports the app shows them, for all customers and for one
   (`get_all_stock_summary`, `get_customer_stock_summary`,
   `get_all_customer_activity_summary`, `get_customer_activity_detail`,

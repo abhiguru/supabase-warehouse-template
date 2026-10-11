@@ -4,6 +4,7 @@ import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf } from './gotenberg-client.ts';
 import { documentHtml } from './document-html.ts';
+import { headerColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';
 
 type Kind = 'grn' | 'dispatch' | 'invoice' | 'stock';
@@ -40,7 +41,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       if ((typeof value !== 'string' && typeof value !== 'number') || !/^[A-Za-z0-9-]{1,20}$/.test(String(value))) throw { status: 400, message: 'Invalid document number' };
       const table = kind === 'grn' ? 'goodsreceived' : kind;
       const key = kind === 'grn' ? 'gr_no' : kind === 'dispatch' ? 'disp_no' : 'inv_no';
-      let query = reader.from(table).select('*').eq(key,value).is('deleted_at',null);
+      let query = reader.from(table).select(headerColumns(kind)).eq(key,value).is('deleted_at',null);
       if (kind === 'invoice') {
         if (!Number.isInteger(Number(body.fin_year)) || Number(body.fin_year)<2000 || Number(body.fin_year)>9999) throw { status: 400, message: 'Invalid financial year' };
         query = query.eq('inv_fin_year',body.fin_year);
