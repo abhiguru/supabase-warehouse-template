@@ -26,6 +26,9 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   'generate-dispatch-pdf': documentPdf,
   'generate-invoice-pdf': documentPdf,
   'generate-customer-stock-pdf': documentPdf,
+  // Report PDFs read like the document PDFs: caller token for the data, the
+  // server key for the warehouse name and the upload.
+  'generate-report-pdf': documentPdf,
   // Refused with 503 by the router today; listed so that enabling printing
   // does not fall back to the whole environment.
   'get-printer-status': [...signedIn, 'SUPABASE_ANON_KEY'],

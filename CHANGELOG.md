@@ -88,6 +88,102 @@ token today.
   most 10 minutes; possibly about a minute, the worker timeout), and nothing
   of this has run inside the edge runtime yet.
 
+## Unreleased — report PDFs: generate-report-pdf (2026-10-12)
+
+Migration 53, `functions/generate-report-pdf`. **Operator action:** none
+beyond the normal upgrade (it applies migration 53 and recreates the functions
+container). No new setting or environment variable. Report PDFs are removed by
+`npm run retention:apply` like the document PDFs.
+
+A new signed-in endpoint renders one report screen of the app as a PDF. It
+reads the report's existing RPC with the **caller's token** (no new SQL for
+data; `authorize_rpc` and each function's customer rules apply unchanged), then
+stores the file in the private `documents` bucket as
+`report/<report>/<customer id or all>/<random uuid>.pdf` and returns a signed
+link. The app does not call it yet.
+
+`POST /functions/v1/generate-report-pdf`, `Authorization: Bearer <session>`,
+JSON body of at most 4096 bytes:
+
+```
+{
+  "report": "grn-activity" | "dispatch-activity" | "invoice-history" | "stock-summary"
+          | "stock-aging" | "item-stock-summary" | "customer-activity",   // required
+  "customer_id": "<uuid>",          // optional; absent or null = all customers (refused to customer accounts)
+  "from": "YYYY-MM-DD",             // required for grn-activity, dispatch-activity, invoice-history,
+  "to":   "YYYY-MM-DD",             //   customer-activity; refused for the three stock reports
+  "sort": { "field": "<name>", "order": "asc" | "desc" },   // optional
+  "lang": "en" | "gu"               // optional, default "en": language of the labels
+}
+```
+
+- No other field is accepted. `from` and `to` are real calendar dates from
+  2000-01-01, `from <= to`, at most 450 days with both ends included.
+- `sort.field` is a lower-case name; a name the report does not sort by gives
+  the report's default order (not an error). `sort.order` must be `asc` or
+  `desc`. Fields by report (one-customer level / all-customers level; default
+  first):
+  - grn-activity: `date` desc, `gr_no`, `items`, `quantity`, `weight`, `stock`,
+    `invoice` / `quantity` desc, `customer`, `grns`, `weight`, `latest`
+  - dispatch-activity: `date` desc, `disp_no`, `grn`, `items`, `quantity` /
+    `quantity` desc, `customer`, `dispatches`, `latest`
+  - invoice-history: `date` desc, `invoice_no`, `grn`, `amount`, `tax`, `net`,
+    `status` / `amount` desc, `customer`, `invoices`, `net`, `latest`
+  - stock-summary: `item` asc, `gr_no`, `date`, `mark`, `rack`, `stock`,
+    `weight` / `stock` desc, `customer`, `items`, `grns`, `weight`
+  - stock-aging: `age` desc, `item`, `gr_no`, `date`, `rack`, `stock`,
+    `last_dispatch` / `stock` desc, `customer`, `average_age`, `over_one_year`
+  - item-stock-summary (both levels): `item` asc, `packaging`, `grns`,
+    `received`, `stock`
+  - customer-activity: `month` asc, `grns`, `received`, `dispatches`,
+    `dispatched`, `amount`, `stock_end` / `stock` desc, `customer`, `city`,
+    `grns`, `dispatches`, `amount`, `last_activity`
+
+Success (HTTP 200), the shape of `generate-customer-stock-pdf`:
+
+```
+{ "success": true,
+  "pdf_url": "<SUPABASE_PUBLIC_URL>/storage/v1/object/sign/documents/report/...?token=...",
+  "expires_in": 3600,
+  "document": { "type": "report", "report": "<report>",
+                "customer": "<customer name>",          // only with customer_id
+                "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", // only for reports with a period
+                "rows_count": 123,                      // table rows printed
+                "rows_total": 123,                      // rows the report has
+                "truncated": false,                     // true when rows_total > 2000
+                "sort": { "field": "date", "order": "desc" } } }  // the order applied
+```
+
+Errors: `{ "success": false, "error": "<message>" }` with 400 (invalid body or
+request), 401 (no or invalid token), 403 (session revoked, profile inactive, or
+the RPC refused this account: a customer account asking for another customer or
+for the all-customers level), 404 (unknown customer), 405 (not POST), 503 (data,
+renderer, storage or link unavailable), 500 otherwise. Same envelope and codes
+as the document PDFs.
+
+The PDF: warehouse name and report title; the customer (or "All customers"),
+period, sort and time in the header and again as the first header row of the
+table on every page; a summary block with the RPC's own figures (they cover
+every row); one table of at most 7 columns, numbers right-aligned in
+figures of one width with Indian digit grouping, dates DD-MM-YYYY; a totals row
+over the rows printed; the page footer with title, warehouse name and page
+numbers. At most 2000 rows; a longer report is cut, with "Showing 2,000 of N"
+under the table and in the footer of every page. Labels in Gujarati are the
+app's own wording; eight labels the app has no Gujarati for yet print in English
+(`Sort by`, `ascending`, `descending`, `Latest invoice`, `Tax`, `Status`,
+`City`, `Last activity`), listed in `functions/_shared/report-labels.ts`.
+
+- Migration 53 widens `warehouse_maintenance.expired_generated_documents` so
+  the `report/...` names (the seven report names, a customer id or `all`, a
+  UUID file name) are listed for removal with the document PDFs; any other name
+  in the bucket is still never listed. `tests/report_pdf_retention.sql`.
+- `tests/report-pdf.test.mjs`: every request refusal, the RPC and arguments of
+  each report and level, the columns in English and Gujarati, sorting,
+  the 2000-row cut, refusal mapping, the HTML and footer, the router entry and
+  the worker environment.
+- Not covered by a test here: a real render through Gotenberg and the HTTP path
+  on an installed stack.
+
 ## Unreleased — edge functions download nothing at start (2026-10-12)
 
 `functions/`. **Operator action:** none; the next start recreates the

@@ -5,7 +5,7 @@ import { workerEnv } from './worker-env.ts';
 
 const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange']);
 const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp',
-  'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);
+  'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
 
 Deno.serve(async (req: Request) => {
   const cors = handleCors(req);
