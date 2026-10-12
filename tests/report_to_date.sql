@@ -7,7 +7,7 @@
 -- power of two, so every sum names exactly the rows it counted.
 --
 -- Days, with E the end day (three days ago) and S the start day (four days before E):
---   row    customer  moment (UTC)    qty   in the period S..E?
+--   row    customer  moment (India)  qty   in the period S..E?
 --   1      Juniper   S   12:00          1   yes, start day
 --   2      Juniper   E   02:00          2   yes, end day (was left out)
 --   3      Juniper   E   23:30          4   yes, end day (was left out)
@@ -19,8 +19,9 @@
 -- and one invoice per receipt, all at these moments. In the period: 4 rows, 39 in all
 -- (Juniper 7, Laurel 32); before migration 54: 1 row, 1 in all, no Laurel.
 --
--- A day here is a day in the session time zone, UTC (asserted below), not India's: migration 54
--- did not change the zone. If the zone is ever changed on purpose, these days move with it.
+-- The moments are India times (UTC+05:30): since migration 56 a report day is a day in India,
+-- whatever the session time zone (UTC here, asserted below). tests/report_ist_day.sql covers the
+-- hours where an India day and a UTC day differ.
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -70,7 +71,7 @@ EXCEPTION WHEN insufficient_privilege THEN RETURN true;
   WHEN OTHERS THEN RETURN false;
 END $$;
 
-SELECT pg_temp.td_assert(current_setting('TimeZone') = 'UTC', 'the session time zone is UTC, so a day below is a UTC day');
+SELECT pg_temp.td_assert(current_setting('TimeZone') = 'UTC', 'the session time zone is UTC, not India''s');
 
 -- ---------------------------------------------------------------------------
 -- The four functions: still single and guarded, no bare end-day comparison left
@@ -79,7 +80,7 @@ SELECT pg_temp.td_assert(count(*) = 4
     AND bool_and(pg_get_functiondef(p.oid) ~ ('BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''' || p.proname || ''','))
     AND bool_and(p.prosecdef)
     AND bool_and(pg_get_functiondef(p.oid) !~ '(disp_date|\.date) <= p_to_date' AND pg_get_functiondef(p.oid) !~ 'BETWEEN v_from_date AND v_to_date')
-    AND bool_and(pg_get_functiondef(p.oid) ~ '< (p_to_date|v_to_date) \+ 1'),
+    AND bool_and(pg_get_functiondef(p.oid) ~ '< warehouse_security\.business_day_start\((p_to_date|v_to_date) \+ 1\)'),
   'the four patched report functions are single, guarded, and end the period before the day after')
 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
   AND p.proname IN ('get_all_dispatch_activity', 'get_all_grn_activity', 'get_customer_grn_activity', 'get_customer_invoice_summary');
@@ -112,7 +113,7 @@ INSERT INTO public.items(name, packaging) VALUES ('End Day Report Ginger', 'Bag'
 -- The customer login is assigned to Juniper only.
 INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
  SELECT id, :'juniper'::uuid, true FROM public.user_profiles WHERE mobile = '919888888543';
--- The dispatches: number, stock lot, day, time of day (UTC), quantity.
+-- The dispatches: number, stock lot, day, time of day (India), quantity.
 CREATE TEMP TABLE report_to_date_dispatches (disp_no text, gr_no text, day date, at text, qty integer);
 INSERT INTO report_to_date_dispatches VALUES
   ('EDD1', 'EDS1', :'start_day', '12:00:00', 1),
@@ -132,7 +133,7 @@ SELECT pg_temp.td_assert(pg_temp.td_figures(public.get_all_grn_activity(:'day_be
   AND pg_temp.td_figures(public.get_customer_grn_activity(NULL, :'day_before', :'next_day')#>'{data,summary}', 'total_grns', 'total_quantity') = '0/0'
   AND pg_temp.td_figures(public.get_customer_invoice_summary(NULL, :'day_before', :'next_day')#>'{data,summary}', 'total_invoices', 'total_amount') = '0/0',
   'the period and the days around it are empty before the fixture');
-SELECT pg_temp.td_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || 'Z')::timestamptz,
+SELECT pg_temp.td_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
   p_customer_id => r.customer, p_customer_name => r.customer_name, p_idempotency_key => 'report-to-date-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'ginger', 'item_name', 'End Day Report Ginger', 'packaging', 'Bag',
     'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)
@@ -159,7 +160,7 @@ SELECT pg_temp.td_assert(public.create_dispatch_with_stock_check(jsonb_build_obj
 FROM report_to_date_dispatches d
 JOIN public.goodsreceived g ON g.gr_no = d.gr_no JOIN public.goodsreceived_trl t ON t.gr_id = g.id;
 RESET ROLE;
-UPDATE public.dispatch SET disp_date = (d.day::text || 'T' || d.at || 'Z')::timestamptz
+UPDATE public.dispatch SET disp_date = (d.day::text || 'T' || d.at || '+05:30')::timestamptz
  FROM report_to_date_dispatches d WHERE public.dispatch.disp_no = d.disp_no;
 -- One invoice per receipt EDR1..EDR7, dated at the receipt's moment, total = its quantity.
 -- Written directly, as tests/list_search.sql does: only the dates matter here.
@@ -167,11 +168,11 @@ INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, cust
  SELECT 2026, 9100 + substr(g.gr_no, 4)::integer, g.id, g.gr_no, g.customer_id, g.customer_name, g.date, t.qty
  FROM public.goodsreceived g JOIN public.goodsreceived_trl t ON t.gr_id = g.id WHERE g.gr_no LIKE 'EDR%';
 SELECT pg_temp.td_assert((SELECT count(*) FROM public.invoice WHERE gr_no LIKE 'EDR%') = 7
-  AND (SELECT string_agg(disp_no || '@' || to_char(disp_date AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || '/' || t.disp_qty, ' ' ORDER BY disp_no)
+  AND (SELECT string_agg(disp_no || '@' || to_char(disp_date AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') || '/' || t.disp_qty, ' ' ORDER BY disp_no)
        FROM public.dispatch d JOIN public.dispatch_trl t ON t.disp_id = d.id WHERE disp_no LIKE 'EDD%')
     = format('EDD1@%s 12:00/1 EDD2@%s 02:00/2 EDD3@%s 23:30/4 EDD4@%s 02:00/8 EDD5@%s 23:30/16 EDD6@%s 23:30/32 EDD7@%s 00:30/64',
              :'start_day', :'end_day', :'end_day', :'next_day', :'day_before', :'end_day', :'next_day')
-  AND (SELECT string_agg(gr_no || '@' || to_char(date AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), ' ' ORDER BY gr_no) FROM public.goodsreceived WHERE gr_no LIKE 'EDR%')
+  AND (SELECT string_agg(gr_no || '@' || to_char(date AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI'), ' ' ORDER BY gr_no) FROM public.goodsreceived WHERE gr_no LIKE 'EDR%')
     = format('EDR1@%s 12:00 EDR2@%s 02:00 EDR3@%s 23:30 EDR4@%s 02:00 EDR5@%s 23:30 EDR6@%s 23:30 EDR7@%s 00:30',
              :'start_day', :'end_day', :'end_day', :'next_day', :'day_before', :'end_day', :'next_day'),
   'fixture rows at the intended moments');

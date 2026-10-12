@@ -6,7 +6,7 @@
 -- total names exactly the receipts it counted.
 --
 -- Days, with E the end day (three days ago) and S the start day (four days before E):
---   receipt  moment (UTC)    qty   in the filter S..E?
+--   receipt  moment (India)  qty   in the filter S..E?
 --   GLE1     S   12:00          1   yes, start day
 --   GLE2     E   02:00          2   yes, end day (was left out)
 --   GLE3     E   23:30          4   yes, end day (was left out)
@@ -14,8 +14,9 @@
 --   GLE5     S-1 23:30         16   no, the day before (start side, unchanged)
 -- Filter S..E: 3 receipts, 7 in all (before migration 55: 1 receipt, 1 in all).
 --
--- A day here is a day in the session time zone, UTC (asserted below), not India's: migration 55
--- did not change the zone. If the zone is ever changed on purpose, these days move with it.
+-- The moments are India times (UTC+05:30): since migration 56 a day in this filter is a day in
+-- India, whatever the session time zone (UTC here, asserted below). tests/report_ist_day.sql
+-- covers the hours where an India day and a UTC day differ.
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -41,7 +42,7 @@ CREATE FUNCTION pg_temp.gl_numbers(answer jsonb) RETURNS text[] LANGUAGE sql AS 
 CREATE FUNCTION pg_temp.gl_figures(answer jsonb) RETURNS text LANGUAGE sql AS $$
   SELECT (answer#>>'{data,summary,total_grns}') || '/' || (answer#>>'{data,summary,total_qty}') $$;
 
-SELECT pg_temp.gl_assert(current_setting('TimeZone') = 'UTC', 'the session time zone is UTC, so a day below is a UTC day');
+SELECT pg_temp.gl_assert(current_setting('TimeZone') = 'UTC', 'the session time zone is UTC, not India''s');
 
 -- ---------------------------------------------------------------------------
 -- The function: still single, guarded and sorted as before; no bare end-day comparison left
@@ -49,8 +50,8 @@ SELECT pg_temp.gl_assert(current_setting('TimeZone') = 'UTC', 'the session time 
 SELECT pg_temp.gl_assert(count(*) = 1 AND bool_and(p.prosecdef)
     AND bool_and(pg_get_functiondef(p.oid) ~ ('BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''' || p.proname || ''','))
     AND bool_and(pg_get_functiondef(p.oid) !~ 'gr\.date <= %L')
-    AND bool_and(pg_get_functiondef(p.oid) LIKE '%format(''gr.date >= %L'', p_date_from)%')
-    AND bool_and(pg_get_functiondef(p.oid) LIKE '%format(''gr.date < %L'', p_date_to + 1)%')
+    AND bool_and(pg_get_functiondef(p.oid) LIKE '%format(''gr.date >= %L'', warehouse_security.business_day_start(p_date_from))%')
+    AND bool_and(pg_get_functiondef(p.oid) LIKE '%format(''gr.date < %L'', warehouse_security.business_day_start(p_date_to + 1))%')
     AND bool_and(pg_get_functiondef(p.oid) LIKE '%warehouse_security.document_number_sort_key(ga.gr_no)%'),
   'get_grn_list is single, guarded, sorted by document key and ends the filter before the day after')
 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'get_grn_list';
@@ -80,7 +81,7 @@ INSERT INTO public.users_customers_new(user_profile_id, customer_id, active)
 
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || 'Z')::timestamptz,
+SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => r.gr_no, p_date => (r.day::text || 'T' || r.at || '+05:30')::timestamptz,
   p_customer_id => :'quince'::uuid, p_customer_name => 'GRN List Day Quince Cold', p_idempotency_key => 'grn-list-end-day-' || r.gr_no,
   p_items => jsonb_build_array(jsonb_build_object('item_id', :'turmeric', 'item_name', 'GRN List Day Turmeric', 'packaging', 'Bag',
     'qty', r.qty, 'weight', 5)))->>'success' = 'true', 'fixture receipt ' || r.gr_no)
@@ -92,7 +93,7 @@ FROM (VALUES
   ('GLE5', :'day_before'::date, '23:30:00', 16)
 ) AS r(gr_no, day, at, qty);
 RESET ROLE;
-SELECT pg_temp.gl_assert((SELECT string_agg(gr_no || '@' || to_char(date AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), ' ' ORDER BY gr_no)
+SELECT pg_temp.gl_assert((SELECT string_agg(gr_no || '@' || to_char(date AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI'), ' ' ORDER BY gr_no)
     FROM public.goodsreceived WHERE gr_no LIKE 'GLE%')
   = format('GLE1@%s 12:00 GLE2@%s 02:00 GLE3@%s 23:30 GLE4@%s 02:00 GLE5@%s 23:30',
            :'start_day', :'end_day', :'end_day', :'next_day', :'day_before'),

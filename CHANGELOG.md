@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased — report days follow India's calendar (2026-10-12)
+
+Migration 56. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- The facilities keep their books in India and billing already counts India
+  days (migration 41), but the reports cut their days in the database's time
+  zone (UTC). Activity between midnight and 05:30 in India counted against the
+  day before, and a period also took in the first five and a half hours after
+  its last day. Every day a report cuts is now an India day: both ends of a
+  period, the per-day and per-month lists, the latest-activity day, the
+  month-end stock, the stock age in days, and "today" when a report is called
+  without days. Functions changed: `get_all_dispatch_activity`,
+  `get_all_grn_activity`, `get_all_customer_activity_summary`,
+  `get_customer_dispatch_activity`, `get_customer_grn_activity`,
+  `get_customer_activity_detail`, `get_customer_invoice_summary`,
+  `get_operations_dashboard`, and the receipt list `get_grn_list`.
+- **Figures for a period may change** for activity between midnight and 05:30
+  India time on its boundary days: such a receipt, dispatch or invoice now
+  belongs to its India day (in a period that starts that day, out of one that
+  ends the day before), and the per-day and per-month lists show it under that
+  day or month. Nothing else in the figures changes.
+- The whole last day stays in (migrations 54 and 55). A period is compared as
+  two moments, so the date indexes on receipts, dispatches and invoices are
+  still used. New private helper `warehouse_security.business_day_start(date)`,
+  the first moment of a day in India, the counterpart of
+  `warehouse_security.business_date`, which is unchanged.
+- The app needs no change: it already sends report periods as plain days of
+  India's calendar.
+- `tests/report_ist_day.sql` puts rows a second before and at midnight India
+  time, at 01:30 and 23:30 India time on the last day, at 00:00 and 00:15 the
+  day after, and on both sides of a month end, and checks every function's
+  counts, totals and day and month keys, with the session in UTC and in another
+  zone, plus the role rules. `tests/report_to_date.sql` and
+  `tests/grn_list_end_day.sql` now state their moments in India time.
+
 ## Unreleased — GRN list includes the end day (2026-10-12)
 
 Migration 55. **Operator action:** none beyond applying the migration (the
