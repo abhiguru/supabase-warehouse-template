@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — GRN list includes the end day (2026-10-12)
+
+Migration 55. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- A GRN list filtered by dates now includes the last day's receipts.
+  `get_grn_list` compared the end day of its date filter (`p_date_to`, a date)
+  directly with the receipt time, which reads the day as midnight at its start,
+  so every receipt on the last day was left out. The filter now runs to the end
+  of its last day (`< p_date_to + 1`, the form migration 54 uses for the
+  reports). The start day was already included. Nothing else in the function
+  changes; the guard, grants, role rules and the receipt-number ordering are as
+  they were.
+- Not changed: a day in this filter is still a day in the database's time zone
+  (UTC), not India's.
+- `tests/grn_list_end_day.sql` puts receipts at 02:00 and 23:30 UTC on the last
+  day, on the day after, on the first day and on the day before, and checks the
+  list, its total and its order for staff, and that a customer account is still
+  refused.
+
 ## Unreleased — report periods include the end day (2026-10-12)
 
 Migration 54. **Operator action:** none beyond applying the migration (the
