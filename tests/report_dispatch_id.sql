@@ -187,12 +187,13 @@ SELECT pg_temp.did_assert(pg_temp.did_column(:'staff_quince'::jsonb, 'disp_no') 
   AND (:'staff_quince'::jsonb)#>>'{summary,total_dispatches}' = '2' AND (:'staff_quince'::jsonb)#>>'{summary,total_quantity}' = '25'
   AND (:'staff_quince'::jsonb)#>>'{summary,total_weight}' = '125',
   'staff: numbers, days, quantities and the summary of the Quince answer: ' || :'staff_quince');
--- The other keys are all still there, and no key besides disp_id is new: the exact key set of a
--- dispatch and of its items.
+-- The other keys are all still there, and no key besides disp_id is new (migration 58 later added
+-- total_weight to a dispatch and weight to an item, which are in the sets below): the exact key set
+-- of a dispatch and of its items.
 SELECT pg_temp.did_assert(count(*) = 2
-    AND bool_and(pg_temp.did_keys(x) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty')
+    AND bool_and(pg_temp.did_keys(x) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty,total_weight')
     AND bool_and(jsonb_array_length(x->'items') = 1)
-    AND bool_and(pg_temp.did_keys(x#>'{items,0}') = 'item_name,orig_qty,package_mark,qty,rack,source_grn,source_grn_id')
+    AND bool_and(pg_temp.did_keys(x#>'{items,0}') = 'item_name,orig_qty,package_mark,qty,rack,source_grn,source_grn_id,weight')
     AND bool_and(x#>>'{items,0,item_name}' = 'Dispatch Id Fennel' AND x#>>'{items,0,source_grn}' = 'DIS1'),
   'staff: the keys of each dispatch and of its items')
 FROM jsonb_array_elements((:'staff_quince'::jsonb)->'dispatches') AS t(x);
@@ -206,7 +207,7 @@ SELECT pg_temp.did_assert(position(:'id_did3' in :'staff_quince') = 0 AND positi
 -- The other customer's answer has its own dispatch and id only.
 SELECT pg_temp.did_assert(pg_temp.did_pairs(:'staff_rowan'::jsonb) = ARRAY['DID3=' || :'id_did3']
   AND pg_temp.did_pairs(:'staff_rowan'::jsonb) = pg_temp.did_table_pairs(:'rowan'::uuid)
-  AND pg_temp.did_keys(((:'staff_rowan'::jsonb)#>'{dispatches,0}')) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty'
+  AND pg_temp.did_keys(((:'staff_rowan'::jsonb)#>'{dispatches,0}')) = 'disp_date,disp_id,disp_no,items,supervisor_name,total_qty,total_weight'
   AND position(:'id_did1' in :'staff_rowan') = 0 AND position(:'id_did2' in :'staff_rowan') = 0,
   'staff: Rowan''s dispatch carries its own id and none of Quince''s: ' || :'staff_rowan');
 -- An administrator is answered the same.

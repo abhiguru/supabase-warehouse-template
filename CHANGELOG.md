@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased — dispatch activity report returns weights (2026-10-12)
+
+Migration 58. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- `get_customer_dispatch_activity` returned a weight only for the whole period
+  (`summary.total_weight`). It now also returns, all in kilograms:
+  - `weight` on each item (line) of a dispatch: the quantity dispatched from that
+    received line times its per-bag weight (`goodsreceived_trl.weight`, kg per
+    bag). 5 bags of 50 kg is `250`. A received line with no per-bag weight (or
+    no quantity) is `0`.
+  - `total_weight` on each dispatch: the sum of the `weight` of its items. A
+    dispatch without lines is `0`.
+  - `summary.total_weight` is unchanged (it was already the sum of dispatched
+    quantity times per-bag weight, in kg, over the not deleted dispatches of the
+    customer in the period): it equals the sum of the returned dispatches'
+    `total_weight`. The migration fails, and applies nothing, if that expression
+    is no longer in the function.
+- App: the dispatch activity report of the mobile app shows a dispatch's weight
+  on its card and offers a Weight sort once the server sends these keys. That
+  needs the app change "dispatch weights and a Weight sort when the server sends
+  them" (rn-warehouse-template CHANGELOG, 2026-10-12). An app without that
+  change keeps working: it reads `weight` on an item (default 0) and shows it on
+  the item row when above 0, and it ignores the dispatch's `total_weight`. Order
+  of rollout does not matter: the new app against an older server shows no
+  weights and no Weight sort.
+- Nothing else changes: the other keys and their values, the order of the
+  dispatches and of the lines, the period and the India day cut of migration 56,
+  `disp_id` of migration 57, the access rules (a customer account still gets only
+  its own customer's dispatches) and the grants. `get_all_dispatch_activity`
+  (all customers) returns no weight, as before.
+- `tests/report_dispatch_weight.sql` checks, as staff, an administrator and a
+  customer account, a customer with three dispatches (5 bags of 50 kg with 3 of
+  25 kg is 325, a line with no per-bag weight is 0, 2 bags of 50 kg is 100): the
+  weight of each line, the total of each dispatch, a summary of 425 that equals
+  the sum of the dispatches and the table's own figure, that a period which
+  excludes a dispatch excludes its weight, that a deleted dispatch and another
+  customer's are not counted, that a dispatch without lines is 0, that a
+  customer account is still refused another customer's dispatches, and that the
+  function is single and keeps its guard, search_path and grants. The key sets
+  asserted in `tests/report_dispatch_id.sql` now include the two new keys.
+
 ## Unreleased — dispatch activity report returns the dispatch id (2026-10-12)
 
 Migration 57. **Operator action:** none beyond applying the migration (the
