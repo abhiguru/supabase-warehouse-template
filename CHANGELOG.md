@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — report periods include the end day (2026-10-12)
+
+Migration 54. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- `get_all_dispatch_activity`, `get_all_grn_activity`,
+  `get_customer_grn_activity` and `get_customer_invoice_summary` compared the
+  last day of the period (`p_to_date`, a date) directly with the receipt,
+  dispatch or invoice time, which reads the day as midnight at its start. Every
+  receipt and invoice on the last day was left out, and every dispatch with a
+  time of day after midnight (the app's dispatch form stores the start of the
+  dispatch date, so those were counted). The app always asks for a period that
+  ends today, so today's receipts and invoices were missing from these reports. The period now runs to the end of its last day (`< p_to_date + 1`),
+  in the summaries, the per-customer and per-day lists and the receipt and
+  invoice lists. Nothing else in the four functions changes; the guard, grants,
+  role rules and the migration 52 order are as they were.
+- **Figures for a period now include its last day.** Totals people saw before
+  for the same period may rise by that day's activity; earlier days are
+  unchanged.
+- The other four report functions that take a period
+  (`get_all_customer_activity_summary`, `get_customer_activity_detail`,
+  `get_customer_dispatch_activity`, `get_operations_dashboard`) already
+  included the last day and are not changed.
+- Not changed: a day in these reports is still a day in the database's time
+  zone (UTC), not India's.
+- `tests/report_to_date.sql` puts rows at 02:00 and 23:30 UTC on the last day,
+  on the day after, on the first day and on the day before, and checks the
+  summaries and lists of each of the four functions, and that staff may and a
+  customer account may not run the all-customers reports.
+
 ## Unreleased — report lists: server-side sort and totals (2026-10-12)
 
 Migration 52. **Operator action:** none beyond applying the migration (the
