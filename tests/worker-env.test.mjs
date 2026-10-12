@@ -70,6 +70,19 @@ test('public workers get no signing secret, and no worker gets a database addres
     APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
     SUPABASE_PUBLIC_URL: 'https://api.example.test', CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
   });
+  // The key file's text is passed by the router to the exchange only; its name also tells get-public-config that keys are configured.
+  const withKeys = name => Object.fromEntries(workerEnv(name, { ...container, CENTRAL_JWKS_FILE: 'central-jwks.json', CENTRAL_JWKS_DIR: '/etc/warehouse/public' }, { CENTRAL_JWKS_JSON: '{"keys":[]}' }));
+  assert.equal(withKeys('central-exchange').CENTRAL_JWKS_JSON, '{"keys":[]}');
+  assert.equal(withKeys('central-exchange').CENTRAL_JWKS_FILE, 'central-jwks.json');
+  assert.equal(withKeys('get-public-config').CENTRAL_JWKS_FILE, 'central-jwks.json');
+  for (const name of Object.keys(workerEnvNames)) {
+    if (name !== 'central-exchange') assert.ok(!('CENTRAL_JWKS_JSON' in withKeys(name)), `${name} received the key set`);
+    assert.ok(!('CENTRAL_JWKS_DIR' in withKeys(name)), `${name} received the key directory`);
+  }
+  // The router reads the file only for the exchange, only by a plain file name, and survives a missing file.
+  assert.match(router, /if \(name === 'central-exchange'\) \{\n      const file = Deno\.env\.get\('CENTRAL_JWKS_FILE'\);/);
+  assert.match(router, /\/\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{0,99\}\$\/\.test\(file\)/);
+  assert.match(router, /try \{\n          extra\.CENTRAL_JWKS_JSON = await Deno\.readTextFile\(`\$\{directory\}\/\$\{file\}`\);\n        \} catch \{/);
   assert.ok(workerEnv('get-public-config', container).some(([key]) => key === 'CENTRAL_ISSUER'));
   for (const name of ['operator-otp', 'get-config', 'generate-grn-pdf']) {
     assert.ok(!workerEnv(name, container).some(([key]) => key.startsWith('CENTRAL_')), `${name} holds a central setting`);
@@ -98,8 +111,10 @@ test('the functions container holds no database address', () => {
   assert.ok(block.includes('SUPABASE_SERVICE_ROLE_KEY'), 'functions block was read');
   // Central sign-in settings are optional: a state written before they existed must still render.
   assert.ok(block.includes('CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}') && block.includes('CENTRAL_JWKS_URL: ${CENTRAL_JWKS_URL:-}'));
-  const database = compose.slice(compose.indexOf('\n  db:\n'));
-  assert.ok(database.includes('CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}') && !database.includes('CENTRAL_JWKS_URL'));
+  assert.ok(block.includes('CENTRAL_JWKS_FILE: ${CENTRAL_JWKS_FILE:-}') && block.includes('CENTRAL_JWKS_DIR: /etc/warehouse/public'));
+  assert.ok(block.includes('- ${WAREHOUSE_PUBLIC_PATH:?Run through scripts/compose.sh}:/etc/warehouse/public:ro'), 'the key file directory is mounted read-only');
+  // The database container has no central setting: adding one would recreate it on upgrade.
+  assert.doesNotMatch(compose.slice(compose.indexOf('\n  db:\n')), /CENTRAL_/);
   assert.doesNotMatch(block, /SUPABASE_DB_URL|POSTGRES_PASSWORD/);
   for (const dir of readdirSync(functions, { recursive: true })) {
     if (String(dir).endsWith('.ts')) assert.doesNotMatch(readFileSync(join(functions, String(dir)), 'utf8'), /SUPABASE_DB_URL/, String(dir));

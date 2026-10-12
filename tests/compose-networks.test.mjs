@@ -125,7 +125,7 @@ test('imgproxy runs as the owner of the private storage directory', () => {
   // The directory is mode 0700 and owned by the installing user. As the image's
   // own user (999) imgproxy could not enter it, and every transformation failed.
   assert.match(read('docker/docker-compose.yml'), /\n  imgproxy:\n(?:    .*\n|\n)*?    user: "\$\{WAREHOUSE_HOST_UID:-999\}:\$\{WAREHOUSE_HOST_GID:-999\}"\n/);
-  assert.match(read('scripts/compose.sh'), /^exec env "\$\{unset_args\[@\]\}" WAREHOUSE_HOST_UID="\$\(id -u\)" WAREHOUSE_HOST_GID="\$\(id -g\)" docker compose /m);
+  assert.match(read('scripts/compose.sh'), /^exec env "\$\{unset_args\[@\]\}" WAREHOUSE_HOST_UID="\$\(id -u\)" WAREHOUSE_HOST_GID="\$\(id -g\)" WAREHOUSE_PUBLIC_PATH="\$STATE\/public" docker compose /m);
 });
 
 test('the pooler registers only a database role that exists', () => {

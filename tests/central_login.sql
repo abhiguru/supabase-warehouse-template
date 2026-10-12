@@ -1,5 +1,5 @@
 -- Migration 49: central login, facility side. The exchange RPC, the single
--- use of a token, linking and conflicts, the administrator's unlink, and who
+-- use of a token, linking (only with a facility SMS code) and conflicts, the administrator's unlink, and who
 -- may call what. Fictional data; runs only in migrations.sh's disposable,
 -- network-disabled database; every fixture row rolls back.
 \set ON_ERROR_STOP on
@@ -9,8 +9,19 @@ BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'central login: %',label; E
 -- One exchange as the edge function calls it, with a token that expires in
 -- five minutes. `jti` must be new for every call that is not a replay test.
 CREATE FUNCTION pg_temp.cl_exchange(subject text, phone text, jti text, person text DEFAULT NULL, source inet DEFAULT NULL,
-  issuer text DEFAULT 'https://login.association.example.test') RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.operator_central_exchange(issuer, subject, phone, jti, now()+interval '5 minutes', person, NULL, source) $$;
+  issuer text DEFAULT 'https://login.association.example.test', otp text DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.operator_central_exchange(issuer, subject, phone, jti, now()+interval '5 minutes', person, NULL, source, otp) $$;
+-- A code this facility "sent" to a phone by SMS (the provider is mocked), as
+-- operator-otp/request prepares it. Earlier codes are aged past the resend wait.
+CREATE FUNCTION pg_temp.cl_code(phone text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE challenge jsonb;
+BEGIN
+  UPDATE public.otp_verifications SET created_at=created_at-interval '61 seconds' WHERE phone_number=phone;
+  challenge := public.operator_prepare_otp(phone);
+  PERFORM pg_temp.cl_assert(challenge->>'success'='true','an SMS code is prepared for '||phone||': '||challenge::text);
+  PERFORM public.operator_finish_otp((challenge#>>'{data,request_id}')::uuid,true,'mock-provider-only');
+  RETURN challenge#>>'{data,otp_code}';
+END $$;
 -- Claims of a fresh session for a profile, as PostgREST would present them.
 CREATE FUNCTION pg_temp.cl_claims(phone text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE account uuid; session uuid;
@@ -39,13 +50,19 @@ INSERT INTO warehouse_security.auth_config(key,value) VALUES
  ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
  ('auth_mode','operator'),('demo_auth_enabled','false')
  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_key='isolated-test-key',
+ msg91_template_id='000000000000000000000001',msg91_pe_id='0000000000000000001',msg91_sender_id='CITEST'
+ WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
 SELECT warehouse_security.bootstrap_first_admin('9000000201','Central Administrator') AS admin_user \gset
 INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status) VALUES
  (gen_random_uuid(),'919000000202','Central Supervisor','supervisor',true,'approved'),
  (gen_random_uuid(),'919000000203','Central Staff','staff',true,'approved'),
  (gen_random_uuid(),'919000000204','Central Customer','customer',true,'approved'),
  -- enrolled with an SMS code before central sign-in existed
- (gen_random_uuid(),'919000000103','Earlier Staff','staff',true,'approved');
+ (gen_random_uuid(),'919000000103','Earlier Staff','staff',true,'approved'),
+ (gen_random_uuid(),'919000000105','Earlier Rejected','customer',false,'rejected'),
+ (gen_random_uuid(),'919000000106','Earlier Disabled','staff',false,'disabled'),
+ (gen_random_uuid(),'919000000107','Earlier Pending','customer',false,'pending');
 INSERT INTO public.customers(name,mobile) VALUES ('Central Customer Account','9000000205') RETURNING id AS customer_account \gset
 SELECT pg_temp.cl_claims('919000000201') AS admin_claims \gset
 SELECT pg_temp.cl_claims('919000000202') AS supervisor_claims \gset
@@ -57,14 +74,14 @@ SELECT count(*) AS profiles_start FROM public.user_profiles \gset
 -- ---------------------------------------------------------------------------
 -- Who may call the exchange
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.cl_assert(NOT has_function_privilege('anon','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet)','EXECUTE'),
+SELECT pg_temp.cl_assert(NOT has_function_privilege('anon','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text)','EXECUTE'),
  'anon cannot execute the exchange');
-SELECT pg_temp.cl_assert(NOT has_function_privilege('authenticated','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet)','EXECUTE'),
+SELECT pg_temp.cl_assert(NOT has_function_privilege('authenticated','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text)','EXECUTE'),
  'a signed-in user cannot execute the exchange');
-SELECT pg_temp.cl_assert(has_function_privilege('service_role','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet)','EXECUTE'),
+SELECT pg_temp.cl_assert(has_function_privilege('service_role','public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text)','EXECUTE'),
  'the edge function''s service role executes the exchange');
 SELECT pg_temp.cl_assert((SELECT prosecdef AND proconfig @> ARRAY['search_path=pg_catalog, public, extensions'] FROM pg_proc
-  WHERE oid='public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet)'::regprocedure),
+  WHERE oid='public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text)'::regprocedure),
  'the exchange is SECURITY DEFINER with a fixed search_path');
 INSERT INTO warehouse_security.auth_config(key,value) VALUES ('central_issuer','https://login.association.example.test');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -203,24 +220,131 @@ SELECT pg_temp.cl_assert(warehouse_security.active_role()='customer','the sessio
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
--- Linking a profile that was enrolled with an SMS code
+-- An existing profile is linked only with a code this facility sent by SMS
 -- ---------------------------------------------------------------------------
 SELECT count(*) AS profiles_before_link FROM public.user_profiles \gset
+SELECT (SELECT count(*) FROM warehouse_security.enrollment_log) AS requests_before_link \gset
+-- The token alone: nothing is written to the profile.
 SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000005','Ignored Name') AS link_answer \gset
-SELECT pg_temp.cl_assert(:'link_answer'::jsonb#>>'{data,action}'='login' AND :'link_answer'::jsonb#>>'{data,user,id}'=:'earlier_profile'
- AND :'link_answer'::jsonb#>>'{data,user,role}'='staff' AND :'link_answer'::jsonb#>>'{data,user,name}'='Earlier Staff',
- 'an existing profile is found by its phone and signed in: '||left(:'link_answer',300));
+SELECT pg_temp.cl_assert(:'link_answer'::jsonb = '{"success":false,"code":"link_required"}'::jsonb,
+ 'a token for the phone of an existing, unlinked profile asks for the facility''s SMS code: '||:'link_answer');
+SELECT pg_temp.cl_assert((SELECT central_issuer IS NULL AND central_subject IS NULL AND NOT mobile_verified AND mobile_verified_at IS NULL
+     AND name='Earlier Staff' AND role='staff' AND active AND enrollment_status='approved'
+   FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
+ AND (SELECT count(*) FROM public.user_profiles)=:'profiles_before_link'::bigint
+ AND (SELECT count(*) FROM warehouse_security.enrollment_log)=:'requests_before_link'::bigint
+ AND NOT EXISTS (SELECT 1 FROM public.user_profiles WHERE central_subject='central-user-0003')
+ AND pg_temp.cl_sessions('919000000103')=0,
+ 'link_required writes nothing: no link, no verified mark, no session, no profile, no request');
+SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000005')->>'code'='identity_token_used',
+ 'the token of a link_required answer is spent like any other');
+-- An administrator's profile is not reachable on the central service's word.
+SELECT pg_temp.cl_sessions('919000000201') AS admin_sessions \gset
+SELECT pg_temp.cl_exchange('central-user-0666','919000000201','token-id-0000000000000666') AS admin_attempt \gset
+SELECT pg_temp.cl_assert(:'admin_attempt'::jsonb = '{"success":false,"code":"link_required"}'::jsonb
+ AND (SELECT central_subject IS NULL AND role='admin' FROM public.user_profiles WHERE mobile='919000000201')
+ AND pg_temp.cl_sessions('919000000201')=:'admin_sessions'::bigint,
+ 'the administrator''s profile is neither linked nor signed in without the SMS code: '||:'admin_attempt');
+SELECT pg_temp.cl_exchange('central-user-0666','919000000201','token-id-0000000000000667',NULL,NULL,
+  'https://login.association.example.test','000000') AS admin_guess \gset
+SELECT pg_temp.cl_assert(:'admin_guess'::jsonb = '{"success":false,"code":"invalid_otp"}'::jsonb
+ AND (SELECT central_subject IS NULL FROM public.user_profiles WHERE mobile='919000000201')
+ AND pg_temp.cl_sessions('919000000201')=:'admin_sessions'::bigint,
+ 'a guessed code where none was sent does not reach the administrator''s profile either: '||:'admin_guess');
+
+-- A wrong code: not linked, and counted as a wrong SMS code is.
+SELECT pg_temp.cl_code('919000000103') AS staff_code \gset
+SELECT CASE WHEN :'staff_code'='000000' THEN '111111' ELSE '000000' END AS wrong_code \gset
+SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000050',NULL,NULL,
+  'https://login.association.example.test',:'wrong_code') AS wrong_answer \gset
+SELECT pg_temp.cl_assert(:'wrong_answer'::jsonb = '{"success":false,"code":"invalid_otp"}'::jsonb,
+ 'a wrong code answers as the SMS sign-in does: '||:'wrong_answer');
+SELECT pg_temp.cl_assert((SELECT central_subject IS NULL AND NOT mobile_verified FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
+ AND pg_temp.cl_sessions('919000000103')=0
+ AND (SELECT count(*)=1 AND bool_and(NOT verified AND attempts+source_attempts=1) FROM public.otp_verifications
+      WHERE phone_number='919000000103' AND expires_at>now()),
+ 'a wrong code links nothing and uses one of the code''s five attempts');
+SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000051',NULL,NULL,
+  'https://login.association.example.test','12345')->>'code'='invalid_otp','a code that is not six digits is a wrong code');
+-- A fifth wrong attempt uses the code up, exactly as at the SMS endpoint.
+SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000052',NULL,NULL,
+  'https://login.association.example.test',:'wrong_code')->>'code'='invalid_otp'
+ AND pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000053',NULL,NULL,
+  'https://login.association.example.test',:'wrong_code')->>'code'='invalid_otp'
+ AND pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000054',NULL,NULL,
+  'https://login.association.example.test',:'wrong_code')->>'code'='invalid_otp','three more wrong codes');
+SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000055',NULL,NULL,
+  'https://login.association.example.test',:'staff_code') AS exhausted \gset
+SELECT pg_temp.cl_assert(:'exhausted'::jsonb->>'code'='invalid_otp'
+ AND (SELECT central_subject IS NULL FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
+ AND pg_temp.cl_sessions('919000000103')=0,
+ 'after five wrong attempts even the right code no longer links: '||:'exhausted');
+
+-- A correct code: the SMS sign-in's own answer, and the link.
+SELECT pg_temp.cl_code('919000000103') AS staff_code \gset
+SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000056','Ignored Name',NULL,
+  'https://login.association.example.test',:'staff_code') AS linked_answer \gset
+SELECT pg_temp.cl_assert(:'linked_answer'::jsonb->>'success'='true' AND :'linked_answer'::jsonb#>>'{data,action}'='login'
+ AND :'linked_answer'::jsonb#>>'{data,user,id}'=:'earlier_profile'
+ AND :'linked_answer'::jsonb#>>'{data,user,role}'='staff' AND :'linked_answer'::jsonb#>>'{data,user,name}'='Earlier Staff'
+ AND :'linked_answer'::jsonb#>>'{data,session,refresh_token}' ~ '^[0-9a-f]{64}$',
+ 'the token with a correct code signs the existing profile in: '||left(:'linked_answer',300));
 SELECT pg_temp.cl_assert((SELECT central_issuer='https://login.association.example.test' AND central_subject='central-user-0003'
      AND mobile_verified AND name='Earlier Staff' AND role='staff' AND active AND enrollment_status='approved'
    FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
  AND (SELECT count(*) FROM public.user_profiles)=:'profiles_before_link'::bigint
- AND pg_temp.cl_sessions('919000000103')=1,
- 'the profile is linked to the central identity; nothing else about it changes and no profile is added');
+ AND pg_temp.cl_sessions('919000000103')=1
+ AND NOT EXISTS (SELECT 1 FROM public.otp_verifications WHERE phone_number='919000000103' AND NOT verified AND expires_at>now()),
+ 'the profile is linked, exactly one session exists, the code is consumed, nothing else changes');
+-- From then on the token is enough.
+SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000057') AS later_answer \gset
+SELECT pg_temp.cl_assert(:'later_answer'::jsonb#>>'{data,action}'='login' AND :'later_answer'::jsonb#>>'{data,user,id}'=:'earlier_profile'
+ AND :'later_answer'::jsonb#>>'{data,user,central_subject}'='central-user-0003',
+ 'a linked profile signs in with the token alone: '||left(:'later_answer',300));
+SELECT pg_temp.cl_assert(pg_temp.cl_sessions('919000000103')=2,'the later exchange issued its own session');
+DELETE FROM warehouse_security.refresh_sessions WHERE user_id=(SELECT auth_user_id FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
+ AND id <> (SELECT min(id::text)::uuid FROM warehouse_security.refresh_sessions WHERE user_id=(SELECT auth_user_id FROM public.user_profiles WHERE id=:'earlier_profile'::uuid));
+
+-- A rejected and a disabled profile are refused with a correct code as well, and are not linked.
+SELECT pg_temp.cl_code('919000000105') AS rejected_code \gset
+SELECT pg_temp.cl_code('919000000106') AS disabled_code \gset
+SELECT pg_temp.cl_exchange('central-user-0005','919000000105','token-id-0000000000000058',NULL,NULL,
+  'https://login.association.example.test',:'rejected_code') AS rejected_answer \gset
+SELECT pg_temp.cl_exchange('central-user-0006','919000000106','token-id-0000000000000059',NULL,NULL,
+  'https://login.association.example.test',:'disabled_code') AS disabled_answer \gset
+SELECT pg_temp.cl_assert(:'rejected_answer'::jsonb = '{"success":false,"code":"account_unavailable"}'::jsonb
+ AND :'disabled_answer'::jsonb = '{"success":false,"code":"account_unavailable"}'::jsonb,
+ 'a correct code for a rejected or disabled profile is refused: '||:'rejected_answer'||' '||:'disabled_answer');
+SELECT pg_temp.cl_assert((SELECT bool_and(central_issuer IS NULL AND central_subject IS NULL) AND count(*)=2
+   FROM public.user_profiles WHERE mobile IN ('919000000105','919000000106'))
+ AND (SELECT enrollment_status='rejected' FROM public.user_profiles WHERE mobile='919000000105')
+ AND (SELECT enrollment_status='disabled' AND NOT active FROM public.user_profiles WHERE mobile='919000000106')
+ AND pg_temp.cl_sessions('919000000105')=0 AND pg_temp.cl_sessions('919000000106')=0,
+ 'a refused profile is never linked and gets no session');
+SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0005','919000000105','token-id-0000000000000060')->>'code'='link_required',
+ 'without a code such a profile answers link_required and so tells nothing about its state');
+-- A request that was made with an SMS code and still waits: the code links it and the answer stays pending.
+SELECT pg_temp.cl_code('919000000107') AS pending_code \gset
+SELECT pg_temp.cl_exchange('central-user-0007','919000000107','token-id-0000000000000061',NULL,NULL,
+  'https://login.association.example.test',:'pending_code') AS pending_link \gset
+SELECT pg_temp.cl_assert(:'pending_link'::jsonb#>>'{data,action}'='pending' AND :'pending_link'::jsonb#>>'{data,enrollment_token}' ~ '^[0-9a-f]{64}$'
+ AND (SELECT central_subject='central-user-0007' AND enrollment_status='pending' AND NOT active FROM public.user_profiles WHERE mobile='919000000107')
+ AND pg_temp.cl_sessions('919000000107')=0,
+ 'a waiting request is linked with the code and stays pending: '||:'pending_link');
+SELECT pg_temp.cl_assert((SELECT count(*) FROM public.user_profiles)=:'profiles_before_link'::bigint
+ AND (SELECT count(*) FROM warehouse_security.enrollment_log)=:'requests_before_link'::bigint,
+ 'none of this created a profile or counted a new access request');
 
 -- Conflict: the phone's profile is linked to another subject. Nothing changes.
 SELECT (SELECT count(*) FROM warehouse_security.enrollment_log) AS requests_before_conflict \gset
 SELECT pg_temp.cl_assert(pg_temp.cl_exchange('central-user-0099','919000000103','token-id-0000000000000006')
  = '{"success":false,"code":"identity_conflict"}'::jsonb,'a phone linked to another central identity is a conflict');
+SELECT pg_temp.cl_code('919000000103') AS conflict_code \gset
+SELECT pg_temp.cl_exchange('central-user-0099','919000000103','token-id-0000000000000062',NULL,NULL,
+  'https://login.association.example.test',:'conflict_code') AS conflict_with_code \gset
+SELECT pg_temp.cl_assert(:'conflict_with_code'::jsonb = '{"success":false,"code":"identity_conflict"}'::jsonb
+ AND EXISTS (SELECT 1 FROM public.otp_verifications WHERE phone_number='919000000103' AND NOT verified AND attempts+source_attempts=0 AND expires_at>now()),
+ 'a correct SMS code does not override a conflict, and the code is not even tried: '||:'conflict_with_code');
 SELECT pg_temp.cl_assert((SELECT central_subject='central-user-0003' FROM public.user_profiles WHERE id=:'earlier_profile'::uuid)
  AND NOT EXISTS (SELECT 1 FROM public.user_profiles WHERE central_subject='central-user-0099')
  AND (SELECT count(*) FROM public.user_profiles)=:'profiles_before_link'::bigint
@@ -332,8 +456,15 @@ SELECT pg_temp.cl_assert((SELECT central_issuer IS NULL AND central_subject IS N
  AND pg_temp.cl_sessions('919000000103')=0,
  'the identity is cleared and the sessions are gone; active, role and number are unchanged');
 SELECT pg_temp.cl_assert(pg_temp.cl_sessions('919000000201')>=1,'the administrator''s own session is untouched');
--- This is how a conflict is resolved: the identity that was refused now links.
-SELECT pg_temp.cl_exchange('central-user-0099','919000000103','token-id-0000000000000014') AS relinked \gset
+-- This is how a conflict is resolved: the identity that was refused can now
+-- link, with the facility's SMS code like any first link.
+SELECT pg_temp.cl_exchange('central-user-0099','919000000103','token-id-0000000000000063') AS relink_without_code \gset
+SELECT pg_temp.cl_assert(:'relink_without_code'::jsonb->>'code'='link_required'
+ AND (SELECT central_subject IS NULL FROM public.user_profiles WHERE id=:'earlier_profile'::uuid) AND pg_temp.cl_sessions('919000000103')=0,
+ 'after the unlink the token alone does not link the profile again: '||:'relink_without_code');
+-- (the code that the conflict above left untried is still good)
+SELECT pg_temp.cl_exchange('central-user-0099','919000000103','token-id-0000000000000014',NULL,NULL,
+  'https://login.association.example.test',:'conflict_code') AS relinked \gset
 SELECT pg_temp.cl_assert(:'relinked'::jsonb#>>'{data,action}'='login'
  AND (SELECT central_subject='central-user-0099' FROM public.user_profiles WHERE id=:'earlier_profile'::uuid),
  'after the unlink the phone''s profile links to the identity that presents it');
@@ -348,13 +479,8 @@ SELECT pg_temp.cl_assert(:'cleared_again'::jsonb->>'success'='true' AND :'cleare
  'unlinking a profile that has no identity is harmless: '||:'cleared_again');
 RESET ROLE;
 -- Local SMS sign-in is untouched by all of this.
-UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_key='isolated-test-key',
- msg91_template_id='000000000000000000000001',msg91_pe_id='0000000000000000001',msg91_sender_id='CITEST'
- WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
-SELECT public.operator_prepare_otp('9000000103') AS challenge \gset
-SELECT pg_temp.cl_assert(:'challenge'::jsonb->>'success'='true','an SMS code is still prepared for an unlinked profile');
-SELECT public.operator_finish_otp((:'challenge'::jsonb#>>'{data,request_id}')::uuid,true,'mock-provider-only');
-SELECT public.operator_verify_otp('9000000103',:'challenge'::jsonb#>>'{data,otp_code}') AS sms_login \gset
+SELECT pg_temp.cl_code('919000000103') AS sms_code \gset
+SELECT public.operator_verify_otp('9000000103',:'sms_code') AS sms_login \gset
 SELECT pg_temp.cl_assert(:'sms_login'::jsonb#>>'{data,action}'='login'
  AND (SELECT central_subject IS NULL FROM public.user_profiles WHERE id=:'earlier_profile'::uuid),
  'the SMS code signs the profile in and links nothing');
@@ -411,4 +537,4 @@ SELECT pg_temp.cl_assert(:'purging'::jsonb->>'success'='true'
  AND NOT EXISTS (SELECT 1 FROM warehouse_security.central_token_use WHERE token_hash='expired-c'),
  'recording a new token removes the expired ones');
 ROLLBACK;
-\echo 'Central login exchange, single use, linking, conflict, refusals, unlink and grants checks passed.'
+\echo 'Central login exchange, single use, linking only with a facility SMS code, conflict, refusals, unlink and grants checks passed.'

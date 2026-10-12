@@ -4,10 +4,10 @@
 
 Migration 49, `functions/central-exchange`, `setup.sh`. **Operator action:**
 none, unless you configure the association's issuer: central sign-in is off
-until `setup.sh` is run with `--central-issuer` and `--central-jwks-url`
+until `setup.sh` is run with `--central-issuer` and a key source
 ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#central-sign-in)). The
-upgrade itself applies migration 49 and recreates the database and functions
-containers once (two new, empty settings). SMS sign-in is unchanged.
+upgrade applies migration 49 and recreates the functions container; the
+database container is not recreated. SMS sign-in is unchanged.
 
 The facility half of central login
 ([docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md)). The association's central
@@ -16,28 +16,44 @@ token today.
 
 - New public endpoint `POST /functions/v1/central-exchange`. It verifies an
   identity token signed by the central service (ES256 only, type
-  `facility-identity+jwt`, exact issuer, audience = this facility's origin, at
-  most 10 minutes of life, verified phone number) against the issuer's
-  published keys, and then answers as `operator-otp/verify` does: a pending
-  access request for an unknown person, this facility's session for an approved
-  one, a refusal for a rejected or disabled one. A token is accepted once.
-- New settings `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL`, both empty by default.
-  `setup.sh --central-issuer URL --central-jwks-url URL` sets or replaces
-  them on a fresh setup or a rerun; `--central-issuer off` removes them.
+  `facility-identity+jwt`, exact issuer, this facility's origin as the only
+  audience, at most 10 minutes of life, verified phone number) and then
+  answers as `operator-otp/verify` does: a pending access request for an
+  unknown person, this facility's session for an approved one, a refusal for a
+  rejected or disabled one. A token is accepted once.
+- **An existing profile is never opened on the central service's word alone.**
+  A profile that is already here (the installation's administrator, anyone
+  enrolled with an SMS code) is linked to a central account only together with
+  a correct SMS code that this facility sent to its number: the first exchange
+  answers `link_required`, the app requests a code from `operator-otp/request`
+  and repeats the exchange with a fresh token and `otp_code`. After that the
+  token is enough. What the facility relies on the central service for is
+  stated at the top of docs/CENTRAL_LOGIN.md.
+- New settings, all empty by default: `CENTRAL_ISSUER` and one key source,
+  `CENTRAL_JWKS_URL` (the facility fetches the keys) or `CENTRAL_JWKS_FILE`
+  (the keys come from a file copied into the state; nothing is fetched).
+  `setup.sh --central-issuer URL` with `--central-jwks-url URL` or
+  `--central-jwks-file PATH` sets or replaces them on a fresh setup or a rerun;
+  `--central-issuer off` removes them. `setup.sh` reads the issuer from
+  `compose.env` and writes it to the database; run it again after a restore.
+- The functions container mounts the state's `public/` directory read-only
+  (for the key file), next to the instance manifest.
 - `get-public-config` answers `centralLogin`: `{ issuer }` when central sign-in
-  is configured, `null` when not.
+  is configured with usable values, `null` when not.
 - `user_profiles` has two new columns, `central_issuer` and `central_subject`.
-  A profile enrolled with an SMS code is linked on its first central sign-in
-  with the same phone number. A phone number whose profile is linked to another
-  central account is refused (`identity_conflict`) until an administrator
-  unlinks the profile with the new `clear_user_central_identity` (administrators
-  only; it also signs that profile out).
+  A phone number whose profile is linked to another central account is refused
+  (`identity_conflict`) until an administrator unlinks the profile with the new
+  `clear_user_central_identity` (administrators only; it also signs that
+  profile out).
 - `delete_user_account` drops the central link of the deleted profile, as it
   already gives up the phone number.
 - `npm run retention:apply` also removes expired single-use records
   (`central_token_use`).
 - The sign-in answers of both paths now include the two new profile columns in
   `user` (they are `null` for a profile that never signed in centrally).
+- Not measured: how long fetched keys stay in a function worker's memory (at
+  most 10 minutes; possibly about a minute, the worker timeout), and nothing
+  of this has run inside the edge runtime yet.
 
 ## Unreleased — edge functions download nothing at start (2026-10-12)
 

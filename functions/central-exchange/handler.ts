@@ -1,18 +1,23 @@
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from '../vendor/jose.mjs';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { httpsAddress } from '../_shared/https-address.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { readBoundedJson } from '../operator-otp/body.ts';
+import { KEY_SET_MAX_BYTES, usableKeys } from './key-set.mjs';
 
 // Central sign-in, facility side (docs/CENTRAL_LOGIN.md). The association's
 // service signs a short-lived identity token for this facility; this function
 // verifies it and hands the identity to public.operator_central_exchange,
-// which answers exactly as a correct SMS code does (pending request, session,
-// or refusal). The token itself is never logged and never echoed.
+// which answers as a correct SMS code does (pending request, session, or
+// refusal). An existing profile that is not linked to a central identity yet
+// is reached only with a correct SMS code of this facility as well (otp_code).
+// The token itself is never logged and never echoed.
 
 type Jwk = Record<string, unknown>;
 type RpcResult = { success: boolean; code?: string; data?: Record<string, unknown> };
-// The verification keys of the issuer, kept in this worker's memory.
-export type KeyCache = { keys: Jwk[]; fetchedAt: number; attemptedAt: number; pending: Promise<void> | null };
+// The fetched verification keys of the issuer, kept in this worker's memory:
+// they live no longer than the worker does.
+export type KeyCache = { keys: Jwk[]; fetchedAt: number; attemptedAt: number; failedAt: number; pending: Promise<void> | null };
 // Everything the handler reaches outside itself, so tests can stand in for it.
 export type HandlerDeps = {
   env: (name: string) => string | undefined;
@@ -27,13 +32,14 @@ const MAX_LIFETIME_SECONDS = 600;
 const CLOCK_TOLERANCE_SECONDS = 30;
 const KEYS_FRESH_MS = 10 * 60 * 1000;
 const KEYS_REFETCH_MS = 60 * 1000;
+// After a fetch that failed no new one is started for this long.
+const KEYS_FAILURE_BACKOFF_MS = 30 * 1000;
 const KEYS_TIMEOUT_MS = 5000;
-const KEYS_MAX_BYTES = 64 * 1024;
 // An ES256 token with these claims is well under 2 KB; the body also carries two names.
 const BODY_MAX_BYTES = 8192;
 
 export function createKeyCache(): KeyCache {
-  return { keys: [], fetchedAt: -Infinity, attemptedAt: -Infinity, pending: null };
+  return { keys: [], fetchedAt: -Infinity, attemptedAt: -Infinity, failedAt: -Infinity, pending: null };
 }
 const workerKeys = createKeyCache();
 
@@ -55,6 +61,11 @@ const answers: Record<string, [number, string]> = {
   account_unavailable: [403, 'Account unavailable'],
   identity_conflict: [409, 'This phone number is linked to another sign-in. Ask the facility administrator.'],
   enrollment_limited: [429, 'Too many new access requests. Try again tomorrow.'],
+  // An existing profile is linked only with a code this facility sent by SMS.
+  link_required: [409, 'Confirm this phone number with a code from this facility to finish linking.'],
+  // What the SMS check answers, with the texts operator-otp uses.
+  invalid_otp: [400, 'Invalid or expired OTP'],
+  rate_limited: [429, 'Too many OTP requests. Try again later.'],
   unavailable: [503, 'Authentication service unavailable'],
 };
 function failure(code: string): Response {
@@ -108,29 +119,27 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
-// Public P-256 signature keys with a key id; everything else in the set is dropped.
-function usableKeys(document: unknown): Jwk[] {
-  const listed = (document as { keys?: unknown } | null)?.keys;
-  if (!Array.isArray(listed)) throw new KeysUnavailable('key set malformed');
-  const keys: Jwk[] = [];
-  for (const key of listed) {
-    if (!key || typeof key !== 'object') continue;
-    const jwk = key as Jwk;
-    if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || typeof jwk.x !== 'string' || typeof jwk.y !== 'string') continue;
-    if (typeof jwk.kid !== 'string' || !jwk.kid || 'd' in jwk) continue;
-    if (jwk.use !== undefined && jwk.use !== 'sig') continue;
-    if (jwk.alg !== undefined && jwk.alg !== 'ES256') continue;
-    if (jwk.key_ops !== undefined && !(Array.isArray(jwk.key_ops) && jwk.key_ops.includes('verify'))) continue;
-    keys.push({ kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y, kid: jwk.kid, alg: 'ES256', use: 'sig' });
+function keySet(text: string): Jwk[] {
+  let document: unknown;
+  try { document = JSON.parse(text); } catch { throw new KeysUnavailable('key set is not JSON'); }
+  try { return usableKeys(document) as Jwk[]; } catch (error) {
+    throw new KeysUnavailable(error instanceof Error ? error.message : 'key set malformed');
   }
-  if (!keys.length) throw new KeysUnavailable('key set holds no P-256 signature key');
-  return keys;
 }
 
 async function fetchKeys(deps: HandlerDeps, address: string): Promise<void> {
   const cache = deps.keys;
   cache.attemptedAt = deps.now();
-  let text: string;
+  try {
+    cache.keys = keySet(await fetchKeyText(deps, address));
+    cache.fetchedAt = deps.now();
+  } catch (error) {
+    cache.failedAt = deps.now();
+    throw error;
+  }
+}
+
+async function fetchKeyText(deps: HandlerDeps, address: string): Promise<string> {
   try {
     const response = await deps.fetch(address, {
       headers: { Accept: 'application/json' },
@@ -138,40 +147,32 @@ async function fetchKeys(deps: HandlerDeps, address: string): Promise<void> {
       redirect: 'error',
     });
     if (response.status !== 200) throw new KeysUnavailable(`key set answered ${response.status}`);
-    text = await readBounded(response, KEYS_MAX_BYTES);
+    return await readBounded(response, KEY_SET_MAX_BYTES);
   } catch (error) {
     throw error instanceof KeysUnavailable ? error : new KeysUnavailable('key set could not be fetched');
   }
-  let document: unknown;
-  try { document = JSON.parse(text); } catch { throw new KeysUnavailable('key set is not JSON'); }
-  cache.keys = usableKeys(document);
-  cache.fetchedAt = deps.now();
 }
 
-// The keys to verify a token that names `kid`. Keys are kept for ten minutes.
-// A key id that is not among them causes a new fetch, at most once a minute,
-// so a rotated key is picked up without letting callers drive the fetches.
+// The fetched keys to verify a token that names `kid`. Keys are kept for at
+// most ten minutes (and no longer than this worker lives). A key id that is
+// not among them causes a new fetch, at most once a minute, so a rotated key
+// is picked up without letting callers drive the fetches. After a fetch that
+// failed, none is started for 30 seconds: callers get "keys unavailable".
 async function keysFor(deps: HandlerDeps, address: string, kid: string): Promise<Jwk[]> {
   const cache = deps.keys;
   const fresh = deps.now() - cache.fetchedAt < KEYS_FRESH_MS;
   const known = cache.keys.some(key => key.kid === kid);
   if (fresh && (known || deps.now() - cache.attemptedAt < KEYS_REFETCH_MS)) return cache.keys;
   // One fetch at a time; requests that arrive meanwhile wait for it.
+  if (!cache.pending && deps.now() - cache.failedAt < KEYS_FAILURE_BACKOFF_MS) throw new KeysUnavailable('waiting after a failed fetch');
   if (!cache.pending) cache.pending = fetchKeys(deps, address).finally(() => { cache.pending = null; });
   await cache.pending;
   return cache.keys;
 }
 
-function httpsAddress(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return value.startsWith('https://') && url.protocol === 'https:' && !url.username && !url.password;
-  } catch { return false; }
-}
-
 type Identity = { subject: string; phone: string; tokenId: string; expiresAt: string; name: string | null };
 
-async function verifyIdentity(deps: HandlerDeps, token: string, issuer: string, audience: string, jwksAddress: string): Promise<Identity> {
+async function verifyIdentity(token: string, issuer: string, audience: string, now: number, keysFor: (kid: string) => Promise<Jwk[]>): Promise<Identity> {
   // The header is read first so that a token of another kind, or one that
   // names no key, never causes a key fetch. Nothing in it is trusted yet.
   let header: Record<string, unknown>;
@@ -179,8 +180,7 @@ async function verifyIdentity(deps: HandlerDeps, token: string, issuer: string, 
   if (header.alg !== 'ES256') throw new TokenRefused('algorithm');
   if (header.typ !== TOKEN_TYPE) throw new TokenRefused('type');
   if (typeof header.kid !== 'string' || !header.kid || header.kid.length > 200) throw new TokenRefused('key id');
-  const keys = await keysFor(deps, jwksAddress, header.kid);
-  const now = deps.now();
+  const keys = await keysFor(header.kid);
   let payload: Record<string, unknown>;
   try {
     ({ payload } = await jwtVerify(token, createLocalJWKSet({ keys }), {
@@ -193,7 +193,9 @@ async function verifyIdentity(deps: HandlerDeps, token: string, issuer: string, 
     const code = (error as { code?: unknown } | null)?.code;
     throw new TokenRefused(typeof code === 'string' && /^ERR_[A-Z_]+$/.test(code) ? code : 'verification');
   }
-  const { sub, jti, iat, exp, phone_number: phone, phone_number_verified: verified, name } = payload;
+  const { aud, sub, jti, iat, exp, phone_number: phone, phone_number_verified: verified, name } = payload;
+  // For this facility and no other: a token that also names another audience is refused.
+  if (aud !== audience && !(Array.isArray(aud) && aud.length === 1 && aud[0] === audience)) throw new TokenRefused('audience');
   if (typeof iat !== 'number' || typeof exp !== 'number' || !Number.isFinite(iat) || !Number.isFinite(exp)) throw new TokenRefused('time claims');
   if (exp - iat > MAX_LIFETIME_SECONDS || exp <= iat) throw new TokenRefused('lifetime');
   if (iat > now / 1000 + CLOCK_TOLERANCE_SECONDS) throw new TokenRefused('issued in the future');
@@ -218,8 +220,11 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
   if (cors) return cors;
   if (req.method !== 'POST') return respond({ success: false, error: 'Method not allowed' }, 405);
   const issuer = deps.env('CENTRAL_ISSUER') || '';
+  // The keys come from a file of the installation (its text arrives from the
+  // router) or from an address; with a file nothing is ever fetched.
+  const jwksFile = deps.env('CENTRAL_JWKS_FILE') || '';
   const jwksAddress = deps.env('CENTRAL_JWKS_URL') || '';
-  if (deps.env('AUTH_MODE') !== 'operator' || deps.env('APP_ENV') !== 'production' || !issuer || !jwksAddress) {
+  if (deps.env('AUTH_MODE') !== 'operator' || deps.env('APP_ENV') !== 'production' || !issuer || !(jwksFile || jwksAddress)) {
     return failure('central_unavailable');
   }
   let body: Record<string, unknown>;
@@ -227,12 +232,21 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
     body = await readBoundedJson(req, BODY_MAX_BYTES);
   } catch { return failure('invalid_request'); }
   if (typeof body.identity_token !== 'string' || !body.identity_token) return failure('invalid_request');
+  if (body.otp_code !== undefined && (typeof body.otp_code !== 'string' || !/^[0-9]{6}$/.test(body.otp_code))) return failure('invalid_request');
 
   let identity: Identity;
   try {
-    if (!httpsAddress(issuer) || !httpsAddress(jwksAddress)) throw new KeysUnavailable('issuer and key address must be https');
+    if (!httpsAddress(issuer) || (!jwksFile && !httpsAddress(jwksAddress))) throw new KeysUnavailable('issuer and key address must be https');
     const audience = publicBaseUrl(deps.env('SUPABASE_PUBLIC_URL'));
-    identity = await verifyIdentity(deps, body.identity_token, issuer, audience, jwksAddress);
+    const keysOf = jwksFile
+      ? (_kid: string) => {
+        const text = deps.env('CENTRAL_JWKS_JSON') || '';
+        if (!text) throw new KeysUnavailable('key file missing or empty');
+        if (text.length > KEY_SET_MAX_BYTES) throw new KeysUnavailable('key set too large');
+        return Promise.resolve(keySet(text));
+      }
+      : (kid: string) => keysFor(deps, jwksAddress, kid);
+    identity = await verifyIdentity(body.identity_token, issuer, audience, deps.now(), keysOf);
   } catch (error) {
     if (error instanceof TokenRefused) {
       deps.log(`central-exchange: identity token refused (${error.message})`);
@@ -254,6 +268,7 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
       p_name: typeof body.name === 'string' ? body.name : identity.name,
       p_display_name: typeof body.display_name === 'string' ? body.display_name : null,
       p_ip_address: clientAddress(req),
+      p_otp_code: typeof body.otp_code === 'string' ? body.otp_code : null,
     });
     if (result.success) return respond(result);
     deps.log(`central-exchange: refused by the facility (${typeof result.code === 'string' && /^[a-z_]{1,40}$/.test(result.code) ? result.code : 'unknown'})`);

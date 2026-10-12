@@ -30,13 +30,20 @@ and the app screens are not built yet, so no real token exists and it is off by 
 
 The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md).
 
-- Operator settings `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL` (`setup.sh --central-issuer
-  --central-jwks-url`; both empty = off, the default for installs that are not members).
+- Operator settings `CENTRAL_ISSUER` with `CENTRAL_JWKS_URL` (keys fetched) or
+  `CENTRAL_JWKS_FILE` (keys from a file copied into the state): `setup.sh --central-issuer`
+  with `--central-jwks-url` or `--central-jwks-file`; all empty = off, the default for
+  installs that are not members.
 - `functions/central-exchange` verifies the identity token (ES256 signature against the
-  issuer's key set, issuer, audience = this facility, lifetime, type) and calls
+  issuer's key set, issuer, audience = this facility only, lifetime, type) and calls
   `operator_central_exchange`, which accepts a token once and then does what a correct SMS
   code does: a pending access request (the existing enrollment review), the existing
   session for an approved active profile, or a refusal for a rejected or disabled one.
+- **The central service's word alone never opens an existing profile.** A profile that is
+  not linked yet is linked only together with a correct SMS code of this facility
+  (`otp_code`, checked by `operator_verify_otp`); without it the answer is `link_required`.
+  The facility relies on the central service for new requests (an administrator approves)
+  and for sign-ins of profiles already linked. Do not weaken this.
 - A profile carries its central identity (`user_profiles.central_issuer`,
   `central_subject`). An administrator unlinks one with `clear_user_central_identity`.
 - Revocation stays local: `update_user_status(false)` revokes a profile's sessions.

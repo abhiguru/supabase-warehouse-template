@@ -82,33 +82,37 @@ SQL
   }
 done
 
-# scripts/configure-central.sql: the trusted issuer follows the database
-# container's CENTRAL_ISSUER; absent or empty turns central sign-in off, and a
-# value that is not an https address changes nothing.
+# scripts/configure-central.sql: the trusted issuer is the psql variable
+# setup.sh passes from compose.env; absent or empty turns central sign-in off,
+# and a value that is not an https address changes nothing.
 central_issuer() {
   docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres \
     -c "SELECT COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='central_issuer'),'off')"
 }
 configure_central() {
-  docker exec -i -e PGPASSWORD=disposable-test-database-only "$@" "$container" \
-    psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-central.sql"
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
+    psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@" < "$ROOT/scripts/configure-central.sql"
 }
 configure_central
-[[ "$(central_issuer)" = off ]] || { echo 'Central sign-in must be off when CENTRAL_ISSUER is absent.' >&2; exit 1; }
+[[ "$(central_issuer)" = off ]] || { echo 'Central sign-in must be off when no issuer is passed.' >&2; exit 1; }
 for pass in 1 2; do
-  configure_central -e CENTRAL_ISSUER=https://login.association.example.test
+  configure_central -v central_issuer=https://login.association.example.test
   [[ "$(central_issuer)" = https://login.association.example.test ]] || { echo 'The trusted issuer was not stored.' >&2; exit 1; }
 done
-configure_central -e CENTRAL_ISSUER=https://login.association.example.test/v2
+configure_central -v central_issuer=https://login.association.example.test/v2
 [[ "$(central_issuer)" = https://login.association.example.test/v2 ]] || { echo 'The trusted issuer was not replaced.' >&2; exit 1; }
-for refused in 'http://login.association.example.test' 'https://login.association.example.test/a b' 'login.association.example.test'; do
-  if configure_central -e "CENTRAL_ISSUER=$refused" >/dev/null 2>&1; then
+# The value is quoted as a literal: text that would end a string is refused as an address, not run.
+for refused in 'http://login.association.example.test' 'https://login.association.example.test/a b' 'login.association.example.test' \
+  "https://x.example.test'); DELETE FROM warehouse_security.auth_config; --"; do
+  if configure_central -v "central_issuer=$refused" >/dev/null 2>&1; then
     echo "configure-central.sql accepted the issuer '$refused'." >&2; exit 1
   fi
   [[ "$(central_issuer)" = https://login.association.example.test/v2 ]] || { echo 'A refused issuer changed the stored one.' >&2; exit 1; }
 done
-configure_central -e CENTRAL_ISSUER=
-[[ "$(central_issuer)" = off ]] || { echo 'An empty CENTRAL_ISSUER must turn central sign-in off.' >&2; exit 1; }
+configure_central -v central_issuer=
+[[ "$(central_issuer)" = off ]] || { echo 'An empty issuer must turn central sign-in off.' >&2; exit 1; }
+# The database container needs no CENTRAL_ISSUER of its own.
+if docker exec "$container" printenv CENTRAL_ISSUER >/dev/null 2>&1; then echo 'The test database must not carry CENTRAL_ISSUER.' >&2; exit 1; fi
 
 # Migrations 26 and 46: a GRN edit, a dispatch being created and a dispatch edit
 # must each survive a concurrent writer of the same lot.

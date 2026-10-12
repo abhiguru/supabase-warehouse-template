@@ -1,11 +1,14 @@
 \set ON_ERROR_STOP on
 -- The association's token issuer this facility trusts for central sign-in
--- (docs/CENTRAL_LOGIN.md). Read only from this database container's
--- environment; empty or absent turns central sign-in off in the database.
--- The edge function reads the same value and the key address from its own
--- environment; public.operator_central_exchange refuses any other issuer.
-\set central_issuer ''
-\getenv central_issuer CENTRAL_ISSUER
+-- (docs/CENTRAL_LOGIN.md). setup.sh reads CENTRAL_ISSUER from the state's
+-- compose.env and passes it as the psql variable central_issuer; empty or
+-- absent turns central sign-in off in the database. The edge function reads
+-- the same value from its own environment; public.operator_central_exchange
+-- refuses any other issuer.
+\if :{?central_issuer}
+\else
+  \set central_issuer ''
+\endif
 BEGIN;
 SELECT pg_advisory_xact_lock(71042);
 SELECT :'central_issuer' = '' AS central_off,

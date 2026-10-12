@@ -1,6 +1,7 @@
 import { createClient } from '../vendor/supabase-js.mjs';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
+import { advertisedCentralIssuer } from '../_shared/https-address.ts';
 
 type InstanceManifest = {
   schemaVersion: number;
@@ -38,10 +39,12 @@ Deno.serve(async (req: Request) => {
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     const instance = await readInstanceManifest(baseUrl);
     const environment = Deno.env.get('APP_ENV') || 'development';
-    // Central sign-in is offered only where functions/central-exchange would accept a token.
-    const centralIssuer = Deno.env.get('CENTRAL_ISSUER') || '';
-    const centralLogin = centralIssuer && Deno.env.get('CENTRAL_JWKS_URL') && Deno.env.get('AUTH_MODE') === 'operator'
-      && environment === 'production' ? { issuer: centralIssuer } : null;
+    // Central sign-in is offered only where functions/central-exchange could accept a token.
+    const centralIssuer = advertisedCentralIssuer({
+      authMode: Deno.env.get('AUTH_MODE'), appEnv: environment, issuer: Deno.env.get('CENTRAL_ISSUER'),
+      jwksUrl: Deno.env.get('CENTRAL_JWKS_URL'), jwksFile: Deno.env.get('CENTRAL_JWKS_FILE'),
+    });
+    const centralLogin = centralIssuer ? { issuer: centralIssuer } : null;
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     if (!anonKey) throw new Error('Missing anon key');
     const client = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {

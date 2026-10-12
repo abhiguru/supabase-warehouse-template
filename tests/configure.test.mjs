@@ -160,6 +160,7 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     const original = readFileSync(envPath, 'utf8');
     assert.match(original, /^CENTRAL_ISSUER=$/m);
     assert.match(original, /^CENTRAL_JWKS_URL=$/m);
+    assert.match(original, /^CENTRAL_JWKS_FILE=$/m);
     assert.equal(readEnv(envPath).CENTRAL_ISSUER, '');
 
     // Rerun with both: exactly those two lines change, the file stays private.
@@ -192,9 +193,11 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
 
     // Both or neither, https only, and nothing compose.env could not hold on one line.
     const refused = [
-      [{ centralIssuer: issuer }, /needs both/], [{ centralJwksUrl: jwks }, /needs both/],
+      [{ centralIssuer: issuer }, /exactly one of --central-jwks-url and --central-jwks-file/], [{ centralJwksUrl: jwks }, /exactly one of --central-jwks-url and --central-jwks-file/],
       [{ centralIssuer: 'off', centralJwksUrl: jwks }, /leave out --central-jwks-url/],
-      [{ centralIssuer: '', centralJwksUrl: jwks }, /needs both/],
+      [{ centralIssuer: issuer, centralJwksUrl: jwks, centralJwksFile: '/nonexistent/keys.json' }, /exactly one of/],
+      [{ centralIssuer: issuer, centralJwksUrl: '' }, /exactly one of/],
+      [{ centralIssuer: '', centralJwksUrl: jwks }, /exactly one of --central-jwks-url and --central-jwks-file/],
       [{ centralIssuer: 'http://login.association.example.test', centralJwksUrl: jwks }, /https:\/\/ address/],
       [{ centralIssuer: issuer, centralJwksUrl: 'http://login.association.example.test/jwks.json' }, /https:\/\/ address/],
       [{ centralIssuer: 'login.association.example.test', centralJwksUrl: jwks }, /https:\/\/ address/],
@@ -221,15 +224,15 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(readFileSync(envPath, 'utf8'), original);
 
     // A state written before the two lines existed: they are appended; "off" leaves such a state alone.
-    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL)=\n/gm, '');
-    assert.doesNotMatch(older, /CENTRAL_ISSUER=|CENTRAL_JWKS_URL=/);
+    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=\n/gm, '');
+    assert.doesNotMatch(older, /^CENTRAL_/m);
     writeFileSync(envPath, older, { mode: 0o600 });
     assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, false);
     assert.equal(readFileSync(envPath, 'utf8'), older);
     assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksUrl: jwks }).centralUpdated, true);
-    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=${issuer}\nCENTRAL_JWKS_URL=${jwks}\n`);
+    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=${issuer}\nCENTRAL_JWKS_URL=${jwks}\nCENTRAL_JWKS_FILE=\n`);
     assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, true);
-    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=\nCENTRAL_JWKS_URL=\n`);
+    assert.equal(readFileSync(envPath, 'utf8'), `${older}CENTRAL_ISSUER=\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=\n`);
 
     // Fresh setup with the options, and with "off".
     const withCentral = join(scratch, 'state-central');
@@ -251,19 +254,143 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.match(run(['--central-issuer', issuer, '--central-jwks-url', jwks]).stdout, /Preserved existing operator state unchanged\./);
     const bad = run(['--central-issuer', issuer]);
     assert.equal(bad.status, 1);
-    assert.match(bad.stderr, /Configure: Central sign-in needs both/);
+    assert.match(bad.stderr, /Configure: Central sign-in needs --central-issuer with exactly one of/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('central sign-in keys from a file: validated, copied into the state, replaced on a rerun, removed when off', async () => {
+  const { exportJWK, generateKeyPair } = await import('jose');
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-central-file-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  const issuer = 'https://login.association.example.test';
+  const jwks = 'https://login.association.example.test/.well-known/jwks.json';
+  const publicJwk = async kid => ({ ...(await exportJWK((await generateKeyPair('ES256', { extractable: true })).publicKey)), kid, alg: 'ES256', use: 'sig' });
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    const first = join(scratch, 'keys-first.json');
+    const second = join(scratch, 'keys-second.json');
+    writeFileSync(first, JSON.stringify({ keys: [await publicJwk('key-1')] }) + '\n');
+    writeFileSync(second, JSON.stringify({ keys: [await publicJwk('key-1'), await publicJwk('key-2')] }, null, 2));
+
+    // Rerun on a state without central sign-in.
+    const stateDir = join(scratch, 'state');
+    const envPath = join(stateDir, 'config/compose.env');
+    const copy = join(stateDir, 'public/central-jwks.json');
+    configure(root, { ...base, stateDir });
+    const original = readFileSync(envPath, 'utf8');
+    const set = configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first });
+    assert.equal(set.centralUpdated, true);
+    assert.deepEqual(readFileSync(copy), readFileSync(first), 'the copy holds the file byte for byte');
+    assert.equal(statSync(copy).mode & 0o777, 0o644);
+    const env = readEnv(envPath);
+    assert.deepEqual([env.CENTRAL_ISSUER, env.CENTRAL_JWKS_URL, env.CENTRAL_JWKS_FILE], [issuer, '', 'central-jwks.json']);
+    assert.deepEqual(readdirSync(join(stateDir, 'public')).sort(), ['central-jwks.json', 'instance.json'], 'no temporary file is left');
+    assert.equal(validateOperatorEnv(env, stateDir).origin, base.apiUrl);
+    const withFile = readFileSync(envPath, 'utf8');
+    assert.deepEqual(original.split('\n').filter((line, index) => line !== withFile.split('\n')[index]), ['CENTRAL_ISSUER=', 'CENTRAL_JWKS_FILE=']);
+
+    // The same file again changes nothing; without a central option the copy stays.
+    assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first }).centralUpdated, false);
+    assert.equal(configure(root, { stateDir }).centralUpdated, false);
+    assert.deepEqual(readFileSync(copy), readFileSync(first));
+
+    // The association rotated: a rerun with the new file replaces the copy and leaves compose.env alone.
+    assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: second }).centralUpdated, true);
+    assert.deepEqual(readFileSync(copy), readFileSync(second));
+    assert.equal(readFileSync(envPath, 'utf8'), withFile);
+    // A copy whose mode was loosened or tightened is put right.
+    chmodSync(copy, 0o600);
+    assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: second }).centralUpdated, true);
+    assert.equal(statSync(copy).mode & 0o777, 0o644);
+
+    // Files that are refused: nothing is copied and nothing changes.
+    const privateJwk = { ...(await exportJWK((await generateKeyPair('ES256', { extractable: true })).privateKey)), kid: 'leaked' };
+    const duplicate = await publicJwk('same');
+    const { publicKey: rsa } = await generateKeyPair('RS256', { extractable: true });
+    const bad = {
+      'private.json': [JSON.stringify({ keys: [await publicJwk('ok'), privateJwk] }), /private key material/],
+      'not-json.json': ['<html>', /not a JSON key set/],
+      'no-keys.json': [JSON.stringify({ jwks: [] }), /not usable: key set malformed/],
+      'rsa-only.json': [JSON.stringify({ keys: [{ ...(await exportJWK(rsa)), kid: 'rsa' }] }), /not usable: key set holds no P-256 signature key/],
+      'no-kid.json': [JSON.stringify({ keys: [{ ...(await publicJwk('x')), kid: undefined }] }), /holds no P-256 signature key/],
+      'duplicate.json': [JSON.stringify({ keys: [duplicate, { ...(await publicJwk('other')), kid: 'same' }] }), /names a key id twice/],
+      'big.json': [JSON.stringify({ keys: [await publicJwk('ok')], padding: 'x'.repeat(64 * 1024) }), /larger than 64 KB/],
+    };
+    for (const [name, [text, message]] of Object.entries(bad)) {
+      const path = join(scratch, name);
+      writeFileSync(path, text);
+      assert.throws(() => configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: path }), message, name);
+      assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'never'), centralIssuer: issuer, centralJwksFile: path }), message, `fresh ${name}`);
+    }
+    assert.throws(() => configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: 'keys-first.json' }), /absolute path/);
+    assert.throws(() => configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: join(scratch, 'missing.json') }), /readable regular file/);
+    assert.throws(() => configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: scratch }), /readable regular file/);
+    assert.throws(() => configure(root, { stateDir, centralJwksFile: first }), /exactly one of/);
+    assert.throws(() => configure(root, { stateDir, centralIssuer: 'off', centralJwksFile: first }), /leave out/);
+    assert.deepEqual(readFileSync(copy), readFileSync(second));
+    assert.equal(readFileSync(envPath, 'utf8'), withFile);
+    assert.equal(statSync(join(scratch, 'never'), { throwIfNoEntry: false }), undefined);
+
+    // Changing to an address removes the copy; changing back puts it there again; off removes all three.
+    assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksUrl: jwks }).centralUpdated, true);
+    assert.equal(statSync(copy, { throwIfNoEntry: false }), undefined);
+    assert.deepEqual([readEnv(envPath).CENTRAL_JWKS_URL, readEnv(envPath).CENTRAL_JWKS_FILE], [jwks, '']);
+    configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first });
+    assert.deepEqual([readEnv(envPath).CENTRAL_JWKS_URL, readEnv(envPath).CENTRAL_JWKS_FILE], ['', 'central-jwks.json']);
+    assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, true);
+    assert.equal(statSync(copy, { throwIfNoEntry: false }), undefined);
+    assert.equal(readFileSync(envPath, 'utf8'), original);
+
+    // A key file lost with the host (backups hold compose.env, not this file): the rerun puts it back.
+    configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first });
+    rmSync(copy);
+    assert.equal(configure(root, { stateDir, centralIssuer: issuer, centralJwksFile: first }).centralUpdated, true);
+    assert.deepEqual(readFileSync(copy), readFileSync(first));
+
+    // Fresh setup with a key file, and the command line.
+    const fresh = join(scratch, 'state-fresh');
+    assert.equal(configure(root, { ...base, stateDir: fresh, centralIssuer: issuer, centralJwksFile: first }).created, true);
+    assert.deepEqual(readFileSync(join(fresh, 'public/central-jwks.json')), readFileSync(first));
+    assert.equal(statSync(join(fresh, 'public/central-jwks.json')).mode & 0o777, 0o644);
+    assert.equal(readEnv(join(fresh, 'config/compose.env')).CENTRAL_JWKS_FILE, 'central-jwks.json');
+    assert.deepEqual(parseConfigureArgs(['--state-dir', fresh, '--central-issuer', issuer, '--central-jwks-file', second]),
+      { stateDir: fresh, centralIssuer: issuer, centralJwksFile: second });
+    const cli = spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, '--state-dir', fresh,
+      '--central-issuer', issuer, '--central-jwks-file', second], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.match(cli.stdout, /Updated central sign-in settings in existing operator state\./);
+    assert.deepEqual(readFileSync(join(fresh, 'public/central-jwks.json')), readFileSync(second));
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('setup and the edge function apply the same key set rules', () => {
+  // scripts/ must run without functions/ (tests/cli-symlink.test.mjs) and the functions container
+  // mounts functions/ only, so the rules are one text kept in both places.
+  assert.equal(readFileSync(new URL('../scripts/central-key-set.mjs', import.meta.url), 'utf8'),
+    readFileSync(new URL('../functions/central-exchange/key-set.mjs', import.meta.url), 'utf8'));
 });
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
   const sql = readFileSync(new URL('../scripts/configure-central.sql', import.meta.url), 'utf8');
-  assert.match(sql, /\\getenv central_issuer CENTRAL_ISSUER/);
-  assert.doesNotMatch(sql, /CENTRAL_JWKS_URL/, 'the database holds the issuer only');
+  // The issuer is read from the state's compose.env (never sourced) and handed to psql as a quoted variable;
+  // the database container has no environment entry for it, so an upgrade does not recreate it.
+  assert.match(setup, /CENTRAL_ISSUER_VALUE="\$\(sed -n 's\/\^CENTRAL_ISSUER=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
+  assert.match(setup, /-v central_issuer="\$CENTRAL_ISSUER_VALUE" < "\$ROOT\/scripts\/configure-central\.sql"/);
+  assert.doesNotMatch(setup, /(?:^|\s)(?:source|\.)\s+"?\$STATE/m);
+  assert.doesNotMatch(sql, /\\getenv/);
+  assert.match(sql, /VALUES \('central_issuer',:'central_issuer'\)/);
+  assert.doesNotMatch(sql, /CENTRAL_JWKS/, 'the database holds the issuer only');
+  const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(compose.slice(compose.indexOf('\n  db:\n')), /CENTRAL_/, 'the db service has no central setting');
 });
 
 test('fresh setup rejects checkout state and unprotected provider credentials', () => {

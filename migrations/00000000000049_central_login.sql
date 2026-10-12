@@ -9,7 +9,8 @@
 -- person, a session for an approved one, a refusal for a disabled one.
 --
 --  1. user_profiles carries the central identity (issuer, subject) a profile
---     is linked to.
+--     is linked to. An existing profile is linked only together with a
+--     correct SMS code of this facility.
 --  2. A token is accepted once: warehouse_security.central_token_use.
 --  3. operator_central_exchange: the exchange itself. Service key only.
 --  4. clear_user_central_identity: an administrator unlinks a profile (how an
@@ -89,25 +90,39 @@ END $patch$;
 --   p_phone_number      the token's phone_number (91 and ten digits)
 --   p_token_id          the token's jti
 --   p_token_expires_at  the token's exp plus the clock tolerance
+--   p_otp_code          optional: a code this facility sent to that phone
 -- Answers, in this order:
 --   central_unavailable     not operator mode, no trusted issuer, or another issuer
 --   invalid_identity_token  an argument is malformed
 --   identity_token_used     this jti was accepted before
 --   identity_conflict       the phone's profile is linked to another central identity
+--   link_required           the phone has a profile that is not linked yet and no
+--                           SMS code came with the token; nothing is written to it
+--   invalid_otp, rate_limited, account_unavailable
+--                           what operator_verify_otp answered to p_otp_code for
+--                           such a profile; it is then not linked
 --   enrollment_limited      too many new access requests (as for an SMS code)
 --   account_unavailable     rejected, disabled or deactivated profile
 --   pending / login         as operator_verify_otp
 -- The profile is found by (issuer, subject) first and is then used even when
 -- its mobile differs from the token's phone: the facility's record of the
 -- number is not changed, and the mobile is marked verified only when the two
--- are equal. A profile found by phone that has no central identity is linked.
+-- are equal.
+-- An EXISTING profile found by phone that has no central identity is linked
+-- only with one local proof, a correct SMS code of this facility for that
+-- number (p_otp_code, checked by operator_verify_otp, whose answer is then
+-- returned as it is). Without that rule, whoever controls the central service
+-- could sign in as any profile here that has not signed in centrally yet,
+-- administrators included. With it, the central service's word is relied on
+-- for two things only: a new access request (which an administrator of this
+-- facility approves or not) and later sign-ins of a profile already linked.
 -- A token that reaches the single-use step is spent whatever the answer.
 CREATE FUNCTION public.operator_central_exchange(p_issuer text, p_subject text, p_phone_number text,
   p_token_id text, p_token_expires_at timestamptz, p_name text DEFAULT NULL,
-  p_display_name text DEFAULT NULL, p_ip_address inet DEFAULT NULL) RETURNS jsonb
+  p_display_name text DEFAULT NULL, p_ip_address inet DEFAULT NULL, p_otp_code text DEFAULT NULL) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,extensions AS $$
-DECLARE phone text; trusted_issuer text; profile public.user_profiles;
-  token text; session_data jsonb; expires timestamptz;
+DECLARE phone text; trusted_issuer text; profile public.user_profiles; by_phone public.user_profiles;
+  token text; session_data jsonb; expires timestamptz; otp_answer jsonb;
   clean_name text; clean_display text;
 BEGIN
   SELECT value INTO trusted_issuer FROM warehouse_security.auth_config WHERE key='central_issuer';
@@ -139,14 +154,27 @@ BEGIN
   SELECT * INTO profile FROM public.user_profiles
     WHERE central_issuer=p_issuer AND central_subject=p_subject FOR UPDATE;
   IF profile.id IS NULL THEN
-    SELECT * INTO profile FROM public.user_profiles WHERE mobile=phone FOR UPDATE;
-    IF profile.id IS NOT NULL THEN
-      IF profile.central_issuer IS NOT NULL OR profile.central_subject IS NOT NULL THEN
-        RETURN jsonb_build_object('success',false,'code','identity_conflict');
-      END IF;
-      UPDATE public.user_profiles SET central_issuer=p_issuer,central_subject=p_subject
-        WHERE id=profile.id RETURNING * INTO profile;
+    SELECT * INTO by_phone FROM public.user_profiles WHERE mobile=phone FOR UPDATE;
+  END IF;
+  IF by_phone.id IS NOT NULL THEN
+    -- An existing profile of this phone number that the identity is not linked
+    -- to. The central service's word alone never opens it.
+    IF by_phone.central_issuer IS NOT NULL OR by_phone.central_subject IS NOT NULL THEN
+      RETURN jsonb_build_object('success',false,'code','identity_conflict');
     END IF;
+    IF p_otp_code IS NULL THEN
+      RETURN jsonb_build_object('success',false,'code','link_required');
+    END IF;
+    -- The local proof: a code this facility sent to that number, checked by
+    -- the SMS sign-in itself with all its limits. Its answer is the answer:
+    -- it has refused a rejected or disabled profile before issuing anything,
+    -- and a success already carries the session (or the pending request).
+    otp_answer := public.operator_verify_otp(phone,p_otp_code,NULL,NULL,p_ip_address);
+    IF (otp_answer->>'success') IS DISTINCT FROM 'true' THEN
+      RETURN otp_answer;
+    END IF;
+    UPDATE public.user_profiles SET central_issuer=p_issuer,central_subject=p_subject WHERE id=by_phone.id;
+    RETURN otp_answer;
   END IF;
   IF profile.id IS NULL THEN
     IF NOT warehouse_security.enrollment_allowed(p_ip_address) THEN
@@ -179,8 +207,8 @@ BEGIN
   session_data:=warehouse_security.issue_session(profile.auth_user_id);
   RETURN jsonb_build_object('success',true,'data',jsonb_build_object('action','login','user',to_jsonb(profile),'session',session_data));
 END $$;
-REVOKE ALL ON FUNCTION public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet) FROM PUBLIC,anon,authenticated;
-GRANT EXECUTE ON FUNCTION public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet) TO service_role;
+REVOKE ALL ON FUNCTION public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.operator_central_exchange(text,text,text,text,timestamptz,text,text,inet,text) TO service_role;
 
 -- ---------------------------------------------------------------------------
 -- 4. Unlinking a profile
@@ -200,8 +228,10 @@ $r$); END $patch$;
 
 -- Clears the central identity of one profile and signs it out everywhere, as
 -- update_user_status(false) does, without changing `active` or the enrollment
--- state. The next central sign-in with this profile's phone number links the
--- profile to the identity that presents it.
+-- state. Linking the profile again, to this or another identity, needs a
+-- correct SMS code of this facility like any first link. The identity that
+-- was removed is unknown here afterwards: a token of it for another phone
+-- number creates a new pending request for an administrator to judge.
 CREATE FUNCTION public.clear_user_central_identity(p_user_id uuid) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE target public.user_profiles;

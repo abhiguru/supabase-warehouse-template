@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT, exportJWK, exportSPKI, generateKeyPair } from 'jose';
 import { TOKEN_TYPE, createKeyCache, handle } from '../functions/central-exchange/handler.ts';
+import { advertisedCentralIssuer, httpsAddress } from '../functions/_shared/https-address.ts';
 
 // No network and no central service: the tests make their own ES256 keys, serve
 // the key set through the injected fetch, and stand in for the PostgREST RPC.
@@ -91,7 +92,7 @@ test('a good token reaches the RPC with the verified identity and its login answ
     p_issuer: ISSUER, p_subject: 'central-user-0001', p_phone_number: '919000000101', p_token_id: 'token-id-0000000000000001',
     // exp plus the 30 s tolerance: the single-use record lasts as long as the token is acceptable.
     p_token_expires_at: new Date(START + 330_000).toISOString(),
-    p_name: 'Asha Central', p_display_name: 'Asha', p_ip_address: '203.0.113.9',
+    p_name: 'Asha Central', p_display_name: 'Asha', p_ip_address: '203.0.113.9', p_otp_code: null,
   });
   assert.equal(call.method, 'POST');
   assert.equal(call.redirect, 'error');
@@ -114,15 +115,37 @@ test('names: the body wins over the token, and a missing or malformed address is
   assert.equal(h.rpcCalls[1].body.p_display_name, null);
 });
 
-test('the pending answer comes back unchanged, and an audience list that names this facility is accepted', async () => {
+test('otp_code is passed on for linking an existing profile, and only when it is six digits', async () => {
+  const h = harness();
+  assert.equal((await h.exchange(await sign(claims(START)), { otp_code: '012345' })).status, 200);
+  assert.equal(h.rpcCalls[0].body.p_otp_code, '012345');
+  // The two-step flow: link_required first, then a fresh token with the code.
+  h.rpcAnswer = { success: false, code: 'link_required' };
+  const asked = await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000002' })));
+  assert.equal(asked.status, 409);
+  assert.equal(asked.body.code, 'link_required');
+  assert.equal(h.rpcCalls[1].body.p_otp_code, null);
+  h.rpcAnswer = loginAnswer;
+  assert.deepEqual(await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000003' })), { otp_code: '654321' }), { status: 200, body: loginAnswer });
+  assert.equal(h.rpcCalls[2].body.p_otp_code, '654321');
+  assert.equal(h.rpcCalls[2].body.p_token_id, 'token-id-0000000000000003');
+  // The code is not logged.
+  h.rpcAnswer = { success: false, code: 'invalid_otp' };
+  await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000004' })), { otp_code: '654321' });
+  assert.ok(!h.logs.join('\n').includes('654321'));
+});
+
+test('the pending answer comes back unchanged, and an audience list of this facility alone is accepted', async () => {
   const h = harness({ rpcAnswer: pendingAnswer });
-  const token = await sign(claims(START, { aud: ['https://another-facility.example.test', FACILITY] }));
+  const token = await sign(claims(START, { aud: [FACILITY] }));
   assert.deepEqual(await h.exchange(token), { status: 200, body: pendingAnswer });
 });
 
 test('not configured: either setting empty, or not an operator production instance, gives 503 without any fetch', async () => {
   const token = await sign(claims(START));
-  for (const changes of [{ CENTRAL_ISSUER: '' }, { CENTRAL_JWKS_URL: '' }, { CENTRAL_ISSUER: undefined, CENTRAL_JWKS_URL: undefined },
+  for (const changes of [{ CENTRAL_ISSUER: '' }, { CENTRAL_JWKS_URL: '' }, { CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: '' },
+    { CENTRAL_JWKS_URL: undefined, CENTRAL_JWKS_JSON: JSON.stringify({ keys: [first.jwk] }) },
+    { CENTRAL_ISSUER: undefined, CENTRAL_JWKS_URL: undefined },
     { AUTH_MODE: 'demo' }, { APP_ENV: 'development' }]) {
     const h = harness({ env: { ...environment, ...changes } });
     assert.deepEqual(await h.exchange(token), notConfigured, JSON.stringify(changes));
@@ -137,7 +160,9 @@ test('answers preflight, refuses other methods and bodies without a token', asyn
   assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), '*');
   assert.deepEqual((({ status, body }) => ({ status, body }))(await h.call(undefined, {}, 'GET')), { status: 405, body: { success: false, error: 'Method not allowed' } });
   const badRequest = { status: 400, body: { success: false, error: 'Invalid request', code: 'invalid_request' } };
-  for (const body of ['{', '[]', {}, { identity_token: 7 }, { identity_token: '' }, { identity_token: 'x'.repeat(9000) }]) {
+  for (const body of ['{', '[]', {}, { identity_token: 7 }, { identity_token: '' }, { identity_token: 'x'.repeat(9000) },
+    // otp_code, when present, is exactly six digits.
+    ...['12345', '1234567', 'abcdef', ' 123456', '', 123456, null, ['123456']].map(otp_code => ({ identity_token: 'a.b.c', otp_code }))]) {
     assert.deepEqual((({ status, body: answer }) => ({ status, body: answer }))(await h.call(body)), badRequest, JSON.stringify(body).slice(0, 40));
   }
   assert.equal(h.jwksFetches.length + h.rpcCalls.length, 0);
@@ -152,6 +177,11 @@ test('every invalid token gets the same 401 and never reaches the database', asy
     'iss with a trailing slash': await sign(claims(START, { iss: `${ISSUER}/` })),
     'wrong aud': await sign(claims(START, { aud: 'https://another-facility.example.test' })),
     'aud list without this facility': await sign(claims(START, { aud: ['https://another-facility.example.test'] })),
+    // A token is for ONE facility: this origin next to another audience is refused.
+    'aud list with this facility and another': await sign(claims(START, { aud: ['https://another-facility.example.test', FACILITY] })),
+    'aud list with this facility first and another': await sign(claims(START, { aud: [FACILITY, 'https://another-facility.example.test'] })),
+    'aud list naming this facility twice': await sign(claims(START, { aud: [FACILITY, FACILITY] })),
+    'aud with a trailing slash': await sign(claims(START, { aud: `${FACILITY}/` })),
     'missing aud': await sign(claims(START, { aud: undefined })),
     'expired beyond the tolerance': await sign(claims(START - 400_000, { exp: seconds(START) - 31 })),
     'issued in the future': await sign(claims(START + 120_000)),
@@ -283,9 +313,16 @@ test('keys that cannot be fetched give central_keys_unavailable and nothing reac
     assert.equal(h.jwksFetches.length, 1, label);
     assert.equal(h.rpcCalls.length, 0, label);
     assert.match(h.logs[0], /^central-exchange: keys unavailable \(/, label);
-    // The failure is not cached: the next request tries again and succeeds.
+    // After a failed fetch none is started for 30 seconds, so callers cannot drive requests to the issuer while it is down.
     h.keySet = { keys: [first.jwk] };
+    h.now += 29_000;
+    assert.deepEqual(await h.exchange(token), keysUnavailable, `${label}: within the back-off`);
+    assert.deepEqual(await h.exchange(token), keysUnavailable, `${label}: within the back-off`);
+    assert.equal(h.jwksFetches.length, 1, `${label}: no fetch during the back-off`);
+    assert.match(h.logs.at(-1), /keys unavailable \(waiting after a failed fetch\)/, label);
+    h.now += 2_000;
     assert.equal((await h.exchange(token)).status, 200, `${label}: recovery`);
+    assert.equal(h.jwksFetches.length, 2, label);
   }
   // A key address or issuer that is not https is never fetched.
   for (const changes of [{ CENTRAL_JWKS_URL: 'http://login.association.example.test/jwks.json' }, { CENTRAL_JWKS_URL: 'file:///etc/passwd' },
@@ -302,6 +339,72 @@ test('keys that cannot be fetched give central_keys_unavailable and nothing reac
   assert.deepEqual(await h.exchange(await sign(claims(h.now), second)), keysUnavailable);
   h.now += 1_000;
   assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200);
+  assert.equal(h.jwksFetches.length, 2, 'a key already held needs no fetch during the back-off');
+  // Stale keys (older than ten minutes) are not used while the refetch is failing or waiting.
+  const stale = harness();
+  assert.equal((await stale.exchange(token)).status, 200);
+  stale.now += 10 * 60_000;
+  stale.keySet = new TypeError('fetch failed');
+  assert.deepEqual(await stale.exchange(await sign(claims(stale.now, { jti: 'token-id-0000000000000003' }))), keysUnavailable);
+  stale.now += 10_000;
+  assert.deepEqual(await stale.exchange(await sign(claims(stale.now, { jti: 'token-id-0000000000000004' }))), keysUnavailable);
+  assert.equal(stale.jwksFetches.length, 2);
+  assert.equal(stale.rpcCalls.length, 1);
+});
+
+test('a key set that names one key id twice is unusable', async () => {
+  // Which of the two keys signs would be ambiguous (jose refuses such a set at verification);
+  // the fault is the issuer's key set, not the caller's token.
+  const twin = { ...stranger.jwk };
+  for (const keys of [[first.jwk, twin], [twin, first.jwk], [first.jwk, { ...first.jwk }], [first.jwk, second.jwk, { ...second.jwk }]]) {
+    const h = harness({ keySet: { keys } });
+    assert.deepEqual(await h.exchange(await sign(claims(START))), keysUnavailable);
+    assert.match(h.logs[0], /keys unavailable \(key set names a key id twice\)/);
+    assert.equal(h.rpcCalls.length, 0);
+  }
+  // A duplicate among keys that are not used anyway does not matter.
+  const h = harness({ keySet: { keys: [first.jwk, { ...second.jwk, use: 'enc' }, { ...second.jwk, use: 'enc' }] } });
+  assert.equal((await h.exchange(await sign(claims(START)))).status, 200);
+});
+
+test('keys from a file of the installation: no fetch at all, the same filtering, an unknown key id is an invalid token', async () => {
+  const fileEnv = (text, extra = {}) => ({ ...environment, CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: 'central-jwks.json', CENTRAL_JWKS_JSON: text, ...extra });
+  const text = JSON.stringify({ keys: [first.jwk] });
+  const h = harness({ env: fileEnv(text) });
+  assert.deepEqual(await h.exchange(await sign(claims(START))), { status: 200, body: loginAnswer });
+  assert.equal(h.rpcCalls[0].body.p_subject, 'central-user-0001');
+  // A key id the file does not hold is simply an invalid token; nothing is fetched, ever.
+  assert.deepEqual(await h.exchange(await sign(claims(START), second)), invalid);
+  h.now += 61_000;
+  assert.deepEqual(await h.exchange(await sign(claims(h.now), second)), invalid);
+  assert.deepEqual(await h.exchange(await sign(claims(h.now), stranger)), invalid);
+  h.now += 20 * 60_000;
+  assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200, 'file keys do not expire');
+  assert.equal(h.jwksFetches.length, 0);
+  // The file wins when an address is configured as well: still no fetch.
+  const both = harness({ env: fileEnv(text, { CENTRAL_JWKS_URL: JWKS }), keySet: { keys: [second.jwk] } });
+  assert.equal((await both.exchange(await sign(claims(START)))).status, 200);
+  assert.deepEqual(await both.exchange(await sign(claims(START), second)), invalid);
+  assert.equal(both.jwksFetches.length, 0);
+  // A file that is missing (the router passed no text) or unusable: keys unavailable, no fetch, nothing reaches the database.
+  const privateJwk = { ...(await exportJWK(first.privateKey)), kid: first.kid };
+  const unusable = {
+    'missing': undefined, 'empty': '', 'not JSON': '<html>', 'no keys member': '{"jwks":[]}',
+    'only a private key': JSON.stringify({ keys: [privateJwk] }),
+    'a key id twice': JSON.stringify({ keys: [first.jwk, { ...stranger.jwk }] }),
+    'over 64 KB': JSON.stringify({ keys: [first.jwk], padding: 'x'.repeat(64 * 1024) }),
+  };
+  for (const [label, value] of Object.entries(unusable)) {
+    const broken = harness({ env: fileEnv(value) });
+    assert.deepEqual(await broken.exchange(await sign(claims(START))), keysUnavailable, label);
+    assert.equal(broken.jwksFetches.length + broken.rpcCalls.length, 0, label);
+    assert.match(broken.logs[0], /^central-exchange: keys unavailable \(/, label);
+  }
+  // The issuer must be https with a file as well; and a file name without an issuer is not a configuration.
+  const plain = harness({ env: fileEnv(text, { CENTRAL_ISSUER: 'http://login.association.example.test' }) });
+  assert.deepEqual(await plain.exchange(await sign(claims(START))), keysUnavailable);
+  const noIssuer = harness({ env: fileEnv(text, { CENTRAL_ISSUER: '' }) });
+  assert.deepEqual(await noIssuer.exchange(await sign(claims(START))), notConfigured);
 });
 
 test('each failure code of the RPC maps to its status and message', async () => {
@@ -313,6 +416,11 @@ test('each failure code of the RPC maps to its status and message', async () => 
     identity_conflict: { status: 409, body: { success: false,
       error: 'This phone number is linked to another sign-in. Ask the facility administrator.', code: 'identity_conflict' } },
     enrollment_limited: { status: 429, body: { success: false, error: 'Too many new access requests. Try again tomorrow.', code: 'enrollment_limited' } },
+    link_required: { status: 409, body: { success: false,
+      error: 'Confirm this phone number with a code from this facility to finish linking.', code: 'link_required' } },
+    // What the SMS check answered for otp_code, with operator-otp's texts.
+    invalid_otp: { status: 400, body: { success: false, error: 'Invalid or expired OTP', code: 'invalid_otp' } },
+    rate_limited: { status: 429, body: { success: false, error: 'Too many OTP requests. Try again later.', code: 'rate_limited' } },
   };
   const unavailable = { status: 503, body: { success: false, error: 'Authentication service unavailable', code: 'unavailable' } };
   const token = await sign(claims(START));
@@ -355,4 +463,24 @@ test('the token text never appears in a response or in what the handler logs', a
     assert.ok(!h.logs.join('\n').includes('919000000101') && !h.logs.join('\n').includes('central-user-0001'));
   }
   assert.ok(logged > 10, 'the refusals were logged');
+});
+
+test('get-public-config advertises central sign-in only where a token could be accepted', () => {
+  const on = { authMode: 'operator', appEnv: 'production', issuer: ISSUER, jwksUrl: JWKS, jwksFile: '' };
+  assert.equal(advertisedCentralIssuer(on), ISSUER);
+  assert.equal(advertisedCentralIssuer({ ...on, jwksUrl: '', jwksFile: 'central-jwks.json' }), ISSUER);
+  assert.equal(advertisedCentralIssuer({ ...on, jwksUrl: undefined, jwksFile: 'central-jwks.json' }), ISSUER);
+  for (const changes of [{ issuer: '' }, { issuer: undefined }, { jwksUrl: '' }, { jwksUrl: undefined, jwksFile: undefined },
+    { authMode: 'demo' }, { appEnv: 'development' }, { appEnv: undefined },
+    // A value that is not https is not advertised: the exchange would answer "keys unavailable".
+    { issuer: 'http://login.association.example.test' }, { issuer: 'login.association.example.test' },
+    { issuer: 'http://login.association.example.test', jwksUrl: '', jwksFile: 'central-jwks.json' },
+    { jwksUrl: 'http://login.association.example.test/jwks.json' }, { jwksUrl: 'file:///etc/passwd' },
+    { jwksUrl: 'https://user:secret@login.association.example.test/jwks.json' }]) {
+    assert.equal(advertisedCentralIssuer({ ...on, ...changes }), null, JSON.stringify(changes));
+  }
+  for (const value of [undefined, '', 'https://', 'HTTPS://login.example.test', ' https://login.example.test', 'https://user@login.example.test']) {
+    assert.equal(httpsAddress(value), false, String(value));
+  }
+  assert.equal(httpsAddress('https://login.example.test/path?x=1'), true);
 });

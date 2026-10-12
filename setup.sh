@@ -12,7 +12,7 @@ ADMIN_NAME=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -58,7 +58,9 @@ bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
 # Central sign-in: the trusted issuer from compose.env (--central-issuer), or off.
-bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-central.sql"
+# The line is read, never sourced; configure.mjs stores no quotes, spaces, $ or #.
+CENTRAL_ISSUER_VALUE="$(sed -n 's/^CENTRAL_ISSUER=//p' "$STATE/config/compose.env" | head -n 1)"
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v central_issuer="$CENTRAL_ISSUER_VALUE" < "$ROOT/scripts/configure-central.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
 # Storage owns its schema upgrades; wait for them before creating private buckets
 # and access policies. This starts only storage and its internal dependencies.

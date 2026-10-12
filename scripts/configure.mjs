@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync, linkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, statSync, realpathSync, readdirSync, chmodSync, renameSync, rmSync, linkSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
+import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -13,19 +14,25 @@ export function canonicalOrigin(value, name = 'URL') {
 }
 
 // Central sign-in (docs/CENTRAL_LOGIN.md): the association's token issuer and
-// the address of its public keys. Both or neither; `off` as the issuer empties
-// both. Returns null when neither option was given (leave the state as it is),
-// else the two compose.env values. The issuer is kept exactly as typed,
-// because the facility compares it with the token's `iss` as a string.
-export function centralValues(centralIssuer, centralJwksUrl) {
-  if (centralIssuer === undefined && centralJwksUrl === undefined) return null;
+// its public keys, either as an address the facility fetches or as a file that
+// is copied into the state. The issuer goes with exactly one of the two; `off`
+// as the issuer empties everything. Returns null when no option was given
+// (leave the state as it is), else the three compose.env values and, for a
+// key file, its bytes. The issuer is kept exactly as typed, because the
+// facility compares it with the token's `iss` as a string.
+export const CENTRAL_KEY_FILE = 'central-jwks.json';
+export function centralValues(centralIssuer, centralJwksUrl, centralJwksFile) {
+  if (centralIssuer === undefined && centralJwksUrl === undefined && centralJwksFile === undefined) return null;
   if (centralIssuer === 'off') {
-    if (centralJwksUrl !== undefined) throw new Error('--central-issuer off turns central sign-in off; leave out --central-jwks-url.');
-    return { CENTRAL_ISSUER: '', CENTRAL_JWKS_URL: '' };
+    if (centralJwksUrl !== undefined || centralJwksFile !== undefined) throw new Error('--central-issuer off turns central sign-in off; leave out --central-jwks-url and --central-jwks-file.');
+    return { values: { CENTRAL_ISSUER: '', CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: '' }, keyFile: null };
   }
-  if (!centralIssuer || !centralJwksUrl) throw new Error('Central sign-in needs both --central-issuer and --central-jwks-url (or --central-issuer off).');
-  const values = { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: centralJwksUrl };
-  for (const [name, value, option] of [['CENTRAL_ISSUER', centralIssuer, '--central-issuer'], ['CENTRAL_JWKS_URL', centralJwksUrl, '--central-jwks-url']]) {
+  if (!centralIssuer || (centralJwksUrl === undefined) === (centralJwksFile === undefined) || centralJwksUrl === '' || centralJwksFile === '') {
+    throw new Error('Central sign-in needs --central-issuer with exactly one of --central-jwks-url and --central-jwks-file (or --central-issuer off).');
+  }
+  const addresses = [['CENTRAL_ISSUER', centralIssuer, '--central-issuer']];
+  if (centralJwksUrl !== undefined) addresses.push(['CENTRAL_JWKS_URL', centralJwksUrl, '--central-jwks-url']);
+  for (const [name, value, option] of addresses) {
     let url;
     try { url = new URL(value); } catch { throw new Error(`${option} must be an https:// address.`); }
     // The same characters a provider value may hold, so the line reads back unchanged from compose.env.
@@ -35,10 +42,45 @@ export function centralValues(centralIssuer, centralJwksUrl) {
     }
     if (name === 'CENTRAL_ISSUER' && url.search) throw new Error('--central-issuer must not carry a query.');
   }
-  return values;
+  if (centralJwksUrl !== undefined) return { values: { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: centralJwksUrl, CENTRAL_JWKS_FILE: '' }, keyFile: null };
+  return { values: { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: CENTRAL_KEY_FILE }, keyFile: centralKeyFile(centralJwksFile) };
 }
 
-// Sets the two central lines of an existing compose.env; a state written by a
+// The bytes of a key file the operator received from the association, after
+// the checks the edge function applies to a fetched key set, plus one: a file
+// that holds private key material is refused outright.
+function centralKeyFile(path) {
+  if (!isAbsolute(path)) throw new Error('--central-jwks-file must be an absolute path.');
+  const st = statSync(path, { throwIfNoEntry: false });
+  if (!st?.isFile()) throw new Error('--central-jwks-file must be a readable regular file.');
+  if (st.size > KEY_SET_MAX_BYTES) throw new Error('--central-jwks-file is larger than 64 KB.');
+  const bytes = readFileSync(path);
+  if (bytes.length > KEY_SET_MAX_BYTES) throw new Error('--central-jwks-file is larger than 64 KB.');
+  let document;
+  try { document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw new Error('--central-jwks-file is not a JSON key set.'); }
+  if (holdsPrivateKey(document)) throw new Error('--central-jwks-file holds private key material (a "d" member). Ask the association for its public key set; nothing was copied.');
+  try { usableKeys(document); } catch (error) { throw new Error(`--central-jwks-file is not usable: ${error.message}.`); }
+  return bytes;
+}
+
+// Puts the key file into the state's public directory (mode 0644, through a
+// same-directory temporary), or removes it. Returns whether anything changed.
+function placeCentralKeyFile(publicDir, bytes) {
+  const path = join(publicDir, CENTRAL_KEY_FILE);
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (st && !st.isFile()) throw new Error(`public/${CENTRAL_KEY_FILE} must be a regular file.`);
+  if (!bytes) {
+    if (st) rmSync(path);
+    return Boolean(st);
+  }
+  if (st && (st.mode & 0o777) === 0o644 && readFileSync(path).equals(bytes)) return false;
+  const stage = join(publicDir, `.${CENTRAL_KEY_FILE}.${randomBytes(8).toString('hex')}`);
+  writeFileSync(stage, bytes, { mode: 0o644, flag: 'wx' });
+  try { chmodSync(stage, 0o644); renameSync(stage, path); } catch (error) { rmSync(stage, { force: true }); throw error; }
+  return true;
+}
+
+// Sets the central lines of an existing compose.env; a state written by a
 // release that had no such lines gets them appended.
 function setCentralLines(text, values) {
   let result = text;
@@ -98,8 +140,8 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, faultAfterManifest = false } = {}) {
-  const central = centralValues(centralIssuer, centralJwksUrl);
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, faultAfterManifest = false } = {}) {
+  const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
   const state = resolve(stateDir);
@@ -128,8 +170,8 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (apiUrl && canonicalOrigin(apiUrl, '--api-url') !== manifest.canonicalOrigin) throw new Error('Existing canonical origin differs; refusing to replace instance identity.');
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
-      // A rerun may replace only the SMS provider lines and the two central
-      // sign-in lines; identity, paths and signing keys are preserved.
+      // A rerun may replace only the SMS provider lines and the central
+      // sign-in lines (with the key file); identity, paths and signing keys are preserved.
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;
@@ -142,8 +184,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (central) {
         const current = readFileSync(envPath, 'utf8');
         // "Off" on a state that never had the lines changes nothing.
-        const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL)=/m.test(current);
-        const updated = absent && !central.CENTRAL_ISSUER ? current : setCentralLines(current, central);
+        const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=/m.test(current);
+        const updated = absent && !central.values.CENTRAL_ISSUER ? current : setCentralLines(current, central.values);
+        // The key file first: compose.env never names a file that is not there.
+        if (placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
       }
       // An installation made before signed backups gets its backup key here;
@@ -168,7 +212,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generateSigningKeys(),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
-    ...(central ?? {}) };
+    ...(central?.values ?? {}) };
   for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
@@ -178,6 +222,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     chmodSync(stage, 0o700);
     writeFileSync(join(stage, 'public/instance.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o644, flag: 'wx' });
     if (faultAfterManifest) throw new Error('Injected failure after manifest staging.');
+    if (central?.keyFile) placeCentralKeyFile(join(stage, 'public'), central.keyFile);
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
     createBackupKey(join(stage, 'config'));
     renameSync(stage, state);
@@ -188,9 +233,9 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
-    '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl' };
+    '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off --central-jwks-url HTTPS]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;

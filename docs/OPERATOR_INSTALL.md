@@ -320,42 +320,78 @@ a code afterwards.
 
 Optional, and off by default. A member of the association can let people sign
 in with the association's central identity service instead of an SMS code
-sent by this facility. The central service only proves who a person is; this
-facility still approves, limits and revokes every person itself, and SMS
-sign-in keeps working. The contract is in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md).
+sent by this facility. SMS sign-in keeps working. What you then rely on the
+central service for, and what you do not, is the first section of
+[CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-relies-on-the-central-service-for):
+in short, it vouches that a phone number belongs to a central account; it
+cannot approve anyone here, and it cannot take over a profile that already
+exists here without an SMS code that this facility sent.
 
-Turn it on with the two values the association gives you, added to the usual
-setup command (first installation or rerun):
+Turn it on with the issuer the association gives you and **one** source for
+its public keys, added to the usual setup command (first installation or
+rerun):
 
 ```bash
+# keys fetched from the association
 bash setup.sh --operator \
   --state-dir "$WAREHOUSE_STATE_DIR" \
   --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
   --central-issuer https://login.association.example \
   --central-jwks-url https://login.association.example/.well-known/jwks.json
+
+# or: keys from a file the association sent you
+bash setup.sh --operator \
+  --state-dir "$WAREHOUSE_STATE_DIR" \
+  --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --central-issuer https://login.association.example \
+  --central-jwks-file /secure/association-jwks.json
 ```
 
-- Both options or neither; both must be `https://` addresses. The issuer is
-  stored exactly as typed, because it is compared with the token as a string.
-- They are written to `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL` in
-  `config/compose.env`, and the issuer to the database. A later rerun without
-  the two options keeps them.
-- Turn it off again with `--central-issuer off` (no `--central-jwks-url`).
-  People who signed in centrally keep their profiles and sessions; they sign
-  in with an SMS code from then on.
-- Setting, replacing or removing the values recreates the database and
-  functions containers during that setup run (a restart of a few seconds), as
-  any change of their settings does.
+- `--central-issuer` goes with exactly one of `--central-jwks-url` and
+  `--central-jwks-file`. The issuer and the address must be `https://`. The
+  issuer is stored exactly as typed, because it is compared with the token as
+  a string.
+- **Address or file?** With the address the functions container fetches the
+  keys over HTTPS when a sign-in needs them, and a key the association rotates
+  is picked up without you. With the file nothing is fetched at all, so
+  sign-in does not depend on reaching the association; but when the
+  association rotates its keys it has to send you the new file first, and you
+  rerun the command above with it. Until you do, central sign-in fails and SMS
+  sign-in still works.
+- The file is checked (a JSON key set of at most 64 KB with at least one
+  usable P-256 public key; a file that contains a private key is refused) and
+  copied to `public/central-jwks.json` in the state directory. Your original
+  is not needed afterwards. A rerun with the option replaces the copy. The
+  running service reads the file when it starts a worker for a sign-in, so
+  the new keys should be in use within about a minute; this has not been
+  measured, and `bash stop.sh && bash start.sh` makes it certain.
+- The settings are `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL` and
+  `CENTRAL_JWKS_FILE` in `config/compose.env`; setup also writes the issuer to
+  the database. A later rerun without the central options keeps everything.
+- Turn it off again with `--central-issuer off` (and no key option). People
+  who signed in centrally keep their profiles and sessions; they sign in with
+  an SMS code from then on.
+- Changing these settings recreates the functions container during that setup
+  run. The database container is not touched.
 - Check: `curl -s https://<your origin>/functions/v1/get-public-config` shows
   `"centralLogin":{"issuer":"…"}` when it is on and `"centralLogin":null` when
-  it is off.
+  it is off or a value is unusable.
 
-The functions container must be able to reach the key address over HTTPS.
+With an address, the functions container must be able to reach it over HTTPS.
 When it cannot, central sign-in answers "temporarily unavailable" and SMS
 sign-in is unaffected.
 
-Approving, revoking and the one new administrator action (unlinking a profile
-whose phone number is tied to another central account) are described in
+**After a restore, run `setup.sh` again** with your usual inputs. The trusted
+issuer lives in the database as well as in `compose.env`, and setup is what
+makes the two agree: a database restored from before you turned central
+sign-in on (or off) otherwise disagrees with the configuration, and central
+sign-in answers "not available" until setup has run. The key file
+`public/central-jwks.json` is not part of a backup: after recovering a lost
+host, pass `--central-jwks-file` again.
+
+A person who already has a profile here links it to the central account once,
+with an SMS code from this facility; approving, revoking and the one new
+administrator action (unlinking a profile) are described in
 [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-administrator-does).
 
 ## Cloudflare Tunnel ingress
@@ -973,6 +1009,7 @@ bash stop.sh
 npm run db:restore -- --yes /path/to/backup   # add --restore-config if keys were rotated after the backup
 bash start.sh
 node scripts/doctor.mjs --local
+bash setup.sh --operator ...   # only if you use central sign-in: makes the restored database agree with compose.env
 ```
 
 A restore returns the instance to the moment of the backup: everything recorded
@@ -1215,8 +1252,8 @@ A rerun is the same `setup.sh --operator ...` command with the same inputs
 against the same state directory. It regenerates nothing that already exists:
 identity, signing keys, database, stored files, the administrator and the
 provider lines are preserved (a different `--provider-env` file replaces only
-the MSG91 lines; `--central-issuer` and `--central-jwks-url` set or replace
-only the two [central sign-in](#central-sign-in) lines). Run it a second time right after installation and compare
+the MSG91 lines; the `--central-…` options set or replace only the
+[central sign-in](#central-sign-in) lines and its key file). Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
 To upgrade to a newer `main`:
