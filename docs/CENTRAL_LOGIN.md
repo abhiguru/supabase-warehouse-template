@@ -184,11 +184,16 @@ account once, in two steps:
 In step 2 the code is checked by the SMS sign-in itself
 (`operator_verify_otp`), with all of its limits: five wrong attempts per code,
 the per-address limit on wrong codes, the send limits of `operator-otp/request`.
-Its answer is the answer:
+Its answer is the answer, with the link it made: after a correct code the
+facility writes the link and then sets `central_issuer` and `central_subject`
+in the answer's `data.user` (migration 64; before it, the answer still showed
+the profile as it was before linking):
 
 - a correct code for an approved, active profile: the profile is linked and
-  the answer is `login` with the session of that SMS sign-in;
-- a correct code for a request that is still pending: linked, `pending`;
+  the answer is `login` with the session of that SMS sign-in; its `data.user`
+  is the stored profile after linking;
+- a correct code for a request that is still pending: linked, `pending`; its
+  short `data.user` gains the two link fields and nothing else;
 - a correct code for a rejected or disabled profile: `account_unavailable`,
   **not linked**;
 - a wrong code: `invalid_otp`, not linked, and one attempt of the code is used.
@@ -251,24 +256,45 @@ Set, replace or remove them with `setup.sh`; see
 in the database is written by `setup.sh`, so after restoring a database run
 `setup.sh` again before relying on central login.
 
-## Not built yet
+## Built (2026-10-12)
 
-- The central identity service itself (sign-in, token issuing, key set,
-  facility catalogue). Until it exists nothing can produce a valid token; the
-  tests make their own keys.
-- The app: central sign-in, My facilities, the calls to this endpoint
-  (including the two-step link), and an administrator screen for
-  `clear_user_central_identity`.
+- The central identity service (sign-in, token issuing, key set, facility
+  catalogue), in its own repository.
+- The app: central sign-in, My facilities, the calls to this endpoint and the
+  two-step link with this facility's SMS code.
+
+Still not built:
+
+- An administrator screen for `clear_user_central_identity`; call the RPC as a
+  signed-in administrator.
 - Binding a token to a device key (DPoP).
 
-## Not tested
+## Tested, and not tested (2026-10-12)
 
-- Nothing here has run inside the edge runtime: the handler is tested under
-  Node with its own keys, the database function in a disposable database. The
-  router's reading of the key file, the mount of the state's `public/`
-  directory into the functions container, and the lifetime of fetched keys in
-  a worker are unmeasured.
-- `setup.sh` has not been run end to end with the central options.
-- Concurrent exchanges were not load-tested. Two exchanges for one phone or
-  one central account are serialized by advisory locks, which is checked by
-  reading the code, not under load.
+Run:
+
+- The handler under Node with its own keys, and the database function in a
+  disposable database (`npm test`, `npm run test:migrations`).
+- `curl` against this endpoint in the real edge runtime of a development
+  installation that reads its keys from a key file: a new person (pending), a
+  replayed token, a wrong audience, issuer and token type (all refused),
+  `link_required`, a wrong and then a correct SMS code, and a conflict.
+- With the app on an Android phone: the central walkthrough (plan D17) by
+  hand (44 of 45 steps, on an earlier commit; the one step not reached was a
+  timing case), and the same walkthrough as 18 Maestro flows (sign-in, request,
+  approval, switching facilities, linking with a wrong and a correct code, an
+  unreachable facility, revocation, sign-out), all passed.
+- All of the above ran before migration 64 existed. The link answer of
+  migration 64 (the two link fields in the reply) is covered by
+  `tests/central_login.sql` only.
+
+Not tested:
+
+- Real SMS delivery (MSG91) for the link code.
+- Keys fetched by URL (`CENTRAL_JWKS_URL`); the development installation uses
+  a key file.
+- `setup.sh` with the central options on a fresh installation (only on the
+  existing development installation).
+- Concurrent exchanges, under load. Two exchanges for one phone or one central
+  account are serialized by advisory locks, which is checked by reading the
+  code, not under load.

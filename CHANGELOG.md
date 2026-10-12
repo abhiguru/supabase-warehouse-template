@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — central login: the link answer names the link (2026-10-12)
+
+Migration 64. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- Migration 64, `operator_central_exchange`: when a token and a correct SMS
+  code of this facility link an existing profile, the answer now carries the
+  link. Before, the function wrote `central_issuer` and `central_subject` to
+  the profile and then returned `operator_verify_otp`'s answer as it was built
+  before the link, so `data.user.central_subject` was null in a `login` answer
+  and missing in a `pending` one, while the stored profile was already linked
+  (external review 2026-10-12, R8). Now, after the link is written, the two
+  fields are set in `data.user`: the `login` answer's `data.user` equals the
+  stored profile, and the `pending` answer's short `data.user` gains the two
+  fields and nothing else. Success, action, session and enrollment token are
+  unchanged, and a refusal is still returned before anything is linked. The
+  function is patched in place (marker count checked), and the migration
+  checks that SECURITY DEFINER, its grants and its `search_path` are
+  unchanged. Migration 49 is not edited.
+- What an app sees: the reply of a correct-code link names the central
+  account it linked. The mobile app reads none of the `central_*` fields, so
+  it needs no change.
+- Tests: `tests/central_login.sql` checks both answer shapes (the two fields,
+  `data.user` equal to the stored profile for `login`, and the exact key set
+  for `pending`).
+- Documents: `docs/CENTRAL_LOGIN.md` (the link answer; "Built" and "Tested,
+  and not tested" replace "Not built yet" and "Not tested") and `CLAUDE.md`.
+
 ## Unreleased — review fixes in the reports (2026-10-12)
 
 Migration 63 and four changes to the report PDFs (`generate-report-pdf`).

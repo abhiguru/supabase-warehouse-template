@@ -296,6 +296,12 @@ SELECT pg_temp.cl_assert((SELECT central_issuer='https://login.association.examp
  AND pg_temp.cl_sessions('919000000103')=1
  AND NOT EXISTS (SELECT 1 FROM public.otp_verifications WHERE phone_number='919000000103' AND NOT verified AND expires_at>now()),
  'the profile is linked, exactly one session exists, the code is consumed, nothing else changes');
+-- The answer names the link it made (migration 64): its user is the stored
+-- profile as it is after linking, not as it was before.
+SELECT pg_temp.cl_assert(:'linked_answer'::jsonb#>>'{data,user,central_issuer}'='https://login.association.example.test'
+ AND :'linked_answer'::jsonb#>>'{data,user,central_subject}'='central-user-0003'
+ AND :'linked_answer'::jsonb#>'{data,user}'=(SELECT to_jsonb(p) FROM public.user_profiles p WHERE p.id=:'earlier_profile'::uuid),
+ 'the answer of a correct-code link carries the stored, linked profile: '||left(:'linked_answer',600));
 -- From then on the token is enough.
 SELECT pg_temp.cl_exchange('central-user-0003','919000000103','token-id-0000000000000057') AS later_answer \gset
 SELECT pg_temp.cl_assert(:'later_answer'::jsonb#>>'{data,action}'='login' AND :'later_answer'::jsonb#>>'{data,user,id}'=:'earlier_profile'
@@ -331,6 +337,13 @@ SELECT pg_temp.cl_assert(:'pending_link'::jsonb#>>'{data,action}'='pending' AND 
  AND (SELECT central_subject='central-user-0007' AND enrollment_status='pending' AND NOT active FROM public.user_profiles WHERE mobile='919000000107')
  AND pg_temp.cl_sessions('919000000107')=0,
  'a waiting request is linked with the code and stays pending: '||:'pending_link');
+-- The pending answer names the link as well (migration 64) and stays the
+-- short pending shape: the two link fields are added, nothing else.
+SELECT pg_temp.cl_assert(:'pending_link'::jsonb#>>'{data,user,central_issuer}'='https://login.association.example.test'
+ AND :'pending_link'::jsonb#>>'{data,user,central_subject}'='central-user-0007'
+ AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(:'pending_link'::jsonb#>'{data,user}') AS k)
+     = ARRAY['active','central_issuer','central_subject','display_name','enrollment_status','id','mobile','name','role'],
+ 'the pending answer of a link names it and keeps its short shape: '||:'pending_link');
 SELECT pg_temp.cl_assert((SELECT count(*) FROM public.user_profiles)=:'profiles_before_link'::bigint
  AND (SELECT count(*) FROM warehouse_security.enrollment_log)=:'requests_before_link'::bigint,
  'none of this created a profile or counted a new access request');

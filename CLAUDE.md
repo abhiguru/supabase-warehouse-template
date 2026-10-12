@@ -23,8 +23,10 @@ the facility's **owner**, **staff** and **clients** use for orders, tracking, go
 
 The target design is in the app repository's
 [docs/CENTRAL_LOGIN.md](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/CENTRAL_LOGIN.md).
-The facility half of it is implemented here (migration 49, 2026-10-12); the central service
-and the app screens are not built yet, so no real token exists and it is off by default.
+The facility half of it is implemented here (migrations 49 and 64, 2026-10-12). The central
+service and the app's central screens were built and tested on 2026-10-12 (what ran and what
+did not: [docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "Tested, and not tested"); central
+login stays off by default.
 
 ## Central login in this backend
 
