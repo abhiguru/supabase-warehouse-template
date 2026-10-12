@@ -199,9 +199,11 @@ figures of one width with Indian digit grouping, dates DD-MM-YYYY; a totals row
 over the rows printed; the page footer with title, warehouse name and page
 numbers. At most 2000 rows; a longer report is cut, with "Showing 2,000 of N"
 under the table and in the footer of every page. Labels in Gujarati are the
-app's own wording; eight labels the app has no Gujarati for yet print in English
-(`Sort by`, `ascending`, `descending`, `Latest invoice`, `Tax`, `Status`,
-`City`, `Last activity`), listed in `functions/_shared/report-labels.ts`.
+app's own wording; `Sort by`, `ascending`, `descending`, `Tax`, `Status` and
+`City` now print in Gujarati too, copied from the app's filters, data-table,
+invoice, users and customers translations, and the two labels the app has no
+Gujarati for yet (`Latest invoice`, `Last activity`) print in English, listed
+in `functions/_shared/report-labels.ts`.
 
 - Migration 53 widens `warehouse_maintenance.expired_generated_documents` so
   the `report/...` names (the seven report names, a customer id or `all`, a

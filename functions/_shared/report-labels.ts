@@ -2,9 +2,10 @@
 //
 // The Gujarati text is copied word for word from the app's own translations
 // (rn-warehouse-template src/i18n/locales/gu/reports.ts and common.ts, at app
-// commit f3b854b) for the same English text, so a PDF says what the screen
-// says. A label whose English the app has no Gujarati for in those two files
-// is `null` here: the PDF prints the English, and the label is listed in
+// commit f3b854b; and, for the labels whose comment names another file, that
+// file as read on 2026-10-12) for the same English text, so a PDF says what
+// the screen says. A label whose English the app has no Gujarati for is `null`
+// here: the PDF prints the English, and the label is listed in
 // `missingGujarati` for the app team to supply. Do not write Gujarati here
 // that the app does not have.
 
@@ -31,9 +32,11 @@ const table = {
   summary: ['Summary', 'સારાંશ'], // reports.components.summary
   total: ['Total', 'કુલ'], // common.total
   showing: ['Showing {{shown}} of {{total}}', '{{total}}માંથી {{shown}} બતાવ્યા છે'], // reports.scaffold.showing
-  sortBy: ['Sort by', null],
-  ascending: ['ascending', null],
-  descending: ['descending', null],
+  sortBy: ['Sort by', 'આ મુજબ સૉર્ટ કરો'], // filters.sheet.sortBy
+  // The direction words of components.table.sortedAscending / sortedDescending
+  // ('{{column}}, sorted ascending' = '{{column}}, ચઢતા ક્રમમાં સૉર્ટ કરેલું').
+  ascending: ['ascending', 'ચઢતા ક્રમમાં'],
+  descending: ['descending', 'ઉતરતા ક્રમમાં'],
 
   // Empty results
   emptyGrns: ['No GRNs in this period', 'આ સમયગાળામાં કોઈ આવક પાવતી નથી'], // reports.grnActivity.emptyTitle
@@ -59,8 +62,8 @@ const table = {
   latestInvoice: ['Latest invoice', null],
   amount: ['Amount', 'રકમ'], // common.amount
   netAmount: ['Net amount', 'ચોખ્ખી રકમ'], // reports.invoiceHistory.netAmount
-  tax: ['Tax', null],
-  status: ['Status', null],
+  tax: ['Tax', 'ટેક્સ'], // invoice.label.tax (also lists.invoice.tax)
+  status: ['Status', 'સ્થિતિ'], // users.fields.status
   paid: ['Paid', 'ચૂકવેલ'], // reports.customerActivity.paid
   pending: ['Pending', 'બાકી'], // common.pending
   date: ['Date', 'તારીખ'], // common.date
@@ -85,7 +88,7 @@ const table = {
   overOneYear: ['Over 1 year', '૧ વર્ષથી વધુ'], // reports.stockAging.overOneYear
   month: ['Month', 'મહિનો'], // reports.customerActivity.trend.month
   stockAtMonthEnd: ['Stock at month end', 'મહિનાના અંતે સ્ટોક'], // reports.customerActivity.trend.stockAtMonthEnd
-  city: ['City', null],
+  city: ['City', 'શહેર'], // customers.fields.city
   lastActivity: ['Last activity', null],
 } as const satisfies Record<string, readonly [string, string | null]>;
 

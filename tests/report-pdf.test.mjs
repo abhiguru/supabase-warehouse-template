@@ -197,7 +197,7 @@ const expectedColumns = {
   },
   'invoice-history': {
     customer: [['Invoice number', 'Date', 'GRN', 'Amount', 'Tax', 'Net amount', 'Status'],
-      ['ઇન્વૉઇસ નંબર', 'તારીખ', 'આવક પાવતી', 'રકમ', 'Tax', 'ચોખ્ખી રકમ', 'Status']],
+      ['ઇન્વૉઇસ નંબર', 'તારીખ', 'આવક પાવતી', 'રકમ', 'ટેક્સ', 'ચોખ્ખી રકમ', 'સ્થિતિ']],
     all: [['Customer', 'Invoices', 'Amount', 'Net amount', 'Latest invoice'], ['વેપારી', 'ઇન્વૉઇસ', 'રકમ', 'ચોખ્ખી રકમ', 'Latest invoice']],
   },
   'stock-summary': {
@@ -217,7 +217,7 @@ const expectedColumns = {
   'customer-activity': {
     customer: [['Month', 'GRNs', 'Received quantity', 'Dispatches', 'Bags dispatched', 'Amount', 'Stock at month end'],
       ['મહિનો', 'આવક પાવતી', 'આવકના નંગ', 'જાવક', 'જાવકના નંગ', 'રકમ', 'મહિનાના અંતે સ્ટોક']],
-    all: [['Customer', 'City', 'Stock', 'GRNs', 'Dispatches', 'Amount', 'Last activity'], ['વેપારી', 'City', 'સ્ટોક', 'આવક પાવતી', 'જાવક', 'રકમ', 'Last activity']],
+    all: [['Customer', 'City', 'Stock', 'GRNs', 'Dispatches', 'Amount', 'Last activity'], ['વેપારી', 'શહેર', 'સ્ટોક', 'આવક પાવતી', 'જાવક', 'રકમ', 'Last activity']],
   },
 };
 
@@ -240,7 +240,8 @@ test('each report prints at most seven chosen columns, labelled in English and G
 });
 
 test('the Gujarati table holds only the app\'s wording, and the labels it lacks are listed', () => {
-  assert.deepEqual([...missingGujarati], ['Sort by', 'ascending', 'descending', 'Latest invoice', 'Tax', 'Status', 'City', 'Last activity']);
+  // The app has no Gujarati for these two English labels yet (it says 'Latest {{date}}' and 'Last active {{date}}').
+  assert.deepEqual([...missingGujarati], ['Latest invoice', 'Last activity']);
   const gujaratiScript = /[઀-૿]/;
   for (const key of labelKeys) {
     const english = label('en', key);
@@ -257,6 +258,12 @@ test('the Gujarati table holds only the app\'s wording, and the labels it lacks 
   assert.equal(label('gu', 'customer'), 'વેપારી');
   assert.equal(label('gu', 'quantity'), 'નંગ');
   assert.equal(label('gu', 'allCustomers'), 'બધા વેપારી');
+  // Filled from other app files: filters.sheet.sortBy, components.table.sortedAscending / sortedDescending,
+  // invoice.label.tax, users.fields.status, customers.fields.city.
+  assert.deepEqual(['sortBy', 'ascending', 'descending', 'tax', 'status', 'city'].map(key => label('gu', key)),
+    ['આ મુજબ સૉર્ટ કરો', 'ચઢતા ક્રમમાં', 'ઉતરતા ક્રમમાં', 'ટેક્સ', 'સ્થિતિ', 'શહેર']);
+  assert.equal(label('gu', 'latestInvoice'), 'Latest invoice');
+  assert.equal(label('gu', 'lastActivity'), 'Last activity');
 });
 
 test('rows, summary figures and totals come from the RPC answer and are printed with Indian grouping', () => {
@@ -312,7 +319,8 @@ test('a requested sort is applied when the report knows the field; anything else
   }
   assert.deepEqual(sortFields(parseReportRequest({ report: 'invoice-history', from: '2026-01-01', to: '2026-01-02' })),
     ['customer', 'invoices', 'amount', 'net', 'latest']);
-  assert.equal(build('stock-aging', 'customer', 'gu', { sort: { field: 'stock', order: 'asc' } }).sort.label, 'સ્ટોક (ascending)');
+  assert.equal(build('stock-aging', 'customer', 'gu', { sort: { field: 'stock', order: 'asc' } }).sort.label, 'સ્ટોક (ચઢતા ક્રમમાં)');
+  assert.equal(build('stock-aging', 'customer', 'gu', { sort: { field: 'stock', order: 'desc' } }).sort.label, 'સ્ટોક (ઉતરતા ક્રમમાં)');
   // Every default sort names a column of its level.
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
