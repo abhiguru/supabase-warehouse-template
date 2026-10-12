@@ -49,6 +49,9 @@ token today.
   already gives up the phone number.
 - `npm run retention:apply` also removes expired single-use records
   (`central_token_use`).
+- Migration 51 drops `public.central_user_links`, the empty table of an earlier
+  central-login design (migration 0) that nothing read or wrote; the link lives
+  on `user_profiles`.
 - The sign-in answers of both paths now include the two new profile columns in
   `user` (they are `null` for a profile that never signed in centrally).
 - Not measured: how long fetched keys stay in a function worker's memory (at

@@ -519,6 +519,15 @@ SELECT pg_temp.cl_assert(:'again'::jsonb#>>'{data,action}'='pending' AND :'again
  'the person can ask for access again, as after deleting an SMS-enrolled account: '||:'again');
 
 -- ---------------------------------------------------------------------------
+-- Migration 51: the table of the earlier design is gone
+-- ---------------------------------------------------------------------------
+SELECT pg_temp.cl_assert(to_regclass('public.central_user_links') IS NULL,'central_user_links no longer exists');
+SELECT pg_temp.cl_assert(NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='central_user_links'),
+ 'the policies of central_user_links are gone with it');
+SELECT pg_temp.cl_assert((SELECT count(*)=2 FROM information_schema.columns WHERE table_schema='public' AND table_name='user_profiles'
+   AND column_name IN ('central_issuer','central_subject')),'the link lives on user_profiles');
+
+-- ---------------------------------------------------------------------------
 -- Expired token records
 -- ---------------------------------------------------------------------------
 INSERT INTO warehouse_security.central_token_use(token_hash,expires_at) VALUES

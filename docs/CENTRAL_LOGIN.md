@@ -231,7 +231,9 @@ together with the phone number and can ask for access again.
 | `config/compose.env`: `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL`, `CENTRAL_JWKS_FILE` | The operator's settings. |
 | `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. **It is not part of a backup.** |
 
-The token itself is never stored or logged.
+The token itself is never stored or logged. The table `public.central_user_links`
+of an earlier design (migration 0) was never written and is dropped by
+migration 51; the link is the two profile columns above.
 
 ## Operator settings
 
