@@ -47,7 +47,7 @@ test_files=(
   "$ROOT/tests/central_login.sql" "$ROOT/tests/report_sort.sql"
   "$ROOT/tests/report_pdf_retention.sql"
   "$ROOT/tests/report_to_date.sql" "$ROOT/tests/grn_list_end_day.sql"
-  "$ROOT/tests/report_ist_day.sql"
+  "$ROOT/tests/report_ist_day.sql" "$ROOT/tests/report_dispatch_id.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — dispatch activity report returns the dispatch id (2026-10-12)
+
+Migration 57. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- Each dispatch in the answer of `get_customer_dispatch_activity` now carries
+  `disp_id`, the id of the dispatch (`dispatch.id`). The app's dispatch
+  activity report shows its "Open dispatch" control only when a dispatch has
+  that field, and opens the dispatch details screen with it, so until now the
+  control never appeared. With this migration applied it does, with no app
+  change.
+- Nothing else changes: the other keys of a dispatch and of its items, the
+  summary, the order, the period and the India day cut of migration 56, the
+  access rules (a customer account still gets only its own customer's
+  dispatches) and the grants are as they were. The id is only that of a
+  dispatch the caller is already given.
+- `tests/report_dispatch_id.sql` checks, as staff, an administrator and a
+  customer account, that each listed dispatch carries the id of its own row in
+  `dispatch` (compared with the table), that the exact set of keys is the
+  earlier one plus `disp_id`, that a deleted dispatch and another customer's
+  are not in the answer, that a customer account is still refused another
+  customer's dispatches, and that the function is single, guarded and keeps
+  its grants.
+
 ## Unreleased — report days follow India's calendar (2026-10-12)
 
 Migration 56. **Operator action:** none beyond applying the migration (the
