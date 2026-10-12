@@ -122,6 +122,20 @@ for (const token of [anon, tokenA, tokenB])
   assert.ok(!(await api(attachmentPath, token)).ok, 'non-staff attachment read denied');
 assert.ok(!(await upload(adminToken)).ok, 'duplicate attachment upload rejected');
 assert.equal((await api(attachmentPath, adminToken)).status, 200, 'failed retry preserves first upload');
+// Image transformation: Storage hands the stored file to imgproxy, which reads
+// the private storage directory itself. A 2x2 PNG must come back as a 1x1 PNG.
+const pngFixture = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
+const picture = `customer-images/${a}/backend-core.png`;
+const stored = await fetch(`${base}/storage/v1/object/${picture}`, { method: 'POST', headers: {
+  apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/png',
+}, body: pngFixture, signal: AbortSignal.timeout(30000) });
+assert.equal(stored.status, 200, 'admin picture upload');
+const resized = await fetch(`${base}/storage/v1/render/image/authenticated/${picture}?width=1&height=1&resize=fill&format=origin`, {
+  headers: { apikey: anon, Authorization: `Bearer ${adminToken}` }, signal: AbortSignal.timeout(30000) });
+assert.equal(resized.status, 200, 'stored picture is transformed');
+const resizedBytes = Buffer.from(await resized.arrayBuffer());
+assert.ok(resizedBytes.subarray(0, 8).equals(pngFixture.subarray(0, 8)), 'transformed picture is a PNG');
+assert.equal(resizedBytes.readUInt32BE(16), 1, 'transformed width');
 const cartA = await rpc('get_or_create_cart', tokenA, { p_customer_id: a });
 assert.ok(cartA.ok && typeof cartA.data === 'string', 'A cart created');
 const foreignCart = await rpc('get_or_create_cart', tokenB, { p_customer_id: a });

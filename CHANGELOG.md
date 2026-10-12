@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — image transformation works again (2026-10-12)
+
+`docker/docker-compose.yml`, `scripts/compose.sh`. **Operator action:** none;
+the next start recreates the imgproxy container.
+
+- Every image transformation (`/storage/v1/render/image/...`) failed with
+  "Internal error". imgproxy ran as its image's user (999), and the storage
+  directory is private to the installing user (mode 0700), so imgproxy could
+  not open any stored picture. It now runs as the owner of that directory;
+  the mount stays read-only. The app does not request transformed pictures
+  today, so nothing visible was broken, and no test asked for one: the
+  operator API test now uploads a 2x2 picture and requires a 1x1 back.
+- Found on the dev instance while checking Storage v1.80.2; the fault is
+  older than that update (the pictures it failed on were stored the day
+  before).
+
 ## Unreleased — Storage v1.80.2 (2026-10-12)
 
 `docker/storage`. **Operator action:** none beyond the usual upgrade; the

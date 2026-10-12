@@ -61,6 +61,8 @@ unset_args=()
 while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then unset_args+=(-u "${BASH_REMATCH[1]}"); fi
 done < "$ENV_FILE"
-exec env "${unset_args[@]}" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+# imgproxy reads the private storage directory (mode 0700, owned by this user)
+# and so runs as this user; see the imgproxy service in docker-compose.yml.
+exec env "${unset_args[@]}" WAREHOUSE_HOST_UID="$(id -u)" WAREHOUSE_HOST_GID="$(id -g)" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" \
   -f "$ROOT/docker/docker-compose.override.yml" "$@"

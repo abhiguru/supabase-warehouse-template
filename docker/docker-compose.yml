@@ -253,6 +253,10 @@ services:
     build:
       context: ./imgproxy
     restart: unless-stopped
+    # The storage directory is private to the installing user (mode 0700), so
+    # the image's own user (999) cannot enter it and every transformation
+    # failed with "permission denied". scripts/compose.sh passes the owner.
+    user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
     volumes:
       # imgproxy only reads stored images; the storage service writes them.
       - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:ro,z
