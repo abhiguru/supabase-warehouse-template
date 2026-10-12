@@ -23,19 +23,26 @@ the facility's **owner**, **staff** and **clients** use for orders, tracking, go
 
 The target design is in the app repository's
 [docs/CENTRAL_LOGIN.md](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/CENTRAL_LOGIN.md).
-Nothing of it is implemented yet.
+The facility half of it is implemented here (migration 49, 2026-10-12); the central service
+and the app screens are not built yet, so no real token exists and it is off by default.
 
-## What the backend will need for central login
+## Central login in this backend
 
-- An operator setting to trust the association's token issuer and public keys (off for
-  installs that are not association members).
-- An exchange endpoint that verifies the central token (signature, issuer, audience = this
-  facility, expiry, single use) and then: creates a pending access request (reuse
-  `operator_enrollment` / enrollment review), issues the existing session for an approved
-  active profile, or refuses a disabled one.
-- Revocation stays local: `update_user_status(false)` already revokes a profile's sessions.
+The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md).
+
+- Operator settings `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL` (`setup.sh --central-issuer
+  --central-jwks-url`; both empty = off, the default for installs that are not members).
+- `functions/central-exchange` verifies the identity token (ES256 signature against the
+  issuer's key set, issuer, audience = this facility, lifetime, type) and calls
+  `operator_central_exchange`, which accepts a token once and then does what a correct SMS
+  code does: a pending access request (the existing enrollment review), the existing
+  session for an approved active profile, or a refusal for a rejected or disabled one.
+- A profile carries its central identity (`user_profiles.central_issuer`,
+  `central_subject`). An administrator unlinks one with `clear_user_central_identity`.
+- Revocation stays local: `update_user_status(false)` revokes a profile's sessions.
 - Local SMS login (`functions/operator-otp`, `operator_*` RPCs) stays for bootstrap and
-  non-member installs.
+  non-member installs. Keep the two paths answering alike: a change to what
+  `operator_verify_otp` does after a correct code belongs in `operator_central_exchange` too.
 
 ## How it works today
 

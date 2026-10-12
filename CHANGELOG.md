@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — central login: facility token exchange (2026-10-12)
+
+Migration 49, `functions/central-exchange`, `setup.sh`. **Operator action:**
+none, unless you configure the association's issuer: central sign-in is off
+until `setup.sh` is run with `--central-issuer` and `--central-jwks-url`
+([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#central-sign-in)). The
+upgrade itself applies migration 49 and recreates the database and functions
+containers once (two new, empty settings). SMS sign-in is unchanged.
+
+The facility half of central login
+([docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md)). The association's central
+service and the app screens do not exist yet, so nothing can produce a valid
+token today.
+
+- New public endpoint `POST /functions/v1/central-exchange`. It verifies an
+  identity token signed by the central service (ES256 only, type
+  `facility-identity+jwt`, exact issuer, audience = this facility's origin, at
+  most 10 minutes of life, verified phone number) against the issuer's
+  published keys, and then answers as `operator-otp/verify` does: a pending
+  access request for an unknown person, this facility's session for an approved
+  one, a refusal for a rejected or disabled one. A token is accepted once.
+- New settings `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL`, both empty by default.
+  `setup.sh --central-issuer URL --central-jwks-url URL` sets or replaces
+  them on a fresh setup or a rerun; `--central-issuer off` removes them.
+- `get-public-config` answers `centralLogin`: `{ issuer }` when central sign-in
+  is configured, `null` when not.
+- `user_profiles` has two new columns, `central_issuer` and `central_subject`.
+  A profile enrolled with an SMS code is linked on its first central sign-in
+  with the same phone number. A phone number whose profile is linked to another
+  central account is refused (`identity_conflict`) until an administrator
+  unlinks the profile with the new `clear_user_central_identity` (administrators
+  only; it also signs that profile out).
+- `delete_user_account` drops the central link of the deleted profile, as it
+  already gives up the phone number.
+- `npm run retention:apply` also removes expired single-use records
+  (`central_token_use`).
+- The sign-in answers of both paths now include the two new profile columns in
+  `user` (they are `null` for a profile that never signed in centrally).
+
 ## Unreleased — edge functions download nothing at start (2026-10-12)
 
 `functions/`. **Operator action:** none; the next start recreates the

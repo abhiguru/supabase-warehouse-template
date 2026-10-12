@@ -16,7 +16,7 @@ function namesRead(entry) {
   const visit = file => {
     if (seen.has(file)) return;
     seen.add(file);
-    // operator-otp wraps the lookup for its unit tests and reads through deps.env('NAME').
+    // operator-otp and central-exchange wrap the lookup for their unit tests and read through deps.env('NAME').
     const source = readFileSync(file, 'utf8').replace('env: name => Deno.env.get(name)', '');
     assert.doesNotMatch(source, /Deno\.env\.(?:toObject|get\((?!['"][A-Z0-9_]+['"]\)))/, `${file} reads the environment by a computed name`);
     for (const match of source.matchAll(/(?:Deno\.env\.get|deps\.env)\(\s*['"]([A-Z0-9_]+)['"]\s*\)/g)) names.add(match[1]);
@@ -30,6 +30,7 @@ const container = {
   JWT_SECRET: 'unit-test-signing-secret-0123456789abcdef', SUPABASE_URL: 'http://kong:8000', SUPABASE_ANON_KEY: 'unit-anon',
   SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_PUBLIC_URL: 'https://api.example.test', GOTENBERG_URL: 'http://gotenberg:3000',
   APP_ENV: 'production', AUTH_MODE: 'operator', VERIFY_JWT: 'true', INSTANCE_MANIFEST_PATH: '/etc/warehouse/instance.json',
+  CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
   SUPABASE_DB_URL: 'postgresql://postgres:unit-db-password@db:5432/postgres', PATH: '/usr/bin', HOME: '/root', HOSTNAME: 'abc',
 };
 
@@ -42,6 +43,10 @@ test('each worker list is exactly what the function and its shared modules read'
 test('every function the router can start has a list, and the router passes only that list', () => {
   const allowed = [...router.matchAll(/'([a-z][a-z-]+)'/g)].map(match => match[1]).filter(name => existsSync(join(functions, name, 'index.ts')));
   assert.ok(allowed.includes('hello') && allowed.includes('generate-invoice-pdf'), 'router names were read');
+  // Sign-in endpoints are reachable with the anon key only: they are in the router's public set.
+  const publicSet = /const publicFunctions = new Set\(\[([^\]]+)\]\)/.exec(router)[1];
+  assert.deepEqual([...publicSet.matchAll(/'([a-z-]+)'/g)].map(match => match[1]), ['hello', 'get-public-config', 'operator-otp', 'central-exchange']);
+  assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, /);
   for (const name of allowed) {
     if (/-preprinted$/.test(name)) continue; // refused with 503 and absent from `allowed`
     assert.ok(workerEnvNames[name], `${name} has no environment list`);
@@ -54,12 +59,21 @@ test('every function the router can start has a list, and the router passes only
 
 test('public workers get no signing secret, and no worker gets a database address or an unlisted value', () => {
   assert.deepEqual(workerEnv('hello', container), []);
-  for (const name of ['hello', 'get-public-config', 'operator-otp']) {
+  for (const name of ['hello', 'get-public-config', 'operator-otp', 'central-exchange']) {
     assert.ok(!workerEnv(name, container).some(([key]) => key === 'JWT_SECRET'), `${name} holds JWT_SECRET`);
   }
   assert.deepEqual(Object.fromEntries(workerEnv('operator-otp', container)), {
     APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
   });
+  // The central settings reach the exchange and the public configuration, not the SMS sign-in or a signed-in function.
+  assert.deepEqual(Object.fromEntries(workerEnv('central-exchange', container)), {
+    APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
+    SUPABASE_PUBLIC_URL: 'https://api.example.test', CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
+  });
+  assert.ok(workerEnv('get-public-config', container).some(([key]) => key === 'CENTRAL_ISSUER'));
+  for (const name of ['operator-otp', 'get-config', 'generate-grn-pdf']) {
+    assert.ok(!workerEnv(name, container).some(([key]) => key.startsWith('CENTRAL_')), `${name} holds a central setting`);
+  }
   for (const name of Object.keys(workerEnvNames)) {
     const pairs = workerEnv(name, container, { INSTANCE_MANIFEST_JSON: '{}' });
     for (const [key, value] of pairs) {
@@ -82,6 +96,10 @@ test('public workers get no signing secret, and no worker gets a database addres
 test('the functions container holds no database address', () => {
   const block = compose.slice(compose.indexOf('\n  functions:\n'), compose.indexOf('\n  db:\n'));
   assert.ok(block.includes('SUPABASE_SERVICE_ROLE_KEY'), 'functions block was read');
+  // Central sign-in settings are optional: a state written before they existed must still render.
+  assert.ok(block.includes('CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}') && block.includes('CENTRAL_JWKS_URL: ${CENTRAL_JWKS_URL:-}'));
+  const database = compose.slice(compose.indexOf('\n  db:\n'));
+  assert.ok(database.includes('CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}') && !database.includes('CENTRAL_JWKS_URL'));
   assert.doesNotMatch(block, /SUPABASE_DB_URL|POSTGRES_PASSWORD/);
   for (const dir of readdirSync(functions, { recursive: true })) {
     if (String(dir).endsWith('.ts')) assert.doesNotMatch(readFileSync(join(functions, String(dir)), 'utf8'), /SUPABASE_DB_URL/, String(dir));

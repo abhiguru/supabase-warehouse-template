@@ -11,8 +11,12 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   'hello': [],
   // INSTANCE_MANIFEST_JSON is not in the container environment: the router
   // reads the manifest file and passes its text.
-  'get-public-config': ['APP_ENV', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON'],
+  'get-public-config': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON',
+    'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL'],
   'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
+  // Central sign-in: the trusted issuer, the address of its public keys, and
+  // this facility's origin (the audience a token must name).
+  'central-exchange': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL'],
   'get-config': [...signedIn, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
   'generate-sample-pdf': [...signedIn, 'GOTENBERG_URL'],
   'generate-grn-pdf': documentPdf,

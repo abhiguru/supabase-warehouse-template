@@ -316,6 +316,48 @@ container with the new environment and synchronizes the protected
 unchanged provider file leaves the configuration byte-identical. Send yourself
 a code afterwards.
 
+## Central sign-in
+
+Optional, and off by default. A member of the association can let people sign
+in with the association's central identity service instead of an SMS code
+sent by this facility. The central service only proves who a person is; this
+facility still approves, limits and revokes every person itself, and SMS
+sign-in keeps working. The contract is in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md).
+
+Turn it on with the two values the association gives you, added to the usual
+setup command (first installation or rerun):
+
+```bash
+bash setup.sh --operator \
+  --state-dir "$WAREHOUSE_STATE_DIR" \
+  --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --central-issuer https://login.association.example \
+  --central-jwks-url https://login.association.example/.well-known/jwks.json
+```
+
+- Both options or neither; both must be `https://` addresses. The issuer is
+  stored exactly as typed, because it is compared with the token as a string.
+- They are written to `CENTRAL_ISSUER` and `CENTRAL_JWKS_URL` in
+  `config/compose.env`, and the issuer to the database. A later rerun without
+  the two options keeps them.
+- Turn it off again with `--central-issuer off` (no `--central-jwks-url`).
+  People who signed in centrally keep their profiles and sessions; they sign
+  in with an SMS code from then on.
+- Setting, replacing or removing the values recreates the database and
+  functions containers during that setup run (a restart of a few seconds), as
+  any change of their settings does.
+- Check: `curl -s https://<your origin>/functions/v1/get-public-config` shows
+  `"centralLogin":{"issuer":"…"}` when it is on and `"centralLogin":null` when
+  it is off.
+
+The functions container must be able to reach the key address over HTTPS.
+When it cannot, central sign-in answers "temporarily unavailable" and SMS
+sign-in is unaffected.
+
+Approving, revoking and the one new administrator action (unlinking a profile
+whose phone number is tied to another central account) are described in
+[CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-administrator-does).
+
 ## Cloudflare Tunnel ingress
 
 Cloudflare Tunnel is the only supported ingress. The `cloudflared` connector on
@@ -1173,7 +1215,8 @@ A rerun is the same `setup.sh --operator ...` command with the same inputs
 against the same state directory. It regenerates nothing that already exists:
 identity, signing keys, database, stored files, the administrator and the
 provider lines are preserved (a different `--provider-env` file replaces only
-the MSG91 lines). Run it a second time right after installation and compare
+the MSG91 lines; `--central-issuer` and `--central-jwks-url` set or replace
+only the two [central sign-in](#central-sign-in) lines). Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
 To upgrade to a newer `main`:

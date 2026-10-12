@@ -38,6 +38,10 @@ Deno.serve(async (req: Request) => {
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     const instance = await readInstanceManifest(baseUrl);
     const environment = Deno.env.get('APP_ENV') || 'development';
+    // Central sign-in is offered only where functions/central-exchange would accept a token.
+    const centralIssuer = Deno.env.get('CENTRAL_ISSUER') || '';
+    const centralLogin = centralIssuer && Deno.env.get('CENTRAL_JWKS_URL') && Deno.env.get('AUTH_MODE') === 'operator'
+      && environment === 'production' ? { issuer: centralIssuer } : null;
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     if (!anonKey) throw new Error('Missing anon key');
     const client = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
@@ -55,6 +59,7 @@ Deno.serve(async (req: Request) => {
       capabilities: instance.capabilities, supportedApiVersions: instance.supportedApiVersions,
       minimumClientVersion: instance.minimumClientVersion,
       maintenanceMode: config.maintenance_mode,
+      centralLogin,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
       featureFlags: Object.fromEntries((flags.data || []).map(flag => [flag.name, flag.enabled])),
     }, timestamp: new Date().toISOString() }), {

@@ -12,6 +12,42 @@ export function canonicalOrigin(value, name = 'URL') {
   return url.origin;
 }
 
+// Central sign-in (docs/CENTRAL_LOGIN.md): the association's token issuer and
+// the address of its public keys. Both or neither; `off` as the issuer empties
+// both. Returns null when neither option was given (leave the state as it is),
+// else the two compose.env values. The issuer is kept exactly as typed,
+// because the facility compares it with the token's `iss` as a string.
+export function centralValues(centralIssuer, centralJwksUrl) {
+  if (centralIssuer === undefined && centralJwksUrl === undefined) return null;
+  if (centralIssuer === 'off') {
+    if (centralJwksUrl !== undefined) throw new Error('--central-issuer off turns central sign-in off; leave out --central-jwks-url.');
+    return { CENTRAL_ISSUER: '', CENTRAL_JWKS_URL: '' };
+  }
+  if (!centralIssuer || !centralJwksUrl) throw new Error('Central sign-in needs both --central-issuer and --central-jwks-url (or --central-issuer off).');
+  const values = { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: centralJwksUrl };
+  for (const [name, value, option] of [['CENTRAL_ISSUER', centralIssuer, '--central-issuer'], ['CENTRAL_JWKS_URL', centralJwksUrl, '--central-jwks-url']]) {
+    let url;
+    try { url = new URL(value); } catch { throw new Error(`${option} must be an https:// address.`); }
+    // The same characters a provider value may hold, so the line reads back unchanged from compose.env.
+    if (!value.startsWith('https://') || url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.hash
+      || value.length > 255 || !/^[^\s'"`\\$#\r\n]+$/.test(value)) {
+      throw new Error(`${option} must be an https:// address without credentials, fragment, spaces, quotes, backslash, $ or #.`);
+    }
+    if (name === 'CENTRAL_ISSUER' && url.search) throw new Error('--central-issuer must not carry a query.');
+  }
+  return values;
+}
+
+// Sets the two central lines of an existing compose.env; a state written by a
+// release that had no such lines gets them appended.
+function setCentralLines(text, values) {
+  let result = text;
+  for (const key of Object.keys(values)) {
+    if (!new RegExp(`^${key}=.*$`, 'm').test(result)) result += `${result.endsWith('\n') ? '' : '\n'}${key}=\n`;
+  }
+  return replaceEnvLines(result, values);
+}
+
 function providerValues(path, checkout) {
   if (!isAbsolute(path) || resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--provider-env must be an absolute file outside the checkout.');
   const st = lstatSync(path, { throwIfNoEntry: false });
@@ -62,7 +98,8 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, faultAfterManifest = false } = {}) {
+  const central = centralValues(centralIssuer, centralJwksUrl);
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
   const state = resolve(stateDir);
@@ -91,19 +128,28 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (apiUrl && canonicalOrigin(apiUrl, '--api-url') !== manifest.canonicalOrigin) throw new Error('Existing canonical origin differs; refusing to replace instance identity.');
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
-      // A rerun may replace only the SMS provider lines; identity, paths and
-      // signing keys are preserved. Unchanged values leave the file bytes intact.
+      // A rerun may replace only the SMS provider lines and the two central
+      // sign-in lines; identity, paths and signing keys are preserved.
+      // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
+      let centralUpdated = false;
       if (providerEnv) {
         const provider = providerValues(providerEnv, checkout);
         const current = readFileSync(envPath, 'utf8');
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
       }
+      if (central) {
+        const current = readFileSync(envPath, 'utf8');
+        // "Off" on a state that never had the lines changes nothing.
+        const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL)=/m.test(current);
+        const updated = absent && !central.CENTRAL_ISSUER ? current : setCentralLines(current, central);
+        if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
+      }
       // An installation made before signed backups gets its backup key here;
       // an existing key is never replaced.
       const backupKeyCreated = createBackupKey(join(state, 'config'));
-      return { created: false, state, manifest, providerUpdated, backupKeyCreated };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, backupKeyCreated };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -121,7 +167,8 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generateSigningKeys(),
-    SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider };
+    SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
+    ...(central ?? {}) };
   for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
@@ -140,9 +187,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
 
 export function parseConfigureArgs(args) {
   const options = {};
-  const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv' };
+  const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
+    '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off --central-jwks-url HTTPS]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -153,7 +201,9 @@ if (isMain(import.meta.url)) {
     const result = configure(fileURLToPath(new URL('..', import.meta.url)), parseConfigureArgs(process.argv.slice(2)));
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
-        : 'Preserved existing operator state unchanged.');
+        : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
+          : 'Preserved existing operator state unchanged.');
+    if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }

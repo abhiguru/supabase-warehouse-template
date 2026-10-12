@@ -592,10 +592,13 @@ several customers calls once per customer.
 | Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
 | Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
 | Review enrollment requests | yes | no | no | no |
+| Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
 
-Bold marks what migration 45 changed.
+Bold marks what migration 45 changed. Migration 49 added the unlink row; it is
+the one function the guard names that a supervisor may not call
+([CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)).
 
 `tests/role_allowlist.sql` classifies every function the app role may execute
 (staff yes/no; customer any/own/no). It calls each one that a customer account

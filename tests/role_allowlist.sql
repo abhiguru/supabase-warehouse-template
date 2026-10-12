@@ -121,7 +121,11 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
  ('update_order_metadata',false,'no'),
  -- the price history of migration 48: staff change prices but do not read it
- ('get_item_price_history',false,'no');
+ ('get_item_price_history',false,'no'),
+ -- migration 49: administrators only; the guard refuses a supervisor as well
+ -- (tests/central_login.sql). operator_central_exchange is, like
+ -- operator_verify_otp, granted to the service role alone and so not listed.
+ ('clear_user_central_identity',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.

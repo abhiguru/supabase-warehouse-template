@@ -44,6 +44,7 @@ test_files=(
   "$ROOT/tests/role_allowlist.sql" "$ROOT/tests/document_write_consistency.sql"
   "$ROOT/tests/invoice_number_per_year.sql" "$ROOT/tests/zero_charge_reason.sql"
   "$ROOT/tests/item_price_history.sql" "$ROOT/tests/invoice_column_grants.sql"
+  "$ROOT/tests/central_login.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -80,6 +81,34 @@ SQL
     echo 'Auth transition must revoke earlier sessions and preserve operator sessions on rerun.' >&2; exit 1;
   }
 done
+
+# scripts/configure-central.sql: the trusted issuer follows the database
+# container's CENTRAL_ISSUER; absent or empty turns central sign-in off, and a
+# value that is not an https address changes nothing.
+central_issuer() {
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres \
+    -c "SELECT COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='central_issuer'),'off')"
+}
+configure_central() {
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$@" "$container" \
+    psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-central.sql"
+}
+configure_central
+[[ "$(central_issuer)" = off ]] || { echo 'Central sign-in must be off when CENTRAL_ISSUER is absent.' >&2; exit 1; }
+for pass in 1 2; do
+  configure_central -e CENTRAL_ISSUER=https://login.association.example.test
+  [[ "$(central_issuer)" = https://login.association.example.test ]] || { echo 'The trusted issuer was not stored.' >&2; exit 1; }
+done
+configure_central -e CENTRAL_ISSUER=https://login.association.example.test/v2
+[[ "$(central_issuer)" = https://login.association.example.test/v2 ]] || { echo 'The trusted issuer was not replaced.' >&2; exit 1; }
+for refused in 'http://login.association.example.test' 'https://login.association.example.test/a b' 'login.association.example.test'; do
+  if configure_central -e "CENTRAL_ISSUER=$refused" >/dev/null 2>&1; then
+    echo "configure-central.sql accepted the issuer '$refused'." >&2; exit 1
+  fi
+  [[ "$(central_issuer)" = https://login.association.example.test/v2 ]] || { echo 'A refused issuer changed the stored one.' >&2; exit 1; }
+done
+configure_central -e CENTRAL_ISSUER=
+[[ "$(central_issuer)" = off ]] || { echo 'An empty CENTRAL_ISSUER must turn central sign-in off.' >&2; exit 1; }
 
 # Migrations 26 and 46: a GRN edit, a dispatch being created and a dispatch edit
 # must each survive a concurrent writer of the same lot.
@@ -119,4 +148,4 @@ migration_files=("$ROOT"/migrations/*.sql)
 # backup and replayed by scripts/verify-restore.sh, once with a session attached to
 # template1 and once with the disk-backed data directory.
 bash "$ROOT/tests/verify-restore-drill.sh" "$container"
-echo 'Migration reruns, checksum mismatch rejection, retention, and operator auth configuration passed.'
+echo 'Migration reruns, checksum mismatch rejection, retention, and operator and central auth configuration passed.'

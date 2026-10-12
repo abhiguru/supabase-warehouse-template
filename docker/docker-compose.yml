@@ -343,6 +343,9 @@ services:
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
       APP_ENV: ${APP_ENV:?Operator environment required}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
+      # Central sign-in; both empty = off. ":-" so a state from before these lines still renders.
+      CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}
+      CENTRAL_JWKS_URL: ${CENTRAL_JWKS_URL:-}
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
     command:
       [
@@ -382,6 +385,8 @@ services:
       JWT_EXP: ${JWT_EXPIRY}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
       APP_ENV: ${APP_ENV:?Operator environment required}
+      # Read by scripts/configure-central.sql; the functions service holds the key address.
+      CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}
       SMS_PROVIDER: ${SMS_PROVIDER:?MSG91 provider required}
       SMS_PRODUCTION_MODE: ${SMS_PRODUCTION_MODE:?Production SMS mode required}
       MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:?MSG91 auth key required}
