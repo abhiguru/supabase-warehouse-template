@@ -1,5 +1,71 @@
 # Changelog
 
+## Unreleased — review fixes in the reports (2026-10-12)
+
+Migration 63 and four changes to the report PDFs (`generate-report-pdf`).
+**Operator action:** none beyond applying the migration (the normal upgrade
+does). No setting, service or container changes.
+
+- Migration 63, `get_customer_grn_activity` (one customer): a goods receipt is
+  listed once, whatever its number of invoices. The CTE `invoice_status` held
+  one row per non-deleted invoice and was joined straight to the receipts, so
+  a receipt with two invoices (old data: before migration 41 a second save for
+  a receipt succeeded, and migration 41 changes no earlier row) came out twice
+  and inflated `summary.total_grns`, `total_items`, `total_quantity`,
+  `total_weight_kg`, `total_invoiced_grns` and `total_images`. Example: a
+  customer with three receipts, 7 bags, 70 kg, one receipt (1 bag, 10 kg) with
+  a second invoice, was answered as 4 receipts, 8 bags, 80 kg, 3 invoiced, the
+  receipt twice; it is now 3, 7, 70, 2 invoiced, each receipt once.
+  `invoice_status` is now one row per receipt: the latest non-deleted invoice
+  (by invoice date, then financial year, then number, then id) gives
+  `invoice_id` and `invoice_number`, and the new key `invoice_count` is the
+  number of non-deleted invoices (`0` for a receipt without one, `1` for an
+  ordinary one, `2` or more for doubled old data). Names and JSON types of
+  every existing key are unchanged; the guard (not redefined), SECURITY
+  DEFINER, search_path, grants, India day cuts, weight expressions of migration
+  59, key order and row order are unchanged, and the all-customers branch and
+  `get_all_grn_activity` (no invoice join) are not touched. Compared with
+  `pg_get_functiondef` before and after in a throwaway database, only the CTE
+  (`SELECT DISTINCT ON (i.gr_id)`, the `ORDER BY`, the new key) and the default
+  object of a receipt without an invoice differ.
+- What an app sees: `invoice_status.invoice_count` is new and is ignored by an
+  app that does not know it (the mobile app reads `invoice_number` only; the
+  GRN activity PDF too). A receipt with several invoices shows once, with its
+  latest invoice. The figures of the summary count each receipt once.
+- Report PDFs, item stock summary: `packaging` is no longer accepted as a sort
+  (the database function sorts by `item`, `stock`, `received` and `grns` only).
+  It used to sort the first 2,001 rows of the item-name order and print
+  "Packaging (ascending)", so a list of more than 2,001 items lost the item that
+  comes first by packaging. A packaging request now gives the default sort, like
+  any unknown field: "Item (ascending)". Other reports' sorts are unchanged.
+- Report PDFs, invoice history of one customer: an invoice whose status word is
+  neither `paid` nor `pending` is worked out by the app's rule instead of
+  being left out of Paid and Pending (and out of both choices): the payment
+  amount, when it can be read, is the money received; otherwise a `paid` word
+  means the whole total and anything else nothing. An unknown word with no
+  payment is Pending for its whole total, and Paid + Pending = Amount for
+  every invoice. Invoices of 0 or more with a `paid` or `pending` word print as
+  before.
+- Report PDFs, invoice history of one customer: a database without migration 61
+  answers an invoice once per payment row. The rows of one `invoice_id` are now
+  merged before the table is built (first row's fields and position, the
+  payments added up in whole paise, `paid` if any row says paid, the date and
+  reference of the latest payment), so an invoice of 14.00 with payments of
+  4.00 and 10.00 prints once: Amount 14.00, Paid 14.00, Pending 0.00, Paid.
+  The summary counts the invoices listed. Rows with no `invoice_id` are not
+  merged; an answer without duplicates prints exactly as before.
+- Report PDFs, a table cut at the 2,000-row limit: its totals row adds up the
+  rows printed while the summary above covers the whole report, so the row is
+  labelled "Total of rows shown" (Gujarati: "દેખાતી લાઇનનો કુલ", put together
+  from the app's words for the owner's check) instead of "Total". A table that
+  was not cut keeps "Total".
+- Developer handoff: migration files are run only through the ledger; run
+  directly a second time, migrations 57 and 58 add their fragment again, so a
+  new marker-patch migration must have no before-text inside its after-text
+  (migration 63 is checked by running it twice in a throwaway database).
+- Tests: `tests/report_grn_invoices.sql` (registered last in
+  `tests/migrations.sh`) and new cases in `tests/report-pdf.test.mjs`.
+
 ## Unreleased — Paid and Pending follow the money in the invoice reports (2026-10-12)
 
 Migration 62. **Operator action:** none beyond applying the migration (the

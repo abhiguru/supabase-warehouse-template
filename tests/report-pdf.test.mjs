@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseReportRequest, reportNames, periodReports, dayNumber } from '../functions/_shared/report-request.ts';
-import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows }
+import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows, oneRowPerInvoice }
   from '../functions/_shared/report-definitions.ts';
 import { label, labelKeys, missingGujarati } from '../functions/_shared/report-labels.ts';
 import { reportHtml, documentHtml } from '../functions/_shared/document-html.ts';
@@ -628,14 +628,15 @@ test('without status the invoice history lists every invoice, adds its amounts u
   }
 });
 
-test('status works with a sort, drops invoices of no known status, and the summary covers a cut table', () => {
+test('status works with a sort, puts an invoice of no known status word under Pending, and the summary covers a cut table', () => {
   const sorted = invoiceDocument('en', { status: 'paid', sort: { field: 'net', order: 'asc' } });
   assert.deepEqual(invoiceNumbers(sorted.built), ['2026-0005', '2026-0003', '2026-0001']);
   // The app still sends 'net' for the amount sort; it sorts by the amount column, which the report then names.
   assert.deepEqual(sorted.filters[3], ['Sort by', 'Amount (ascending)']);
   const largest = invoiceDocument('en', { status: 'pending', sort: { field: 'net', order: 'desc' } });
   assert.deepEqual(invoiceNumbers(largest.built), ['2026-0002', '2026-0004']);
-  // An invoice whose status is neither is listed without a choice, as the app does ("All" only), and under neither choice.
+  // An invoice whose status word is neither paid nor pending is worked out as the app does (invoicePayment.ts): with no payment it is
+  // Pending for its whole total, so it is listed without a choice and under Pending, never under Paid.
   const odd = { success: true, data: { summary: { total_invoices: 6 }, invoices: [
     ...mixedInvoices.data.invoices,
     { invoice_number: '2026-0006', invoice_date: '2026-01-31', grn_ref: 'Z0006', total: 10, tax_amount: 0, net_total: 10, payment_status: { status: 'void' } },
@@ -643,7 +644,9 @@ test('status works with a sort, drops invoices of no known status, and the summa
   ] } };
   assert.equal(invoiceDocument('en', {}, odd).built.rows.length, 7);
   assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'paid' }, odd).built), ['2026-0005', '2026-0003', '2026-0001']);
-  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'pending' }, odd).built), ['2026-0004', '2026-0002']);
+  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'pending' }, odd).built), ['2026-0006', '2026-0007', '2026-0004', '2026-0002']);
+  assert.deepEqual(invoiceDocument('en', { status: 'pending' }, odd).built.summary, [['Invoices', '4'], ['Amount', '2,770.00'], ['Paid', '0.00'], ['Pending', '2,770.00']]);
+  assert.deepEqual(invoiceDocument('en', {}, odd).built.summary.slice(1), [['Amount', '4,370.50'], ['Paid', '1,600.50'], ['Pending', '2,770.00']]);
   // 2,100 paid invoices of 1.00 and 100 pending ones: the table is cut at the limit, the summary and the count still cover all the paid ones.
   const many = { success: true, data: { summary: { total_invoices: 2200, net_amount: 2200, paid_amount: 2100, pending_amount: 100 }, invoices: [
     ...Array.from({ length: 2100 }, (_, index) => ({ invoice_number: `P${index}`, invoice_date: '2026-01-05', grn_ref: 'Z', total: 1, tax_amount: 0, net_total: 1, payment_status: { status: 'paid' } })),
@@ -689,7 +692,9 @@ test('the handler takes the header choices from reportFilters and reports status
 // the GRN number in the one-customer GRN activity, stock summary and stock aging; 'કેટલા દિવસથી (દિવસ)' for the stock age in the
 // stock aging, which is also its sort line). The old text is put back the same way (`gujaratiReview`). The fourteen English
 // documents are unchanged by it, and the Paid / Pending rule changes none of the 28: the invoice history fixtures hold one
-// pending invoice with no payment, which prints 'Pending' as before.
+// pending invoice with no payment, which prints 'Pending' as before. The review fixes of 2026-10-12 change none of the 28 either (no
+// change on purpose): no fixture holds a cut table (the label 'Total of rows shown'), a packaging sort, a status word other than
+// paid or pending, or two rows with one invoice_id, and the item list's sort keys change nothing for the default sort.
 const baselineHtml = {
   'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
   'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
@@ -1247,11 +1252,15 @@ test('an amount that cannot be used: a paid invoice has received all of it, a pe
   assert.equal(cell(0.51, { status: 'pending' }).rows[0][5], 'Pending');
   assert.equal(cell(0, { status: 'pending' }).rows[0][5], 'Paid', 'an invoice of 0 owes nothing');
   assert.equal(cell(20.1, { status: 'paid', amount: 19.6 }).rows[0][5], 'Paid', '0.50 owed whatever the binary form of 20.1 - 19.6 is');
-  // An invoice of another status than paid or pending is listed and counted in the amount, but is in neither sum.
+  // An invoice of another status word than paid or pending is worked out like any other (the app's rule): an amount that can be read is
+  // the money received, whatever the word is, and with none nothing is received, so it is Pending for the whole total. It is never in neither sum.
   const odd = cell(14, { status: 'void', amount: 14 });
-  assert.deepEqual(odd.rows[0].slice(3), ['14.00', '0.00', 'void']);
-  assert.deepEqual(odd.summary.slice(1), [['Amount', '14.00'], ['Paid', '0.00'], ['Pending', '0.00']]);
-  assert.deepEqual(invoiceDocument('en', {}, one(14, undefined)).built.rows[0].slice(3), ['14.00', '0.00', '']);
+  assert.deepEqual(odd.rows[0].slice(3), ['14.00', '0.00', 'Paid']);
+  assert.deepEqual(odd.summary.slice(1), [['Amount', '14.00'], ['Paid', '14.00'], ['Pending', '0.00']]);
+  const unpaid = cell(14, { status: 'void' });
+  assert.deepEqual(unpaid.rows[0].slice(3), ['14.00', '0.00', 'Pending']);
+  assert.deepEqual(unpaid.summary.slice(1), [['Amount', '14.00'], ['Paid', '0.00'], ['Pending', '14.00']]);
+  assert.deepEqual(invoiceDocument('en', {}, one(14, undefined)).built.rows[0].slice(3), ['14.00', '0.00', 'Pending']);
 });
 
 // ---------------------------------------------------------------------------
@@ -1430,4 +1439,327 @@ test('the time of the report is India\'s day and clock, so a report made at 02:3
   assert.deepEqual(stamp('2026-09-30T18:29:59.999Z'), ['', 'Last updated 30-09-2026 23:59 IST']);
   assert.deepEqual(stamp('2026-10-12T08:00:00.000Z'), ['', 'Last updated 12-10-2026 13:30 IST']);
   assert.deepEqual(stamp('2026-12-31T20:00:00.000Z', 'gu'), ['', 'છેલ્લે અપડેટ થયું: 01-01-2027 01:30 IST']);
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes of 2026-10-12: the item list's sorts, every status word, one row per invoice, the totals row of a cut table
+// ---------------------------------------------------------------------------
+// Packaging is not a sort of get_item_wise_stock_list (item_name, total_stock, total_qty, grn_count). The PDF used to sort the first
+// 2,001 rows of the item-name order by packaging and print "Packaging (ascending)": a list of more than 2,001 items lost the item
+// that is first by packaging. Now `packaging` is no sort of this report and gives the default, like any unknown field.
+// Item order and packaging order differ here: by item Aniseed, Cumin, Fennel; by packaging Fennel (A bag), Cumin (M sack), Aniseed (Z container).
+const packagingItems = { success: true, data: { total_count: 3, items: [
+  { item_name: 'Aniseed', packaging: 'Z container', grn_count: 1, total_qty: 10, total_stock: 4 },
+  { item_name: 'Cumin', packaging: 'M sack', grn_count: 2, total_qty: 30, total_stock: 9 },
+  { item_name: 'Fennel', packaging: 'A bag', grn_count: 3, total_qty: 20, total_stock: 1 },
+] } };
+
+test('the item stock summary has four sorts, the ones the server does; packaging is not one and gives the default, item ascending', () => {
+  const defaults = { p_search_query: null, p_limit: maxReportRows + 1, p_offset: 0, p_sort_by: 'item_name', p_sort_order: 'asc' };
+  for (const level of ['customer', 'all']) for (const order of ['asc', 'desc']) for (const lang of ['en', 'gu']) {
+    const req = parseReportRequest({ report: 'item-stock-summary', lang, ...(level === 'customer' ? { customer_id: customer } : {}), sort: { field: 'packaging', order } });
+    const where = `${level} ${order} ${lang}`;
+    assert.deepEqual(reportLevel(req).rpc(req).args, { p_customer_id: level === 'customer' ? customer : null, ...defaults }, where);
+    const built = buildReport(req, unwrapReportBody(packagingItems));
+    assert.deepEqual(built.sort, { field: 'item', order: 'asc', label: lang === 'en' ? 'Item (ascending)' : 'આઇટમ (ચઢતા ક્રમમાં)' }, where);
+    assert.deepEqual(built.rows.map(row => row[0]), ['Aniseed', 'Cumin', 'Fennel'], where);
+    // Exactly the four sorts of the database function, in the order of the columns.
+    assert.deepEqual(sortFields(req), ['item', 'grns', 'received', 'stock'], where);
+  }
+  // The four sorts still work and still ask the server: stock descending is total_stock desc and the table is in that order.
+  const byStock = parseReportRequest({ report: 'item-stock-summary', sort: { field: 'stock', order: 'desc' } });
+  assert.equal(reportLevel(byStock).rpc(byStock).args.p_sort_by, 'total_stock');
+  const built = buildReport(byStock, unwrapReportBody(packagingItems));
+  assert.deepEqual([built.sort.field, built.sort.label, built.rows.map(row => row[0])], ['stock', 'Stock (descending)', ['Cumin', 'Aniseed', 'Fennel']]);
+  // The reported case: 2,002 items, the first 2,001 (by name) in "Z container", the last in "A container". The RPC sends 2,001 rows.
+  const prefix = { success: true, data: { total_count: 2002, items: Array.from({ length: maxReportRows + 1 }, (_, index) => (
+    { item_name: `Fictional ${String(index).padStart(4, '0')}`, packaging: 'Z container', grn_count: 1, total_qty: 1, total_stock: 1 })) } };
+  const request2002 = parseReportRequest({ report: 'item-stock-summary', sort: { field: 'packaging', order: 'asc' } });
+  const cut = buildReport(request2002, unwrapReportBody(prefix));
+  assert.deepEqual([cut.sort.label, cut.rows.length, cut.rows[0][0], cut.rowsTotal, cut.truncated], ['Item (ascending)', maxReportRows, 'Fictional 0000', 2002, true]);
+  // Other reports keep every sort they had: all their columns (and the aliases of the invoice history).
+  for (const report of reportNames.filter(name => name !== 'item-stock-summary')) for (const level of ['customer', 'all']) {
+    const req = parseReportRequest({ report, ...(level === 'customer' ? { customer_id: customer } : {}), ...(periodReports.has(report) ? invoicePeriod : {}) });
+    const definition = reportLevel(req);
+    assert.deepEqual(sortFields(req), [...definition.columns.map(column => column.key), ...Object.keys(definition.sortAliases ?? {})], `${report} ${level}`);
+  }
+});
+
+// The money rule as it was before this fix, for an invoice of 0 or more with the word paid or pending: the PDF must still print it.
+const usableAmount = value => (typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)))
+  ? Number(value) : null;
+const wasMoney = (word, total, amount) => {
+  const totalPaise = Math.round(total * 100);
+  const usable = usableAmount(amount);
+  const money = usable === null ? (word === 'paid' ? totalPaise : 0) : Math.round(usable * 100);
+  const received = Math.max(0, Math.min(money, totalPaise));
+  const balance = totalPaise - received;
+  return { status: balance <= 50 ? 'paid' : 'pending', received, balance };
+};
+// The app's rule (rn-warehouse-template src/features/filters/configs/reports/invoicePayment.ts, invoicePayment()), for any word and any total.
+const appMoney = (word, total, amount) => {
+  const totalPaise = Math.round((Number(total) || 0) * 100);
+  const usable = usableAmount(amount);
+  const recorded = usable === null ? (word === 'paid' ? totalPaise : 0) : Math.round(usable * 100);
+  const balance = Math.max(totalPaise - Math.max(recorded, 0), 0);
+  return { status: balance <= 50 ? 'paid' : 'pending', received: totalPaise - balance, balance };
+};
+const oneInvoice = (total, payment_status) => ({ success: true, data: { summary: { total_invoices: 1 }, invoices: [
+  { invoice_number: '2026-0900', invoice_date: '2026-01-05', grn_ref: 'Z', total, tax_amount: 0, net_total: total, ...(payment_status === undefined ? {} : { payment_status }) }] } });
+const paiseOf = text => Math.round(Number(text.replaceAll(',', '')) * 100);
+/** What the PDF prints for the one invoice: its status word as printed, and the received and balance as the summary adds them up. */
+function printedMoney(total, payment_status) {
+  const { rows, summary } = invoiceDocument('en', {}, oneInvoice(total, payment_status)).built;
+  return { status: rows[0][5].split(' ')[0].toLowerCase(), received: paiseOf(summary[2][1]), balance: paiseOf(summary[3][1]), amount: paiseOf(summary[1][1]) };
+}
+
+test('an invoice of 0 or more with the word paid or pending is worked out exactly as before', () => {
+  let compared = 0;
+  for (const total of [0, 0.5, 0.51, 14, 100.1, 125000]) {
+    for (const amount of [undefined, null, '', 'abc', -5, 0, 0.25, 4, '4.00', 13.5, 13.49, 14, 99.95, 1000]) {
+      for (const word of ['paid', 'pending']) {
+        const expected = wasMoney(word, total, amount);
+        assert.deepEqual(printedMoney(total, { status: word, amount }), { ...expected, amount: Math.round(total * 100) }, `${word} ${total} ${String(amount)}`);
+        compared += 1;
+      }
+    }
+  }
+  assert.equal(compared, 168);
+});
+
+test('any status word is worked out by the app\'s rule: no payment is Pending for the whole total, Paid + Pending = Amount, and the invoice is under one choice', () => {
+  const words = ['paid', 'pending', 'void', 'cancelled', 'PAID', '', null, undefined, 5, {}];
+  for (const total of [-4, 0, 0.5, 14, 89]) {
+    for (const amount of [undefined, null, 'abc', -5, 0, 4, 13.5, 14, 90]) {
+      for (const word of words) {
+        const expected = appMoney(word, total, amount);
+        const printed = printedMoney(total, { status: word, amount });
+        assert.deepEqual(printed, { ...expected, amount: Math.round(total * 100) }, `${String(word)} ${total} ${String(amount)}`);
+        assert.equal(printed.received + printed.balance, printed.amount, `${String(word)} ${total} ${String(amount)}: Paid + Pending = Amount`);
+      }
+    }
+  }
+  // The worked example: 89.00, a word of no meaning and no payment: Pending for 89.00 (it was in the amount only).
+  const void89 = invoiceDocument('en', {}, oneInvoice(89, { status: 'void' })).built;
+  assert.deepEqual(void89.rows[0].slice(3), ['89.00', '0.00', 'Pending']);
+  assert.deepEqual(void89.summary.slice(1), [['Amount', '89.00'], ['Paid', '0.00'], ['Pending', '89.00']]);
+  // No payment_status at all, and one that is not an object, are the same: Pending for the whole total.
+  for (const status of [undefined, null, 'paid', 7]) {
+    assert.deepEqual(invoiceDocument('en', {}, oneInvoice(89, status)).built.summary.slice(1), [['Amount', '89.00'], ['Paid', '0.00'], ['Pending', '89.00']], String(status));
+  }
+  // A credit (less than 0, which the database does not allow) owes nothing: received is its total, Paid.
+  assert.deepEqual(invoiceDocument('en', {}, oneInvoice(-4, { status: 'pending' })).built.summary.slice(1), [['Amount', '-4.00'], ['Paid', '-4.00'], ['Pending', '0.00']]);
+  // Under the choices each invoice is listed once: the two choices together are the whole document.
+  const mixed = { success: true, data: { summary: { total_invoices: 4 }, invoices: [
+    { invoice_number: 'A', invoice_date: '2026-01-04', grn_ref: 'Z', total: 10, tax_amount: 0, payment_status: { status: 'paid', amount: 10 } },
+    { invoice_number: 'B', invoice_date: '2026-01-03', grn_ref: 'Z', total: 10, tax_amount: 0, payment_status: { status: 'void' } },
+    { invoice_number: 'C', invoice_date: '2026-01-02', grn_ref: 'Z', total: 10, tax_amount: 0, payment_status: { status: 'cancelled', amount: 10 } },
+    { invoice_number: 'D', invoice_date: '2026-01-01', grn_ref: 'Z', total: 10, tax_amount: 0 },
+  ] } };
+  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'paid' }, mixed).built), ['A', 'C']);
+  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'pending' }, mixed).built), ['B', 'D']);
+  assert.deepEqual(invoiceDocument('en', {}, mixed).built.summary, [['Invoices', '4'], ['Amount', '40.00'], ['Paid', '20.00'], ['Pending', '20.00']]);
+});
+
+// A database without migration 61 answers an invoice once per payment row (evidence/staged-pre61.txt: invoice 2026-6203, total
+// 111.00, one row of 51.00 and one of 60.00): the same invoice_id and fields, each row's payment_status.amount one payment.
+const payment = (amount, day, ref) => ({ status: 'paid', paid_date: `2026-01-${day}T06:00:00+00:00`, payment_ref: ref, amount, payment_mode: 'ONLINE' });
+const preRow = (id, number, day, total, payment_status) => ({
+  invoice_id: id, invoice_number: `2026-${number}`, invoice_date: `2026-01-${day}T06:00:00+00:00`, grn_ref: `Z${number}`, total, tax_amount: total / 10,
+  net_total: total, payment_status });
+const pre61Rows = [
+  preRow('i5', '6205', 26, 66, payment(20, 27, 'UTR-5A')),
+  preRow('i5', '6205', 26, 66, payment(30, 29, 'UTR-5B')),
+  preRow('i4', '6204', 24, 109, payment(108.5, 25, 'UTR-4')),
+  preRow('i3', '6203', 22, 111, payment(60, 23, 'UTR-3A')),
+  preRow('i2', '6202', 20, 89, { status: 'pending', paid_date: null, payment_ref: null }),
+  preRow('i3', '6203', 22, 111, payment(51, 22, 'UTR-3B')),
+  preRow('i1', '6201', 16, 14, payment(4, 17, 'UTR-1A')),
+  preRow('i1', '6201', 16, 14, payment(10, 18, 'UTR-1B')),
+];
+// The RPC counts the rows: 8, for five invoices. Amount 389.00 = Paid 283.50 + Pending 105.50.
+const pre61 = { success: true, data: { summary: { total_invoices: 8, total_amount: 500, net_amount: 500 }, invoices: pre61Rows } };
+
+test('a database without migration 61 answers an invoice once per payment row; the PDF prints it once, with the payments added up', () => {
+  const { built, html } = invoiceDocument('en', {}, pre61);
+  assert.deepEqual(built.rows, [
+    ['2026-6205', '26-01-2026', 'Z6205', '66.00', '6.60', 'Pending (Paid 50.00)'],
+    ['2026-6204', '24-01-2026', 'Z6204', '109.00', '10.90', 'Paid'],
+    ['2026-6203', '22-01-2026', 'Z6203', '111.00', '11.10', 'Paid'],
+    ['2026-6202', '20-01-2026', 'Z6202', '89.00', '8.90', 'Pending'],
+    ['2026-6201', '16-01-2026', 'Z6201', '14.00', '1.40', 'Paid'],
+  ]);
+  assert.deepEqual(built.totals, ['Total', '', '', '389.00', '38.90', '']);
+  // The count is the invoices listed, not the RPC's rows (8).
+  assert.deepEqual(built.summary, [['Invoices', '5'], ['Amount', '389.00'], ['Paid', '283.50'], ['Pending', '105.50']]);
+  assert.equal(built.rowsTotal, 5);
+  assert.equal(html.split('<td>2026-6203</td>').length - 1, 1, 'an invoice of two payments is in the table once');
+  // The invoice of 14.00 with payments of 4.00 and 10.00: once, Amount 14.00, Paid 14.00, Pending 0.00, status Paid.
+  const small = invoiceDocument('en', {}, { success: true, data: { summary: { total_invoices: 2 }, invoices: pre61Rows.slice(-2) } }).built;
+  assert.deepEqual(small.rows, [['2026-6201', '16-01-2026', 'Z6201', '14.00', '1.40', 'Paid']]);
+  assert.deepEqual(small.summary, [['Invoices', '1'], ['Amount', '14.00'], ['Paid', '14.00'], ['Pending', '0.00']]);
+  // The choices and the Gujarati document list the same invoices once.
+  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'paid' }, pre61).built), ['2026-6204', '2026-6203', '2026-6201']);
+  const pending = invoiceDocument('en', { status: 'pending' }, pre61).built;
+  assert.deepEqual(invoiceNumbers(pending), ['2026-6205', '2026-6202']);
+  assert.deepEqual(pending.summary, [['Invoices', '2'], ['Amount', '155.00'], ['Paid', '50.00'], ['Pending', '105.00']]);
+  const gu = invoiceDocument('gu', {}, pre61).built;
+  assert.deepEqual(gu.rows.map(row => row[5]), ['બાકી (ચૂકવેલ 50.00)', 'ચૂકવેલ', 'ચૂકવેલ', 'બાકી', 'ચૂકવેલ']);
+  assert.deepEqual(gu.summary, [['ઇન્વૉઇસ', '5'], ['રકમ', '389.00'], ['ચૂકવેલ', '283.50'], ['બાકી', '105.50']]);
+});
+
+test('rows of one invoice are merged into the first row, with the amounts added in paise, status paid if any row is, and the latest payment\'s date and reference', () => {
+  const input = structuredClone(pre61Rows);
+  const merged = oneRowPerInvoice(input);
+  assert.deepEqual(merged.map(row => row.invoice_id), ['i5', 'i4', 'i3', 'i2', 'i1'], 'the first row\'s position');
+  assert.deepEqual(input, pre61Rows, 'the answer itself is not changed');
+  // i5: 20.00 on the 27th and 30.00 on the 29th: the fields of the first row, the sum, the date and reference of the 29th.
+  assert.deepEqual(merged[0], { ...pre61Rows[0], payment_status: { status: 'paid', paid_date: '2026-01-29T06:00:00+00:00', payment_ref: 'UTR-5B', amount: 50, payment_mode: 'ONLINE' } });
+  // i3: 60.00 on the 23rd (first row) and 51.00 on the 22nd: the latest is the first row's.
+  assert.deepEqual(merged[2].payment_status, { status: 'paid', paid_date: '2026-01-23T06:00:00+00:00', payment_ref: 'UTR-3A', amount: 111, payment_mode: 'ONLINE' });
+  // An invoice answered once is the very row that came; an answer without duplicates is returned as it is.
+  assert.equal(merged[1], input[2]);
+  assert.equal(merged[3], input[4]);
+  const single = [pre61Rows[2], pre61Rows[4]];
+  oneRowPerInvoice(single).forEach((row, index) => assert.equal(row, single[index]));
+  // Rows with no invoice_id are never merged, also when they are alike.
+  const anonymous = { invoice_number: 'N', total: 10, payment_status: { status: 'paid', amount: 4 } };
+  assert.deepEqual(oneRowPerInvoice([anonymous, { ...anonymous }, { ...anonymous, invoice_id: null }, { ...anonymous, invoice_id: '' }]).length, 4);
+  // Whole paise: 0.10 + 0.20 is 0.30. An amount that cannot be read adds nothing; none that can be read leaves the first row's.
+  const row = (payment_status, id = 'x') => ({ invoice_id: id, total: 1, payment_status });
+  assert.equal(oneRowPerInvoice([row({ status: 'paid', amount: 0.1 }), row({ status: 'paid', amount: 0.2 })])[0].payment_status.amount, 0.3);
+  assert.equal(oneRowPerInvoice([row({ status: 'paid', amount: '4.00' }), row({ status: 'paid', amount: 'abc' }), row({ status: 'paid' })])[0].payment_status.amount, 4);
+  assert.deepEqual(oneRowPerInvoice([row({ status: 'paid', amount: 'abc' }), row({ status: 'paid' })])[0].payment_status.amount, 'abc');
+  // Paid if any row says paid; otherwise the first row's word. A date that cannot be read is the oldest; equal dates keep the first row.
+  assert.equal(oneRowPerInvoice([row({ status: 'pending' }), row({ status: 'paid', amount: 1 })])[0].payment_status.status, 'paid');
+  assert.equal(oneRowPerInvoice([row({ status: 'void' }), row({ status: 'pending' })])[0].payment_status.status, 'void');
+  assert.equal(oneRowPerInvoice([row({ paid_date: 'soon', payment_ref: 'A' }), row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'B' })])[0].payment_status.payment_ref, 'B');
+  assert.equal(oneRowPerInvoice([row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'A' }), row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'B' })])[0].payment_status.payment_ref, 'A');
+  // A row whose payment_status is missing or not an object is merged with the others without error.
+  assert.equal(oneRowPerInvoice([{ invoice_id: 'y', total: 1 }, row({ status: 'paid', amount: 1 }, 'y')])[0].payment_status.amount, 1);
+});
+
+test('an answer without duplicate rows prints exactly what it printed, with or without invoice ids', () => {
+  for (const [shape, body] of Object.entries(moneyShapes)) {
+    const withIds = { ...body, data: { ...body.data, invoices: body.data.invoices.map((invoice, index) => ({ invoice_id: `id-${index}`, ...invoice })) } };
+    for (const lang of ['en', 'gu']) for (const fields of [{}, { status: 'paid' }, { status: 'pending' }]) {
+      const plain = invoiceDocument(lang, fields, body);
+      const keyed = invoiceDocument(lang, fields, withIds);
+      assert.equal(keyed.html, plain.html, `${shape} ${lang} ${JSON.stringify(fields)}`);
+      assert.deepEqual(keyed.built, plain.built, `${shape} ${lang} ${JSON.stringify(fields)}`);
+    }
+  }
+  // The RPC's own count is still printed when nothing was merged (here it differs from the rows on purpose).
+  const counted = { success: true, data: { summary: { total_invoices: 9 }, invoices: mixedInvoices.data.invoices.map((invoice, index) => ({ invoice_id: `id-${index}`, ...invoice })) } };
+  assert.equal(invoiceDocument('en', {}, counted).built.summary[0][1], '9');
+});
+
+// The totals row of a table that was cut at the limit adds up the printed rows only, while the summary covers the whole report.
+function cutDocument(req, body) {
+  const built = buildReport(req, unwrapReportBody(body));
+  const lang = req.lang;
+  const html = reportHtml({ title: built.title, company: 'Fictional Cold Storage', lang, filters: reportFilters(req, null, built, NOW), summaryTitle: label(lang, 'summary'),
+    summary: built.summary, columns: built.columns, rows: built.rows, totals: built.totals, note: '', empty: built.empty });
+  return { built, html };
+}
+const agingItems = count => ({ success: true, data: { summary: { total_quantity: 1 }, items: Array.from({ length: count }, (_, index) => ({
+  item_name: `Item ${index}`, gr_no: `Z${index}`, grn_date: '2026-01-01', rack: 'R', current_stock: 1, aging_days: index })) } });
+const itemList = (rows, total) => ({ success: true, data: { total_count: total, items: Array.from({ length: rows }, (_, index) => ({ item_name: `I${index}`, total_stock: 1 })) } });
+const invoiceList = (paid, pending) => ({ success: true, data: { summary: { total_invoices: paid + pending }, invoices: [
+  ...Array.from({ length: paid }, (_, index) => ({ invoice_number: `P${index}`, invoice_date: '2026-01-05', grn_ref: 'Z', total: 1, tax_amount: 0, payment_status: { status: 'paid', amount: 1 } })),
+  ...Array.from({ length: pending }, (_, index) => ({ invoice_number: `Q${index}`, invoice_date: '2026-01-06', grn_ref: 'Z', total: 1, tax_amount: 0, payment_status: { status: 'pending' } })),
+] } });
+
+test('the totals row of a table cut at the limit says "Total of rows shown"; a table that was not cut says "Total", in both languages', () => {
+  const words = { en: ['Total', 'Total of rows shown'], gu: ['કુલ', 'દેખાતી લાઇનનો કુલ'] };
+  const cases = [
+    // [name, request fields, cut answer, answer exactly at the limit, answer one past the limit]
+    ['stock-aging, one customer', { report: 'stock-aging', customer_id: customer }, agingItems(2500), agingItems(maxReportRows), agingItems(maxReportRows + 1)],
+    ['item stock summary, read one row past the limit', { report: 'item-stock-summary' }, itemList(maxReportRows + 1, 3100), itemList(maxReportRows, maxReportRows), itemList(maxReportRows + 1, maxReportRows + 1)],
+    ['invoice history under a choice', { report: 'invoice-history', customer_id: customer, status: 'paid', ...invoicePeriod }, invoiceList(2100, 100), invoiceList(maxReportRows, 100), invoiceList(maxReportRows + 1, 0)],
+  ];
+  for (const lang of ['en', 'gu']) {
+    const [plain, shown] = words[lang];
+    for (const [name, fields, cut, exact, past] of cases) {
+      const req = parseReportRequest({ ...fields, lang });
+      const long = cutDocument(req, cut);
+      assert.equal(long.built.truncated, true, `${name} ${lang}`);
+      assert.equal(long.built.rows.length, maxReportRows);
+      assert.equal(long.built.totals[0], shown, `${name} ${lang}: cut`);
+      assert.ok(long.html.includes(`<tr class="totals"><td>${shown}</td>`), `${name} ${lang}: cut, in the document`);
+      assert.ok(!long.html.includes(`<tr class="totals"><td>${plain}</td>`), `${name} ${lang}: cut, no plain Total row`);
+      const whole = cutDocument(req, exact);
+      assert.equal(whole.built.truncated, false, `${name} ${lang} at the limit`);
+      assert.equal(whole.built.totals[0], plain, `${name} ${lang} at the limit`);
+      assert.ok(whole.html.includes(`<tr class="totals"><td>${plain}</td>`), `${name} ${lang} at the limit: in the document`);
+      assert.ok(!whole.html.includes(shown), `${name} ${lang} at the limit: no "${shown}"`);
+      // One row past the limit is cut again (the item list is read one row past it and knows it is cut by its count).
+      const over = cutDocument(req, past);
+      assert.equal(over.built.truncated, true, `${name} ${lang} one past`);
+      assert.equal(over.built.totals[0], shown, `${name} ${lang} one past`);
+    }
+  }
+  assert.deepEqual([label('en', 'totalShown'), label('gu', 'totalShown')], ['Total of rows shown', 'દેખાતી લાઇનનો કુલ']);
+  // The summary above still covers the whole report while the totals row adds up the rows printed.
+  const aging = cutDocument(parseReportRequest({ report: 'stock-aging', customer_id: customer }), agingItems(2500)).built;
+  assert.equal(aging.totals[4], '2,000');
+  const invoices = cutDocument(parseReportRequest({ report: 'invoice-history', customer_id: customer, status: 'paid', ...invoicePeriod }), invoiceList(2100, 100)).built;
+  assert.deepEqual([invoices.totals.slice(0, 4), invoices.summary.slice(0, 2)], [['Total of rows shown', '', '', '2,000.00'], [['Invoices', '2,100'], ['Amount', '2,100.00']]]);
+});
+
+// ---------------------------------------------------------------------------
+// Migration 63: one row per receipt in the GRN activity of one customer
+// ---------------------------------------------------------------------------
+test('migration 63 is ASCII, patches only invoice_status and its default with counted markers whose before-text is not in the after-text, and its SQL test closes the list', () => {
+  const name = '00000000000063_grn_activity_one_row_per_grn.sql';
+  const sql = readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
+  assert.match(sql, /^[\x00-\x7F]*$/, 'ASCII only');
+  assert.match(sql, /^-- /);
+  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
+  assert.doesNotMatch(sql, /authorize_rpc\(|CREATE (OR REPLACE )?FUNCTION (?!pg_temp)/, 'it redefines no function and does not touch the guard');
+  // Every entry: [step, signature, before text, after text, expected count], in order.
+  const entries = [...sql.matchAll(/\((\d+), '(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
+    .map(match => [Number(match[1]), match[2], match[3], match[4], Number(match[5])]);
+  const customer = 'public.get_customer_grn_activity(uuid,date,date)';
+  assert.deepEqual(entries.map(([step, signature, , , times]) => [step, signature, times]), [1, 2, 3, 4, 5, 6].map(step => [step, customer, 1]));
+  assert.ok(!sql.includes("'public.get_all_grn_activity("), 'get_all_grn_activity has no invoice join and is not patched');
+  // Steps 1 and 2 change text; 3 to 6 only fail the migration when the text the fix relies on is no longer there once.
+  const changing = entries.filter(([, , before, after]) => before !== after);
+  assert.deepEqual(changing.map(([step]) => step), [1, 2]);
+  for (const step of [3, 4, 5, 6]) assert.equal(entries[step - 1][2], entries[step - 1][3], `step ${step} is a check`);
+  assert.deepEqual(entries.slice(2).map(entry => entry[2]), [
+    'LEFT JOIN invoice_status inv ON gd.grn_id = inv.gr_id', "'total_grns', COUNT(*),",
+    "'total_invoiced_grns', COUNT(*) FILTER (WHERE (invoice_status->>'is_invoiced')::boolean = true),", "'invoice_status', invoice_status,",
+  ]);
+  // A second direct run must fail with the count error, not patch again: no replacement contains its own marker.
+  for (const [step, , before, after] of changing) assert.ok(!after.includes(before), `step ${step}: the before-text is not contained in the after-text`);
+  // The fix: one row per receipt from the latest invoice, plus the count; the default says 0. Nothing else is in the replacements.
+  const [, , , cte] = entries[0];
+  assert.match(cte, /SELECT DISTINCT ON \(i\.gr_id\)/);
+  assert.match(cte, /'invoice_count', COUNT\(\*\) OVER \(PARTITION BY i\.gr_id\)/);
+  assert.match(cte, /ORDER BY i\.gr_id, i\.inv_date DESC, i\.inv_fin_year DESC, i\.inv_no DESC, i\.id DESC/);
+  assert.match(cte, /WHERE i\.deleted_at IS NULL/);
+  assert.match(entries[1][3], /'invoice_number', null, 'invoice_count', 0\)\) as invoice_status,/);
+  for (const [, , , text] of entries) assert.doesNotMatch(text, /business_day_start|business_date|weight|total_qty|jsonb_agg/);
+  // The pg_temp helper is the one of migration 62 and is dropped again.
+  const helper = text => text.match(/CREATE FUNCTION pg_temp\.replace_marker[\s\S]*?END \$\$;/)[0];
+  assert.equal(helper(sql), helper(readFileSync(new URL('../migrations/00000000000062_invoice_paid_follows_money.sql', import.meta.url), 'utf8')));
+  assert.match(sql, /DROP FUNCTION pg_temp\.replace_marker\(text, text, text, text, integer\);\nNOTIFY/);
+  // The test is on a new line at the very end of the list, after the line that ends with the GRN weight test.
+  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
+  assert.equal(migrations.split('"$ROOT/tests/report_grn_invoices.sql"').length - 1, 1);
+  assert.ok(migrations.includes('"$ROOT/tests/report_grn_weight.sql"\n  "$ROOT/tests/report_grn_invoices.sql"\n)\nfor test_sql in'));
+  assert.match(readFileSync(new URL('../tests/report_grn_invoices.sql', import.meta.url), 'utf8'), /^[\x00-\x7F]*$/, 'the SQL test is ASCII');
+});
+
+test('the GRN activity PDF reads invoice_number of invoice_status and needs nothing from the new key', () => {
+  const grn = (invoice_status) => ({ success: true, data: { summary: { total_grns: 1, total_quantity: 1, total_invoiced_grns: 1 }, grns: [
+    { gr_no: 'Z0001', grn_date: '2026-01-20', total_items: 1, total_qty: 1, items: [{ weight: 10, quantity: 1 }], dispatch_summary: { current_stock: 1 }, invoice_status }] } });
+  const req = parseReportRequest({ report: 'grn-activity', customer_id: customer, ...invoicePeriod });
+  // The answer of a database with migration 63 (invoice_count) and one without it print the same document.
+  const without = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101' })));
+  const withKey = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101', invoice_count: 2 })));
+  assert.deepEqual(withKey, without);
+  assert.equal(withKey.rows[0][6], '2026-7101');
+  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][6], '');
 });

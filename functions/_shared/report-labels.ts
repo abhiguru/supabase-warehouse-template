@@ -39,6 +39,10 @@ const table = {
   updated: ['Last updated {{time}}', 'છેલ્લે અપડેટ થયું: {{time}}'], // reports.scaffold.updated
   summary: ['Summary', 'સારાંશ'], // reports.components.summary
   total: ['Total', 'કુલ'], // common.total
+  // The first cell of the totals row of a table that was cut at the row limit: the row adds up only the rows printed, while the
+  // summary above covers the whole report. Put together from the app's words, for the owner to check: 'કુલ' (common.total),
+  // 'દેખાતી' (the participle of 'દેખાય છે', reports.scaffold.showing) and 'લાઇન' (rows, reports.export.truncated).
+  totalShown: ['Total of rows shown', 'દેખાતી લાઇનનો કુલ'],
   // The reviewed wording (2026-10-12), not the app's: the app says '{{total}}માંથી {{shown}} બતાવ્યા છે'
   // (reports.scaffold.showing), where બતાવ્યા is masculine plural and the rows can be feminine or neuter;
   // 'દેખાય છે' has no gender. The placeholders are the same.

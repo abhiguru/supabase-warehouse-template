@@ -20,7 +20,9 @@
 // total; the RPC's net_total and net_amount (total + labour + tax - discount
 // until migration 61, when they became the total) are not printed from it.
 // Paid and Pending follow the money (the owner's rule, migration 62): see
-// `invoiceMoney`.
+// `invoiceMoney`; every invoice is in Paid or in Pending, whatever its status word, so Paid + Pending
+// = Amount. An invoice is one row: a database without migration 61 answers it once per payment row,
+// and `oneRowPerInvoice` merges those rows first.
 import { label, withUnit, type LabelKey, type ReportLang } from './report-labels.ts';
 import type { ReportName, ReportRequest } from './report-request.ts';
 
@@ -56,6 +58,8 @@ interface Level {
   defaultSort: { field: string; order: 'asc' | 'desc' };
   /** A sort field the app may still send that names no column of this level: the column key it sorts by instead. */
   sortAliases?: Readonly<Record<string, string>>;
+  /** The keys of the columns a request may sort by; absent, every column. A key that is not listed gives the default sort. */
+  sortKeys?: readonly string[];
   empty: LabelKey;
 }
 
@@ -81,28 +85,62 @@ const paidWithinPaise = 50;
 /**
  * Paid and Pending follow the money (the owner's rule of 2026-10-12, migration 62): "Paid is the money received and
  * Pending is what is still owed. An invoice counts as Paid only when nothing is owed; a part-paid invoice stays
- * Pending with the balance."
- *   received = the sum of the invoice's payments (payment_status.amount since migration 61), never below 0 and never
- *              above the invoice's total;
- *   balance  = total - received;
- *   status   = 'paid' when the balance is 0.50 or less, otherwise 'pending'.
+ * Pending with the balance." This is the app's own calculation (rn-warehouse-template invoicePayment.ts), so the PDF
+ * and the screen agree for every invoice:
+ *   recorded = the sum of the invoice's payments (payment_status.amount since migration 61), when the answer carries
+ *              an amount that can be read; otherwise the whole total when the status word is 'paid' (a database from
+ *              before migration 61 answers the one row's amount; any answer may leave it out), otherwise 0;
+ *   balance  = the larger of (total - the larger of recorded and 0) and 0, so never below 0 and never above the total
+ *              of an invoice of 0 or more;
+ *   received = total - balance;
+ *   status   = 'paid' when the balance is 0.50 or less (get_open_invoices_for_customer: owed > 0.50 is open),
+ *              otherwise 'pending'.
  * The answer's own status is not the rule on a database without migration 62 (it is 'paid' as soon as any payment row
- * names the invoice), so it is only read to tell the two statuses from anything else, and to decide what a missing
- * amount means: 'paid' with no usable amount (a database from before migration 61 answers the one row's amount; any
- * answer may leave it out) has received the whole total, 'pending' with none has received nothing. With the amount, the
- * answer of a database with migration 62 and of one without it give the same status, received and balance.
- * An invoice whose status is neither is not worked out: no received and no balance, so it is in neither sum.
+ * names the invoice), so it is read only for the word 'paid' with no amount. Any other word (and a missing
+ * payment_status) is no payment: an invoice of 89.00 with such a word and no amount is Pending for 89.00. An amount
+ * that can be read is the money received whatever the word is. Every invoice therefore has a status, received and
+ * balance, and received + balance = total, so Paid + Pending = Amount in every row and in every sum. An invoice of
+ * less than 0 (the database does not allow one) owes nothing: received is its total, balance 0, status 'paid'.
  */
-function invoiceMoney(invoice: Row): { status: unknown; received?: number; balance?: number } {
+function invoiceMoney(invoice: Row): { status: 'paid' | 'pending'; received: number; balance: number } {
   const payment = invoice.payment_status as Row | undefined;
-  const status = payment?.status;
-  if (status !== 'paid' && status !== 'pending') return { status };
   const total = paise(num(invoice.total) ?? 0);
   const amount = num(payment?.amount);
-  const money = amount === null ? (status === 'paid' ? total : 0) : paise(amount);
-  const received = Math.max(0, Math.min(money, total));
-  const balance = total - received;
-  return { status: balance <= paidWithinPaise ? 'paid' : 'pending', received: received / 100, balance: balance / 100 };
+  const recorded = amount === null ? (payment?.status === 'paid' ? total : 0) : paise(amount);
+  const balance = Math.max(total - Math.max(recorded, 0), 0);
+  return { status: balance <= paidWithinPaise ? 'paid' : 'pending', received: (total - balance) / 100, balance: balance / 100 };
+}
+
+/**
+ * One row per invoice. A database without migration 61 answers an invoice once per payment row: the same invoice_id and
+ * the same fields, each row's payment_status.amount being one payment. The rows of one invoice are merged into one, which
+ * is the first row's fields at the first row's position, with payment_status.amount = the sum of the rows' amounts that can
+ * be read, added in whole paise (left as it was when none can be read), status 'paid' when any row says paid, and the
+ * other keys of payment_status (paid_date, payment_ref, payment_mode) those of the row with the latest paid_date (the
+ * earlier row of two with the same date; a date that cannot be read is the oldest). A row with no invoice_id is never merged,
+ * and an invoice answered once is returned as it came, so an answer without duplicates prints exactly what it printed.
+ */
+export function oneRowPerInvoice(invoices: Row[]): Row[] {
+  const groups: Row[][] = [];
+  const known = new Map<string, Row[]>();
+  for (const invoice of invoices) {
+    const id = typeof invoice.invoice_id === 'string' && invoice.invoice_id !== '' ? invoice.invoice_id : null;
+    const group = id === null ? undefined : known.get(id);
+    if (group) { group.push(invoice); continue; }
+    const created = [invoice];
+    groups.push(created);
+    if (id !== null) known.set(id, created);
+  }
+  return groups.map(group => {
+    if (group.length === 1) return group[0];
+    const payments = group.map(invoice => (invoice.payment_status && typeof invoice.payment_status === 'object' ? invoice.payment_status : {}) as Row);
+    const moment = (payment: Row) => { const time = Date.parse(String(payment.paid_date)); return Number.isNaN(time) ? -Infinity : time; };
+    const latest = payments.reduce((best, payment) => moment(payment) > moment(best) ? payment : best);
+    const amounts = payments.map(payment => num(payment.amount)).filter((value): value is number => value !== null);
+    const merged: Row = { ...payments[0], ...latest, status: payments.some(payment => payment.status === 'paid') ? 'paid' : payments[0].status };
+    if (amounts.length > 0) merged.amount = amounts.reduce((total, value) => total + paise(value), 0) / 100;
+    return { ...group[0], payment_status: merged };
+  });
 }
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
 const kg = ['weight', 'kg'] as const;
@@ -113,6 +151,14 @@ const kg = ['weight', 'kg'] as const;
  * It is not summary.qty_over_365_days (bags, counted from 365 days), and a missing bucket is 0 as on the screen.
  */
 const itemsOver364 = (body: Body) => body.by_bucket?.['364+']?.item_count;
+
+// The item stock list is paged and sorted by the server (migration 52), so a list longer than the limit is cut after the
+// rows that come first in the chosen order. One row past the limit shows whether it was cut. The server sorts by the four
+// fields below and by nothing else, so these are the only sorts this report accepts (`sortKeys` of its levels): sorting
+// by packaging here would sort the first rows of the item-name order, not the whole list. Any other field, packaging
+// included, gives the default sort, item ascending, which is what the server then answers in.
+const itemServerSort: Record<string, string> = { item: 'item_name', stock: 'total_stock', received: 'total_qty', grns: 'grn_count' };
+const itemSortKeys = Object.keys(itemServerSort);
 
 export const reportDefinitions: Record<ReportName, Definition> = {
   'grn-activity': {
@@ -232,7 +278,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       // the tax and the discount twice, until migration 61 made it the total. The PDF therefore prints no net
       // column, and its summary is worked out below from the totals and the payments it lists, so it is right on
       // a database with or without migrations 61 and 62.
-      rows: (body, request) => list(body.invoices).map(invoice => ({
+      rows: (body, request) => oneRowPerInvoice(list(body.invoices)).map(invoice => ({
         invoice_no: invoice.invoice_number,
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
@@ -257,10 +303,13 @@ export const reportDefinitions: Record<ReportName, Definition> = {
           } },
       ],
       summary: [
-        // The count is the RPC's own without a choice. The amount, paid and pending are always added up from the
-        // listed invoices: the amount of every one, Paid the money received on them and Pending the balances still
-        // owed, so Paid + Pending = Amount (an invoice of another status than paid or pending is in neither).
-        { label: 'invoices', kind: 'number', value: (body, rows, request) => request.status ? rows.length : body.summary?.total_invoices },
+        // The count is the RPC's own without a choice, unless rows of one invoice were merged (a database without
+        // migration 61 counts an invoice once per payment row): then it is the number of invoices listed. The amount,
+        // paid and pending are always added up from the listed invoices: the amount of every one, Paid the money
+        // received on them and Pending the balances still owed, so Paid + Pending = Amount for every invoice, whatever
+        // its status word is.
+        { label: 'invoices', kind: 'number',
+          value: (body, rows, request) => request.status || rows.length < list(body.invoices).length ? rows.length : body.summary?.total_invoices },
         { label: 'amount', kind: 'money', value: (_, rows) => sumMoney(rows, 'amount') },
         { label: 'paid', kind: 'money', value: (_, rows) => sumMoney(rows, 'received') },
         { label: 'pending', kind: 'money', value: (_, rows) => sumMoney(rows, 'balance') },
@@ -413,6 +462,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       columns: itemColumns(),
       summary: itemSummary(),
       defaultSort: { field: 'item', order: 'asc' },
+      sortKeys: itemSortKeys,
       empty: 'emptyCustomerStock',
     },
     all: {
@@ -421,6 +471,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       columns: itemColumns(),
       summary: itemSummary(),
       defaultSort: { field: 'item', order: 'asc' },
+      sortKeys: itemSortKeys,
       empty: 'emptyStock',
     },
   },
@@ -496,11 +547,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
   },
 };
 
-// The list is paged and sorted by the server (migration 52), so a list longer
-// than the limit is cut after the rows that come first in the chosen order.
-// One row past the limit shows whether it was cut. Packaging is not a server
-// sort; the server then keeps its item-name order.
-const itemServerSort: Record<string, string> = { item: 'item_name', stock: 'total_stock', received: 'total_qty', grns: 'grn_count' };
 function itemCall(request: ReportRequest, customerId: string | null) {
   const field = request.sort?.field ?? 'item';
   // Own keys only: a field such as "constructor" names nothing here.
@@ -543,10 +589,13 @@ export function reportLevel(request: ReportRequest): Level {
   return request.customerId ? definition.customer : definition.all;
 }
 
-/** The fields a request may sort the report by (every column of its level, and the aliases of the level). */
+/** The columns a level may be sorted by: every column, or the ones its `sortKeys` name. */
+const sortableColumns = (level: Level) => level.columns.filter(column => !level.sortKeys || level.sortKeys.includes(column.key));
+
+/** The fields a request may sort the report by (the sortable columns of its level, and the aliases of the level). */
 export function sortFields(request: ReportRequest): string[] {
   const level = reportLevel(request);
-  return [...level.columns.map(column => column.key), ...Object.keys(level.sortAliases ?? {})];
+  return [...sortableColumns(level).map(column => column.key), ...Object.keys(level.sortAliases ?? {})];
 }
 
 /** The RPC answer itself: the first row of an array, and the `data` of a {success, data} envelope. */
@@ -689,7 +738,7 @@ export function buildReport(request: ReportRequest, body: Body): BuiltReport {
   // An alias names the column it sorts by (own keys only: a field such as "constructor" names nothing here).
   const sent = request.sort && level.sortAliases && Object.hasOwn(level.sortAliases, request.sort.field)
     ? { ...request.sort, field: level.sortAliases[request.sort.field] } : request.sort;
-  const wanted = sent && level.columns.some(column => column.key === sent.field) ? sent : level.defaultSort;
+  const wanted = sent && sortableColumns(level).some(column => column.key === sent.field) ? sent : level.defaultSort;
   const column = level.columns.find(item => item.key === wanted.field)!;
   const direction = wanted.order === 'desc' ? -1 : 1;
   // Array.prototype.sort is stable: equal rows keep the order the RPC gave. A
@@ -703,10 +752,13 @@ export function buildReport(request: ReportRequest, body: Body): BuiltReport {
   const rowsTotal = request.report === 'item-stock-summary' ? Math.max(num(body.total_count) ?? 0, sorted.length) : sorted.length;
   const shown = sorted.slice(0, maxReportRows);
   const hasTotals = level.columns.some(item => item.total);
+  // The totals row adds up the rows printed, while the summary covers the whole report: on a table that was cut at the
+  // limit its label says so.
+  const cut = rowsTotal > shown.length;
   const totals = hasTotals && shown.length > 0
     ? level.columns.map((item, index) => item.total
       ? formatCell(item.kind, shown.reduce((total, row) => total + (num(row[item.key]) ?? 0), 0), lang)
-      : index === 0 ? label(lang, 'total') : '')
+      : index === 0 ? label(lang, cut ? 'totalShown' : 'total') : '')
     : null;
   return {
     title: label(lang, reportDefinitions[request.report].title),
@@ -720,7 +772,7 @@ export function buildReport(request: ReportRequest, body: Body): BuiltReport {
       label: `${columnLabel(lang, column.label)} (${label(lang, wanted.order === 'asc' ? 'ascending' : 'descending')})`,
     },
     rowsTotal,
-    truncated: rowsTotal > shown.length,
+    truncated: cut,
     empty: label(lang, level.empty),
   };
 }
