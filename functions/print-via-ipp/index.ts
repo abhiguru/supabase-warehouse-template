@@ -1,13 +1,12 @@
 // Edge Function: print-via-ipp
 // Generic IPP print function — sends raw data to CUPS printer
 
-import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
+import { createClient } from '../vendor/supabase-js.mjs'
 import { Buffer } from 'node:buffer'
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
 

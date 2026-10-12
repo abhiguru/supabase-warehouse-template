@@ -1,5 +1,5 @@
 import { documentRequestBody } from './request-body.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
+import { createClient } from '../vendor/supabase-js.mjs';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf } from './gotenberg-client.ts';

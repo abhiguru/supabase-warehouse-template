@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
 import { verifySignedInRequest } from '../_shared/jwt.ts';
 import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
@@ -8,7 +7,7 @@ const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp']);
 const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
   const name = new URL(req.url).pathname.split('/')[1];
@@ -32,7 +31,6 @@ serve(async (req: Request) => {
       memoryLimitMb: 150,
       workerTimeoutMs: 60000,
       noModuleCache: false,
-      importMapPath: '/home/deno/functions/import_map.json',
       envVars: workerEnv(name, Deno.env.toObject(), extra),
     });
     return await worker.fetch(req);

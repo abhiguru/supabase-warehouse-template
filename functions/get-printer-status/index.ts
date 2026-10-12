@@ -1,5 +1,4 @@
-import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
+import { createClient } from '../vendor/supabase-js.mjs'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { IPPPrinterState, mapPrinterStateToStatus } from '../_shared/ipp-types.ts'
 import type { IPPPrinterAttributes } from '../_shared/ipp-types.ts'
@@ -16,7 +15,7 @@ const PRINTER_STATE_MESSAGES: Record<number, string> = {
   5: 'stopped'
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }

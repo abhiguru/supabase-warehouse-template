@@ -1,5 +1,4 @@
-import { serve } from 'https://deno.land/std@0.192.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
+import { createClient } from '../vendor/supabase-js.mjs';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 
@@ -31,7 +30,7 @@ async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
   return manifest;
 }
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   const cors = handleCors(req);
   if (cors) return cors;
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: corsHeaders });

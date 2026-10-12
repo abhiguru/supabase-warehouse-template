@@ -2,14 +2,13 @@
 // Demonstrates Gotenberg HTML-to-PDF conversion
 // POST with optional { title, items: [{ name, quantity, rate }] }
 
-import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { htmlToPdf, createFooterHtml } from '../_shared/gotenberg-client.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 
 const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: corsHeaders });

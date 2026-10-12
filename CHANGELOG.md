@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — edge functions download nothing at start (2026-10-12)
+
+`functions/`. **Operator action:** none; the next start recreates the
+functions container. A facility server no longer needs to reach esm.sh or
+deno.land for sign-in codes, app configuration or PDFs.
+
+- The functions imported supabase-js and jose from esm.sh and the Deno
+  standard library from deno.land every time their container was recreated,
+  with no check of what came back (review finding X5-1). Both libraries are
+  now files in the repository, `functions/vendor/jose.mjs` and
+  `functions/vendor/supabase-js.mjs`, built by
+  `scripts/vendor-edge-modules.sh` from an integrity-locked manifest and
+  checked against `functions/vendor/SHA256SUMS` by a unit test.
+- The standard library was used for `serve` only; the functions use the
+  runtime's `Deno.serve`. `functions/import_map.json` is removed.
+- Versions are unchanged (jose 5.10.0, supabase-js 2.39.0). supabase-js's own
+  Supabase dependencies are now fixed at 2.117.3; before, esm.sh chose them
+  when it served the module.
+- Not changed: the printing functions still import `ipp` at run time. The
+  router refuses them, so nothing loads it today.
+
 ## Unreleased — image transformation works again (2026-10-12)
 
 `docker/docker-compose.yml`, `scripts/compose.sh`. **Operator action:** none;

@@ -15,13 +15,15 @@ the original warehouse-template code and does not replace third-party licenses.
 The complete Apache License 2.0 text is included at
 `LICENSES/Apache-2.0.txt`.
 
-Runtime URL imports are not vendored in the source archive. Functions reference
-the Deno standard library 0.192.0 (MIT), the Supabase JS 2.39.0 package (MIT),
-and the optional `ipp` 2.0.1 package (MIT). `jose` 5.10.0 (MIT, Filip Skokan)
-is a runtime URL import and, at the same version, the locked local development
-dependency the unit tests use; its installed license is
-`node_modules/jose/LICENSE.md`. The exact versions are listed in
-`functions/import_map.json`.
+The edge functions carry two third-party libraries as built files:
+`functions/vendor/jose.mjs` (`jose` 5.10.0, MIT, Filip Skokan) and
+`functions/vendor/supabase-js.mjs` (the Supabase JS 2.39.0 package, MIT, with
+its dependencies). The licence text of every package they may contain is in
+`functions/vendor/LICENSES.txt`; the exact versions are in
+`scripts/edge-vendor/package-lock.json`. `jose` at the same version is also
+the locked local development dependency the unit tests use. The optional `ipp`
+2.0.1 package (MIT) is not vendored: the printing functions import it at run
+time, and the router refuses those functions.
 
 The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
