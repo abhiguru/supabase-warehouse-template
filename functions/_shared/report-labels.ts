@@ -4,10 +4,12 @@
 // (rn-warehouse-template src/i18n/locales/gu/reports.ts and common.ts, at app
 // commit f3b854b; and, for the labels whose comment names another file, that
 // file as read on 2026-10-12) for the same English text, so a PDF says what
-// the screen says. A label whose English the app has no Gujarati for is `null`
-// here: the PDF prints the English, and the label is listed in
-// `missingGujarati` for the app team to supply. Do not write Gujarati here
-// that the app does not have.
+// the screen says. The few labels whose exact English the app does not have
+// are put together from the app's own words and say so in their comment, so
+// the owner can check them. A label whose English the app has no Gujarati for
+// at all may be `null` here: the PDF prints the English, and the label is
+// listed in `missingGujarati` for the app team to supply. Do not invent
+// Gujarati here that is not made of the app's words.
 
 export type ReportLang = 'en' | 'gu';
 
@@ -27,7 +29,7 @@ const table = {
   customers: ['Customers', 'વેપારીઓ'], // common.customers
   allCustomers: ['All customers', 'બધા વેપારી'], // reports.shared.allCustomers
   period: ['Period', 'સમયગાળો'], // reports.period.label
-  dateRange: ['{{from}} – {{to}}', '{{from}}થી {{to}} સુધી'], // reports.period.dateRange
+  dateRange: ['{{from}} – {{to}}', '{{from}}થી {{to}} સુધી'], // filters.chip.dateBetween (also filters.chip.textBetween)
   updated: ['Last updated {{time}}', 'છેલ્લે અપડેટ થયું: {{time}}'], // reports.scaffold.updated
   summary: ['Summary', 'સારાંશ'], // reports.components.summary
   total: ['Total', 'કુલ'], // common.total
@@ -55,17 +57,20 @@ const table = {
   dispatches: ['Dispatches', 'જાવક'], // reports.customerActivity.dispatches
   lastDispatch: ['Last dispatch', 'છેલ્લી જાવક'], // reports.stockAging.lastDispatch
   bagsDispatched: ['Bags dispatched', 'જાવકના નંગ'], // reports.dispatchActivity.bagsDispatched
-  customersWithDispatches: ['Customers with dispatches', 'જાવકવાળા વેપારી'], // reports.dispatchActivity.customersWithDispatches
+  customersWithDispatches: ['Customers with dispatches', 'જાવકવાળા વેપારી'], // (wording kept from an earlier app version)
   invoiceNumber: ['Invoice number', 'ઇન્વૉઇસ નંબર'], // common.invoiceNumber
   invoices: ['Invoices', 'ઇન્વૉઇસ'], // reports.invoiceHistory.invoices
   invoiced: ['Invoiced', 'ઇન્વૉઇસ બન્યું'], // reports.grnActivity.invoiced
-  latestInvoice: ['Latest invoice', null],
+  // The app says 'Latest {{date}}' in an invoice's customer row (reports.invoiceHistory.latestInvoice =
+  // 'છેલ્લું {{date}}'); 'Latest' without a date is its word 'છેલ્લું' (neuter, as ઇન્વૉઇસ is) before the
+  // app's word for invoices (reports.invoiceHistory.invoices).
+  latestInvoice: ['Latest invoice', 'છેલ્લું ઇન્વૉઇસ'],
   amount: ['Amount', 'રકમ'], // common.amount
-  netAmount: ['Net amount', 'ચોખ્ખી રકમ'], // reports.invoiceHistory.netAmount
   tax: ['Tax', 'ટેક્સ'], // invoice.label.tax (also lists.invoice.tax)
   status: ['Status', 'સ્થિતિ'], // users.fields.status
   paid: ['Paid', 'ચૂકવેલ'], // reports.customerActivity.paid
   pending: ['Pending', 'બાકી'], // common.pending
+  payment: ['Payment', 'ચુકવણી'], // reports.filters.payment (the Paid / Pending choice)
   date: ['Date', 'તારીખ'], // common.date
   item: ['Item', 'આઇટમ'], // common.item
   items: ['Items', 'આઇટમ'], // common.items
@@ -75,21 +80,25 @@ const table = {
   kg: ['kg', 'કિલો'], // reports.operations.kg
   stock: ['Stock', 'સ્ટોક'], // common.stock
   totalStock: ['Total stock', 'કુલ સ્ટોક'], // reports.operations.totalStock
-  unitsInStock: ['Units in stock', 'સ્ટોકમાં નંગ'], // reports.stockSummary.unitsInStock
-  itemsInStorage: ['Items in storage', 'સ્ટોકમાં રહેલી આઇટમ'], // reports.stockSummary.itemsInStorage
+  unitsInStock: ['Units in stock', 'સ્ટોકમાં નંગ'], // (wording kept from an earlier app version)
+  itemsInStorage: ['Items in storage', 'સ્ટોકમાં રહેલી આઇટમ'], // (wording kept from an earlier app version)
   grnsWithStock: ['GRNs with stock', 'સ્ટોકવાળી આવક પાવતી'], // reports.stockSummary.grnsWithStock
-  customersWithStock: ['Customers with stock', 'સ્ટોકવાળા વેપારી'], // reports.stockSummary.customersWithStock
+  customersWithStock: ['Customers with stock', 'સ્ટોકવાળા વેપારી'], // (wording kept from an earlier app version)
   rack: ['Rack', 'રેક'], // common.rack
   packageMark: ['Package mark', 'માર્કો'], // common.packageMark
   packaging: ['Packaging', 'પેકિંગ'], // common.packaging
   stockAge: ['Stock age', 'માલ કેટલા દિવસથી પડ્યો છે'], // reports.stockAging.stockAge
   averageAge: ['Average age', 'સરેરાશ કેટલા દિવસથી'], // reports.stockAging.averageAge
   daysUnit: ['days', 'દિવસ'], // reports.stockAging.daysUnit
-  overOneYear: ['Over 1 year', '૧ વર્ષથી વધુ'], // reports.stockAging.overOneYear
+  overOneYear: ['Over 1 year', '૧ વર્ષથી વધુ'], // (wording kept from an earlier app version)
+  // The tile of the oldest stock on the app's stock aging screen: a count of items in its over-364-days bucket.
+  itemsOver364: ['Items over 364 days', '૩૬૪ દિવસથી વધુ જૂની આઇટમ'], // reports.stockAging.itemsOver364
   month: ['Month', 'મહિનો'], // reports.customerActivity.trend.month
   stockAtMonthEnd: ['Stock at month end', 'મહિનાના અંતે સ્ટોક'], // reports.customerActivity.trend.stockAtMonthEnd
   city: ['City', 'શહેર'], // customers.fields.city
-  lastActivity: ['Last activity', null],
+  // The app's reports.sort.lastActive ('Last active') and reports.customerActivity.lastActive
+  // ('Last active {{date}}') are both 'છેલ્લી કામગીરી' (last activity); this column holds that date.
+  lastActivity: ['Last activity', 'છેલ્લી કામગીરી'],
 } as const satisfies Record<string, readonly [string, string | null]>;
 
 export type LabelKey = keyof typeof table;

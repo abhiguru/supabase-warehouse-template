@@ -1,5 +1,241 @@
 # Changelog
 
+## Unreleased — stock reports cut days on India's calendar (2026-10-12)
+
+Migration 60. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- The facility's books are kept in India (Asia/Kolkata, UTC+05:30), and
+  migrations 41 and 56 already cut the billable day and every period report on
+  that calendar. The stock reports did not: every day they took from a receipt,
+  a dispatch or a stock movement, and every age in days, was a day in the
+  database session's time zone (UTC), so a receipt made at 02:30 India time on
+  1 October was reported on 30 September by the stock summary and on 1 October
+  by the GRN activity report. They now use India's day, as the period reports.
+- Functions and keys that change (names, types and order unchanged: a date
+  stays a `YYYY-MM-DD` string, an age stays a whole number):
+  - `get_customer_stock_summary`: `summary.oldest_stock_date`,
+    `summary.last_grn_date`, `summary.last_dispatch_date`, `date` of every lot
+    in `items[].grns[]` and in `out_of_stock_items[].grns[]`, and
+    `emptied_date` of the lots in `out_of_stock_items[]`. The list of lots
+    emptied "within the last 360 days" also counts those days: a lot emptied on
+    India's day 360 days ago or later is listed (it was a rolling 360 x 24
+    hours before, so a lot emptied early on that day could drop out for part of
+    the day).
+  - `get_all_stock_summary`: `summary.oldest_stock_date`,
+    `customers[].oldest_date`, `customers[].latest_date`.
+  - `get_stock_aging_report` (one customer and all customers): `aging_days` is
+    India's today minus India's day of the receipt, and so are the bucket a lot
+    falls in (`aging_bucket`, `by_bucket`, `aging_distribution`),
+    `oldest_stock_days`, `average_age_days`, `items_over_365_days` and
+    `qty_over_365_days`; `dispatch_info.days_since_last_dispatch` and
+    `dispatch_info.avg_days_between_dispatches` use India's days too.
+  - `get_customer_stock_analysis_v2`: the day named in `message`
+    ("... as of 2026-10-01 retrieved successfully") is India's day of the
+    date given.
+- Figures change only for activity between 00:00 and 05:30 India time (18:30 to
+  24:00 UTC), for ages in the hours around India's midnight, and at the edge of
+  the 360-day window. Everything else is unchanged: the guard, grants, key
+  sets, the weight figures, the sort and summary of migration 52, and the order
+  of every list (receipts are still ordered by the moment).
+- Not changed: moments stay moments (`grn_date` and
+  `dispatch_info.last_dispatch_date` of the aging report, `as_of_date`,
+  `retrieved_at`, the `date` of `get_customer_grn_items`). `get_item_wise_stock_list`
+  and `get_customer_grn_items` take no day from a moment and need nothing.
+- App: no app change is needed; the app shows the dates and ages as returned.
+
+## Unreleased — GRN activity report weights are bags times bag weight (2026-10-12)
+
+Migration 59. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- `get_customer_grn_activity` added up the per-bag weights of a receipt's lines
+  (`goodsreceived_trl.weight`, kg **per bag**) without the bags, so its weight
+  totals were not weights: a receipt of 100 bags of 25 kg and 40 bags of 50 kg
+  answered `75`. Every weight **total** of the function is now the kg received:
+  the sum, over the received lines, of the line's received quantity (`qty`, not
+  the stock left) times its per-bag weight, in kg. The same receipt answers
+  `4500`. A line with no per-bag weight counts as 0, and a receipt without such
+  lines is `0` (a number). Keys and types are unchanged (numbers):
+  - one customer: `data.grns[].total_weight` (kg of the receipt) and
+    `data.summary.total_weight_kg` (the sum of the listed receipts);
+  - no customer given (all customers): `data.by_customer[].total_weight` and
+    `data.summary.total_weight_kg`.
+- Per bag, not changed: `data.grns[].items[].weight` is the kg per bag as typed
+  in (`null` when a line has none). It is not a total.
+- `get_all_grn_activity` (the all-customers report the app calls) already
+  multiplied bags by bag weight in `summary.total_weight` and
+  `by_customer[].total_weight`, since the first schema. It is unchanged; the
+  migration only checks the two expressions are still there and fails, applying
+  nothing, if not. So the all-customers GRN PDF, which prints those two, was
+  right before and stays right, and it now agrees with the other function. (A
+  customer whose lines all have no per-bag weight is a `null` `total_weight`
+  there, as before.)
+- The stock reports use the same per-bag weight times the quantity they count:
+  bags still in storage (`get_customer_stock_summary`, `get_all_stock_summary`,
+  `get_operations_dashboard`) and, since migration 58, bags dispatched. Weight
+  received uses the bags received. Not touched here: `get_stock_aging_report`
+  adds per-bag weights the same way (`summary.total_weight_kg` and the bucket
+  totals); that is for a decision of its own.
+- App: the mobile app reads `total_weight` on a receipt and `total_weight_kg` in
+  the summary (`src/services/reporting/grn-activity-service.ts`) but shows
+  neither on a screen today, so nothing on a screen changes and no app change is
+  needed. The one-customer GRN PDF (`generate-report-pdf`) keeps computing each
+  GRN's weight from its lines, which is right with or without this migration.
+- Nothing else changes: the `authorize_rpc` guard, SECURITY DEFINER, the
+  search_path and jit setting, the grants, the India day cut of migration 56, the
+  end-day rule of migration 54, every other key and the order of the receipts
+  and customers. Compared in a throwaway database, the only difference in the
+  two function definitions is the two lines of the per-receipt sum.
+- `tests/report_grn_weight.sql` checks, as staff, an administrator and a
+  customer account, a customer with three receipts in a period (100 x 25 + 40 x
+  50 = 4500; 60 x 30 + 10 with no weight = 1800; 20 x 40 = 800; summary 7100),
+  that the received bags are used and not the stock left (after two dispatches),
+  that each total equals the figure worked out from the tables, that a deleted
+  receipt and one before the period are not counted, that periods move the
+  weights, a second customer (310) and a customer whose lines have no weight
+  (0), all customers (7410 = 7100 + 310 + 0) against `get_all_grn_activity`,
+  that the key sets and the per-bag line weight are unchanged, that a customer
+  account is still refused another customer, all customers and
+  `get_all_grn_activity`, and that both functions are single and keep their
+  guard, search_path and grants. No earlier SQL test asserted the old figures.
+
+## Unreleased — the invoice PDF follows the Paid / Pending choice; two labels in Gujarati (2026-10-12)
+
+No migration: `functions/generate-report-pdf` only. **Operator action:** none
+beyond the normal upgrade, which recreates the functions container. No setting,
+service or SQL change.
+
+- The invoice history PDF of one customer ignored the app's Paid / Pending
+  choice. `generate-report-pdf` now takes an optional `"status": "paid" |
+  "pending"` (`null` is the same as leaving it out). It is accepted only with
+  `"report": "invoice-history"` and a `customer_id`; anything else is a 400 with
+  a fixed message that does not echo the body:
+  - `status is only for the invoice history of one customer` (any other report,
+    or the invoice history without a customer, with either value);
+  - `status must be 'paid' or 'pending'` (any other value).
+  An unknown key still gets `Unknown field in report request`, as before.
+- With `status` set, only the invoices whose `payment_status.status` equals it
+  are listed (the app reads the status the same way), and every figure of the PDF
+  is over those invoices: the totals row and the summary (Invoices, Net amount,
+  Paid, Pending; Paid and Pending are net amounts, as in the RPC, so the other
+  status shows `0.00`). The summary covers all the listed invoices also when the
+  table is cut at 2000 rows. The header, under the title and again in the
+  table's header row, gets one more line between the period and the sort:
+  `Payment: Paid` or `Payment: Pending` (`ચુકવણી: ચૂકવેલ`, `ચુકવણી: બાકી` in
+  Gujarati, the app's `reports.filters.payment`, `reports.customerActivity.paid`
+  and `common.pending`). The answer's `document` carries `status` when it was
+  set. The function still calls the same report RPC with the caller's token; the
+  invoices of the other status are dropped afterwards, so no access rule changes.
+- Without `status` the PDF is exactly what it was (the tests compare the HTML
+  of every report fixture, both levels, both languages, with the earlier output).
+- An app that sends `status` to a function without this change gets `Unknown
+  field in report request` (400) and retries without it; the PDF then lists
+  every invoice. Upgrade the backend first and the choice is followed.
+- Two labels that printed in English in a Gujarati PDF now have Gujarati, made
+  of the app's own words: `Latest invoice` is `છેલ્લું ઇન્વૉઇસ` (the "Latest"
+  of an invoice row, `reports.invoiceHistory.latestInvoice`, with the app's word
+  for invoices) in the all-customers invoice history, and `Last activity` is
+  `છેલ્લી કામગીરી` (`reports.sort.lastActive`, `reports.customerActivity.lastActive`)
+  in the all-customers customer activity report. English PDFs are unchanged.
+  The wording is for the owner to check.
+- The stock aging PDF's figure for the oldest stock now matches the app's screen: it prints the item count of the
+  over-364-days bucket (`by_bucket['364+'].item_count` of the RPC's answer, the figure of the screen's tile and red
+  bar) under the app's own label, `Items over 364 days` (`૩૬૪ દિવસથી વધુ જૂની આઇટમ`), in the summary at the
+  one-customer and the all-customers level; before, it printed the bags over 365 days (`summary.qty_over_365_days`)
+  as `Over 1 year`. The all-customers table keeps its per-customer `Over 1 year` column (items older than 365 days),
+  because the answer carries no per-customer count of that bucket.
+- The report PDFs print India's calendar day for every date that the database returns as a moment, so a PDF agrees
+  with the app's screen for a document made between 00:00 and 05:30 India time. They printed the first ten characters
+  of the time, which is the UTC day: a receipt made at 02:30 India time on 1 October (`2026-09-30T21:00:00+00:00`)
+  was printed as 30 September. The moments are the GRN activity of one customer (`Date`), the invoice history
+  (`Date` of one customer, `Latest invoice` of all customers), the stock aging of one customer (`Date`, `Last
+  dispatch`) and the customer activity of all customers (`Last activity`). The dates the database already gives as
+  India days (the dispatch activity, `Latest GRN`, the stock summary, the months of the customer activity) are
+  printed as they are. A report sorted by a date column is ordered by the day that is printed, and two moments of
+  one day by their time. The `Last updated` line of every report is India's day and clock too
+  (`Last updated 12-10-2026 13:30 IST`; it was the UTC day and clock, `... 08:00 UTC`).
+- Checks: `tests/report-pdf.test.mjs` (`npm test`).
+
+## Unreleased — invoice amounts in the reports are the invoice total (2026-10-12)
+
+Migration 61. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- What was wrong: an invoice's payable amount is `invoice.total`
+  (`recalculate_invoice_header` stores the ceiling of the line bases plus the tax
+  minus the discount; a line base already holds the labour). Payments, Tally, the
+  invoice PDF and the invoice screens all use `total`. Three report functions
+  built a "net" figure as `total + labour + tax_amount - discount`, which adds
+  the labour and the tax a second time and takes the discount off a second time.
+  Example: 1 bag, charge 10, labour rate 2.50, tax 5%: base 12.50, tax
+  ceil(0.625) = 1, `total` = ceil(13.50) = 14. The reports said 14 + 2.50 + 1 =
+  17.50.
+- Every key whose value changes is a number before and after, with the same name;
+  the new value is the invoice total:
+  - `get_customer_invoice_summary`, one customer: `invoices[].net_total` (now =
+    `total`), `summary.net_amount` (now = `summary.total_amount`),
+    `summary.paid_amount` and `summary.pending_amount` (the totals of the
+    invoices with / without a payment row, so paid + pending = `total_amount`),
+    and `by_month[].paid_amount` and `by_month[].pending_amount`;
+  - `get_customer_invoice_summary`, no customer (all customers):
+    `by_customer[].net_amount` (now = `total_amount`) and `summary.net_amount`;
+  - `get_customer_activity_detail`: `summary.total_invoice_amount`,
+    `monthly_trends[].invoice_amount`, `summary.total_pending_amount` (the
+    invoiced amount minus `total_paid_amount`, so it follows) and
+    `recent_invoices[].net_total`;
+  - `get_all_customer_activity_summary`: `summary.total_invoice_amount` and
+    `customers[].total_invoice_amount`.
+  `total_amount`, `total_labour`, `total_tax`, `total_discount`, the counts,
+  `invoices[].total`, `labour`, `tax_amount`, `discount` and
+  `summary.total_paid_amount` (the payments themselves) are not touched.
+- **Figures go down.** In the invoice history and customer activity reports and
+  their PDFs, every amount above falls to the real one: the worked invoice shows
+  14 and not 17.50, and an invoice with a discount no longer has it deducted
+  twice. Nothing is lost: no stored value changes, only what the reports add up.
+- Duplicate rows: `get_customer_invoice_summary` listed an invoice once per row
+  in `payments` and added it once per row, so an invoice with two payment rows (a
+  part payment and the balance, as Tally writes them) appeared twice and counted
+  twice in `total_invoices`, `total_amount`, `paid_count` and every other sum.
+  Its payment status is now one entry per invoice: `payment_status.amount` is the
+  sum of the invoice's payment rows (it was the one row's amount), and
+  `paid_date`, `payment_ref` and `payment_mode` are those of the latest payment
+  row (the latest `payment_date`, then `payment_no`). The keys of `payment_status`
+  are unchanged, and an invoice with one payment row or none is answered as
+  before.
+- "Paid" still means "has a payment row": an invoice with a part payment counts
+  as paid in full in `paid_count`, `paid_amount` and `status`. Changing that is
+  the owner's decision and this migration does not.
+- What an app shows: the invoice history screen's "Net amount" tile, its paid and
+  pending tiles, the customer rows and each invoice's amount, and the customer
+  activity screen's invoiced amount, monthly amounts and recent invoices read
+  these keys, so they show the lower, real amounts, the same as the invoice
+  itself, with no app change. Before: 17.50 for the worked invoice, and an
+  invoice with two payment rows listed twice. After: 14, listed once.
+- Report PDFs (`generate-report-pdf`): both levels of the invoice history print
+  one amount. Neither prints a "Net amount" column or figure any more (it
+  repeated "Amount"); the app's net sort, which it still sends for the amount
+  sort of both levels, is still accepted and sorts by the amount, and the report
+  names the real column. The invoice history of one customer works its amount,
+  paid and pending figures out from the totals of the invoices it lists, so it
+  is right on a database with or without this migration. The all-customers
+  invoice history prints the RPC's `total_amount` (right on every database) in
+  its Amount column and figure. The customer activity PDF reads the corrected
+  keys and has no invoice total to work from, so its amounts are right from
+  migration 61 on.
+- Nothing else changes: the `authorize_rpc` guard, SECURITY DEFINER, the
+  search_path and jit setting, the grants, the India day cuts of migrations 54 and
+  56, the key sets and the order of the rows. Compared in a throwaway database,
+  the only differences in the three function definitions are the sum expressions
+  (six places) and the payment status (three lines).
+- `tests/report_invoice_amounts.sql` makes seven invoices with `save_invoice`
+  (the worked example, discounts, labour and tax rates, one invoice with two
+  payment rows, one paid with one row, pending ones, one outside the period, a
+  second customer) and checks every key above as staff, an administrator and a
+  customer account, that the old sum is gone, and that the three functions keep
+  their guard, search_path and grants; `tests/report-pdf.test.mjs` checks the PDF
+  with the answer of a database with and without the migration.
+
 ## Unreleased — dispatch activity report returns weights (2026-10-12)
 
 Migration 58. **Operator action:** none beyond applying the migration (the
@@ -252,7 +488,7 @@ reads the report's existing RPC with the **caller's token** (no new SQL for
 data; `authorize_rpc` and each function's customer rules apply unchanged), then
 stores the file in the private `documents` bucket as
 `report/<report>/<customer id or all>/<random uuid>.pdf` and returns a signed
-link. The app does not call it yet.
+link. The app has called it since its reports rebuild.
 
 `POST /functions/v1/generate-report-pdf`, `Authorization: Bearer <session>`,
 JSON body of at most 4096 bytes:

@@ -14,7 +14,7 @@ import { reportHtml } from './document-html.ts';
 import { documentRequestBody } from './request-body.ts';
 import { publicBaseUrl } from './public-url.ts';
 import { parseReportRequest } from './report-request.ts';
-import { buildReport, formatCell, reportLevel, reportRefusal, unwrapReportBody } from './report-definitions.ts';
+import { buildReport, formatCell, reportFilters, reportLevel, reportRefusal, unwrapReportBody } from './report-definitions.ts';
 import { label } from './report-labels.ts';
 
 export async function reportPdf(req: Request): Promise<Response> {
@@ -54,12 +54,7 @@ export async function reportPdf(req: Request): Promise<Response> {
     const report = buildReport(request, body);
     const lang = request.lang;
     const now = new Date().toISOString();
-    const filters: [string, string][] = [[label(lang, 'customer'), customerName ?? label(lang, 'allCustomers')]];
-    if (request.from && request.to) {
-      filters.push([label(lang, 'period'), label(lang, 'dateRange', { from: formatCell('date', request.from, lang), to: formatCell('date', request.to, lang) })]);
-    }
-    filters.push([label(lang, 'sortBy'), report.sort.label]);
-    filters.push(['', label(lang, 'updated', { time: `${formatCell('date', now, lang)} ${now.slice(11, 16)} UTC` })]);
+    const filters = reportFilters(request, customerName, report, now);
     const note = report.truncated
       ? label(lang, 'showing', { shown: formatCell('number', report.rows.length, lang), total: formatCell('number', report.rowsTotal, lang) })
       : '';
@@ -88,6 +83,7 @@ export async function reportPdf(req: Request): Promise<Response> {
     const document: Record<string, unknown> = { type: 'report', report: request.report };
     if (customerName !== null) document.customer = customerName;
     if (request.from && request.to) Object.assign(document, { from: request.from, to: request.to });
+    if (request.status) document.status = request.status;
     Object.assign(document, {
       rows_count: report.rows.length, rows_total: report.rowsTotal, truncated: report.truncated,
       sort: { field: report.sort.field, order: report.sort.order },

@@ -20,10 +20,12 @@ export interface ReportRequest {
   /** As sent; the report decides whether the field is one it sorts by. */
   sort: { field: string; order: 'asc' | 'desc' } | null;
   lang: ReportLang;
+  /** The payment choice of the invoice history of one customer; null lists every invoice. */
+  status: 'paid' | 'pending' | null;
 }
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const allowedKeys = new Set(['report', 'customer_id', 'from', 'to', 'sort', 'lang']);
+const allowedKeys = new Set(['report', 'customer_id', 'from', 'to', 'sort', 'lang', 'status']);
 const bad = (message: string) => ({ status: 400, message });
 
 /** Day number of a real calendar date written YYYY-MM-DD, or null. */
@@ -83,5 +85,14 @@ export function parseReportRequest(body: unknown): ReportRequest {
     if (input.lang !== 'en' && input.lang !== 'gu') throw bad("lang must be 'en' or 'gu'");
     lang = input.lang;
   }
-  return { report, customerId, from, to, sort, lang };
+
+  // The app's Paid / Pending choice. Only the invoice history of one customer has it; null is the same as
+  // leaving it out, and no value is echoed in a refusal.
+  let status: ReportRequest['status'] = null;
+  if (input.status !== undefined && input.status !== null) {
+    if (report !== 'invoice-history' || customerId === null) throw bad('status is only for the invoice history of one customer');
+    if (input.status !== 'paid' && input.status !== 'pending') throw bad("status must be 'paid' or 'pending'");
+    status = input.status;
+  }
+  return { report, customerId, from, to, sort, lang, status };
 }

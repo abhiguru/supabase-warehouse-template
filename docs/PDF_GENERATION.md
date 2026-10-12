@@ -16,8 +16,10 @@ the caller JWT; the server key reads the warehouse branding setting and performs
 the subsequent private upload.
 
 `generate-report-pdf` renders one of the seven report screens
-(`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"? }`; the
-full contract is in the CHANGELOG entry for migration 53). It reads the
+(`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"?, "status"? }`;
+`status` is `paid` or `pending` and only for the invoice history of one
+customer; the full contract is in the CHANGELOG entries for migration 53 and
+for `status`). It reads the
 report's existing RPC with the caller JWT, so the RPC guard decides access
 (a refusal is 403, an unknown customer 404), prints at most 2000 rows with a
 note when cut, and returns the same `{ success, pdf_url, expires_in, document }`
