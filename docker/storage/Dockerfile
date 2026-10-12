@@ -1,4 +1,4 @@
-FROM supabase/storage-api:v1.79.14@sha256:b2525671e665c3bf15bfaba4b0cc1754f0cb8f36cdb9d6dce13beed58b854ae1
+FROM supabase/storage-api:v1.79.38@sha256:7903ad62951b6b7978fabed4c5db26d10da7c4fea10ee9b4fdfff86440f8b206
 WORKDIR /app
 # Preserve the precompiled application and existing native modules. Patch only
 # locked dependency versions; never run package lifecycle scripts in the image.
