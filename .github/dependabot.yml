@@ -20,16 +20,13 @@ updates:
       - "/docker/storage"
     schedule:
       interval: weekly
-    # One pull request for the week's minor and patch updates of both
-    # manifests: each pull request rebuilds the images in CI, and the install
-    # job runs one at a time.
-    groups:
-      recipe-dependencies:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+    # No version updates for these two manifests, security updates only (a
+    # limit of 0 does exactly that). Each is the dependency set of an upstream
+    # application at a pinned tag. Tried on 2026-10-12: grouped, the pending
+    # minor and patch updates were 44 and the metadata image did not build; one by one
+    # they are 44 runs of the install job, and two of the first six broke the
+    # postgres-meta type check. The manifests move when the upstream tag moves.
+    open-pull-requests-limit: 0
     ignore:
       # These two manifests are the dependency sets of upstream applications
       # that the recipes build from a pinned source tag. A new major of one of
@@ -86,14 +83,26 @@ updates:
         update-types:
           - "version-update:semver-major"
       # A new PostgreSQL major needs a planned upgrade of every installation's
-      # data directory, not a changed line in a recipe.
+      # data directory, not a changed line in a recipe. So does the publisher's
+      # 15.19 line (looked at on 2026-10-12, tag 15.19.0.004): it is a different
+      # image, on Alpine and not Ubuntu (the recipe's apt-get step cannot run),
+      # with another user id for postgres (100, was 105), without wal-g, and
+      # tests/migrations.sh stops on it: the Storage schema is missing.
       - dependency-name: supabase/postgres
         update-types:
           - "version-update:semver-major"
+          - "version-update:semver-minor"
       # The recipe builds postgres-meta from the source of the same tag, with
       # this repository's manifest and two patches (docker/postgres-meta). A new
       # tag moves the source checksum, the manifest and the patches together.
       - dependency-name: supabase/postgres-meta
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      # The recipe installs this repository's manifest (docker/storage) over the
+      # application the image ships. A new tag brings its own dependency set, so
+      # the manifest is rebuilt from it in the same change.
+      - dependency-name: supabase/storage-api
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
