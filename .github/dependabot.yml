@@ -101,7 +101,7 @@ updates:
           - "version-update:semver-minor"
       # The recipe installs this repository's manifest (docker/storage) over the
       # application the image ships. A new tag brings its own dependency set, so
-      # the manifest is rebuilt from it in the same change.
+      # the manifest is rebuilt from it in the same change (docker/storage/README.md).
       - dependency-name: supabase/storage-api
         update-types:
           - "version-update:semver-major"

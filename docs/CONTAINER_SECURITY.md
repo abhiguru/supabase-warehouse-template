@@ -18,7 +18,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
-| Storage | 1.79.14 | Upgrade from 1.74.0; same-major runtime leaf fixes in locked npm manifest; remove unused npm CLI |
+| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest; Alpine package upgrade; remove unused npm CLI |
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
@@ -988,12 +988,13 @@ building an image or starting the stack.
   Until then the exposure is bounded by the network change: only
   postgres-meta and the database can reach Studio. The scan numbers in the
   table near the top of this page are from 2026-09-22 and an older tag.
-- **Edge runtime and Storage operating-system packages.**
+- **Edge runtime operating-system packages.**
   `docker/edge-runtime/Dockerfile` upgrades one package; replacing that with a
-  full `apt-get upgrade` (keeping the PCRE2 version check) and adding
-  `apk upgrade --no-cache` to `docker/storage/Dockerfile` both change images
-  that every request depends on. Build, then run the operator API and
-  document tests.
+  full `apt-get upgrade` (keeping the PCRE2 version check) changes an image
+  that every document request depends on. Build, then run the operator API
+  and document tests. (Storage got `apk upgrade --no-cache` with the move to
+  v1.80.2 on 2026-10-12: the Trivy scan of that build has no HIGH or CRITICAL
+  finding, where the v1.79.14 build had 13 in Alpine packages.)
 - **Storage `npm install`.** `npm ci` would fail on lock drift, but it deletes
   `node_modules` first, and the recipe keeps the publisher's prebuilt native
   modules and runs no install scripts, so they would not be rebuilt. Moving

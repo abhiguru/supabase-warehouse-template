@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — Storage v1.80.2 (2026-10-12)
+
+`docker/storage`. **Operator action:** none beyond the usual upgrade; the
+setup rerun rebuilds the Storage image, and Storage applies its own schema
+changes when it starts.
+
+- Storage moves from v1.79.14 to v1.80.2, with the dependency manifest
+  rebuilt from the new tag (`docker/storage/README.md` describes the steps).
+  The new tag pins fastify 5.11.2 and `@fastify/busboy` 3.1.1, which have
+  HIGH findings; the manifest raises them to 5.12.5 and 3.2.1.
+- The recipe now applies Alpine's package updates (`apk upgrade`). A Trivy
+  scan of the build has no HIGH or CRITICAL finding; the v1.79.14 build had
+  13, all in Alpine packages (Python and libexpat).
+
 ## Unreleased — Studio 2026.10.05 (2026-10-12)
 
 `docker/studio/Dockerfile`. **Operator action:** none beyond the usual
