@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — report lists: server-side sort and totals (2026-10-12)
+
+Migration 52. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+For the sort control on the app's report screens:
+
+- `get_item_wise_stock_list`, the only paged report list, takes two new
+  optional parameters: `p_sort_by` (`item_name`, `total_stock`, `total_qty` or
+  `grn_count`; default `item_name`) and `p_sort_order` (`asc` or `desc`;
+  default `asc`), compared without regard to case. Any other value, `null`
+  included, means the default of that parameter; it is never an error and is
+  never built into SQL. Equal rows are ordered by item name and then item id,
+  so pages neither repeat nor skip an item. A call with only the four old
+  parameters works as before and keeps the item-name order.
+- Its answer gains `data.summary` = `{ total_stock, total_qty, item_count }`
+  over the whole filtered list (the same customer and search as the rows), on
+  every page. `data.items` and `data.total_count` are unchanged. The app no
+  longer has to add up the pages it has loaded.
+- The function was replaced, not overloaded: there is one
+  `get_item_wise_stock_list`, with the same guard, grants and role rules.
+- `get_all_stock_summary` (`customers`), `get_all_grn_activity` and
+  `get_all_dispatch_activity` (`by_customer`) ordered their customers by the
+  total read as text, so 9 came before 100 and 100 before 10. They now order by
+  the number, largest first, a missing total last, and equal totals by customer
+  name. Nothing else in those answers changes.
+- `tests/report_sort.sql` covers each sort in both directions, paging, the
+  summary with search and customer filters, hostile sort values, the numeric
+  order of the three lists and the unchanged role rules.
+
 ## Unreleased — central login: facility token exchange (2026-10-12)
 
 Migration 49, `functions/central-exchange`, `setup.sh`. **Operator action:**
