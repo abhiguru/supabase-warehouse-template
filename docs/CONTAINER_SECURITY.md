@@ -18,7 +18,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
-| Storage | 1.79.14 | Upgrade from 1.74.0; same-major runtime leaf fixes in locked npm manifest; remove unused npm CLI |
+| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest; Alpine package upgrade; remove unused npm CLI |
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
@@ -573,59 +573,50 @@ Each install now creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
 
-## Edge function modules (2026-10-11)
+## Edge function modules (2026-10-12)
 
-The functions load three remote modules when a worker first starts: the Deno
-standard library 0.192.0 from deno.land, and supabase-js 2.39.0 and jose 5.10.0
-from esm.sh. The printing functions, which the router refuses with 503, import
-`npm:ipp@2.0.1` on demand.
+The functions load nothing from the network when a worker starts. Until
+2026-10-12 they imported the Deno standard library from deno.land and
+supabase-js and jose from esm.sh on first start, and again after every
+recreation of the container; a URL pinned only the top-level version, esm.sh
+resolved supabase-js's own dependencies by range when it served the module,
+and nothing checked content.
 
-- `functions/import_map.json` is the one list of those URLs.
-  `tests/edge-imports.test.mjs` fails on any remote import that is not in the
-  list, on a list entry without an exact version, on a list entry nothing
-  imports, and on an `npm:` import without an exact version.
-- supabase-js was imported at 2.39.0 by the functions that run (configuration
-  and PDFs) and at 2.39.3 by the printing functions that do not. All now use
-  2.39.0, so no running function changed version.
-- The unit tests verify tokens with jose 5.10.0, the release the runtime
-  loads (`package.json` pins it; Dependabot version updates for it are held so
-  the two move together). They ran on jose 6 before.
+- **Two vendored files.** `functions/vendor/jose.mjs` (jose 5.10.0) and
+  `functions/vendor/supabase-js.mjs` (supabase-js 2.39.0 with its
+  dependencies) are each one self-contained module. The functions import them
+  by relative path. `functions/vendor/LICENSES.txt` holds the licence of every
+  package they may contain.
+- **How they are built.** `scripts/vendor-edge-modules.sh` installs the exact
+  packages of `scripts/edge-vendor/package-lock.json` (integrity-hashed,
+  without install scripts) into a temporary directory and bundles them with
+  esbuild. Two runs give byte-identical files. `functions/vendor/SHA256SUMS`
+  records them, and `tests/edge-imports.test.mjs` fails when a file differs
+  from its checksum, when a vendored file imports anything, when a function
+  imports anything that is not a file of this repository, or when a version in
+  the manifest is not exact.
+- **To change a version:** edit `scripts/edge-vendor/package.json`, run
+  `npm install --package-lock-only --ignore-scripts` in that directory, run
+  the script, then start the stack and call `get-public-config`,
+  `operator-otp`, `get-config` and one PDF function before committing. The
+  root `package.json` pins the same jose for the unit tests.
+- **The standard library is gone.** It was used for `serve` only; the
+  functions call the runtime's own `Deno.serve`.
+- **No import map.** `functions/import_map.json` is removed and the main
+  service no longer passes one to the workers.
+- **Checked on the dev instance (2026-10-12),** after recreating the functions
+  container: `hello`, `get-public-config`, a sign-in through `operator-otp`
+  (request, then verify, which returned a session), `get-config` with that
+  session, and `generate-customer-stock-pdf`, which stored a PDF and returned
+  its signed link. The container log names no download.
 
 Still open:
 
-- **No lock file.** A URL pins the top-level version only; esm.sh resolves that
-  module's own dependencies when it serves it, and nothing checks content
-  hashes. The module cache lives in the container and is refetched after the
-  container is recreated. To close this, on a machine with the Deno release
-  that matches the edge runtime in `docker/edge-runtime/Dockerfile` (Deno is
-  not installed where this was written, so the command is a starting point
-  and has not been run):
-
-  ```bash
-  cd functions
-  deno cache --lock=deno.lock --frozen=false --import-map=import_map.json \
-    main/index.ts hello/index.ts get-public-config/index.ts operator-otp/index.ts \
-    get-config/index.ts generate-*-pdf/index.ts
-  git add deno.lock
-  ```
-
-  Then make the runtime refuse a module that is not in the lock. How the
-  pinned edge-runtime release takes a lock file (a `deno.json` beside the
-  functions with `"lock": {"frozen": true}`, or a start-up flag) is not
-  recorded in this repository and was not tested, so no such setting is
-  committed. Confirm it against that release, start the stack, call
-  `get-public-config`, `operator-otp`, `get-config` and one PDF function, and
-  only then commit the setting. A second option that needs no runtime support
-  is to vendor the three modules under `functions/vendor/` and point the
-  import map at the files.
-- **The functions import by full URL, not through the import map's names.**
-  `functions/_shared/jwt.ts` is loaded by the main service as well as by the
-  workers, and only the workers are given the import map
-  (`functions/main/index.ts`). Switching to bare names therefore needs the
-  main service to receive the map too, and a failure there leaves the
-  functions container unhealthy. It needs a run on the edge runtime first.
+- **Printing.** The printing functions, which the router refuses with 503,
+  import `npm:ipp@2.0.1` on demand. Vendor it the same way before printing is
+  enabled.
 - jose 5 to 6 and supabase-js 2.39 to a current 2.x release are version
-  moves for the same run.
+  moves; the pinned supabase-js resolves its Supabase dependencies at 2.117.3.
 
 ## Image pins (2026-10-11)
 
@@ -974,22 +965,27 @@ building an image or starting the stack.
   `golang.org/x/net` finding, Gotenberg that and the three standard-library
   findings of its publisher binary. Build with `--no-cache` (or `--pull` and
   a pruned cache) before reading scan numbers or deploying.
-- **Studio application advisories.** The recipe now applies Debian updates,
-  which addresses the operating-system findings at build time. The Next.js
-  and simple-git advisories are in the publisher's application and need a
-  Studio tag that ships fixed versions (the review named next 16.3.6 and
-  simple-git 4.0.1 as the first fixed releases); change the tag and digest in
-  `docker/studio/Dockerfile`, then `npm run test:studio`. Until then the
-  exposure is bounded by the network change: only postgres-meta and the
-  database can reach Studio. The scan numbers in the table near the top of
-  this page are from 2026-09-22 and an older tag; they have not been
-  re-measured.
-- **Edge runtime and Storage operating-system packages.**
+- **Studio application advisories.** The recipe applies Debian updates, which
+  addresses the operating-system findings at build time. On 2026-10-12 the
+  tag moved from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`. Scanned
+  with Trivy (HIGH and CRITICAL, a `--no-cache` build), findings that have a
+  fixed release went from eight to six: the Critical Next.js advisory
+  (GHSA-vcvr-r3jv-pc5j, next 16.3.5) and the High sharp advisory are gone.
+  Left in the publisher's application: simple-git 3.36.0 (one Critical, two
+  High; fixed in 4.0.1), `@simple-git/argv-parser` 1.1.1 (Critical; 2.0.1),
+  next 16.3.6 (High; 16.3.8) and `@modelcontextprotocol/sdk` 1.29.0 (High;
+  1.31.0). They need a later Studio tag; change the tag and digest in
+  `docker/studio/Dockerfile` and the notices, then `npm run test:studio`.
+  Until then the exposure is bounded by the network change: only
+  postgres-meta and the database can reach Studio. The scan numbers in the
+  table near the top of this page are from 2026-09-22 and an older tag.
+- **Edge runtime operating-system packages.**
   `docker/edge-runtime/Dockerfile` upgrades one package; replacing that with a
-  full `apt-get upgrade` (keeping the PCRE2 version check) and adding
-  `apk upgrade --no-cache` to `docker/storage/Dockerfile` both change images
-  that every request depends on. Build, then run the operator API and
-  document tests.
+  full `apt-get upgrade` (keeping the PCRE2 version check) changes an image
+  that every document request depends on. Build, then run the operator API
+  and document tests. (Storage got `apk upgrade --no-cache` with the move to
+  v1.80.2 on 2026-10-12: the Trivy scan of that build has no HIGH or CRITICAL
+  finding, where the v1.79.14 build had 13 in Alpine packages.)
 - **Storage `npm install`.** `npm ci` would fail on lock drift, but it deletes
   `node_modules` first, and the recipe keeps the publisher's prebuilt native
   modules and runs no install scripts, so they would not be rebuilt. Moving

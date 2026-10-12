@@ -15,6 +15,16 @@ RLS. A document outside the caller's scope returns 404. The business reads use
 the caller JWT; the server key reads the warehouse branding setting and performs
 the subsequent private upload.
 
+`generate-report-pdf` renders one of the seven report screens
+(`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"?, "status"? }`;
+`status` is `paid` or `pending` and only for the invoice history of one
+customer; the full contract is in the CHANGELOG entries for migration 53 and
+for `status`). It reads the
+report's existing RPC with the caller JWT, so the RPC guard decides access
+(a refusal is 403, an unknown customer 404), prints at most 2000 rows with a
+note when cut, and returns the same `{ success, pdf_url, expires_in, document }`
+answer with `document.type = "report"`. Code: `functions/_shared/report-*.ts`.
+
 Gotenberg renders escaped HTML with a restrictive content policy. The generic
 layout uses the warehouse name installed in `system_settings.app_name`. It
 omits private addresses, organization-specific terms and preprinted-paper
@@ -24,7 +34,8 @@ Generated PDFs live in the private documents bucket. Links expire after one hour
 there is no direct client-read policy. Signed links are bearer capabilities:
 do not log, share publicly, or send them to unrelated services.
 
-Every request stores a new file `<kind>/<document id>/<random>.pdf`; the link
+Every request stores a new file `<kind>/<document id>/<random>.pdf`
+(reports: `report/<report>/<customer id or all>/<random>.pdf`); the link
 expiring does not delete it. `npm run retention:apply` removes generated PDFs
 older than the `generated_documents` policy (7 days by default, far longer than
 the one-hour link), and `npm run retention:preview` shows how many it would

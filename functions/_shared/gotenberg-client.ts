@@ -103,9 +103,12 @@ export async function htmlToPdf(
 
 /**
  * Create a professional page footer HTML
- * Uses Gotenberg's special CSS classes for page numbers
+ * Uses Gotenberg's special CSS classes for page numbers.
+ * An empty docNumber prints the document type alone (a report has no number);
+ * `note` adds a second line on the left of every page, e.g. that rows were left out.
  */
-export function createFooterHtml(companyName: string, docType: string, docNumber: string): string {
+export function createFooterHtml(companyName: string, docType: string, docNumber: string, note = ''): string {
+  const left = docNumber ? `${escapeHtml(docType)} #${escapeHtml(docNumber)}` : escapeHtml(docType);
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -116,19 +119,20 @@ export function createFooterHtml(companyName: string, docType: string, docNumber
       position: absolute; bottom: 3mm; left: 14mm; right: 14mm;
       display: flex; justify-content: space-between; align-items: center;
       border-top: 2px solid #333; padding-top: 4px;
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 8pt;
+      font-family: 'Helvetica Neue', Helvetica, Arial, 'Noto Sans Gujarati', sans-serif; font-size: 8pt;
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }
     .footer-left { font-size: 7pt; color: #888; }
     .footer-center { font-size: 7pt; font-weight: 600; color: #333; }
     .footer-right { font-size: 8pt; color: #666; }
     .page-info { font-weight: 500; }
+    .footer-note { display: block; color: #8a4b00; font-size: 7pt; }
   </style>
 </head>
 <body>
   <div class="footer-container">
     <div class="footer-text-content">
-      <div class="footer-left">${escapeHtml(docType)} #${escapeHtml(docNumber)}</div>
+      <div class="footer-left">${left}${note ? `<span class="footer-note">${escapeHtml(note)}</span>` : ''}</div>
       <div class="footer-center">${escapeHtml(companyName)}</div>
       <div class="footer-right">
         <span class="page-info">Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>

@@ -253,6 +253,10 @@ services:
     build:
       context: ./imgproxy
     restart: unless-stopped
+    # The storage directory is private to the installing user (mode 0700), so
+    # the image's own user (999) cannot enter it and every transformation
+    # failed with "permission denied". scripts/compose.sh passes the owner.
+    user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
     volumes:
       # imgproxy only reads stored images; the storage service writes them.
       - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:ro,z
@@ -326,6 +330,11 @@ services:
     volumes:
       - ../functions:/home/deno/functions:ro,Z
       - ${WAREHOUSE_MANIFEST_PATH:?Set public manifest path}:/etc/warehouse/instance.json:ro
+      # The state's public directory, for the optional central sign-in key file
+      # (CENTRAL_JWKS_FILE). A directory, not the file: the file may be absent,
+      # and a replaced file is seen without recreating the container.
+      # scripts/compose.sh sets the path for every state, old or new.
+      - ${WAREHOUSE_PUBLIC_PATH:?Run through scripts/compose.sh}:/etc/warehouse/public:ro
     depends_on:
       db:
         condition: service_healthy
@@ -339,6 +348,11 @@ services:
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
       APP_ENV: ${APP_ENV:?Operator environment required}
       AUTH_MODE: ${AUTH_MODE:?Operator mode required}
+      # Central sign-in; both empty = off. ":-" so a state from before these lines still renders.
+      CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}
+      CENTRAL_JWKS_URL: ${CENTRAL_JWKS_URL:-}
+      CENTRAL_JWKS_FILE: ${CENTRAL_JWKS_FILE:-}
+      CENTRAL_JWKS_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
     command:
       [

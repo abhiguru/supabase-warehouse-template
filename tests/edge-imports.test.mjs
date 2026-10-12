@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const functions = new URL('../functions/', import.meta.url).pathname;
-const map = JSON.parse(readFileSync(join(functions, 'import_map.json'), 'utf8')).imports;
-const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const packageJson = JSON.parse(read('package.json'));
+const vendorManifest = JSON.parse(read('scripts/edge-vendor/package.json'));
+const vendorLock = JSON.parse(read('scripts/edge-vendor/package-lock.json'));
 
 function specifiers() {
   const found = [];
@@ -18,43 +21,63 @@ function specifiers() {
   return found;
 }
 
-test('functions/import_map.json is the one list of remote modules, each at an exact version', () => {
-  const remote = Object.values(map);
-  for (const [name, url] of Object.entries(map)) {
-    assert.match(url, /^https:\/\/(?:esm\.sh|deno\.land)\/[^?#]*@\d+\.\d+\.\d+(?:\/|$)/, `${name} is not pinned to an exact version`);
-  }
-  const used = new Set();
+test('the functions load no module from the network when a worker starts', () => {
+  // Everything is a file in this repository: relative imports, with the two
+  // libraries built into functions/vendor. The one exception is the printing
+  // code, which the router refuses with 503 and which imports ipp on demand.
   const all = specifiers();
   assert.ok(all.length > 40, 'function imports were read');
+  const vendored = new Set();
   for (const { file, specifier } of all) {
-    if (/^\.{1,2}\//.test(specifier) || specifier.startsWith('node:')) continue;
+    if (specifier.startsWith('node:')) continue;
     if (specifier.startsWith('npm:')) {
-      assert.match(specifier, /^npm:(?:@[a-z0-9-]+\/)?[a-z0-9-]+@\d+\.\d+\.\d+$/, `${file}: ${specifier} has no exact version`);
+      assert.equal(specifier, 'npm:ipp@2.0.1', `${file}: ${specifier}`);
+      assert.match(file, /^_shared\/ipp-client\.ts$|^print-|^get-printer-status\//, `${file} is not printing code`);
       continue;
     }
-    const pin = remote.find(url => (url.endsWith('/') ? specifier.startsWith(url) : specifier === url));
-    assert.ok(pin, `${file}: ${specifier} is not listed in functions/import_map.json`);
-    used.add(pin);
+    assert.match(specifier, /^\.{1,2}\//, `${file}: ${specifier} is not a file in this repository`);
+    const vendor = /^\.\.\/vendor\/(.+)$/.exec(specifier)?.[1];
+    if (vendor) vendored.add(vendor);
   }
-  assert.deepEqual([...used].sort(), [...remote].sort(), 'import_map.json lists a module no function imports');
+  assert.deepEqual([...vendored].sort(), ['jose.mjs', 'supabase-js.mjs']);
+  assert.doesNotMatch(read('functions/main/index.ts'), /importMapPath/);
 });
 
-test('each npm package is imported at one version', () => {
-  const versions = {};
-  for (const { specifier } of specifiers()) {
-    const match = /^npm:((?:@[^/]+\/)?[^@]+)(?:@(.+))?$/.exec(specifier);
-    if (match) (versions[match[1]] ??= new Set()).add(match[2] ?? 'unpinned');
+test('functions/vendor holds exactly the files its checksum list names', () => {
+  const sums = read('functions/vendor/SHA256SUMS').trim().split('\n').map(line => line.split(/\s+/));
+  assert.deepEqual(sums.map(([, name]) => name), ['LICENSES.txt', 'jose.mjs', 'supabase-js.mjs']);
+  for (const [sum, name] of sums) {
+    const actual = createHash('sha256').update(readFileSync(join(functions, 'vendor', name))).digest('hex');
+    assert.equal(actual, sum, `${name} was changed without scripts/vendor-edge-modules.sh`);
   }
-  assert.deepEqual(Object.fromEntries(Object.entries(versions).map(([name, set]) => [name, [...set]])), { ipp: ['2.0.1'] });
+  assert.deepEqual(readdirSync(join(functions, 'vendor')).sort(), ['LICENSES.txt', 'SHA256SUMS', 'jose.mjs', 'supabase-js.mjs']);
+  // A vendored file must not reach out again.
+  for (const [, name] of sums.filter(([, file]) => file.endsWith('.mjs'))) {
+    const source = readFileSync(join(functions, 'vendor', name), 'utf8');
+    assert.doesNotMatch(source, /^\s*(?:import|export)\b[^\n]*\bfrom\s*["'][^"']+["']/m, `${name} imports another module`);
+    assert.doesNotMatch(source, /\bimport\s*\(\s*["']/, `${name} imports another module on demand`);
+  }
 });
 
-test('the unit tests verify tokens with the jose release the edge runtime loads', async () => {
-  const runtime = /jose@(\d+\.\d+\.\d+)$/.exec(map.jose)?.[1];
-  assert.ok(runtime, 'jose is listed in the import map');
-  assert.equal(packageJson.devDependencies.jose, runtime, 'package.json jose differs from functions/import_map.json');
-  const installed = JSON.parse(readFileSync(new URL('../node_modules/jose/package.json', import.meta.url), 'utf8')).version;
-  assert.equal(installed, runtime, 'installed jose differs; run npm ci');
-  // The loader maps the runtime URL to that installed package.
-  const viaUrl = await import(map.jose);
-  assert.equal(viaUrl.jwtVerify, (await import('jose')).jwtVerify);
+test('the vendored libraries are built from exact, locked versions', () => {
+  for (const [name, version] of Object.entries({ ...vendorManifest.dependencies, ...vendorManifest.devDependencies })) {
+    assert.match(version, /^\d+\.\d+\.\d+$/, `${name} is not an exact version`);
+    assert.equal(vendorLock.packages[`node_modules/${name}`]?.version, version, `${name} differs in the lock file`);
+  }
+  for (const [path, entry] of Object.entries(vendorLock.packages)) {
+    if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has no integrity hash`);
+  }
+  assert.deepEqual(Object.keys(vendorManifest.dependencies).sort(), ['@supabase/supabase-js', 'jose']);
+});
+
+test('the unit tests sign tokens with the jose release the functions verify with', async () => {
+  assert.equal(packageJson.devDependencies.jose, vendorManifest.dependencies.jose, 'package.json jose differs from scripts/edge-vendor/package.json');
+  const installed = JSON.parse(read('node_modules/jose/package.json')).version;
+  assert.equal(installed, vendorManifest.dependencies.jose, 'installed jose differs; run npm ci');
+  // A token signed with the installed package verifies with the vendored file.
+  const { SignJWT } = await import('jose');
+  const { jwtVerify } = await import('../functions/vendor/jose.mjs');
+  const key = new TextEncoder().encode('unit-test-key-of-thirty-two-bytes');
+  const token = await new SignJWT({ role: 'fixture' }).setProtectedHeader({ alg: 'HS256' }).sign(key);
+  assert.equal((await jwtVerify(token, key)).payload.role, 'fixture');
 });
