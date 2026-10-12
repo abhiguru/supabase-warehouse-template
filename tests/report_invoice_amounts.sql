@@ -30,6 +30,11 @@
 -- A wrong sum or a repeated invoice tells itself apart: the old sum gives 375, 139 paid and 236
 -- pending; the old join lists 6102 twice (5 invoices) and sums it twice.
 --
+-- Migration 62 changed what Paid and Pending mean (the money received, not "has a payment row"), which these
+-- fixtures do not touch: every invoice here is paid in full by its payment rows or has none, so the statuses and sums
+-- below read the same under both rules. The only line that moved is the key set of an invoice (two new keys).
+-- tests/report_invoice_paid.sql covers part payments, the 0.50 tolerance and over-payments.
+--
 -- Each answer is read as the role under test and compared AFTER the role is dropped.
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
@@ -350,7 +355,8 @@ SELECT pg_temp.ria_assert(pg_temp.ria_keys(:'staff_quince'::jsonb) = 'data,metad
   AND pg_temp.ria_keys(:'staff_quince'::jsonb#>'{data,summary}') = 'net_amount,paid_amount,paid_count,pending_amount,pending_count,total_amount,total_discount,total_invoices,total_labour,total_tax'
   AND pg_temp.ria_keys(:'staff_quince'::jsonb#>'{data,by_month,0}') = 'invoice_count,month,paid_amount,pending_amount,total_amount',
   'staff: the keys of the Quince answer, its summary and its months: ' || :'staff_quince');
-SELECT pg_temp.ria_assert(count(*) = 4 AND bool_and(pg_temp.ria_keys(x) = 'discount,financial_year,grn_id,grn_ref,invoice_date,invoice_id,invoice_number,item_count,labour,line_items,net_total,notes,payment_status,tax_amount,total,total_quantity'),
+-- Migration 62 adds balance_amount and paid_amount to each invoice (tests/report_invoice_paid.sql checks their values).
+SELECT pg_temp.ria_assert(count(*) = 4 AND bool_and(pg_temp.ria_keys(x) = 'balance_amount,discount,financial_year,grn_id,grn_ref,invoice_date,invoice_id,invoice_number,item_count,labour,line_items,net_total,notes,paid_amount,payment_status,tax_amount,total,total_quantity'),
   'staff: the keys of each Quince invoice')
 FROM jsonb_array_elements(:'staff_quince'::jsonb#>'{data,invoices}') AS t(x);
 -- An administrator is answered the same (everything but the time of the answer).

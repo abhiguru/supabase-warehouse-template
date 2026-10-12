@@ -196,7 +196,7 @@ const build = (report, level, lang, extra = {}) => {
 const expectedColumns = {
   'grn-activity': {
     customer: [['GRN number', 'Date', 'Items', 'Quantity', 'Weight (kg)', 'Stock', 'Invoice number'],
-      ['આવક પાવતી નંબર', 'તારીખ', 'આઇટમ', 'નંગ', 'વજન (કિલો)', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
+      ['આવક નં.', 'તારીખ', 'આઇટમ', 'નંગ', 'વજન (કિલો)', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
     all: [['Customer', 'GRNs', 'Quantity', 'Weight (kg)', 'Latest GRN'], ['વેપારી', 'આવક પાવતી', 'નંગ', 'વજન (કિલો)', 'છેલ્લી આવક પાવતી']],
   },
   'dispatch-activity': {
@@ -210,12 +210,12 @@ const expectedColumns = {
   },
   'stock-summary': {
     customer: [['Item', 'GRN number', 'Date', 'Package mark', 'Rack', 'Stock', 'Weight (kg)'],
-      ['આઇટમ', 'આવક પાવતી નંબર', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક', 'વજન (કિલો)']],
+      ['આઇટમ', 'આવક નં.', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક', 'વજન (કિલો)']],
     all: [['Customer', 'Items', 'GRNs', 'Stock', 'Weight (kg)'], ['વેપારી', 'આઇટમ', 'આવક પાવતી', 'સ્ટોક', 'વજન (કિલો)']],
   },
   'stock-aging': {
     customer: [['Item', 'GRN number', 'Date', 'Rack', 'Stock', 'Stock age (days)', 'Last dispatch'],
-      ['આઇટમ', 'આવક પાવતી નંબર', 'તારીખ', 'રેક', 'સ્ટોક', 'માલ કેટલા દિવસથી પડ્યો છે (દિવસ)', 'છેલ્લી જાવક']],
+      ['આઇટમ', 'આવક નં.', 'તારીખ', 'રેક', 'સ્ટોક', 'કેટલા દિવસથી (દિવસ)', 'છેલ્લી જાવક']],
     all: [['Customer', 'Stock', 'Average age (days)', 'Over 1 year'], ['વેપારી', 'સ્ટોક', 'સરેરાશ કેટલા દિવસથી (દિવસ)', '૧ વર્ષથી વધુ']],
   },
   'item-stock-summary': {
@@ -260,16 +260,26 @@ test('the Gujarati table holds only the app\'s wording, and the labels it lacks 
   }
   assert.equal(label('gu', 'dateRange', { from: '01-01-2026', to: '31-01-2026' }), '01-01-2026થી 31-01-2026 સુધી');
   assert.equal(label('en', 'showing', { shown: '2,000', total: '2,500' }), 'Showing 2,000 of 2,500');
-  assert.equal(label('gu', 'showing', { shown: '2,000', total: '2,500' }), '2,500માંથી 2,000 બતાવ્યા છે');
+  assert.equal(label('gu', 'showing', { shown: '2,000', total: '2,500' }), '2,500માંથી 2,000 દેખાય છે');
   assert.equal(label('en', 'updated', { time: 'now' }), 'Last updated now');
   // Gujarati copied from the app is spot-checked against the app's English for the same key.
   assert.equal(label('gu', 'customer'), 'વેપારી');
   assert.equal(label('gu', 'quantity'), 'નંગ');
   assert.equal(label('gu', 'allCustomers'), 'બધા વેપારી');
-  // Filled from other app files: filters.sheet.sortBy, components.table.sortedAscending / sortedDescending,
+  // Filled from other app files: filters.sheet.sortOrder (the reviewed wording of the sort line; the sort sheet's own
+  // command, filters.sheet.sortBy, is 'આ મુજબ સૉર્ટ કરો'), components.table.sortedAscending / sortedDescending,
   // invoice.label.tax, users.fields.status, customers.fields.city.
   assert.deepEqual(['sortBy', 'ascending', 'descending', 'tax', 'status', 'city'].map(key => label('gu', key)),
-    ['આ મુજબ સૉર્ટ કરો', 'ચઢતા ક્રમમાં', 'ઉતરતા ક્રમમાં', 'ટેક્સ', 'સ્થિતિ', 'શહેર']);
+    ['સૉર્ટનો ક્રમ', 'ચઢતા ક્રમમાં', 'ઉતરતા ક્રમમાં', 'ટેક્સ', 'સ્થિતિ', 'શહેર']);
+  // The four labels of the wording review of 2026-10-12 (the owner applied its suggestions): the sort line, the cut note, the
+  // GRN number column (filters.sort.grnNumberChip) and the stock age column (reports.sort.age). The stock aging REPORT
+  // keeps the whole clause as its title, which is its own label, and the long forms stay where the app has them.
+  assert.deepEqual(['sortBy', 'grnNumber', 'stockAge', 'titleStockAging'].map(key => label('gu', key)),
+    ['સૉર્ટનો ક્રમ', 'આવક નં.', 'કેટલા દિવસથી', 'માલ કેટલા દિવસથી પડ્યો છે']);
+  assert.deepEqual(['sortBy', 'showing', 'grnNumber', 'stockAge'].map(key => label('en', key, { shown: '1', total: '2' })),
+    ['Sort by', 'Showing 1 of 2', 'GRN number', 'Stock age']);
+  assert.equal(label('gu', 'overOneYear'), '૧ વર્ષથી વધુ', 'the fifth doubtful label is left as it was');
+  assert.deepEqual(['grn', 'grns', 'averageAge'].map(key => label('gu', key)), ['આવક પાવતી', 'આવક પાવતી', 'સરેરાશ કેટલા દિવસથી']);
   // The app's 'Latest {{date}}' of an invoice row is 'છેલ્લું {{date}}'; its 'Last active' is 'છેલ્લી કામગીરી'.
   assert.equal(label('gu', 'latestInvoice'), 'છેલ્લું ઇન્વૉઇસ');
   assert.equal(label('gu', 'lastActivity'), 'છેલ્લી કામગીરી');
@@ -674,6 +684,12 @@ test('the handler takes the header choices from reportFilters and reports status
 // (added up from the totals listed), the all-customers ones keep their Amount column and figure. The old text (the Net amount
 // column of 1,180.00, its cell in the totals row and its figure in the summary) is put back piece by piece, each piece a
 // counted text; the label 'Net amount' is no longer in report-labels.ts, so the test holds the old words itself.
+// Then the Gujarati wording review of 2026-10-12 (migration 62's commit) changes all fourteen Gujarati documents: the sort line
+// says 'સૉર્ટનો ક્રમ' where it said 'આ મુજબ સૉર્ટ કરો' (twice per document), and three of them reword a column header ('આવક નં.' for
+// the GRN number in the one-customer GRN activity, stock summary and stock aging; 'કેટલા દિવસથી (દિવસ)' for the stock age in the
+// stock aging, which is also its sort line). The old text is put back the same way (`gujaratiReview`). The fourteen English
+// documents are unchanged by it, and the Paid / Pending rule changes none of the 28: the invoice history fixtures hold one
+// pending invoice with no payment, which prints 'Pending' as before.
 const baselineHtml = {
   'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
   'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
@@ -733,13 +749,25 @@ function oldInvoiceHistory(level, lang) {
   ];
 }
 
-test('without status every existing fixture prints byte for byte the HTML it printed before, but for the time stamp and the ten changes on purpose', () => {
+test('without status every existing fixture prints byte for byte the HTML it printed before, but for the time stamp and the changes on purpose', () => {
   const english = ['<div class="kpi"><dt>Items over 364 days</dt><dd>0</dd></div>', '<div class="kpi"><dt>Over 1 year</dt><dd>0</dd></div>'];
   const gujarati = ['<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂની આઇટમ</dt><dd>0</dd></div>', '<div class="kpi"><dt>૧ વર્ષથી વધુ</dt><dd>0</dd></div>'];
   const swapped = {
     'invoice-history/all/gu': ['છેલ્લું ઇન્વૉઇસ', 'Latest invoice'], 'customer-activity/all/gu': ['છેલ્લી કામગીરી', 'Last activity'],
     'stock-aging/customer/en': english, 'stock-aging/all/en': english, 'stock-aging/customer/gu': gujarati, 'stock-aging/all/gu': gujarati,
   };
+  // The Gujarati wording review of 2026-10-12 (the owner applied its suggestions) changes every Gujarati document: the sort line
+  // (under the title and in the table's header row) and, where the table has the column, the GRN number and the stock age
+  // headers. [new text, old text, times]. The stock age text is told from the averageAge one ('સરેરાશ કેટલા દિવસથી (દિવસ)') by
+  // what comes before it: the closing tag of the header cell, or the label of the sort line. The English documents are unchanged.
+  const gujaratiReview = (key) => [
+    ['<strong>સૉર્ટનો ક્રમ:</strong>', '<strong>આ મુજબ સૉર્ટ કરો:</strong>', 2],
+    ...(['grn-activity/customer/gu', 'stock-summary/customer/gu', 'stock-aging/customer/gu'].includes(key)
+      ? [['>આવક નં.</th>', '>આવક પાવતી નંબર</th>', 1]] : []),
+    ...(key === 'stock-aging/customer/gu'
+      ? [['>કેટલા દિવસથી (દિવસ)</th>', '>માલ કેટલા દિવસથી પડ્યો છે (દિવસ)</th>', 1],
+        ['</strong> કેટલા દિવસથી (દિવસ) (', '</strong> માલ કેટલા દિવસથી પડ્યો છે (દિવસ) (', 2]] : []),
+  ];
   let compared = 0;
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
@@ -757,6 +785,12 @@ test('without status every existing fixture prints byte for byte the HTML it pri
         if (swapped[key]) {
           assert.equal(html.split(swapped[key][0]).length - 1, 1, `${key} holds the new text once`);
           html = html.replace(swapped[key][0], swapped[key][1]);
+        }
+        if (lang === 'gu') {
+          for (const [added, old, times] of gujaratiReview(key)) {
+            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
+            html = html.replaceAll(added, old);
+          }
         }
         if (report === 'invoice-history') {
           for (const [added, old, times] of oldInvoiceHistory(level, lang)) {
@@ -1018,6 +1052,206 @@ test('migration 61 is ASCII, patches only the invoice amounts with counted marke
   const amounts = migrations.indexOf('"$ROOT/tests/report_invoice_amounts.sql"');
   assert.equal(migrations.split('"$ROOT/tests/report_invoice_amounts.sql"').length - 1, 1);
   assert.ok(retention >= 0 && amounts > retention && amounts < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
+});
+
+test('migration 62 is ASCII, patches only the paid and pending expressions with counted markers, and its SQL test is registered after the invoice amounts one', () => {
+  const sql = readFileSync(new URL('../migrations/00000000000062_invoice_paid_follows_money.sql', import.meta.url), 'utf8');
+  assert.doesNotMatch(sql, /[^\x09\x0A\x0D\x20-\x7E]/);
+  assert.match(sql, /^-- /);
+  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
+  assert.doesNotMatch(sql, /authorize_rpc\(|CREATE (OR REPLACE )?FUNCTION (?!pg_temp)/, 'it redefines no function and does not touch the guard');
+  assert.ok(!sql.includes('get_all_customer_activity_summary(date,date)\''), 'the all-customers activity summary has no paid or pending figure and is not patched');
+  // Every entry: [step, signature, before text, after text, expected count], in order.
+  const entries = [...sql.matchAll(/\((\d+), '(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
+    .map(match => [Number(match[1]), match[2], match[3], match[4], Number(match[5])]);
+  const summary = 'public.get_customer_invoice_summary(uuid,date,date,integer)';
+  const detail = 'public.get_customer_activity_detail(uuid,date,date)';
+  assert.deepEqual(entries.map(([step, signature, , , times]) => [step, signature, times]), [
+    [1, summary, 1], [2, summary, 1], [3, summary, 1], [4, summary, 1], [5, summary, 1], [6, summary, 1], [7, summary, 1], [8, summary, 1], [9, summary, 1],
+    [10, detail, 1], [11, detail, 1], [12, detail, 1],
+  ]);
+  // The rule is written with the tolerance of get_open_invoices_for_customer, 0.50, and the cap GREATEST(0, LEAST(sum, total)).
+  const after = step => entries.find(entry => entry[0] === step)[3];
+  assert.match(after(3), /bal\.balance <= 0\.50/);
+  assert.match(after(2), /GREATEST\(0, LEAST\(COALESCE\(ps\.paid_sum, 0\), COALESCE\(id\.total, 0\)\)\)/);
+  assert.match(after(12), /<= 0\.50 THEN 'paid' ELSE 'pending'/);
+  assert.match(after(10), /GREATEST\(0, LEAST\(/);
+  // Steps 7 and 8 change nothing: they only fail the migration when the counts no longer read the status.
+  for (const step of [7, 8]) assert.equal(entries.find(entry => entry[0] === step)[2], after(step), `step ${step} is a check`);
+  // No replacement touches the sums of the total, the day cuts or the payments' total_paid_amount.
+  for (const [, , , text] of entries) assert.doesNotMatch(text, /business_day_start|business_date|total_paid_amount|net_amount/);
+  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
+  // Registered once, on the line directly after the invoice amounts test.
+  assert.equal(migrations.split('"$ROOT/tests/report_invoice_paid.sql"').length - 1, 1);
+  assert.ok(migrations.includes('  "$ROOT/tests/report_invoice_amounts.sql"\n  "$ROOT/tests/report_invoice_paid.sql"\n'));
+  assert.ok(migrations.indexOf('"$ROOT/tests/report_invoice_paid.sql"') < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
+});
+
+// ---------------------------------------------------------------------------
+// Paid and Pending follow the money (migration 62), with or without the migration
+// ---------------------------------------------------------------------------
+// The owner's rule: "Paid is the money received and Pending is what is still owed. An invoice counts as Paid only when nothing
+// is owed; a part-paid invoice stays Pending with the balance." Per invoice: received = the sum of its payments, never below 0
+// and never above its total; balance = total - received; Paid when the balance is 0.50 or less (get_open_invoices_for_customer's
+// tolerance: owed > 0.50 is open), otherwise Pending.
+//
+//   no    total  tax   payments (sum)            rule: status    received  balance
+//   0101    14      1  14.00                      Paid            14.00      0.00   fully paid
+//   0102    14      1   4.00                      Pending          4.00     10.00   part paid
+//   0103   100      5  none                       Pending          0.00    100.00   unpaid
+//   0104    50   2.50  60.00                      Paid            50.00      0.00   over-paid (60 of 50)
+//   0105    20      1  19.50                      Paid            19.50      0.50   0.50 owed: within the tolerance
+//   0106    20      1  19.49                      Pending         19.49      0.51   0.51 owed: just outside it
+//   0107    30      3  status 'paid', no amount   Paid            30.00      0.00   "paid" without an amount: all of it
+//   0108 125000  1250  1,00,000.50                Pending    1,00,000.50 24,999.50   Indian grouping in the row
+// Together: amount 1,25,248.00 = Paid 1,00,137.49 + Pending 25,110.51.
+const moneyCases = [
+  // [number, day, total, tax, payment sum or null, rule status, received, balance]
+  ['0101', '2026-01-16', 14, 1, 14, 'paid', 14, 0],
+  ['0102', '2026-01-18', 14, 1, 4, 'pending', 4, 10],
+  ['0103', '2026-01-20', 100, 5, null, 'pending', 0, 100],
+  ['0104', '2026-01-22', 50, 2.5, 60, 'paid', 50, 0],
+  ['0105', '2026-01-24', 20, 1, 19.5, 'paid', 19.5, 0.5],
+  ['0106', '2026-01-26', 20, 1, 19.49, 'pending', 19.49, 0.51],
+  ['0107', '2026-01-28', 30, 3, 'no amount', 'paid', 30, 0],
+  ['0108', '2026-01-30', 125000, 1250, 100000.5, 'pending', 100000.5, 24999.5],
+];
+/**
+ * The RPC's answer for those invoices. 'without' is a database with migration 61 only: payment_status.status is 'paid' as soon as
+ * any payment row names the invoice, and its amount is the sum of the rows. 'with' is a database with migration 62: the status is
+ * the rule's, and each invoice has the two new keys paid_amount and balance_amount. The summary is the RPC's own and the PDF must
+ * not print it (in 'without' it counts the part-paid invoices as paid).
+ */
+const moneyAnswer = shape => ({ success: true, data: {
+  summary: shape === 'with'
+    ? { total_invoices: 8, total_amount: 125248, net_amount: 125248, paid_amount: 100137.49, pending_amount: 25110.51, paid_count: 4, pending_count: 4 }
+    : { total_invoices: 8, total_amount: 125248, net_amount: 125248, paid_amount: 125148, pending_amount: 100, paid_count: 7, pending_count: 1 },
+  invoices: [...moneyCases].reverse().map(([number, day, total, tax, sum, status, received, balance]) => {
+    const rows = sum === null ? null : { paid_date: `${day}T06:00:00+00:00`, payment_ref: `UTR-${number}`, payment_mode: 'ONLINE', ...(sum === 'no amount' ? {} : { amount: sum }) };
+    return {
+      invoice_number: `2026-${number}`, invoice_date: `${day}T06:00:00+00:00`, grn_ref: `Z${number}`, total, tax_amount: tax, net_total: total,
+      payment_status: sum === null ? { status: 'pending', paid_date: null, payment_ref: null }
+        : { status: shape === 'with' ? status : 'paid', ...rows },
+      ...(shape === 'with' ? { paid_amount: received, balance_amount: balance } : {}),
+    };
+  }) } });
+const moneyShapes = { without: moneyAnswer('without'), with: moneyAnswer('with') };
+const numbersOf = built => built.rows.map(row => row[0].slice(5));
+
+test('Paid and Pending follow the money: fully paid, part paid, unpaid, over-paid, the 0.50 tolerance and "paid" without an amount', () => {
+  for (const [shape, body] of Object.entries(moneyShapes)) {
+    const en = invoiceDocument('en', {}, body).built;
+    // Newest first. The status is the rule's, not the answer's: 0102, 0106 and 0108 are paid in part and are Pending in both shapes.
+    assert.deepEqual(en.rows, [
+      ['2026-0108', '30-01-2026', 'Z0108', '1,25,000.00', '1,250.00', 'Pending (Paid 1,00,000.50)'],
+      ['2026-0107', '28-01-2026', 'Z0107', '30.00', '3.00', 'Paid'],
+      ['2026-0106', '26-01-2026', 'Z0106', '20.00', '1.00', 'Pending (Paid 19.49)'],
+      ['2026-0105', '24-01-2026', 'Z0105', '20.00', '1.00', 'Paid'],
+      ['2026-0104', '22-01-2026', 'Z0104', '50.00', '2.50', 'Paid'],
+      ['2026-0103', '20-01-2026', 'Z0103', '100.00', '5.00', 'Pending'],
+      ['2026-0102', '18-01-2026', 'Z0102', '14.00', '1.00', 'Pending (Paid 4.00)'],
+      ['2026-0101', '16-01-2026', 'Z0101', '14.00', '1.00', 'Paid'],
+    ], shape);
+    assert.deepEqual(en.totals, ['Total', '', '', '1,25,248.00', '1,264.50', ''], shape);
+    // Paid = the money received (the over-payment counts 50, not 60), Pending = the balances; together the amount. The RPC's own
+    // summary of the 'without' shape (Paid 1,25,148.00, Pending 100.00) is not what is printed.
+    assert.deepEqual(en.summary, [['Invoices', '8'], ['Amount', '1,25,248.00'], ['Paid', '1,00,137.49'], ['Pending', '25,110.51']], shape);
+    const gu = invoiceDocument('gu', {}, body).built;
+    assert.deepEqual(gu.rows.map(row => row[5]), ['બાકી (ચૂકવેલ 1,00,000.50)', 'ચૂકવેલ', 'બાકી (ચૂકવેલ 19.49)', 'ચૂકવેલ', 'ચૂકવેલ', 'બાકી', 'બાકી (ચૂકવેલ 4.00)', 'ચૂકવેલ'], shape);
+    assert.deepEqual(gu.summary, [['ઇન્વૉઇસ', '8'], ['રકમ', '1,25,248.00'], ['ચૂકવેલ', '1,00,137.49'], ['બાકી', '25,110.51']], shape);
+    assert.deepEqual(gu.totals, ['કુલ', '', '', '1,25,248.00', '1,264.50', ''], shape);
+    // The part payment is in the status cell of the printed document, and only there.
+    const html = invoiceDocument('en', {}, body).html;
+    assert.ok(html.includes('<td>Pending (Paid 4.00)</td>') && html.includes('<td>Pending (Paid 1,00,000.50)</td>') && html.includes('<td>Pending</td>'), shape);
+    assert.ok(!html.includes('Paid 14.00') && !html.includes('Paid 50.00') && !html.includes('Paid 19.50') && !html.includes('Paid 30.00') && !html.includes('Paid 0.00'), `${shape}: no part payment on a paid or unpaid invoice`);
+  }
+  // Paid + Pending is the amount, in the whole document and under each choice (paise are exact).
+  for (const lang of ['en', 'gu']) for (const status of [undefined, 'paid', 'pending']) {
+    const { summary } = invoiceDocument(lang, { status }, moneyShapes.with).built;
+    const [, amount, paid, pending] = summary.map(([, value]) => Math.round(Number(value.replaceAll(',', '')) * 100));
+    assert.equal(paid + pending, amount, `${lang} ${status}`);
+  }
+});
+
+test('the status choice follows the rule: a part-paid invoice is under Pending, an invoice owing 0.50 or less is under Paid', () => {
+  for (const [shape, body] of Object.entries(moneyShapes)) {
+    const paid = invoiceDocument('en', { status: 'paid' }, body);
+    // Paid: 0107, 0105 (0.50 owed), 0104 (over-paid), 0101. Not 0102 (4.00 of 14.00), not 0106 (0.51 owed), not 0108.
+    assert.deepEqual(numbersOf(paid.built), ['0107', '0105', '0104', '0101'], shape);
+    assert.deepEqual(paid.built.rows.map(row => row[5]), ['Paid', 'Paid', 'Paid', 'Paid'], shape);
+    assert.deepEqual(paid.built.totals, ['Total', '', '', '114.00', '7.50', ''], shape);
+    // Paid here is the received money (113.50), and what 0105 still owes (0.50) is the Pending of this document.
+    assert.deepEqual(paid.built.summary, [['Invoices', '4'], ['Amount', '114.00'], ['Paid', '113.50'], ['Pending', '0.50']], shape);
+    assert.equal(paid.built.rowsTotal, 4);
+    assert.deepEqual(paid.filters[2], ['Payment', 'Paid']);
+
+    const pending = invoiceDocument('en', { status: 'pending' }, body);
+    assert.deepEqual(numbersOf(pending.built), ['0108', '0106', '0103', '0102'], shape);
+    assert.deepEqual(pending.built.rows.map(row => row[5]), ['Pending (Paid 1,00,000.50)', 'Pending (Paid 19.49)', 'Pending', 'Pending (Paid 4.00)'], shape);
+    assert.deepEqual(pending.built.totals, ['Total', '', '', '1,25,134.00', '1,257.00', ''], shape);
+    assert.deepEqual(pending.built.summary, [['Invoices', '4'], ['Amount', '1,25,134.00'], ['Paid', '1,00,023.99'], ['Pending', '25,110.01']], shape);
+    assert.deepEqual(pending.filters[2], ['Payment', 'Pending']);
+    // The two choices split the eight invoices, and their figures add up to the whole document's.
+    assert.equal(numbersOf(paid.built).length + numbersOf(pending.built).length, 8);
+
+    const guPaid = invoiceDocument('gu', { status: 'paid' }, body).built;
+    const guPending = invoiceDocument('gu', { status: 'pending' }, body).built;
+    assert.deepEqual(guPaid.summary, [['ઇન્વૉઇસ', '4'], ['રકમ', '114.00'], ['ચૂકવેલ', '113.50'], ['બાકી', '0.50']], shape);
+    assert.deepEqual(guPending.summary, [['ઇન્વૉઇસ', '4'], ['રકમ', '1,25,134.00'], ['ચૂકવેલ', '1,00,023.99'], ['બાકી', '25,110.01']], shape);
+    assert.deepEqual(guPending.rows.map(row => row[5]), ['બાકી (ચૂકવેલ 1,00,000.50)', 'બાકી (ચૂકવેલ 19.49)', 'બાકી', 'બાકી (ચૂકવેલ 4.00)'], shape);
+  }
+  // A sort by the status column orders by the rule's status (Paid before Pending), not by the answer's.
+  const byStatus = invoiceDocument('en', { sort: { field: 'status', order: 'asc' } }, moneyShapes.without).built;
+  assert.deepEqual(byStatus.rows.map(row => row[5].split(' ')[0]), ['Paid', 'Paid', 'Paid', 'Paid', 'Pending', 'Pending', 'Pending', 'Pending']);
+});
+
+test('the same document is printed from the answer of a database with and without migration 62', () => {
+  for (const lang of ['en', 'gu']) {
+    for (const fields of [{}, { status: 'paid' }, { status: 'pending' }, { sort: { field: 'amount', order: 'desc' } }, { sort: { field: 'net', order: 'asc' } }]) {
+      const before = invoiceDocument(lang, fields, moneyShapes.without);
+      const after = invoiceDocument(lang, fields, moneyShapes.with);
+      assert.deepEqual(before.built, after.built, `${lang} ${JSON.stringify(fields)}`);
+      assert.equal(before.html, after.html, `${lang} ${JSON.stringify(fields)}`);
+    }
+  }
+  // Without migration 62 the answer calls the part-paid invoices paid; the PDF does not follow it.
+  assert.equal(moneyShapes.without.data.invoices.filter(invoice => invoice.payment_status.status === 'paid').length, 7);
+  assert.equal(moneyShapes.with.data.invoices.filter(invoice => invoice.payment_status.status === 'paid').length, 4);
+  // The two new keys are not columns and are never printed.
+  assert.ok(!invoiceDocument('en', {}, moneyShapes.with).html.includes('balance_amount'));
+  assert.deepEqual(sortFields(invoicesRequest()), ['invoice_no', 'date', 'grn', 'amount', 'tax', 'status', 'net']);
+});
+
+test('an amount that cannot be used: a paid invoice has received all of it, a pending one nothing, and money stays between 0 and the total', () => {
+  const one = (total, payment_status, fields = {}) => ({ success: true, data: { summary: { total_invoices: 1 }, invoices: [
+    { invoice_number: '2026-0900', invoice_date: '2026-01-05', grn_ref: 'Z', total, tax_amount: 0, net_total: total, payment_status }] } });
+  const cell = (total, payment_status) => invoiceDocument('en', {}, one(total, payment_status)).built;
+  // 'paid' with no amount, null, text or a non-number: the whole total is received. 'pending' with none: nothing.
+  for (const amount of [undefined, null, '', 'abc', {}, [], NaN]) {
+    assert.deepEqual(cell(14, { status: 'paid', amount }).rows[0].slice(3), ['14.00', '0.00', 'Paid'], `paid, amount ${String(amount)}`);
+    assert.deepEqual(cell(14, { status: 'paid', amount }).summary.slice(2), [['Paid', '14.00'], ['Pending', '0.00']]);
+    assert.deepEqual(cell(14, { status: 'pending', amount }).rows[0].slice(3), ['14.00', '0.00', 'Pending'], `pending, amount ${String(amount)}`);
+    assert.deepEqual(cell(14, { status: 'pending', amount }).summary.slice(2), [['Paid', '0.00'], ['Pending', '14.00']]);
+  }
+  // A number sent as text is a number (numeric columns may come as text); a payment of 0 is nothing received; a negative sum is 0.
+  assert.deepEqual(cell(14, { status: 'paid', amount: '4.00' }).rows[0][5], 'Pending (Paid 4.00)');
+  assert.deepEqual(cell(14, { status: 'paid', amount: 0 }).rows[0][5], 'Pending');
+  assert.deepEqual(cell(14, { status: 'paid', amount: 0 }).summary.slice(2), [['Paid', '0.00'], ['Pending', '14.00']]);
+  assert.deepEqual(cell(14, { status: 'paid', amount: -5 }).summary.slice(2), [['Paid', '0.00'], ['Pending', '14.00']]);
+  // Over-paid: received is the total, not the money paid.
+  assert.deepEqual(cell(14, { status: 'paid', amount: 1000 }).summary.slice(1), [['Amount', '14.00'], ['Paid', '14.00'], ['Pending', '0.00']]);
+  // The tolerance, to the paisa: 0.50 owed is Paid, 0.51 owed is Pending; a total with paise works the same way.
+  assert.equal(cell(14, { status: 'paid', amount: 13.5 }).rows[0][5], 'Paid');
+  assert.equal(cell(14, { status: 'paid', amount: 13.49 }).rows[0][5], 'Pending (Paid 13.49)');
+  assert.equal(cell(0.5, { status: 'pending' }).rows[0][5], 'Paid', 'a total of 0.50 with nothing received owes 0.50: nothing is owed in the sense of the rule');
+  assert.equal(cell(0.51, { status: 'pending' }).rows[0][5], 'Pending');
+  assert.equal(cell(0, { status: 'pending' }).rows[0][5], 'Paid', 'an invoice of 0 owes nothing');
+  assert.equal(cell(20.1, { status: 'paid', amount: 19.6 }).rows[0][5], 'Paid', '0.50 owed whatever the binary form of 20.1 - 19.6 is');
+  // An invoice of another status than paid or pending is listed and counted in the amount, but is in neither sum.
+  const odd = cell(14, { status: 'void', amount: 14 });
+  assert.deepEqual(odd.rows[0].slice(3), ['14.00', '0.00', 'void']);
+  assert.deepEqual(odd.summary.slice(1), [['Amount', '14.00'], ['Paid', '0.00'], ['Pending', '0.00']]);
+  assert.deepEqual(invoiceDocument('en', {}, one(14, undefined)).built.rows[0].slice(3), ['14.00', '0.00', '']);
 });
 
 // ---------------------------------------------------------------------------

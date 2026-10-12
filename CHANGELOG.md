@@ -1,5 +1,115 @@
 # Changelog
 
+## Unreleased — Paid and Pending follow the money in the invoice reports (2026-10-12)
+
+Migration 62. **Operator action:** none beyond applying the migration (the
+normal upgrade does). No setting, service or container changes.
+
+- The rule (the owner's choice): "Paid is the money received and Pending is what
+  is still owed. An invoice counts as Paid only when nothing is owed; a
+  part-paid invoice stays Pending with the balance." Per invoice, **received** is
+  the sum of its `payments.amount`, never below 0 and never above the invoice
+  `total`; **balance** is `total` minus received; the status is `paid` when the
+  balance is 0.50 or less (the tolerance `get_open_invoices_for_customer`
+  already uses: an invoice is open when more than 0.50 is owed), otherwise
+  `pending`. An invoice of 0 owes nothing and is paid. Until now an invoice was
+  paid as soon as any payment row named it, and its whole `total` counted as
+  paid. Example: an invoice of 14.00 with 4.00 received was `paid` and counted 14
+  as paid; it is now `pending`, received 4.00, balance 10.00. With 108.50
+  received of 109.00 (0.50 owed) it is paid; with 65.49 of 66.00 (0.51 owed) it
+  is pending; with 120.00 received of 108.00 only 108.00 counts as received.
+  Two rows of 60.00 and 51.00 against 111.00 are paid. Paid + Pending = the
+  total, for an invoice and for any set of invoices; the up to 0.50 still owed
+  on an invoice that is listed as paid is in Pending (an invoice of 20.00 with
+  19.50 received is `paid`, Paid 19.50, Pending 0.50).
+- Keys whose values change (names and JSON types unchanged), with the numbers
+  they hold now:
+  - `get_customer_invoice_summary`, one customer: `invoices[].payment_status.status`
+    (by the rule; the other keys of `payment_status` keep their meaning:
+    `amount` is the sum of the payment rows, `paid_date`, `payment_ref` and
+    `payment_mode` those of the latest row, so a part-paid invoice is `pending`
+    and still carries them), `summary.paid_amount` (the sum of received),
+    `summary.pending_amount` (the sum of balances), `summary.paid_count` and
+    `summary.pending_count` (the invoices that are paid / pending by the rule),
+    and `by_month[].paid_amount` and `by_month[].pending_amount` (received and
+    balances of the month).
+  - `get_customer_activity_detail`: `recent_invoices[].status` (by the rule) and
+    `summary.total_pending_amount` (the sum of the balances of the period's
+    invoices; it was invoiced minus paid, which went negative for an
+    over-payment).
+- Two new keys on each invoice of `get_customer_invoice_summary`'s `invoices[]`
+  (one customer): `paid_amount` (received) and `balance_amount` (balance), both
+  numbers.
+- Not changed: `summary.total_paid_amount` of the activity detail (the sum of
+  the period's payments, an over-payment included, so with an over-payment it
+  and `total_pending_amount` add up to more than `total_invoice_amount`; the
+  invoice history has the capped figures), every other key, the all-customers
+  branch of `get_customer_invoice_summary` and
+  `get_all_customer_activity_summary` (neither returns a paid or pending
+  figure), the `authorize_rpc` guard (not redefined), SECURITY DEFINER, the
+  search_path and jit setting, the grants, the India day cuts, the order of the
+  rows. Compared with `pg_get_functiondef` before and after in a throwaway
+  database, the only differences in the two definitions are these expressions:
+  the payment status set (one added column), two lateral values and the status
+  expression of the invoice list, the month and summary sums, the two new keys,
+  and in the activity detail the pending sum and the status of the recent
+  invoices.
+- What an app shows, before and after. Before, an invoice with any payment row
+  was `paid`: a part-paid invoice of 14.00 with 4.00 received was Paid in full
+  (14.00) in its status, the counts, the months and the summary. After, it is
+  `pending`, with `paid_amount` 4.00 and `balance_amount` 10.00 on the invoice,
+  and the summary and the months hold the money received (4.00) and the balance
+  (10.00). An app that works the same rule out itself from `total` and the
+  payment amount (`payment_status.amount`, the sum of the payment rows since
+  migration 61) shows the same numbers as these keys, and may read the two new
+  keys instead. The mobile app does exactly that in its invoice history from
+  its change "Paid and Pending follow the money in invoice history"
+  (rn-warehouse-template CHANGELOG, 2026-10-12), so its screen is the same with
+  or without this migration. An app before that change (commit e79515d and
+  older) takes each invoice's `payment_status.status` and its whole `total`:
+  with this migration it shows a part-paid invoice under Pending for its whole
+  `total`. The customer activity screen's recent invoices show the new status,
+  and its pending amount is never negative.
+- Report PDFs (`generate-report-pdf`), the invoice history of one customer: the
+  status of each invoice, the Paid / Pending choice (`status`) and the summary
+  follow the rule, worked out from each invoice's `total` and
+  `payment_status.amount`, so the document is the same on a database with and
+  without this migration. A `paid` status with no usable amount is taken as paid
+  in full. A part payment shows in the status cell, in the app's words for
+  Pending and Paid: `Pending (Paid 4.00)` (`બાકી (ચૂકવેલ 4.00)` in Gujarati). In
+  the summary, Paid is the sum of the money received, Pending the sum of the
+  balances, and together they are Amount; under the Pending choice a part-paid
+  invoice is listed with its full amount, Paid its received part and Pending its
+  balance. The all-customers invoice history and the customer activity PDF are
+  unchanged and follow the RPC.
+- Four Gujarati labels of the report PDFs are reworded, as the wording review
+  suggested and the owner chose (`overOneYear` is left as it is):
+  `Sort by` was `આ મુજબ સૉર્ટ કરો`, now `સૉર્ટનો ક્રમ` (the app's
+  `filters.sheet.sortOrder`; a fact line on paper, not the sort sheet's
+  command); `Showing {{shown}} of {{total}}` was `{{total}}માંથી {{shown}} બતાવ્યા છે`,
+  now `{{total}}માંથી {{shown}} દેખાય છે` (no gender; the app's screen still says
+  `બતાવ્યા છે`); the column `GRN number` was `આવક પાવતી નંબર`, now `આવક નં.`
+  (the app's `filters.sort.grnNumberChip`); the column `Stock age` was
+  `માલ કેટલા દિવસથી પડ્યો છે`, now `કેટલા દિવસથી` (the app's `reports.sort.age`;
+  printed with its unit, `કેટલા દિવસથી (દિવસ)`). The stock aging report's title is
+  its own label and keeps `માલ કેટલા દિવસથી પડ્યો છે`. English PDFs are unchanged.
+- Checks: `tests/report_invoice_paid.sql` (registered after
+  `tests/report_invoice_amounts.sql`) makes nine invoices with `save_invoice` and
+  adds payments: none, a part payment, an exact payment, two rows that pay in
+  full, 0.50 and 0.51 short, two over-payments and an invoice of 0, and checks
+  every key above as staff, an administrator and a customer account, that
+  received + balance = total on every invoice, month and summary, that the key
+  sets are unchanged apart from the two new keys, and that the functions keep
+  their guard, search_path and grants; it fails without the migration and under
+  mutants (the old "any row" status, an uncapped received sum, a tolerance of 0,
+  0.51 or "less than"). `tests/report_invoice_amounts.sql` keeps its figures
+  (its invoices are paid in full or not at all) and its key set of an invoice
+  gains the two new keys. `tests/report-pdf.test.mjs` checks the PDF rule, the
+  `status` choice, the summary sums, both languages and the same document from the
+  answer of a database with and without the migration, and the byte-for-byte
+  comparison of the 28 report documents puts the old Gujarati label text back
+  where it changed on purpose (all 14 Gujarati documents).
+
 ## Unreleased — stock reports cut days on India's calendar (2026-10-12)
 
 Migration 60. **Operator action:** none beyond applying the migration (the

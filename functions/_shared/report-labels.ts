@@ -10,6 +10,12 @@
 // at all may be `null` here: the PDF prints the English, and the label is
 // listed in `missingGujarati` for the app team to supply. Do not invent
 // Gujarati here that is not made of the app's words.
+//
+// Four labels (sortBy, showing, grnNumber, stockAge) carry the wording of the
+// Gujarati review of 2026-10-12, which the owner chose to apply: a paper
+// document is a fact line or a column of short numbers, not the screen's
+// command or clause. Their comments say which app key the text is, or that
+// the app still says otherwise (showing).
 
 export type ReportLang = 'en' | 'gu';
 
@@ -33,8 +39,13 @@ const table = {
   updated: ['Last updated {{time}}', 'છેલ્લે અપડેટ થયું: {{time}}'], // reports.scaffold.updated
   summary: ['Summary', 'સારાંશ'], // reports.components.summary
   total: ['Total', 'કુલ'], // common.total
-  showing: ['Showing {{shown}} of {{total}}', '{{total}}માંથી {{shown}} બતાવ્યા છે'], // reports.scaffold.showing
-  sortBy: ['Sort by', 'આ મુજબ સૉર્ટ કરો'], // filters.sheet.sortBy
+  // The reviewed wording (2026-10-12), not the app's: the app says '{{total}}માંથી {{shown}} બતાવ્યા છે'
+  // (reports.scaffold.showing), where બતાવ્યા is masculine plural and the rows can be feminine or neuter;
+  // 'દેખાય છે' has no gender. The placeholders are the same.
+  showing: ['Showing {{shown}} of {{total}}', '{{total}}માંથી {{shown}} દેખાય છે'],
+  // A fact line on paper ("Sort by | Date (descending)"), so the app's 'સૉર્ટનો ક્રમ' (filters.sheet.sortOrder)
+  // and not the command of its sort sheet, 'આ મુજબ સૉર્ટ કરો' (filters.sheet.sortBy).
+  sortBy: ['Sort by', 'સૉર્ટનો ક્રમ'],
   // The direction words of components.table.sortedAscending / sortedDescending
   // ('{{column}}, sorted ascending' = '{{column}}, ચઢતા ક્રમમાં સૉર્ટ કરેલું').
   ascending: ['ascending', 'ચઢતા ક્રમમાં'],
@@ -50,7 +61,9 @@ const table = {
 
   // Columns and figures
   grn: ['GRN', 'આવક પાવતી'], // common.grn
-  grnNumber: ['GRN number', 'આવક પાવતી નંબર'], // common.grnNumber
+  // The app's short form of a GRN number (filters.sort.grnNumberChip), which fits the column of short
+  // numbers; the long 'આવક પાવતી નંબર' is common.grnNumber.
+  grnNumber: ['GRN number', 'આવક નં.'],
   grns: ['GRNs', 'આવક પાવતી'], // reports.customerActivity.grns
   latestGrn: ['Latest GRN', 'છેલ્લી આવક પાવતી'], // reports.sort.latestGrn
   dispatchNumber: ['Dispatch number', 'જાવક નંબર'], // common.dispatchNumber
@@ -87,7 +100,9 @@ const table = {
   rack: ['Rack', 'રેક'], // common.rack
   packageMark: ['Package mark', 'માર્કો'], // common.packageMark
   packaging: ['Packaging', 'પેકિંગ'], // common.packaging
-  stockAge: ['Stock age', 'માલ કેટલા દિવસથી પડ્યો છે'], // reports.stockAging.stockAge
+  // The column header of the stock aging report, printed with its unit ('કેટલા દિવસથી (દિવસ)'): the app's short
+  // form (reports.sort.age). The report's title is its own label, titleStockAging, and keeps the whole clause.
+  stockAge: ['Stock age', 'કેટલા દિવસથી'],
   averageAge: ['Average age', 'સરેરાશ કેટલા દિવસથી'], // reports.stockAging.averageAge
   daysUnit: ['days', 'દિવસ'], // reports.stockAging.daysUnit
   overOneYear: ['Over 1 year', '૧ વર્ષથી વધુ'], // (wording kept from an earlier app version)

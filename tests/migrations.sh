@@ -47,6 +47,7 @@ test_files=(
   "$ROOT/tests/central_login.sql" "$ROOT/tests/report_sort.sql"
   "$ROOT/tests/report_pdf_retention.sql"
   "$ROOT/tests/report_invoice_amounts.sql"
+  "$ROOT/tests/report_invoice_paid.sql"
   "$ROOT/tests/report_to_date.sql" "$ROOT/tests/grn_list_end_day.sql"
   "$ROOT/tests/report_ist_day.sql" "$ROOT/tests/report_dispatch_id.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"

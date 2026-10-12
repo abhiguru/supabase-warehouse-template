@@ -13,12 +13,14 @@
 // the RPC answered; the summary figures are the RPC's own (they cover every
 // row, also when the table is cut at the limit). The one exception is the
 // invoice history of one customer: its amount, paid and pending figures are
-// added up here from the invoices listed (their total and their payment status),
-// and with a Paid / Pending choice (`status`) the invoices of the other status
-// are dropped first, so every figure of the PDF, the summary included, is worked
-// out from the invoices listed. An invoice's amount is its total; the RPC's
-// net_total and net_amount (total + labour + tax - discount until migration 61,
-// when they became the total) are not printed from it.
+// added up here from the invoices listed (their total and the payment amount of
+// their payment status), and with a Paid / Pending choice (`status`) the invoices
+// of the other status are dropped first, so every figure of the PDF, the summary
+// included, is worked out from the invoices listed. An invoice's amount is its
+// total; the RPC's net_total and net_amount (total + labour + tax - discount
+// until migration 61, when they became the total) are not printed from it.
+// Paid and Pending follow the money (the owner's rule, migration 62): see
+// `invoiceMoney`.
 import { label, withUnit, type LabelKey, type ReportLang } from './report-labels.ts';
 import type { ReportName, ReportRequest } from './report-request.ts';
 
@@ -35,6 +37,8 @@ interface Column {
   kind: Kind;
   /** Summed in the totals row. */
   total?: boolean;
+  /** The printed cell, when it is more than the value of the row's `key` formatted by its `kind`. */
+  cell?: (row: Row, lang: ReportLang) => string;
 }
 
 interface Figure {
@@ -70,6 +74,36 @@ const num = (value: unknown): number | null => {
 const sum = (rows: Row[], key: string) => rows.reduce((total, row) => total + (num(row[key]) ?? 0), 0);
 /** A sum of rupee amounts, added in whole paise so that two decimals stay exact. */
 const sumMoney = (rows: Row[], key: string) => rows.reduce((total, row) => total + Math.round((num(row[key]) ?? 0) * 100), 0) / 100;
+/** The unit of a rupee amount, one paisa: money is compared in whole paise so that two decimals stay exact. */
+const paise = (value: number) => Math.round(value * 100);
+/** An invoice is paid when no more than this is still owed (0.50, as get_open_invoices_for_customer: owed > 0.50 is open). */
+const paidWithinPaise = 50;
+/**
+ * Paid and Pending follow the money (the owner's rule of 2026-10-12, migration 62): "Paid is the money received and
+ * Pending is what is still owed. An invoice counts as Paid only when nothing is owed; a part-paid invoice stays
+ * Pending with the balance."
+ *   received = the sum of the invoice's payments (payment_status.amount since migration 61), never below 0 and never
+ *              above the invoice's total;
+ *   balance  = total - received;
+ *   status   = 'paid' when the balance is 0.50 or less, otherwise 'pending'.
+ * The answer's own status is not the rule on a database without migration 62 (it is 'paid' as soon as any payment row
+ * names the invoice), so it is only read to tell the two statuses from anything else, and to decide what a missing
+ * amount means: 'paid' with no usable amount (a database from before migration 61 answers the one row's amount; any
+ * answer may leave it out) has received the whole total, 'pending' with none has received nothing. With the amount, the
+ * answer of a database with migration 62 and of one without it give the same status, received and balance.
+ * An invoice whose status is neither is not worked out: no received and no balance, so it is in neither sum.
+ */
+function invoiceMoney(invoice: Row): { status: unknown; received?: number; balance?: number } {
+  const payment = invoice.payment_status as Row | undefined;
+  const status = payment?.status;
+  if (status !== 'paid' && status !== 'pending') return { status };
+  const total = paise(num(invoice.total) ?? 0);
+  const amount = num(payment?.amount);
+  const money = amount === null ? (status === 'paid' ? total : 0) : paise(amount);
+  const received = Math.max(0, Math.min(money, total));
+  const balance = total - received;
+  return { status: balance <= paidWithinPaise ? 'paid' : 'pending', received: received / 100, balance: balance / 100 };
+}
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
 const kg = ['weight', 'kg'] as const;
 /**
@@ -192,19 +226,19 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     title: 'titleInvoiceHistory',
     customer: {
       rpc: request => ({ name: 'get_customer_invoice_summary', args: { p_customer_uuid: request.customerId, ...period(request) } }),
-      // With a Paid / Pending choice only the invoices of that status are listed (the app reads the
-      // status the same way: payment_status.status). An invoice's amount is its total (the amount that is
-      // paid or owed); the RPC's net_total was total + labour + tax - discount, which counts the labour, the
-      // tax and the discount twice, until migration 61 made it the total. The PDF therefore prints no net
-      // column, and its summary is worked out below from the totals it lists, so it is right on a database
-      // with or without migration 61.
+      // With a Paid / Pending choice only the invoices of that status are listed, the status being the one of
+      // the rule of `invoiceMoney` (a part-paid invoice is Pending). An invoice's amount is its total (the amount
+      // that is paid or owed); the RPC's net_total was total + labour + tax - discount, which counts the labour,
+      // the tax and the discount twice, until migration 61 made it the total. The PDF therefore prints no net
+      // column, and its summary is worked out below from the totals and the payments it lists, so it is right on
+      // a database with or without migrations 61 and 62.
       rows: (body, request) => list(body.invoices).map(invoice => ({
         invoice_no: invoice.invoice_number,
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
         amount: invoice.total,
         tax: invoice.tax_amount,
-        status: (invoice.payment_status as Row | undefined)?.status,
+        ...invoiceMoney(invoice),
       })).filter(row => !request.status || row.status === request.status),
       columns: [
         { key: 'invoice_no', label: 'invoiceNumber', kind: 'text' },
@@ -212,16 +246,24 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { key: 'grn', label: 'grn', kind: 'text' },
         { key: 'amount', label: 'amount', kind: 'money', total: true },
         { key: 'tax', label: 'tax', kind: 'money', total: true },
-        { key: 'status', label: 'status', kind: 'status' },
+        // A part payment shows in the row: "Pending (Paid 4.00)" / "બાકી (ચૂકવેલ 4.00)", the status and the money
+        // received, in the app's own words for Pending and Paid. A Pending invoice with nothing received, and a
+        // Paid one, print the status alone.
+        { key: 'status', label: 'status', kind: 'status',
+          cell: (row, lang) => {
+            const status = formatCell('status', row.status, lang);
+            const received = num(row.received) ?? 0;
+            return row.status === 'pending' && received > 0 ? `${status} (${label(lang, 'paid')} ${formatCell('money', received, lang)})` : status;
+          } },
       ],
       summary: [
         // The count is the RPC's own without a choice. The amount, paid and pending are always added up from the
-        // listed invoices: the amount of every one, paid and pending those of that payment status, as in the RPC
-        // ("paid" is an invoice with a payment row).
+        // listed invoices: the amount of every one, Paid the money received on them and Pending the balances still
+        // owed, so Paid + Pending = Amount (an invoice of another status than paid or pending is in neither).
         { label: 'invoices', kind: 'number', value: (body, rows, request) => request.status ? rows.length : body.summary?.total_invoices },
         { label: 'amount', kind: 'money', value: (_, rows) => sumMoney(rows, 'amount') },
-        { label: 'paid', kind: 'money', value: (_, rows) => sumMoney(rows.filter(row => row.status === 'paid'), 'amount') },
-        { label: 'pending', kind: 'money', value: (_, rows) => sumMoney(rows.filter(row => row.status === 'pending'), 'amount') },
+        { label: 'paid', kind: 'money', value: (_, rows) => sumMoney(rows, 'received') },
+        { label: 'pending', kind: 'money', value: (_, rows) => sumMoney(rows, 'balance') },
       ],
       defaultSort: { field: 'date', order: 'desc' },
       // The app's amount sort of one customer's invoices is the 'net' column it used to have (reportPdfSort.ts: total -> net);
@@ -669,7 +711,7 @@ export function buildReport(request: ReportRequest, body: Body): BuiltReport {
   return {
     title: label(lang, reportDefinitions[request.report].title),
     columns: level.columns.map(item => ({ label: columnLabel(lang, item.label), numeric: item.kind === 'number' || item.kind === 'money' })),
-    rows: shown.map(row => level.columns.map(item => formatCell(item.kind, row[item.key], lang))),
+    rows: shown.map(row => level.columns.map(item => item.cell ? item.cell(row, lang) : formatCell(item.kind, row[item.key], lang))),
     totals,
     summary: level.summary.map(figure => [columnLabel(lang, figure.label), formatCell(figure.kind, figure.value(body, all, request) ?? 0, lang)]),
     sort: {
