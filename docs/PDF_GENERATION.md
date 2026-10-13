@@ -16,10 +16,21 @@ the caller JWT; the server key reads the warehouse branding setting and performs
 the subsequent private upload.
 
 `generate-report-pdf` renders one of the seven report screens
-(`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"?, "status"? }`;
+(`{ "report": "...", "customer_id"?, "from"?, "to"?, "sort"?, "lang"?, "status"?, "invoicing"?, "bucket"?, "search"? }`;
 `status` is `paid` or `pending` and only for the invoice history of one
-customer; the full contract is in the CHANGELOG entries for migration 53 and
-for `status`). It reads the
+customer; `invoicing` is `invoiced` or `not_invoiced` and only for the GRN
+activity of one customer; `bucket` is `0-120`, `121-240`, `241-364` or
+`over-364` and only for the stock aging of one customer; `search` is text of
+at most 80 characters after trimming, without control characters, and only for
+the item stock summary (a blank search is none). `null` is the same as leaving
+a field out. A field on another report, without the customer it needs, or with
+another value is refused with 400 and a fixed message that never repeats the
+value. `status`, `invoicing` and `bucket` drop the other rows after the RPC
+answered and the summary is worked out from the rows listed; `search` goes to
+the item RPC as `p_search_query`. Each choice prints a line under the title;
+`status`, `invoicing` and `bucket` are echoed in the answer's `document`, the
+search never is. The full contract is in the CHANGELOG entries for migration
+53, for `status` and for these three fields). It reads the
 report's existing RPC with the caller JWT, so the RPC guard decides access
 (a refusal is 403, an unknown customer 404), prints at most 2000 rows with a
 note when cut, and returns the same `{ success, pdf_url, expires_in, document }`

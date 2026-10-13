@@ -16,7 +16,12 @@
 // added up here from the invoices listed (their total and the payment amount of
 // their payment status), and with a Paid / Pending choice (`status`) the invoices
 // of the other status are dropped first, so every figure of the PDF, the summary
-// included, is worked out from the invoices listed. An invoice's amount is its
+// included, is worked out from the invoices listed. The app's other two choices
+// work the same way: with an Invoiced / Not invoiced choice (`invoicing`) on the
+// GRN activity of one customer and an age bucket (`bucket`) on the stock aging of
+// one customer, the other rows are dropped and the summary is worked out from the
+// rows listed. The search of the item stock summary (`search`) goes to its RPC,
+// whose summary already covers the rows it finds. An invoice's amount is its
 // total; the RPC's net_total and net_amount (total + labour + tax - discount
 // until migration 61, when they became the total) are not printed from it.
 // Paid and Pending follow the money (the owner's rule, migration 62): see
@@ -24,7 +29,7 @@
 // = Amount. An invoice is one row: a database without migration 61 answers it once per payment row,
 // and `oneRowPerInvoice` merges those rows first.
 import { label, withUnit, type LabelKey, type ReportLang } from './report-labels.ts';
-import type { ReportName, ReportRequest } from './report-request.ts';
+import type { AgingBucket, ReportName, ReportRequest } from './report-request.ts';
 
 /** At most this many table rows per PDF; the rest is left out with a note. */
 export const maxReportRows = 2000;
@@ -145,12 +150,39 @@ export function oneRowPerInvoice(invoices: Row[]): Row[] {
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
 const kg = ['weight', 'kg'] as const;
 /**
- * The oldest stock of the stock aging report, as the app's screen shows it (app/reports/stock-aging.tsx, "Items over 364
- * days"): the item count of the over-364-days bucket of the RPC's answer, by_bucket['364+'].item_count, which is also what
- * the red bar of the screen shows. The report is asked with the default buckets (120, 240, 364), so the oldest is '364+'.
- * It is not summary.qty_over_365_days (bags, counted from 365 days), and a missing bucket is 0 as on the screen.
+ * The oldest stock of the stock aging report, as the app's screen shows it (app/reports/stock-aging.tsx): the count of the
+ * over-364-days bucket of the RPC's answer, by_bucket['364+'].item_count, which is also what the red bar of the screen
+ * shows. The RPC counts it with COUNT(*) over stock lines, so it is a count of lots (one item on one GRN), printed as
+ * "Lots over 364 days". The report is asked with the default buckets (120, 240, 364), so the oldest is '364+'. It is not
+ * summary.qty_over_365_days (bags, counted from 365 days), and a missing bucket is 0 as on the screen.
  */
-const itemsOver364 = (body: Body) => body.by_bucket?.['364+']?.item_count;
+const lotsOver364 = (body: Body) => body.by_bucket?.['364+']?.item_count;
+
+/** The RPC's bucket keys of a stock line (default buckets 120, 240, 364) and the app's bucket ids (AgingBucketId). */
+const lineBuckets: Readonly<Record<string, AgingBucket>> = { '0-120': '0-120', '121-240': '121-240', '241-364': '241-364', '364+': 'over-364' };
+/**
+ * The bucket of a stock line, as the app finds it (src/features/filters/configs/reports/stockAging.ts, lineBucket): the one
+ * the RPC named in aging_bucket, or else the one its aging_days fall in (up to 120, 240, 364 days, else over 364). A line with
+ * neither is in no bucket and is listed only without a bucket choice.
+ */
+export function stockLineBucket(line: Row): AgingBucket | null {
+  const named = typeof line.aging_bucket === 'string' && Object.hasOwn(lineBuckets, line.aging_bucket) ? lineBuckets[line.aging_bucket] : undefined;
+  if (named) return named;
+  const days = num(line.aging_days);
+  if (days === null) return null;
+  return days <= 120 ? '0-120' : days <= 240 ? '121-240' : days <= 364 ? '241-364' : 'over-364';
+}
+
+/** The printed name of each bucket choice, as the app's chips say it. */
+export const bucketLabels: Readonly<Record<AgingBucket, LabelKey>> = {
+  '0-120': 'bucket0to120', '121-240': 'bucket121to240', '241-364': 'bucket241to364', 'over-364': 'bucketOver364',
+};
+
+/** The mean of the readable values, rounded to a whole number as the RPC's ROUND(AVG(aging_days)) is; 0 for none. */
+const roundedMean = (rows: Row[], key: string) => {
+  const values = rows.map(row => num(row[key])).filter((value): value is number => value !== null);
+  return values.length === 0 ? 0 : Math.round(values.reduce((total, value) => total + value, 0) / values.length);
+};
 
 // The item stock list is paged and sorted by the server (migration 52), so a list longer than the limit is cut after the
 // rows that come first in the chosen order. One row past the limit shows whether it was cut. The server sorts by the four
@@ -169,7 +201,9 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       // weights without the bags. The weight received is computed here from each
       // line (its bag weight times its bags), which is right with or without that
       // migration.
-      rows: body => list(body.grns).map(grn => ({
+      // With an Invoiced / Not invoiced choice only the GRNs of that choice are listed, by the app's own test
+      // (grnActivity.ts, grnRecordsView): invoice_status.is_invoiced, a missing one being not invoiced.
+      rows: (body, request) => list(body.grns).map(grn => ({
         gr_no: grn.gr_no,
         date: grn.grn_date,
         items: grn.total_items,
@@ -177,7 +211,8 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         weight: list(grn.items).reduce((total, item) => total + (num(item.weight) ?? 0) * (num(item.quantity) ?? 0), 0),
         stock: (grn.dispatch_summary as Row | undefined)?.current_stock,
         invoice: (grn.invoice_status as Row | undefined)?.invoice_number ?? '',
-      })),
+        invoiced: Boolean((grn.invoice_status as Row | undefined)?.is_invoiced),
+      })).filter(row => !request.invoicing || row.invoiced === (request.invoicing === 'invoiced')),
       columns: [
         { key: 'gr_no', label: 'grnNumber', kind: 'text' },
         { key: 'date', label: 'date', kind: 'date' },
@@ -187,11 +222,13 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { key: 'stock', label: 'stock', kind: 'number', total: true },
         { key: 'invoice', label: 'invoiceNumber', kind: 'text' },
       ],
+      // The RPC's own figures cover every GRN of the period; with an invoicing choice they are worked out from the GRNs listed.
       summary: [
-        { label: 'grns', kind: 'number', value: body => body.summary?.total_grns },
-        { label: 'quantity', kind: 'number', value: body => body.summary?.total_quantity },
+        { label: 'grns', kind: 'number', value: (body, rows, request) => request.invoicing ? rows.length : body.summary?.total_grns },
+        { label: 'quantity', kind: 'number', value: (body, rows, request) => request.invoicing ? sum(rows, 'quantity') : body.summary?.total_quantity },
         { label: kg, kind: 'number', value: (_, rows) => sum(rows, 'weight') },
-        { label: 'invoiced', kind: 'number', value: body => body.summary?.total_invoiced_grns },
+        { label: 'invoiced', kind: 'number',
+          value: (body, rows, request) => request.invoicing ? rows.filter(row => row.invoiced).length : body.summary?.total_invoiced_grns },
       ],
       defaultSort: { field: 'date', order: 'desc' },
       empty: 'emptyGrns',
@@ -405,7 +442,8 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     title: 'titleStockAging',
     customer: {
       rpc: request => ({ name: 'get_stock_aging_report', args: { p_customer_uuid: request.customerId } }),
-      rows: body => list(body.items).map(item => ({
+      // With a bucket choice only the stock lines of that bucket are listed (`stockLineBucket`), as on the app's screen.
+      rows: (body, request) => list(body.items).map(item => ({
         item: item.item_name,
         gr_no: item.gr_no,
         date: item.grn_date,
@@ -413,7 +451,8 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         stock: item.current_stock,
         age: item.aging_days,
         last_dispatch: (item.dispatch_info as Row | undefined)?.last_dispatch_date,
-      })),
+        bucket: stockLineBucket(item),
+      })).filter(row => !request.bucket || row.bucket === request.bucket),
       columns: [
         { key: 'item', label: 'item', kind: 'text' },
         { key: 'gr_no', label: 'grnNumber', kind: 'text' },
@@ -423,10 +462,14 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { key: 'age', label: ['stockAge', 'daysUnit'], kind: 'number' },
         { key: 'last_dispatch', label: 'lastDispatch', kind: 'date' },
       ],
+      // The RPC's own figures cover every stock line of the customer; with a bucket choice they are worked out from the lines
+      // listed: their units, the rounded mean of their ages (as the RPC's ROUND(AVG(aging_days))) and how many are over 364 days.
       summary: [
-        { label: 'unitsInStock', kind: 'number', value: body => body.summary?.total_quantity },
-        { label: ['averageAge', 'daysUnit'], kind: 'number', value: body => body.summary?.average_age_days },
-        { label: 'itemsOver364', kind: 'number', value: itemsOver364 },
+        { label: 'unitsInStock', kind: 'number', value: (body, rows, request) => request.bucket ? sum(rows, 'stock') : body.summary?.total_quantity },
+        { label: ['averageAge', 'daysUnit'], kind: 'number',
+          value: (body, rows, request) => request.bucket ? roundedMean(rows, 'age') : body.summary?.average_age_days },
+        { label: 'lotsOver364', kind: 'number',
+          value: (body, rows, request) => request.bucket ? rows.filter(row => row.bucket === 'over-364').length : lotsOver364(body) },
       ],
       defaultSort: { field: 'age', order: 'desc' },
       empty: 'emptyCustomerStock',
@@ -448,7 +491,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { label: 'customers', kind: 'number', value: body => body.summary?.total_customers },
         { label: 'unitsInStock', kind: 'number', value: body => body.summary?.total_quantity },
         { label: ['averageAge', 'daysUnit'], kind: 'number', value: body => body.summary?.average_age_days },
-        { label: 'itemsOver364', kind: 'number', value: itemsOver364 },
+        { label: 'lotsOver364', kind: 'number', value: lotsOver364 },
       ],
       defaultSort: { field: 'stock', order: 'desc' },
       empty: 'emptyStock',
@@ -554,7 +597,8 @@ function itemCall(request: ReportRequest, customerId: string | null) {
   return {
     name: 'get_item_wise_stock_list',
     args: {
-      p_customer_id: customerId, p_search_query: null, p_limit: maxReportRows + 1, p_offset: 0,
+      // The search goes to the RPC, as the app's item list sends it; its rows, count and summary are then those it finds.
+      p_customer_id: customerId, p_search_query: request.search, p_limit: maxReportRows + 1, p_offset: 0,
       p_sort_by: server ?? 'item_name', p_sort_order: server ? request.sort?.order ?? 'asc' : 'asc',
     },
   };
@@ -779,7 +823,8 @@ export function buildReport(request: ReportRequest, body: Body): BuiltReport {
 
 /**
  * The choices a report was made with, printed under the title and again as the first header row of the
- * table: the customer, the period, the Paid / Pending choice when there is one, the sort and the time.
+ * table: the customer, the period, the Paid / Pending, Invoiced / Not invoiced, age bucket and search
+ * choices when there are any, the sort and the time.
  */
 export function reportFilters(request: ReportRequest, customerName: string | null, report: Pick<BuiltReport, 'sort'>, now: string): [string, string][] {
   const lang = request.lang;
@@ -788,6 +833,10 @@ export function reportFilters(request: ReportRequest, customerName: string | nul
     filters.push([label(lang, 'period'), label(lang, 'dateRange', { from: formatCell('date', request.from, lang), to: formatCell('date', request.to, lang) })]);
   }
   if (request.status) filters.push([label(lang, 'payment'), label(lang, request.status)]);
+  if (request.invoicing) filters.push([label(lang, 'invoicing'), label(lang, request.invoicing === 'invoiced' ? 'invoiced' : 'notInvoiced')]);
+  if (request.bucket) filters.push([label(lang, 'stockAge'), label(lang, bucketLabels[request.bucket])]);
+  // The search as typed, in quotes; the HTML escapes it as every other value.
+  if (request.search) filters.push([label(lang, 'search'), `“${request.search}”`]);
   filters.push([label(lang, 'sortBy'), report.sort.label]);
   // The time of the report is India's day and India's clock (it was the UTC day and the UTC clock, "12-10-2026 08:00 UTC"),
   // so a report made at 02:30 India time on 1 October says 1 October.
