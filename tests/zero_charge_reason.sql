@@ -154,39 +154,39 @@ SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.zc_assert(warehouse_security.active_role()='staff','actual staff role');
 -- One-argument path: the function wraps the reason in "Database error: ...".
-SELECT pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused1 \gset
+SELECT pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused1 \gset
 SELECT pg_temp.zc_assert(:'refused1'::jsonb->>'success'='false'
  AND :'refused1'::jsonb->>'error'='Database error: Enter a reason for the zero charge (SQLState: 22023)',
  'one-argument save: zero charge without a reason refused: '||:'refused1');
 -- Three-argument path (the one the app uses): the text and the code as they are.
-SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused3 \gset
+SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused3 \gset
 SELECT pg_temp.zc_assert(:'refused3'::jsonb->>'success'='false' AND :'refused3'::jsonb->>'error'='Enter a reason for the zero charge'
  AND :'refused3'::jsonb->>'error_code'='22023','three-argument save: zero charge without a reason refused: '||:'refused3');
 -- One zero-charge line among two is enough.
-SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":261101}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb,
  pg_temp.zc_line(:'a_items'::jsonb,1,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge',
  'three-argument save: one zero-charge line of two needs a reason');
 -- A reason made only of white space or invisible characters is no reason
 -- (the same characters as for the discount reason, migration 41).
-SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || jsonb_build_object('inv_no',261101,'zero_charge_reason',blank.reason),
+SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || jsonb_build_object('inv_no',20261101,'zero_charge_reason',blank.reason),
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge','blank reason refused for staff: '||blank.label)
  FROM (VALUES ('empty',''),('spaces','   '),('tab and newline',E'\t\n\r'),('no-break space',U&'\00A0'),('zero-width space',U&'\200B'),
   ('ideographic space',U&'\3000'),('a mix',U&' \00A0\2003\200B\FEFF\2060 ')) AS blank(label,reason);
 -- A line without a charge is billed as zero, so it is a zero charge too. (The
 -- three-argument save refuses a missing charge before that.)
-SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":261101}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb,
  (SELECT jsonb_agg(item - 'charge') FROM jsonb_array_elements(:'a_items'::jsonb) AS item))->>'error' LIKE '%Enter a reason for the zero charge%',
  'one-argument save: a line without a charge counts as a zero charge');
 -- A charge outside the range is still refused, with or without a reason.
-SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"Goodwill"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
   pg_temp.zc_line(pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb),1,rate.bad))->>'error' LIKE '%Invoice line charge must be between 0 and 999999%'
- AND pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"Goodwill"}'::jsonb,
+ AND pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
   pg_temp.zc_line(pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb),1,rate.bad))->>'success'='false',
  'a charge out of range is still refused beside a zero charge with a reason: '||rate.bad::text)
  FROM (VALUES ('{"charge":-0.01}'::jsonb),('{"charge":-5}'::jsonb),('{"charge":1000000}'::jsonb)) AS rate(bad);
 -- A zero duration is still refused where it was (the three-argument save
 -- validates the line it is sent; the other paths compute the duration).
-SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"Goodwill"}'::jsonb,
+SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0,"duration":0}'::jsonb)) AS zero_duration \gset
 SELECT pg_temp.zc_assert(:'zero_duration'::jsonb->>'success'='false' AND :'zero_duration'::jsonb->>'error'='Invalid invoice items'
  AND :'zero_duration'::jsonb->'validation_errors'->0->>'field'='invoice_items[1].duration','a zero duration is still refused: '||:'zero_duration');
@@ -198,22 +198,22 @@ SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice WHERE customer_i
 -- With a reason the saves go through and the record is written. ZCA through
 -- the three-argument path, both lines at zero: 100 x 2 labour = 200, tax 10.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_save3(:'a_header'::jsonb || jsonb_build_object('inv_no',261101,'zero_charge_reason',U&' \00A0Trial consignment\200B '),
+SELECT pg_temp.zc_save3(:'a_header'::jsonb || jsonb_build_object('inv_no',20261101,'zero_charge_reason',U&' \00A0Trial consignment\200B '),
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_a \gset
 SELECT pg_temp.zc_assert(:'saved_a'::jsonb->>'success'='true','three-argument save: zero charge with a reason: '||:'saved_a');
 SELECT (:'saved_a'::jsonb->>'invoice_id') AS invoice_a \gset
 -- ZCB through the one-argument path, reason beside the other header fields.
-SELECT pg_temp.zc_save1(:'b_header'::jsonb || '{"inv_no":261102,"zero_charge_reason":"Sample lot"}'::jsonb,
+SELECT pg_temp.zc_save1(:'b_header'::jsonb || '{"inv_no":20261102,"zero_charge_reason":"Sample lot"}'::jsonb,
  pg_temp.zc_rates(:'b_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_b \gset
 SELECT pg_temp.zc_assert(:'saved_b'::jsonb->>'success'='true','one-argument save: zero charge with a reason: '||:'saved_b');
 SELECT (:'saved_b'::jsonb->>'invoice_id') AS invoice_b \gset
 -- ZCC through the one-argument path, reason inside a "header" object.
-SELECT pg_temp.zc_save1(:'c_header'::jsonb || '{"inv_no":261103,"header":{"zero_charge_reason":"Owner said so"}}'::jsonb,
+SELECT pg_temp.zc_save1(:'c_header'::jsonb || '{"inv_no":20261103,"header":{"zero_charge_reason":"Owner said so"}}'::jsonb,
  pg_temp.zc_rates(:'c_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_c \gset
 SELECT pg_temp.zc_assert(:'saved_c'::jsonb->>'success'='true','one-argument save: the reason in the header object: '||:'saved_c');
 SELECT (:'saved_c'::jsonb->>'invoice_id') AS invoice_c \gset
 -- ZCD has no zero-charge line: the reason that was sent is not stored.
-SELECT pg_temp.zc_save3(:'d_header'::jsonb || '{"inv_no":261104,"zero_charge_reason":"Not needed"}'::jsonb,:'d_items'::jsonb) AS saved_d \gset
+SELECT pg_temp.zc_save3(:'d_header'::jsonb || '{"inv_no":20261104,"zero_charge_reason":"Not needed"}'::jsonb,:'d_items'::jsonb) AS saved_d \gset
 SELECT pg_temp.zc_assert(:'saved_d'::jsonb->>'success'='true','three-argument save without a zero charge: '||:'saved_d');
 SELECT (:'saved_d'::jsonb->>'invoice_id') AS invoice_d \gset
 RESET ROLE;
@@ -222,7 +222,7 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_
  AND pg_temp.zc_record(:'invoice_a'::uuid)->>'at' IS NOT NULL,'the reason is stored trimmed, with the profile and the time: '||pg_temp.zc_record(:'invoice_a'::uuid)::text);
 SELECT pg_temp.zc_assert(pg_temp.zc_history(:'invoice_a'::uuid)=jsonb_build_array(jsonb_build_array(NULL,'Trial consignment',0,2,:'staff_profile','staff')),
  'one history row for the new invoice: '||pg_temp.zc_history(:'invoice_a'::uuid)::text);
-SELECT pg_temp.zc_assert((SELECT h.inv_no=261101 AND h.inv_fin_year=2026 AND h.customer_id=:'customer_id'::uuid AND h.changed_at IS NOT NULL
+SELECT pg_temp.zc_assert((SELECT h.inv_no=20261101 AND h.inv_fin_year=2026 AND h.customer_id=:'customer_id'::uuid AND h.changed_at IS NOT NULL
    AND h.old_lines='{}' AND h.new_lines=ARRAY(SELECT t.disp_trl_id FROM public.invoice_trl t WHERE t.invoice_id=h.invoice_id ORDER BY t.disp_trl_id)
   FROM public.invoice_zero_charge_history h WHERE h.invoice_id=:'invoice_a'::uuid),'the history row names the invoice, the customer and the dispatch lines');
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_b'::uuid)-'at'=jsonb_build_object('reason','Sample lot','by',:'staff_profile')
@@ -242,12 +242,12 @@ SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice_discount_history
 -- ---------------------------------------------------------------------------
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_save3(:'e_header'::jsonb || '{"inv_no":261105}'::jsonb, pg_temp.zc_rates(:'e_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_e \gset
+SELECT pg_temp.zc_save3(:'e_header'::jsonb || '{"inv_no":20261105}'::jsonb, pg_temp.zc_rates(:'e_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_e \gset
 SELECT pg_temp.zc_assert(:'saved_e'::jsonb->>'success'='true','administrator: zero charge without a reason: '||:'saved_e');
 SELECT (:'saved_e'::jsonb->>'invoice_id') AS invoice_e \gset
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SELECT pg_temp.zc_assert(warehouse_security.active_role()='supervisor','actual supervisor role');
-SELECT pg_temp.zc_save1(:'f_header'::jsonb || '{"inv_no":261106,"zero_charge_reason":"   "}'::jsonb, pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_f \gset
+SELECT pg_temp.zc_save1(:'f_header'::jsonb || '{"inv_no":20261106,"zero_charge_reason":"   "}'::jsonb, pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb)) AS saved_f \gset
 SELECT pg_temp.zc_assert(:'saved_f'::jsonb->>'success'='true','supervisor: zero charge with a blank reason: '||:'saved_f');
 SELECT (:'saved_f'::jsonb->>'invoice_id') AS invoice_f \gset
 RESET ROLE;
@@ -267,13 +267,13 @@ UPDATE public.invoice SET zero_charge_set_at='2026-01-01T00:00:00Z' WHERE custom
 SELECT set_config('request.jwt.claims',:'staff2_claims',true);
 SET LOCAL ROLE authenticated;
 -- Without the reason: refused, and nothing of the edit is kept.
-SELECT pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"notes":"must roll back"}'::jsonb,
+SELECT pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"must roll back"}'::jsonb,
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS edit_refused \gset
 SELECT pg_temp.zc_assert(:'edit_refused'::jsonb->>'success'='false' AND :'edit_refused'::jsonb->>'error'='Enter a reason for the zero charge'
  AND :'edit_refused'::jsonb->>'error_code'='22023','edit: staff must send the reason again: '||:'edit_refused');
 -- The same reason and the same zero-charge lines: the edit is saved, the
 -- record keeps its author and time, the history gets no row.
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"notes":"same zero charge","zero_charge_reason":"Trial consignment"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"same zero charge","zero_charge_reason":"Trial consignment"}'::jsonb,
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0,"labour_rate":3}'::jsonb))->>'success'='true','edit keeping the reason and the zero-charge lines');
 RESET ROLE;
 SELECT pg_temp.zc_assert((SELECT notes='same zero charge' AND labour=300 FROM public.invoice WHERE id=:'invoice_a'::uuid)
@@ -282,10 +282,10 @@ SELECT pg_temp.zc_assert((SELECT notes='same zero charge' AND labour=300 FROM pu
  'an unchanged zero charge keeps its author and time: '||pg_temp.zc_record(:'invoice_a'::uuid)::text);
 -- Another reason: recorded for the person who changed it.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"Trial consignment, agreed by phone"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Trial consignment, agreed by phone"}'::jsonb,
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','edit changing the reason');
 -- (The same person rewords ZCC's reason; section 6 removes that profile.)
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":261103,"zero_charge_reason":"Owner agreed"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":20261103,"zero_charge_reason":"Owner agreed"}'::jsonb,
  pg_temp.zc_rates(:'c_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','edit changing the reason of ZCC');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_object('reason','Trial consignment, agreed by phone','by',:'staff2_profile')
@@ -297,7 +297,7 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_
 UPDATE public.invoice SET zero_charge_set_at='2026-01-01T00:00:00Z' WHERE id=:'invoice_a'::uuid;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"Trial consignment, agreed by phone"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Trial consignment, agreed by phone"}'::jsonb,
  pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','edit changing which lines have a zero charge');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_object('reason','Trial consignment, agreed by phone','by',:'supervisor_profile')
@@ -315,7 +315,7 @@ UPDATE public.invoice SET zero_charge_set_at='2026-01-01T00:00:00Z' WHERE id=:'i
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.zc_assert(NOT (:'a_header'::jsonb ? 'zero_charge_reason')
- AND pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"notes":"edit without the key"}'::jsonb,
+ AND pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"edit without the key"}'::jsonb,
  pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','administrator edit without the reason key');
 RESET ROLE;
 SELECT pg_temp.zc_assert((SELECT notes='edit without the key' FROM public.invoice WHERE id=:'invoice_a'::uuid)
@@ -325,7 +325,7 @@ SELECT pg_temp.zc_assert((SELECT notes='edit without the key' FROM public.invoic
 -- The key sent as null (what the app sends for an empty field) clears the
 -- reason, and that is recorded.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":null}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":null}'::jsonb,
  pg_temp.zc_line(:'a_items'::jsonb,0,'{"charge":0}'::jsonb))->>'success'='true','administrator edit with the reason sent as null');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_object('reason',NULL,'by',:'admin_profile')
@@ -338,10 +338,10 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_a'::uuid)-'at'=jsonb_build_
 -- although the request is otherwise complete; a reason sent blank clears it.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":261106,"zero_charge_reason":"Promotional lot"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":20261106,"zero_charge_reason":"Promotional lot"}'::jsonb,
  pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','the supervisor adds a reason to ZCF');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":261106,"notes":"no key","discount":0}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || '{"inv_no":20261106,"notes":"no key","discount":0}'::jsonb,
  pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0,"labour_rate":3}'::jsonb))->>'success'='true','administrator edit of ZCF without the reason key');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_object('reason','Promotional lot','by',:'supervisor_profile')
@@ -350,7 +350,7 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_
    jsonb_build_array(NULL,'Promotional lot',1,1,:'supervisor_profile','supervisor')),
  'ZCF keeps the supervisor''s reason through an edit without the key: '||pg_temp.zc_history(:'invoice_f'::uuid)::text);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || jsonb_build_object('inv_no',261106,'zero_charge_reason',U&' \00A0\200B '),
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_f'::uuid,:'f_header'::jsonb || jsonb_build_object('inv_no',20261106,'zero_charge_reason',U&' \00A0\200B '),
  pg_temp.zc_rates(:'f_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','administrator edit of ZCF with a blank reason');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_object('reason',NULL,'by',:'admin_profile')
@@ -361,7 +361,7 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_f'::uuid)-'at'=jsonb_build_
 -- line is left, so the reason is stored as NULL; the removal is a change.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"zero_charge_reason":"No longer free"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"No longer free"}'::jsonb,
  :'a_items'::jsonb)->>'success'='true','edit removing every zero charge');
 RESET ROLE;
 SELECT pg_temp.zc_assert((SELECT total=998 FROM public.invoice WHERE id=:'invoice_a'::uuid)
@@ -371,16 +371,16 @@ SELECT pg_temp.zc_assert((SELECT total=998 FROM public.invoice WHERE id=:'invoic
  'with no zero-charge line left the reason is NULL and the removal is recorded: '||pg_temp.zc_history(:'invoice_a'::uuid)::text);
 -- From then on a reason is neither needed nor stored, and nothing is recorded.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"notes":"priced","zero_charge_reason":"ignored"}'::jsonb,
- :'a_items'::jsonb)->>'success'='true' AND pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261101,"notes":"priced"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"priced","zero_charge_reason":"ignored"}'::jsonb,
+ :'a_items'::jsonb)->>'success'='true' AND pg_temp.zc_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261101,"notes":"priced"}'::jsonb,
  :'a_items'::jsonb)->>'success'='true','edits of an invoice without a zero charge');
 -- Giving a line a zero charge in an edit needs the reason again.
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || '{"inv_no":261104}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || '{"inv_no":20261104}'::jsonb,
  pg_temp.zc_rates(:'d_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge','edit: a new zero charge without a reason refused');
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || jsonb_build_object('inv_no',261104,'zero_charge_reason',repeat('Long reason ',50)),
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || jsonb_build_object('inv_no',20261104,'zero_charge_reason',repeat('Long reason ',50)),
  pg_temp.zc_rates(:'d_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','edit: a new zero charge with a 600-character reason');
 -- A charge out of range is refused on the edit path as before.
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || '{"inv_no":261104,"zero_charge_reason":"Goodwill"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_d'::uuid,:'d_header'::jsonb || '{"inv_no":20261104,"zero_charge_reason":"Goodwill"}'::jsonb,
  pg_temp.zc_rates(:'d_items'::jsonb,rate.bad))->>'error'='Invoice line charge must be between 0 and 999999','edit: a charge out of range is still refused: '||rate.bad::text)
  FROM (VALUES ('{"charge":-1}'::jsonb),('{"charge":1000000}'::jsonb)) AS rate(bad);
 RESET ROLE;
@@ -398,11 +398,11 @@ SELECT pg_temp.zc_assert((SELECT length(zero_charge_reason)=500 AND zero_charge_
 -- for on its own.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":261102,"discount":-10,"zero_charge_reason":"Sample lot"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261102,"discount":-10,"zero_charge_reason":"Sample lot"}'::jsonb,
   pg_temp.zc_rates(:'b_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='A reason is required for an invoice discount'
- AND pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":261102,"discount":-10,"discount_reason":"Handling"}'::jsonb,
+ AND pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261102,"discount":-10,"discount_reason":"Handling"}'::jsonb,
   pg_temp.zc_rates(:'b_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge'
- AND pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":261102,"discount":-10,"discount_reason":"Handling","zero_charge_reason":"Sample lot"}'::jsonb,
+ AND pg_temp.zc_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261102,"discount":-10,"discount_reason":"Handling","zero_charge_reason":"Sample lot"}'::jsonb,
   pg_temp.zc_rates(:'b_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','a discount and a zero charge each need their own reason');
 RESET ROLE;
 SELECT pg_temp.zc_assert((SELECT discount=-10 AND discount_reason='Handling' AND zero_charge_reason='Sample lot' AND total=10 FROM public.invoice WHERE id=:'invoice_b'::uuid)
@@ -466,24 +466,24 @@ CROSS JOIN LATERAL (VALUES
 CROSS JOIN LATERAL (SELECT path.expected AS without_reason) AS expected
 CROSS JOIN LATERAL (SELECT
   pg_temp.zc_try(format(path.call,
-    (:'g_header'::jsonb || '{"inv_no":261108}'::jsonb)::text,
+    (:'g_header'::jsonb || '{"inv_no":20261108}'::jsonb)::text,
     (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'g_items'::jsonb) item)::text,
-    (:'d_header'::jsonb || '{"inv_no":261104}'::jsonb)::text,
+    (:'d_header'::jsonb || '{"inv_no":20261104}'::jsonb)::text,
     (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'d_items'::jsonb) item)::text, :'invoice_d')) AS without_reason,
   pg_temp.zc_try(format(path.call,
-    (:'g_header'::jsonb || '{"inv_no":261108,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
+    (:'g_header'::jsonb || '{"inv_no":20261108,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
     (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'g_items'::jsonb) item)::text,
-    (:'d_header'::jsonb || '{"inv_no":261104,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
+    (:'d_header'::jsonb || '{"inv_no":20261104,"zero_charge_reason":"Goodwill"}'::jsonb)::text,
     (SELECT jsonb_agg((item - 'charge') || spelling.rates) FROM jsonb_array_elements(:'d_items'::jsonb) item)::text, :'invoice_d')) AS with_reason
  ) AS outcome;
 -- A reason sent as null or blank is no reason for staff, whatever the spelling.
 SELECT pg_temp.zc_assert(pg_temp.zc_try(format('SELECT pg_temp.zc_update(%L::uuid,%L::jsonb,%L::jsonb)',:'invoice_d',
-   (:'d_header'::jsonb || '{"inv_no":261104}'::jsonb || reason.sent)::text,
+   (:'d_header'::jsonb || '{"inv_no":20261104}'::jsonb || reason.sent)::text,
    pg_temp.zc_rates(:'d_items'::jsonb,'{"charge":"0.00"}'::jsonb)::text))='reason','staff edit with the reason sent as '||reason.sent::text||' is refused')
 FROM (VALUES ('{"zero_charge_reason":null}'::jsonb),('{"zero_charge_reason":""}'),('{"zero_charge_reason":"  "}')) AS reason(sent);
 RESET ROLE;
 -- None of the trials was kept.
-SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=261108)
+SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=20261108)
  AND (SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_g'::uuid)
  AND (SELECT length(zero_charge_reason)=500 FROM public.invoice WHERE id=:'invoice_d'::uuid)
  AND (SELECT count(*)=1 FROM public.invoice_zero_charge_history WHERE invoice_id=:'invoice_d'::uuid),
@@ -494,7 +494,7 @@ SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=261
 -- ---------------------------------------------------------------------------
 -- Written as the database owner, the way such a row exists after the upgrade.
 INSERT INTO public.invoice(id,inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount)
- VALUES ('00000000-0000-4000-8000-000000000048',2026,261107,:'grn_g'::uuid,'ZCG',:'customer_id'::uuid,'Zero Charge Customer','2026-05-02T12:00:00Z',20,1,21,0);
+ VALUES ('00000000-0000-4000-8000-000000000048',2026,20261107,:'grn_g'::uuid,'ZCG',:'customer_id'::uuid,'Zero Charge Customer','2026-05-02T12:00:00Z',20,1,21,0);
 INSERT INTO public.invoice_trl(invoice_id,disp_trl_id,duration,no_of_days,charge,tax,labour_rate)
  VALUES ('00000000-0000-4000-8000-000000000048',(:'g_items'::jsonb#>>'{0,disp_trl_id}')::uuid,1.5,31,0,5,2);
 UPDATE public.goodsreceived SET invoiced=true WHERE id=:'grn_g'::uuid;
@@ -510,7 +510,7 @@ SELECT pg_temp.zc_assert(:'detail_old'::jsonb->>'success'='true' AND (:'detail_o
 -- An administrator edits it without a reason: nothing about the zero charge
 -- changed, so nothing is recorded.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":261107,"notes":"older invoice"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":20261107,"notes":"older invoice"}'::jsonb,
  pg_temp.zc_rates(:'g_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','administrator edits the older invoice without a reason');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_g'::uuid)=jsonb_build_object('reason',NULL,'by',NULL,'at',NULL)
@@ -520,9 +520,9 @@ SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_g'::uuid)=jsonb_build_objec
 -- recorded with one.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":261107,"notes":"staff edit"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":20261107,"notes":"staff edit"}'::jsonb,
  pg_temp.zc_rates(:'g_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge','staff edit of the older invoice needs a reason');
-SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":261107,"notes":"staff edit","zero_charge_reason":"Free storage agreed in April"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_update(:'invoice_g'::uuid,:'g_header'::jsonb || '{"inv_no":20261107,"notes":"staff edit","zero_charge_reason":"Free storage agreed in April"}'::jsonb,
  pg_temp.zc_rates(:'g_items'::jsonb,'{"charge":0}'::jsonb))->>'success'='true','staff edit of the older invoice with a reason');
 RESET ROLE;
 SELECT pg_temp.zc_assert(pg_temp.zc_record(:'invoice_g'::uuid)-'at'=jsonb_build_object('reason','Free storage agreed in April','by',:'staff_profile')

@@ -6,8 +6,9 @@
 -- save RPCs stored it. One invoice numbered 2147483647 (typed by hand while testing) then made
 -- every further invoice of its financial year fail.
 --
--- INVOICE_NUMBER_MAX = 999999, the largest invoice number the save RPCs accept from now on;
--- 1 to 999999 is allowed. warehouse_security.invoice_number_max() holds it, so the save check and
+-- INVOICE_NUMBER_MAX = 99999999 (eight digits, owner's choice, so year-prefixed numbers such as
+-- 20260929 stay valid), the largest invoice number the save RPCs accept from now on;
+-- 1 to 99999999 is allowed. warehouse_security.invoice_number_max() holds it, so the save check and
 -- the suggestion use one value.
 --
 -- 1. The three granted write paths check the number before they write anything:
@@ -15,7 +16,7 @@
 --                                               the last "-" of header.invoice_number)
 --      save_invoice(uuid,jsonb,jsonb[])         p_invoice_data->>'inv_no' (the app's create path)
 --      update_invoice(uuid,jsonb,jsonb[])       p_invoice_data->>'inv_no' (the app's edit path)
---    A number outside 1..999999 is refused with "Invoice number must be between 1 and 999999"
+--    A number outside 1..99999999 is refused with "Invoice number must be between 1 and 99999999"
 --    (SQLSTATE WH422). The number is compared as written, so 10 digits get this message, not
 --    "integer out of range". save_invoice(jsonb) and update_invoice return their usual
 --    {"success": false, "error": ...} answer with it (their exception handlers turn every error
@@ -27,9 +28,9 @@
 --    column and the integer cast); the unique (inv_fin_year, inv_no) constraint is unchanged.
 --    save_invoice_internal and get_next_invoice_number_with_year are not granted to any app role
 --    and are not changed.
--- 2. get_next_invoice_number takes the maximum over the year's numbers from 1 to 999999 only, so
+-- 2. get_next_invoice_number takes the maximum over the year's numbers from 1 to 99999999 only, so
 --    a row above the ceiling (legacy data, or written with the service key) no longer blocks its
---    year. Its WH409 refusal now comes when the year's highest number in the range is 999999,
+--    year. Its WH409 refusal now comes when the year's highest number in the range is 99999999,
 --    because the number after it would be refused by the save. Guard, signature, security and
 --    grants are unchanged (CREATE OR REPLACE keeps the grants).
 --
@@ -38,7 +39,7 @@
 
 CREATE FUNCTION warehouse_security.invoice_number_max() RETURNS integer
 LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
-  SELECT 999999  -- INVOICE_NUMBER_MAX
+  SELECT 99999999  -- INVOICE_NUMBER_MAX
 $$;
 REVOKE ALL ON FUNCTION warehouse_security.invoice_number_max() FROM PUBLIC, anon, authenticated, service_role;
 

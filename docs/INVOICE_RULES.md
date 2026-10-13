@@ -236,17 +236,18 @@ turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date. Before migration 48 the function took no argument and returned
 the highest number over all years plus 1.
 
-**Range (migration 73).** An invoice number runs from 1 to 999999
-(`INVOICE_NUMBER_MAX`, held by `warehouse_security.invoice_number_max()`).
+**Range (migration 73).** An invoice number runs from 1 to 99999999
+(`INVOICE_NUMBER_MAX`, eight digits so that year-prefixed numbers such as
+20260929 stay valid; held by `warehouse_security.invoice_number_max()`).
 `save_invoice` (both signatures) and `update_invoice` refuse any other number
-with `Invoice number must be between 1 and 999999` (SQLSTATE `WH422`) before
+with `Invoice number must be between 1 and 99999999` (SQLSTATE `WH422`) before
 they write anything; the three-argument `save_invoice` raises it, the other two
 return it in their `{"success": false, "error": ...}` answer. An edit that keeps
 the invoice's own stored number is accepted, so an invoice saved earlier with a
 larger number can still be edited, but not moved to another number outside the
-range. The suggestion counts only numbers from 1 to 999999, so a row above the
+range. The suggestion counts only numbers from 1 to 99999999, so a row above the
 ceiling (earlier data, or written with the service key) does not block its year.
-When the year's highest number in that range is 999999, the call is refused with
+When the year's highest number in that range is 99999999, the call is refused with
 `No invoice number is left in financial year <year>` (SQLSTATE `WH409`). Before
 migration 73 that refusal came at 2147483647 and any typed number was stored, so
 one invoice numbered 2147483647 blocked the suggestion for its whole year. The
@@ -265,7 +266,7 @@ app role may call soft-deletes an invoice: `delete_invoice` removes the row,
 and the number of a removed invoice is free again, so deleting the year's
 last invoice makes its number the next suggestion. Soft-deleted rows come only
 from the service key, an operator in the database or earlier data. If such a
-row holds 999999, its year is refused as above.
+row holds 99999999, its year is refused as above.
 
 ## Reproducible fixture
 

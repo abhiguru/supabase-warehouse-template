@@ -164,7 +164,7 @@ SELECT pg_temp.guard_assert(public.create_dispatch_with_stock_check(:'dispatch_f
  ARRAY[jsonb_build_object('gr_trl_id',:'lot_a','disp_qty',80)],0,'write-guard-a2')->>'success'='true','WGA final dispatch');
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'grn_item_id',t.gr_trl_id,'duration',1,'charge',5,'tax',5,'labour_rate',2) ORDER BY t.disp_qty) AS a_items
  FROM public.dispatch_trl t WHERE t.gr_id=:'grn_a'::uuid \gset
-SELECT jsonb_build_object('inv_no',261091,'inv_fin_year',2026,'customer_id',:'customer_id','customer_name','Write Guard Customer',
+SELECT jsonb_build_object('inv_no',20261091,'inv_fin_year',2026,'customer_id',:'customer_id','customer_name','Write Guard Customer',
  'inv_date','2026-05-02T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
  'gr_id',:'grn_a','gr_no','WGA') AS a_header \gset
 SELECT public.save_invoice(:'a_header'::jsonb || jsonb_build_object('items',:'a_items'::jsonb)) AS saved \gset

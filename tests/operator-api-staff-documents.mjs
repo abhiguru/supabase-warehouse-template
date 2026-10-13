@@ -67,7 +67,7 @@ const customers=await api('/rest/v1/customers?select=id,name',token);assert.equa
 const a=customers.data.find(x=>x.name==='Backend Test Customer A')?.id;
 const b=customers.data.find(x=>x.name==='Backend Test Customer B')?.id;assert.ok(a&&b&&a!==b);
 assert.equal(sql("NOT EXISTS(SELECT 1 FROM public.user_profiles WHERE mobile='919888888874')"),true,'fresh reserved staff account required');
-assert.equal(sql("NOT EXISTS(SELECT 1 FROM public.goodsreceived WHERE gr_no='SDA01') AND NOT EXISTS(SELECT 1 FROM public.dispatch WHERE disp_no IN ('SDD01','SDD02')) AND NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=261005)"),true,'fresh fictional document numbers required');
+assert.equal(sql("NOT EXISTS(SELECT 1 FROM public.goodsreceived WHERE gr_no='SDA01') AND NOT EXISTS(SELECT 1 FROM public.dispatch WHERE disp_no IN ('SDD01','SDD02')) AND NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=20261005)"),true,'fresh fictional document numbers required');
 const pending=await login('919888888874','Document Workflow Staff');assert.equal(pending.action,'pending');assert.ok(!pending.session);
 const staffId=sql("(SELECT to_jsonb(id) FROM public.user_profiles WHERE mobile='919888888874')");
 good(await rpc('operator_review_enrollment',token,{p_user_id:staffId,p_decision:'approved',p_customer_ids:[b]}),'approve fictional staff enrollment');
@@ -88,12 +88,12 @@ good(await rpc('create_dispatch_with_stock_check',st,{...first,p_dispatch_data:{
 good(await rpc('get_dispatch_list',st),'staff dispatch list');
 const lines=sql("(SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) FROM public.dispatch_trl t JOIN public.dispatch d ON d.id=t.disp_id WHERE d.disp_no IN ('SDD01','SDD02'))");assert.equal(lines.length,2);
 const preview=good(await rpc('generate_invoice_data_for_grn_with_pricing',st,{p_gr_id:grn,p_duration_mode:'legacy'}),'staff invoice preview');
-const saved=good(await rpc('save_invoice',st,{p_invoice_data:{inv_no:261005,inv_fin_year:2026,gr_id:grn,gr_no:'SDA01',customer_id:a,customer_name:'Backend Test Customer A',inv_date:'2026-05-02T12:00:00Z',total:preview.totals.grand_total,tax_amount:preview.totals.tax,discount:0,duration_mode:'legacy',items:lines}}),'staff invoice save');
+const saved=good(await rpc('save_invoice',st,{p_invoice_data:{inv_no:20261005,inv_fin_year:2026,gr_id:grn,gr_no:'SDA01',customer_id:a,customer_name:'Backend Test Customer A',inv_date:'2026-05-02T12:00:00Z',total:preview.totals.grand_total,tax_amount:preview.totals.tax,discount:0,duration_mode:'legacy',items:lines}}),'staff invoice save');
 good(await rpc('get_invoice_data',st,{p_invoice_id:saved.invoice_id}),'staff invoice read');
 assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=id`,st)).data.length,1,'caller-RLS staff invoice read');
 assert.equal((await api('/rest/v1/item_storage_prices?select=id',st)).data.length,0,'no direct pricing grant');
 const pdfHashes=[];
-for(const [kind,body] of [['dispatch',{disp_no:'SDD01'}],['invoice',{inv_no:261005,fin_year:2026}]]){
+for(const [kind,body] of [['dispatch',{disp_no:'SDD01'}],['invoice',{inv_no:20261005,fin_year:2026}]]){
  const document=good(await api('/functions/v1/generate-'+kind+'-pdf',st,body),'staff '+kind+' PDF');
  const url=new URL(document.pdf_url);assert.equal(url.origin,'https://backend-core.example.test');
  const download=await fetch(base+url.pathname+url.search,{signal:AbortSignal.timeout(30000),redirect:'error'});assert.equal(download.status,200);
@@ -101,7 +101,7 @@ for(const [kind,body] of [['dispatch',{disp_no:'SDD01'}],['invoice',{inv_no:2610
  pdfHashes.push({kind,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
 }
 const customerB=await login('919888888873','Customer B');assert.equal(customerB.action,'login');
-assert.equal((await api('/functions/v1/generate-invoice-pdf',customerB.session.access_token,{inv_no:261005,fin_year:2026})).status,404,'B denied unassigned staff-created A invoice PDF');
+assert.equal((await api('/functions/v1/generate-invoice-pdf',customerB.session.access_token,{inv_no:20261005,fin_year:2026})).status,404,'B denied unassigned staff-created A invoice PDF');
 const denied=await rpc('delete_invoice',st,{p_invoice_id:saved.invoice_id});assert.notEqual(denied.data?.success,true,'staff deletion denied');
 assert.equal(sql(`(SELECT count(*) FROM public.invoice WHERE id=${quote(saved.invoice_id)}::uuid)`),1,'denial preserves invoice');
 const proof={status:'PASS',scope:'fresh fictional staff HTTP dispatch/invoice/PDF regression; no native acceptance',backendApplication:c.backendApplication,instanceId:c.instanceId,staffProfile:staffId,unassignedCustomer:a,grn,lot,invoice:saved.invoice_id,stockSequence:[10,7,7,0],pdfHashes,noExternalProvider:true,noCountersReset:true,successfulRecordsPreserved:true};

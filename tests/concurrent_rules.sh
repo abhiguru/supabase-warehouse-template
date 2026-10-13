@@ -126,17 +126,17 @@ public.save_invoice(NULL::uuid, (SELECT jsonb_build_object('inv_no',$1,'inv_fin_
     FROM public.dispatch_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CONCA'))
 SQL
 }
-call_as "$claims_one" "$(invoice_call 269901)" 4 > "$scratch/first" &
+call_as "$claims_one" "$(invoice_call 20269901)" 4 > "$scratch/first" &
 holder=$!
 sleep 1
-call_as "$claims_staff" "$(invoice_call 269902)" > "$scratch/second"
+call_as "$claims_staff" "$(invoice_call 20269902)" > "$scratch/second"
 wait "$holder" || { echo 'Concurrent invoice: the first save failed.' >&2; exit 1; }
 first=$(answer "$scratch/first"); second=$(answer "$scratch/second")
 [[ "$first" == *'"success": true'* ]] || { echo "Concurrent invoice: the first save did not succeed: $first" >&2; exit 1; }
 [[ "$second" == *'"success": false'* && "$second" == *'GRN is already invoiced'* ]] ||
   { echo "Concurrent invoice: the second save was not refused as already invoiced: $second" >&2; exit 1; }
 stored=$(psql_exec -At -v receipt="$receipt" <<'SQL'
-SELECT (SELECT count(*)=1 AND bool_and(inv_no=269901) FROM public.invoice WHERE gr_id=:'receipt'::uuid AND deleted_at IS NULL)
+SELECT (SELECT count(*)=1 AND bool_and(inv_no=20269901) FROM public.invoice WHERE gr_id=:'receipt'::uuid AND deleted_at IS NULL)
   AND (SELECT count(*)=1 FROM public.invoice_trl t JOIN public.dispatch_trl d ON d.id=t.disp_trl_id WHERE d.gr_id=:'receipt'::uuid)
   AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'receipt'::uuid);
 SQL

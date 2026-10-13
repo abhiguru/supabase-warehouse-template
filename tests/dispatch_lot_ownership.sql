@@ -139,7 +139,7 @@ SELECT pg_temp.lot_assert((SELECT stock=0 FROM public.goodsreceived_trl WHERE id
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) AS invoice_items
  FROM public.dispatch_trl t WHERE t.gr_trl_id=:'lot_a'::uuid \gset
 SET LOCAL ROLE authenticated;
-SELECT public.save_invoice(jsonb_build_object('inv_no',261039,'inv_fin_year',2026,'gr_id',:'grn_a','gr_no','LOTA',
+SELECT public.save_invoice(jsonb_build_object('inv_no',20261039,'inv_fin_year',2026,'gr_id',:'grn_a','gr_no','LOTA',
  'customer_id',:'customer_a','customer_name','Lot Rule Customer A','inv_date','2026-05-02T12:00:00Z',
  'total',998,'tax_amount',48,'discount',0,'duration_mode','legacy','items',:'invoice_items'::jsonb)) AS saved \gset
 SELECT pg_temp.lot_assert(:'saved'::jsonb->>'success'='true','invoice for LOTA: ' || :'saved');

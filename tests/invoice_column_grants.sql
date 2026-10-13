@@ -114,7 +114,7 @@ SELECT pg_temp.col_assert(public.create_dispatch_with_stock_check(jsonb_build_ob
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.col_assert(warehouse_security.active_role()='staff','actual staff role');
 SELECT public.save_invoice(NULL::uuid,
- jsonb_build_object('inv_fin_year',2026,'inv_no',261201,'customer_id',:'north','customer_name','Internal Column North',
+ jsonb_build_object('inv_fin_year',2026,'inv_no',20261201,'customer_id',:'north','customer_name','Internal Column North',
   'inv_date','2026-05-02T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',-10,'duration_mode','legacy',
   'gr_id',:'grn_id','gr_no','ICN1','discount_reason','Handling surcharge agreed','zero_charge_reason','Sample lot'),
  ARRAY(SELECT jsonb_build_object('disp_trl_id',t.id,'grn_item_id',t.gr_trl_id,'duration',1,'charge',0,'tax',5,'labour_rate',2)
@@ -165,12 +165,12 @@ FROM (VALUES ('SELECT * FROM public.invoice'),('SELECT i FROM public.invoice i')
 SELECT pg_temp.col_rows(format('SELECT %s FROM public.invoice',:'open_columns')) AS customer_rows \gset
 SELECT pg_temp.col_assert(jsonb_array_length(:'customer_rows'::jsonb)=1 AND :'customer_rows'::jsonb#>>'{0,id}'=:'invoice_id'
  AND (:'customer_rows'::jsonb#>>'{0,total}')::numeric=10 AND (:'customer_rows'::jsonb#>>'{0,discount}')::numeric=-10
- AND :'customer_rows'::jsonb#>>'{0,inv_no}'='261201' AND :'customer_rows'::jsonb#>>'{0,customer_id}'=:'north'
+ AND :'customer_rows'::jsonb#>>'{0,inv_no}'='20261201' AND :'customer_rows'::jsonb#>>'{0,customer_id}'=:'north'
  AND (SELECT count(*)=:open_count FROM jsonb_object_keys(:'customer_rows'::jsonb->0))
  AND NOT (:'customer_rows'::jsonb->0 ?| :'internal'::text[]),
  'a customer account reads every other column of its own invoice: '||:'customer_rows');
 -- The columns the invoice PDF function reads (functions/_shared/document-columns.ts).
-SELECT pg_temp.col_assert(pg_temp.col_rows('SELECT id,customer_name,inv_date,inv_fin_year,labour,tax_amount,discount,total FROM public.invoice WHERE inv_no=261201 AND inv_fin_year=2026 AND deleted_at IS NULL')
+SELECT pg_temp.col_assert(pg_temp.col_rows('SELECT id,customer_name,inv_date,inv_fin_year,labour,tax_amount,discount,total FROM public.invoice WHERE inv_no=20261201 AND inv_fin_year=2026 AND deleted_at IS NULL')
   #>>'{0,customer_name}'='Internal Column North','the invoice PDF header query is answered');
 SELECT pg_temp.col_assert((SELECT count(*)=1 FROM public.invoice) AND (SELECT count(*)=1 FROM public.invoice WHERE id=:'invoice_id'::uuid),
  'counting its invoices still works');
