@@ -110,11 +110,24 @@ const table = {
   averageAge: ['Average age', 'સરેરાશ કેટલા દિવસથી'], // reports.stockAging.averageAge
   daysUnit: ['days', 'દિવસ'], // reports.stockAging.daysUnit
   overOneYear: ['Over 1 year', '૧ વર્ષથી વધુ'], // (wording kept from an earlier app version)
-  // The tile of the oldest stock on the app's stock aging screen: a count of items in its over-364-days bucket.
-  itemsOver364: ['Items over 364 days', '૩૬૪ દિવસથી વધુ જૂની આઇટમ'], // reports.stockAging.itemsOver364
+  // The oldest stock of both stock aging PDFs: the count of the over-364-days bucket, which the RPC counts in stock LINES
+  // (lots: one item on one GRN), not in items. The app's overview tile says the same (reports.stockAging.lotsOver364, added
+  // with this label on 2026-10-13); its Gujarati is drafted from the app's itemsOver364 ('૩૬૪ દિવસથી વધુ જૂની આઇટમ') with
+  // lot = જથ્થો, for the integrator to align with the app's key.
+  lotsOver364: ['Lots over 364 days', '૩૬૪ દિવસથી વધુ જૂના જથ્થા'], // reports.stockAging.lotsOver364
   month: ['Month', 'મહિનો'], // reports.customerActivity.trend.month
   stockAtMonthEnd: ['Stock at month end', 'મહિનાના અંતે સ્ટોક'], // reports.customerActivity.trend.stockAtMonthEnd
   city: ['City', 'શહેર'], // customers.fields.city
+  // The choices of the report screens a PDF can be made with, printed as a line under the title ('Invoicing: Not invoiced').
+  invoicing: ['Invoicing', 'ઇન્વૉઇસ'], // reports.filters.invoicing
+  notInvoiced: ['Not invoiced', 'ઇન્વૉઇસ બાકી'], // reports.grnActivity.notInvoiced
+  bucket0to120: ['0–120 days', '૦–૧૨૦ દિવસ'], // reports.stockAging.bucket0to120
+  bucket121to240: ['121–240 days', '૧૨૧–૨૪૦ દિવસ'], // reports.stockAging.bucket121to240
+  bucket241to364: ['241–364 days', '૨૪૧–૩૬૪ દિવસ'], // reports.stockAging.bucket241to364
+  bucketOver364: ['Over 364 days', '૩૬૪ દિવસથી વધુ'], // reports.stockAging.bucketOver364
+  // A fact line on paper ('Search: “cumin”'), so the noun 'શોધ' of the app's 'તાજેતરની શોધ' (filters.search.recent) and not
+  // the command of common.search ('શોધો'), as sortBy does; for the owner to check.
+  search: ['Search', 'શોધ'],
   // The app's reports.sort.lastActive ('Last active') and reports.customerActivity.lastActive
   // ('Last active {{date}}') are both 'છેલ્લી કામગીરી' (last activity); this column holds that date.
   lastActivity: ['Last activity', 'છેલ્લી કામગીરી'],

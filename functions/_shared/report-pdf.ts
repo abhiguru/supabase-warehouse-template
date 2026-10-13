@@ -84,6 +84,9 @@ export async function reportPdf(req: Request): Promise<Response> {
     if (customerName !== null) document.customer = customerName;
     if (request.from && request.to) Object.assign(document, { from: request.from, to: request.to });
     if (request.status) document.status = request.status;
+    // The invoicing and bucket choices are echoed as the status is; the search, which is free text, never is.
+    if (request.invoicing) document.invoicing = request.invoicing;
+    if (request.bucket) document.bucket = request.bucket;
     Object.assign(document, {
       rows_count: report.rows.length, rows_total: report.rowsTotal, truncated: report.truncated,
       sort: { field: report.sort.field, order: report.sort.order },
