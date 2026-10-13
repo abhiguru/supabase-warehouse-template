@@ -10,7 +10,7 @@ class LoadTest(unittest.TestCase):
     def test_defaults(self):
         c = load(env(SENSOR_BRIDGE_QUEUE_PATH=None, SENSOR_BRIDGE_HEALTH_PATH=None))
         self.assertEqual(c.hubs, ("192.0.2.10",))
-        self.assertEqual((c.poll_seconds, c.post_seconds, c.heartbeat_seconds, c.max_batch), (30, 60, 900, 200))
+        self.assertEqual((c.poll_seconds, c.post_seconds, c.heartbeat_seconds, c.max_batch), (300, 60, 300, 200))
         self.assertEqual((c.queue_path, c.health_path, c.bridge_id), ("/data/bridge.sqlite3", "/data/health.json",
                                                                        "sensor-bridge"))
         self.assertIsNone(c.reboot_cron)

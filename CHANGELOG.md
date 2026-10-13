@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — sensors sampled every 5 minutes, kept 90 days (2026-10-13)
+
+The owner wants a sample every 5 minutes and three months of history.
+
+**Operator action** (only where sensors are used): apply migration 75 (the
+normal setup rerun does). Then either accept the new bridge defaults (leave
+`SENSOR_BRIDGE_POLL_SECONDS` and `SENSOR_BRIDGE_HEARTBEAT_SECONDS` empty in
+`config/compose.env`, or the standalone `sensor-bridge.env`) or set them there,
+and recreate the bridge (`bash scripts/compose.sh --profile sensors up -d
+--force-recreate sensor-bridge`). At its next `retention:apply` the retention
+job deletes every reading older than 90 days, legacy history included; check
+the count with `npm run retention:preview` first, and take a backup or export
+before that run if older readings are still wanted.
+
+- Bridge defaults: `SENSOR_BRIDGE_POLL_SECONDS` 30 -> 300 and
+  `SENSOR_BRIDGE_HEARTBEAT_SECONDS` 900 -> 300 (`config.py`, the Compose
+  service, both env examples). With both at 300 every poll queues one reading
+  per sensor, a change or a heartbeat, so each sensor is sampled every 5
+  minutes: one row per 5 minutes, about 288 a day. The allowed ranges are
+  unchanged (poll 5 to 3600, heartbeat 60 to 86400). A shorter poll with the
+  heartbeat at 300 still catches changes sooner. Consequences of the longer
+  poll: a value change reaches the backend up to about 5 minutes later than
+  before, and a hub is reported offline after three failed polls, about 10
+  minutes after the first one instead of about a minute. The hub status is
+  re-sent every 5 minutes instead of every 15. The container healthcheck is
+  unaffected: the health file is rewritten on every pass of the 1-second loop,
+  not per poll, so `SENSOR_BRIDGE_HEALTH_MAX_AGE` (120 s) still holds.
+- Migration 75 `sensor_retention_90_days`: retention key `sensor_readings` is
+  90 days instead of 400 (it stops with an error unless exactly one policy row
+  is updated). Nothing is deleted by the migration itself.
+- Staleness is unchanged: `staleness_threshold_minutes` stays 30 by default.
+  With 5-minute samples that is about six missed samples; two missed samples
+  (10 minutes, for example a bridge restart or a failed poll or two) do not
+  mark a sensor stale, so 30 stays a safe default.
+- Tests: the bridge unit tests pin the new defaults and check that the default
+  settings give one reading per sensor per 5 minutes (the state-machine tests
+  keep a 30 s poll and a 15-minute heartbeat); `tests/sensor_ingest.sql`
+  checks 90 days and that retention deletes a reading of 91 days and keeps one
+  of 89 days.
+
 ## Unreleased — Tapo sensors through the template (2026-10-13)
 
 Tapo T310 temperature and humidity sensors on H200 hubs now reach this backend
