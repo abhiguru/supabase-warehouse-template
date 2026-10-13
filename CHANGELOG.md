@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — invoice numbers run from 1 to 99999999 (2026-10-13)
+
+- Migration 73 `invoice_number_ceiling`: `save_invoice` (both signatures) and `update_invoice` refuse an invoice number outside 1..99999999 (eight digits, so year-prefixed numbers such as 20260929 stay valid) with "Invoice number must be between 1 and 99999999" (WH422), an edit keeping the invoice's own stored number excepted, and `get_next_invoice_number` ignores numbers above 99999999, so one typed 2147483647 no longer blocks its financial year (WH409 now comes at 99999999); no operator action. The app's cap on the number field is a separate app pull request; this backend change merges first. Rules: [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Invoice numbers"; test `tests/invoice_number_ceiling.sql`.
+
 ## Unreleased — Backend review fixes 2026-10-13
 
 ### Migrations 65-67
