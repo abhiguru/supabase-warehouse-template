@@ -12,7 +12,11 @@ umask 077
 #                build nothing: replace the running optional services
 #                (monitoring, printing, pooler) whose image or configuration
 #                changed. setup.sh and start.sh start only the core services,
-#                so they run this after their own start.
+#                so they run this after their own start. A running service
+#                whose image does not match this checkout (missing, recipe
+#                changed, or replaced by something else) is left as it is and
+#                the command exits 1: start never builds, and never recreates a
+#                service from an image this checkout did not build.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() { echo 'Usage: bash scripts/build-images.sh [--all | --no-cache | --replace-optional]' >&2; exit 1; }
 plan_args=()
@@ -38,13 +42,28 @@ config="$(compose --profile '*' config --format json)" || { echo 'Could not read
 if [[ "$replace_optional" == true ]]; then
   running="$(printf '%s' "$config" | node "$ROOT/scripts/image-recipes.mjs" optional)" || { echo 'Could not work out which optional services are running.' >&2; exit 1; }
   [[ -n "$running" ]] || exit 0
+  # The same comparison as the build step; an image with no build record yet is
+  # accepted (one built by `compose build` or `compose up` of this project).
+  plan="$(printf '%s' "$config" | node "$ROOT/scripts/image-recipes.mjs" plan "$record")" || { echo 'Could not check the images of the optional services.' >&2; exit 1; }
+  declare -A mismatch=()
+  while IFS=$'\t' read -r service _ _ reason; do
+    if [[ -n "$service" && "$reason" != 'no build record' ]]; then mismatch["$service"]="$reason"; fi
+  done <<< "$plan"
   services=()
-  while IFS= read -r service; do [[ -z "$service" ]] || services+=("$service"); done <<< "$running"
-  echo "Optional services that are running: ${services[*]}. Replacing those whose image or configuration changed."
-  if ! compose --profile '*' up -d --wait --wait-timeout 180 "${services[@]}"; then
+  skipped=()
+  while IFS= read -r service; do
+    [[ -n "$service" ]] || continue
+    if [[ -n "${mismatch[$service]:-}" ]]; then skipped+=("$service"); else services+=("$service"); fi
+  done <<< "$running"
+  echo "Optional services that are running: ${running//$'\n'/ }. Replacing those whose image or configuration changed."
+  for service in "${skipped[@]}"; do
+    echo "Left $service running unchanged: the $service image does not match this checkout (${mismatch[$service]}); run \`bash scripts/build-images.sh\`." >&2
+  done
+  if ((${#services[@]})) && ! compose --profile '*' up -d --wait --wait-timeout 180 "${services[@]}"; then
     echo "An optional service did not start (${services[*]}). The core services are not affected; see the message above." >&2
     exit 1
   fi
+  ((${#skipped[@]} == 0)) || exit 1
   exit 0
 fi
 

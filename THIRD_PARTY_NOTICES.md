@@ -35,18 +35,19 @@ inventory, provenance boundary, and maintainer attestation.
 Grafana is licensed under the GNU Affero General Public License v3.0
 (upstream: https://github.com/grafana/grafana; the complete licence text is
 vendored at `LICENSES/grafana/LICENSE`, see `LICENSES/grafana/README.md`).
-`docker/grafana/Dockerfile` builds the local `warehouse-grafana:local` image
-from the publisher's digest-pinned `grafana/grafana:13.2.3` image: it upgrades
-two Alpine libraries and replaces the bundled plugins with publisher-signed,
-checksum-pinned releases (`plugins.lock`, `install-plugins.sh`). No Grafana
+`docker/grafana/Dockerfile` builds the installation's local Grafana image
+(`<project>-grafana`) from the publisher's digest-pinned `grafana/grafana:13.2.3`
+image: it upgrades two Alpine libraries and replaces the bundled plugins with
+publisher-signed, checksum-pinned releases (`plugins.lock`, `install-plugins.sh`). No Grafana
 source is modified or vendored here; the earlier core-rebuild research and its
 Thrift patch were retired under the won't-fix disposition in
 `docs/PRODUCTION_DEPENDENCIES.md`.
 
 This repository redistributes neither the publisher image nor any rebuilt
-image: operators build `warehouse-grafana:local` on their own host at setup
-time. An operator who distributes a rebuilt or modified Grafana image must offer
-its corresponding source under AGPL-3.0, and one who modifies Grafana (for
+image: operators build the installation's local Grafana image
+(`<project>-grafana`) on their own host at setup time. An operator who
+distributes a rebuilt or modified Grafana image must offer its corresponding
+source under AGPL-3.0, and one who modifies Grafana (for
 example by applying the Thrift patch) and lets users interact with it over a
 network must offer the modified source as well (AGPL-3.0 section 13). The
 Grafana provisioning files adapted from `supabase/supabase` remain Apache-2.0.

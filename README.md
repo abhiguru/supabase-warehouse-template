@@ -82,6 +82,14 @@ contract parity, but physical printing hardware remains unverified. See
 [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for the exact
 boundary of what has been accepted.
 
+The unused Tally accounting integration (invoice sync queue and trigger, receipt
+and contra vouchers, bank statement reconciliation, ledger map) and the dead
+legacy functions of the baseline were removed by migration 71 (2026-10-13).
+Recorded payments remain and drive the Paid and Pending figures of the invoice
+reports; the app does not write them. A future accounting integration starts
+from a new design. The remaining ungranted baseline functions are not API
+([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
+
 ## Contributing, CI and history
 
 `npm test` runs the node tests without Docker; `bash tests/migrations.sh` runs

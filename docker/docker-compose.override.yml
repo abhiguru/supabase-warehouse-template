@@ -274,7 +274,6 @@ services:
           memory: 128M
 
   grafana:
-    image: warehouse-grafana:local
     build:
       # Its own directory: with the whole of docker/ as context, a change to any
       # other recipe or configuration file would look like a changed Grafana recipe.

@@ -1298,7 +1298,19 @@ start then replaces only the containers whose image changed. What to expect:
   the core services, so after their own start they replace the optional
   services that are running and whose image or configuration changed. A
   failure there is printed as a warning; the core services stay up.
+- A running optional service whose image does not match this checkout (the
+  image is missing, its recipe changed, or its tag names an image this
+  checkout did not build) is left running unchanged with the warning "the
+  <service> image does not match this checkout"; `bash scripts/build-images.sh`
+  or the next setup rerun builds it, and the following start replaces it.
 - `start.sh` never builds: a host that restarts offline starts what it has.
+- Every built image is tagged for its installation (`<project>-<service>`).
+  Grafana's was the shared `warehouse-grafana:local` until 2026-10-13, so the
+  first setup rerun after that builds `<project>-grafana` and replaces Grafana
+  (its data volume is kept). Once every installation on the host has been
+  upgraded, remove the old tag with `docker image rm warehouse-grafana:local`
+  (Docker refuses while a container still uses it); nothing removes it
+  automatically.
 - A setup from a release before this one did not rebuild anything: it kept
   every image of the first installation, and recipe changes never reached
   the running services. If you stay on such a release, run

@@ -18,7 +18,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
-| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest; Alpine package upgrade; remove unused npm CLI |
+| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest (2026-10-13: `@fastify/busboy` 3.2.3 for [GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9), `fast-copy` 4.1.2 for [GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j), both moderate); Alpine package upgrade; remove unused npm CLI |
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
@@ -53,9 +53,13 @@ correctly failed for three unchanged upstream images:
 
 Each scan report was validated for presence, format, nonempty results, image
 identity and findings. Private machine-readable inventory stays outside Git.
-The commands to reproduce are `npm run scan:images`, `test:api`,
-`test:monitoring`, `test:pooler`, `test:realtime`, `test:recovery`, `db:backup`,
-and `db:verify-restore`, with a unique owned loopback demo project.
+The commands to reproduce are `npm run scan:images`, `npm run test:monitoring`,
+`npm run test:pooler`, `npm run test:recovery`, `npm run db:backup` and
+`npm run db:verify-restore`, with a unique owned loopback demo project. The API
+contract is checked with `npm run check:contract -- <app path>` (CI's contract
+job runs it against the pinned app commit); the API and Realtime drivers
+(`tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs` and the
+others listed in `docs/DEVELOPER_HANDOFF.md`) run in CI's operator-install job.
 
 Acceptance passed: 19 backend unit tests; source/history secret scans; generated
 setup/rerun; full demo API (roles, sessions, images, all four PDFs and business

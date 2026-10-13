@@ -130,10 +130,24 @@ test('gateway exports the request metrics the alert rules query', () => {
   assert.equal(expression('APIHighLatency'), 'histogram_quantile(0.95, sum(rate(kong_request_latency_ms_bucket[5m])) by (le, service)) > 2000');
   assert.equal(expression('ScrapeTargetDown'), 'up{job!="kong"} == 0');
   assert.equal(expression('APIDown'), 'up{job="kong"} == 0');
+  // postgres-exporter splits pg_stat_activity_count by database, state, user, application and
+  // backend type: no single series reaches 80 when the connections are spread, so the rule adds
+  // the client connections of each exporter (background workers do not count toward max_connections
+  // in the same way and are left out).
+  assert.equal(expression('DatabaseConnectionsHigh'), 'sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"}) > 80');
   // Every job Prometheus scrapes is covered by one of the two.
   const jobs = [...readFileSync(new URL('../docker/prometheus.yml', import.meta.url), 'utf8').matchAll(/job_name: '([a-z-]+)'/g)].map(match => match[1]);
   assert.deepEqual(jobs.sort(), ['cadvisor', 'kong', 'node', 'postgres', 'prometheus']);
-  assert.match(readFileSync(new URL('../scripts/monitoring-check.sh', import.meta.url), 'utf8'), /kong_http_requests_total/, 'monitoring check does not require gateway request metrics');
+  const monitoringCheck = readFileSync(new URL('../scripts/monitoring-check.sh', import.meta.url), 'utf8');
+  assert.match(monitoringCheck, /kong_http_requests_total/, 'monitoring check does not require gateway request metrics');
+  // The rule unit tests (docker/alert-rules.test.yml) run with the image's own promtool, and the
+  // live exporter must still label its series with backend_type, or the rule matches nothing.
+  assert.match(monitoringCheck, /--entrypoint promtool prometheus \\\n\s+test rules \/etc\/prometheus\/alert-rules\.test\.yml/, 'monitoring check does not run the alert rule tests');
+  assert.match(monitoringCheck, /"\$ROOT\/docker\/alert-rules\.test\.yml:\/etc\/prometheus\/alert-rules\.test\.yml:ro"/);
+  assert.ok(monitoringCheck.includes("query=sum(pg_stat_activity_count%7Bbackend_type%3D%22client%20backend%22%7D)"), 'monitoring check does not require client-backend connection series');
+  const unit = readFileSync(new URL('../docker/alert-rules.test.yml', import.meta.url), 'utf8');
+  assert.match(unit, /^rule_files:\n  - \/etc\/prometheus\/alert-rules\.yml\n/m);
+  assert.match(unit, /alertname: DatabaseConnectionsHigh/);
 });
 
 test('gateway configuration survives the entrypoint that fills in its variables', () => {
