@@ -19,6 +19,9 @@
 --      leaves 10 outstanding, read as the service role.
 -- Recorded payments stay; Paid and Pending in the reports read them (tests/report_invoice_paid.sql
 -- and tests/report_invoice_amounts.sql are unchanged).
+-- Part 5: migration 74 retires the two MAC-based sensor writers, record_sensor_reading and
+-- update_sensor (service role only, called by nothing); public.record_sensor_batch and
+-- public.update_sensor_device replace them (tests/sensor_ingest.sql).
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -185,5 +188,17 @@ SELECT pg_temp.lf_assert((:'open_invoices'::jsonb)->>'success' = 'true'
   AND ((:'open_invoices'::jsonb)#>>'{data,0,paid}')::numeric = 4
   AND ((:'open_invoices'::jsonb)#>>'{data,0,outstanding}')::numeric = 10,
   'one open invoice, 14 total, 4 paid, 10 outstanding: ' || :'open_invoices');
+
+-- ---------------------------------------------------------------------------
+-- 5. Migration 74: the MAC-based sensor writers
+-- ---------------------------------------------------------------------------
+SELECT pg_temp.lf_assert(to_regprocedure('public.record_sensor_reading(character varying,numeric,numeric,character varying,character varying)') IS NULL
+  AND to_regprocedure('public.update_sensor(character varying,text,text,integer,jsonb)') IS NULL,
+  'record_sensor_reading and update_sensor are gone');
+SELECT pg_temp.lf_assert(count(*) = 0, 'a function by a retired sensor writer''s name is still in public: ' || COALESCE(string_agg(p.oid::regprocedure::text, ', '), ''))
+FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN ('record_sensor_reading', 'update_sensor');
+SELECT pg_temp.lf_assert(to_regprocedure('public.record_sensor_batch(text,jsonb,jsonb)') IS NOT NULL
+  AND to_regprocedure('public.update_sensor_device(uuid,text,text,integer)') IS NOT NULL,
+  'record_sensor_batch and update_sensor_device replace them');
 
 ROLLBACK;

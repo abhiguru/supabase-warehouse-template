@@ -1,0 +1,7 @@
+# Never copy a real settings file or local byproducts into the image.
+**/__pycache__
+**/*.pyc
+*.env
+.env
+docker-compose.standalone.yml
+sensor-bridge.env.example

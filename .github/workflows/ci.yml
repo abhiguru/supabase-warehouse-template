@@ -70,6 +70,22 @@ jobs:
       - run: npm run test:grafana
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
+  bridge:
+    name: Sensor bridge unit tests
+    # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
+    # with the pinned requirements, without Docker or hubs. The image itself is
+    # built and checked by `npm run test:sensors` in operator-install.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r docker/sensor-bridge/requirements.txt
+      - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
+      - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge
   contract:
     runs-on: ubuntu-latest
     steps:
@@ -209,6 +225,9 @@ jobs:
         working-directory: backend
       - name: CUPS startup without printer hardware
         run: npm run test:cups
+        working-directory: backend
+      - name: Sensor bridge image and configuration check without hubs
+        run: npm run test:sensors
         working-directory: backend
       - name: Owned-service recovery
         run: npm run test:recovery

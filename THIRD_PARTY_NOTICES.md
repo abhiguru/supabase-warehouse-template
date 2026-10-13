@@ -52,6 +52,32 @@ example by applying the Thrift patch) and lets users interact with it over a
 network must offer the modified source as well (AGPL-3.0 section 13). The
 Grafana provisioning files adapted from `supabase/supabase` remain Apache-2.0.
 
+## Sensor bridge (GPL-3.0-or-later)
+
+`docker/sensor-bridge/` is the optional Tapo sensor bridge (Compose profile
+`sensors`, see `docs/SENSORS.md`). It uses python-kasa, which is licensed under
+the GNU General Public License v3.0, so the bridge's own code in that directory
+is licensed **GPL-3.0-or-later** (complete text in
+`docker/sensor-bridge/LICENSE`), not MIT. The rest of this repository stays
+MIT: the bridge is a separate program that talks to the backend only over HTTP
+(the `ingest-sensor-readings` function through the gateway), and no other code
+here imports the bridge or python-kasa.
+
+python-kasa and its dependencies are not vendored. `docker/sensor-bridge/requirements.txt`
+pins them, and pip installs them from PyPI when the operator builds the
+installation's bridge image (`<project>-sensor-bridge`) on their own host. This
+repository redistributes no built image. An operator who distributes a built
+bridge image distributes python-kasa and the bridge, and must offer their
+complete corresponding source under the GPL (GPL-3.0 section 6), together with
+the licences of the other packages in the image. Running the bridge on one's
+own premises is not distribution.
+
+| Project | Version | Licence | Upstream |
+| --- | --- | --- | --- |
+| python-kasa | 0.10.2 (`python-kasa==0.10.2` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
+
+The other packages pinned in that file keep their own upstream licences.
+
 ## Referenced publisher images
 
 The Compose files and recipes reference these publisher images without
@@ -69,6 +95,7 @@ redistributing them. Versions are the ones pinned in
 | Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`) | MIT | https://github.com/gotenberg/gotenberg |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
 | Grafana | 13.2.3 (`grafana/grafana:13.2.3`) | AGPL-3.0 | https://github.com/grafana/grafana |
+| Sensor bridge base image: Python | 3.12-slim-bookworm (`python:3.12-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
 
 ## Maintained container source recipes (2026-09-22)
 

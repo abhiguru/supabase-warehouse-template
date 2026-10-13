@@ -60,6 +60,53 @@ The imported schema includes unexposed internal/legacy/admin functions.
 Do not grant blanket API execution to make an unsupported call work.
 See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining business, Storage and native acceptance.
 
+## Sensors (migration 74)
+
+The sensor bridge, not the app, writes readings (key minted with
+`scripts/sensor-ingest-key.sql`, stored hashed; guide:
+[SENSORS.md](SENSORS.md#the-ingest-contract)).
+
+`POST /functions/v1/ingest-sensor-readings` (sensor bridge only, no anon key or user token): `Authorization: Bearer <64 lowercase hex ingest key>`; body `{bridge:{id,version}, hub:{id,host,online,firmware}, readings:[{external_id,name,model,temperature,humidity,measured_at,battery_low,battery_percent,signal_level,report_interval_s,kind}]}`, at most 256 KiB and 500 readings. Answers: 200 `{success:true, accepted, duplicates, rejected, devices}`; 401 `Unauthorized` (key missing, malformed or not accepted); 400 `Invalid request` (body shape, or hub or readings refused by `record_sensor_batch`); 405; 503 `Ingestion unavailable` (database not configured, erroring or timing out after 15 s), which the bridge retries. Every answer has `Cache-Control: no-store`.
+
+What the app reads:
+
+- `get_sensor_polling_data(p_since_timestamp)`: same signature and envelope
+  (`success`, `poll_timestamp`, `devices[]`, `new_readings[]`, `dashboard`).
+  `is_stale`, `connectivity_status` (OFFLINE when the hub is offline, STALE,
+  ONLINE) and `battery_status` (LOW, OK, UNKNOWN) are now computed from
+  `sensor_status`; each device also carries `measured_at`, `temperature_at`,
+  `humidity_at`, `hub_online`, `battery_low`, `signal_level` and
+  `last_seen_at`. A temperature or humidity that was never reported is null,
+  not 0.
+- `get_sensor_history`: same signature, buckets on `measured_at`, averages
+  ignore nulls, a sample count per bucket, and period `1` (today, 5-minute
+  buckets).
+- `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
+  one device's status, its first reading and its hub. `data` also carries the
+  keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it
+  as the same device: `latest_temperature`, `latest_humidity`,
+  `latest_reading_timestamp`, `is_stale` and `earliest_reading_at` repeat
+  `temperature`, `humidity`, `measured_at`, `stale` and `first_reading_at`.
+- `update_sensor_device(p_device_id, p_device_name, p_location,
+  p_staleness_threshold_minutes)` (new; administrator only).
+- Table `sensor_latest` (one row per device), readable by administrator,
+  supervisor and staff, published to Realtime; the app subscribes to it and
+  refetches on a change. Customers and `anon` read no sensor table.
+- `capabilities.sensors` in `get-public-config` (from the state's
+  `instance.json`, set with `node scripts/set-capability.mjs`); the app shows
+  the Sensors screen only when it is true.
+
+A refusal by the guard is now an error, not an answer: migration 74 removed the
+`EXCEPTION WHEN OTHERS` handler of `get_sensor_polling_data` and
+`get_sensor_history`, so a caller without the role (a customer account) gets
+PostgREST's 403 with code `42501` instead of a 200 `{success:false}`; the app's
+`useReportQuery` treats `42501` as a refusal. `get_sensor_device` and
+`update_sensor_device` answer the same way. An unknown device or period is
+still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
+
+`record_sensor_reading` and `update_sensor` were dropped: they were granted to
+the service role only and nothing called them.
+
 ## Legacy and dormant functions
 
 Migration 71 (2026-10-13) removed the unused Tally accounting integration: the

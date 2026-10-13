@@ -111,6 +111,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_item_storage_prices',true,'no'),('find_or_create_item_storage_price',true,'no'),
  ('create_item_storage_price',true,'no'),('update_item_storage_price',true,'no'),('delete_item_storage_price',true,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
+ -- migration 74: one sensor
+ ('get_sensor_device',true,'no'),
  ('delete_grn_image',true,'no'),('delete_dispatch_image',true,'no'),
  -- administrators and supervisors only
  ('update_user_role',false,'no'),('update_user_status',false,'no'),
@@ -125,7 +127,10 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- migration 49: administrators only; the guard refuses a supervisor as well
  -- (tests/central_login.sql). operator_central_exchange is, like
  -- operator_verify_otp, granted to the service role alone and so not listed.
- ('clear_user_central_identity',false,'no');
+ ('clear_user_central_identity',false,'no'),
+ -- migration 74: a sensor's settings, administrators only; the guard refuses
+ -- a supervisor as well (section 5 and tests/sensor_ingest.sql)
+ ('update_sensor_device',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.
@@ -400,6 +405,8 @@ FROM (VALUES ('SELECT public.get_all_stock_summary()'),
   ('SELECT public.get_users_list()'),
   ('SELECT public.get_supervisors()')) s(statement);
 SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.get_sensor_history(%L::uuid,7)',:'sensor_id'))
+ AND pg_temp.ra_refused(format('SELECT public.get_sensor_device(%L::uuid)',:'sensor_id'))
+ AND pg_temp.ra_refused(format('SELECT public.update_sensor_device(%L::uuid,''Renamed'')',:'sensor_id'))
  AND pg_temp.ra_refused(format('SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,''monthly'')',:'item_id',:'alpha'))
  AND pg_temp.ra_refused(format('SELECT public.delete_grn_image(%L::uuid)',:'img_a1'::jsonb->>'image_id'))
  AND pg_temp.ra_refused(format('SELECT public.update_user_role(%L::uuid,''staff''::public.user_role)',:'managed_profile')),
@@ -498,6 +505,9 @@ SELECT pg_temp.ra_assert(public.get_sensor_polling_data()->>'success'='true'
  'staff read the sensor list: '||public.get_sensor_polling_data()::text);
 SELECT pg_temp.ra_assert(public.get_sensor_history(:'sensor_id'::uuid,7)->>'success'='true',
  'staff read a sensor''s history: '||public.get_sensor_history(:'sensor_id'::uuid,7)::text);
+SELECT pg_temp.ra_assert(public.get_sensor_device(:'sensor_id'::uuid)#>>'{data,device_name}'='Role Matrix Chamber'
+ AND pg_temp.ra_refused(format('SELECT public.update_sensor_device(%L::uuid,''Renamed'')',:'sensor_id')),
+ 'staff open one sensor and may not change it: '||public.get_sensor_device(:'sensor_id'::uuid)::text);
 -- Item pricing: read, and the write path of the pricing form. Staff can now
 -- change prices (material change, docs/STAFF_GRN_POLICY.md).
 SELECT public.get_item_storage_prices() AS staff_prices \gset
@@ -736,6 +746,10 @@ SELECT pg_temp.ra_assert(:'s_self_role'::jsonb->>'success'='false' AND :'s_self_
 SELECT pg_temp.ra_assert(pg_temp.ra_call(format('SELECT to_jsonb(public.assign_customer_to_user(''919888888933'',%L::uuid))',:'gamma'))->>'state'='42501'
  AND pg_temp.ra_call(format('SELECT to_jsonb(public.remove_customer_assignment(''919888888933'',%L::uuid))',:'gamma'))->>'state'='42501',
  'supervisor cannot change the own customer assignments');
+-- A sensor's settings are an administrator's (migration 74); reading one is not.
+SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.update_sensor_device(%L::uuid,''Renamed'')',:'sensor_id'))
+ AND public.get_sensor_device(:'sensor_id'::uuid)->>'success'='true',
+ 'supervisor reads a sensor and may not change it');
 -- Enrollment review stays with administrators.
 SELECT pg_temp.ra_assert(pg_temp.ra_call(format('SELECT public.operator_review_enrollment(%L::uuid,''reject'',NULL)',:'managed_profile'))::text
    ~ '(Administrator|42501|not authorized|denied)','supervisor cannot review enrollments: '

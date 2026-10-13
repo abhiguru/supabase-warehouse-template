@@ -20,6 +20,9 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // token must name).
   'central-exchange': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL',
     'CENTRAL_JWKS_FILE', 'CENTRAL_JWKS_JSON'],
+  // Sensor bridge batches: the RPC is called with the server key; the bridge's
+  // ingest key is checked by the database, not here.
+  'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
   'get-config': [...signedIn, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
   'generate-sample-pdf': [...signedIn, 'GOTENBERG_URL'],
   'generate-grn-pdf': documentPdf,

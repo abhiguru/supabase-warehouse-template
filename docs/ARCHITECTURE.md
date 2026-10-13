@@ -14,6 +14,7 @@ table from the rendered configuration).
               │  Kong :8000 ──▶ REST :3000   Realtime :4000   Storage :5000 │
               │            └──▶ Functions :9000 ──▶ Gotenberg :3000         │
               │  imgproxy :5001 (from Storage)      CUPS :631 (profile)     │
+              │  sensor-bridge ──▶ Kong (profile; polls hubs on the LAN)    │
               │  Prometheus, Alertmanager, exporters, Grafana (profile)     │
               └────────────────────┬────────────────────────────────────────┘
                  REST, Realtime, Storage, Postgres exporter, Grafana
@@ -27,12 +28,12 @@ table from the rendered configuration).
 
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | kong, rest, realtime, storage, imgproxy, functions, gotenberg, cups, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor, grafana | The gateway and everything it or a function calls; monitoring scrapes |
+| `default` | kong, rest, realtime, storage, imgproxy, functions, gotenberg, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor, grafana | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
 | `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter, grafana | Connections to PostgreSQL |
 | `admin` | db, meta, studio | postgres-meta and Studio, which run SQL without a login |
 
-Kong, the function runtime, Gotenberg, imgproxy, CUPS and Prometheus are on
-`default` only: they cannot open a connection to PostgreSQL, postgres-meta or
+Kong, the function runtime, Gotenberg, imgproxy, CUPS, the sensor bridge and
+Prometheus are on `default` only: they cannot open a connection to PostgreSQL, postgres-meta or
 Studio. Studio is on `admin` only, so its panels that call the API gateway do
 not work; it is kept for the metadata acceptance check. Only Kong publishes a
 host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed
@@ -60,3 +61,12 @@ Client → Kong → PostgREST → send_otp() → Twilio/MSG91
 Client → Kong → PostgREST → verify_otp_or_register() → JWT token
 Client → Kong (with JWT) → PostgREST → Data (RLS enforced)
 ```
+
+### Sensor readings
+```
+Tapo hubs (LAN) ◀── sensor-bridge ──▶ Kong :8000 ──▶ ingest-sensor-readings ──▶ record_sensor_batch
+   (poll 30 s)      (queue in volume)  (no user JWT;   (service key, ingest       → sensor_readings, sensor_latest,
+                                        ingest key)     key checked in SQL)          sensor_hubs → Realtime → app
+```
+The bridge is the optional `sensors` profile, or the same image as its own
+Compose project posting through the tunnel ([SENSORS.md](SENSORS.md)).

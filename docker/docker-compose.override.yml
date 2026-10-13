@@ -64,6 +64,14 @@ services:
   cups:
     logging: *default-logging
 
+  sensor-bridge:
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
   meta:
     logging: *default-logging
     deploy:

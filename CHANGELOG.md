@@ -1,5 +1,99 @@
 # Changelog
 
+## Unreleased — Tapo sensors through the template (2026-10-13)
+
+Tapo T310 temperature and humidity sensors on H200 hubs now reach this backend
+through the template itself, replacing the Home Assistant stack that posted to
+the legacy server. Guide: [docs/SENSORS.md](docs/SENSORS.md).
+
+**Operator action** (only where sensors are used; nothing changes elsewhere):
+apply migration 74 (the normal setup rerun does; it clears the legacy zero
+placeholders and prints NOTICE counts of what it cleared, merged or removed);
+mint an ingest key and keep it only in the bridge's private configuration
+(`compose.env`, or the standalone `sensor-bridge.env`):
+`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=main-bridge < scripts/sensor-ingest-key.sql`
+(prints the key once); set `SENSOR_BRIDGE_HUBS`, `TAPO_USERNAME`,
+`TAPO_PASSWORD` and `SENSOR_INGEST_KEY` in `config/compose.env`; start the
+bridge with `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`
+(or run the same image as its own Compose project); then
+`node scripts/set-capability.mjs sensors on`, `bash scripts/compose.sh restart
+functions`, and take a new `npm run db:backup` (an older backup can then only be
+restored with `db:restore-host`). A key is revoked with
+`UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<label>' AND revoked_at IS NULL`.
+
+- Migration 74 `sensor_ingest` adds sensor ingestion. `sensor_readings` gains
+  `measured_at` (when the bridge observed the value; the hub reports no time),
+  backfilled from `recorded_at`; temperature and humidity are now nullable (at
+  least one, each in range), legacy zero placeholders become NULL, and a
+  reading is stored once per sensor and time (`(device_id, measured_at)`
+  unique), so a resend is harmless. `sensor_devices` gains the hub child id
+  (`external_id`, 40 hex, stored upper case), hub, model, battery, signal,
+  report interval and `last_seen_at`. New `sensor_hubs`; new `sensor_latest`
+  with the newest value of each kind per sensor (RLS for administrator,
+  supervisor and staff, published over Realtime to them); and the view
+  `sensor_status`, which derives stale (nothing seen within the device's
+  threshold, 30 minutes) and offline (hub reported offline) when read.
+- Migration 74: `record_sensor_batch(p_key, p_hub, p_readings)`, service key
+  only and called by the edge function, checks a per-bridge ingest key
+  (SHA-256 in `warehouse_security.sensor_ingest_keys`, readable by no API
+  role), validates every reading and counts rejections by reason, accepts a
+  child id in either case, creates devices on first sight (names set once, so
+  renames survive), stores a heartbeat that carries values as a reading and
+  counts heartbeats by their `kind`, and moves `sensor_latest` only forward in
+  time. The two readers `get_sensor_polling_data` and `get_sensor_history` keep
+  their signatures and answers, now computed (status OFFLINE, STALE, ONLINE;
+  battery LOW, OK, UNKNOWN; nulls ignored instead of read as 0; per-bucket
+  sample counts); history gains a 1-day period (5-minute buckets). Their
+  `EXCEPTION WHEN OTHERS` handler is gone, so a refused caller now gets a
+  PostgREST `42501` error instead of `{success:false}` (the app's
+  `useReportQuery` treats it as a refusal). New `get_sensor_device` (staff and
+  above) and `update_sensor_device` (administrator). `record_sensor_reading` and
+  `update_sensor` are removed (service role only, never called). Readings are
+  kept 400 days (retention key `sensor_readings`).
+- Edge function `ingest-sensor-readings`: `POST` with the ingest key as bearer
+  (no user session), at most 256 KiB and 500 readings; 200 with accepted,
+  duplicate and rejected counts, 401 for a missing, malformed, wrong or revoked
+  key (a malformed one never reaches the database), 400 for a bad body shape
+  or a hub or readings refused by `record_sensor_batch`, 405, and 503 when the
+  database is not configured, errors or times out after 15 s (the bridge
+  retries). It is in the router's public set; its worker gets only
+  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; every answer has
+  `Cache-Control: no-store`, and its log lines carry a reason code only, never
+  the key or the body.
+- The bridge, `docker/sensor-bridge/` (Python 3.12, python-kasa 0.10.2): polls
+  each hub every 30 seconds, queues a reading on a change or every 15 minutes
+  as a heartbeat, keeps the queue and its change detector in SQLite in the
+  `sensor-bridge-data` volume, posts every 60 seconds with backoff, marks a hub
+  offline after three failed polls, and offers `--check-config`, `--once` and
+  `--dump`. Because the change detector persists, a second `--once` straight
+  after the first posts nothing (`posts=0`); the backend reports duplicates
+  only when the bridge re-sends a batch whose answer it did not get. It runs as the optional Compose service `sensor-bridge` (profile
+  `sensors`, `default` network only, fixed URL `http://kong:8000/functions/v1/ingest-sensor-readings`,
+  every variable optional so `compose config` is unchanged for installations
+  without it, non-root, all capabilities dropped, read-only root filesystem,
+  0.25 CPU / 128 MB), or as its
+  own Compose project (`docker-compose.standalone.yml`). `.env.example` has an
+  empty SENSORS block.
+- `scripts/set-capability.mjs <sensors|printing> <on|off>` changes one flag of
+  `public/instance.json` in place (staging file and rename, mode kept, every
+  other byte unchanged) and prints the restart and backup steps.
+- Checks: `npm run test:sensors` (`scripts/sensor-bridge-check.sh`, under the
+  operator lock: builds the image; `--check-config` exits 0 with fictional
+  values without printing them and 78 without any; the unit tests run inside
+  the image), also a step of CI `operator-install`; a new CI job `bridge`
+  (`compileall` and the unit tests on Python 3.12); `tests/sensor_ingest.sql`;
+  the function's handler tests; the network table and notice-version tests
+  cover the new service.
+- Licence: the bridge's code is **GPL-3.0-or-later** (`docker/sensor-bridge/LICENSE`)
+  because python-kasa is GPL-3.0; it is a separate program that talks to the
+  backend over HTTP, and the rest of the repository stays MIT.
+  `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` list python-kasa
+  0.10.2 and the Python 3.12-slim-bookworm base image. Distributing a built
+  bridge image carries the GPL source offer.
+- Not yet verified: the hub protocol on the facility's real H200 hubs, the
+  heartbeat against real T310 reporting, Realtime delivery to a staff phone,
+  and the profile started under Compose on an installation.
+
 ## Unreleased — report PDFs keep the screen's choices (2026-10-13)
 
 - `generate-report-pdf` takes three optional request fields (no migration): `invoicing` ('invoiced' | 'not_invoiced', GRN activity of one customer), `bucket` ('0-120' | '121-240' | '241-364' | 'over-364', stock aging of one customer) and `search` (trimmed text of at most 80 characters, no control characters; item stock summary). The first two drop the other rows after the RPC answered and work the summary out from the rows listed, as `status` does; the search goes to `get_item_wise_stock_list` as `p_search_query`. Each prints a line under the title ("Invoicing: Not invoiced", "Stock age: Over 364 days", "Search: “cumin”"); `invoicing` and `bucket` are echoed in the answer's `document`, the search never is. A field on another report, without the customer, or with another value is refused with 400 and a fixed message. Both stock aging PDFs now label their oldest-stock figure "Lots over 364 days" (it is a count of stock lines; it said "Items over 364 days"). The matching app change ships separately; against a server without this change the app asks before sharing the report without the choice (the old server answers "Unknown field in report request").
