@@ -33,24 +33,30 @@ recorded separately before anyone is told the screen works.
 ## How a reading travels
 
 ```
- T310 ──▶ H200 hub ◀── poll every 30 s ── sensor-bridge ── post every 60 s ──▶ Kong ──▶ ingest-sensor-readings
+ T310 ──▶ H200 hub ◀── poll every 5 min ─ sensor-bridge ── post every 60 s ──▶ Kong ──▶ ingest-sensor-readings
                                           (queue in /data)                          │ service key
                                                                                     ▼
                          sensor_readings (history) ◀── record_sensor_batch ──▶ sensor_latest ──▶ Realtime ──▶ app
                                                                           └──▶ sensor_hubs
 ```
 
-- **Change or heartbeat.** The bridge queues a reading when a value changes, the
-  battery flag flips, or 15 minutes (`SENSOR_BRIDGE_HEARTBEAT_SECONDS=900`)
-  have passed since the last one for that sensor. A heartbeat carries the
-  unchanged values (`kind: "heartbeat"`) and is stored as a reading, so the
-  history has a point at least every 15 minutes. Its change detector is stored
-  in the volume, so a restart sends nothing new.
+- **Sampled every 5 minutes.** The bridge polls each hub every 5 minutes
+  (`SENSOR_BRIDGE_POLL_SECONDS=300`) and queues a reading when a value changes,
+  the battery flag flips, or 5 minutes (`SENSOR_BRIDGE_HEARTBEAT_SECONDS=300`)
+  have passed since the last one for that sensor. With both at 300 every poll
+  queues one reading per sensor, a change or a heartbeat, so each sensor has
+  one row per 5 minutes (about 288 a day, about 26,000 in the 90 days kept). A
+  heartbeat carries the unchanged values (`kind: "heartbeat"`) and is stored as
+  a reading. Polls are about 5 minutes apart, not on the clock's 5-minute
+  marks. Its change detector is stored in the volume, so a restart sends
+  nothing new until the next sample falls due.
 - **Stale.** A sensor is stale when `last_seen_at` is older than its
-  `staleness_threshold_minutes`: 30 minutes, two missed heartbeats.
+  `staleness_threshold_minutes`: 30 minutes by default, about six missed
+  5-minute samples, so a restart or a failed poll or two does not flag it.
   `sensor_status` computes `stale` and `values_stale` at read time; nothing is
   written when a sensor goes quiet, so the app recomputes it from the clock.
-- **Hub offline.** After three failed polls of a hub the bridge sends heartbeats
+- **Hub offline.** After three failed polls of a hub (about 10 minutes with the
+  5-minute poll) the bridge sends heartbeats
   with `online=false` for it and keeps reconnecting with backoff; the app shows
   its sensors as OFFLINE.
 - **Delivery.** Readings wait in an SQLite queue (`/data/bridge.sqlite3` in the
@@ -61,8 +67,10 @@ recorded separately before anyone is told the screen works.
   Duplicates appear only when the bridge re-sends a batch whose answer it did
   not get (a timeout or a lost 200); a bridge that runs normally reports
   `duplicates=0`.
-- **Retention.** `sensor_readings` older than 400 days are removed by the
-  database retention job (key `sensor_readings`, `npm run retention:preview`).
+- **Retention.** `sensor_readings` older than 90 days (3 months; migration 75,
+  400 days before it) are removed by the database retention job (key
+  `sensor_readings`, `npm run retention:preview`, deleted at the next
+  `retention:apply`).
 
 ## The ingest contract
 
@@ -156,7 +164,7 @@ configuration changed, and `stop.sh` stops it with everything else.
    | `TAPO_USERNAME`, `TAPO_PASSWORD` | the Tapo account the hubs were set up with |
    | `SENSOR_INGEST_KEY` | the key from step 2 |
    | `SENSOR_BRIDGE_ID` | optional name shown in `sensor_hubs.bridge_id` (default `sensor-bridge`) |
-   | `SENSOR_BRIDGE_POLL_SECONDS`, `_POST_SECONDS`, `_HEARTBEAT_SECONDS`, `_MAX_BATCH`, `_LOG_LEVEL` | optional: 30, 60, 900, 200, INFO |
+   | `SENSOR_BRIDGE_POLL_SECONDS`, `_POST_SECONDS`, `_HEARTBEAT_SECONDS`, `_MAX_BATCH`, `_LOG_LEVEL` | optional: 300, 60, 300, 200, INFO (poll and heartbeat 300: sampled every 5 minutes) |
    | `SENSOR_BRIDGE_REBOOT_CRON` | optional five-field cron in UTC for a hub reboot, e.g. `30 21 * * 6` (Saturday 21:30 UTC, Sunday 03:00 IST); empty = never |
 
    Compose reads this file with variable substitution: a password that
