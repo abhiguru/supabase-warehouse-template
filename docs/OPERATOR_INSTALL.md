@@ -164,8 +164,14 @@ state directory, takes the per-state operator lock, verifies the configuration
 and gateway port (`doctor --preflight`), starts only the database, applies the
 migration ledger, configures auth, SMS and storage, bootstraps the
 administrator, starts every service with `--wait` and runs the local doctor.
-The gateway listens on `127.0.0.1:18000` only; database, Studio, CUPS and
-monitoring are never published.
+The gateway listens on `127.0.0.1:18000` only; database, Studio, CUPS,
+the sensor bridge and monitoring are never published.
+
+Optional services are Compose profiles that setup does not start:
+`monitoring`, `printing`, `pooler` and `sensors` (the Tapo sensor bridge; set
+up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation),
+then `node scripts/set-capability.mjs sensors on` and a new `db:backup`). A new
+state's `compose.env` carries the `SENSOR_*` and `TAPO_*` lines empty.
 
 Running the same command again is safe: a rerun preserves identity, keys,
 database and stored files (see [rerun and upgrade](#rerun-and-upgrade)). Setup
@@ -590,7 +596,7 @@ run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`,
 `db:backup`, `db:restore`, `backup-disk.sh sync`, `backup-usb.sh run`,
 `test:recovery`, `retention:*`, `test:gateway-dns`, `test:pooler`,
-`test:monitoring`, `test:cups`, and `scripts/migrate.sh` when run by itself)
+`test:monitoring`, `test:cups`, `test:sensors`, and `scripts/migrate.sh` when run by itself)
 takes an exclusive per-state lock on `config/operator.lock` before touching
 Docker. A second command for the same state fails immediately with "Another
 operator command ... is running for this state." Wait for the first to finish;
@@ -690,7 +696,8 @@ encrypted off-host destination; the acceptance ledger keeps encrypted off-host
 custody, schedule and retention open. The `db-config` Docker volume (PostgreSQL
 custom configuration and the pgsodium root key) is not part of the backup and
 is preserved by `stop.sh`; never use `down -v` on a production instance.
-Optional CUPS and monitoring volumes are not in this core backup.
+Optional CUPS, monitoring and sensor bridge volumes are not in this core
+backup (the bridge's volume holds only readings not yet delivered).
 
 `npm run db:verify-restore -- /path/to/backup` accepts v1 to v5 backups. It
 checks every checksum and the signature first (see [Backup key](#backup-key)),
@@ -1198,15 +1205,18 @@ different warehouse.
 
 `rotate-keys.sh` replaces the JWT secret and the two API keys derived from it.
 `compose.env`, and so every unencrypted backup, holds more. After a backup
-medium was exposed, these stay valid until you change them by hand. None of
-them is reachable from the internet through the tunnel: they matter to someone
-who also reaches the host or its network.
+medium was exposed, these stay valid until you change them by hand. Except
+`SENSOR_INGEST_KEY`, which posts sensor readings through the tunnel and so
+must be replaced at once, none of them is usable from the internet through the
+tunnel: they matter to someone who also reaches the host or its network.
 
 | Secret | What it opens | How to replace it |
 | --- | --- | --- |
 | `DASHBOARD_PASSWORD` | Nothing in this release: it is passed to the gateway container, but the gateway configuration (`docker/kong.yml`) has no route that asks for it. | Manual, below, so that a later route never trusts a disclosed value. |
 | `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
 | `GRAFANA_ADMIN_PASS` | Grafana (monitoring profile). | Manual, below; Grafana keeps its own copy. |
+| `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
+| `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | Every database login, superuser included, from inside the Compose network or the host. | No supported procedure yet; see below. |
 | `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Realtime and pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
@@ -1293,7 +1303,7 @@ start then replaces only the containers whose image changed. What to expect:
   services stay as they are. An image that did finish building before the
   failure is used the next time its service is started, so run setup again
   when the network is back rather than leaving the installation half way.
-- Optional services (`monitoring`, `printing`, `pooler`) are rebuilt only if
+- Optional services (`monitoring`, `printing`, `pooler`, `sensors`) are rebuilt only if
   this installation has a container of them. Setup and `start.sh` start only
   the core services, so after their own start they replace the optional
   services that are running and whose image or configuration changed. A

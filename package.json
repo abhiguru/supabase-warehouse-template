@@ -23,6 +23,7 @@
     "test:grafana": "bash scripts/grafana-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
     "test:cups": "bash scripts/cups-check.sh",
+    "test:sensors": "bash scripts/sensor-bridge-check.sh",
     "scan:images": "bash scripts/scan-images.sh",
     "retention:preview": "bash scripts/retention.sh preview",
     "retention:apply": "bash scripts/retention.sh apply",

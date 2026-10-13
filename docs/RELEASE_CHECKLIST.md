@@ -330,6 +330,15 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 - [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
       Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
       and WebSocket Realtime remain unverified and default-disabled.
+      2026-10-13: sensors now have their own ingestion path (migration 74, `ingest-sensor-readings`,
+      the `sensors` profile; [SENSORS.md](SENSORS.md)). The `sensors` capability stays `false` in a new
+      manifest; turn it on per installation with `node scripts/set-capability.mjs sensors on` only after
+      that installation's hubs passed `--once --dump` and an hour of readings, and take `db:backup` after.
+- [ ] Before a release that changes `docker/sensor-bridge/`: `npm run test:sensors` passes on an
+      installed state (CI `operator-install` runs it; the `bridge` job runs the unit tests), the GPL-3.0-or-later
+      notice rows for the bridge (`THIRD_PARTY_NOTICES.md`, `ATTRIBUTION_REVIEW.md`) name the Python
+      base image and python-kasa versions in use (`tests/gateway-config.test.mjs` checks both), and
+      `docker/sensor-bridge/LICENSE` is present.
 - [x] Publish matching `v0.2.0-demo` source-only prereleases after protected PR/main
       CI, exact-tag validation and final source/history scans pass. Record both
       final commit IDs and limitations in the release notes; attach no native binaries.

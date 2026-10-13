@@ -203,6 +203,9 @@ test('publisher images are pinned by digest and the notices name the versions in
     Studio: base('studio', 'supabase/studio'),
     Gotenberg: base('gotenberg', 'gotenberg/gotenberg'),
     Grafana: base('grafana', 'grafana/grafana'),
+    // The sensor bridge (GPL-3.0-or-later): its base image and the GPL library it installs.
+    Python: base('sensor-bridge', 'python'),
+    'python-kasa': /^python-kasa==([0-9][0-9.]*)\b/m.exec(readFileSync(new URL('../docker/sensor-bridge/requirements.txt', import.meta.url), 'utf8'))?.[1],
   };
   for (const [name, version] of Object.entries(versions)) {
     assert.ok(version, `${name} version was not read`);

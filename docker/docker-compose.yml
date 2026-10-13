@@ -482,6 +482,48 @@ services:
       retries: 3
       start_period: 40s
 
+  # Tapo sensor bridge — start with: bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge
+  # Polls the facility's Tapo hubs on the LAN and posts readings to the
+  # ingest-sensor-readings function through the gateway (docs/SENSORS.md).
+  # GPL-3.0-or-later code in its own directory (docker/sensor-bridge/LICENSE).
+  # On `default` only: it calls Kong and nothing else in the project, and it
+  # cannot reach the database, postgres-meta or Studio. Every variable has a
+  # default, so `compose config` keeps working on an installation that never
+  # set them; an unconfigured bridge exits 78 when started.
+  sensor-bridge:
+    build:
+      context: ./sensor-bridge
+    restart: unless-stopped
+    profiles: ["sensors"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # As in docker-compose.standalone.yml: only /data (queue, change detector,
+    # health file) and /tmp are writable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - sensor-bridge-data:/data
+    environment:
+      SENSOR_BRIDGE_HUBS: ${SENSOR_BRIDGE_HUBS:-}
+      TAPO_USERNAME: ${TAPO_USERNAME:-}
+      TAPO_PASSWORD: ${TAPO_PASSWORD:-}
+      SENSOR_INGEST_URL: http://kong:8000/functions/v1/ingest-sensor-readings
+      SENSOR_INGEST_KEY: ${SENSOR_INGEST_KEY:-}
+      SENSOR_BRIDGE_ID: ${SENSOR_BRIDGE_ID:-}
+      SENSOR_BRIDGE_POLL_SECONDS: ${SENSOR_BRIDGE_POLL_SECONDS:-30}
+      SENSOR_BRIDGE_POST_SECONDS: ${SENSOR_BRIDGE_POST_SECONDS:-60}
+      SENSOR_BRIDGE_HEARTBEAT_SECONDS: ${SENSOR_BRIDGE_HEARTBEAT_SECONDS:-900}
+      SENSOR_BRIDGE_REBOOT_CRON: ${SENSOR_BRIDGE_REBOOT_CRON:-}
+      SENSOR_BRIDGE_MAX_BATCH: ${SENSOR_BRIDGE_MAX_BATCH:-200}
+      SENSOR_BRIDGE_LOG_LEVEL: ${SENSOR_BRIDGE_LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-m", "sensor_bridge.health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   # Gotenberg - HTML to PDF conversion (Chromium-based)
   gotenberg:
     build:
@@ -508,6 +550,7 @@ services:
 volumes:
   db-config:
   cups-spool:
+  sensor-bridge-data:
 
 # Three project-scoped networks; services resolve each other by DNS name only
 # on a network they share (tests/compose-networks.test.mjs holds the table).

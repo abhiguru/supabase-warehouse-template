@@ -108,6 +108,25 @@ bash scripts/compose.sh --profile printing exec -T cups curl -f http://localhost
 Setup, the printer queue and the 503 answer of the print routes are described
 in [PRINTING.md](PRINTING.md).
 
+## Sensors show no data
+
+Sensors are an optional profile (`sensors`); the bridge polls the Tapo hubs
+and posts to the `ingest-sensor-readings` function:
+
+```bash
+bash scripts/compose.sh --profile sensors ps sensor-bridge
+bash scripts/compose.sh --profile sensors logs --tail 100 sensor-bridge
+bash scripts/compose.sh --profile sensors run --rm sensor-bridge --check-config
+bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once --dump
+```
+
+The log has one line per event (`event=config_error`, `auth_refused`,
+`hub_offline`, `post_failed`, ...) and never the password or the key. Exit
+code 78 means a missing or invalid variable; a 401 means the ingest key is
+wrong or revoked. When the app has no Sensors screen at all, the `sensors`
+capability is off or the `functions` service was not restarted after
+`set-capability`. Details: [SENSORS.md](SENSORS.md#troubleshooting).
+
 ## PDF generation fails
 
 ```bash

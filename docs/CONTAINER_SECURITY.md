@@ -550,8 +550,8 @@ SQL. The project now has three networks; the table is in
 - `db` is reachable from the services that hold a database connection (rest,
   realtime, storage, supavisor, the disabled auth service, postgres-exporter,
   grafana) and from the admin pair. Kong, the function runtime, Gotenberg,
-  imgproxy, CUPS, Prometheus, Alertmanager, node-exporter and cAdvisor cannot
-  connect to it.
+  imgproxy, CUPS, the sensor bridge, Prometheus, Alertmanager, node-exporter
+  and cAdvisor cannot connect to it.
 - Operator probes follow the same rule: `health-check.sh` and
   `scripts/gateway-dns-check.sh` call the gateway from the `storage` container
   (they used Studio), and postgres-meta from Studio.
@@ -576,6 +576,46 @@ What this does not do:
 Each install now creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
+
+## Sensor bridge (2026-10-13)
+
+The optional `sensor-bridge` service (profile `sensors`, [SENSORS.md](SENSORS.md))
+is the one container that talks to devices on the facility LAN. What limits it:
+
+- **Network:** `default` only, so it reaches Kong and cannot open a connection
+  to PostgreSQL, postgres-meta or Studio (`tests/compose-networks.test.mjs`).
+  It publishes no port. Its only call into the project is
+  `http://kong:8000/functions/v1/ingest-sensor-readings`, fixed in Compose
+  rather than taken from a variable. Outbound it needs the hubs' LAN addresses.
+- **Credential:** an ingest key of its own that opens only that function; the
+  database keeps its SHA-256 and checks it inside `record_sensor_batch`
+  (service role only). Revoking it stops the bridge without touching any other
+  key. The bridge never holds the service key or a user session.
+- **Process:** non-root (uid 10001 in the image), `cap_drop: [ALL]`,
+  `no-new-privileges`, limited to 0.25 CPU and 128 MB, logs bounded like every
+  service. The log formatter replaces the Tapo password, the ingest key and any
+  URL query with `***`; `scripts/sensor-bridge-check.sh` fails if the
+  configuration check prints a fictional password or key.
+- **Image:** `python:3.12-slim-bookworm` pinned by digest in
+  `docker/sensor-bridge/Dockerfile`; python-kasa and its dependencies pinned in
+  `requirements.txt` and updated by Dependabot (`pip`). The image is built on
+  the operator's host, like the other recipes.
+- **Read-only root filesystem** (`read_only: true`, `/tmp` a tmpfs), as in the
+  standalone project: the queue, change detector and health file are in the
+  `/data` volume. Tried with the built image (`docker run --read-only`):
+  `--check-config` and a `--once` against an unreachable hub write
+  `/data/bridge.sqlite3` and nothing else.
+- **Not done:** the Tapo password and the
+  ingest key are container environment variables, readable with
+  `docker inspect` by anyone who can use Docker on the host, like every other
+  secret of the installation.
+
+`ingest-sensor-readings` is in the router's public set: the router does not check a user token for it, and the function checks only the shape of the bridge's ingest key (64 hex). The key itself is checked inside `record_sensor_batch` against a SHA-256 in `warehouse_security.sensor_ingest_keys`, which PostgREST cannot reach. Its worker gets only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. It is subject to the gateway's functions limits (10 MB payload, 100 a minute per IP), and its log lines carry a reason code only, never the key or the body.
+
+`cap_drop` and `no-new-privileges` are exercised by `npm run test:sensors`,
+which runs the image with the same flags; the Compose service itself is not
+started in CI, so the first `up` of the profile on an installation is its first
+run under Compose.
 
 ## Edge function modules (2026-10-12)
 
@@ -1047,4 +1087,5 @@ step that fails points at the change.
 | Pooler tenant with one user | tenant creation succeeds | Pooler authentication |
 | Studio and CUPS `apt-get upgrade` | both images build | setup (Studio), CUPS startup |
 | Actions pinned to commits | the hashes resolve | every job |
+| Sensor bridge service (profile `sensors`, `cap_drop: [ALL]`, `no-new-privileges`, read-only root, `default` network only) | the bridge starts under Compose, reaches the hubs and posts through Kong | none: `npm run test:sensors` runs the image with the same flags but without Compose or hubs; the first `up` on an installation is the first run |
 

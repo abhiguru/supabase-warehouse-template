@@ -1,0 +1,33 @@
+# The sensor bridge as its own Compose project, outside the warehouse stack (README.md,
+# "Standalone run"). Copy this file as docker-compose.yml into a private folder together
+# with sensor-bridge.env (from sensor-bridge.env.example, mode 600), and set
+# SENSOR_BRIDGE_SOURCE in that folder's .env to the path of docker/sensor-bridge.
+name: sensor-bridge
+services:
+  sensor-bridge:
+    build:
+      context: ${SENSOR_BRIDGE_SOURCE:-.}
+    restart: unless-stopped
+    env_file:
+      - sensor-bridge.env
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+volumes:
+  data:
