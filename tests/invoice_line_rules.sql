@@ -121,25 +121,25 @@ SELECT :'header'::jsonb || jsonb_build_object('gr_id',:'grn_c','gr_no','RULC') A
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(warehouse_security.active_role()='staff','actual staff role');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-7.5}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'one-argument save: negative labour rate refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-100}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: negative tax refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":100.01}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: tax above 100 refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'one-argument save: negative charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'one-argument save: absurd charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'one-argument save: absurd labour rate refused');
-SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)) AS three_charge \gset
+SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)) AS three_charge \gset
 SELECT pg_temp.rule_assert(:'three_charge'::jsonb->>'success'='false','three-argument save: negative charge refused: ' || :'three_charge');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-2}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'three-argument save: negative labour rate refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-1}'::jsonb)),'Invoice line tax must be between 0 and 100'),'three-argument save: negative tax refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'three-argument save: absurd labour rate refused');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE customer_id=:'customer_id'::uuid),'refused saves leave no invoice');
@@ -149,7 +149,7 @@ SELECT pg_temp.rule_assert((SELECT invoiced IS NOT TRUE FROM public.goodsreceive
 -- discount, so no discount record either. Since migration 48 staff give a
 -- reason for a zero charge (tests/zero_charge_reason.sql).
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041,"zero_charge_reason":"Nothing to charge"}'::jsonb,
+SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261041,"zero_charge_reason":"Nothing to charge"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)) AS zero \gset
 SELECT pg_temp.rule_assert(:'zero'::jsonb->>'success'='true','one-argument save: zero rates accepted: ' || :'zero');
 SELECT (:'zero'::jsonb->>'invoice_id') AS zero_invoice \gset
@@ -161,9 +161,9 @@ SELECT pg_temp.rule_assert((SELECT invoiced FROM public.goodsreceived WHERE id=:
 -- 2. The receipt is invoiced, so a second invoice under a new number is
 -- refused on both save paths, as staff.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261042}'::jsonb,:'a_items'::jsonb),
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261042}'::jsonb,:'a_items'::jsonb),
  'GRN is already invoiced'),'one-argument save: an invoiced receipt is refused');
-SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261042}'::jsonb,:'a_items'::jsonb) AS second_three \gset
+SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261042}'::jsonb,:'a_items'::jsonb) AS second_three \gset
 SELECT pg_temp.rule_assert(:'second_three'::jsonb->>'success'='false' AND :'second_three'::jsonb->>'error'='GRN is already invoiced'
  AND :'second_three'::jsonb->>'error_code'='WH409','three-argument save: an invoiced receipt is refused: ' || :'second_three');
 RESET ROLE;
@@ -171,9 +171,9 @@ RESET ROLE;
 -- invoice's back, a line that is on a live invoice is still refused, alone too.
 UPDATE public.goodsreceived SET invoiced=false WHERE id=:'grn_a'::uuid;
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261042}'::jsonb,:'a_items'::jsonb),
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261042}'::jsonb,:'a_items'::jsonb),
  'A dispatch line is already on another invoice'),'one-argument save: a line on another invoice is refused');
-SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261042}'::jsonb,:'a_items'::jsonb) AS line_three \gset
+SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261042}'::jsonb,:'a_items'::jsonb) AS line_three \gset
 SELECT pg_temp.rule_assert(:'line_three'::jsonb->>'success'='false' AND :'line_three'::jsonb->>'error'='A dispatch line is already on another invoice',
  'three-argument save: a line on another invoice is refused: ' || :'line_three');
 RESET ROLE;
@@ -189,7 +189,7 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(public.delete_invoice(:'zero_invoice'::uuid)->>'success'='true','administrator deletes the zero invoice');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261043}'::jsonb,:'a_items'::jsonb) AS again \gset
+SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":261043}'::jsonb,:'a_items'::jsonb) AS again \gset
 SELECT pg_temp.rule_assert(:'again'::jsonb->>'success'='true','the receipt is invoiced again after the delete: ' || :'again');
 SELECT (:'again'::jsonb->>'invoice_id') AS invoice_a \gset
 RESET ROLE;
@@ -213,14 +213,14 @@ SELECT public.generate_invoice_data_for_grn_with_pricing(p_gr_id=>:'grn_c'::uuid
 SELECT pg_temp.rule_assert(:'preview_c'::jsonb->>'success'='true' AND (:'preview_c'::jsonb#>>'{rows,0,no_of_days}')::int=30
  AND (:'preview_c'::jsonb#>>'{rows,0,duration}')::numeric=1 AND (:'preview_c'::jsonb#>>'{totals,grand_total}')::numeric=74,
  'preview: 30 days, one period, total 74: ' || (:'preview_c'::jsonb->'totals')::text);
-SELECT pg_temp.rule_save3(:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb) AS saved_c \gset
+SELECT pg_temp.rule_save3(:'c_header'::jsonb || '{"inv_no":261044}'::jsonb,:'c_items'::jsonb) AS saved_c \gset
 SELECT pg_temp.rule_assert(:'saved_c'::jsonb->>'success'='true','three-argument save of RULC: ' || :'saved_c');
 SELECT (:'saved_c'::jsonb->>'invoice_id') AS invoice_c \gset
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT no_of_days=30 AND duration=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_c'::uuid),'three-argument save: 30 days, one period');
 SELECT pg_temp.rule_assert((SELECT total=74 AND tax_amount=4 AND labour=20 FROM public.invoice WHERE id=:'invoice_c'::uuid),'three-argument save: total 74');
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":20261044,"notes":"edited"}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit of RULC');
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":261044,"notes":"edited"}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit of RULC');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT no_of_days=30 AND duration=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_c'::uuid)
  AND (SELECT total=74 AND notes='edited' FROM public.invoice WHERE id=:'invoice_c'::uuid),'edit: 30 days, one period, total 74');
@@ -229,7 +229,7 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(public.delete_invoice(:'invoice_c'::uuid)->>'success'='true','administrator deletes the RULC invoice');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.rule_save1(:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb) AS saved_c1 \gset
+SELECT pg_temp.rule_save1(:'c_header'::jsonb || '{"inv_no":261044}'::jsonb,:'c_items'::jsonb) AS saved_c1 \gset
 SELECT pg_temp.rule_assert(:'saved_c1'::jsonb->>'success'='true','one-argument save of RULC: ' || :'saved_c1');
 SELECT (:'saved_c1'::jsonb->>'invoice_id') AS invoice_c \gset
 RESET ROLE;
@@ -239,7 +239,7 @@ SELECT pg_temp.rule_assert((SELECT no_of_days=30 AND duration=1 FROM public.invo
 -- (19:00 UTC on 1 May) is 31 days after 1 April, so 1.5 periods.
 UPDATE public.dispatch SET disp_date='2026-05-01T19:00:00Z' WHERE disp_no='RULC1';
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit after the dispatch date moved');
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_c'::uuid,:'c_header'::jsonb || '{"inv_no":261044}'::jsonb,:'c_items'::jsonb)->>'success'='true','edit after the dispatch date moved');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT no_of_days=31 AND duration=1.5 FROM public.invoice_trl WHERE invoice_id=:'invoice_c'::uuid)
  AND (SELECT total=100 FROM public.invoice WHERE id=:'invoice_c'::uuid),'00:30 on 2 May in India counts as 2 May: 31 days, total 100');
@@ -247,13 +247,13 @@ SELECT pg_temp.rule_assert((SELECT no_of_days=31 AND duration=1.5 FROM public.in
 -- 1 again, on the edit path: rates out of range are refused and the invoice
 -- keeps its lines and total; a negative discount is still a surcharge.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"notes":"must roll back"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"notes":"must roll back"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'edit: negative charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"notes":"must roll back"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"notes":"must roll back"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-500}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'edit: negative labour rate refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"notes":"must roll back"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"notes":"must roll back"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-100}'::jsonb)),'Invoice line tax must be between 0 and 100'),'edit: negative tax refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"notes":"must roll back"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"notes":"must roll back"}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'edit: absurd charge refused');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 AND notes IS DISTINCT FROM 'must roll back' FROM public.invoice WHERE id=:'invoice_a'::uuid)
@@ -262,7 +262,7 @@ SELECT pg_temp.rule_assert((SELECT total=998 AND notes IS DISTINCT FROM 'must ro
 -- The discount guard of migration 24 is unchanged.
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || '{"inv_no":20261043,"discount":5000,"discount_reason":"Too much"}'::jsonb,:'a_items'::jsonb),'Discount exceeds the invoice amount'),
+ :'a_header'::jsonb || '{"inv_no":261043,"discount":5000,"discount_reason":"Too much"}'::jsonb,:'a_items'::jsonb),'Discount exceeds the invoice amount'),
  'a discount above the invoice amount is still refused');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice_discount_history),'a refused discount leaves no history row');
@@ -270,10 +270,10 @@ SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice_discount_histo
 -- 4. Discount changes, as staff. A surcharge of 50 needs a reason like any
 -- other change; given one it is saved and the total rises to 1048.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"discount":-50}'::jsonb,:'a_items'::jsonb),
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"discount":-50}'::jsonb,:'a_items'::jsonb),
  'A reason is required for an invoice discount'),'staff surcharge without a reason refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || '{"inv_no":20261043,"discount":-50,"discount_reason":"Late collection surcharge"}'::jsonb,:'a_items'::jsonb)->>'success'='true',
+ :'a_header'::jsonb || '{"inv_no":261043,"discount":-50,"discount_reason":"Late collection surcharge"}'::jsonb,:'a_items'::jsonb)->>'success'='true',
  'a negative discount is still accepted as a surcharge');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=1048 AND discount=-50 AND discount_reason='Late collection surcharge' AND discount_set_by=:'staff_profile'::uuid
@@ -282,20 +282,20 @@ SELECT pg_temp.rule_assert((SELECT total=1048 AND discount=-50 AND discount_reas
 -- tab and newline, no-break space, zero-width space, ideographic space.
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || jsonb_build_object('inv_no',20261043,'discount',10,'discount_reason',blank.reason),:'a_items'::jsonb),
+ :'a_header'::jsonb || jsonb_build_object('inv_no',261043,'discount',10,'discount_reason',blank.reason),:'a_items'::jsonb),
  'A reason is required for an invoice discount'),'white-space-only reason refused for staff: ' || blank.label)
  FROM (VALUES ('spaces','   '),('tab and newline',E'\t\n\r'),('no-break space',U&'\00A0'),('zero-width space',U&'\200B'),
   ('ideographic space',U&'\3000'),('a mix',U&' \00A0\2003\200B\FEFF\2060 ')) AS blank(label,reason);
 -- A real reason is kept without the surrounding white space.
 SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || jsonb_build_object('inv_no',20261043,'discount',10,'discount_reason',U&' \00A0Damaged bags\200B '),:'a_items'::jsonb)->>'success'='true',
+ :'a_header'::jsonb || jsonb_build_object('inv_no',261043,'discount',10,'discount_reason',U&' \00A0Damaged bags\200B '),:'a_items'::jsonb)->>'success'='true',
  'staff discount with a reason');
 -- An edit that keeps the discount adds nothing to the history.
 SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || '{"inv_no":20261043,"discount":10,"notes":"same discount"}'::jsonb,:'a_items'::jsonb)->>'success'='true','edit keeping the discount');
+ :'a_header'::jsonb || '{"inv_no":261043,"discount":10,"notes":"same discount"}'::jsonb,:'a_items'::jsonb)->>'success'='true','edit keeping the discount');
 -- The administrator removes the discount without giving a reason.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"discount":0}'::jsonb,:'a_items'::jsonb)->>'success'='true',
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"discount":0}'::jsonb,:'a_items'::jsonb)->>'success'='true',
  'administrator removes the discount');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 AND discount=0 AND discount_reason IS NULL AND discount_set_by=:'admin_profile'::uuid
@@ -308,7 +308,7 @@ SELECT pg_temp.rule_assert((SELECT jsonb_agg(jsonb_build_array(h.old_discount,h.
   jsonb_build_array(-50,10,'Damaged bags',:'staff_profile','staff'),
   jsonb_build_array(10,0,NULL,:'admin_profile','admin')),
  'three changes, three history rows: ' || COALESCE((SELECT jsonb_agg(to_jsonb(h) ORDER BY h.id)::text FROM public.invoice_discount_history h),'none'));
-SELECT pg_temp.rule_assert((SELECT count(*)=3 AND bool_and(inv_no=20261043 AND inv_fin_year=2026 AND customer_id=:'customer_id'::uuid AND changed_at IS NOT NULL)
+SELECT pg_temp.rule_assert((SELECT count(*)=3 AND bool_and(inv_no=261043 AND inv_fin_year=2026 AND customer_id=:'customer_id'::uuid AND changed_at IS NOT NULL)
  FROM public.invoice_discount_history),'history rows carry the invoice number and customer, and nothing else was written');
 -- Each row keeps the author's name as it was at the change (migration 48), so
 -- the record still names the person after the account is renamed or deleted.
@@ -320,18 +320,18 @@ SELECT pg_temp.rule_assert((SELECT array_agg(h.changed_by_name ORDER BY h.id) FR
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 -- Without a reason staff cannot give one on either save path, and nothing is stored.
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'b_header'::jsonb || '{"inv_no":261045,"discount":-25}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)),'A reason is required for an invoice discount'),
  'one-argument save: staff discount on a new invoice without a reason refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"  "}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":261045,"discount":-25,"discount_reason":"  "}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)),'A reason is required for an invoice discount'),
  'three-argument save: staff discount on a new invoice with a blank reason refused');
 RESET ROLE;
-SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=20261045)
+SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_no=261045)
  AND (SELECT count(*)=3 FROM public.invoice_discount_history),'the refused saves stored no invoice and no history row');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"discount_reason":"Handling","zero_charge_reason":"Handling only"}'::jsonb,
+SELECT pg_temp.rule_save3(:'b_header'::jsonb || '{"inv_no":261045,"discount":-25,"discount_reason":"Handling","zero_charge_reason":"Handling only"}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb)) AS saved_b \gset
 SELECT pg_temp.rule_assert(:'saved_b'::jsonb->>'success'='true','three-argument save: zero rates accepted: ' || :'saved_b');
 SELECT (:'saved_b'::jsonb->>'invoice_id') AS invoice_b \gset
@@ -367,7 +367,7 @@ SELECT pg_temp.rule_assert((SELECT relrowsecurity FROM pg_class WHERE oid='publi
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,
- :'a_header'::jsonb || '{"inv_no":20261043,"discount":10,"discount_reason":"Damaged bags"}'::jsonb,:'a_items'::jsonb)->>'success'='true','staff discount for the detail check');
+ :'a_header'::jsonb || '{"inv_no":261043,"discount":10,"discount_reason":"Damaged bags"}'::jsonb,:'a_items'::jsonb)->>'success'='true','staff discount for the detail check');
 SELECT public.get_invoice_detail(:'invoice_a'::uuid) AS detail_staff \gset
 SELECT pg_temp.rule_assert(:'detail_staff'::jsonb->>'success'='true' AND :'detail_staff'::jsonb#>>'{invoice,discount_reason}'='Damaged bags'
  AND :'detail_staff'::jsonb#>>'{invoice,discount_set_by}'=:'staff_profile' AND :'detail_staff'::jsonb#>>'{invoice,discount_set_by_name}'='Line Rule Staff'
@@ -388,9 +388,9 @@ RESET ROLE;
 -- duration and no labour, tax 5, total 105 (the old formula gave 147).
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261045,"discount":-25,"zero_charge_reason":"Handling only"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":261045,"discount":-25,"zero_charge_reason":"Handling only"}'::jsonb,
  pg_temp.rule_rates(:'b_items'::jsonb,'{"charge":0,"labour_rate":0,"tax":0}'::jsonb))->>'success'='true','edit: zero rates accepted');
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":20261045,"discount":0,"discount_reason":"Charged in the rates"}'::jsonb,
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || '{"inv_no":261045,"discount":0,"discount_reason":"Charged in the rates"}'::jsonb,
  :'b_items'::jsonb)->>'success'='true','edit of RULB to the price-list rates');
 SELECT public.get_invoice_items_detailed(:'invoice_b'::uuid) AS lines_b \gset
 SELECT public.get_invoice_items_detailed(:'invoice_a'::uuid) AS lines_a \gset
@@ -405,7 +405,7 @@ SELECT pg_temp.rule_assert((SELECT jsonb_agg(jsonb_build_array((l->>'dispatch_qt
 -- 2 on the edit path. An invoice cannot be moved onto a receipt that is
 -- already invoiced (the RULC invoice onto RULA and its lines).
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_c'::uuid,:'a_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'a_items'::jsonb),
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_update(:'invoice_c'::uuid,:'a_header'::jsonb || '{"inv_no":261044}'::jsonb,:'a_items'::jsonb),
  'GRN is already invoiced'),'edit: an invoice cannot move onto an invoiced receipt');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT gr_id=:'grn_c'::uuid AND total=100 FROM public.invoice WHERE id=:'invoice_c'::uuid)
@@ -413,12 +413,12 @@ SELECT pg_temp.rule_assert((SELECT gr_id=:'grn_c'::uuid AND total=100 FROM publi
 -- Records saved before this rule may already hold a dispatch line twice. The
 -- rule looks only at what a save adds, so such an invoice can still be edited.
 INSERT INTO public.invoice(id,inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total,discount)
- VALUES ('00000000-0000-4000-8000-000000000041',2026,20261046,:'grn_a'::uuid,'RULA',:'customer_id'::uuid,'Line Rule Customer','2026-05-02T12:00:00Z',0,0,0,0);
+ VALUES ('00000000-0000-4000-8000-000000000041',2026,261046,:'grn_a'::uuid,'RULA',:'customer_id'::uuid,'Line Rule Customer','2026-05-02T12:00:00Z',0,0,0,0);
 INSERT INTO public.invoice_trl(invoice_id,disp_trl_id,duration,no_of_days,charge,tax,labour_rate)
  SELECT '00000000-0000-4000-8000-000000000041',t.disp_trl_id,t.duration,t.no_of_days,t.charge,t.tax,t.labour_rate
  FROM public.invoice_trl t WHERE t.invoice_id=:'invoice_a'::uuid;
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":20261043,"discount":10,"notes":"older double"}'::jsonb,:'a_items'::jsonb)->>'success'='true',
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_a'::uuid,:'a_header'::jsonb || '{"inv_no":261043,"discount":10,"notes":"older double"}'::jsonb,:'a_items'::jsonb)->>'success'='true',
  'an invoice whose lines were already doubled can still be edited');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT notes='older double' AND total=988 FROM public.invoice WHERE id=:'invoice_a'::uuid),'the edit of the older double is saved');
@@ -445,7 +445,7 @@ DELETE FROM public.payments WHERE payment_no='RULPAY1';
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(public.delete_invoice(:'invoice_a'::uuid)->>'success'='true','the invoice is deleted once the payment is gone');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261047}'::jsonb,:'a_items'::jsonb) AS third \gset
+SELECT pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":261047}'::jsonb,:'a_items'::jsonb) AS third \gset
 SELECT pg_temp.rule_assert(:'third'::jsonb->>'success'='true','one-argument save: the receipt is invoiced again after the delete: ' || :'third');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT total=998 FROM public.invoice WHERE id=(:'third'::jsonb->>'invoice_id')::uuid)
@@ -455,7 +455,7 @@ SELECT pg_temp.rule_assert((SELECT count(*)=4 FROM public.invoice_discount_histo
 -- A reason longer than 500 characters is cut to 500 on the invoice and in the history.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || jsonb_build_object('inv_no',20261045,'discount',-7,
+SELECT pg_temp.rule_assert(pg_temp.rule_update(:'invoice_b'::uuid,:'b_header'::jsonb || jsonb_build_object('inv_no',261045,'discount',-7,
  'discount_reason',repeat('Long reason ',50)),:'b_items'::jsonb)->>'success'='true','staff sets a surcharge with a 600-character reason');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT discount=-7 AND length(discount_reason)=500 AND discount_reason=left(repeat('Long reason ',50),500)

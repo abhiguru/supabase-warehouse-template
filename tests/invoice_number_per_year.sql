@@ -5,7 +5,9 @@
 -- year without invoices; numbers below 1 do not count; the year defaults to the
 -- financial year of today in India; and when the year's highest number is the
 -- largest an invoice number can be, the answer is a WH409 refusal instead of
--- "integer out of range". Guard and grants are those of the function it
+-- "integer out of range". Since migration 73 the largest is 999999
+-- (INVOICE_NUMBER_MAX) and numbers above it do not count
+-- (tests/invoice_number_ceiling.sql). Guard and grants are those of the function it
 -- replaces. Fictional data; runs only in migrations.sh's disposable,
 -- network-disabled database (session time zone UTC).
 \set ON_ERROR_STOP on
@@ -60,8 +62,8 @@ SELECT jsonb_build_object('role','authenticated','sub',auth_user_id) AS former_c
 --   2091  nothing                                               -> 1
 --   2092  9, deleted                                            -> 10
 --   2093  0 and -5 only                                         -> 1
---   2094  2147483647 live                                       -> refused
---   2095  3 live, 2147483647 deleted                            -> refused
+--   2094  999999 live                                           -> refused
+--   2095  3 live, 999999 deleted                                -> refused
 --   2096  8 live, 2 deleted                                     -> 9
 -- and 4242 in the financial year of today in India.
 SELECT pg_temp.num_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year BETWEEN 2090 AND 2096),'the fixture years are empty');
@@ -74,7 +76,7 @@ SELECT f.fin_year,f.number,gen_random_uuid(),'YEARNO',gen_random_uuid(),'Year Nu
        CASE WHEN f.deleted THEN now() END
 FROM (VALUES (2090,7,false),(2090,54,false),(2090,60,true),(2090,0,false),(2090,-3,false),
              (2092,9,true),(2093,0,false),(2093,-5,false),
-             (2094,2147483647,false),(2095,3,false),(2095,2147483647,true),
+             (2094,999999,false),(2095,3,false),(2095,999999,true),
              (2096,8,false),(2096,2,true),
              (:this_year,4242,false)) AS f(fin_year,number,deleted);
 

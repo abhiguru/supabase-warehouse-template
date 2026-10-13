@@ -236,12 +236,23 @@ turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date. Before migration 48 the function took no argument and returned
 the highest number over all years plus 1.
 
-When the year's highest number is 2147483647, the largest an invoice number can
-be, the call is refused with `No invoice number is left in financial year
-<year>` (SQLSTATE `WH409`); before, one such invoice made the suggestion fail
-for every year with "integer out of range". The user can still type a free
-number. The suggestion is not a reservation: two people saving at once can get
-the same number, and the second save is refused by the unique constraint.
+**Range (migration 73).** An invoice number runs from 1 to 999999
+(`INVOICE_NUMBER_MAX`, held by `warehouse_security.invoice_number_max()`).
+`save_invoice` (both signatures) and `update_invoice` refuse any other number
+with `Invoice number must be between 1 and 999999` (SQLSTATE `WH422`) before
+they write anything; the three-argument `save_invoice` raises it, the other two
+return it in their `{"success": false, "error": ...}` answer. An edit that keeps
+the invoice's own stored number is accepted, so an invoice saved earlier with a
+larger number can still be edited, but not moved to another number outside the
+range. The suggestion counts only numbers from 1 to 999999, so a row above the
+ceiling (earlier data, or written with the service key) does not block its year.
+When the year's highest number in that range is 999999, the call is refused with
+`No invoice number is left in financial year <year>` (SQLSTATE `WH409`). Before
+migration 73 that refusal came at 2147483647 and any typed number was stored, so
+one invoice numbered 2147483647 blocked the suggestion for its whole year. The
+user can still type a free number in the range. The suggestion is not a
+reservation: two people saving at once can get the same number, and the second
+save is refused by the unique constraint.
 
 **Which rows count.** Every invoice row of the year, also a soft-deleted one
 (`deleted_at` set). The unique constraint `unique_inv_no_per_year` is on
@@ -254,7 +265,7 @@ app role may call soft-deletes an invoice: `delete_invoice` removes the row,
 and the number of a removed invoice is free again, so deleting the year's
 last invoice makes its number the next suggestion. Soft-deleted rows come only
 from the service key, an operator in the database or earlier data. If such a
-row holds 2147483647, its year is refused as above.
+row holds 999999, its year is refused as above.
 
 ## Reproducible fixture
 

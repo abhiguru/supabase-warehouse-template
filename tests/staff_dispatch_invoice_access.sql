@@ -98,7 +98,7 @@ RESET ROLE;
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) AS invoice_items
  FROM public.dispatch_trl t JOIN public.dispatch d ON d.id=t.disp_id WHERE d.disp_no IN ('COREA','COREB') \gset
 SET LOCAL ROLE authenticated;
-SELECT jsonb_build_object('inv_no',20260929,'inv_fin_year',2026,'gr_id',:'grn_id','gr_no','COREA',
+SELECT jsonb_build_object('inv_no',260929,'inv_fin_year',2026,'gr_id',:'grn_id','gr_no','COREA',
  'customer_id',:'customer_id','customer_name','Core Demo Customer A','inv_date','2026-05-02T12:00:00Z',
  'total',998,'tax_amount',48,'discount',0,'duration_mode','legacy','items',:'invoice_items'::jsonb) AS invoice_data \gset
 SELECT public.save_invoice(:'invoice_data'::jsonb) AS saved \gset
@@ -106,10 +106,10 @@ SELECT pg_temp.core_assert(:'saved'::jsonb->>'success'='true','save invoice');
 RESET ROLE;
 SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND discount=0 FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'saved header matches preview');
 SET LOCAL ROLE authenticated;
-SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":20260930,"items":[{"disp_trl_id":"00000000-0000-4000-8000-000000000000","charge":1}]}'::jsonb) AS invalid \gset
+SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":260930,"items":[{"disp_trl_id":"00000000-0000-4000-8000-000000000000","charge":1}]}'::jsonb) AS invalid \gset
 SELECT pg_temp.core_assert(:'invalid'::jsonb->>'success'='false','invalid dispatch invoice denied');
 RESET ROLE;
-SELECT pg_temp.core_assert(NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=20260930),'invalid invoice rolls back header');
+SELECT pg_temp.core_assert(NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=260930),'invalid invoice rolls back header');
 SET LOCAL ROLE authenticated;
 
 -- Migration 30: staff may discount an invoice only with a reason, and the

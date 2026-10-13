@@ -182,7 +182,7 @@ for (const header of dispatchHeaders.data) {
   dispatchLines.push(lines.data[0]);
 }
 const saved = good(await rpc('save_invoice', adminToken, { p_invoice_data: {
-  inv_no: 20260929, inv_fin_year: 2026, gr_id: grn, gr_no: 'BAA01', customer_id: a,
+  inv_no: 260929, inv_fin_year: 2026, gr_id: grn, gr_no: 'BAA01', customer_id: a,
   customer_name: 'Backend Test Customer A', inv_date: '2026-05-02T12:00:00Z',
   total: 998, tax_amount: 48, discount: 0, duration_mode: 'legacy',
   items: dispatchLines.map(line => ({ disp_trl_id: line.id, charge: 5, tax: 5, labour_rate: 2 })),
@@ -217,7 +217,7 @@ async function document(name, body) {
 }
 await document('generate-grn-pdf', { gr_no: 'BAA01' });
 await document('generate-dispatch-pdf', { disp_no: 'BAD01' });
-await document('generate-invoice-pdf', { inv_no: 20260929, fin_year: 2026 });
+await document('generate-invoice-pdf', { inv_no: 260929, fin_year: 2026 });
 await document('generate-customer-stock-pdf', { customer_id: a });
 good(await rpc('save_grn', adminToken, { p_gr_no: 'BAC01', p_date: '2026-04-01T12:00:00Z',
   p_customer_id: a, p_customer_name: 'Backend Test Customer A', p_pricing_mode: 'MONTHLY',
