@@ -1,5 +1,242 @@
 # Changelog
 
+## Unreleased — Backend review fixes 2026-10-13
+
+### Migrations 65-67
+
+**Operator action:** none beyond applying the migrations (the normal upgrade
+does). Migration 65 reports (a WARNING when there are any) saved invoices whose
+stored total differs from a recomputation of their lines under the receipt's
+current pricing mode (whatever the cause); it changes none. Migration 67 prints a NOTICE with the number of old stock
+movements whose sign or type it corrected, and a WARNING with the probable
+duplicates it kept (not deleted) when there are any.
+
+- Migration 65 `grn_edit_integrity`, `update_grn` (review I1, P1): an edit
+  of receipt B that sent a line id of receipt A changed A's line (to "Foreign
+  Mutation", weight 99 in the review) and deleted B's own line; a line id sent
+  twice was applied twice; an unknown id deleted the real line. Now refused
+  before anything is written: "A GRN line is sent more than once in this
+  edit; reload the GRN and edit again" and "GRN line <id> is not a line of
+  this GRN; reload the GRN and edit again". The line SELECT is bound to the
+  receipt and row-locked, and both line UPDATEs are bound to the receipt and
+  must change exactly one row. The image "keep" UPDATE is bound to the
+  receipt too (its id lookup already was).
+- Migration 65, `update_grn` (review I3): changing the pricing mode of a
+  receipt that has an invoice (of the receipt, or a line of one of its lots)
+  is refused: "Cannot change the pricing mode of a GRN that has invoices:
+  delete invoices first, then change the pricing mode and invoice again".
+  Before, a MONTHLY invoice of 108.00 read 40.00 in
+  `get_invoice_items_detailed` after its receipt became ONE_TIME, while its
+  stored total stayed 108.00. Sending the mode the receipt already has (the
+  app always does) or none is an ordinary edit; a receipt without invoices
+  changes freely.
+- Migration 66 `stock_history_cutoff`, `get_customer_stock_analysis_v2`
+  (review I2): with a date, each lot's balance is now its received quantity
+  less what was dispatched from it up to that date, and the in-stock filter is
+  applied after that. Before, 10 received on 1 April with 4 dispatched on
+  1 June read 10 / 0 / 6 on 15 April (now 10 / 0 / 10), and a lot emptied
+  after the date was left out. Without a date the answer is unchanged.
+- Migration 67 `dispatch_cart_and_movements` (review I4): a dispatch now
+  records on each line the cart line it lowered and by how much
+  (`source_order_item_id`, `cart_quantity_consumed`; `source_type` 'cart' for
+  a dispatch from the cart), and `delete_dispatch_with_order_cleanup` gives
+  that quantity back: a cart of 10 that a dispatch of 4 lowered to 6 is 10
+  again (before: 6), a used-up line comes back pending with the quantity it
+  had (before: recreated as fulfilled with the dispatched quantity), and a
+  direct dispatch that lowered the cart gives back too. Lines of a dispatch
+  from the cart saved before migration 67 carry no record: nothing is given
+  back for them, the answer counts them in the new `cart_lines_not_restored`
+  and `cart_restoration.lines_not_restored`, and its message says so.
+  A direct dispatch lowers, and its deletion gives back to, only the
+  customer's OPEN cart (oldest first, then lowest id). When the dispatch used
+  the line up and the customer has no OPEN cart, a cart is made as
+  `get_or_create_cart` makes it; the unique index `one_cart_per_customer`
+  allows one order per customer, so when that order exists but is not OPEN
+  (or is deleted) it is left untouched, nothing is given back for the line,
+  and the answer counts it in the new `cart_lines_without_open_cart` and
+  `cart_restoration.lines_without_open_cart` with a message (before: the
+  pending line went into the closed order, or, with no order, nothing was
+  given back).
+- Migration 67 (review I5): `update_dispatch_smart` logs a movement only for
+  lines it actually adds (before, every line sent, so an unchanged resave
+  logged a dispatch that never happened and made an old empty lot look
+  emptied today in the stock summary). One sign rule: `dispatch` negative,
+  `return` positive, quantity = balance after - balance before (creation was
+  positive; a lowered quantity was a `dispatch` of +q). Deleting a dispatch
+  now logs the stock it restores. The trigger
+  `restore_stock_on_dispatch_delete` wrote a movement type the table refuses,
+  so a database owner's `DELETE FROM dispatch` with lines failed; it now
+  writes a `return` of what the lot really got back: when the restore is
+  capped at the received quantity (stock 7 of 10, a dispatch of 6 deleted)
+  it logs `return 3 7>10`, not `return 6 4>10`. Old movements are corrected where their balances show
+  the meaning; probable duplicates are counted, not deleted (the count also
+  includes a line legitimately removed and added again).
+- Tests: `tests/grn_edit_integrity.sql`, `tests/stock_history_cutoff.sql`,
+  `tests/dispatch_cart_and_movements.sql` (each failed before its migration).
+- What the app sees: two new `update_grn` refusal texts (shown in English;
+  the Gujarati fallback is the generic save error) and four added keys in the
+  dispatch deletion answer (lines not given back, by reason). No shape the app
+  reads changes.
+### Operations, documents and dependencies
+
+**Operator action:** run the normal upgrade (`npm run db:backup`,
+`db:verify-restore`, `git pull`, `setup.sh --operator ...` with the same
+inputs). Setup rebuilds the Storage image (new lock) and, where monitoring
+runs, builds Grafana under its new tag `<project>-grafana` and replaces the
+Grafana container; its data volume is kept. After **every** installation on
+the host has been upgraded, remove the old shared tag once with
+`docker image rm warehouse-grafana:local` (Docker refuses while a container
+still uses it). Nothing removes it automatically.
+
+- OPS-1, `docker/alert-rules.yml`: `DatabaseConnectionsHigh` compared each
+  `pg_stat_activity_count` series with 80, but postgres-exporter splits the
+  count by database, state, user, application, backend type and wait event,
+  so 90 connections spread as 45 active and 45 idle never fired it. The rule
+  is now `sum by (instance, job) (pg_stat_activity_count{backend_type="client
+  backend"}) > 80` (background workers left out). New
+  `docker/alert-rules.test.yml` (`promtool test rules`: the split fires at
+  5 minutes with its labels and annotations, not at 1; 80 clients plus 10
+  autovacuum workers do not fire); `scripts/monitoring-check.sh` runs it after
+  `promtool check config` and requires live client-backend series;
+  `tests/gateway-config.test.mjs` pins the expression; `docs/MONITORING.md`.
+- OPS-2, Grafana image tag: Grafana was the only built service with a fixed
+  image name (`warehouse-grafana:local`), shared by every installation on a
+  host, and `build-images.sh --replace-optional` (run by `start.sh` and
+  `setup.sh`) recreated running optional services without checking the image,
+  so another checkout's Grafana build replaced this installation's Grafana at
+  its next start. The `image:` line is gone (Compose tags `<project>-grafana`),
+  and `--replace-optional` now runs the build step's image check: a running
+  optional service whose image is missing, whose recipe changed or whose tag
+  names an image this checkout did not build is left running with "the
+  <service> image does not match this checkout (...)", the others are
+  replaced, and `start.sh` prints the warning (start still never builds).
+  Tests in `tests/build-images.test.mjs` ("image missing", "image was
+  replaced", no built service with `image:`); `THIRD_PARTY_NOTICES.md`,
+  `docs/OPERATOR_INSTALL.md`.
+- OPS-3, `docs/TROUBLESHOOTING.md`: the guide ran `docker logs/exec/restart`
+  on fixed `supabase-*` container names, which on a shared host belong to
+  another Compose project, and ended with a reset (`down -v`, a stale data
+  path). Every command now goes through `WAREHOUSE_STATE_DIR` and
+  `bash scripts/compose.sh`; "Reset Everything" is replaced by "Restore or
+  recover (there is no reset)" pointing at the documented restore, USB
+  recovery, rerun and setup paths. `tests/operator-docs.test.mjs`.
+- DOC-1, `docs/API_CONTRACT.md`: it named the removed `npm run test:api` and
+  said the checker exits nonzero by design. It now gives
+  `npm run check:contract -- ../rn-warehouse-template` and CI's pinned pair,
+  the counts at backend `3c32394` and app `d8af378` (94 RPC names, 0 missing;
+  133 typed calls, 0 mismatches; 2 dynamic calls; 6 tables; 8 literal Edge
+  names), when the checker fails, and the operator fixture drivers plus
+  `npm run test:migrations`. `tests/operator-docs.test.mjs`.
+- Storage dependencies: `@fastify/busboy` 3.2.1 → 3.2.3
+  ([GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9))
+  and a new `fast-copy@^4` override to 4.1.2
+  ([GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j)),
+  both moderate: parser and logging leaf fixes; not exploitable as shown in
+  this warehouse. Lock regenerated with npm 11.12.1, only those two packages
+  changed; `npm audit --omit=dev` 0 (was 2 moderate).
+  `docs/CONTAINER_SECURITY.md`, `docker/storage/README.md`. **Operator
+  action:** `setup.sh` rebuilds Storage.
+### Migrations 71-72 and printing
+
+Migrations 71 and 72 and changes to the dormant printing functions (the five
+printing routes still answer 503). **Operator action:** take and verify a
+backup before upgrading (`npm run db:backup`, then `npm run db:verify-restore --
+<backup directory>`); `setup.sh` does not take one. Migration 71 discards the
+never-sent Tally invoice sync queue, the sync logs and the voucher counters
+(a NOTICE gives the row counts) and STOPS, naming the table, if any Tally
+voucher, receipt or contra voucher, bank statement or line, ledger map or
+company configuration row exists. The edge changes are in the printing
+functions only, which still answer 503.
+
+- Migration 71, `retire_tally_and_dead_functions`, retires the Tally accounting
+  integration and dead legacy functions (review 2026-10-13, L1-L10): the invoice
+  sync trigger and its queue are removed (the trigger on `invoice` and the
+  ledger-map trigger on `customers` with four more on Tally tables); 46
+  Tally/receipt/contra functions and 14 tables are dropped; 24 dead functions
+  (L1, L2, L7's 17, L8, L9, L10 and `generate_order_number`) are dropped. All
+  70 were service-role only and uncalled. Before the first drop it refuses if
+  one is granted to an app role, called by another trigger, depended on, or
+  named by a kept function, or a retired table is named by a kept function or a
+  policy. `payments`, its policies and the Paid/Pending reports are unchanged;
+  nothing in the product writes `payments` now (the Tally functions were the
+  only writers; the app never did). Test: `tests/legacy_functions.sql`.
+- Migration 72, `print_invoice_line_amounts` (PRINT2, PRINT3):
+  `get_invoice_range_for_print` gives each line `pricing_mode`,
+  `storage_amount` and `labour_amount` by the invoice rule (ONE_TIME storage
+  charged once, no labour), patched at one counted marker;
+  `print_jobs_status_check` accepts `unknown`. Test:
+  `tests/print_invoice_range.sql`.
+- Printing (PRINT1-5), new modules under `functions/_shared/` with node tests:
+  invoice pages built from printed rows with `contd.` group headers
+  (`invoice-print-layout.ts`); line and page amounts from the server, a missing
+  one stops the print, and the default financial year is India's
+  (`invoice-print-amounts.ts`); IPP replies validated before success is reported,
+  an unconfirmed job recorded as `unknown` with 502, only an idle printer online
+  (`ipp-validate.ts`; `ipp-types.ts` re-exports its constants); the status
+  monitor finishes a job only on a final CUPS state and otherwise records
+  `unknown` within 44 s, and the Print-Job submission of the three preprinted
+  routes is given up after 8 s (no answer: `unknown`), so the submission and
+  the monitor take at most 52 s of the 60 s worker (`print-monitor-rule.ts`).
+  Tests:
+  `tests/print-paginator.test.mjs`, `print-amounts.test.mjs`,
+  `ipp-validation.test.mjs`, `print-monitor.test.mjs`.
+- Documents: `docs/PRINTING.md` ("Activation acceptance"), README ("Features
+  and limits") and `docs/API_CONTRACT.md` ("Legacy and dormant functions").
+### Migrations 68-70
+
+Migrations 68, 69 and 70. **Operator action:** none beyond applying the
+migrations (the normal upgrade does). Migration 68 drops and recreates the
+materialized view `mv_invoice_list` (same columns, indexes, owner and grants;
+filled again in the migration). No setting, service or container changes;
+no function signature changes.
+
+- Migration 68 (I6), `get_dispatch_details`: `invoices_summary.total_amount`
+  summed an invoice once per dispatch line on it (two lines on invoice 90101
+  of 357: 714); it now sums each invoice once (357; two invoices of 357 each
+  still give 714). `statistics.total_invoice_amount` was SUM(charge x
+  duration) (30); it is now the invoiced amount of the dispatch's own lines,
+  each as `get_invoice_items_detailed` computes it (357), without the
+  header's whole-rupee rounding or the discount.
+- Migration 68 (I7), `get_all_dispatch_items`: LIMIT/OFFSET applied to the
+  one aggregated row (limit 1 gave 2 rows, offset 1 gave none); rows are now
+  numbered in the requested order (ties by line id), paged, then aggregated:
+  1 row, then the other.
+- Migration 68 (I8), `get_all_dispatch_items`: staff got `items: []` with
+  `total` 2; the rows now admit staff as the count and sums do (2 rows).
+- Migration 68 (I9), `mv_invoice_list.total_qty` (`get_invoices_list`): was
+  sum(DISTINCT lot quantity), 10 for two lots of 10 bags; now the bags
+  billed, sum(disp_qty) = 20.
+- Migration 68 (I10), `get_customer_invoice_summary` line items: quantity
+  1.5 -> 10 (bags), rate 6.67 -> 10 (charge), labour_amount 3 -> 20,
+  tax_percent 50 -> 5, tax_amount 5 -> 8.50, line_total 18 -> 178.50 (ONE_TIME:
+  no labour, 42 = the header); `total_quantity` 3.0 -> 20. The lines now add
+  up to the invoice total. Keys, types and rows unchanged.
+- Migration 68 (I11): invoice numbers longer than four digits were cut
+  (`2026-9010` for 90101); now `2026-90101` in `get_customer_invoice_summary`
+  and `get_customer_activity_detail` (104 stays `2026-0104`), and the same
+  expression in `get_grn_invoices` (dormant) and the `get_invoices_list`
+  search.
+- Migration 69 (SEC-1, SEC-2): new helper
+  `warehouse_security.grn_image_visible(status, uploaded_by)` (not granted to
+  app roles) holds the `grn_images` read rule. `get_grn_details` lists only
+  the photo rows the caller may read (a customer or other staff no longer get
+  a pending upload's path, name and uploader). `update_grn` with a non-empty
+  `p_images` removes only omitted rows the caller may read, so a staff edit
+  no longer deletes another person's pending upload (which could then not be
+  confirmed); such a row named in the list is kept as it is; `grn.images`
+  lists what the caller may read. The same filter is applied to the image
+  subqueries of `get_customer_items_for_order_selection` (a customer got a
+  pending upload's path as `image_url`), `get_invoiceable_grns`
+  (`gr_image_url`) and `get_customer_grn_activity` (`image_count`,
+  `total_images`); keys and rows unchanged. `docs/STAFF_GRN_POLICY.md`.
+- Migration 70 (EDGE-RENDER-1), `get_customer_stock_summary`: after an item
+  rename, `items` and `out_of_stock_items` had one row per received name,
+  each listing every lot (three names, 35 bags: 105 bags in the rows); now
+  one row per item, named as its latest receipt, with its lots (35).
+- Tests: `tests/dispatch_invoice_read_figures.sql`,
+  `tests/grn_image_visibility.sql`, `tests/stock_summary_item_identity.sql`
+  (each fails before its migration).
+
 ## Unreleased — central login: the link answer names the link (2026-10-12)
 
 Migration 64. **Operator action:** none beyond applying the migration (the

@@ -20,13 +20,16 @@ groups:
           description: "Memory usage above 85% for more than 5 minutes"
 
       - alert: DatabaseConnectionsHigh
-        expr: pg_stat_activity_count > 80
+        # postgres-exporter reports one series per database, state, user, application, backend
+        # type and wait event: add up the client connections of each server. Background workers
+        # (autovacuum, WAL writer, ...) are left out. Tests: docker/alert-rules.test.yml.
+        expr: sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"}) > 80
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "High database connections"
-          description: "Database connections above 80% of the configured 100-connection ceiling"
+          description: "{{ $value }} client connections on {{ $labels.instance }}, above 80% of the configured 100-connection ceiling"
 
       - alert: SlowQueries
         expr: pg_stat_activity_max_tx_duration > 60
