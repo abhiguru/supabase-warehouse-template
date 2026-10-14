@@ -161,7 +161,7 @@ The queue lives in the volume `sensor-bridge_data`; `docker compose down` keeps 
 
 ## Image
 
-`python:3.12-slim-bookworm` pinned by digest; dependencies pinned in `requirements.txt` and
+`python:3.14-slim-bookworm` pinned by digest; dependencies pinned in `requirements.txt` and
 installed from wheels only; runs as uid 10001 with `/data` as its only writable place;
 HEALTHCHECK `python -m sensor_bridge.health` (the health file is younger than 120 s).
 

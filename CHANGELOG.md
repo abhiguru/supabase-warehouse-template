@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Sensor bridge on Python 3.14 (2026-10-14)
+
+No migration. `docker/sensor-bridge/Dockerfile`: the setup rerun rebuilds the sensor bridge image.
+
+- **Python 3.14-slim-bookworm** (was 3.12-slim-bookworm), by digest. The CI `bridge` job and the
+  notices, attribution review, container security note and developer handoff name 3.14.
+- Tested against the built image: 82 unit tests pass on Python 3.14.8 with the pinned
+  requirements. Not verified: a real Tapo hub.
+
 ## Unreleased — python-kasa 0.11.0.1 (sensor bridge) (2026-10-14)
 
 No migration. `docker/sensor-bridge/requirements.txt`: the setup rerun rebuilds the sensor bridge image.

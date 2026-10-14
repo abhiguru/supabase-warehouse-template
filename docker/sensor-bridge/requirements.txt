@@ -1,4 +1,4 @@
-# The bridge's Python dependencies, every one pinned (resolved with pip 24 on Python 3.12;
+# The bridge's Python dependencies, every one pinned (resolved with pip 24 on Python 3.12, installed and tested on 3.14;
 # Dependabot's pip entry proposes updates). python-kasa is GPL-3.0, hence LICENSE here.
 python-kasa==0.11.0.1
 aiohappyeyeballs==2.7.1
