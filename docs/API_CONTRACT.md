@@ -135,3 +135,109 @@ The five printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`
 `print-invoice-preprinted`, `print-via-ipp`, `get-printer-status`) answer 503
 from the router until printing is accepted ([PRINTING.md](PRINTING.md),
 "Activation acceptance").
+
+## Settings UX batch (migrations 76 to 78, 2026-10-14)
+
+Errors of `replace_item_rates`, `undo_rate_change` and the rate functions are
+`{ success: false, error, error_code, data }`. The service-account answers (`set_service_account`
+and `SERVICE_ACCOUNT_READ_ONLY`) are `{ success: false, error, error_code, message }` with no `data`
+(`delete_user_account` and `operator_review_enrollment` also carry `code`); `assign_customer_to_user`
+and `remove_customer_assignment` return a boolean and raise an exception whose message starts with
+`SERVICE_ACCOUNT_READ_ONLY`. Days are India
+days (`warehouse_security.business_date(now())`), not UTC days.
+
+### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL)`
+
+Changes one scope (item, customer or NULL for the default rate, price type) "from a date" in one
+transaction (a refusal after the first write undoes all of them). A band is
+`{weight_min, weight_max, unit_price, labour_rate, tax_percent}` (up to 10; whole kilograms; amounts
+with at most two decimals; labour is not read and is stored as 0 for `one_time`). Default-rate bands
+must start at 0 and follow on without gaps; customer bands may have gaps. Roles: admin, supervisor,
+staff.
+
+- `p_mode = 'change'` (default): rows in force on `p_starts_on` end the day before, rows starting on
+  that day that are already in force are deleted, the bands are added from that day. A rate
+  planned (not begun) to start on that day or later is refused with `LATER_RATES_EXIST` unless
+  `p_replace_later` is true, which deletes it. Exception: new bands (not a stop) that start on a
+  planned rate's own start day replace it when its id is listed in `p_seen_rows`.
+  `p_bands = []` stops the rate. If every row in force that day shares one last day E and no row
+  starts later, the new rows keep that stop (`effective_to = E`); `data.kept_end` is E, else null.
+- `p_mode = 'correct'`: `p_starts_on` must be the start of the rows in force that day
+  (`NOT_A_RATE_START` otherwise). Exactly the rows starting that day are replaced, the new rows keep
+  their last day (`data.kept_end`, null when open), later rows are never touched and
+  `p_replace_later` is ignored (`LATER_RATES_EXIST` is never returned). `p_bands` needs at least
+  one band.
+- `p_move_from` (only with `'change'`, else `INVALID_MODE`): first undoes the change that starts on
+  `p_move_from` (as `undo_rate_change`: its rows go, the rows it ended are opened again,
+  `data.reopened`), then applies the change from `p_starts_on`, in the same transaction.
+  `NOTHING_TO_MOVE` if nothing starts on `p_move_from`.
+- `p_seen_rows` (optional): the ids of the rows the editor loaded for this scope. A row the call would
+  end, move or delete that is not listed was changed by someone else: the answer is `STALE_RATES`
+  (`data.ids` = the unseen ids) and nothing is written. NULL skips the check. Moving or undoing a
+  planned rate that carried a scheduled stop gives the stop back to the rows it reopens.
+- Staff: `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
+  today (`PAST_DATE_NOT_ALLOWED`); rows of the scope that start on `p_starts_on` when that day is
+  today give `RATE_IN_FORCE_MANAGER_ONLY` (a rate that began today is for administrators and
+  supervisors), in either mode.
+
+Answer: `{success:true, message:'Rates saved', data:{item_id, customer_id, price_type, starts_on, mode, move_from, kept_end, ended:[{id,effective_from,effective_to}], removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}], added:[{id,weight_min,weight_max,unit_price,labour_rate,tax_percent}]}}`.
+`error_code`: `INVALID_PRICE_TYPE`, `INVALID_MODE`, `INVALID_DATE` (outside 3 years back to 2 years
+ahead; also for `p_move_from`), `PAST_DATE_NOT_ALLOWED`, `RATE_IN_FORCE_MANAGER_ONLY`,
+`ITEM_NOT_FOUND`, `CUSTOMER_NOT_FOUND`, `INVALID_BANDS`, `INVALID_BAND` (`data.index`, and
+`data.field` when a weight is wrong), `INVALID_AMOUNT` (`data.index`, `data.field`), `BANDS_OVERLAP`,
+`BANDS_GAP` (`data.expected_min`), `LATER_RATES_EXIST` (`data.later`, change mode only),
+`NOT_A_RATE_START`, `NOTHING_TO_MOVE`, `NOTHING_TO_STOP`. A customer account is refused with
+SQLSTATE 42501.
+
+`find_or_create_item_storage_price` is for administrators and supervisors only (no app code calls
+it); it uses the India day, stores labour 0 for one-time and refuses an overlapping row
+(`BANDS_OVERLAP`). `get_item_storage_prices` without `include_expired` hides rows that ended before
+the India day.
+
+### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date)`
+
+Undoes the change of one scope that starts on `p_starts_on` in one transaction: the rows with
+`effective_from = p_starts_on` are deleted, and the rows that ended the day before
+(`effective_to = p_starts_on - 1`) are opened again, up to the day before the next planned rate of
+the scope, or without an end if there is none. This is how "cancel the new rate" and "undo the
+stop" work: the rate in force before the change continues. Roles: admin, supervisor, staff; staff
+only for a change that has not begun (`p_starts_on` after today), managers also for one that has.
+The history trigger records the deletes and updates. Answer:
+`{success:true, message:'Change undone', data:{item_id, customer_id, price_type, starts_on, removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}]}}`.
+`error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`),
+`PAST_DATE_NOT_ALLOWED` (staff, change starting today or earlier), `ITEM_NOT_FOUND`,
+`CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
+`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
+refused with SQLSTATE 42501.
+
+### Changed price functions
+
+- `create_item_storage_price`, `update_item_storage_price`: refuse an overlap of the same item,
+  customer, price type, weight and days (`BANDS_OVERLAP`); a one-day rate is valid
+  (`effective_to >= effective_from`); `one_time` stores labour 0; staff get
+  `RATE_IN_FORCE_MANAGER_ONLY` (message "Only administrators and supervisors can change a rate that
+  is already in force") when the row has started or the new start is in the past.
+- `delete_item_storage_price`: the same refusal for staff on a row that has started. The old
+  nine-argument `update_item_storage_price` follows the same staff rule.
+- `get_item_storage_prices`: a final `id` sort key. `search_customers`: every typed word may occur
+  anywhere in the name (mobile still by prefix); names starting with the text come first.
+
+### `operator_review_enrollment(p_user_id uuid, p_decision text, p_customer_ids uuid[] DEFAULT '{}', p_role text DEFAULT 'customer')`
+
+Administrators only. `p_role` is `customer`, `staff` or `supervisor`. For staff and supervisor
+`p_customer_ids` must be empty (`CUSTOMERS_NOT_ALLOWED`) and the profile takes that role with no
+assignment; `customer` is as before. Answer `{success:true, data:{status, role}}`. `INVALID_ROLE`
+for any other value; the earlier refusals are unchanged. Returned as `error_code` and `code`.
+
+### Service accounts
+
+- `user_profiles.is_service_account`; returned by `get_users_list` (each row) and `get_user_details` (`user`).
+- `update_user_role`, `update_user_status`, `delete_user_account`, `clear_user_central_identity` and
+  `operator_review_enrollment` answer `error_code` `SERVICE_ACCOUNT_READ_ONLY` for such a profile;
+  `assign_customer_to_user` and `remove_customer_assignment` raise an exception whose message starts
+  with `SERVICE_ACCOUNT_READ_ONLY`. A service account does not count as another
+  administrator for the last-administrator rule.
+- `set_service_account(p_user_id uuid, p_is_service boolean)`: administrators (and the service key).
+  Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
+  `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
+
