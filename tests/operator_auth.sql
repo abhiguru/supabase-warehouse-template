@@ -23,7 +23,7 @@ UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_ke
 SELECT pg_temp.assert_true((public.operator_sms_config()#>>'{data,flow_id}')='694a8ea0cd30ae1f432f445a',
   'worker reads the latest protected Flow ID');
 SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_verify_otp(text,text,text,text,inet)','EXECUTE'),'authenticated cannot bypass provider');
-SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE'),'anon cannot approve');
+SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_review_enrollment(uuid,text,uuid[],text)','EXECUTE'),'anon cannot approve');
 
 SELECT warehouse_security.bootstrap_first_admin('9888888801','Test Administrator') AS admin_user \gset
 SELECT pg_temp.assert_true((SELECT mobile_verified=false FROM public.user_profiles WHERE auth_user_id=:'admin_user'::uuid),'bootstrap requires real verification');

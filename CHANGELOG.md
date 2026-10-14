@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — Settings UX batch: item rate changes, approving staff, service accounts (2026-10-14)
+
+Migrations 76, 77 and 78; apply with the normal setup rerun, then update the app.
+
+- Migration 76: `replace_item_rates` (change an item's default or customer rate from a date in
+  one step) and `undo_rate_change` (undo the change that starts on a day: its rows go and the rows it
+  ended are opened again); a one-day rate is valid; creating or editing a rate refuses overlapping rows
+  (`BANDS_OVERLAP`); one-time rates store labour 0; staff can no longer change, delete or
+  back-date a rate that is already in force (`RATE_IN_FORCE_MANAGER_ONLY`); `search_customers`
+  matches words anywhere in the name; the price list pages stably. Dates use the India day.
+  Code-review fixes: `replace_item_rates` has `p_mode` ('change' keeps a scheduled stop; 'correct'
+  replaces only the rows starting that day and never touches later rates) and `p_move_from` (move a
+  planned rate in one step); new `error_code`s `INVALID_MODE`, `NOT_A_RATE_START`, `NOTHING_TO_MOVE`;
+  staff get `RATE_IN_FORCE_MANAGER_ONLY` for a rate that began today; `find_or_create_item_storage_price`
+  is administrators and supervisors only and checks overlap, one-time labour and the India day;
+  `get_item_storage_prices` hides expired rows by the India day.
+- Migration 77: `operator_review_enrollment` takes `p_role` (customer, staff, supervisor); the
+  three-argument call still works. `scripts/backup-integrity.sql` now checks it by name.
+- Migration 78: `user_profiles.is_service_account`, `set_service_account`; such a profile cannot be
+  given another role, deactivated or deleted and does not count as an administrator. Nothing is
+  marked by the migration: mark the FAS sync profile with `set_service_account`. Customer
+  assignment, its removal, clearing the central link and the access-request review refuse such a
+  profile too (`SERVICE_ACCOUNT_READ_ONLY`).
+
 ## Unreleased — sensors sampled every 5 minutes, kept 90 days (2026-10-13)
 
 The owner wants a sample every 5 minutes and three months of history.
