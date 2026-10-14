@@ -107,6 +107,12 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+  # The sensor bridge's Python dependencies (python-kasa and what it needs), each pinned
+  # in docker/sensor-bridge/requirements.txt. Its base image is covered by "/docker/*" above.
+  - package-ecosystem: pip
+    directory: "/docker/sensor-bridge"
+    schedule:
+      interval: weekly
   - package-ecosystem: docker-compose
     directory: "/docker"
     schedule:

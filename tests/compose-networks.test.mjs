@@ -42,7 +42,7 @@ test('postgres-meta, Studio and the database are reachable only from the service
   assert.deepEqual(peers('db'), ['auth', 'grafana', 'meta', 'postgres-exporter', 'realtime', 'rest', 'storage', 'studio', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
   // share no network with the database, postgres-meta or Studio.
-  for (const service of ['kong', 'functions', 'gotenberg', 'imgproxy', 'cups', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
+  for (const service of ['kong', 'functions', 'gotenberg', 'imgproxy', 'cups', 'sensor-bridge', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
     const reachable = peers(service);
     for (const guarded of ['db', 'meta', 'studio']) assert.ok(!reachable.includes(guarded), `${service} can reach ${guarded}`);
   }
@@ -69,6 +69,8 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual([...wanted.studio].sort(), ['meta']);
   assert.deepEqual([...wanted.prometheus].sort(), ['alertmanager', 'cadvisor', 'kong', 'node-exporter', 'postgres-exporter']);
   assert.deepEqual([...wanted.grafana].sort(), ['db', 'prometheus']);
+  // The sensor bridge posts to the ingest function through the gateway and calls nothing else here.
+  assert.deepEqual([...wanted['sensor-bridge']].sort(), ['kong']);
   for (const service of ['rest', 'realtime', 'meta', 'auth', 'supavisor', 'postgres-exporter']) assert.ok(wanted[service].has('db'), `${service} names the database`);
   for (const [service, hosts] of Object.entries(wanted)) {
     for (const host of hosts) assert.ok(reaches(service, host), `${service} cannot resolve ${host}`);
@@ -85,6 +87,7 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual(Object.keys(services.studio.networks), ['admin']);
   // The gateway DNS regression moves the functions container on the default network only.
   assert.deepEqual(Object.keys(services.functions.networks), ['default']);
+  assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
 });
 
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
@@ -126,6 +129,20 @@ test('imgproxy runs as the owner of the private storage directory', () => {
   // own user (999) imgproxy could not enter it, and every transformation failed.
   assert.match(read('docker/docker-compose.yml'), /\n  imgproxy:\n(?:    .*\n|\n)*?    user: "\$\{WAREHOUSE_HOST_UID:-999\}:\$\{WAREHOUSE_HOST_GID:-999\}"\n/);
   assert.match(read('scripts/compose.sh'), /^exec env "\$\{unset_args\[@\]\}" WAREHOUSE_HOST_UID="\$\(id -u\)" WAREHOUSE_HOST_GID="\$\(id -g\)" WAREHOUSE_PUBLIC_PATH="\$STATE\/public" docker compose /m);
+});
+
+test('the sensor bridge needs no variable to render, so installations that never set one keep working', () => {
+  // `${X:?}` here would make every `compose --profile '*'` command (build-images,
+  // stop.sh, rotate-keys) fail on an installation without the SENSOR lines.
+  const compose = read('docker/docker-compose.yml');
+  const rest = compose.slice(compose.indexOf('\n  sensor-bridge:\n') + 1);
+  const block = rest.slice(0, rest.search(/\n  \S/));
+  const variables = [...block.matchAll(/\$\{([A-Z_]+)([^}]*)\}/g)];
+  assert.ok(variables.length >= 5, 'the bridge variables were read');
+  for (const [, name, modifier] of variables) assert.match(modifier, /^:-/, `${name} must have a default`);
+  assert.match(block, /\n      SENSOR_INGEST_URL: http:\/\/kong:8000\/functions\/v1\/ingest-sensor-readings\n/);
+  assert.match(block, /\n    profiles: \["sensors"\]\n/);
+  assert.doesNotMatch(block, /\n    (?:networks|ports|privileged):/);
 });
 
 test('the pooler registers only a database role that exists', () => {

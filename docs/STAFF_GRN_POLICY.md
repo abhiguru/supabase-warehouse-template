@@ -26,6 +26,10 @@ still restricted and no new image-failure/retry acceptance is claimed.
 > confirmed photo with `delete_grn_image` / `delete_dispatch_image` and then
 > delete its file. A file that an image row still names cannot be deleted or
 > overwritten by staff.
+>
+> Completed on 13 October 2026 (migration 69): the same rule applies inside
+> `get_grn_details` and `update_grn`, which list and remove only the photo rows
+> the caller may read; see the last section.
 
 The mobile GRN activity report includes staff. Its GRN edit dispatch-presence
 helper uses the existing authorized GRN detail summary instead of a direct
@@ -427,6 +431,9 @@ What that means for each entry point:
 - `update_grn` keeps the images already on the receipt, named by id (or by
   their path). An id of another receipt's image no longer re-links that image.
   Any other entry is a new attachment and must pass the rule.
+  (Migration 69: the images it removes, keeps and lists are only those the
+  caller may read; another person's pending upload is left alone. See the last
+  section.)
 - `save_grn` creates the receipt id itself, so no file can be in its folder
   yet: a `p_images` entry is refused. Photos of a new receipt are registered
   after the save, which is what the app does.
@@ -830,3 +837,36 @@ prices created before it have no insert row. `tests/item_price_history.sql`.
 ([INVOICE_RULES.md](INVOICE_RULES.md), "Invoice numbers"). The roles are the
 same as before: administrators, supervisors and staff; a customer account is
 refused. `tests/invoice_number_per_year.sql`.
+
+## Unfinished photos in the receipt RPCs, 13 October 2026 (migration 69)
+
+The external review of 13 October (SEC-1, SEC-2) found two SECURITY DEFINER
+functions that did not apply the `grn_images` row rules: administrators and
+supervisors read every row, staff read confirmed rows and the pending rows they
+registered, a customer reads confirmed rows of its own receipts (migrations 18,
+42, 43). Migration 69 puts the rule in one helper,
+`warehouse_security.grn_image_visible(status, uploaded_by)` (not granted to the
+app roles), and uses it in both and in three other readers of `grn_images`:
+
+- `get_grn_details` lists in `header_images` and in each line's `item_images`
+  only the rows the caller may read. Before, a customer or another staff member
+  got a pending upload's path, file name, size, type and uploader. The answer's
+  shape is unchanged.
+- `update_grn` with a non-empty `p_images` removes only the omitted rows the
+  caller may read: an administrator or supervisor any omitted row, staff the
+  confirmed rows and their own pending ones (the rule of `delete_grn_image` and
+  `cancel_grn_image_upload`). Another person's pending upload stays, and that
+  person can still confirm it. A row the caller may not read that the list
+  names (by id or path) is kept as it is: not moved to another line, not counted
+  in `images_updated` and not attached a second time. `grn.images` in the answer
+  lists the rows the caller may read. An empty `p_images` still changes no
+  photo.
+- `get_customer_items_for_order_selection` (`image_url`), `get_invoiceable_grns`
+  (`gr_image_url`) and `get_customer_grn_activity` (`image_count`,
+  `total_images`) take only those rows into account. Before, a customer's order
+  picker could show the storage path of a pending upload, and the GRN activity
+  report counted every row. Their keys and rows are unchanged.
+
+The roles in the table of migration 45 are unchanged. `tests/grn_image_visibility.sql`
+reads `get_grn_details` as each role and edits as two staff members and an
+administrator.

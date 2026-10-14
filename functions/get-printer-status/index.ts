@@ -1,18 +1,11 @@
 import { createClient } from '../vendor/supabase-js.mjs'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
-import { IPPPrinterState, mapPrinterStateToStatus } from '../_shared/ipp-types.ts'
-import type { IPPPrinterAttributes } from '../_shared/ipp-types.ts'
+import { printerStatusFromReply } from '../_shared/ipp-validate.ts'
 import { validPrinterName, printerStatusFailure } from '../_shared/printer-name.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
-const PRINTER_STATE_MESSAGES: Record<number, string> = {
-  3: 'idle',
-  4: 'processing',
-  5: 'stopped'
 }
 
 Deno.serve(async (req) => {
@@ -62,24 +55,27 @@ Deno.serve(async (req) => {
       });
     });
 
-    const printerAttrs: IPPPrinterAttributes = result?.["printer-attributes-tag"] || {};
-    const printerState = printerAttrs["printer-state"] as number;
-    const stateReasons = printerAttrs["printer-state-reasons"] || ["none"];
-    const isAcceptingJobs = printerAttrs["printer-is-accepting-jobs"] ?? true;
-
-    const { status, message } = mapPrinterStateToStatus(printerState, stateReasons, isAcceptingJobs);
+    // A reply without the attribute block, a known state or the accepting flag
+    // is not read as "ready": the status is unknown.
+    const reading = printerStatusFromReply(result);
+    if (reading.printerState === undefined) {
+      return new Response(
+        JSON.stringify({ success: false, status: 'error', error: reading.message, printer_name, timestamp: new Date().toISOString() }, null, 2),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 }
+      );
+    }
 
     return new Response(
       JSON.stringify({
         success: true,
-        status,
-        message,
+        status: reading.status,
+        message: reading.message,
         printer_name,
-        printer_state: printerState,
-        printer_state_message: PRINTER_STATE_MESSAGES[printerState] || 'unknown',
-        printer_state_reasons: stateReasons,
-        printer_is_accepting_jobs: isAcceptingJobs,
-        queued_job_count: printerAttrs["queued-job-count"] || 0,
+        printer_state: reading.printerState,
+        printer_state_message: reading.stateName,
+        printer_state_reasons: reading.stateReasons,
+        printer_is_accepting_jobs: reading.isAcceptingJobs,
+        queued_job_count: reading.queuedJobCount,
         timestamp: new Date().toISOString()
       }, null, 2),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }

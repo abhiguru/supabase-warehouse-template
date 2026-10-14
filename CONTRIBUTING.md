@@ -8,7 +8,7 @@ commands, migration conventions, CI jobs and the mobile companion pin).
 ## Development Setup
 
 1. Fork and clone the repo
-2. `npm ci`, then `npm test` (no Docker needed) and `bash tests/migrations.sh` (disposable database, needs Docker)
+2. `npm ci`, then `npm test` (no Docker needed) and `bash tests/migrations.sh` (disposable database, needs Docker); for a change under `docker/sensor-bridge/`, its Python unit tests as well ([DEVELOPER_HANDOFF.md](docs/DEVELOPER_HANDOFF.md), "Running checks")
 3. For runtime changes, install an isolated Linux x86-64 instance with [operator installation](docs/OPERATOR_INSTALL.md) and run `./health-check.sh` against it
 4. Make your changes and add tests next to the existing ones
 5. Submit a PR
@@ -52,4 +52,8 @@ Use the GitHub issue templates for bug reports and feature requests.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the
+MIT License, except contributions to `docker/sensor-bridge/`, which are licensed
+under GPL-3.0-or-later (`docker/sensor-bridge/LICENSE`) because the bridge uses
+python-kasa (GPL-3.0). Do not import the bridge or python-kasa from any other
+part of the repository; the backend talks to the bridge over HTTP only.

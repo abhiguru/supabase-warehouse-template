@@ -97,11 +97,14 @@ SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_price_history),'no 
 -- 1. One row per insert, update and delete, with the acting profile
 -- ---------------------------------------------------------------------------
 -- Staff create a price: Chillies for North, monthly, 5 a bag.
+-- Staff change only a rate that has not started (migration 76), so the prices below start
+-- in 30 days and end in 400.
+SELECT (CURRENT_DATE+30) AS f, (CURRENT_DATE+400) AS t \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_assert(warehouse_security.active_role()='staff','actual staff role');
 SELECT public.create_item_storage_price(p_item_id=>:'chillies'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
+ p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'f',
  p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS created \gset
 SELECT pg_temp.ph_assert(:'created'::jsonb->>'success'='true','staff create a price: '||:'created');
 SELECT (:'created'::jsonb#>>'{data,id}') AS north_price \gset
@@ -111,7 +114,7 @@ SELECT pg_temp.ph_assert(pg_temp.ph_rows()=jsonb_build_array(jsonb_build_array('
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillies'::uuid AND h.item_name='Price History Chillies'
  AND h.customer_id=:'north'::uuid AND h.customer_name='Price History North' AND h.changed_at=now() AND h.old_values IS NULL
  AND h.changed_by_name='Price History Staff'
- AND h.new_values @> '{"price_type":"monthly","unit_price":5,"unit_price_monthly":5,"unit_price_one_time":0,"weight_min":0,"weight_max":100,"labour_rate":2,"tax_percent":5,"effective_from":"2026-01-01","effective_to":null}'::jsonb
+ AND h.new_values @> ('{"price_type":"monthly","unit_price":5,"unit_price_monthly":5,"unit_price_one_time":0,"weight_min":0,"weight_max":100,"labour_rate":2,"tax_percent":5,"effective_from":"'||:'f'||'","effective_to":null}')::jsonb
  AND NOT h.new_values ?| ARRAY['id','item_id','customer_id','created_at','created_by'],
  'the row names the price, the item and the customer and holds the new values: '||to_jsonb(h)::text)
 FROM pg_temp.ph_last() h;
@@ -119,26 +122,27 @@ FROM pg_temp.ph_last() h;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_assert(public.update_item_storage_price(p_id=>:'north_price'::uuid,p_unit_price=>8,p_weight_min=>0,p_weight_max=>100,
- p_labour_rate=>3,p_tax_percent=>5,p_effective_from=>'2026-01-01',p_effective_to=>'2026-12-31')->>'success'='true','the supervisor changes the price');
+ p_labour_rate=>3,p_tax_percent=>5,p_effective_from=>:'f',p_effective_to=>:'t')->>'success'='true','the supervisor changes the price');
 RESET ROLE;
 SELECT pg_temp.ph_assert(pg_temp.ph_rows()->1=jsonb_build_array('update',5,8,:'supervisor_profile','supervisor') AND jsonb_array_length(pg_temp.ph_rows())=2,
  'the update is recorded for the supervisor: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillies'::uuid AND h.customer_id=:'north'::uuid
  AND h.changed_by_name='Price History Supervisor'
  AND h.old_values @> '{"unit_price":5,"labour_rate":2,"effective_to":null}'::jsonb
- AND h.new_values @> '{"unit_price":8,"unit_price_monthly":8,"labour_rate":3,"effective_to":"2026-12-31","price_type":"monthly"}'::jsonb,
+ AND h.new_values @> ('{"unit_price":8,"unit_price_monthly":8,"labour_rate":3,"effective_to":"'||:'t'||'","price_type":"monthly"}')::jsonb,
  'the row holds the old and the new values: '||to_jsonb(h)::text)
 FROM pg_temp.ph_last() h;
--- The second staff member uses the invoice form's helper: it creates a price
--- for South (one row) and finds it the next time (no row).
+-- The second staff member adds a one-time price for South (one row); adding it again is refused
+-- and leaves no row. (find_or_create_item_storage_price is no longer a staff call, migration 76.)
 SELECT set_config('request.jwt.claims',:'staff2_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.find_or_create_item_storage_price(:'turmeric'::uuid,:'south'::uuid,10,'one_time',12,1,5) AS found_first \gset
-SELECT pg_temp.ph_assert(:'found_first'::jsonb->>'success'='true' AND (:'found_first'::jsonb#>>'{data,was_created}')::boolean,
- 'find-or-create creates the price: '||:'found_first');
+SELECT public.create_item_storage_price(p_item_id=>:'turmeric'::uuid,p_price_type=>'one_time',p_unit_price=>12,
+ p_weight_min=>0,p_weight_max=>10,p_labour_rate=>1,p_effective_from=>:'f',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS found_first \gset
+SELECT pg_temp.ph_assert(:'found_first'::jsonb->>'success'='true','the second staff member creates the price: '||:'found_first');
 SELECT (:'found_first'::jsonb#>>'{data,id}') AS south_price \gset
-SELECT pg_temp.ph_assert(NOT (public.find_or_create_item_storage_price(:'turmeric'::uuid,:'south'::uuid,10,'one_time',12,1,5)#>>'{data,was_created}')::boolean,
- 'find-or-create finds it the second time');
+SELECT pg_temp.ph_assert(public.create_item_storage_price(p_item_id=>:'turmeric'::uuid,p_price_type=>'one_time',p_unit_price=>12,
+ p_weight_min=>0,p_weight_max=>10,p_labour_rate=>1,p_effective_from=>:'f',p_customer_id=>:'south'::uuid,p_tax_percent=>5)->>'error_code'='BANDS_OVERLAP',
+ 'adding it again is refused');
 RESET ROLE;
 SELECT pg_temp.ph_assert(pg_temp.ph_rows()->2=jsonb_build_array('insert',NULL,12,:'staff2_profile','staff') AND jsonb_array_length(pg_temp.ph_rows())=3,
  'find-or-create leaves one insert row, and none for the price it found: '||pg_temp.ph_rows()::text);
@@ -151,12 +155,12 @@ FROM pg_temp.ph_last() h;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_assert(public.create_item_storage_price(p_item_id=>:'chillies'::uuid,p_price_type=>'monthly',p_unit_price=>6,
-  p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',p_customer_id=>:'north'::uuid,p_tax_percent=>5,
-  p_effective_to=>'2026-12-31')->>'error' LIKE 'A price with the same item%'
+  p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'f',p_customer_id=>:'north'::uuid,p_tax_percent=>5,
+  p_effective_to=>:'t')->>'error_code'='BANDS_OVERLAP'
  AND public.update_item_storage_price(p_id=>:'north_price'::uuid,p_unit_price=>-1,p_weight_min=>0,p_weight_max=>100,
-  p_labour_rate=>3,p_tax_percent=>5,p_effective_from=>'2026-01-01')->>'error'='unit_price must be >= 0'
+  p_labour_rate=>3,p_tax_percent=>5,p_effective_from=>:'f')->>'error'='unit_price must be >= 0'
  AND public.update_item_storage_price(p_id=>:'north_price'::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,
-  p_labour_rate=>3,p_tax_percent=>500,p_effective_from=>'2026-01-01')->>'success'='false',
+  p_labour_rate=>3,p_tax_percent=>500,p_effective_from=>:'f')->>'success'='false',
  'a duplicate price and two invalid changes are refused');
 RESET ROLE;
 SELECT pg_temp.ph_assert(jsonb_array_length(pg_temp.ph_rows())=3 AND (SELECT unit_price=8 FROM public.item_storage_prices WHERE id=:'north_price'::uuid),
@@ -169,7 +173,7 @@ RESET ROLE;
 SELECT pg_temp.ph_assert(pg_temp.ph_rows()->3=jsonb_build_array('delete',8,NULL,:'admin_profile','admin') AND jsonb_array_length(pg_temp.ph_rows())=4,
  'the delete is recorded for the administrator: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_name='Price History Chillies' AND h.customer_name='Price History North'
- AND h.new_values IS NULL AND h.old_values @> '{"unit_price":8,"labour_rate":3,"effective_to":"2026-12-31"}'::jsonb
+ AND h.new_values IS NULL AND h.old_values @> ('{"unit_price":8,"labour_rate":3,"effective_to":"'||:'t'||'"}')::jsonb
  AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE id=:'north_price'::uuid),
  'the row keeps what the deleted price was: '||to_jsonb(h)::text)
 FROM pg_temp.ph_last() h;

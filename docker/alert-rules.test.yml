@@ -1,0 +1,53 @@
+# Unit tests for docker/alert-rules.yml, run by scripts/monitoring-check.sh with the
+# Prometheus image's own promtool:
+#   promtool test rules /etc/prometheus/alert-rules.test.yml
+# postgres-exporter (v0.20.1) reports pg_stat_activity_count per database, state, user,
+# application, backend type and wait event, so the connections of one server arrive as many
+# small series. The values below are fictional.
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+evaluation_interval: 1m
+tests:
+  # 90 client connections split over two series of 45: no single series is above 80.
+  - interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="postgres-exporter:9187",job="postgres",datname="postgres",state="active",usename="authenticator",application_name="postgrest",backend_type="client backend",wait_event_type="",wait_event=""}'
+        values: '45+0x10'
+      - series: 'pg_stat_activity_count{instance="postgres-exporter:9187",job="postgres",datname="postgres",state="idle",usename="supabase_storage_admin",application_name="storage",backend_type="client backend",wait_event_type="Client",wait_event="ClientRead"}'
+        values: '45+0x10'
+    promql_expr_test:
+      - expr: 'sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"})'
+        eval_time: 5m
+        exp_samples:
+          - labels: '{instance="postgres-exporter:9187",job="postgres"}'
+            value: 90
+    alert_rule_test:
+      # Pending, not firing, until the condition has held for 2 minutes.
+      - eval_time: 1m
+        alertname: DatabaseConnectionsHigh
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: DatabaseConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              instance: postgres-exporter:9187
+              job: postgres
+              severity: warning
+            exp_annotations:
+              summary: "High database connections"
+              description: "90 client connections on postgres-exporter:9187, above 80% of the configured 100-connection ceiling"
+
+  # 80 client connections and 10 autovacuum workers: background processes are not client
+  # connections, and 80 is not above 80.
+  - interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="postgres-exporter:9187",job="postgres",datname="postgres",state="active",usename="authenticator",application_name="postgrest",backend_type="client backend",wait_event_type="",wait_event=""}'
+        values: '40+0x10'
+      - series: 'pg_stat_activity_count{instance="postgres-exporter:9187",job="postgres",datname="postgres",state="idle",usename="supabase_storage_admin",application_name="storage",backend_type="client backend",wait_event_type="Client",wait_event="ClientRead"}'
+        values: '40+0x10'
+      - series: 'pg_stat_activity_count{instance="postgres-exporter:9187",job="postgres",datname="postgres",state="active",usename="",application_name="",backend_type="autovacuum worker",wait_event_type="",wait_event=""}'
+        values: '10+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DatabaseConnectionsHigh
+        exp_alerts: []

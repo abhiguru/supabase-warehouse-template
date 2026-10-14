@@ -4,6 +4,7 @@
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { createClient } from '../vendor/supabase-js.mjs'
+import { submittedJob } from '../_shared/ipp-validate.ts'
 import { Buffer } from 'node:buffer'
 
 Deno.serve(async (req) => {
@@ -56,13 +57,21 @@ Deno.serve(async (req) => {
       });
     });
 
-    const jobId = result?.["job-attributes-tag"]?.["job-id"];
+    // Success only with a reply that confirms the job and names its id.
+    const submitted = submittedJob(result);
+    if (!submitted.ok) {
+      console.error('print-via-ipp: the printer reply did not confirm the job');
+      return new Response(
+        JSON.stringify({ success: false, error: 'The printer did not confirm the job' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 }
+      );
+    }
 
     return new Response(
       JSON.stringify({
         success: true,
         message: 'Print job submitted successfully',
-        job_id: jobId,
+        job_id: submitted.jobId,
         printer: printer_name,
         timestamp: new Date().toISOString()
       }),

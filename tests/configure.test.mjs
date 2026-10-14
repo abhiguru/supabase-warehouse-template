@@ -450,3 +450,75 @@ test('interruption while staging leaves state unpublished and rerun succeeds', (
     assert.equal(configure(root, options).created, true);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('set-capability flips one manifest flag in place, keeps every other byte and the mode, and refuses bad input', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-capability-'));
+  const root = join(scratch, 'checkout');
+  const stateDir = join(scratch, 'state');
+  const providerEnv = join(scratch, 'provider.env');
+  const script = new URL('../scripts/set-capability.mjs', import.meta.url).pathname;
+  const run = (args, state = stateDir) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: state } });
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=key\nMSG91_TEMPLATE_ID=id\nMSG91_PE_ID=pe\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    configure(root, { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv });
+    const manifestPath = join(stateDir, 'public/instance.json');
+    const envPath = join(stateDir, 'config/compose.env');
+    const original = readFileSync(manifestPath, 'utf8');
+    const env = readFileSync(envPath);
+    const mode = statSync(manifestPath).mode & 0o777;
+    assert.match(original, /"sensors": false/);
+
+    const on = run(['sensors', 'on']);
+    assert.equal(on.status, 0, on.stderr);
+    assert.match(on.stdout, /Set capabilities\.sensors on/);
+    assert.match(on.stdout, /restore-host/);
+    assert.match(on.stdout, /npm run db:backup/);
+    assert.match(on.stdout, /compose\.sh restart functions/);
+    const flipped = readFileSync(manifestPath, 'utf8');
+    // The same file with the one word changed: every other byte, the order and the indentation stay.
+    assert.equal(flipped, original.replace('"sensors": false', '"sensors": true'));
+    assert.deepEqual(JSON.parse(flipped).capabilities, { sensors: true, printing: false });
+    assert.equal(statSync(manifestPath).mode & 0o777, mode, 'the mode is kept');
+    assert.deepEqual(readFileSync(envPath), env, 'compose.env is not touched');
+    assert.deepEqual(readdirSync(join(stateDir, 'public')), ['instance.json'], 'no staging file is left');
+
+    const again = run(['sensors', 'on']);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /already on/);
+    assert.doesNotMatch(again.stdout, /db:backup/);
+    assert.equal(readFileSync(manifestPath, 'utf8'), flipped);
+
+    const off = run(['sensors', 'off']);
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(readFileSync(manifestPath, 'utf8'), original, 'off restores the original bytes');
+    const printing = run(['printing', 'on']);
+    assert.equal(printing.status, 0, printing.stderr);
+    assert.match(printing.stdout, /503/);
+    assert.equal(readFileSync(manifestPath, 'utf8'), original.replace('"printing": false', '"printing": true'));
+    assert.equal(run(['printing', 'off']).status, 0);
+
+    for (const args of [['alarms', 'on'], ['sensors', 'yes'], ['sensors', 'true'], ['Sensors', 'on'], ['sensors'], ['sensors', 'on', 'extra'], []]) {
+      const refused = run(args);
+      assert.equal(refused.status, 1, `${args.join(' ')} was accepted`);
+      assert.match(refused.stderr, /Usage: /);
+    }
+    assert.match(run(['sensors', 'on'], '').stderr, /WAREHOUSE_STATE_DIR/);
+    assert.match(run(['sensors', 'on'], 'relative/state').stderr, /WAREHOUSE_STATE_DIR/);
+    assert.match(run(['sensors', 'on'], join(scratch, 'missing')).stderr, /operator state must be a directory/);
+    // A manifest without the flag, or with a non-boolean flag, is left alone.
+    writeFileSync(manifestPath, original.replace('"sensors": false', '"sensors": "no"'));
+    assert.match(run(['sensors', 'on']).stderr, /no boolean capabilities\.sensors/);
+    writeFileSync(manifestPath, original.replace('"sensors": false,\n', ''));
+    assert.match(run(['sensors', 'on']).stderr, /no boolean capabilities\.sensors/);
+    writeFileSync(manifestPath, '{ not json');
+    assert.match(run(['sensors', 'on']).stderr, /not valid JSON/);
+    assert.equal(readFileSync(manifestPath, 'utf8'), '{ not json');
+    writeFileSync(manifestPath, original);
+    chmodSync(stateDir, 0o755);
+    assert.match(run(['sensors', 'on']).stderr, /mode 0700/);
+    chmodSync(stateDir, 0o700);
+    assert.equal(readFileSync(manifestPath, 'utf8'), original, 'nothing was changed by a refusal');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

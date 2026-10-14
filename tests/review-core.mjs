@@ -201,7 +201,7 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   const financialDispatch = (await api(`/rest/v1/dispatch?disp_no=eq.${number}&select=id`, adminToken)).data[0].id;
   const dispatchLine = (await api(`/rest/v1/dispatch_trl?disp_id=eq.${financialDispatch}&select=id,disp_qty`, adminToken)).data[0];
   const dispatchItem = dispatchLine.id;
-  const invoiceArgs = { inv_no: Date.now() % 1000000000, inv_fin_year: 2026, gr_id: financialGrn, gr_no: number, customer_id: otherId, customer_name: 'Review', inv_date: '2026-05-02T12:00:00Z', total: 116.01, tax_amount: 5.01, discount: 2.5, duration_mode: 'legacy', items: [{ disp_trl_id: dispatchItem, charge: 5, tax: 5, labour_rate: 2 }] };
+  const invoiceArgs = { inv_no: 1 + Date.now() % 99999998, inv_fin_year: 2026, gr_id: financialGrn, gr_no: number, customer_id: otherId, customer_name: 'Review', inv_date: '2026-05-02T12:00:00Z', total: 116.01, tax_amount: 5.01, discount: 2.5, duration_mode: 'legacy', items: [{ disp_trl_id: dispatchItem, charge: 5, tax: 5, labour_rate: 2 }] };
   const saved = await rpc('save_invoice', adminToken, { p_invoice_data: invoiceArgs }); success(saved, 'financial invoice');
   const header = (await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total,tax_amount,discount,labour`, adminToken)).data[0];
   // Migration 24: header money is server-computed from the saved line and the

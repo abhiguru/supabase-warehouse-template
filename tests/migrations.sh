@@ -42,7 +42,8 @@ test_files=(
   "$ROOT/tests/refresh_reuse.sql" "$ROOT/tests/otp_abuse_limits.sql"
   "$ROOT/tests/admin_guards.sql" "$ROOT/tests/auth_and_access.sql"
   "$ROOT/tests/role_allowlist.sql" "$ROOT/tests/document_write_consistency.sql"
-  "$ROOT/tests/invoice_number_per_year.sql" "$ROOT/tests/zero_charge_reason.sql"
+  "$ROOT/tests/invoice_number_per_year.sql" "$ROOT/tests/invoice_number_ceiling.sql"
+  "$ROOT/tests/zero_charge_reason.sql"
   "$ROOT/tests/item_price_history.sql" "$ROOT/tests/invoice_column_grants.sql"
   "$ROOT/tests/central_login.sql" "$ROOT/tests/report_sort.sql"
   "$ROOT/tests/report_pdf_retention.sql"
@@ -50,6 +51,16 @@ test_files=(
   "$ROOT/tests/report_invoice_paid.sql"
   "$ROOT/tests/report_to_date.sql" "$ROOT/tests/grn_list_end_day.sql"
   "$ROOT/tests/report_ist_day.sql" "$ROOT/tests/report_dispatch_id.sql"
+  "$ROOT/tests/grn_edit_integrity.sql"
+  "$ROOT/tests/stock_history_cutoff.sql"
+  "$ROOT/tests/dispatch_cart_and_movements.sql"
+  "$ROOT/tests/legacy_functions.sql"
+  "$ROOT/tests/print_invoice_range.sql"
+  "$ROOT/tests/dispatch_invoice_read_figures.sql"
+  "$ROOT/tests/grn_image_visibility.sql"
+  "$ROOT/tests/stock_summary_item_identity.sql"
+  "$ROOT/tests/sensor_ingest.sql"
+  "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
 )
@@ -120,6 +131,41 @@ configure_central -v central_issuer=
 [[ "$(central_issuer)" = off ]] || { echo 'An empty issuer must turn central sign-in off.' >&2; exit 1; }
 # The database container needs no CENTRAL_ISSUER of its own.
 if docker exec "$container" printenv CENTRAL_ISSUER >/dev/null 2>&1; then echo 'The test database must not carry CENTRAL_ISSUER.' >&2; exit 1; fi
+
+# scripts/sensor-ingest-key.sql (migration 74): each run prints one new key, 64 hex, once;
+# only its SHA-256 is stored; record_sensor_batch takes it until it is revoked. A missing or
+# ill-formed label mints nothing. The key is not echoed here.
+sensor_sql() {
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "$1"
+}
+mint_sensor_key() {
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
+    psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@" < "$ROOT/scripts/sensor-ingest-key.sql"
+}
+sensor_keys_before=$(sensor_sql 'SELECT count(*) FROM warehouse_security.sensor_ingest_keys')
+sensor_key=$(mint_sensor_key -v label=ci)
+[[ "$(printf '%s\n' "$sensor_key" | wc -l)" = 1 && "$sensor_key" =~ ^[0-9a-f]{64}$ ]] || {
+  echo 'sensor-ingest-key.sql must print exactly one row: a 64-hex key.' >&2; exit 1; }
+second_sensor_key=$(mint_sensor_key -v label=ci)
+[[ "$second_sensor_key" =~ ^[0-9a-f]{64}$ && "$second_sensor_key" != "$sensor_key" ]] || { echo 'A second run must mint a different key.' >&2; exit 1; }
+[[ "$(sensor_sql "SELECT count(*) FROM warehouse_security.sensor_ingest_keys WHERE label='ci' AND revoked_at IS NULL
+    AND key_hash IN (encode(extensions.digest('$sensor_key','sha256'),'hex'), encode(extensions.digest('$second_sensor_key','sha256'),'hex'))")" = 2
+   && "$(sensor_sql "SELECT count(*) FROM warehouse_security.sensor_ingest_keys WHERE key_hash IN ('$sensor_key','$second_sensor_key')")" = 0
+   && "$(sensor_sql 'SELECT count(*) FROM warehouse_security.sensor_ingest_keys')" = $((sensor_keys_before + 2)) ]] || {
+  echo 'sensor-ingest-key.sql must store the SHA-256 of each key under its label, never the key.' >&2; exit 1; }
+[[ "$(sensor_sql "SELECT public.record_sensor_batch('$sensor_key', '{\"id\":\"ci-hub\",\"online\":true}', '[]')->>'success'")" = true ]] || {
+  echo 'record_sensor_batch refused a key minted by sensor-ingest-key.sql.' >&2; exit 1; }
+sensor_sql "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = 'ci' AND revoked_at IS NULL" >/dev/null
+[[ "$(sensor_sql "SELECT public.record_sensor_batch('$sensor_key', '{\"id\":\"ci-hub\",\"online\":true}', '[]')->>'code'")" = invalid_key ]] || {
+  echo 'record_sensor_batch accepted a revoked key.' >&2; exit 1; }
+for refused in '' ' ci' 'a/b' "ci'); DELETE FROM warehouse_security.sensor_ingest_keys; --" "$(printf 'k%.0s' {1..65})"; do
+  if mint_sensor_key -v "label=$refused" >/dev/null 2>&1; then echo "sensor-ingest-key.sql accepted the label '$refused'." >&2; exit 1; fi
+done
+if mint_sensor_key >/dev/null 2>&1; then echo 'sensor-ingest-key.sql minted a key without a label.' >&2; exit 1; fi
+[[ "$(sensor_sql 'SELECT count(*) FROM warehouse_security.sensor_ingest_keys')" = $((sensor_keys_before + 2)) ]] || {
+  echo 'A refused label changed the stored keys.' >&2; exit 1; }
+sensor_sql "DELETE FROM warehouse_security.sensor_ingest_keys WHERE label = 'ci'; DELETE FROM public.sensor_hubs WHERE hub_id = 'ci-hub'" >/dev/null
+unset sensor_key second_sensor_key
 
 # Migrations 26 and 46: a GRN edit, a dispatch being created and a dispatch edit
 # must each survive a concurrent writer of the same lot.

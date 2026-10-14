@@ -43,9 +43,11 @@ test('each worker list is exactly what the function and its shared modules read'
 test('every function the router can start has a list, and the router passes only that list', () => {
   const allowed = [...router.matchAll(/'([a-z][a-z-]+)'/g)].map(match => match[1]).filter(name => existsSync(join(functions, name, 'index.ts')));
   assert.ok(allowed.includes('hello') && allowed.includes('generate-invoice-pdf'), 'router names were read');
-  // Sign-in endpoints are reachable with the anon key only: they are in the router's public set.
+  // Sign-in endpoints are reachable with the anon key only, and the sensor
+  // bridge's endpoint with its own ingest key: they are in the router's public set.
   const publicSet = /const publicFunctions = new Set\(\[([^\]]+)\]\)/.exec(router)[1];
-  assert.deepEqual([...publicSet.matchAll(/'([a-z-]+)'/g)].map(match => match[1]), ['hello', 'get-public-config', 'operator-otp', 'central-exchange']);
+  assert.deepEqual([...publicSet.matchAll(/'([a-z-]+)'/g)].map(match => match[1]),
+    ['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
   assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, /);
   for (const name of allowed) {
     if (/-preprinted$/.test(name)) continue; // refused with 503 and absent from `allowed`
@@ -59,9 +61,13 @@ test('every function the router can start has a list, and the router passes only
 
 test('public workers get no signing secret, and no worker gets a database address or an unlisted value', () => {
   assert.deepEqual(workerEnv('hello', container), []);
-  for (const name of ['hello', 'get-public-config', 'operator-otp', 'central-exchange']) {
+  for (const name of ['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']) {
     assert.ok(!workerEnv(name, container).some(([key]) => key === 'JWT_SECRET'), `${name} holds JWT_SECRET`);
   }
+  // The sensor ingest worker gets the RPC address and the server key, nothing else.
+  assert.deepEqual(Object.fromEntries(workerEnv('ingest-sensor-readings', container)), {
+    SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
+  });
   assert.deepEqual(Object.fromEntries(workerEnv('operator-otp', container)), {
     APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
   });
@@ -84,7 +90,7 @@ test('public workers get no signing secret, and no worker gets a database addres
   assert.match(router, /\/\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{0,99\}\$\/\.test\(file\)/);
   assert.match(router, /try \{\n          extra\.CENTRAL_JWKS_JSON = await Deno\.readTextFile\(`\$\{directory\}\/\$\{file\}`\);\n        \} catch \{/);
   assert.ok(workerEnv('get-public-config', container).some(([key]) => key === 'CENTRAL_ISSUER'));
-  for (const name of ['operator-otp', 'get-config', 'generate-grn-pdf']) {
+  for (const name of ['operator-otp', 'get-config', 'generate-grn-pdf', 'ingest-sensor-readings']) {
     assert.ok(!workerEnv(name, container).some(([key]) => key.startsWith('CENTRAL_')), `${name} holds a central setting`);
   }
   for (const name of Object.keys(workerEnvNames)) {

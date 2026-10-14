@@ -44,6 +44,7 @@ test('every operator command refuses to run while another holds the state lock',
       ['scripts/pooler-check.sh', []],
       ['scripts/monitoring-check.sh', []],
       ['scripts/cups-check.sh', []],
+      ['scripts/sensor-bridge-check.sh', []],
       ['scripts/migrate.sh', ['--operator']],
     ];
     for (const [script, args] of commands) {

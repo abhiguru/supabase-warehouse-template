@@ -1,33 +1,50 @@
 # Mobile/backend API coverage
 
-Inventory updated 2026-09-12 using:
+The app and the backend are checked as a pair. CI's `contract` job checks out
+the app at the commit pinned in `.github/workflows/ci.yml` (`MOBILE_REF`) and
+runs the checker against it; locally, with the app checked out beside this
+repository:
 
 ```bash
-node scripts/check-mobile-contract.mjs ../rn-warehouse-template
+npm run check:contract -- ../rn-warehouse-template
 ```
 
-The checker parses TypeScript calls to `.rpc()` and `executeRPC()`, direct
-table calls, and literal Edge URLs. Comments/tests are excluded.
+(`check:contract` is `node scripts/check-mobile-contract.mjs`; `--live` also
+compares overloads, SQL return types and effective grants against a running
+database.) The checker parses the app's TypeScript calls to `.rpc()` and
+`executeRPC()`, direct table calls, `functions.invoke()` and literal Edge URLs.
+Comments and tests are excluded.
+
+Counts at backend `3c32394` and app `MOBILE_REF` `d8af378`, re-run on
+2026-10-13:
 
 | Surface | Static result |
 | --- | --- |
-| Mobile RPC names | 100 found, 0 missing (includes new logout_session) |
-| Direct mobile table names | 8 found, 0 missing |
-| Literal Edge Function names | 7 of 10 found |
-| Remaining literal functions | print-grn-preprinted, print-dispatch-preprinted, print-invoice-preprinted |
-| Additional dynamic endpoint | manage-print-jobs is also not implemented |
+| Mobile RPC names | 94 found, 0 missing |
+| Typed RPC calls (argument names compared) | 133, 0 mismatches |
+| Dynamic RPC calls (name in a variable; not checked) | 2: `src/config/supabaseConfig.ts`, `src/utils/serviceErrorHandler.ts` |
+| Direct mobile table names | 6 found, 0 missing |
+| Literal Edge Function names | 8 found, 0 missing |
+| Printing functions | `print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted` (and `print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design (`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal count |
+| `manage-print-jobs` | absent; the app does not call it |
 
-The checker deliberately exits nonzero while optional printing is incomplete.
-Do not replace these endpoints with success stubs or treat name presence as
-signature/security/behavior validation.
+The checker exits 1 only for a missing name or, with `--live`, a mismatch; the
+pinned pair above exits 0. Name presence is not signature, security or
+behaviour validation, and a missing endpoint is never replaced with a success
+stub to make the check pass.
 
-## Tested runtime subset
+## Tested runtime behaviour
 
-`npm run test:api` uses the demo API to exercise login, assigned-customer reads,
-GRN creation/details, the paginated customer-item selector, dispatch creation and
-oversell rejection, invoice saving, PDF generation/download, refresh/replay and
-REST/Edge logout revocation. `npm run test:migrations` additionally tests real
-database roles, active/inactive profiles and effective grants.
+The runtime behaviour is tested by the five operator fixture drivers that CI's
+install job runs against a fresh installation, all through
+`tests/operator-fixture.mjs`: `operator-api-core.mjs`,
+`operator-realtime-core.mjs`, `operator-api-final.mjs`,
+`operator-api-rotation.mjs` (`npm run test:rotation`) and
+`operator-api-restore.mjs` ([DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)).
+`npm run test:migrations` tests the database itself: real roles, active and
+inactive profiles, effective grants and the role policy of every granted
+function. `tests/api-demo.mjs` and `tests/review-core.mjs` are the historical
+fixed-OTP demos and are not run.
 
 The duplicate five-argument customer-item selector was removed; the remaining
 six-argument RPC returns `{ success, data: [], pagination }`. The mobile adapter
@@ -42,3 +59,185 @@ server key.
 The imported schema includes unexposed internal/legacy/admin functions.
 Do not grant blanket API execution to make an unsupported call work.
 See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining business, Storage and native acceptance.
+
+## Sensors (migration 74)
+
+The sensor bridge, not the app, writes readings (key minted with
+`scripts/sensor-ingest-key.sql`, stored hashed; guide:
+[SENSORS.md](SENSORS.md#the-ingest-contract)).
+
+`POST /functions/v1/ingest-sensor-readings` (sensor bridge only, no anon key or user token): `Authorization: Bearer <64 lowercase hex ingest key>`; body `{bridge:{id,version}, hub:{id,host,online,firmware}, readings:[{external_id,name,model,temperature,humidity,measured_at,battery_low,battery_percent,signal_level,report_interval_s,kind}]}`, at most 256 KiB and 500 readings. Answers: 200 `{success:true, accepted, duplicates, rejected, devices}`; 401 `Unauthorized` (key missing, malformed or not accepted); 400 `Invalid request` (body shape, or hub or readings refused by `record_sensor_batch`); 405; 503 `Ingestion unavailable` (database not configured, erroring or timing out after 15 s), which the bridge retries. Every answer has `Cache-Control: no-store`.
+
+What the app reads:
+
+- `get_sensor_polling_data(p_since_timestamp)`: same signature and envelope
+  (`success`, `poll_timestamp`, `devices[]`, `new_readings[]`, `dashboard`).
+  `is_stale`, `connectivity_status` (OFFLINE when the hub is offline, STALE,
+  ONLINE) and `battery_status` (LOW, OK, UNKNOWN) are now computed from
+  `sensor_status`; each device also carries `measured_at`, `temperature_at`,
+  `humidity_at`, `hub_online`, `battery_low`, `signal_level` and
+  `last_seen_at`. A temperature or humidity that was never reported is null,
+  not 0.
+- `get_sensor_history`: same signature, buckets on `measured_at`, averages
+  ignore nulls, a sample count per bucket, and period `1` (today, 5-minute
+  buckets).
+- `get_sensor_device(p_device_id)` (new; administrator, supervisor and staff):
+  one device's status, its first reading and its hub. `data` also carries the
+  keys of a `devices[]` entry of `get_sensor_polling_data`, so the app reads it
+  as the same device: `latest_temperature`, `latest_humidity`,
+  `latest_reading_timestamp`, `is_stale` and `earliest_reading_at` repeat
+  `temperature`, `humidity`, `measured_at`, `stale` and `first_reading_at`.
+- `update_sensor_device(p_device_id, p_device_name, p_location,
+  p_staleness_threshold_minutes)` (new; administrator only).
+- Table `sensor_latest` (one row per device), readable by administrator,
+  supervisor and staff, published to Realtime; the app subscribes to it and
+  refetches on a change. Customers and `anon` read no sensor table.
+- `capabilities.sensors` in `get-public-config` (from the state's
+  `instance.json`, set with `node scripts/set-capability.mjs`); the app shows
+  the Sensors screen only when it is true.
+
+A refusal by the guard is now an error, not an answer: migration 74 removed the
+`EXCEPTION WHEN OTHERS` handler of `get_sensor_polling_data` and
+`get_sensor_history`, so a caller without the role (a customer account) gets
+PostgREST's 403 with code `42501` instead of a 200 `{success:false}`; the app's
+`useReportQuery` treats `42501` as a refusal. `get_sensor_device` and
+`update_sensor_device` answer the same way. An unknown device or period is
+still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
+
+`record_sensor_reading` and `update_sensor` were dropped: they were granted to
+the service role only and nothing called them.
+
+## Legacy and dormant functions
+
+Migration 71 (2026-10-13) removed the unused Tally accounting integration: the
+invoice sync trigger on `invoice` and its never-read queue, the customer-rename
+trigger that kept a ledger map, receipt and contra vouchers, bank statement
+reconciliation and the company configuration, with 46 functions and 14 tables.
+It also dropped 24 dead functions of the baseline that nothing called and that
+did not work against the final schema (review 2026-10-13, L1-L10; among them
+`create_order`, `cancel_order`, `get_order_queue`, `ignore_order`,
+`reactivate_order`, `delete_dispatch_with_stock_restore`, `safe_delete_invoice`,
+`auto_generate_invoice_for_dispatch`, `get_customers_with_stock` and the older
+sensor and credential functions). None was granted to the app; the app called
+none of them.
+
+Recorded payments remain: the `payments` table and its policies are unchanged
+and drive Paid and Pending in `get_customer_invoice_summary` and
+`get_customer_activity_detail`. The app does not write payments; after
+migration 71 only the service role or the database owner does. A future
+accounting integration starts from a new design, not from the removed code.
+
+The baseline still holds other functions that are not granted to `anon` or
+`authenticated`. They are not API: do not grant one to make a call work; add a
+guarded RPC in a new migration instead.
+
+The five printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`,
+`print-invoice-preprinted`, `print-via-ipp`, `get-printer-status`) answer 503
+from the router until printing is accepted ([PRINTING.md](PRINTING.md),
+"Activation acceptance").
+
+## Settings UX batch (migrations 76 to 78, 2026-10-14)
+
+Errors of `replace_item_rates`, `undo_rate_change` and the rate functions are
+`{ success: false, error, error_code, data }`. The service-account answers (`set_service_account`
+and `SERVICE_ACCOUNT_READ_ONLY`) are `{ success: false, error, error_code, message }` with no `data`
+(`delete_user_account` and `operator_review_enrollment` also carry `code`); `assign_customer_to_user`
+and `remove_customer_assignment` return a boolean and raise an exception whose message starts with
+`SERVICE_ACCOUNT_READ_ONLY`. Days are India
+days (`warehouse_security.business_date(now())`), not UTC days.
+
+### `replace_item_rates(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_bands jsonb, p_replace_later boolean DEFAULT false, p_mode text DEFAULT 'change', p_move_from date DEFAULT NULL, p_seen_rows uuid[] DEFAULT NULL)`
+
+Changes one scope (item, customer or NULL for the default rate, price type) "from a date" in one
+transaction (a refusal after the first write undoes all of them). A band is
+`{weight_min, weight_max, unit_price, labour_rate, tax_percent}` (up to 10; whole kilograms; amounts
+with at most two decimals; labour is not read and is stored as 0 for `one_time`). Default-rate bands
+must start at 0 and follow on without gaps; customer bands may have gaps. Roles: admin, supervisor,
+staff.
+
+- `p_mode = 'change'` (default): rows in force on `p_starts_on` end the day before, rows starting on
+  that day that are already in force are deleted, the bands are added from that day. A rate
+  planned (not begun) to start on that day or later is refused with `LATER_RATES_EXIST` unless
+  `p_replace_later` is true, which deletes it. Exception: new bands (not a stop) that start on a
+  planned rate's own start day replace it when its id is listed in `p_seen_rows`.
+  `p_bands = []` stops the rate. If every row in force that day shares one last day E and no row
+  starts later, the new rows keep that stop (`effective_to = E`); `data.kept_end` is E, else null.
+- `p_mode = 'correct'`: `p_starts_on` must be the start of the rows in force that day
+  (`NOT_A_RATE_START` otherwise). Exactly the rows starting that day are replaced, the new rows keep
+  their last day (`data.kept_end`, null when open), later rows are never touched and
+  `p_replace_later` is ignored (`LATER_RATES_EXIST` is never returned). `p_bands` needs at least
+  one band.
+- `p_move_from` (only with `'change'`, else `INVALID_MODE`): first undoes the change that starts on
+  `p_move_from` (as `undo_rate_change`: its rows go, the rows it ended are opened again,
+  `data.reopened`), then applies the change from `p_starts_on`, in the same transaction.
+  `NOTHING_TO_MOVE` if nothing starts on `p_move_from`.
+- `p_seen_rows` (optional): the ids of the rows the editor loaded for this scope. A row the call would
+  end, move or delete that is not listed was changed by someone else: the answer is `STALE_RATES`
+  (`data.ids` = the unseen ids) and nothing is written. NULL skips the check. Moving or undoing a
+  planned rate that carried a scheduled stop gives the stop back to the rows it reopens.
+- Staff: `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
+  today (`PAST_DATE_NOT_ALLOWED`); rows of the scope that start on `p_starts_on` when that day is
+  today give `RATE_IN_FORCE_MANAGER_ONLY` (a rate that began today is for administrators and
+  supervisors), in either mode.
+
+Answer: `{success:true, message:'Rates saved', data:{item_id, customer_id, price_type, starts_on, mode, move_from, kept_end, ended:[{id,effective_from,effective_to}], removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}], added:[{id,weight_min,weight_max,unit_price,labour_rate,tax_percent}]}}`.
+`error_code`: `INVALID_PRICE_TYPE`, `INVALID_MODE`, `INVALID_DATE` (outside 3 years back to 2 years
+ahead; also for `p_move_from`), `PAST_DATE_NOT_ALLOWED`, `RATE_IN_FORCE_MANAGER_ONLY`,
+`ITEM_NOT_FOUND`, `CUSTOMER_NOT_FOUND`, `INVALID_BANDS`, `INVALID_BAND` (`data.index`, and
+`data.field` when a weight is wrong), `INVALID_AMOUNT` (`data.index`, `data.field`), `BANDS_OVERLAP`,
+`BANDS_GAP` (`data.expected_min`), `LATER_RATES_EXIST` (`data.later`, change mode only),
+`NOT_A_RATE_START`, `NOTHING_TO_MOVE`, `NOTHING_TO_STOP`. A customer account is refused with
+SQLSTATE 42501.
+
+`find_or_create_item_storage_price` is for administrators and supervisors only (no app code calls
+it); it uses the India day, stores labour 0 for one-time and refuses an overlapping row
+(`BANDS_OVERLAP`). `get_item_storage_prices` without `include_expired` hides rows that ended before
+the India day.
+
+### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date)`
+
+Undoes the change of one scope that starts on `p_starts_on` in one transaction: the rows with
+`effective_from = p_starts_on` are deleted, and the rows that ended the day before
+(`effective_to = p_starts_on - 1`) are opened again, up to the day before the next planned rate of
+the scope, or without an end if there is none. This is how "cancel the new rate" and "undo the
+stop" work: the rate in force before the change continues. Roles: admin, supervisor, staff; staff
+only for a change that has not begun (`p_starts_on` after today), managers also for one that has.
+The history trigger records the deletes and updates. Answer:
+`{success:true, message:'Change undone', data:{item_id, customer_id, price_type, starts_on, removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}]}}`.
+`error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`),
+`PAST_DATE_NOT_ALLOWED` (staff, change starting today or earlier), `ITEM_NOT_FOUND`,
+`CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
+`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
+refused with SQLSTATE 42501.
+
+### Changed price functions
+
+- `create_item_storage_price`, `update_item_storage_price`: refuse an overlap of the same item,
+  customer, price type, weight and days (`BANDS_OVERLAP`); a one-day rate is valid
+  (`effective_to >= effective_from`); `one_time` stores labour 0; staff get
+  `RATE_IN_FORCE_MANAGER_ONLY` (message "Only administrators and supervisors can change a rate that
+  is already in force") when the row has started or the new start is in the past.
+- `delete_item_storage_price`: the same refusal for staff on a row that has started. The old
+  nine-argument `update_item_storage_price` follows the same staff rule.
+- `get_item_storage_prices`: a final `id` sort key. `search_customers`: every typed word may occur
+  anywhere in the name (mobile still by prefix); names starting with the text come first.
+
+### `operator_review_enrollment(p_user_id uuid, p_decision text, p_customer_ids uuid[] DEFAULT '{}', p_role text DEFAULT 'customer')`
+
+Administrators only. `p_role` is `customer`, `staff` or `supervisor`. For staff and supervisor
+`p_customer_ids` must be empty (`CUSTOMERS_NOT_ALLOWED`) and the profile takes that role with no
+assignment; `customer` is as before. Answer `{success:true, data:{status, role}}`. `INVALID_ROLE`
+for any other value; the earlier refusals are unchanged. Returned as `error_code` and `code`.
+
+### Service accounts
+
+- `user_profiles.is_service_account`; returned by `get_users_list` (each row) and `get_user_details` (`user`).
+- `update_user_role`, `update_user_status`, `delete_user_account`, `clear_user_central_identity` and
+  `operator_review_enrollment` answer `error_code` `SERVICE_ACCOUNT_READ_ONLY` for such a profile;
+  `assign_customer_to_user` and `remove_customer_assignment` raise an exception whose message starts
+  with `SERVICE_ACCOUNT_READ_ONLY`. A service account does not count as another
+  administrator for the last-administrator rule.
+- `set_service_account(p_user_id uuid, p_is_service boolean)`: administrators (and the service key).
+  Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
+  `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
+

@@ -64,6 +64,14 @@ services:
   cups:
     logging: *default-logging
 
+  sensor-bridge:
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
   meta:
     logging: *default-logging
     deploy:
@@ -274,7 +282,6 @@ services:
           memory: 128M
 
   grafana:
-    image: warehouse-grafana:local
     build:
       # Its own directory: with the whole of docker/ as context, a change to any
       # other recipe or configuration file would look like a changed Grafana recipe.

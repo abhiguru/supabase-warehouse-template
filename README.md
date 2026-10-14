@@ -73,14 +73,26 @@ and invoice totals are computed server-side ([docs/INVOICE_RULES.md](docs/INVOIC
 Generated PDFs use a generic, escaped starter layout, private storage and
 one-hour signed links. Configure business details and document terms before use.
 
-Realtime supports order/cart live updates. Printing and sensors still require
-hardware acceptance; monitoring is optional. The three preprinted document
+Realtime supports order/cart live updates. Tapo temperature and humidity
+sensors reach the backend through an optional bridge container (Compose profile
+`sensors`, GPL-3.0-or-later code in `docker/sensor-bridge/`; see
+[docs/SENSORS.md](docs/SENSORS.md)); the app sees them where the `sensors`
+capability is turned on. Printing and sensors still require hardware
+acceptance; monitoring is optional. The three preprinted document
 functions (`print-dispatch-preprinted`, `print-grn-preprinted`,
 `print-invoice-preprinted`) and print status monitoring are exported for
 contract parity, but physical printing hardware remains unverified. See
 [docs/API_CONTRACT.md](docs/API_CONTRACT.md) for the exported surface and
 [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for the exact
 boundary of what has been accepted.
+
+The unused Tally accounting integration (invoice sync queue and trigger, receipt
+and contra vouchers, bank statement reconciliation, ledger map) and the dead
+legacy functions of the baseline were removed by migration 71 (2026-10-13).
+Recorded payments remain and drive the Paid and Pending figures of the invoice
+reports; the app does not write them. A future accounting integration starts
+from a new design. The remaining ungranted baseline functions are not API
+([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
 
 ## Contributing, CI and history
 
@@ -96,5 +108,7 @@ manually.
 The source-demo release `v0.2.2-demo` and the 2026 pilot are summarized in
 [docs/HISTORY.md](docs/HISTORY.md).
 
-MIT covers project code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+MIT covers project code, except the optional sensor bridge in
+`docker/sensor-bridge/`, which is GPL-3.0-or-later because it uses python-kasa
+(GPL-3.0). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 and [LICENSES](LICENSES/) for bundled upstream material.

@@ -116,7 +116,7 @@ const deniedCustomerDispatches=await api('/rest/v1/rpc/get_customer_dispatch_lis
 });
 assert.ok(!deniedCustomerDispatches.ok || deniedCustomerDispatches.data?.success===false,'other-customer dispatch list denied');
 const dispatchItems=await api(`/rest/v1/dispatch_trl?disp_id=eq.${dispatchId}&select=id`,adminToken);
-const invoiceNumber=Date.now()%1000000000;
+const invoiceNumber=1+Date.now()%99999998;
 const financialYear=new Date().getUTCFullYear();
 success(await rpc('save_invoice',adminToken,{p_invoice_data:{inv_no:invoiceNumber,inv_fin_year:financialYear,
   gr_id:grnId,gr_no:number,customer_id:customerId,customer_name:'Example Customer A',inv_date:new Date().toISOString(),total:100,
