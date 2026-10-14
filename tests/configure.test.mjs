@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync, symlinkSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, copyFileSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
@@ -224,7 +224,7 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(readFileSync(envPath, 'utf8'), original);
 
     // A state written before the two lines existed: they are appended; "off" leaves such a state alone.
-    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=\n/gm, '');
+    const older = original.replace(/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE|LOCAL_CODE)=\n/gm, '');
     assert.doesNotMatch(older, /^CENTRAL_/m);
     writeFileSync(envPath, older, { mode: 0o600 });
     assert.equal(configure(root, { stateDir, centralIssuer: 'off' }).centralUpdated, false);
@@ -376,7 +376,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -384,10 +384,12 @@ test('setup.sh passes the central options on and applies the issuer to the datab
   // The issuer is read from the state's compose.env (never sourced) and handed to psql as a quoted variable;
   // the database container has no environment entry for it, so an upgrade does not recreate it.
   assert.match(setup, /CENTRAL_ISSUER_VALUE="\$\(sed -n 's\/\^CENTRAL_ISSUER=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
-  assert.match(setup, /-v central_issuer="\$CENTRAL_ISSUER_VALUE" < "\$ROOT\/scripts\/configure-central\.sql"/);
+  assert.match(setup, /CENTRAL_LOCAL_CODE_VALUE="\$\(sed -n 's\/\^CENTRAL_LOCAL_CODE=\/\/p' "\$STATE\/config\/compose\.env" \| head -n 1\)"/);
+  assert.match(setup, /-v central_issuer="\$CENTRAL_ISSUER_VALUE" -v central_local_code="\$CENTRAL_LOCAL_CODE_VALUE" < "\$ROOT\/scripts\/configure-central\.sql"/);
   assert.doesNotMatch(setup, /(?:^|\s)(?:source|\.)\s+"?\$STATE/m);
   assert.doesNotMatch(sql, /\\getenv/);
   assert.match(sql, /VALUES \('central_issuer',:'central_issuer'\)/);
+  assert.match(sql, /VALUES \('central_local_code','on'\)/);
   assert.doesNotMatch(sql, /CENTRAL_JWKS/, 'the database holds the issuer only');
   const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(compose.slice(compose.indexOf('\n  db:\n')), /CENTRAL_/, 'the db service has no central setting');
@@ -520,5 +522,83 @@ test('set-capability flips one manifest flag in place, keeps every other byte an
     assert.match(run(['sensors', 'on']).stderr, /mode 0700/);
     chmodSync(stateDir, 0o700);
     assert.equal(readFileSync(manifestPath, 'utf8'), original, 'nothing was changed by a refusal');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('central local code (--central-local-code): off by default, kept on a rerun without the flag, refused without central sign-in', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-localcode-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  const issuer = 'https://login.association.example.test';
+  const jwks = 'https://login.association.example.test/.well-known/jwks.json';
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    const value = dir => readEnv(join(dir, 'config/compose.env')).CENTRAL_LOCAL_CODE;
+
+    // Default: the line exists and is empty (off), with and without central sign-in.
+    const plain = join(scratch, 'plain');
+    assert.equal(configure(root, { ...base, stateDir: plain }).created, true);
+    assert.equal(value(plain), '');
+    const defaults = join(scratch, 'defaults');
+    configure(root, { ...base, stateDir: defaults, centralIssuer: issuer, centralJwksUrl: jwks });
+    assert.equal(value(defaults), '');
+    assert.equal(configure(root, { stateDir: defaults, centralLocalCode: 'off' }).centralUpdated, false, 'off on an off state changes nothing');
+
+    // Fresh setup with it on.
+    const fresh = join(scratch, 'fresh');
+    assert.equal(configure(root, { ...base, stateDir: fresh, centralIssuer: issuer, centralJwksUrl: jwks, centralLocalCode: 'on' }).created, true);
+    assert.equal(value(fresh), 'on');
+
+    // Rerun: on and off by the flag alone, byte-stable when unchanged.
+    assert.equal(configure(root, { stateDir: defaults, centralLocalCode: 'on' }).centralUpdated, true);
+    assert.equal(value(defaults), 'on');
+    assert.equal(configure(root, { stateDir: defaults, centralLocalCode: 'on' }).centralUpdated, false);
+    // A rerun without the flag keeps the stored value, also when the keys or the issuer change.
+    assert.equal(configure(root, { stateDir: defaults }).centralUpdated, false);
+    assert.equal(value(defaults), 'on');
+    assert.equal(configure(root, { stateDir: defaults, centralIssuer: issuer, centralJwksUrl: `${jwks}?v=2` }).centralUpdated, true);
+    assert.equal(value(defaults), 'on');
+    assert.equal(readEnv(join(defaults, 'config/compose.env')).CENTRAL_JWKS_URL, `${jwks}?v=2`);
+    assert.equal(configure(root, { stateDir: defaults, centralLocalCode: 'off' }).centralUpdated, true);
+    assert.equal(value(defaults), '');
+
+    // Turning central sign-in off clears the extra code with it.
+    configure(root, { stateDir: defaults, centralLocalCode: 'on' });
+    assert.equal(configure(root, { stateDir: defaults, centralIssuer: 'off' }).centralUpdated, true);
+    assert.equal(value(defaults), '');
+    assert.equal(readEnv(join(defaults, 'config/compose.env')).CENTRAL_ISSUER, '');
+
+    // Refused: without central sign-in (fresh, rerun, issuer off in the same call), and a value that is not on or off.
+    const before = readFileSync(join(plain, 'config/compose.env'), 'utf8');
+    assert.throws(() => configure(root, { stateDir: plain, centralLocalCode: 'on' }), /needs central sign-in/);
+    assert.throws(() => configure(root, { stateDir: plain, centralIssuer: 'off', centralLocalCode: 'on' }), /needs central sign-in/);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused'), centralLocalCode: 'on' }), /needs central sign-in/);
+    assert.throws(() => configure(root, { stateDir: plain, centralLocalCode: 'yes' }), /must be on or off/);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'refused2'), centralLocalCode: 'yes' }), /must be on or off/);
+    assert.equal(existsSync(join(scratch, 'refused')), false);
+    assert.equal(readFileSync(join(plain, 'config/compose.env'), 'utf8'), before, 'a refused flag changes nothing');
+
+    // A state written before the line existed: the line is added only when the flag asks for it.
+    const older = join(scratch, 'older');
+    configure(root, { ...base, stateDir: older, centralIssuer: issuer, centralJwksUrl: jwks });
+    const olderPath = join(older, 'config/compose.env');
+    const stripped = readFileSync(olderPath, 'utf8').replace(/^CENTRAL_LOCAL_CODE=\n/m, '');
+    writeFileSync(olderPath, stripped, { mode: 0o600 });
+    assert.equal(configure(root, { stateDir: older }).centralUpdated, false);
+    assert.equal(configure(root, { stateDir: older, centralLocalCode: 'off' }).centralUpdated, false);
+    assert.equal(readFileSync(olderPath, 'utf8'), stripped);
+    assert.equal(configure(root, { stateDir: older, centralLocalCode: 'on' }).centralUpdated, true);
+    assert.equal(readFileSync(olderPath, 'utf8'), `${stripped}CENTRAL_LOCAL_CODE=on\n`);
+
+    // The command line.
+    assert.deepEqual(parseConfigureArgs(['--state-dir', fresh, '--central-local-code', 'on']), { stateDir: fresh, centralLocalCode: 'on' });
+    const script = new URL('../scripts/configure.mjs', import.meta.url).pathname;
+    const run = args => spawnSync(process.execPath, [script, '--state-dir', plain, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+    const refused = run(['--central-local-code', 'on']);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /Configure: --central-local-code on needs central sign-in/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -352,6 +352,8 @@ services:
       CENTRAL_ISSUER: ${CENTRAL_ISSUER:-}
       CENTRAL_JWKS_URL: ${CENTRAL_JWKS_URL:-}
       CENTRAL_JWKS_FILE: ${CENTRAL_JWKS_FILE:-}
+      # on = this facility also asks for its own SMS code at every central sign-in (default off).
+      CENTRAL_LOCAL_CODE: ${CENTRAL_LOCAL_CODE:-}
       CENTRAL_JWKS_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
     command:

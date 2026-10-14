@@ -46,6 +46,27 @@ export function centralValues(centralIssuer, centralJwksUrl, centralJwksFile) {
   return { values: { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: CENTRAL_KEY_FILE }, keyFile: centralKeyFile(centralJwksFile) };
 }
 
+// The facility's own extra code (--central-local-code on|off; owner decision of
+// 2026-10-15): with it on, this facility asks for an SMS code of its own at
+// every central sign-in; off (the default) leaves the association's sign-in
+// alone. Returns the CENTRAL_LOCAL_CODE line to write, or {} to leave the state
+// as it is: a rerun without the flag keeps the stored value, exactly as the
+// other central lines are kept, and only `--central-issuer off` clears it (it
+// is meaningless without central sign-in). `on` is refused unless central
+// sign-in is configured, in this call or already in the state (`current` is
+// the text of an existing compose.env, null on a fresh setup).
+export function centralLocalCodeValues(flag, central, current) {
+  if (flag !== undefined && flag !== 'on' && flag !== 'off') throw new Error('--central-local-code must be on or off.');
+  const stored = current ? current.match(/^CENTRAL_LOCAL_CODE=(.*)$/m)?.[1] ?? '' : '';
+  const issuer = central ? central.values.CENTRAL_ISSUER : (current?.match(/^CENTRAL_ISSUER=(.*)$/m)?.[1] ?? '');
+  if (flag === 'on') {
+    if (!issuer) throw new Error('--central-local-code on needs central sign-in: also give --central-issuer with --central-jwks-url or --central-jwks-file, or set it up first.');
+    return { CENTRAL_LOCAL_CODE: 'on' };
+  }
+  if ((flag === 'off' || (central && !issuer)) && stored) return { CENTRAL_LOCAL_CODE: '' };
+  return {};
+}
+
 // The bytes of a key file the operator received from the association, after
 // the checks the edge function applies to a fetched key set, plus one: a file
 // that holds private key material is refused outright.
@@ -140,8 +161,9 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, faultAfterManifest = false } = {}) {
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
+  if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
   const state = resolve(stateDir);
@@ -181,13 +203,16 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
       }
-      if (central) {
+      if (central || centralLocalCode !== undefined) {
         const current = readFileSync(envPath, 'utf8');
+        // The extra code is decided before anything is written, so a refused flag changes nothing.
+        const localCode = centralLocalCodeValues(centralLocalCode, central, current);
         // "Off" on a state that never had the lines changes nothing.
         const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=/m.test(current);
-        const updated = absent && !central.values.CENTRAL_ISSUER ? current : setCentralLines(current, central.values);
+        const updated = !central ? setCentralLines(current, localCode)
+          : absent && !central.values.CENTRAL_ISSUER ? current : setCentralLines(current, { ...central.values, ...localCode });
         // The key file first: compose.env never names a file that is not there.
-        if (placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
+        if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
       }
       // An installation made before signed backups gets its backup key here;
@@ -212,7 +237,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generateSigningKeys(),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
-    ...(central?.values ?? {}) };
+    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
   for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
@@ -233,9 +258,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
-    '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile' };
+    '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
+    '--central-local-code': 'centralLocalCode' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;

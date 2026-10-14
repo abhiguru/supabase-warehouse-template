@@ -9,8 +9,10 @@ import { KEY_SET_MAX_BYTES, usableKeys } from './key-set.mjs';
 // service signs a short-lived identity token for this facility; this function
 // verifies it and hands the identity to public.operator_central_exchange,
 // which answers as a correct SMS code does (pending request, session, or
-// refusal). An existing profile that is not linked to a central identity yet
-// is reached only with a correct SMS code of this facility as well (otp_code).
+// refusal). The association's sign-in alone opens an existing person profile
+// of this facility (owner decision 2026-10-15). Only where the facility has
+// switched on its own extra code does it ask for a correct SMS code of this
+// facility (otp_code) at every sign-in; link_required then means "send the code".
 // The token itself is never logged and never echoed.
 
 type Jwk = Record<string, unknown>;
@@ -61,8 +63,8 @@ const answers: Record<string, [number, string]> = {
   account_unavailable: [403, 'Account unavailable'],
   identity_conflict: [409, 'This phone number is linked to another sign-in. Ask the facility administrator.'],
   enrollment_limited: [429, 'Too many new access requests. Try again tomorrow.'],
-  // An existing profile is linked only with a code this facility sent by SMS.
-  link_required: [409, 'Confirm this phone number with a code from this facility to finish linking.'],
+  // This facility asks for its own code at every sign-in (the setting is off by default).
+  link_required: [409, 'This facility asks for its own code each time you sign in.'],
   // What the SMS check answers, with the texts operator-otp uses.
   invalid_otp: [400, 'Invalid or expired OTP'],
   rate_limited: [429, 'Too many OTP requests. Try again later.'],

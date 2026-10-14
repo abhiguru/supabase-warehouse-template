@@ -23,7 +23,7 @@ the facility's **owner**, **staff** and **clients** use for orders, tracking, go
 
 The target design is in the app repository's
 [docs/CENTRAL_LOGIN.md](https://github.com/abhiguru/rn-warehouse-template/blob/main/docs/CENTRAL_LOGIN.md).
-The facility half of it is implemented here (migrations 49 and 64, 2026-10-12). The central
+The facility half of it is implemented here (migrations 49 and 64, 2026-10-12; 81, 2026-10-15). The central
 service and the app's central screens were built and tested on 2026-10-12 (what ran and what
 did not: [docs/CENTRAL_LOGIN.md](docs/CENTRAL_LOGIN.md), "Tested, and not tested"); central
 login stays off by default.
@@ -41,11 +41,24 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
   `operator_central_exchange`, which accepts a token once and then does what a correct SMS
   code does: a pending access request (the existing enrollment review), the existing
   session for an approved active profile, or a refusal for a rejected or disabled one.
-- **The central service's word alone never opens an existing profile.** A profile that is
-  not linked yet is linked only together with a correct SMS code of this facility
-  (`otp_code`, checked by `operator_verify_otp`); without it the answer is `link_required`.
-  The facility relies on the central service for new requests (an administrator approves)
-  and for sign-ins of profiles already linked. Do not weaken this.
+- **One association sign-in opens every facility (owner decision of 2026-10-15, migration 81).**
+  The central token opens an existing **person** profile: found by the central-verified mobile
+  the first time (the profile is then linked to the identity), by central `sub` afterwards, with
+  no SMS code of this facility. This deliberately replaces the earlier rule "the central
+  service's word alone never opens an existing profile": the reason is that one association
+  sign-in, with one code sent by the association, must work at every facility. **Accepted
+  consequence:** whoever controls the central service (or a number's SMS there) can open any
+  profile with that number at a facility that leaves the extra code off, administrators
+  included. Do not "fix" this back without the owner. New people still file an access request
+  that an administrator approves (no code); revocation stays local; `identity_conflict` stays.
+  The decision order is in the header of migration 81 and `docs/CENTRAL_LOGIN.md`.
+- **Service accounts are never opened by a central token** (`user_profiles.is_service_account`,
+  migration 78): the exchange answers `account_unavailable` for one, found by phone or by
+  subject, and does not link it. Keep that guard whenever the exchange changes.
+- **The facility's own code is optional and off by default** (`setup.sh --central-local-code
+  on|off`, `auth_config` key `central_local_code`): with it on, an approved profile is asked
+  for a facility SMS code (`otp_code`, `operator_verify_otp`; `link_required` without it) at
+  **every** new sign-in, linked or not.
 - A profile carries its central identity (`user_profiles.central_issuer`,
   `central_subject`). An administrator unlinks one with `clear_user_central_identity`.
 - Revocation stays local: `update_user_status(false)` revokes a profile's sessions.

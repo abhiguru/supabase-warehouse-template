@@ -20,3 +20,14 @@ export function advertisedCentralIssuer(settings: {
   if (!settings.jwksFile && !httpsAddress(settings.jwksUrl)) return null;
   return settings.issuer!;
 }
+
+// centralLogin as get-public-config answers it: the issuer, and whether this
+// facility asks for its own code at every sign-in (localCode, default false),
+// or null where central sign-in is not offered. The flag is advertised only
+// together with the issuer, so a facility without central login shows nothing.
+export function advertisedCentralLogin(settings: {
+  authMode?: string; appEnv?: string; issuer?: string; jwksUrl?: string; jwksFile?: string; localCode?: string;
+}): { issuer: string; localCode: boolean } | null {
+  const issuer = advertisedCentralIssuer(settings);
+  return issuer ? { issuer, localCode: settings.localCode === 'on' } : null;
+}
