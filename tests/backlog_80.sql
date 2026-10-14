@@ -270,13 +270,15 @@ SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
   :'disp_id',jsonb_build_object('supervisor_id',:'sync_id')::text,:'d_lines')) AS upd_sa \gset
+-- Read straight after the refused call: the next call (upd_person) changes the supervisor on purpose.
+SELECT COALESCE(supervisor_id::text,'') AS sup_after_sa FROM public.dispatch WHERE id=:'disp_id'::uuid \gset
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
   :'disp_id',jsonb_build_object('supervisor_id',:'person_id','supervisor_name','Backlog Person Supervisor')::text,:'d_lines')) AS upd_person \gset
 RESET ROLE;
 -- update_dispatch_smart catches every exception and answers {success:false, error:<message>} (its own convention).
 SELECT pg_temp.bl_assert(:'upd_sa'::jsonb->>'success'='false' AND :'upd_sa'::jsonb->>'error'='Supervisor must be a person, not a service account'
- AND (SELECT COALESCE(supervisor_id::text,'')=:'sup_before_sa' FROM public.dispatch WHERE id=:'disp_id'::uuid),
- 'update_dispatch_smart: a person naming a service account is refused, supervisor kept ('||:'sup_before_sa'||'): '||:'upd_sa');
+ AND :'sup_after_sa'=:'sup_before_sa' AND :'sup_before_sa'<>'',
+ 'update_dispatch_smart: a person naming a service account is refused, supervisor kept ('||:'sup_before_sa'||' -> '||:'sup_after_sa'||'): '||:'upd_sa');
 SELECT pg_temp.bl_assert(:'upd_person'::jsonb->>'success'='true' AND (SELECT supervisor_id=:'person_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),
  'update_dispatch_smart: a person naming a person is accepted: '||:'upd_person');
 SELECT set_config('request.jwt.claims',:'sync_claims',true);
