@@ -1,5 +1,10 @@
 import { createClient } from '../vendor/supabase-js.mjs'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
+import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-rule.ts'
+import { submittedJob } from '../_shared/ipp-validate.ts'
+import { groupInvoiceLines, paginateInvoiceRows } from '../_shared/invoice-print-layout.ts'
+import type { InvoicePrintPage } from '../_shared/invoice-print-layout.ts'
+import { lineStorageAmount, cumulativeStorageAmount, resolveInvoiceFinYear } from '../_shared/invoice-print-amounts.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 
 const corsHeaders = {
@@ -55,7 +60,7 @@ const LAYOUT = {
   // Page dimensions
   PAGE_WIDTH: 91,            // 23.2cm @ 10 CPI = 91.3 chars
   FORM_HEIGHT: 47,           // 20cm @ 6 LPI = 47.2 lines
-  ITEMS_PER_PAGE: 20,        // Max 20 items per invoice page (increased from 16)
+  ITEMS_PER_PAGE: 20,        // Item ROWS per invoice page: group headers count (invoice-print-layout.ts)
 
   // Header section (positions scaled for 10 CPI)
   HEADER_START_LINE: 0,      // No empty lines at start
@@ -164,11 +169,14 @@ function formatCurrency(amount: number): string {
   return amount.toFixed(2);
 }
 
-// Generate a single invoice page (14 items max)
+// Marks a group header repeated at the top of a page, inside the item-name width.
+const CONTINUED = ' contd.';
+
+// Generate a single invoice page: the rows paginateInvoiceRows gave it
 function generateInvoicePage(
   invoice: any,
-  pageItems: any[],
-  cumulativeItems: any[],  // All items from page 1 to current page for cumulative totals
+  page: InvoicePrintPage<any>,
+  cumulativeItems: any[],  // All lines from page 1 to current page for cumulative totals
   pageNum: number,
   totalPages: number,
   isLastPage: boolean
@@ -232,20 +240,19 @@ function generateInvoicePage(
   // Add 2 more blank lines after customer address (3 total before items)
   output += '\n\n\n';
 
-  // Print each item - GRN header row followed by dispatch detail rows
-  let previousGrnItemId = null;
-  let printedLines = 0;
-  pageItems.forEach((item: any, index: number) => {
+  // Print each row - a GRN group header row, or a dispatch detail row
+  page.rows.forEach((row) => {
     const w = LAYOUT.COL_WIDTHS;
-    const currentGrnItemId = item.grn_items_id;
-    const isFirstInGroup = currentGrnItemId !== previousGrnItemId;
+    const item: any = row.line;
 
-    // If first in group, print GRN header row first
-    if (isFirstInGroup) {
+    if (row.kind === 'group') {
       let headerLine = '';
 
       // GRN Header: Item Name, Packaging, Inward Qty, GRN Date, (empty dispatch cols), GRN No
-      headerLine += padRight(truncateString(item.grn_items_item_name || '', w.ITEM_NAME), w.ITEM_NAME);
+      const itemName = row.continued
+        ? truncateString(item.grn_items_item_name || '', w.ITEM_NAME - CONTINUED.length) + CONTINUED
+        : truncateString(item.grn_items_item_name || '', w.ITEM_NAME);
+      headerLine += padRight(itemName, w.ITEM_NAME);
       headerLine += ' '.repeat(w.SPACE1);
 
       const packingDetails = item.grn_items_packaging || item.grn_items_package_mark || '';
@@ -277,10 +284,8 @@ function generateInvoicePage(
       headerLine += padRight(truncateString(grnRef, w.GRN_NO), w.GRN_NO);
 
       output += headerLine + '\n';
-      printedLines++;
+      return;
     }
-
-    previousGrnItemId = currentGrnItemId;
 
     // Dispatch detail row: (empty GRN cols), Out Qty, Dispatch Date, Duration, Weight, Rate, Amount
     let detailLine = '';
@@ -313,23 +318,19 @@ function generateInvoicePage(
     detailLine += padLeft(formatCurrency(item.charge || 0), w.RATE);
     detailLine += ' '.repeat(w.SPACE9);
 
-    const duration = parseFloat(item.duration) || 0;
-    const dispatchQty = item.dispatches_items_disp_qty || 0;
-    const rate = item.charge || 0;
-    const calculatedAmount = duration * dispatchQty * rate;
-    detailLine += padLeft(formatCurrency(calculatedAmount), w.AMOUNT);
+    // The storage amount the database computed (migration 72): a ONE_TIME line is charged once.
+    detailLine += padLeft(formatCurrency(lineStorageAmount(item)), w.AMOUNT);
     detailLine += ' '.repeat(w.SPACE10);
 
     // Empty GRN No column
     detailLine += ' '.repeat(w.GRN_NO);
 
     output += detailLine + '\n';
-    printedLines++;
   });
 
   // === FILL EMPTY ITEM ROWS ===
-  // Account for extra header rows (printedLines includes both header + detail rows)
-  const emptyRowCount = Math.max(0, LAYOUT.ITEMS_PER_PAGE - printedLines);
+  // The page never holds more rows than the form (header rows included).
+  const emptyRowCount = Math.max(0, LAYOUT.ITEMS_PER_PAGE - page.rows.length);
   output += emptyLines(emptyRowCount);
 
   // === TOTALS SECTION ===
@@ -348,13 +349,8 @@ function generateInvoicePage(
   // Calculate cumulative total dispatch qty (sum ALL rows from page 1 to current page)
   const totalDispQty = cumulativeItems.reduce((sum: number, item: any) => sum + (item.dispatches_items_disp_qty || 0), 0);
 
-  // Calculate cumulative total amount (sum all item amounts from page 1 to current page)
-  const totalAmount = cumulativeItems.reduce((sum: number, item: any) => {
-    const duration = parseFloat(item.duration) || 0;
-    const dispatchQty = item.dispatches_items_disp_qty || 0;
-    const rate = item.charge || 0;
-    return sum + (duration * dispatchQty * rate);
-  }, 0);
+  // Cumulative storage amount (the server amounts of all lines from page 1 to current page, in paise)
+  const totalAmount = cumulativeStorageAmount(cumulativeItems);
 
   // Totals row (always show on every page)
   // Calculate exact position of INW_QTY column: ITEM_NAME + SPACE1 + PACKAGING + SPACE2
@@ -468,21 +464,8 @@ function generatePrePrintedInvoice(invoiceData: any): string {
   const invoice = invoiceData;
   const rawItems = invoice.trl || []; // trl array contains denormalized items
 
-  // Group items by grn_items_id (keep all items, just sort them by group)
-  const groupedItemsMap = new Map<string, any[]>();
-  rawItems.forEach((item: any) => {
-    const grnItemId = item.grn_items_id;
-    if (!groupedItemsMap.has(grnItemId)) {
-      groupedItemsMap.set(grnItemId, []);
-    }
-    groupedItemsMap.get(grnItemId)!.push(item);
-  });
-
-  // Flatten back to array (groups stay together)
-  const items: any[] = [];
-  groupedItemsMap.forEach((groupItems) => {
-    items.push(...groupItems);
-  });
+  // Lines of the same GRN item together (the groups in the order first seen)
+  const items: any[] = groupInvoiceLines(rawItems);
 
   let output = '';
 
@@ -494,19 +477,19 @@ function generatePrePrintedInvoice(invoiceData: any): string {
   output += ESC + '\x51' + String.fromCharCode(110); // Right margin = 110 chars for 10 CPI
   // RAW mode - CUPS will NOT wrap lines, printer gets full ESC/P control
 
-  // Calculate total pages needed
-  const totalPages = Math.ceil(items.length / LAYOUT.ITEMS_PER_PAGE);
+  // Pages by printed rows: a group header takes a row, is repeated (contd.) when
+  // its group goes on to the next page, and never ends a page on its own.
+  const pages = paginateInvoiceRows(items, LAYOUT.ITEMS_PER_PAGE);
+  const totalPages = pages.length;
 
   // Generate each page - simply concatenate like GRN/Dispatch (continuous form handles positioning)
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    const startIdx = (pageNum - 1) * LAYOUT.ITEMS_PER_PAGE;
-    const endIdx = Math.min(startIdx + LAYOUT.ITEMS_PER_PAGE, items.length);
-    const pageItems = items.slice(startIdx, endIdx);
-    const cumulativeItems = items.slice(0, endIdx);  // All items from page 1 to current page
+    const page = pages[pageNum - 1];
+    const cumulativeItems = pages.slice(0, pageNum).flatMap((p) => p.lines);  // All lines from page 1 to current page
     const isLastPage = (pageNum === totalPages);
 
     // Simply concatenate each page's output - continuous form handles positioning
-    const pageContent = generateInvoicePage(invoice, pageItems, cumulativeItems, pageNum, totalPages, isLastPage);
+    const pageContent = generateInvoicePage(invoice, page, cumulativeItems, pageNum, totalPages, isLastPage);
     output += pageContent;
   }
 
@@ -535,8 +518,10 @@ Deno.serve(async (req) => {
     if (!start_inv_no_str || !end_inv_no_str) {
       throw new Error('Missing required parameters: start_inv_no_str and end_inv_no_str');
     }
+    // The financial year asked for, or India's current one (1 April to 31 March); used for the query and both answers.
+    const finYear = resolveInvoiceFinYear(inv_fin_year, new Date());
 
-    console.log(`print-invoice-preprinted: User ${userName} (${userProfile.role}) printing Invoice range:`, start_inv_no_str, 'to', end_inv_no_str, 'FY:', inv_fin_year);
+    console.log(`print-invoice-preprinted: User ${userName} (${userProfile.role}) printing Invoice range:`, start_inv_no_str, 'to', end_inv_no_str, 'FY:', finYear);
     console.log('Debug mode:', debug || false);
 
     // Call get_invoice_range_for_print RPC
@@ -544,7 +529,7 @@ Deno.serve(async (req) => {
       .rpc('get_invoice_range_for_print', {
         start_inv_no_str: start_inv_no_str,
         end_inv_no_str: end_inv_no_str,
-        inv_fin_year: inv_fin_year || new Date().getFullYear(),
+        inv_fin_year: finYear,
         limit_count: limit_count || 100
       });
 
@@ -600,7 +585,7 @@ Deno.serve(async (req) => {
           range: {
             start: start_inv_no_str,
             end: end_inv_no_str,
-            fin_year: inv_fin_year || new Date().getFullYear(),
+            fin_year: finYear,
             count: results.length
           },
           timestamp: new Date().toISOString()
@@ -630,8 +615,15 @@ Deno.serve(async (req) => {
 
     console.log('print-invoice-preprinted: Sending to printer...');
 
-    const result: any = await new Promise((resolve, reject) => {
+    // Bounded by SUBMIT_TIMEOUT_MS so the submission and the status monitor
+    // fit the worker's lifetime (print-monitor-rule.ts). No answer in time is
+    // an unconfirmed job (submittedJob below), never resubmitted.
+    const result: any = await submitWithTimeout((signal) => new Promise((resolve, reject) => {
       printer.execute("Print-Job", msg, (err: any, res: any) => {
+        if (signal.aborted) {
+          console.error('print-invoice-preprinted: IPP reply after the submission timeout, ignored:', err ?? 'reply');
+          return;
+        }
         if (err) {
           console.error('print-invoice-preprinted: IPP error:', err);
           reject(err);
@@ -640,23 +632,30 @@ Deno.serve(async (req) => {
           resolve(res);
         }
       });
-    });
+    }));
+    if (result === null) {
+      console.error(`print-invoice-preprinted: no reply from the printer within ${SUBMIT_TIMEOUT_MS / 1000} s`);
+    }
 
-    const jobId = result?.["job-attributes-tag"]?.["job-id"] || 'unknown';
-    const jobUri = result?.["job-attributes-tag"]?.["job-uri"] || '';
+    // Submitted only when the reply confirms the job with its id. Otherwise the
+    // paper may or may not come out: the job is recorded as 'unknown' (never
+    // resubmitted on a guess) and the caller is told the printer did not confirm it.
+    const submitted = submittedJob(result);
+    const jobId = submitted.ok ? submitted.jobId : null;
+    const jobUri = submitted.ok ? submitted.jobUri : '';
 
     // Log print job to database
     const { data: printJobRecord, error: logError } = await supabase
       .from('print_jobs')
       .insert({
-        cups_job_id: typeof jobId === 'number' ? jobId : null,
+        cups_job_id: jobId,
         job_type: 'Invoice',
         document_range_start: start_inv_no_str,
         document_range_end: end_inv_no_str,
         document_count: results.length,
         user_id: userId,
         user_name: userName,
-        status: 'printing',
+        ...(submitted.ok ? { status: 'printing' } : { status: 'unknown', error_message: 'The printer did not confirm the job' }),
         content_size: contentBuffer.length,
         printer_name: 'LQ1310_RAW'
       })
@@ -667,8 +666,23 @@ Deno.serve(async (req) => {
       console.error('print-invoice-preprinted: Failed to log print job:', logError);
     }
 
+    if (!submitted.ok) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'The printer did not confirm the job',
+          print_job_id: printJobRecord?.id || null,
+          timestamp: new Date().toISOString()
+        }, null, 2),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 502
+        }
+      );
+    }
+
     // Start background status monitoring (non-blocking)
-    if (printJobRecord?.id && typeof jobId === 'number') {
+    if (printJobRecord?.id && jobId !== null) {
       EdgeRuntime.waitUntil(
         monitorPrintJobStatus(
           printJobRecord.id,
@@ -687,7 +701,7 @@ Deno.serve(async (req) => {
         range: {
           start: start_inv_no_str,
           end: end_inv_no_str,
-          fin_year: inv_fin_year || new Date().getFullYear(),
+          fin_year: finYear,
           count: results.length
         },
         print_job: {
@@ -707,8 +721,8 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error('print-invoice-preprinted ERROR:', error);
 
-    // Handle auth errors with proper status codes
-    if (error.status && (error.status === 401 || error.status === 403)) {
+    // Handle auth errors and a refused request (400) with proper status codes
+    if (error.status && (error.status === 400 || error.status === 401 || error.status === 403)) {
       return createAuthErrorResponse(error, corsHeaders);
     }
 

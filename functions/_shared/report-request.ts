@@ -22,10 +22,26 @@ export interface ReportRequest {
   lang: ReportLang;
   /** The payment choice of the invoice history of one customer; null lists every invoice. */
   status: 'paid' | 'pending' | null;
+  /** The invoicing choice of the GRN activity of one customer; null lists every GRN. */
+  invoicing: InvoicingChoice | null;
+  /** The age bucket of the stock aging of one customer (the app's AgingBucketId); null lists every stock line. */
+  bucket: AgingBucket | null;
+  /** The search of the item stock summary, trimmed, given to the item RPC; null lists every item. */
+  search: string | null;
 }
 
+export const invoicingChoices = ['invoiced', 'not_invoiced'] as const;
+export type InvoicingChoice = typeof invoicingChoices[number];
+/** The app's AgingBucketId (src/components/reports/AgingBucketBar.tsx), not the RPC's bucket keys ('364+'). */
+export const agingBuckets = ['0-120', '121-240', '241-364', 'over-364'] as const;
+export type AgingBucket = typeof agingBuckets[number];
+/** The longest search, after trimming, as the app sends it. */
+export const maxSearchLength = 80;
+
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const allowedKeys = new Set(['report', 'customer_id', 'from', 'to', 'sort', 'lang', 'status']);
+const allowedKeys = new Set(['report', 'customer_id', 'from', 'to', 'sort', 'lang', 'status', 'invoicing', 'bucket', 'search']);
+// Control characters (C0, DEL, C1) and lone surrogates, which no typed search holds.
+const unusableText = /[\p{Cc}\p{Cs}]/u;
 const bad = (message: string) => ({ status: 400, message });
 
 /** Day number of a real calendar date written YYYY-MM-DD, or null. */
@@ -94,5 +110,32 @@ export function parseReportRequest(body: unknown): ReportRequest {
     if (input.status !== 'paid' && input.status !== 'pending') throw bad("status must be 'paid' or 'pending'");
     status = input.status;
   }
-  return { report, customerId, from, to, sort, lang, status };
+
+  // The app's Invoiced / Not invoiced choice of one customer's GRN activity, the bucket choice of one customer's stock
+  // aging and the search of the item stock summary: the same rules as status (null is the same as leaving the field
+  // out, a field on a report that does not have it is refused, and no value is echoed in a refusal).
+  let invoicing: ReportRequest['invoicing'] = null;
+  if (input.invoicing !== undefined && input.invoicing !== null) {
+    if (report !== 'grn-activity' || customerId === null) throw bad('invoicing is only for the GRN activity of one customer');
+    if (!(invoicingChoices as readonly unknown[]).includes(input.invoicing)) throw bad("invoicing must be 'invoiced' or 'not_invoiced'");
+    invoicing = input.invoicing as InvoicingChoice;
+  }
+
+  let bucket: ReportRequest['bucket'] = null;
+  if (input.bucket !== undefined && input.bucket !== null) {
+    if (report !== 'stock-aging' || customerId === null) throw bad('bucket is only for the stock aging of one customer');
+    if (!(agingBuckets as readonly unknown[]).includes(input.bucket)) throw bad("bucket must be '0-120', '121-240', '241-364' or 'over-364'");
+    bucket = input.bucket as AgingBucket;
+  }
+
+  // A search is trimmed; a blank one is no search.
+  let search: ReportRequest['search'] = null;
+  if (input.search !== undefined && input.search !== null) {
+    if (report !== 'item-stock-summary') throw bad('search is only for the item stock summary');
+    if (typeof input.search !== 'string' || unusableText.test(input.search)) throw bad('search must be text without control characters');
+    const text = input.search.trim();
+    if (text.length > maxSearchLength) throw bad(`search must not be longer than ${maxSearchLength} characters`);
+    search = text === '' ? null : text;
+  }
+  return { report, customerId, from, to, sort, lang, status, invoicing, bucket, search };
 }

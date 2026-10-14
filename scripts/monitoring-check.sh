@@ -11,6 +11,11 @@ operator_lock "$state"
 compose --profile monitoring build prometheus alertmanager
 compose --profile monitoring run --rm --no-deps --entrypoint promtool prometheus \
   check config /etc/prometheus/prometheus.yml
+# Unit tests of the alert rules (docker/alert-rules.test.yml), with the image's own promtool.
+compose --profile monitoring run --rm --no-deps \
+  -v "$ROOT/docker/alert-rules.test.yml:/etc/prometheus/alert-rules.test.yml:ro" \
+  --entrypoint promtool prometheus \
+  test rules /etc/prometheus/alert-rules.test.yml
 compose --profile monitoring run --rm --no-deps --entrypoint amtool alertmanager \
   check-config /etc/alertmanager/alertmanager.yml
 compose --profile monitoring up -d prometheus alertmanager postgres-exporter node-exporter cadvisor
@@ -50,10 +55,23 @@ for ((i=0; i<30; i++)); do
 done
 [[ "$gateway_metrics" == true ]] || { echo 'Prometheus has no gateway request metrics (kong_http_requests_total).' >&2; exit 1; }
 
+# DatabaseConnectionsHigh adds up the series labelled backend_type="client backend". An exporter
+# that stopped exporting that label would leave the rule with nothing to add, and it would never
+# fire. The query is sum(pg_stat_activity_count{backend_type="client backend"}), URL-encoded.
+client_connections=false
+for ((i=0; i<30; i++)); do
+  series=$(compose --profile monitoring exec -T prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(pg_stat_activity_count%7Bbackend_type%3D%22client%20backend%22%7D)' || true)
+  if node -e "const r=JSON.parse(process.argv[1]).data.result;if(!(r.length===1&&Number(r[0].value[1])>0))process.exit(1)" "$series" 2>/dev/null; then
+    client_connections=true; break
+  fi
+  sleep 2
+done
+[[ "$client_connections" == true ]] || { echo 'Prometheus has no client connection series (pg_stat_activity_count{backend_type="client backend"}).' >&2; exit 1; }
+
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 compose --profile monitoring exec -T alertmanager wget -qO- --header='Content-Type: application/json' \
   --post-data="[{\"labels\":{\"alertname\":\"WarehouseSynthetic\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"local delivery test\"},\"startsAt\":\"$now\"}]" \
   http://localhost:9093/api/v2/alerts >/dev/null
 alerts=$(compose --profile monitoring exec -T alertmanager wget -qO- http://localhost:9093/api/v2/alerts)
 node -e "if(!JSON.parse(process.argv[1]).some(a=>a.labels.alertname==='WarehouseSynthetic'))process.exit(1)" "$alerts"
-echo 'Monitoring configs, scrape targets, and local Alertmanager delivery passed.'
+echo 'Monitoring configs, alert rule tests, scrape targets, and local Alertmanager delivery passed.'

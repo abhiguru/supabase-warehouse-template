@@ -20,7 +20,9 @@ SELECT 'acl_authenticated_orders_select=' || has_table_privilege('authenticated'
 SELECT 'acl_service_operator_prepare=' || has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE');
 SELECT 'acl_anon_operator_prepare=' || has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE');
 SELECT 'acl_anon_legacy_send_otp=' || has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE');
-SELECT 'acl_authenticated_enrollment_review=' || has_function_privilege('authenticated','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE');
+-- By name, not signature: migration 77 added a fourth argument, and a backup from before it still verifies.
+SELECT 'acl_authenticated_enrollment_review=' || COALESCE((SELECT bool_and(has_function_privilege('authenticated',p.oid,'EXECUTE'))
+  FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='operator_review_enrollment'),false);
 DO $$ BEGIN
   IF NOT has_table_privilege('anon','public.feature_flags','SELECT')
     OR has_table_privilege('anon','public.orders','SELECT')
@@ -28,7 +30,8 @@ DO $$ BEGIN
     OR NOT has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE')
     OR has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
     OR has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE')
-    OR NOT has_function_privilege('authenticated','public.operator_review_enrollment(uuid,text,uuid[])','EXECUTE')
+    OR NOT COALESCE((SELECT bool_and(has_function_privilege('authenticated',p.oid,'EXECUTE'))
+         FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='operator_review_enrollment'),false)
   THEN RAISE EXCEPTION 'Representative operator access grants are missing or too broad';
   END IF;
 END $$;

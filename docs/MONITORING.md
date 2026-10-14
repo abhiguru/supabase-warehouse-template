@@ -44,6 +44,12 @@ rules.
   could never fire. The names were read from the plugin source in the pinned
   `kong:3.9.3-ubuntu` image; the rules pass `promtool check rules`.
 
+`npm run test:monitoring` (`scripts/monitoring-check.sh`, run by CI's install
+job) checks the configuration with `promtool check config`, runs the rule unit
+tests in `docker/alert-rules.test.yml` with `promtool test rules`, and requires
+live series for the gateway (`kong_http_requests_total`) and for client
+connections (`pg_stat_activity_count{backend_type="client backend"}`).
+
 ## Alert rules and what they do not cover
 
 `docker/alert-rules.yml` has rules for host CPU, memory and disk (the root
@@ -51,6 +57,16 @@ filesystem, and any other ext4/xfs/btrfs filesystem below 10% free), database
 availability, connections and long transactions, container memory, restarts
 and OOM events, gateway latency, error rate and availability, and any other
 scrape target being down (`ScrapeTargetDown`).
+
+`DatabaseConnectionsHigh` fires when the **client** connections of one
+PostgreSQL server (all databases, users, states and applications added up,
+`sum by (instance, job)`) stay above 80 for 2 minutes, 80% of the configured
+100-connection ceiling. Background workers (autovacuum, WAL writer and the
+like) are not counted. Until 2026-10-13 the rule compared each exporter series
+on its own; postgres-exporter splits the count by database, state, user,
+application, backend type and wait event, so connections spread over several
+series (for example 45 active and 45 idle) never fired it. The unit tests in
+`docker/alert-rules.test.yml` cover that split and the background workers.
 
 There is no rule for:
 

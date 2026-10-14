@@ -22,18 +22,19 @@ function fixture() {
   const root = scriptRoot(scratch);
   copyFileSync(join(repo, 'scripts/image-recipes.mjs'), join(root, 'scripts/image-recipes.mjs'));
   const services = {};
-  const recipe = (service, { profiles, image, context = service } = {}) => {
+  const recipe = (service, { profiles, context = service } = {}) => {
     const dir = join(root, 'docker', context);
     mkdirSync(join(dir, 'sub'), { recursive: true });
     writeFileSync(join(dir, 'Dockerfile'), `FROM example.invalid/${service}:1\n`);
     writeFileSync(join(dir, 'sub/go.mod'), `module ${service}\n`);
-    services[service] = { build: { context: dir, dockerfile: 'Dockerfile' }, ...(profiles ? { profiles } : {}), ...(image ? { image } : {}) };
+    services[service] = { build: { context: dir, dockerfile: 'Dockerfile' }, ...(profiles ? { profiles } : {}) };
   };
   recipe('db', { context: 'postgres' });
   recipe('imgproxy');
   recipe('prometheus', { profiles: ['monitoring'] });
   recipe('cups', { profiles: ['printing'] });
-  recipe('grafana', { profiles: ['monitoring'], image: 'warehouse-grafana:local' });
+  // No `image:`: Compose tags every built image `<project>-<service>`, Grafana included.
+  recipe('grafana', { profiles: ['monitoring'] });
   services.kong = { image: 'kong:3.9.3-ubuntu' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
@@ -61,7 +62,7 @@ case "$1" in
         for service in $args; do
           case "$service" in -*) continue ;; esac
           count=$(( $(cat "$FAKE_DIR/counter" 2>/dev/null || echo 100) + 1 )); echo "$count" > "$FAKE_DIR/counter"
-          if [ "$service" = grafana ]; then image=warehouse-grafana:local; else image=${PROJECT}-$service; fi
+          image=${PROJECT}-$service
           printf 'sha256:%064d\\n' "$count" > "$FAKE_DIR/images/$(file "$image")"
         done ;;
       *' up -d '*) printf '%s\\n' "$*" | sed 's/.* up -d //' >> "$FAKE_DIR/up.log"; if [ "$FAKE_FAIL_UP" = yes ]; then exit 4; fi ;;
@@ -111,7 +112,7 @@ test('an installation from before the record rebuilds once what it uses; an imag
   try {
     // The image scan and the checks build optional images that are never started:
     // Grafana and CUPS have an image here, but only Prometheus has a container.
-    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, 'warehouse-grafana:local');
+    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-grafana`);
     const containers = 'db imgproxy prometheus kong';
     const first = run(f, { containers });
     assert.equal(first.status, 0, first.stderr);
@@ -216,20 +217,67 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
   } finally { cleanup(f); }
 });
 
+// What setup.sh leaves behind: every image built from this checkout and recorded.
+const builtAll = f => {
+  const containers = 'db imgproxy prometheus grafana kong';
+  assert.equal(run(f, { containers }).status, 0);
+  return containers;
+};
+
 test('--replace-optional starts only the optional services that are running, and builds nothing', () => {
   const f = fixture();
   try {
-    const none = run(f, { args: ['--replace-optional'], running: 'db imgproxy kong' });
+    const containers = builtAll(f);
+    const none = run(f, { args: ['--replace-optional'], containers, running: 'db imgproxy kong' });
     assert.equal(none.status, 0, none.stderr);
     assert.equal(none.ups, '');
-    const some = run(f, { args: ['--replace-optional'], running: 'db prometheus grafana kong' });
+    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
     assert.equal(some.status, 0, some.stderr);
     assert.equal(some.ups, '--wait --wait-timeout 180 grafana prometheus');
     assert.equal(some.builds, '');
     assert.match(some.stdout, /Optional services that are running: grafana prometheus\./);
-    const failed = run(f, { args: ['--replace-optional'], running: 'prometheus', fail: 'up' });
+    // An image of this project that has no build record yet (`compose build` by the monitoring
+    // check, an installation from before the record) is still replaced.
+    rmSync(f.record);
+    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'grafana prometheus' });
+    assert.equal(unrecorded.status, 0, unrecorded.stderr);
+    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 grafana prometheus');
+    const failed = run(f, { args: ['--replace-optional'], containers, running: 'prometheus', fail: 'up' });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /An optional service did not start \(prometheus\)\. The core services are not affected/);
+  } finally { cleanup(f); }
+});
+
+test('--replace-optional leaves a running optional service alone when its image is missing: start never builds', () => {
+  const f = fixture();
+  try {
+    const containers = builtAll(f);
+    // An upgrade renamed the image (Grafana's shared tag became `<project>-grafana`), or it was removed.
+    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)));
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
+    assert.equal(result.status, 1, 'start.sh turns this into a warning');
+    assert.equal(result.builds, '');
+    assert.equal(result.ups, '--wait --wait-timeout 180 prometheus', 'the others are still replaced');
+    assert.match(result.stderr, /the grafana image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
+  } finally { cleanup(f); }
+});
+
+test('--replace-optional leaves a running optional service alone when its image was replaced by something else', () => {
+  const f = fixture();
+  try {
+    const containers = builtAll(f);
+    // Another checkout, a manual build: the tag names an image this checkout did not record.
+    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)), `sha256:${'9'.repeat(64)}\n`);
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    assert.equal(result.status, 1);
+    assert.equal(result.builds, '');
+    assert.equal(result.ups, '', 'nothing else is running, so nothing is started');
+    assert.match(result.stderr, /the grafana image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
+    // The image setup.sh builds next puts it right.
+    assert.equal(run(f, { containers }).builds, 'grafana');
+    const after = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    assert.equal(after.status, 0, after.stderr);
+    assert.equal(after.ups, '--wait --wait-timeout 180 grafana');
   } finally { cleanup(f); }
 });
 
@@ -267,6 +315,20 @@ test('the Grafana recipe is its own build directory, like every other recipe', (
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
   // A context of `.` would put every file under docker/ into the Grafana fingerprint.
   assert.doesNotMatch(`${readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8')}\n${override}`, /^\s+context: \.$/m);
-  assert.match(override, /grafana:\n    image: warehouse-grafana:local\n    build:\n(?:\s+#.*\n)*\s+context: \.\/grafana\n/);
+  assert.match(override, /grafana:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/grafana\n/);
   assert.match(readFileSync(join(repo, 'docker/grafana/Dockerfile'), 'utf8'), /^COPY plugins\.lock install-plugins\.sh \/tmp\/$/m);
+});
+
+test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {
+  // A fixed tag (Grafana's was `warehouse-grafana:local` until 2026-10-13) is shared by every
+  // installation on the host: one checkout's build replaced another's running image.
+  for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
+    const text = readFileSync(join(repo, file), 'utf8');
+    const blocks = text.split(/\n(?=  [a-z][a-z0-9-]*:\n)/);
+    for (const block of blocks.filter(item => /^    build:/m.test(item))) {
+      assert.doesNotMatch(block, /^    image:/m, `${file}: ${block.split('\n')[0].trim()} has both build: and image:`);
+    }
+  }
+  const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
+  assert.match(override, /\n  grafana:\n    build:\n/, 'the Grafana service is still built here');
 });

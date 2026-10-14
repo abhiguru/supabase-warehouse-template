@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { parseReportRequest, reportNames, periodReports, dayNumber } from '../functions/_shared/report-request.ts';
-import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows, oneRowPerInvoice }
+import { parseReportRequest, reportNames, periodReports, dayNumber, maxSearchLength } from '../functions/_shared/report-request.ts';
+import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows, oneRowPerInvoice,
+  stockLineBucket }
   from '../functions/_shared/report-definitions.ts';
 import { label, labelKeys, missingGujarati } from '../functions/_shared/report-labels.ts';
 import { reportHtml, documentHtml } from '../functions/_shared/document-html.ts';
@@ -18,10 +19,11 @@ const rejects = (body, message) => assert.throws(() => parseReportRequest(body),
 });
 
 test('a report request is accepted with its defaults and with every optional field', () => {
-  assert.deepEqual(request(), { report: 'stock-summary', customerId: null, from: null, to: null, sort: null, lang: 'en', status: null });
+  assert.deepEqual(request(), { report: 'stock-summary', customerId: null, from: null, to: null, sort: null, lang: 'en', status: null, invoicing: null, bucket: null, search: null });
   assert.deepEqual(parseReportRequest({ report: 'grn-activity', customer_id: customer.toUpperCase(), from: '2026-01-01', to: '2026-03-31',
     sort: { field: 'quantity', order: 'asc' }, lang: 'gu' }), {
     report: 'grn-activity', customerId: customer, from: '2026-01-01', to: '2026-03-31', sort: { field: 'quantity', order: 'asc' }, lang: 'gu', status: null,
+    invoicing: null, bucket: null, search: null,
   });
   // null is the same as leaving a field out
   assert.deepEqual(request({ customer_id: null, sort: null, lang: null }), request());
@@ -195,9 +197,9 @@ const build = (report, level, lang, extra = {}) => {
 // The columns of each PDF, in English and Gujarati. Labels without Gujarati in the app print the English.
 const expectedColumns = {
   'grn-activity': {
-    customer: [['GRN number', 'Date', 'Items', 'Quantity', 'Weight (kg)', 'Stock', 'Invoice number'],
-      ['આવક નં.', 'તારીખ', 'આઇટમ', 'નંગ', 'વજન (કિલો)', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
-    all: [['Customer', 'GRNs', 'Quantity', 'Weight (kg)', 'Latest GRN'], ['વેપારી', 'આવક પાવતી', 'નંગ', 'વજન (કિલો)', 'છેલ્લી આવક પાવતી']],
+    customer: [['GRN number', 'Date', 'Items', 'Quantity', 'Stock', 'Invoice number'],
+      ['આવક નં.', 'તારીખ', 'આઇટમ', 'નંગ', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
+    all: [['Customer', 'GRNs', 'Quantity', 'Latest GRN'], ['વેપારી', 'આવક પાવતી', 'નંગ', 'છેલ્લી આવક પાવતી']],
   },
   'dispatch-activity': {
     customer: [['Dispatch number', 'Date', 'GRN', 'Items', 'Quantity'], ['જાવક નંબર', 'તારીખ', 'આવક પાવતી', 'આઇટમ', 'નંગ']],
@@ -209,9 +211,9 @@ const expectedColumns = {
     all: [['Customer', 'Invoices', 'Amount', 'Latest invoice'], ['વેપારી', 'ઇન્વૉઇસ', 'રકમ', 'છેલ્લું ઇન્વૉઇસ']],
   },
   'stock-summary': {
-    customer: [['Item', 'GRN number', 'Date', 'Package mark', 'Rack', 'Stock', 'Weight (kg)'],
-      ['આઇટમ', 'આવક નં.', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક', 'વજન (કિલો)']],
-    all: [['Customer', 'Items', 'GRNs', 'Stock', 'Weight (kg)'], ['વેપારી', 'આઇટમ', 'આવક પાવતી', 'સ્ટોક', 'વજન (કિલો)']],
+    customer: [['Item', 'GRN number', 'Date', 'Package mark', 'Rack', 'Stock'],
+      ['આઇટમ', 'આવક નં.', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક']],
+    all: [['Customer', 'Items', 'GRNs', 'Stock'], ['વેપારી', 'આઇટમ', 'આવક પાવતી', 'સ્ટોક']],
   },
   'stock-aging': {
     customer: [['Item', 'GRN number', 'Date', 'Rack', 'Stock', 'Stock age (days)', 'Last dispatch'],
@@ -290,14 +292,14 @@ test('the Gujarati table holds only the app\'s wording, and the labels it lacks 
 
 test('rows, summary figures and totals come from the RPC answer and are printed with Indian grouping', () => {
   const grn = build('grn-activity', 'customer', 'en');
-  // Newest GRN first by default; weight is each line's bag weight times its bags.
+  // Newest GRN first by default; no weight column or figure since 2026-10-14.
   assert.deepEqual(grn.rows, [
-    ['Z0002', '20-01-2026', '1', '50', '1,500', '50', ''],
-    ['Z0010', '05-01-2026', '2', '100', '4,020', '40', '2026-7'],
+    ['Z0002', '20-01-2026', '1', '50', '50', ''],
+    ['Z0010', '05-01-2026', '2', '100', '40', '2026-7'],
   ]);
-  assert.deepEqual(grn.totals, ['Total', '', '3', '150', '5,520', '90', '']);
-  assert.deepEqual(grn.summary, [['GRNs', '2'], ['Quantity', '150'], ['Weight (kg)', '5,520'], ['Invoiced', '1']]);
-  assert.deepEqual(grn.columns.map(column => column.numeric), [false, false, true, true, true, true, false]);
+  assert.deepEqual(grn.totals, ['Total', '', '3', '150', '90', '']);
+  assert.deepEqual(grn.summary, [['GRNs', '2'], ['Quantity', '150'], ['Invoiced', '1']]);
+  assert.deepEqual(grn.columns.map(column => column.numeric), [false, false, true, true, true, false]);
   assert.deepEqual(grn.sort, { field: 'date', order: 'desc', label: 'Date (descending)' });
 
   const invoices = build('invoice-history', 'customer', 'gu');
@@ -307,14 +309,14 @@ test('rows, summary figures and totals come from the RPC answer and are printed 
 
   assert.deepEqual(build('dispatch-activity', 'customer', 'en').rows, [['I0001', '12-01-2026', 'Z0002, Z0010', '3', '12']]);
   assert.deepEqual(build('stock-summary', 'customer', 'en').rows, [
-    ['Cumin', 'Z0002', '20-01-2026', 'AT', 'R1', '50', '2,500'],
-    ['Cumin', 'Z0010', '05-01-2026', 'AT', 'R2', '40', '2,000'],
+    ['Cumin', 'Z0002', '20-01-2026', 'AT', 'R1', '50'],
+    ['Cumin', 'Z0010', '05-01-2026', 'AT', 'R2', '40'],
   ]);
   assert.deepEqual(build('customer-activity', 'customer', 'en').rows[1], ['01-2026', '2', '150', '1', '12', '1,180.00', '90']);
   // Item stock: the whole-list summary of migration 52 when present, otherwise the rows read.
   assert.deepEqual(build('item-stock-summary', 'all', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
   assert.deepEqual(build('item-stock-summary', 'customer', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
-  assert.equal(build('grn-activity', 'all', 'en').summary[3][1], '1,234.5');
+  assert.deepEqual(build('grn-activity', 'all', 'en').summary, [['GRNs', '3'], ['Customers', '2'], ['Quantity', '900']]);
   assert.equal(formatCell('number', 12345678.456, 'en'), '1,23,45,678.46');
   assert.equal(formatCell('number', 'x', 'en'), '');
   assert.equal(formatCell('date', '2026-01-05T10:00:00+00:00', 'en'), '05-01-2026');
@@ -405,7 +407,7 @@ test('a refusal in the RPC body becomes 403, an unknown customer 404, anything e
 const sample = (overrides = {}) => reportHtml({
   title: 'Stock summary', company: 'Fictional Cold Storage', lang: 'en',
   filters: [['Customer', 'Amar Traders'], ['Sort by', 'Stock (descending)'], ['', 'Last updated 12-10-2026 08:00 UTC']],
-  summaryTitle: 'Summary', summary: [['Units in stock', '1,23,456'], ['Weight (kg)', '4,500']],
+  summaryTitle: 'Summary', summary: [['Units in stock', '1,23,456'], ['Stock age (days)', '45']],
   columns: [{ label: 'Item', numeric: false }, { label: 'Stock', numeric: true }],
   rows: [['Cumin', '90'], ['Fennel', '5']], totals: ['Total', '95'], empty: 'No stock yet', ...overrides,
 });
@@ -507,6 +509,7 @@ test('status is accepted for the invoice history of one customer as paid or pend
   assert.equal(invoicesRequest({ status: 'pending' }).status, 'pending');
   assert.deepEqual(invoicesRequest({ status: 'pending', lang: 'gu', sort: { field: 'net', order: 'asc' } }), {
     report: 'invoice-history', customerId: customer, from: '2026-01-01', to: '2026-01-31', sort: { field: 'net', order: 'asc' }, lang: 'gu', status: 'pending',
+    invoicing: null, bucket: null, search: null,
   });
 
   const value = "status must be 'paid' or 'pending'";
@@ -531,12 +534,12 @@ test('status is accepted for the invoice history of one customer as paid or pend
   assert.throws(() => parseReportRequest({ report: 'stock-summary', status: 'secret-value-4711' }),
     error => { assert.deepEqual(error, { status: 400, message: scope }); return true; });
   // Other keys are still unknown, with the message the app relies on.
-  for (const key of ['Status', 'payment', 'payment_status', 'statuses']) {
+  for (const key of ['Status', 'payment', 'payment_status', 'statuses', 'Invoicing', 'invoiced', 'aging_bucket', 'buckets', 'Search', 'search_query', 'query']) {
     rejects({ report: 'invoice-history', customer_id: customer, ...invoicePeriod, [key]: 'paid' }, 'Unknown field in report request');
   }
   rejects({ report: 'stock-summary', extra: 1 }, 'Unknown field in report request');
-  // A request without status is what it was, plus status: null.
-  assert.deepEqual(Object.keys(invoicesRequest()).sort(), ['customerId', 'from', 'lang', 'report', 'sort', 'status', 'to']);
+  // A request without status is what it was, plus status: null (and the three other choices, also null).
+  assert.deepEqual(Object.keys(invoicesRequest()).sort(), ['bucket', 'customerId', 'from', 'invoicing', 'lang', 'report', 'search', 'sort', 'status', 'to']);
 });
 
 // One customer's invoices as the RPC answers since migration 61 (net_total is the invoice's total, which already holds its tax):
@@ -695,6 +698,10 @@ test('the handler takes the header choices from reportFilters and reports status
 // pending invoice with no payment, which prints 'Pending' as before. The review fixes of 2026-10-12 change none of the 28 either (no
 // change on purpose): no fixture holds a cut table (the label 'Total of rows shown'), a packaging sort, a status word other than
 // paid or pending, or two rows with one invoice_id, and the item list's sort keys change nothing for the default sort.
+// The weight change of 2026-10-14 changes ten documents on purpose: GRN activity (one customer and all customers), stock summary
+// (both levels) and the one-customer dispatch activity, each in English and Gujarati (4 + 4 + 2), which lost their weight columns,
+// totals and figures (`oldWeight` puts the old text back piece by piece); the other eighteen of the 28 are untouched, so no hash
+// below was re-pinned.
 const baselineHtml = {
   'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
   'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
@@ -754,9 +761,64 @@ function oldInvoiceHistory(level, lang) {
   ];
 }
 
+// The ten documents that printed a weight until 2026-10-14 (GRN activity, stock summary and the one-customer dispatch activity) in
+// the old text, as [new text, old text, times]: the colspan, the header cell, each row's cell, the totals cell and the summary figure.
+// The old label "Weight (kg)" is no longer in report-labels.ts, so the test holds the old words itself. The weights are those of the
+// fixtures: GRN activity 1,500 and 4,020 (bag weight times bags, total 5,520) one customer, 234.5 and 1,000 (1,234.5) all customers;
+// dispatch activity 600; stock summary 2,500 and 2,000 (4,500) one customer, 4,500 all customers.
+function oldWeight(report, level, lang) {
+  const word = key => label(lang, key);
+  const W = { en: 'Weight (kg)', gu: 'વજન (કિલો)' }[lang];
+  const num = value => `<td class="num">${value}</td>`;
+  const th = `<th class="num">${W}</th>`;
+  const kpi = value => `<div class="kpi"><dt>${W}</dt><dd>${value}</dd></div>`;
+  const figure = (key, value) => `<div class="kpi"><dt>${word(key)}</dt><dd>${value}</dd></div>`;
+  if (report === 'grn-activity' && level === 'customer') {
+    return [
+      ['<th colspan="6">', '<th colspan="7">', 1],
+      [`<th class="num">${word('quantity')}</th><th class="num">${word('stock')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th class="num">${word('stock')}</th>`, 1],
+      [`${num('50')}${num('50')}<td></td></tr>`, `${num('50')}${num('1,500')}${num('50')}<td></td></tr>`, 1],
+      [`${num('100')}${num('40')}<td>2026-7</td>`, `${num('100')}${num('4,020')}${num('40')}<td>2026-7</td>`, 1],
+      [`${num('150')}${num('90')}<td></td></tr></tbody>`, `${num('150')}${num('5,520')}${num('90')}<td></td></tr></tbody>`, 1],
+      [figure('quantity', '150'), figure('quantity', '150') + kpi('5,520'), 1],
+    ];
+  }
+  if (report === 'grn-activity') {
+    return [
+      ['<th colspan="4">', '<th colspan="5">', 1],
+      [`<th class="num">${word('quantity')}</th><th>${word('latestGrn')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th>${word('latestGrn')}</th>`, 1],
+      [`${num('800')}<td>15-01-2026</td>`, `${num('800')}${num('234.5')}<td>15-01-2026</td>`, 1],
+      [`${num('100')}<td>10-01-2026</td>`, `${num('100')}${num('1,000')}<td>10-01-2026</td>`, 1],
+      [`${num('900')}<td></td></tr></tbody>`, `${num('900')}${num('1,234.5')}<td></td></tr></tbody>`, 1],
+      [`${figure('quantity', '900')}</dl>`, `${figure('quantity', '900')}${kpi('1,234.5')}</dl>`, 1],
+    ];
+  }
+  if (report === 'dispatch-activity') {
+    return [[`${figure('bagsDispatched', '12')}</dl>`, `${figure('bagsDispatched', '12')}${kpi('600')}</dl>`, 1]];
+  }
+  if (level === 'customer') {
+    return [
+      ['<th colspan="6">', '<th colspan="7">', 1],
+      [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
+      [`${num('50')}</tr>`, `${num('50')}${num('2,500')}</tr>`, 1],
+      [`${num('40')}</tr>`, `${num('40')}${num('2,000')}</tr>`, 1],
+      [`${num('90')}</tr></tbody>`, `${num('90')}${num('4,500')}</tr></tbody>`, 1],
+      [`${figure('unitsInStock', '90')}${figure('grnsWithStock', '2')}`, `${figure('unitsInStock', '90')}${kpi('4,500')}${figure('grnsWithStock', '2')}`, 1],
+    ];
+  }
+  return [
+    ['<th colspan="4">', '<th colspan="5">', 1],
+    [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
+    [`<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}</tr>`, `<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}${num('4,500')}</tr>`, 1],
+    [`${num('2')}${num('90')}</tr></tbody>`, `${num('2')}${num('90')}${num('4,500')}</tr></tbody>`, 1],
+    [`${figure('unitsInStock', '90')}</dl>`, `${figure('unitsInStock', '90')}${kpi('4,500')}</dl>`, 1],
+  ];
+}
+
 test('without status every existing fixture prints byte for byte the HTML it printed before, but for the time stamp and the changes on purpose', () => {
-  const english = ['<div class="kpi"><dt>Items over 364 days</dt><dd>0</dd></div>', '<div class="kpi"><dt>Over 1 year</dt><dd>0</dd></div>'];
-  const gujarati = ['<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂની આઇટમ</dt><dd>0</dd></div>', '<div class="kpi"><dt>૧ વર્ષથી વધુ</dt><dd>0</dd></div>'];
+  // The stock aging figure is a count of stock lines: 'Lots over 364 days' since 2026-10-13 (it said 'Items over 364 days').
+  const english = ['<div class="kpi"><dt>Lots over 364 days</dt><dd>0</dd></div>', '<div class="kpi"><dt>Over 1 year</dt><dd>0</dd></div>'];
+  const gujarati = ['<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂના જથ્થા</dt><dd>0</dd></div>', '<div class="kpi"><dt>૧ વર્ષથી વધુ</dt><dd>0</dd></div>'];
   const swapped = {
     'invoice-history/all/gu': ['છેલ્લું ઇન્વૉઇસ', 'Latest invoice'], 'customer-activity/all/gu': ['છેલ્લી કામગીરી', 'Last activity'],
     'stock-aging/customer/en': english, 'stock-aging/all/en': english, 'stock-aging/customer/gu': gujarati, 'stock-aging/all/gu': gujarati,
@@ -774,6 +836,7 @@ test('without status every existing fixture prints byte for byte the HTML it pri
         ['</strong> કેટલા દિવસથી (દિવસ) (', '</strong> માલ કેટલા દિવસથી પડ્યો છે (દિવસ) (', 2]] : []),
   ];
   let compared = 0;
+  let weighted = 0;
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
       for (const lang of ['en', 'gu']) {
@@ -803,17 +866,27 @@ test('without status every existing fixture prints byte for byte the HTML it pri
             html = html.replaceAll(added, old);
           }
         }
+        if (['grn-activity', 'dispatch-activity', 'stock-summary'].includes(report) && !(report === 'dispatch-activity' && level === 'all')) {
+          weighted += 1;
+          for (const [added, old, times] of oldWeight(report, level, lang)) {
+            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
+            html = html.replaceAll(added, old);
+          }
+        }
         assert.equal(createHash('sha256').update(html).digest('hex'), baselineHtml[key], key);
         compared += 1;
       }
     }
   }
   assert.equal(compared, 28);
+  assert.equal(weighted, 10);
   assert.deepEqual(Object.keys(baselineHtml).length, 28);
 });
 
-test('the one-customer GRN PDF weighs each GRN from its lines, with or without migration 59, and the all-customers one prints the RPC weight', () => {
+test('the one-customer GRN PDF prints the same document with or without migration 59, and no report PDF prints a weight', () => {
   // Before migration 59 the RPC's total_weight of a GRN was the sum of its per-bag weights (30 and 75); after it, the kg (1500 and 4020).
+  // The report ignores both: weights are no longer printed (2026-10-14). This equality guards against a total weight being read
+  // from the RPC answer again: if the report used total_weight, the two documents would differ.
   const before = structuredClone(fixtures['grn-activity'].customer);
   const after = structuredClone(fixtures['grn-activity'].customer);
   after.data.grns[0].total_weight = 1500;
@@ -822,12 +895,58 @@ test('the one-customer GRN PDF weighs each GRN from its lines, with or without m
   const request = parseReportRequest({ report: 'grn-activity', customer_id: customer, from: '2026-01-01', to: '2026-01-31' });
   const built = [before, after].map(answer => buildReport(request, unwrapReportBody(answer)));
   assert.deepEqual(built[0], built[1]);
-  assert.deepEqual(built[1].rows.map(row => row[4]), ['1,500', '4,020']);
-  assert.deepEqual(built[1].summary[2], ['Weight (kg)', '5,520']);
-  // The all-customers level prints get_all_grn_activity's own weights.
-  const all = build('grn-activity', 'all', 'en');
-  assert.deepEqual(all.rows.map(row => row[3]), ['234.5', '1,000']);
-  assert.deepEqual(all.summary[3], ['Weight (kg)', '1,234.5']);
+  // Each part protects one thing, although the RPC answers still carry weights. Labels: no column label or summary label of any
+  // document says weight or kg (a label that came back). Shape: every row and totals row is as wide as the columns (the table
+  // stays aligned); it cannot fail on a weight cell by itself because buildReport maps the level's columns, so the two
+  // all-customers levels, which had a weight cell, also have their exact rows and totals checked below (a cell that came back).
+  const words = /weight|kg|વજન|કિલો/i;
+  for (const report of reportNames) {
+    for (const level of ['customer', 'all']) {
+      for (const lang of ['en', 'gu']) {
+        const document = build(report, level, lang);
+        const where = `${report}/${level}/${lang}`;
+        assert.deepEqual(document.columns.map(column => column.label).filter(text => words.test(text)), [], where);
+        assert.deepEqual(document.summary.map(figure => figure[0]).filter(text => words.test(text)), [], where);
+        for (const row of document.rows) assert.equal(row.length, document.columns.length, where);
+        if (document.totals) assert.equal(document.totals.length, document.columns.length, where);
+      }
+    }
+  }
+  assert.deepEqual(build('grn-activity', 'all', 'en').rows, [['Bharat Foods', '2', '800', '15-01-2026'], ['Amar Traders', '1', '100', '10-01-2026']]);
+  assert.deepEqual(build('grn-activity', 'all', 'en').totals, ['Total', '3', '900', '']);
+  assert.deepEqual(build('stock-summary', 'all', 'en').rows, [['Amar Traders', '1', '2', '90']]);
+  assert.deepEqual(build('stock-summary', 'all', 'en').totals, ['Total', '', '2', '90']);
+});
+
+test('a sort on weight is no longer known: the default order applies, and no sortable column is called weight', () => {
+  const defaults = { 'grn-activity/customer': 'date', 'grn-activity/all': 'quantity', 'stock-summary/customer': 'item', 'stock-summary/all': 'stock' };
+  for (const [key, field] of Object.entries(defaults)) {
+    const [report, level] = key.split('/');
+    const requested = build(report, level, 'en', { sort: { field: 'weight', order: 'desc' } });
+    const plain = build(report, level, 'en');
+    assert.equal(requested.sort.field, field, key);
+    assert.deepEqual(requested.sort, plain.sort, key);
+    assert.deepEqual(requested.rows, plain.rows, key);
+    const period = periodReports.has(report) ? { from: '2026-01-01', to: '2026-01-31' } : {};
+    const request = parseReportRequest({ report, ...period, ...(level === 'customer' ? { customer_id: customer } : {}) });
+    assert.ok(!sortFields(request).includes('weight'), key);
+  }
+});
+
+test('the dispatch activity summary of one customer has two figures, with no weight', () => {
+  assert.deepEqual(build('dispatch-activity', 'customer', 'en').summary, [['Dispatches', '1'], ['Bags dispatched', '12']]);
+  assert.deepEqual(build('dispatch-activity', 'customer', 'gu').summary, [['જાવક', '1'], ['જાવકના નંગ', '12']]);
+});
+
+test('the label table holds no weight or kg label, and the GRN document PDF says Kg each for the weight of one package', () => {
+  assert.ok(!labelKeys.includes('weight'));
+  assert.ok(!labelKeys.includes('kg'));
+  const source = readFileSync(new URL('../functions/_shared/document-pdf.ts', import.meta.url), 'utf8');
+  assert.match(source, /columns = \['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'\];/);
+  assert.ok(!source.includes("'Weight'"));
+  // The row array keeps the weight of one package between the stock and the rack, as it is read, not multiplied by the quantity.
+  assert.ok(source.includes('rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,kgEach(line.weight),line.rack,line.package_mark]);'));
+  assert.doesNotMatch(source, /line\.qty\s*\*\s*line\.weight|line\.weight\s*\*\s*line\.qty/);
 });
 
 test('migration 59 is ASCII, patches only the weight totals with counted markers, and its SQL test is registered after the dispatch weight one', () => {
@@ -859,7 +978,7 @@ test('migration 59 is ASCII, patches only the weight totals with counted markers
 // ---------------------------------------------------------------------------
 // The stock aging PDF says what the app's screen says about the oldest stock
 // ---------------------------------------------------------------------------
-// The app's screen (app/reports/stock-aging.tsx) shows "Items over 364 days": the item count of the '364+' bucket of the answer
+// The app's screen (app/reports/stock-aging.tsx) shows the count of the '364+' bucket of the answer, a count of stock lines
 // (by_bucket['364+'].item_count), the same figure as its red bar. The answers below give every neighbouring figure a different
 // value: 3 items in the bucket, 2 items over 365 days, 120 bags over 365 days, 320 bags in the bucket.
 const oldestBuckets = {
@@ -885,14 +1004,16 @@ const aging = (level, lang, answer = agingOldest) => {
   return { built, html };
 };
 
-test('the stock aging PDF prints the item count of the 364+ bucket under the app\'s label, not the bags over 365 days', () => {
-  assert.equal(label('en', 'itemsOver364'), 'Items over 364 days');
-  assert.equal(label('gu', 'itemsOver364'), '૩૬૪ દિવસથી વધુ જૂની આઇટમ');
+test('the stock aging PDF prints the line count of the 364+ bucket as lots, not the bags over 365 days', () => {
+  // The RPC counts the bucket with COUNT(*) over stock lines, so both PDFs say lots (SR-04), as the app's overview tile does.
+  assert.equal(label('en', 'lotsOver364'), 'Lots over 364 days');
+  assert.equal(label('gu', 'lotsOver364'), '૩૬૪ દિવસથી વધુ જૂના જથ્થા');
+  assert.ok(!labelKeys.includes('itemsOver364'));
   const one = { en: aging('customer', 'en'), gu: aging('customer', 'gu') };
-  assert.deepEqual(one.en.built.summary, [['Units in stock', '500'], ['Average age (days)', '300'], ['Items over 364 days', '3']]);
-  assert.deepEqual(one.gu.built.summary, [['સ્ટોકમાં નંગ', '500'], ['સરેરાશ કેટલા દિવસથી (દિવસ)', '300'], ['૩૬૪ દિવસથી વધુ જૂની આઇટમ', '3']]);
-  assert.ok(one.en.html.includes('<div class="kpi"><dt>Items over 364 days</dt><dd>3</dd></div>'));
-  assert.ok(one.gu.html.includes('<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂની આઇટમ</dt><dd>3</dd></div>'));
+  assert.deepEqual(one.en.built.summary, [['Units in stock', '500'], ['Average age (days)', '300'], ['Lots over 364 days', '3']]);
+  assert.deepEqual(one.gu.built.summary, [['સ્ટોકમાં નંગ', '500'], ['સરેરાશ કેટલા દિવસથી (દિવસ)', '300'], ['૩૬૪ દિવસથી વધુ જૂના જથ્થા', '3']]);
+  assert.ok(one.en.html.includes('<div class="kpi"><dt>Lots over 364 days</dt><dd>3</dd></div>'));
+  assert.ok(one.gu.html.includes('<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂના જથ્થા</dt><dd>3</dd></div>'));
   // Not the bags over 365 days (120), not the items over 365 days (2), not the bags in the bucket (320), and no "Over 1 year" tile.
   for (const html of [one.en.html, one.gu.html]) {
     assert.ok(!html.includes('<dd>120</dd>') && !html.includes('<dd>2</dd>') && !html.includes('<dd>320</dd>'));
@@ -900,9 +1021,9 @@ test('the stock aging PDF prints the item count of the 364+ bucket under the app
   }
   // The all-customers level reads the same place of its answer.
   const all = { en: aging('all', 'en'), gu: aging('all', 'gu') };
-  assert.deepEqual(all.en.built.summary, [['Customers', '2'], ['Units in stock', '500'], ['Average age (days)', '300'], ['Items over 364 days', '3']]);
-  assert.deepEqual(all.gu.built.summary, [['વેપારીઓ', '2'], ['સ્ટોકમાં નંગ', '500'], ['સરેરાશ કેટલા દિવસથી (દિવસ)', '300'], ['૩૬૪ દિવસથી વધુ જૂની આઇટમ', '3']]);
-  assert.ok(all.en.html.includes('<div class="kpi"><dt>Items over 364 days</dt><dd>3</dd></div>'));
+  assert.deepEqual(all.en.built.summary, [['Customers', '2'], ['Units in stock', '500'], ['Average age (days)', '300'], ['Lots over 364 days', '3']]);
+  assert.deepEqual(all.gu.built.summary, [['વેપારીઓ', '2'], ['સ્ટોકમાં નંગ', '500'], ['સરેરાશ કેટલા દિવસથી (દિવસ)', '300'], ['૩૬૪ દિવસથી વધુ જૂના જથ્થા', '3']]);
+  assert.ok(all.en.html.includes('<div class="kpi"><dt>Lots over 364 days</dt><dd>3</dd></div>'));
   // Its table keeps the per-customer count of items over 365 days under 'Over 1 year' (the answer has no per-customer bucket count).
   assert.deepEqual(all.en.built.columns.map(column => column.label), ['Customer', 'Stock', 'Average age (days)', 'Over 1 year']);
   assert.deepEqual(all.en.built.rows.map(row => row[3]), ['1', '1']);
@@ -926,7 +1047,7 @@ test('the source comments of report-labels.ts point at app keys that exist', () 
   }
   assert.match(source, /dateRange: .*\/\/ filters\.chip\.dateBetween/);
   assert.equal(source.split('(wording kept from an earlier app version)').length - 1, 5);
-  assert.match(source, /itemsOver364: .*\/\/ reports\.stockAging\.itemsOver364/);
+  assert.match(source, /lotsOver364: .*\/\/ reports\.stockAging\.lotsOver364/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1399,7 +1520,7 @@ test('the days the database already gives as plain days print as they are, whate
   for (const lang of ['en', 'gu']) {
     assert.deepEqual(documentOf('dispatch-activity', 'customer', lang, dispatch).built.rows.map(row => row[1]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('dispatch-activity', 'all', lang, dispatchAll).built.rows.map(row => row[3]), ['31-01-2026'], lang);
-    assert.deepEqual(documentOf('grn-activity', 'all', lang, grnAll).built.rows.map(row => row[4]), ['31-01-2026'], lang);
+    assert.deepEqual(documentOf('grn-activity', 'all', lang, grnAll).built.rows.map(row => row[3]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('stock-summary', 'customer', lang, stock).built.rows.map(row => row[2]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('customer-activity', 'customer', lang, months).built.rows.map(row => row[0]), ['01-2026', '02-2026'], lang);
   }
@@ -1760,6 +1881,292 @@ test('the GRN activity PDF reads invoice_number of invoice_status and needs noth
   const without = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101' })));
   const withKey = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101', invoice_count: 2 })));
   assert.deepEqual(withKey, without);
-  assert.equal(withKey.rows[0][6], '2026-7101');
-  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][6], '');
+  assert.equal(withKey.rows[0][5], '2026-7101');
+  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][5], '');
+});
+
+// ---------------------------------------------------------------------------
+// invoicing, bucket and search: the app's other choices of a report screen (SR-03 of the 2026-10-13 review)
+// ---------------------------------------------------------------------------
+// The app's Invoiced / Not invoiced choice (GRN activity of one customer), its age bucket (stock aging of one customer) and
+// its item search (item stock summary). The first two drop rows after the RPC answered and work the summary out from the
+// rows listed, as status does; the search goes to the item RPC. Without them a PDF is what it was (the byte-for-byte test).
+const grnRequest = (fields = {}) => parseReportRequest({ report: 'grn-activity', customer_id: customer, ...invoicePeriod, ...fields });
+const agingRequest = (fields = {}) => parseReportRequest({ report: 'stock-aging', customer_id: customer, ...fields });
+const itemRequest = (fields = {}) => parseReportRequest({ report: 'item-stock-summary', ...fields });
+const otherReports = name => reportNames.filter(report => report !== name);
+const periodOf = report => periodReports.has(report) ? invoicePeriod : {};
+
+test('invoicing, bucket and search are accepted where the app has them, and null or a blank search is no choice', () => {
+  for (const invoicing of ['invoiced', 'not_invoiced']) assert.equal(grnRequest({ invoicing }).invoicing, invoicing);
+  for (const bucket of ['0-120', '121-240', '241-364', 'over-364']) assert.equal(agingRequest({ bucket }).bucket, bucket);
+  for (const fields of [{}, { invoicing: null }, { invoicing: undefined }]) assert.equal(grnRequest(fields).invoicing, null);
+  for (const fields of [{}, { bucket: null }, { bucket: undefined }]) assert.equal(agingRequest(fields).bucket, null);
+  // null is the same as leaving a choice out, on every report.
+  for (const report of reportNames) {
+    const base = { report, ...periodOf(report) };
+    assert.deepEqual(parseReportRequest({ ...base, invoicing: null, bucket: null, search: null }), parseReportRequest(base), report);
+  }
+  // The search is trimmed; a blank one is none; it is taken at both levels of the item stock summary.
+  assert.equal(itemRequest({ search: '  cumin seeds  ' }).search, 'cumin seeds');
+  assert.equal(itemRequest({ customer_id: customer, search: 'Z0010' }).search, 'Z0010');
+  for (const search of ['', '   ', ' ', null, undefined]) assert.equal(itemRequest({ search }).search, null, JSON.stringify(search));
+  assert.equal(itemRequest({ search: 'a'.repeat(maxSearchLength) }).search.length, 80);
+  assert.equal(itemRequest({ search: ` ${'a'.repeat(maxSearchLength)}  ` }).search.length, 80, 'the limit is on the trimmed text');
+  // Gujarati with its vowel signs and joiners, and an emoji (a surrogate pair), are text.
+  for (const search of ['જીરું', 'ક્‍ષ', 'વરિયાળી 50', 'cumin \u{1F33F}']) assert.equal(itemRequest({ search }).search, search);
+  assert.equal(maxSearchLength, 80);
+  assert.deepEqual(grnRequest({ invoicing: 'not_invoiced', lang: 'gu', sort: { field: 'quantity', order: 'asc' } }), {
+    report: 'grn-activity', customerId: customer, from: '2026-01-01', to: '2026-01-31', sort: { field: 'quantity', order: 'asc' }, lang: 'gu',
+    status: null, invoicing: 'not_invoiced', bucket: null, search: null,
+  });
+});
+
+test('invoicing, bucket and search are refused on another report, without the customer, or with a value the app does not send, and never echoed', () => {
+  const invoicingScope = 'invoicing is only for the GRN activity of one customer';
+  const invoicingValue = "invoicing must be 'invoiced' or 'not_invoiced'";
+  const bucketScope = 'bucket is only for the stock aging of one customer';
+  const bucketValue = "bucket must be '0-120', '121-240', '241-364' or 'over-364'";
+  const searchScope = 'search is only for the item stock summary';
+  const searchText = 'search must be text without control characters';
+  const searchLength = 'search must not be longer than 80 characters';
+  for (const invoicing of ['invoiced', 'not_invoiced', 'all']) {
+    rejects({ report: 'grn-activity', ...invoicePeriod, invoicing }, invoicingScope);
+    for (const report of otherReports('grn-activity')) {
+      rejects({ report, ...periodOf(report), invoicing }, invoicingScope);
+      rejects({ report, customer_id: customer, ...periodOf(report), invoicing }, invoicingScope);
+    }
+  }
+  for (const invoicing of ['', 'all', 'Invoiced', 'INVOICED', 'not-invoiced', 'notInvoiced', ' invoiced', 0, true, {}, ['invoiced']]) {
+    rejects({ report: 'grn-activity', customer_id: customer, ...invoicePeriod, invoicing }, invoicingValue);
+  }
+  for (const bucket of ['0-120', 'over-364']) {
+    rejects({ report: 'stock-aging', bucket }, bucketScope);
+    for (const report of otherReports('stock-aging')) {
+      rejects({ report, ...periodOf(report), bucket }, bucketScope);
+      rejects({ report, customer_id: customer, ...periodOf(report), bucket }, bucketScope);
+    }
+  }
+  // The RPC's key '364+' is not the app's id; nor is any other spelling.
+  for (const bucket of ['364+', 'over364', 'Over-364', '0-121', '0–120', 'all', '', 120, true, {}, ['0-120']]) {
+    rejects({ report: 'stock-aging', customer_id: customer, bucket }, bucketValue);
+  }
+  for (const search of ['cumin', '', '  ']) {
+    for (const report of otherReports('item-stock-summary')) {
+      rejects({ report, ...periodOf(report), search }, searchScope);
+      rejects({ report, customer_id: customer, ...periodOf(report), search }, searchScope);
+    }
+  }
+  for (const search of [5, 0, true, false, {}, ['cumin'], { text: 'cumin' }]) rejects({ report: 'item-stock-summary', search }, searchText);
+  for (const search of ['cu\u0000min', 'cu\nmin', 'cumin\t', '\u0007', 'a\u007fb', 'a\u0085b', 'a\u009fb', 'lone \ud800', '\udc00']) {
+    rejects({ report: 'item-stock-summary', search }, searchText);
+  }
+  for (const search of ['a'.repeat(81), `${'જ'.repeat(81)}`, ` ${'a'.repeat(81)} `]) rejects({ report: 'item-stock-summary', search }, searchLength);
+  // A refusal is its fixed message and nothing else.
+  const secret = 'secret-value-4711';
+  for (const [body, message] of [
+    [{ report: 'grn-activity', customer_id: customer, ...invoicePeriod, invoicing: secret }, invoicingValue],
+    [{ report: 'stock-summary', invoicing: secret }, invoicingScope],
+    [{ report: 'stock-aging', customer_id: customer, bucket: secret }, bucketValue],
+    [{ report: 'stock-summary', bucket: secret }, bucketScope],
+    [{ report: 'stock-summary', search: secret }, searchScope],
+    [{ report: 'item-stock-summary', search: `${secret}\u0000` }, searchText],
+    [{ report: 'item-stock-summary', search: secret.repeat(9) }, searchLength],
+  ]) {
+    assert.throws(() => parseReportRequest(body), error => {
+      assert.deepEqual(error, { status: 400, message });
+      assert.ok(!JSON.stringify(error).includes(secret));
+      return true;
+    });
+  }
+});
+
+// One customer's GRNs: two invoiced, one not invoiced, and one whose answer has no invoice_status (not invoiced, as in the app).
+// The RPC's summary covers all four, so a figure taken from it would show.
+const grnMix = { success: true, data: { summary: { total_grns: 4, total_quantity: 155, total_invoiced_grns: 2 }, grns: [
+  { gr_no: 'Z0001', grn_date: '2026-01-05', total_items: 1, total_qty: 100, items: [{ quantity: 100, weight: 50 }], dispatch_summary: { current_stock: 60 },
+    invoice_status: { is_invoiced: true, invoice_id: 'i1', invoice_number: '2026-1' } },
+  { gr_no: 'Z0002', grn_date: '2026-01-12', total_items: 1, total_qty: 40, items: [{ quantity: 40, weight: 25 }], dispatch_summary: { current_stock: 40 },
+    invoice_status: { is_invoiced: false, invoice_id: null, invoice_number: null } },
+  { gr_no: 'Z0003', grn_date: '2026-01-20', total_items: 2, total_qty: 10, items: [{ quantity: 6, weight: 30 }, { quantity: 4, weight: 30 }],
+    dispatch_summary: { current_stock: 0 }, invoice_status: { is_invoiced: true, invoice_id: 'i2', invoice_number: '2026-2' } },
+  { gr_no: 'Z0004', grn_date: '2026-01-25', total_items: 1, total_qty: 5, items: [{ quantity: 5, weight: 20 }], dispatch_summary: { current_stock: 5 } },
+] } };
+
+function documentWith(req, answer, customerName = 'Amar Traders') {
+  const built = buildReport(req, unwrapReportBody(answer));
+  const filters = reportFilters(req, customerName, built, NOW);
+  const html = reportHtml({ title: built.title, company: 'Fictional Cold Storage', lang: req.lang, filters, summaryTitle: label(req.lang, 'summary'),
+    summary: built.summary, columns: built.columns, rows: built.rows, totals: built.totals, note: '', empty: built.empty });
+  return { built, filters, html };
+}
+
+test('with invoicing only the GRNs of that choice are listed, and the summary is worked out from them, in English and Gujarati', () => {
+  const cases = {
+    not_invoiced: { numbers: ['Z0004', 'Z0002'], totals: ['', '2', '45', '45', ''],
+      en: [['GRNs', '2'], ['Quantity', '45'], ['Invoiced', '0']], word: ['Not invoiced', 'ઇન્વૉઇસ બાકી'] },
+    invoiced: { numbers: ['Z0003', 'Z0001'], totals: ['', '3', '110', '60', ''],
+      en: [['GRNs', '2'], ['Quantity', '110'], ['Invoiced', '2']], word: ['Invoiced', 'ઇન્વૉઇસ બન્યું'] },
+  };
+  for (const [invoicing, expected] of Object.entries(cases)) {
+    const en = documentWith(grnRequest({ invoicing }), grnMix);
+    assert.deepEqual(en.built.rows.map(row => row[0]), expected.numbers, invoicing);
+    assert.deepEqual(en.built.totals, ['Total', ...expected.totals], invoicing);
+    assert.deepEqual(en.built.summary, expected.en, invoicing);
+    assert.equal(en.built.rowsTotal, 2);
+    assert.deepEqual(en.filters, [['Customer', 'Amar Traders'], ['Period', '01-01-2026 – 31-01-2026'], ['Invoicing', expected.word[0]],
+      ['Sort by', 'Date (descending)'], ['', 'Last updated 12-10-2026 13:30 IST']]);
+    assert.equal(en.html.split(`<span class="filter"><strong>Invoicing:</strong> ${expected.word[0]}</span>`).length - 1, 2, 'under the title and in the table header');
+    for (const number of ['Z0001', 'Z0002', 'Z0003', 'Z0004'].filter(number => !expected.numbers.includes(number))) assert.ok(!en.html.includes(number), number);
+
+    const gu = documentWith(grnRequest({ invoicing, lang: 'gu' }), grnMix);
+    assert.deepEqual(gu.built.rows, en.built.rows);
+    assert.deepEqual(gu.built.summary, [['આવક પાવતી', expected.en[0][1]], ['નંગ', expected.en[1][1]], ['ઇન્વૉઇસ બન્યું', expected.en[2][1]]]);
+    assert.deepEqual(gu.filters[2], ['ઇન્વૉઇસ', expected.word[1]]);
+    assert.equal(gu.html.split(`<span class="filter"><strong>ઇન્વૉઇસ:</strong> ${expected.word[1]}</span>`).length - 1, 2);
+  }
+  // Without the choice: every GRN, the RPC's own figures (the figures are the RPC's own, none of them a weight), and no invoicing line.
+  for (const fields of [{}, { invoicing: null }]) {
+    const all = documentWith(grnRequest(fields), grnMix);
+    assert.deepEqual(all.built.rows.map(row => row[0]), ['Z0004', 'Z0003', 'Z0002', 'Z0001']);
+    assert.deepEqual(all.built.summary, [['GRNs', '4'], ['Quantity', '155'], ['Invoiced', '2']]);
+    assert.ok(!all.filters.some(([key]) => key === 'Invoicing'));
+    assert.ok(!all.html.includes('Invoicing'));
+  }
+  // A choice that lists nothing: the empty text, no totals row, and zeros, not the RPC's figures.
+  const none = documentWith(grnRequest({ invoicing: 'invoiced' }), fixtures['grn-activity'].customer);
+  assert.deepEqual([none.built.rows, none.built.totals, none.built.empty], [[], null, 'No GRNs in this period']);
+  assert.deepEqual(none.built.summary, [['GRNs', '0'], ['Quantity', '0'], ['Invoiced', '0']]);
+  // The choice works with a sort, and the RPC is asked exactly as without it.
+  assert.deepEqual(documentWith(grnRequest({ invoicing: 'not_invoiced', sort: { field: 'quantity', order: 'desc' } }), grnMix).built.rows.map(row => row[0]), ['Z0002', 'Z0004']);
+  assert.deepEqual(reportLevel(grnRequest({ invoicing: 'invoiced' })).rpc(grnRequest({ invoicing: 'invoiced' })), reportLevel(grnRequest()).rpc(grnRequest()));
+});
+
+test('a stock line is in the bucket the RPC names, or else in the one its age falls in, as in the app', () => {
+  const cases = [
+    [{ aging_days: 0 }, '0-120'], [{ aging_days: 120 }, '0-120'], [{ aging_days: 121 }, '121-240'], [{ aging_days: 240 }, '121-240'],
+    [{ aging_days: 241 }, '241-364'], [{ aging_days: 364 }, '241-364'], [{ aging_days: 365 }, 'over-364'], [{ aging_days: '130' }, '121-240'],
+    // The RPC's keys: '364+' is the app's 'over-364'; a named bucket wins over the days, as in the app's lineBucket.
+    [{ aging_bucket: '0-120', aging_days: 500 }, '0-120'], [{ aging_bucket: '121-240' }, '121-240'], [{ aging_bucket: '241-364' }, '241-364'],
+    [{ aging_bucket: '364+', aging_days: 10 }, 'over-364'],
+    // A key the default buckets do not make, or an inherited name, falls back to the days.
+    [{ aging_bucket: 'over-364', aging_days: 10 }, '0-120'], [{ aging_bucket: '0-90', aging_days: 200 }, '121-240'],
+    [{ aging_bucket: 'constructor', aging_days: 400 }, 'over-364'], [{ aging_bucket: '__proto__', aging_days: 250 }, '241-364'],
+    [{}, null], [{ aging_bucket: null, aging_days: null }, null], [{ aging_days: 'old' }, null],
+  ];
+  for (const [line, bucket] of cases) assert.equal(stockLineBucket(line), bucket, JSON.stringify(line));
+});
+
+// One customer's stock lines: the RPC names the bucket of some and not of others. Its summary and by_bucket cover all eight
+// lines (units 128, average 196, 3 lines over 364 days), which no bucket choice lists, so a figure taken from it would show.
+const agingMix = { success: true, data: { summary: { total_quantity: 128, average_age_days: 196, qty_over_365_days: 50 },
+  by_bucket: { ...oldestBuckets, '364+': { item_count: 3, total_quantity: 57, percentage: 45 } }, items: [
+    { item_name: 'Cumin', gr_no: 'Z0001', grn_date: '2025-01-01', rack: 'R1', current_stock: 30, aging_days: 400, aging_bucket: '364+' },
+    { item_name: 'Cumin', gr_no: 'Z0002', grn_date: '2025-01-31', rack: 'R1', current_stock: 20, aging_days: 370 },
+    { item_name: 'Cumin', gr_no: 'Z0009', grn_date: '2025-01-31', rack: 'R1', current_stock: 7, aging_days: 365 },
+    { item_name: 'Fennel', gr_no: 'Z0003', grn_date: '2025-07-01', rack: 'R2', current_stock: 50, aging_days: 200, aging_bucket: '121-240' },
+    { item_name: 'Fennel', gr_no: 'Z0004', grn_date: '2026-01-01', rack: 'R2', current_stock: 7, aging_days: 10, aging_bucket: '0-120' },
+    { item_name: 'Aniseed', gr_no: 'Z0005', grn_date: '2025-05-20', rack: 'R3', current_stock: 9, aging_days: 241, aging_bucket: '241-364' },
+    { item_name: 'Aniseed', gr_no: 'Z0006', grn_date: '2025-02-01', rack: 'R3', current_stock: 4, aging_days: 364 },
+    { item_name: 'Aniseed', gr_no: 'Z0007', grn_date: '2025-10-01', rack: 'R3', current_stock: 1, aging_days: 120 },
+  ] } };
+
+test('with a bucket only the stock lines of that bucket are listed, and units, average age and lots over 364 days are theirs, in English and Gujarati', () => {
+  const cases = {
+    'over-364': { numbers: ['Z0001', 'Z0002', 'Z0009'], figures: ['57', '378', '3'], word: ['Over 364 days', '૩૬૪ દિવસથી વધુ'] },
+    '241-364': { numbers: ['Z0006', 'Z0005'], figures: ['13', '303', '0'], word: ['241–364 days', '૨૪૧–૩૬૪ દિવસ'] },
+    '121-240': { numbers: ['Z0003'], figures: ['50', '200', '0'], word: ['121–240 days', '૧૨૧–૨૪૦ દિવસ'] },
+    '0-120': { numbers: ['Z0007', 'Z0004'], figures: ['8', '65', '0'], word: ['0–120 days', '૦–૧૨૦ દિવસ'] },
+  };
+  for (const [bucket, expected] of Object.entries(cases)) {
+    const en = documentWith(agingRequest({ bucket }), agingMix);
+    assert.deepEqual(en.built.rows.map(row => row[1]), expected.numbers, bucket);
+    assert.deepEqual(en.built.summary, [['Units in stock', expected.figures[0]], ['Average age (days)', expected.figures[1]], ['Lots over 364 days', expected.figures[2]]], bucket);
+    assert.equal(en.built.totals[4], expected.figures[0], 'the totals row agrees with the summary');
+    assert.deepEqual(en.filters, [['Customer', 'Amar Traders'], ['Stock age', expected.word[0]], ['Sort by', 'Stock age (days) (descending)'],
+      ['', 'Last updated 12-10-2026 13:30 IST']], bucket);
+    assert.equal(en.html.split(`<span class="filter"><strong>Stock age:</strong> ${expected.word[0]}</span>`).length - 1, 2, bucket);
+
+    const gu = documentWith(agingRequest({ bucket, lang: 'gu' }), agingMix);
+    assert.deepEqual(gu.built.rows.map(row => row[1]), expected.numbers, bucket);
+    assert.deepEqual(gu.built.summary, [['સ્ટોકમાં નંગ', expected.figures[0]], ['સરેરાશ કેટલા દિવસથી (દિવસ)', expected.figures[1]], ['૩૬૪ દિવસથી વધુ જૂના જથ્થા', expected.figures[2]]]);
+    assert.deepEqual(gu.filters[1], ['કેટલા દિવસથી', expected.word[1]]);
+    assert.equal(gu.html.split(`<span class="filter"><strong>કેટલા દિવસથી:</strong> ${expected.word[1]}</span>`).length - 1, 2, bucket);
+  }
+  // Without a bucket: all eight lines and the RPC's own figures, and no stock age line.
+  const all = documentWith(agingRequest(), agingMix);
+  assert.equal(all.built.rows.length, 8);
+  assert.deepEqual(all.built.summary, [['Units in stock', '128'], ['Average age (days)', '196'], ['Lots over 364 days', '3']]);
+  assert.ok(!all.filters.some(([key]) => key === 'Stock age'));
+  // A line with no bucket and no age is listed only without a choice; a bucket with no line lists nothing and counts 0.
+  const odd = structuredClone(fixtures['stock-aging'].customer);
+  odd.data.items.push({ item_name: 'Mustard', gr_no: 'Z0042', current_stock: 3 });
+  assert.equal(documentWith(agingRequest(), odd).built.rows.length, 3);
+  for (const bucket of ['0-120', '121-240', '241-364', 'over-364']) assert.ok(!documentWith(agingRequest({ bucket }), odd).html.includes('Z0042'), bucket);
+  const none = documentWith(agingRequest({ bucket: 'over-364' }), fixtures['stock-aging'].customer);
+  assert.deepEqual([none.built.rows, none.built.totals], [[], null]);
+  assert.deepEqual(none.built.summary, [['Units in stock', '0'], ['Average age (days)', '0'], ['Lots over 364 days', '0']]);
+  // The RPC is asked as without the choice.
+  assert.deepEqual(reportLevel(agingRequest({ bucket: 'over-364' })).rpc(agingRequest({ bucket: 'over-364' })), reportLevel(agingRequest()).rpc(agingRequest()));
+});
+
+test('the search of the item stock summary goes to its RPC and is named in quotes on the document, escaped, in English and Gujarati', () => {
+  const defaults = { p_limit: maxReportRows + 1, p_offset: 0, p_sort_by: 'item_name', p_sort_order: 'asc' };
+  for (const level of ['customer', 'all']) {
+    const one = level === 'customer' ? { customer_id: customer } : {};
+    const req = itemRequest({ ...one, search: '  cumin ' });
+    assert.deepEqual(reportLevel(req).rpc(req), { name: 'get_item_wise_stock_list',
+      args: { p_customer_id: level === 'customer' ? customer : null, p_search_query: 'cumin', ...defaults } }, level);
+    const sorted = itemRequest({ ...one, search: 'cumin', sort: { field: 'stock', order: 'desc' } });
+    assert.deepEqual(reportLevel(sorted).rpc(sorted).args, { p_customer_id: level === 'customer' ? customer : null, p_search_query: 'cumin', ...defaults,
+      p_sort_by: 'total_stock', p_sort_order: 'desc' });
+    // A blank search is none: the RPC gets null, as without one.
+    for (const search of ['', '   ']) assert.equal(reportLevel(itemRequest({ ...one, search })).rpc(itemRequest({ ...one, search })).args.p_search_query, null);
+  }
+  // The RPC's answer to a search is the rows it found, with their count and summary (migration 52), printed as they come.
+  const found = { success: true, data: { total_count: 1, summary: { total_stock: 90, total_qty: 150, item_count: 1 }, items: [
+    { item_name: 'Cumin', packaging: 'Bag', grn_count: 2, total_qty: 150, total_stock: 90 }] } };
+  const en = documentWith(itemRequest({ search: 'cumin' }), found, null);
+  assert.deepEqual(en.built.rows, [['Cumin', 'Bag', '2', '150', '90']]);
+  assert.deepEqual(en.built.summary, [['Items', '1'], ['Units in stock', '90'], ['Received quantity', '150']]);
+  assert.deepEqual(en.filters, [['Customer', 'All customers'], ['Search', '“cumin”'], ['Sort by', 'Item (ascending)'], ['', 'Last updated 12-10-2026 13:30 IST']]);
+  assert.equal(en.html.split('<span class="filter"><strong>Search:</strong> “cumin”</span>').length - 1, 2);
+  const gu = documentWith(itemRequest({ search: 'જીરું', lang: 'gu', customer_id: customer }), found);
+  assert.deepEqual(gu.filters[1], ['શોધ', '“જીરું”']);
+  assert.equal(gu.html.split('<span class="filter"><strong>શોધ:</strong> “જીરું”</span>').length - 1, 2);
+  // The search is the caller's own text: it is escaped like every value of the document.
+  const attack = documentWith(itemRequest({ search: '<img src=x onerror=alert(1)>&"' }), found, null);
+  assert.ok(!attack.html.includes('<img'));
+  assert.equal(attack.html.split('“&lt;img src=x onerror=alert(1)&gt;&amp;&quot;”').length - 1, 2);
+  // Without a search (or with a blank one) the document is the one it was.
+  for (const search of [undefined, null, '', '  ']) {
+    const plain = documentWith(itemRequest({ search }), fixtures['item-stock-summary'].all, null);
+    assert.equal(plain.html, documentWith(itemRequest(), fixtures['item-stock-summary'].all, null).html);
+    assert.ok(!plain.filters.some(([key]) => key === 'Search'));
+  }
+});
+
+test('a request with every choice null prints byte for byte what the request without them prints, for every report, level and language', () => {
+  let compared = 0;
+  for (const report of reportNames) for (const level of ['customer', 'all']) for (const lang of ['en', 'gu']) {
+    const base = { report, lang, ...periodOf(report), ...(level === 'customer' ? { customer_id: customer } : {}) };
+    const name = level === 'customer' ? 'Amar Traders' : null;
+    const without = documentWith(parseReportRequest(base), fixtures[report][level], name);
+    const withNulls = documentWith(parseReportRequest({ ...base, invoicing: null, bucket: null, search: null }), fixtures[report][level], name);
+    assert.equal(withNulls.html, without.html, `${report} ${level} ${lang}`);
+    compared += 1;
+  }
+  assert.equal(compared, 28);
+});
+
+test('the handler echoes invoicing and bucket in the answer\'s document when they are set, and never the search', () => {
+  const handler = readFileSync(new URL('../functions/_shared/report-pdf.ts', import.meta.url), 'utf8');
+  assert.match(handler, /if \(request\.invoicing\) document\.invoicing = request\.invoicing;/);
+  assert.match(handler, /if \(request\.bucket\) document\.bucket = request\.bucket;/);
+  assert.ok(handler.indexOf('document.status = request.status') < handler.indexOf('document.invoicing = request.invoicing'));
+  assert.ok(handler.indexOf('document.bucket = request.bucket') < handler.indexOf('rows_count: report.rows.length'));
+  assert.doesNotMatch(handler, /document\.search|request\.search|search:/, 'the search is never in the answer');
+  // Nothing of a request is logged by the handler or the request parser.
+  const parser = readFileSync(new URL('../functions/_shared/report-request.ts', import.meta.url), 'utf8');
+  for (const source of [handler, parser]) assert.doesNotMatch(source, /console\./);
 });

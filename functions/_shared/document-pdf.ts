@@ -3,7 +3,7 @@ import { createClient } from '../vendor/supabase-js.mjs';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf } from './gotenberg-client.ts';
-import { documentHtml } from './document-html.ts';
+import { documentHtml, kgEach } from './document-html.ts';
 import { headerColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';
 
@@ -51,8 +51,8 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
       header = result.data; number = String(value); date = header.date || header.disp_date || header.inv_date;
       if (kind === 'grn') {
         details = await reader.from('goodsreceived_trl').select('item_name,packaging,qty,stock,weight,rack,package_mark',{count:'exact'}).eq('gr_id',header.id).limit(1001);
-        columns = ['Item','Packaging','Quantity','Stock','Weight','Rack','Mark'];
-        rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,line.weight,line.rack,line.package_mark]);
+        columns = ['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'];
+        rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,kgEach(line.weight),line.rack,line.package_mark]);
       } else if (kind === 'dispatch') {
         details = await reader.from('dispatch_trl').select('disp_qty,goodsreceived_trl(item_name,packaging,package_mark)',{count:'exact'}).eq('disp_id',header.id).limit(1001);
         columns = ['Item','Packaging','Quantity','Mark'];

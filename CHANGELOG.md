@@ -1,5 +1,425 @@
 # Changelog
 
+## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
+
+No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).
+The matching app change is rn-warehouse-template PR #45.
+
+- GRN document PDF (`generate-grn-pdf`): the line table's weight column header is now `Kg each`
+  (it is the weight of one package, `goodsreceived_trl.weight`; the values are unchanged).
+  A weight of 0 or none prints `—`, like the app (0 means not recorded).
+  English only, like the rest of that PDF.
+- Report PDFs (`generate-report-pdf`) no longer print weights: the weight column, its total and
+  the weight summary figure are gone from GRN activity (one customer and all customers) and Stock
+  summary (both levels), and the weight figure from the Dispatch activity summary of one customer.
+  The Weight and kg labels are removed from `report-labels.ts`. A request that sorts by `weight`
+  gets the report's default order, like any unknown sort field; this replaces the `weight` sort fields
+  listed in the migration 53 entry. The RPCs still return their weights.
+- The pre-printed slips (`print-grn-preprinted`, `print-invoice-preprinted`) are unchanged.
+
+## Unreleased — Settings UX batch: item rate changes, approving staff, service accounts (2026-10-14)
+
+Migrations 76, 77 and 78; apply with the normal setup rerun, then update the app.
+
+- Migration 76: `replace_item_rates` (change an item's default or customer rate from a date in
+  one step) and `undo_rate_change` (undo the change that starts on a day: its rows go and the rows it
+  ended are opened again); a one-day rate is valid; creating or editing a rate refuses overlapping rows
+  (`BANDS_OVERLAP`); one-time rates store labour 0; staff can no longer change, delete or
+  back-date a rate that is already in force (`RATE_IN_FORCE_MANAGER_ONLY`); `search_customers`
+  matches words anywhere in the name; the price list pages stably. Dates use the India day.
+  Code-review fixes: `replace_item_rates` has `p_mode` ('change' keeps a scheduled stop; 'correct'
+  replaces only the rows starting that day and never touches later rates) and `p_move_from` (move a
+  planned rate in one step); new `error_code`s `INVALID_MODE`, `NOT_A_RATE_START`, `NOTHING_TO_MOVE`;
+  staff get `RATE_IN_FORCE_MANAGER_ONLY` for a rate that began today; `find_or_create_item_storage_price`
+  is administrators and supervisors only and checks overlap, one-time labour and the India day;
+  `get_item_storage_prices` hides expired rows by the India day.
+- Migration 77: `operator_review_enrollment` takes `p_role` (customer, staff, supervisor); the
+  three-argument call still works. `scripts/backup-integrity.sql` now checks it by name.
+- Migration 78: `user_profiles.is_service_account`, `set_service_account`; such a profile cannot be
+  given another role, deactivated or deleted and does not count as an administrator. Nothing is
+  marked by the migration: mark the FAS sync profile with `set_service_account`. Customer
+  assignment, its removal, clearing the central link and the access-request review refuse such a
+  profile too (`SERVICE_ACCOUNT_READ_ONLY`).
+
+## Unreleased — sensors sampled every 5 minutes, kept 90 days (2026-10-13)
+
+The owner wants a sample every 5 minutes and three months of history.
+
+**Operator action** (only where sensors are used): apply migration 75 (the
+normal setup rerun does). Then either accept the new bridge defaults (leave
+`SENSOR_BRIDGE_POLL_SECONDS` and `SENSOR_BRIDGE_HEARTBEAT_SECONDS` empty in
+`config/compose.env`, or the standalone `sensor-bridge.env`) or set them there,
+and recreate the bridge (`bash scripts/compose.sh --profile sensors up -d
+--force-recreate sensor-bridge`). At its next `retention:apply` the retention
+job deletes every reading older than 90 days, legacy history included; check
+the count with `npm run retention:preview` first, and take a backup or export
+before that run if older readings are still wanted.
+
+- Bridge defaults: `SENSOR_BRIDGE_POLL_SECONDS` 30 -> 300 and
+  `SENSOR_BRIDGE_HEARTBEAT_SECONDS` 900 -> 300 (`config.py`, the Compose
+  service, both env examples). With both at 300 every poll queues one reading
+  per sensor, a change or a heartbeat, so each sensor is sampled every 5
+  minutes: one row per 5 minutes, about 288 a day. The allowed ranges are
+  unchanged (poll 5 to 3600, heartbeat 60 to 86400). A shorter poll with the
+  heartbeat at 300 still catches changes sooner. Consequences of the longer
+  poll: a value change reaches the backend up to about 5 minutes later than
+  before, and a hub is reported offline after three failed polls, about 10
+  minutes after the first one instead of about a minute. The hub status is
+  re-sent every 5 minutes instead of every 15. The container healthcheck is
+  unaffected: the health file is rewritten on every pass of the 1-second loop,
+  not per poll, so `SENSOR_BRIDGE_HEALTH_MAX_AGE` (120 s) still holds.
+- Migration 75 `sensor_retention_90_days`: retention key `sensor_readings` is
+  90 days instead of 400 (it stops with an error unless exactly one policy row
+  is updated). Nothing is deleted by the migration itself.
+- Staleness is unchanged: `staleness_threshold_minutes` stays 30 by default.
+  With 5-minute samples that is about six missed samples; two missed samples
+  (10 minutes, for example a bridge restart or a failed poll or two) do not
+  mark a sensor stale, so 30 stays a safe default.
+- Tests: the bridge unit tests pin the new defaults and check that the default
+  settings give one reading per sensor per 5 minutes (the state-machine tests
+  keep a 30 s poll and a 15-minute heartbeat); `tests/sensor_ingest.sql`
+  checks 90 days and that retention deletes a reading of 91 days and keeps one
+  of 89 days.
+
+## Unreleased — Tapo sensors through the template (2026-10-13)
+
+Tapo T310 temperature and humidity sensors on H200 hubs now reach this backend
+through the template itself, replacing the Home Assistant stack that posted to
+the legacy server. Guide: [docs/SENSORS.md](docs/SENSORS.md).
+
+**Operator action** (only where sensors are used; nothing changes elsewhere):
+apply migration 74 (the normal setup rerun does; it clears the legacy zero
+placeholders and prints NOTICE counts of what it cleared, merged or removed);
+mint an ingest key and keep it only in the bridge's private configuration
+(`compose.env`, or the standalone `sensor-bridge.env`):
+`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=main-bridge < scripts/sensor-ingest-key.sql`
+(prints the key once); set `SENSOR_BRIDGE_HUBS`, `TAPO_USERNAME`,
+`TAPO_PASSWORD` and `SENSOR_INGEST_KEY` in `config/compose.env`; start the
+bridge with `bash scripts/compose.sh --profile sensors up -d --wait sensor-bridge`
+(or run the same image as its own Compose project); then
+`node scripts/set-capability.mjs sensors on`, `bash scripts/compose.sh restart
+functions`, and take a new `npm run db:backup` (an older backup can then only be
+restored with `db:restore-host`). A key is revoked with
+`UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<label>' AND revoked_at IS NULL`.
+
+- Migration 74 `sensor_ingest` adds sensor ingestion. `sensor_readings` gains
+  `measured_at` (when the bridge observed the value; the hub reports no time),
+  backfilled from `recorded_at`; temperature and humidity are now nullable (at
+  least one, each in range), legacy zero placeholders become NULL, and a
+  reading is stored once per sensor and time (`(device_id, measured_at)`
+  unique), so a resend is harmless. `sensor_devices` gains the hub child id
+  (`external_id`, 40 hex, stored upper case), hub, model, battery, signal,
+  report interval and `last_seen_at`. New `sensor_hubs`; new `sensor_latest`
+  with the newest value of each kind per sensor (RLS for administrator,
+  supervisor and staff, published over Realtime to them); and the view
+  `sensor_status`, which derives stale (nothing seen within the device's
+  threshold, 30 minutes) and offline (hub reported offline) when read.
+- Migration 74: `record_sensor_batch(p_key, p_hub, p_readings)`, service key
+  only and called by the edge function, checks a per-bridge ingest key
+  (SHA-256 in `warehouse_security.sensor_ingest_keys`, readable by no API
+  role), validates every reading and counts rejections by reason, accepts a
+  child id in either case, creates devices on first sight (names set once, so
+  renames survive), stores a heartbeat that carries values as a reading and
+  counts heartbeats by their `kind`, and moves `sensor_latest` only forward in
+  time. The two readers `get_sensor_polling_data` and `get_sensor_history` keep
+  their signatures and answers, now computed (status OFFLINE, STALE, ONLINE;
+  battery LOW, OK, UNKNOWN; nulls ignored instead of read as 0; per-bucket
+  sample counts); history gains a 1-day period (5-minute buckets). Their
+  `EXCEPTION WHEN OTHERS` handler is gone, so a refused caller now gets a
+  PostgREST `42501` error instead of `{success:false}` (the app's
+  `useReportQuery` treats it as a refusal). New `get_sensor_device` (staff and
+  above) and `update_sensor_device` (administrator). `record_sensor_reading` and
+  `update_sensor` are removed (service role only, never called). Readings are
+  kept 400 days (retention key `sensor_readings`).
+- Edge function `ingest-sensor-readings`: `POST` with the ingest key as bearer
+  (no user session), at most 256 KiB and 500 readings; 200 with accepted,
+  duplicate and rejected counts, 401 for a missing, malformed, wrong or revoked
+  key (a malformed one never reaches the database), 400 for a bad body shape
+  or a hub or readings refused by `record_sensor_batch`, 405, and 503 when the
+  database is not configured, errors or times out after 15 s (the bridge
+  retries). It is in the router's public set; its worker gets only
+  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; every answer has
+  `Cache-Control: no-store`, and its log lines carry a reason code only, never
+  the key or the body.
+- The bridge, `docker/sensor-bridge/` (Python 3.12, python-kasa 0.10.2): polls
+  each hub every 30 seconds, queues a reading on a change or every 15 minutes
+  as a heartbeat, keeps the queue and its change detector in SQLite in the
+  `sensor-bridge-data` volume, posts every 60 seconds with backoff, marks a hub
+  offline after three failed polls, and offers `--check-config`, `--once` and
+  `--dump`. Because the change detector persists, a second `--once` straight
+  after the first posts nothing (`posts=0`); the backend reports duplicates
+  only when the bridge re-sends a batch whose answer it did not get. It runs as the optional Compose service `sensor-bridge` (profile
+  `sensors`, `default` network only, fixed URL `http://kong:8000/functions/v1/ingest-sensor-readings`,
+  every variable optional so `compose config` is unchanged for installations
+  without it, non-root, all capabilities dropped, read-only root filesystem,
+  0.25 CPU / 128 MB), or as its
+  own Compose project (`docker-compose.standalone.yml`). `.env.example` has an
+  empty SENSORS block.
+- `scripts/set-capability.mjs <sensors|printing> <on|off>` changes one flag of
+  `public/instance.json` in place (staging file and rename, mode kept, every
+  other byte unchanged) and prints the restart and backup steps.
+- Checks: `npm run test:sensors` (`scripts/sensor-bridge-check.sh`, under the
+  operator lock: builds the image; `--check-config` exits 0 with fictional
+  values without printing them and 78 without any; the unit tests run inside
+  the image), also a step of CI `operator-install`; a new CI job `bridge`
+  (`compileall` and the unit tests on Python 3.12); `tests/sensor_ingest.sql`;
+  the function's handler tests; the network table and notice-version tests
+  cover the new service.
+- Licence: the bridge's code is **GPL-3.0-or-later** (`docker/sensor-bridge/LICENSE`)
+  because python-kasa is GPL-3.0; it is a separate program that talks to the
+  backend over HTTP, and the rest of the repository stays MIT.
+  `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` list python-kasa
+  0.10.2 and the Python 3.12-slim-bookworm base image. Distributing a built
+  bridge image carries the GPL source offer.
+- Not yet verified: the hub protocol on the facility's real H200 hubs, the
+  heartbeat against real T310 reporting, Realtime delivery to a staff phone,
+  and the profile started under Compose on an installation.
+
+## Unreleased — report PDFs keep the screen's choices (2026-10-13)
+
+- `generate-report-pdf` takes three optional request fields (no migration): `invoicing` ('invoiced' | 'not_invoiced', GRN activity of one customer), `bucket` ('0-120' | '121-240' | '241-364' | 'over-364', stock aging of one customer) and `search` (trimmed text of at most 80 characters, no control characters; item stock summary). The first two drop the other rows after the RPC answered and work the summary out from the rows listed, as `status` does; the search goes to `get_item_wise_stock_list` as `p_search_query`. Each prints a line under the title ("Invoicing: Not invoiced", "Stock age: Over 364 days", "Search: “cumin”"); `invoicing` and `bucket` are echoed in the answer's `document`, the search never is. A field on another report, without the customer, or with another value is refused with 400 and a fixed message. Both stock aging PDFs now label their oldest-stock figure "Lots over 364 days" (it is a count of stock lines; it said "Items over 364 days"). The matching app change ships separately; against a server without this change the app asks before sharing the report without the choice (the old server answers "Unknown field in report request").
+
+## Unreleased — invoice numbers run from 1 to 99999999 (2026-10-13)
+
+- Migration 73 `invoice_number_ceiling`: `save_invoice` (both signatures) and `update_invoice` refuse an invoice number outside 1..99999999 (eight digits, so year-prefixed numbers such as 20260929 stay valid) with "Invoice number must be between 1 and 99999999" (WH422), an edit keeping the invoice's own stored number excepted, and `get_next_invoice_number` ignores numbers above 99999999, so one typed 2147483647 no longer blocks its financial year (WH409 now comes at 99999999); no operator action. The app's cap on the number field is a separate app pull request; this backend change merges first. Rules: [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Invoice numbers"; test `tests/invoice_number_ceiling.sql`.
+
+## Unreleased — Backend review fixes 2026-10-13
+
+### Migrations 65-67
+
+**Operator action:** none beyond applying the migrations (the normal upgrade
+does). Migration 65 reports (a WARNING when there are any) saved invoices whose
+stored total differs from a recomputation of their lines under the receipt's
+current pricing mode (whatever the cause); it changes none. Migration 67 prints a NOTICE with the number of old stock
+movements whose sign or type it corrected, and a WARNING with the probable
+duplicates it kept (not deleted) when there are any.
+
+- Migration 65 `grn_edit_integrity`, `update_grn` (review I1, P1): an edit
+  of receipt B that sent a line id of receipt A changed A's line (to "Foreign
+  Mutation", weight 99 in the review) and deleted B's own line; a line id sent
+  twice was applied twice; an unknown id deleted the real line. Now refused
+  before anything is written: "A GRN line is sent more than once in this
+  edit; reload the GRN and edit again" and "GRN line <id> is not a line of
+  this GRN; reload the GRN and edit again". The line SELECT is bound to the
+  receipt and row-locked, and both line UPDATEs are bound to the receipt and
+  must change exactly one row. The image "keep" UPDATE is bound to the
+  receipt too (its id lookup already was).
+- Migration 65, `update_grn` (review I3): changing the pricing mode of a
+  receipt that has an invoice (of the receipt, or a line of one of its lots)
+  is refused: "Cannot change the pricing mode of a GRN that has invoices:
+  delete invoices first, then change the pricing mode and invoice again".
+  Before, a MONTHLY invoice of 108.00 read 40.00 in
+  `get_invoice_items_detailed` after its receipt became ONE_TIME, while its
+  stored total stayed 108.00. Sending the mode the receipt already has (the
+  app always does) or none is an ordinary edit; a receipt without invoices
+  changes freely.
+- Migration 66 `stock_history_cutoff`, `get_customer_stock_analysis_v2`
+  (review I2): with a date, each lot's balance is now its received quantity
+  less what was dispatched from it up to that date, and the in-stock filter is
+  applied after that. Before, 10 received on 1 April with 4 dispatched on
+  1 June read 10 / 0 / 6 on 15 April (now 10 / 0 / 10), and a lot emptied
+  after the date was left out. Without a date the answer is unchanged.
+- Migration 67 `dispatch_cart_and_movements` (review I4): a dispatch now
+  records on each line the cart line it lowered and by how much
+  (`source_order_item_id`, `cart_quantity_consumed`; `source_type` 'cart' for
+  a dispatch from the cart), and `delete_dispatch_with_order_cleanup` gives
+  that quantity back: a cart of 10 that a dispatch of 4 lowered to 6 is 10
+  again (before: 6), a used-up line comes back pending with the quantity it
+  had (before: recreated as fulfilled with the dispatched quantity), and a
+  direct dispatch that lowered the cart gives back too. Lines of a dispatch
+  from the cart saved before migration 67 carry no record: nothing is given
+  back for them, the answer counts them in the new `cart_lines_not_restored`
+  and `cart_restoration.lines_not_restored`, and its message says so.
+  A direct dispatch lowers, and its deletion gives back to, only the
+  customer's OPEN cart (oldest first, then lowest id). When the dispatch used
+  the line up and the customer has no OPEN cart, a cart is made as
+  `get_or_create_cart` makes it; the unique index `one_cart_per_customer`
+  allows one order per customer, so when that order exists but is not OPEN
+  (or is deleted) it is left untouched, nothing is given back for the line,
+  and the answer counts it in the new `cart_lines_without_open_cart` and
+  `cart_restoration.lines_without_open_cart` with a message (before: the
+  pending line went into the closed order, or, with no order, nothing was
+  given back).
+- Migration 67 (review I5): `update_dispatch_smart` logs a movement only for
+  lines it actually adds (before, every line sent, so an unchanged resave
+  logged a dispatch that never happened and made an old empty lot look
+  emptied today in the stock summary). One sign rule: `dispatch` negative,
+  `return` positive, quantity = balance after - balance before (creation was
+  positive; a lowered quantity was a `dispatch` of +q). Deleting a dispatch
+  now logs the stock it restores. The trigger
+  `restore_stock_on_dispatch_delete` wrote a movement type the table refuses,
+  so a database owner's `DELETE FROM dispatch` with lines failed; it now
+  writes a `return` of what the lot really got back: when the restore is
+  capped at the received quantity (stock 7 of 10, a dispatch of 6 deleted)
+  it logs `return 3 7>10`, not `return 6 4>10`. Old movements are corrected where their balances show
+  the meaning; probable duplicates are counted, not deleted (the count also
+  includes a line legitimately removed and added again).
+- Tests: `tests/grn_edit_integrity.sql`, `tests/stock_history_cutoff.sql`,
+  `tests/dispatch_cart_and_movements.sql` (each failed before its migration).
+- What the app sees: two new `update_grn` refusal texts (shown in English;
+  the Gujarati fallback is the generic save error) and four added keys in the
+  dispatch deletion answer (lines not given back, by reason). No shape the app
+  reads changes.
+### Operations, documents and dependencies
+
+**Operator action:** run the normal upgrade (`npm run db:backup`,
+`db:verify-restore`, `git pull`, `setup.sh --operator ...` with the same
+inputs). Setup rebuilds the Storage image (new lock) and, where monitoring
+runs, builds Grafana under its new tag `<project>-grafana` and replaces the
+Grafana container; its data volume is kept. After **every** installation on
+the host has been upgraded, remove the old shared tag once with
+`docker image rm warehouse-grafana:local` (Docker refuses while a container
+still uses it). Nothing removes it automatically.
+
+- OPS-1, `docker/alert-rules.yml`: `DatabaseConnectionsHigh` compared each
+  `pg_stat_activity_count` series with 80, but postgres-exporter splits the
+  count by database, state, user, application, backend type and wait event,
+  so 90 connections spread as 45 active and 45 idle never fired it. The rule
+  is now `sum by (instance, job) (pg_stat_activity_count{backend_type="client
+  backend"}) > 80` (background workers left out). New
+  `docker/alert-rules.test.yml` (`promtool test rules`: the split fires at
+  5 minutes with its labels and annotations, not at 1; 80 clients plus 10
+  autovacuum workers do not fire); `scripts/monitoring-check.sh` runs it after
+  `promtool check config` and requires live client-backend series;
+  `tests/gateway-config.test.mjs` pins the expression; `docs/MONITORING.md`.
+- OPS-2, Grafana image tag: Grafana was the only built service with a fixed
+  image name (`warehouse-grafana:local`), shared by every installation on a
+  host, and `build-images.sh --replace-optional` (run by `start.sh` and
+  `setup.sh`) recreated running optional services without checking the image,
+  so another checkout's Grafana build replaced this installation's Grafana at
+  its next start. The `image:` line is gone (Compose tags `<project>-grafana`),
+  and `--replace-optional` now runs the build step's image check: a running
+  optional service whose image is missing, whose recipe changed or whose tag
+  names an image this checkout did not build is left running with "the
+  <service> image does not match this checkout (...)", the others are
+  replaced, and `start.sh` prints the warning (start still never builds).
+  Tests in `tests/build-images.test.mjs` ("image missing", "image was
+  replaced", no built service with `image:`); `THIRD_PARTY_NOTICES.md`,
+  `docs/OPERATOR_INSTALL.md`.
+- OPS-3, `docs/TROUBLESHOOTING.md`: the guide ran `docker logs/exec/restart`
+  on fixed `supabase-*` container names, which on a shared host belong to
+  another Compose project, and ended with a reset (`down -v`, a stale data
+  path). Every command now goes through `WAREHOUSE_STATE_DIR` and
+  `bash scripts/compose.sh`; "Reset Everything" is replaced by "Restore or
+  recover (there is no reset)" pointing at the documented restore, USB
+  recovery, rerun and setup paths. `tests/operator-docs.test.mjs`.
+- DOC-1, `docs/API_CONTRACT.md`: it named the removed `npm run test:api` and
+  said the checker exits nonzero by design. It now gives
+  `npm run check:contract -- ../rn-warehouse-template` and CI's pinned pair,
+  the counts at backend `3c32394` and app `d8af378` (94 RPC names, 0 missing;
+  133 typed calls, 0 mismatches; 2 dynamic calls; 6 tables; 8 literal Edge
+  names), when the checker fails, and the operator fixture drivers plus
+  `npm run test:migrations`. `tests/operator-docs.test.mjs`.
+- Storage dependencies: `@fastify/busboy` 3.2.1 → 3.2.3
+  ([GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9))
+  and a new `fast-copy@^4` override to 4.1.2
+  ([GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j)),
+  both moderate: parser and logging leaf fixes; not exploitable as shown in
+  this warehouse. Lock regenerated with npm 11.12.1, only those two packages
+  changed; `npm audit --omit=dev` 0 (was 2 moderate).
+  `docs/CONTAINER_SECURITY.md`, `docker/storage/README.md`. **Operator
+  action:** `setup.sh` rebuilds Storage.
+### Migrations 71-72 and printing
+
+Migrations 71 and 72 and changes to the dormant printing functions (the five
+printing routes still answer 503). **Operator action:** take and verify a
+backup before upgrading (`npm run db:backup`, then `npm run db:verify-restore --
+<backup directory>`); `setup.sh` does not take one. Migration 71 discards the
+never-sent Tally invoice sync queue, the sync logs and the voucher counters
+(a NOTICE gives the row counts) and STOPS, naming the table, if any Tally
+voucher, receipt or contra voucher, bank statement or line, ledger map or
+company configuration row exists. The edge changes are in the printing
+functions only, which still answer 503.
+
+- Migration 71, `retire_tally_and_dead_functions`, retires the Tally accounting
+  integration and dead legacy functions (review 2026-10-13, L1-L10): the invoice
+  sync trigger and its queue are removed (the trigger on `invoice` and the
+  ledger-map trigger on `customers` with four more on Tally tables); 46
+  Tally/receipt/contra functions and 14 tables are dropped; 24 dead functions
+  (L1, L2, L7's 17, L8, L9, L10 and `generate_order_number`) are dropped. All
+  70 were service-role only and uncalled. Before the first drop it refuses if
+  one is granted to an app role, called by another trigger, depended on, or
+  named by a kept function, or a retired table is named by a kept function or a
+  policy. `payments`, its policies and the Paid/Pending reports are unchanged;
+  nothing in the product writes `payments` now (the Tally functions were the
+  only writers; the app never did). Test: `tests/legacy_functions.sql`.
+- Migration 72, `print_invoice_line_amounts` (PRINT2, PRINT3):
+  `get_invoice_range_for_print` gives each line `pricing_mode`,
+  `storage_amount` and `labour_amount` by the invoice rule (ONE_TIME storage
+  charged once, no labour), patched at one counted marker;
+  `print_jobs_status_check` accepts `unknown`. Test:
+  `tests/print_invoice_range.sql`.
+- Printing (PRINT1-5), new modules under `functions/_shared/` with node tests:
+  invoice pages built from printed rows with `contd.` group headers
+  (`invoice-print-layout.ts`); line and page amounts from the server, a missing
+  one stops the print, and the default financial year is India's
+  (`invoice-print-amounts.ts`); IPP replies validated before success is reported,
+  an unconfirmed job recorded as `unknown` with 502, only an idle printer online
+  (`ipp-validate.ts`; `ipp-types.ts` re-exports its constants); the status
+  monitor finishes a job only on a final CUPS state and otherwise records
+  `unknown` within 44 s, and the Print-Job submission of the three preprinted
+  routes is given up after 8 s (no answer: `unknown`), so the submission and
+  the monitor take at most 52 s of the 60 s worker (`print-monitor-rule.ts`).
+  Tests:
+  `tests/print-paginator.test.mjs`, `print-amounts.test.mjs`,
+  `ipp-validation.test.mjs`, `print-monitor.test.mjs`.
+- Documents: `docs/PRINTING.md` ("Activation acceptance"), README ("Features
+  and limits") and `docs/API_CONTRACT.md` ("Legacy and dormant functions").
+### Migrations 68-70
+
+Migrations 68, 69 and 70. **Operator action:** none beyond applying the
+migrations (the normal upgrade does). Migration 68 drops and recreates the
+materialized view `mv_invoice_list` (same columns, indexes, owner and grants;
+filled again in the migration). No setting, service or container changes;
+no function signature changes.
+
+- Migration 68 (I6), `get_dispatch_details`: `invoices_summary.total_amount`
+  summed an invoice once per dispatch line on it (two lines on invoice 90101
+  of 357: 714); it now sums each invoice once (357; two invoices of 357 each
+  still give 714). `statistics.total_invoice_amount` was SUM(charge x
+  duration) (30); it is now the invoiced amount of the dispatch's own lines,
+  each as `get_invoice_items_detailed` computes it (357), without the
+  header's whole-rupee rounding or the discount.
+- Migration 68 (I7), `get_all_dispatch_items`: LIMIT/OFFSET applied to the
+  one aggregated row (limit 1 gave 2 rows, offset 1 gave none); rows are now
+  numbered in the requested order (ties by line id), paged, then aggregated:
+  1 row, then the other.
+- Migration 68 (I8), `get_all_dispatch_items`: staff got `items: []` with
+  `total` 2; the rows now admit staff as the count and sums do (2 rows).
+- Migration 68 (I9), `mv_invoice_list.total_qty` (`get_invoices_list`): was
+  sum(DISTINCT lot quantity), 10 for two lots of 10 bags; now the bags
+  billed, sum(disp_qty) = 20.
+- Migration 68 (I10), `get_customer_invoice_summary` line items: quantity
+  1.5 -> 10 (bags), rate 6.67 -> 10 (charge), labour_amount 3 -> 20,
+  tax_percent 50 -> 5, tax_amount 5 -> 8.50, line_total 18 -> 178.50 (ONE_TIME:
+  no labour, 42 = the header); `total_quantity` 3.0 -> 20. The lines now add
+  up to the invoice total. Keys, types and rows unchanged.
+- Migration 68 (I11): invoice numbers longer than four digits were cut
+  (`2026-9010` for 90101); now `2026-90101` in `get_customer_invoice_summary`
+  and `get_customer_activity_detail` (104 stays `2026-0104`), and the same
+  expression in `get_grn_invoices` (dormant) and the `get_invoices_list`
+  search.
+- Migration 69 (SEC-1, SEC-2): new helper
+  `warehouse_security.grn_image_visible(status, uploaded_by)` (not granted to
+  app roles) holds the `grn_images` read rule. `get_grn_details` lists only
+  the photo rows the caller may read (a customer or other staff no longer get
+  a pending upload's path, name and uploader). `update_grn` with a non-empty
+  `p_images` removes only omitted rows the caller may read, so a staff edit
+  no longer deletes another person's pending upload (which could then not be
+  confirmed); such a row named in the list is kept as it is; `grn.images`
+  lists what the caller may read. The same filter is applied to the image
+  subqueries of `get_customer_items_for_order_selection` (a customer got a
+  pending upload's path as `image_url`), `get_invoiceable_grns`
+  (`gr_image_url`) and `get_customer_grn_activity` (`image_count`,
+  `total_images`); keys and rows unchanged. `docs/STAFF_GRN_POLICY.md`.
+- Migration 70 (EDGE-RENDER-1), `get_customer_stock_summary`: after an item
+  rename, `items` and `out_of_stock_items` had one row per received name,
+  each listing every lot (three names, 35 bags: 105 bags in the rows); now
+  one row per item, named as its latest receipt, with its lots (35).
+- Tests: `tests/dispatch_invoice_read_figures.sql`,
+  `tests/grn_image_visibility.sql`, `tests/stock_summary_item_identity.sql`
+  (each fails before its migration).
+
 ## Unreleased — central login: the link answer names the link (2026-10-12)
 
 Migration 64. **Operator action:** none beyond applying the migration (the

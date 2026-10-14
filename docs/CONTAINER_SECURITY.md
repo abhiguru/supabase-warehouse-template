@@ -18,7 +18,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
-| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest; Alpine package upgrade; remove unused npm CLI |
+| Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest (2026-10-13: `@fastify/busboy` 3.2.3 for [GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9), `fast-copy` 4.1.2 for [GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j), both moderate); Alpine package upgrade; remove unused npm CLI |
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
@@ -53,9 +53,13 @@ correctly failed for three unchanged upstream images:
 
 Each scan report was validated for presence, format, nonempty results, image
 identity and findings. Private machine-readable inventory stays outside Git.
-The commands to reproduce are `npm run scan:images`, `test:api`,
-`test:monitoring`, `test:pooler`, `test:realtime`, `test:recovery`, `db:backup`,
-and `db:verify-restore`, with a unique owned loopback demo project.
+The commands to reproduce are `npm run scan:images`, `npm run test:monitoring`,
+`npm run test:pooler`, `npm run test:recovery`, `npm run db:backup` and
+`npm run db:verify-restore`, with a unique owned loopback demo project. The API
+contract is checked with `npm run check:contract -- <app path>` (CI's contract
+job runs it against the pinned app commit); the API and Realtime drivers
+(`tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs` and the
+others listed in `docs/DEVELOPER_HANDOFF.md`) run in CI's operator-install job.
 
 Acceptance passed: 19 backend unit tests; source/history secret scans; generated
 setup/rerun; full demo API (roles, sessions, images, all four PDFs and business
@@ -546,8 +550,8 @@ SQL. The project now has three networks; the table is in
 - `db` is reachable from the services that hold a database connection (rest,
   realtime, storage, supavisor, the disabled auth service, postgres-exporter,
   grafana) and from the admin pair. Kong, the function runtime, Gotenberg,
-  imgproxy, CUPS, Prometheus, Alertmanager, node-exporter and cAdvisor cannot
-  connect to it.
+  imgproxy, CUPS, the sensor bridge, Prometheus, Alertmanager, node-exporter
+  and cAdvisor cannot connect to it.
 - Operator probes follow the same rule: `health-check.sh` and
   `scripts/gateway-dns-check.sh` call the gateway from the `storage` container
   (they used Studio), and postgres-meta from Studio.
@@ -572,6 +576,46 @@ What this does not do:
 Each install now creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
+
+## Sensor bridge (2026-10-13)
+
+The optional `sensor-bridge` service (profile `sensors`, [SENSORS.md](SENSORS.md))
+is the one container that talks to devices on the facility LAN. What limits it:
+
+- **Network:** `default` only, so it reaches Kong and cannot open a connection
+  to PostgreSQL, postgres-meta or Studio (`tests/compose-networks.test.mjs`).
+  It publishes no port. Its only call into the project is
+  `http://kong:8000/functions/v1/ingest-sensor-readings`, fixed in Compose
+  rather than taken from a variable. Outbound it needs the hubs' LAN addresses.
+- **Credential:** an ingest key of its own that opens only that function; the
+  database keeps its SHA-256 and checks it inside `record_sensor_batch`
+  (service role only). Revoking it stops the bridge without touching any other
+  key. The bridge never holds the service key or a user session.
+- **Process:** non-root (uid 10001 in the image), `cap_drop: [ALL]`,
+  `no-new-privileges`, limited to 0.25 CPU and 128 MB, logs bounded like every
+  service. The log formatter replaces the Tapo password, the ingest key and any
+  URL query with `***`; `scripts/sensor-bridge-check.sh` fails if the
+  configuration check prints a fictional password or key.
+- **Image:** `python:3.12-slim-bookworm` pinned by digest in
+  `docker/sensor-bridge/Dockerfile`; python-kasa and its dependencies pinned in
+  `requirements.txt` and updated by Dependabot (`pip`). The image is built on
+  the operator's host, like the other recipes.
+- **Read-only root filesystem** (`read_only: true`, `/tmp` a tmpfs), as in the
+  standalone project: the queue, change detector and health file are in the
+  `/data` volume. Tried with the built image (`docker run --read-only`):
+  `--check-config` and a `--once` against an unreachable hub write
+  `/data/bridge.sqlite3` and nothing else.
+- **Not done:** the Tapo password and the
+  ingest key are container environment variables, readable with
+  `docker inspect` by anyone who can use Docker on the host, like every other
+  secret of the installation.
+
+`ingest-sensor-readings` is in the router's public set: the router does not check a user token for it, and the function checks only the shape of the bridge's ingest key (64 hex). The key itself is checked inside `record_sensor_batch` against a SHA-256 in `warehouse_security.sensor_ingest_keys`, which PostgREST cannot reach. Its worker gets only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. It is subject to the gateway's functions limits (10 MB payload, 100 a minute per IP), and its log lines carry a reason code only, never the key or the body.
+
+`cap_drop` and `no-new-privileges` are exercised by `npm run test:sensors`,
+which runs the image with the same flags; the Compose service itself is not
+started in CI, so the first `up` of the profile on an installation is its first
+run under Compose.
 
 ## Edge function modules (2026-10-12)
 
@@ -1043,4 +1087,5 @@ step that fails points at the change.
 | Pooler tenant with one user | tenant creation succeeds | Pooler authentication |
 | Studio and CUPS `apt-get upgrade` | both images build | setup (Studio), CUPS startup |
 | Actions pinned to commits | the hashes resolve | every job |
+| Sensor bridge service (profile `sensors`, `cap_drop: [ALL]`, `no-new-privileges`, read-only root, `default` network only) | the bridge starts under Compose, reaches the hubs and posts through Kong | none: `npm run test:sensors` runs the image with the same flags but without Compose or hubs; the first `up` on an installation is the first run |
 

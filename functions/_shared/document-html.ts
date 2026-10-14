@@ -1,6 +1,11 @@
 export const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g,
   char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 
+// The weight of one package as the document prints it: 0 means "not recorded" (docs/STAFF_GRN_POLICY.md), so 0, null,
+// undefined and anything that is not a finite number print an em dash, like the app. Every other value is printed as it is.
+export const kgEach = (value: unknown): unknown =>
+  value === null || value === undefined || value === 0 || (typeof value === 'number' && !Number.isFinite(value)) ? '\u2014' : value;
+
 export function documentHtml(title: string, company: string, metadata: Record<string, unknown>, columns: string[], rows: unknown[][]): string {
   return `<!doctype html><html><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">

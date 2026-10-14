@@ -1,0 +1,171 @@
+# Sensor bridge (Tapo hubs to the warehouse backend)
+
+A small container that reads the temperature and humidity sensors (Tapo T310/T315 and
+the like) paired to one or more Tapo hubs (H100, H200) on the facility's network, and
+posts their readings to this backend's `ingest-sensor-readings` edge function. It talks to
+the hubs with [python-kasa](https://github.com/python-kasa/python-kasa) 0.10.2 over the
+local network; nothing goes through the Tapo cloud.
+
+**Licence.** python-kasa is GPL-3.0, so everything in this folder is
+GPL-3.0-or-later ([LICENSE](LICENSE)). The rest of the repository stays MIT.
+
+## What it does
+
+1. Every `SENSOR_BRIDGE_POLL_SECONDS` (300) it asks each hub for its sensors.
+2. For each sensor it compares temperature, humidity and the battery-low flag with what it
+   last sent. A difference is a **change** and is queued at once. A sensor that has not
+   changed for `SENSOR_BRIDGE_HEARTBEAT_SECONDS` (300) is queued once as a **heartbeat**
+   with its current values, so the backend knows it is alive. Anything else is not sent.
+   With both at their default of 300, every poll queues one reading per sensor (a change
+   or a heartbeat): each sensor is **sampled every 5 minutes**, one row per 5 minutes. A
+   poll starts 300 s after the previous one began plus up to a second of loop time, so
+   samples are about 5 minutes apart, not on the clock's 5-minute marks.
+   What was last sent is kept on disk, so a restart sends nothing new until a value
+   changes or a heartbeat falls due.
+3. The queue (SQLite in `/data`) is posted every `SENSOR_BRIDGE_POST_SECONDS` (60), at
+   most `SENSOR_BRIDGE_MAX_BATCH` (200) readings per request, oldest first. A reading
+   leaves the queue only when the backend answered 200. Readings are identified by
+   (sensor, `measured_at`), as in the backend, so a resend is stored once.
+4. The hub's own status (`online`, firmware) travels with every request and is also sent
+   alone when it changes and every heartbeat interval.
+
+### `measured_at`
+
+A hub reports a sensor's current values but not when the sensor sent them. `measured_at`
+is therefore the time **the bridge observed** the values (its own clock, UTC, ISO-8601
+with `Z`, whole seconds). With the 5-minute poll it is at most about 5 minutes plus the
+sensor's report interval after the real change; set a shorter `SENSOR_BRIDGE_POLL_SECONDS`
+(with the heartbeat at 300) to catch changes sooner at the cost of more rows. Keep the
+host's clock synchronised (NTP): the backend refuses readings more than 5 minutes in the
+future or older than 30 days.
+
+### Heartbeats and stale sensors
+
+- A sensor that does not change still produces one reading every 5 minutes (heartbeat).
+- The backend marks a sensor **stale** when its last reading is older than the device's
+  `staleness_threshold_minutes` (30 by default), that is after about six missed 5-minute
+  samples, so a bridge restart or one or two failed polls do not flag it:
+  the sensor's battery died, it lost its hub, or the bridge or the hub is down.
+- A hub that fails three polls (or connections) in a row is reported `online=false` (with
+  the 5-minute poll, about 10 minutes after the first failed poll), and
+  that status is repeated every heartbeat interval while it lasts; the app shows its
+  sensors as offline. Readings already queued are kept and still delivered.
+
+### Hub states
+
+| State | Meaning | Next |
+|---|---|---|
+| DISCONNECTED | not connected yet | connect and poll; on failure retry after 5 s, 10 s, 20 s ... up to 5 min |
+| POLLING | connected | poll every `POLL_SECONDS`; a failed poll is retried on the same connection |
+| OFFLINE | 3 failures in a row | `online=false` sent; reconnect with the same backoff; `online=true` sent when it works |
+| REBOOTING | rebooted on `SENSOR_BRIDGE_REBOOT_CRON` | reconnect after 2 min; failures in the first 5 min do not count |
+
+### Delivery
+
+| Answer | What the bridge does |
+|---|---|
+| 200 | removes the readings from the queue |
+| 401 (key refused or revoked) | keeps everything, waits 5 minutes before the next request |
+| other 4xx (400 invalid batch) | keeps the batch for 3 tries in all, then drops it and logs `post_refused ... dropped=N` |
+| 5xx, 408, 429, network error, timeout (20 s) | keeps everything, retries after 15 s, doubling up to 10 min |
+
+Redirects are not followed (the key goes to the configured URL only). Readings older
+than 29 days are dropped from the queue, and it never holds more than 200,000.
+
+## Settings (environment)
+
+| Variable | Default | |
+|---|---|---|
+| `SENSOR_BRIDGE_HUBS` | (required) | hub addresses, comma-separated, e.g. `192.0.2.10,192.0.2.11`; give each hub a fixed address (DHCP reservation) |
+| `TAPO_USERNAME`, `TAPO_PASSWORD` | (required) | the Tapo account the hubs belong to |
+| `SENSOR_INGEST_URL` | (required) | `https://<backend>/functions/v1/ingest-sensor-readings`; inside the warehouse stack `http://kong:8000/functions/v1/ingest-sensor-readings` |
+| `SENSOR_INGEST_KEY` | (required) | 64 lowercase hex characters, minted with `scripts/sensor-ingest-key.sql` |
+| `SENSOR_BRIDGE_ID` | `sensor-bridge` | names this bridge in the backend's hub table |
+| `SENSOR_BRIDGE_POLL_SECONDS` | `300` | 5 to 3600 |
+| `SENSOR_BRIDGE_POST_SECONDS` | `60` | 5 to 3600 |
+| `SENSOR_BRIDGE_HEARTBEAT_SECONDS` | `300` | 60 to 86400 |
+| `SENSOR_BRIDGE_MAX_BATCH` | `200` | readings per request, 1 to 500 |
+| `SENSOR_BRIDGE_REBOOT_CRON` | (off) | reboot every hub on this schedule, five cron fields **in UTC**, minute and hour as single numbers; `30 21 * * 6` is Sunday 03:00 in India |
+| `SENSOR_BRIDGE_QUEUE_PATH` | `/data/bridge.sqlite3` | queue and sent-state |
+| `SENSOR_BRIDGE_HEALTH_PATH` | `/data/health.json` | rewritten every second, whatever the poll interval |
+| `SENSOR_BRIDGE_HEALTH_MAX_AGE` | `120` | seconds; the HEALTHCHECK fails beyond it |
+| `SENSOR_BRIDGE_LOG_LEVEL` | `INFO` | `DEBUG` also shows python-kasa's own messages |
+
+When a required setting is missing or a value is invalid the bridge logs
+`event=config_error` with the variable's name (never its value) and exits with **78**, so
+a container without settings stops instead of restarting in a loop.
+
+## Commands
+
+The image's entrypoint passes options to the bridge and runs any other command as given.
+
+```sh
+docker run --rm --env-file sensor-bridge.env IMAGE --check-config   # validate, print settings without secrets
+docker run --rm --env-file sensor-bridge.env IMAGE --once --dump    # print what each hub reports; sends nothing
+docker run --rm --env-file sensor-bridge.env -v sensor-bridge-data:/data IMAGE --once   # one poll, one post
+docker run --rm --network none IMAGE python -m unittest discover -s tests   # unit tests, no hub needed
+```
+
+- `--dump` connects to every hub and prints, per sensor, its id, name, model, values,
+  battery, signal, report interval, and the **names** of the fields the hub reports and
+  the modules python-kasa found (not their raw values). It needs no backend settings and
+  stores nothing. Exit 0 when every hub answered.
+- `--once` polls each hub once, posts what is due and exits 0 when every hub answered and
+  the queue is empty. Run twice in a row, the second run sends nothing (`posts=0`): the
+  change detector is kept in `/data`. The backend counts a reading as a duplicate only
+  when the bridge re-sends a batch whose answer it did not get (a timeout or a lost 200).
+- `--once --dump` is the same as `--dump`.
+- No option: run until stopped (`SIGTERM`).
+
+Logs go to standard error, one line per event (`event=hub_online`, `readings`, `post_ok`,
+`post_failed`, `post_refused`, `auth_refused`, `hub_error`, `hub_offline`,
+`offline_heartbeat`, `hub_reboot`, ...). The password, the key and the URL's query are
+never written; every line is also filtered for them.
+
+## Standalone run (outside the warehouse stack)
+
+For a bridge on its own host or VM, next to the hubs. First mint a key on the installation
+the bridge posts to, from that installation's backend folder (it prints the key once, as the
+only line; put it straight into `SENSOR_INGEST_KEY` of `sensor-bridge.env`):
+
+```sh
+bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+  -v label=main-bridge < scripts/sensor-ingest-key.sql
+```
+
+To revoke that bridge's keys later (the bridge then gets 401 and waits):
+
+```sh
+bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+  -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = 'main-bridge' AND revoked_at IS NULL"
+```
+
+Then:
+
+```sh
+mkdir -p ~/sensor-bridge && cd ~/sensor-bridge
+cp /path/to/repo/docker/sensor-bridge/docker-compose.standalone.yml docker-compose.yml
+cp /path/to/repo/docker/sensor-bridge/sensor-bridge.env.example sensor-bridge.env
+chmod 600 sensor-bridge.env        # then fill it in with an editor
+echo "SENSOR_BRIDGE_SOURCE=/path/to/repo/docker/sensor-bridge" > .env
+docker compose build
+docker compose run --rm sensor-bridge --check-config
+docker compose run --rm sensor-bridge --once --dump
+docker compose run --rm sensor-bridge --once
+docker compose up -d
+docker compose logs -f
+```
+
+The queue lives in the volume `sensor-bridge_data`; `docker compose down` keeps it
+(`down -v` deletes it, together with anything not yet delivered).
+
+## Image
+
+`python:3.12-slim-bookworm` pinned by digest; dependencies pinned in `requirements.txt` and
+installed from wheels only; runs as uid 10001 with `/data` as its only writable place;
+HEALTHCHECK `python -m sensor_bridge.health` (the health file is younger than 120 s).
+
+## Not verified here
+
+The unit tests use a fake hub and a fake backend. The hub protocol itself (python-kasa
+against a real H200 with this login) is only proven by a run against real hubs.
