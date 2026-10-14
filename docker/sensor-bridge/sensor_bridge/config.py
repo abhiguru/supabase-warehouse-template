@@ -19,9 +19,9 @@ BRIDGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 KEY = re.compile(r"^[0-9a-f]{64}$")
 # name: (default, minimum, maximum)
 NUMBERS = {
-    "POLL_SECONDS": (30, 5, 3600),
+    "POLL_SECONDS": (300, 5, 3600),
     "POST_SECONDS": (60, 5, 3600),
-    "HEARTBEAT_SECONDS": (900, 60, 86400),
+    "HEARTBEAT_SECONDS": (300, 60, 86400),
     "MAX_BATCH": (200, 1, 500),
 }
 
@@ -89,9 +89,9 @@ class Config:
     ingest_url: str = field(default="", repr=False)
     ingest_key: str = field(default="", repr=False)
     bridge_id: str = "sensor-bridge"
-    poll_seconds: int = 30
+    poll_seconds: int = 300
     post_seconds: int = 60
-    heartbeat_seconds: int = 900
+    heartbeat_seconds: int = 300
     max_batch: int = 200
     reboot_cron: Cron | None = None
     queue_path: str = "/data/bridge.sqlite3"

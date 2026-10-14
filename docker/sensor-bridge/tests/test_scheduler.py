@@ -18,6 +18,9 @@ HOST = "192.0.2.10"
 
 class Harness:
     def __init__(self, hub: FakeHub | None = None, poster: FakePoster | None = None, db=None, **settings):
+        # The state machine is tested with a 30 s poll and a 15-minute heartbeat (finer than the
+        # 5-minute defaults); pass None for either to use the default.
+        settings = {"SENSOR_BRIDGE_POLL_SECONDS": "30", "SENSOR_BRIDGE_HEARTBEAT_SECONDS": "900", **settings}
         self.config = config(**settings)
         self.clock = Clock()
         self.db = db or open_db(":memory:")
@@ -74,6 +77,22 @@ class ChangeAndHeartbeatTest(unittest.TestCase):
         self.assertEqual(h.sent()[3:], [(cid(2), "heartbeat")], "sensor 2 unchanged for 15 minutes")
         h.run(1200, 1800)
         self.assertEqual(h.sent()[4:], [(cid(1), "heartbeat"), (cid(2), "heartbeat")])
+
+    def test_default_settings_sample_every_sensor_every_five_minutes(self):
+        h = Harness(SENSOR_BRIDGE_POLL_SECONDS=None, SENSOR_BRIDGE_HEARTBEAT_SECONDS=None)
+        self.assertEqual((h.config.poll_seconds, h.config.heartbeat_seconds), (300, 300))
+        h.run(0, 899)
+        self.assertEqual(len(h.hub.calls), 1 + 3, "one connect, then a poll at 0, 300 and 600 s only")
+        self.assertEqual(h.sent(), [(cid(1), "change"), (cid(2), "change"),
+                                    (cid(1), "heartbeat"), (cid(2), "heartbeat"),
+                                    (cid(1), "heartbeat"), (cid(2), "heartbeat")],
+                         "unchanged sensors still give one reading per poll")
+        h.hub.update(1, temperature=21.9)
+        h.run(900, 1199)
+        self.assertEqual(h.sent()[6:], [(cid(1), "change"), (cid(2), "heartbeat")])
+        self.assertEqual(sorted({r["measured_at"] for p in h.poster.payloads for r in p["readings"]}),
+                         ["2026-10-03T04:00:00Z", "2026-10-03T04:05:00Z", "2026-10-03T04:10:00Z",
+                          "2026-10-03T04:15:00Z"], "one row per sensor every 5 minutes")
 
     def test_battery_flip_is_sent_at_once(self):
         h = Harness()

@@ -11,11 +11,15 @@ GPL-3.0-or-later ([LICENSE](LICENSE)). The rest of the repository stays MIT.
 
 ## What it does
 
-1. Every `SENSOR_BRIDGE_POLL_SECONDS` (30) it asks each hub for its sensors.
+1. Every `SENSOR_BRIDGE_POLL_SECONDS` (300) it asks each hub for its sensors.
 2. For each sensor it compares temperature, humidity and the battery-low flag with what it
    last sent. A difference is a **change** and is queued at once. A sensor that has not
-   changed for `SENSOR_BRIDGE_HEARTBEAT_SECONDS` (900) is queued once as a **heartbeat**
+   changed for `SENSOR_BRIDGE_HEARTBEAT_SECONDS` (300) is queued once as a **heartbeat**
    with its current values, so the backend knows it is alive. Anything else is not sent.
+   With both at their default of 300, every poll queues one reading per sensor (a change
+   or a heartbeat): each sensor is **sampled every 5 minutes**, one row per 5 minutes. A
+   poll starts 300 s after the previous one began plus up to a second of loop time, so
+   samples are about 5 minutes apart, not on the clock's 5-minute marks.
    What was last sent is kept on disk, so a restart sends nothing new until a value
    changes or a heartbeat falls due.
 3. The queue (SQLite in `/data`) is posted every `SENSOR_BRIDGE_POST_SECONDS` (60), at
@@ -29,17 +33,21 @@ GPL-3.0-or-later ([LICENSE](LICENSE)). The rest of the repository stays MIT.
 
 A hub reports a sensor's current values but not when the sensor sent them. `measured_at`
 is therefore the time **the bridge observed** the values (its own clock, UTC, ISO-8601
-with `Z`, whole seconds). With a 30-second poll it is at most about 30 seconds plus the
-sensor's report interval after the real change. Keep the host's clock synchronised (NTP):
-the backend refuses readings more than 5 minutes in the future or older than 30 days.
+with `Z`, whole seconds). With the 5-minute poll it is at most about 5 minutes plus the
+sensor's report interval after the real change; set a shorter `SENSOR_BRIDGE_POLL_SECONDS`
+(with the heartbeat at 300) to catch changes sooner at the cost of more rows. Keep the
+host's clock synchronised (NTP): the backend refuses readings more than 5 minutes in the
+future or older than 30 days.
 
 ### Heartbeats and stale sensors
 
-- A sensor that does not change still produces one reading every 15 minutes (heartbeat).
+- A sensor that does not change still produces one reading every 5 minutes (heartbeat).
 - The backend marks a sensor **stale** when its last reading is older than the device's
-  `staleness_threshold_minutes` (30 by default), that is after two missed heartbeats:
+  `staleness_threshold_minutes` (30 by default), that is after about six missed 5-minute
+  samples, so a bridge restart or one or two failed polls do not flag it:
   the sensor's battery died, it lost its hub, or the bridge or the hub is down.
-- A hub that fails three polls (or connections) in a row is reported `online=false`, and
+- A hub that fails three polls (or connections) in a row is reported `online=false` (with
+  the 5-minute poll, about 10 minutes after the first failed poll), and
   that status is repeated every heartbeat interval while it lasts; the app shows its
   sensors as offline. Readings already queued are kept and still delivered.
 
@@ -73,13 +81,13 @@ than 29 days are dropped from the queue, and it never holds more than 200,000.
 | `SENSOR_INGEST_URL` | (required) | `https://<backend>/functions/v1/ingest-sensor-readings`; inside the warehouse stack `http://kong:8000/functions/v1/ingest-sensor-readings` |
 | `SENSOR_INGEST_KEY` | (required) | 64 lowercase hex characters, minted with `scripts/sensor-ingest-key.sql` |
 | `SENSOR_BRIDGE_ID` | `sensor-bridge` | names this bridge in the backend's hub table |
-| `SENSOR_BRIDGE_POLL_SECONDS` | `30` | 5 to 3600 |
+| `SENSOR_BRIDGE_POLL_SECONDS` | `300` | 5 to 3600 |
 | `SENSOR_BRIDGE_POST_SECONDS` | `60` | 5 to 3600 |
-| `SENSOR_BRIDGE_HEARTBEAT_SECONDS` | `900` | 60 to 86400 |
+| `SENSOR_BRIDGE_HEARTBEAT_SECONDS` | `300` | 60 to 86400 |
 | `SENSOR_BRIDGE_MAX_BATCH` | `200` | readings per request, 1 to 500 |
 | `SENSOR_BRIDGE_REBOOT_CRON` | (off) | reboot every hub on this schedule, five cron fields **in UTC**, minute and hour as single numbers; `30 21 * * 6` is Sunday 03:00 in India |
 | `SENSOR_BRIDGE_QUEUE_PATH` | `/data/bridge.sqlite3` | queue and sent-state |
-| `SENSOR_BRIDGE_HEALTH_PATH` | `/data/health.json` | rewritten every second |
+| `SENSOR_BRIDGE_HEALTH_PATH` | `/data/health.json` | rewritten every second, whatever the poll interval |
 | `SENSOR_BRIDGE_HEALTH_MAX_AGE` | `120` | seconds; the HEALTHCHECK fails beyond it |
 | `SENSOR_BRIDGE_LOG_LEVEL` | `INFO` | `DEBUG` also shows python-kasa's own messages |
 
