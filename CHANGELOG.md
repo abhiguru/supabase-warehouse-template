@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — Realtime v2.143.3 (2026-10-14)
+
+No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
+
+- **Realtime v2.143.3** (was v2.143.1), a patch release. `THIRD_PARTY_NOTICES.md` and
+  `docs/ATTRIBUTION_REVIEW.md` name the new version.
+
 ## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
 
 No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).
