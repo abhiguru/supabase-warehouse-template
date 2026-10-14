@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — backlog fixes, migration 80 (2026-10-14)
+
+Migration `00000000000080_backlog_fixes.sql`, applied by the setup rerun; then recreate the
+functions container (`bash scripts/compose.sh up -d --force-recreate functions`). The matching app
+change is rn-warehouse-template's `fix/backlog-2026-10-14`; an older app keeps working (it never
+sends a service account as supervisor on its own and treats a missing `get_my_access_status` as
+"no business linked").
+
+- **A service account may be a supervisor only when it is the one saving.** `save_grn`,
+  `update_grn`, `create_dispatch_with_stock_check` (both overloads) and `update_dispatch_smart`
+  refuse a service-account profile named as supervisor with `Supervisor must be a person, not a
+  service account` (P0001), unless it is the caller's own profile (FAS sync acting as itself keeps
+  working) or the document's unchanged supervisor. `update_grn` answers `GRN not found` first.
+  `update_dispatch_smart` reports it in its usual `{success: false, error}` form. New helper
+  `warehouse_security.require_person_supervisor`.
+- **`get_or_create_cart` and a switched-off business.** For a business with `active = false` or
+  `deleted_at` set it raises `Business is not active` (P0001): no new order for anyone (also no
+  DISPATCHED → OPEN reset), and a customer login is refused even for an existing order. Admin,
+  supervisor and staff can still open an existing OPEN order to look at it or clear it.
+- **`get_my_access_status()`** (new, read-only, SECURITY DEFINER, `search_path` pg_catalog;
+  authenticated and service_role only): `'active'`, `'revoked'` (an active profile whose customer
+  assignments were all switched off) or `'none'` for the caller. The app shows "Your cold storage
+  has removed your businesses" instead of "No business linked"; nobody is signed out.
+- **Two totals no screen shows now multiply by the bags.** `get_grn_details` →
+  `statistics.total_weight` is weight × bags received; `get_stock_aging_report` →
+  `summary.total_weight_kg` and each `by_bucket[*].total_weight` are weight × bags in stock. Field
+  names and shapes are unchanged; each line's `weight` stays the weight of one bag.
+- **Document PDFs print their date as 13-10-2026** (India's calendar) instead of ISO text, on the
+  GRN, dispatch, invoice and stock documents; the JSON `document.date` is unchanged.
+- **Print functions** add `"unconfirmed": true` to every "The printer did not confirm the job" 502
+  (also when the job could not be logged and `print_job_id` is null), so the app can warn against a
+  reprint.
+- **Docs:** `docs/OPERATOR_INSTALL.md` "Rerun and upgrade" now includes the functions container
+  recreate in the upgrade commands. Earlier entries below that say "the normal upgrade recreates
+  the functions container" are wrong on this point: a change under `functions/` needs that command.
+- **Tests:** `tests/backlog_80.sql` (each rule above, all roles); `tests/restore.test.mjs` no longer
+  fails about 1 run in 128 when the random verification container name ends in `db`.
+
 ## Unreleased — supabase/postgres 15.8.1.135 (2026-10-14)
 
 No migration. `docker/postgres/Dockerfile`: the setup rerun rebuilds the database image; the database container is recreated on the next start.
