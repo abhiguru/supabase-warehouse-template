@@ -316,7 +316,7 @@ test('rows, summary figures and totals come from the RPC answer and are printed 
   // Item stock: the whole-list summary of migration 52 when present, otherwise the rows read.
   assert.deepEqual(build('item-stock-summary', 'all', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
   assert.deepEqual(build('item-stock-summary', 'customer', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
-  assert.equal(build('grn-activity', 'all', 'en').summary.length, 3);
+  assert.deepEqual(build('grn-activity', 'all', 'en').summary, [['GRNs', '3'], ['Customers', '2'], ['Quantity', '900']]);
   assert.equal(formatCell('number', 12345678.456, 'en'), '1,23,45,678.46');
   assert.equal(formatCell('number', 'x', 'en'), '');
   assert.equal(formatCell('date', '2026-01-05T10:00:00+00:00', 'en'), '05-01-2026');
@@ -407,7 +407,7 @@ test('a refusal in the RPC body becomes 403, an unknown customer 404, anything e
 const sample = (overrides = {}) => reportHtml({
   title: 'Stock summary', company: 'Fictional Cold Storage', lang: 'en',
   filters: [['Customer', 'Amar Traders'], ['Sort by', 'Stock (descending)'], ['', 'Last updated 12-10-2026 08:00 UTC']],
-  summaryTitle: 'Summary', summary: [['Units in stock', '1,23,456'], ['Weight (kg)', '4,500']],
+  summaryTitle: 'Summary', summary: [['Units in stock', '1,23,456'], ['Stock age (days)', '45']],
   columns: [{ label: 'Item', numeric: false }, { label: 'Stock', numeric: true }],
   rows: [['Cumin', '90'], ['Fennel', '5']], totals: ['Total', '95'], empty: 'No stock yet', ...overrides,
 });
@@ -698,9 +698,10 @@ test('the handler takes the header choices from reportFilters and reports status
 // pending invoice with no payment, which prints 'Pending' as before. The review fixes of 2026-10-12 change none of the 28 either (no
 // change on purpose): no fixture holds a cut table (the label 'Total of rows shown'), a packaging sort, a status word other than
 // paid or pending, or two rows with one invoice_id, and the item list's sort keys change nothing for the default sort.
-// The weight change of 2026-10-14 changes nine documents on purpose, GRN activity, stock summary and the one-customer dispatch
-// activity in English and Gujarati, which lost their weight columns, totals and figures (`oldWeight` puts the old text back piece by
-// piece); the other nineteen are untouched, so no hash below was re-pinned.
+// The weight change of 2026-10-14 changes ten documents on purpose: GRN activity (one customer and all customers), stock summary
+// (both levels) and the one-customer dispatch activity, each in English and Gujarati (4 + 4 + 2), which lost their weight columns,
+// totals and figures (`oldWeight` puts the old text back piece by piece); the other eighteen of the 28 are untouched, so no hash
+// below was re-pinned.
 const baselineHtml = {
   'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
   'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
@@ -760,7 +761,7 @@ function oldInvoiceHistory(level, lang) {
   ];
 }
 
-// The nine documents that printed a weight until 2026-10-14 (GRN activity, stock summary and the one-customer dispatch activity) in
+// The ten documents that printed a weight until 2026-10-14 (GRN activity, stock summary and the one-customer dispatch activity) in
 // the old text, as [new text, old text, times]: the colspan, the header cell, each row's cell, the totals cell and the summary figure.
 // The old label "Weight (kg)" is no longer in report-labels.ts, so the test holds the old words itself. The weights are those of the
 // fixtures: GRN activity 1,500 and 4,020 (bag weight times bags, total 5,520) one customer, 234.5 and 1,000 (1,234.5) all customers;
@@ -835,6 +836,7 @@ test('without status every existing fixture prints byte for byte the HTML it pri
         ['</strong> કેટલા દિવસથી (દિવસ) (', '</strong> માલ કેટલા દિવસથી પડ્યો છે (દિવસ) (', 2]] : []),
   ];
   let compared = 0;
+  let weighted = 0;
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
       for (const lang of ['en', 'gu']) {
@@ -865,6 +867,7 @@ test('without status every existing fixture prints byte for byte the HTML it pri
           }
         }
         if (['grn-activity', 'dispatch-activity', 'stock-summary'].includes(report) && !(report === 'dispatch-activity' && level === 'all')) {
+          weighted += 1;
           for (const [added, old, times] of oldWeight(report, level, lang)) {
             assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
             html = html.replaceAll(added, old);
@@ -876,12 +879,14 @@ test('without status every existing fixture prints byte for byte the HTML it pri
     }
   }
   assert.equal(compared, 28);
+  assert.equal(weighted, 10);
   assert.deepEqual(Object.keys(baselineHtml).length, 28);
 });
 
 test('the one-customer GRN PDF prints the same document with or without migration 59, and no report PDF prints a weight', () => {
   // Before migration 59 the RPC's total_weight of a GRN was the sum of its per-bag weights (30 and 75); after it, the kg (1500 and 4020).
-  // The report ignores both: weights are no longer printed (2026-10-14).
+  // The report ignores both: weights are no longer printed (2026-10-14). This equality guards against a total weight being read
+  // from the RPC answer again: if the report used total_weight, the two documents would differ.
   const before = structuredClone(fixtures['grn-activity'].customer);
   const after = structuredClone(fixtures['grn-activity'].customer);
   after.data.grns[0].total_weight = 1500;
@@ -890,7 +895,10 @@ test('the one-customer GRN PDF prints the same document with or without migratio
   const request = parseReportRequest({ report: 'grn-activity', customer_id: customer, from: '2026-01-01', to: '2026-01-31' });
   const built = [before, after].map(answer => buildReport(request, unwrapReportBody(answer)));
   assert.deepEqual(built[0], built[1]);
-  // No column label, summary label or cell of any document says weight or kg, although the RPC answers still carry weights.
+  // Each part protects one thing, although the RPC answers still carry weights. Labels: no column label or summary label of any
+  // document says weight or kg (a label that came back). Shape: every row and totals row is as wide as the columns (the table
+  // stays aligned); it cannot fail on a weight cell by itself because buildReport maps the level's columns, so the two
+  // all-customers levels, which had a weight cell, also have their exact rows and totals checked below (a cell that came back).
   const words = /weight|kg|વજન|કિલો/i;
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
@@ -904,6 +912,10 @@ test('the one-customer GRN PDF prints the same document with or without migratio
       }
     }
   }
+  assert.deepEqual(build('grn-activity', 'all', 'en').rows, [['Bharat Foods', '2', '800', '15-01-2026'], ['Amar Traders', '1', '100', '10-01-2026']]);
+  assert.deepEqual(build('grn-activity', 'all', 'en').totals, ['Total', '3', '900', '']);
+  assert.deepEqual(build('stock-summary', 'all', 'en').rows, [['Amar Traders', '1', '2', '90']]);
+  assert.deepEqual(build('stock-summary', 'all', 'en').totals, ['Total', '', '2', '90']);
 });
 
 test('a sort on weight is no longer known: the default order applies, and no sortable column is called weight', () => {
@@ -932,6 +944,9 @@ test('the label table holds no weight or kg label, and the GRN document PDF says
   const source = readFileSync(new URL('../functions/_shared/document-pdf.ts', import.meta.url), 'utf8');
   assert.match(source, /columns = \['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'\];/);
   assert.ok(!source.includes("'Weight'"));
+  // The row array keeps the weight of one package between the stock and the rack, as it is read, not multiplied by the quantity.
+  assert.ok(source.includes('rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,kgEach(line.weight),line.rack,line.package_mark]);'));
+  assert.doesNotMatch(source, /line\.qty\s*\*\s*line\.weight|line\.weight\s*\*\s*line\.qty/);
 });
 
 test('migration 59 is ASCII, patches only the weight totals with counted markers, and its SQL test is registered after the dispatch weight one', () => {
@@ -2010,7 +2025,7 @@ test('with invoicing only the GRNs of that choice are listed, and the summary is
     assert.deepEqual(gu.filters[2], ['ઇન્વૉઇસ', expected.word[1]]);
     assert.equal(gu.html.split(`<span class="filter"><strong>ઇન્વૉઇસ:</strong> ${expected.word[1]}</span>`).length - 1, 2);
   }
-  // Without the choice: every GRN, the RPC's own figures (the weight is always from the lines), and no invoicing line.
+  // Without the choice: every GRN, the RPC's own figures (the figures are the RPC's own, none of them a weight), and no invoicing line.
   for (const fields of [{}, { invoicing: null }]) {
     const all = documentWith(grnRequest(fields), grnMix);
     assert.deepEqual(all.built.rows.map(row => row[0]), ['Z0004', 'Z0003', 'Z0002', 'Z0001']);

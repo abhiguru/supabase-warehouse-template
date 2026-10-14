@@ -30,7 +30,7 @@ answered and the summary is worked out from the rows listed; `search` goes to
 the item RPC as `p_search_query`. Each choice prints a line under the title;
 `status`, `invoicing` and `bucket` are echoed in the answer's `document`, the
 search never is. The full contract is in the CHANGELOG entries for migration
-53, for `status` and for these three fields). It reads the
+53, for `status` and for these three fields; the `weight` sort field of grn-activity and stock-summary that entry lists no longer exists, and a request naming it falls back to the report's default sort: the parser still accepts the name and `buildReport` uses `defaultSort`). It reads the
 report's existing RPC with the caller JWT, so the RPC guard decides access
 (a refusal is 403, an unknown customer 404), prints at most 2000 rows with a
 note when cut, and returns the same `{ success, pdf_url, expires_in, document }`
