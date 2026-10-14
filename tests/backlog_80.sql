@@ -264,6 +264,8 @@ SELECT pg_temp.bl_assert(:'disp_other'::jsonb->>'raised'='Supervisor must be a p
  'create_dispatch: a service account naming another service account is refused: '||:'disp_other');
 -- update_dispatch_smart: the same lines of BL80D are sent each time.
 SELECT jsonb_build_array(jsonb_build_object('gr_trl_id',:'lot_big','disp_qty',3)) AS d_lines \gset
+-- The supervisor BL80D has now, read before each refused call: "unchanged" means equal to this, not to a guess.
+SELECT COALESCE(supervisor_id::text,'') AS sup_before_sa FROM public.dispatch WHERE id=:'disp_id'::uuid \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
@@ -273,20 +275,23 @@ SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::
 RESET ROLE;
 -- update_dispatch_smart catches every exception and answers {success:false, error:<message>} (its own convention).
 SELECT pg_temp.bl_assert(:'upd_sa'::jsonb->>'success'='false' AND :'upd_sa'::jsonb->>'error'='Supervisor must be a person, not a service account'
- AND (SELECT supervisor_id=:'admin_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),'update_dispatch_smart: a person naming a service account is refused, supervisor kept: '||:'upd_sa');
+ AND (SELECT COALESCE(supervisor_id::text,'')=:'sup_before_sa' FROM public.dispatch WHERE id=:'disp_id'::uuid),
+ 'update_dispatch_smart: a person naming a service account is refused, supervisor kept ('||:'sup_before_sa'||'): '||:'upd_sa');
 SELECT pg_temp.bl_assert(:'upd_person'::jsonb->>'success'='true' AND (SELECT supervisor_id=:'person_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),
  'update_dispatch_smart: a person naming a person is accepted: '||:'upd_person');
 SELECT set_config('request.jwt.claims',:'sync_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
   :'disp_id',jsonb_build_object('supervisor_id',:'sync_id')::text,:'d_lines')) AS upd_self \gset
+SELECT COALESCE(supervisor_id::text,'') AS sup_before_other FROM public.dispatch WHERE id=:'disp_id'::uuid \gset
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
   :'disp_id',jsonb_build_object('supervisor_id',:'other_sync_id')::text,:'d_lines')) AS upd_other \gset
 RESET ROLE;
 SELECT pg_temp.bl_assert(:'upd_self'::jsonb->>'success'='true' AND (SELECT supervisor_id=:'sync_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),
  'update_dispatch_smart: a service account naming itself is accepted: '||:'upd_self');
 SELECT pg_temp.bl_assert(:'upd_other'::jsonb->>'success'='false' AND :'upd_other'::jsonb->>'error'='Supervisor must be a person, not a service account'
- AND (SELECT supervisor_id=:'sync_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),'update_dispatch_smart: another service account is refused, supervisor kept: '||:'upd_other');
+ AND (SELECT COALESCE(supervisor_id::text,'')=:'sup_before_other' FROM public.dispatch WHERE id=:'disp_id'::uuid),
+ 'update_dispatch_smart: another service account is refused, supervisor kept ('||:'sup_before_other'||'): '||:'upd_other');
 -- A dispatch that already has a service account as supervisor keeps it through an edit by anyone.
 UPDATE public.dispatch SET supervisor_id=:'other_sync_id'::uuid WHERE id=:'disp_id'::uuid;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -294,7 +299,8 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT public.update_dispatch_smart(%L::uuid,%L::jsonb,ARRAY(SELECT jsonb_array_elements(%L::jsonb)))',
   :'disp_id',jsonb_build_object('supervisor_id',:'other_sync_id')::text,:'d_lines')) AS upd_same \gset
 RESET ROLE;
-SELECT pg_temp.bl_assert(:'upd_same'::jsonb->>'success'='true','update_dispatch_smart: the unchanged supervisor is kept: '||:'upd_same');
+SELECT pg_temp.bl_assert(:'upd_same'::jsonb->>'success'='true' AND (SELECT supervisor_id=:'other_sync_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),
+ 'update_dispatch_smart: the unchanged supervisor is kept: '||:'upd_same');
 
 -- ---- 2. An inactive or deleted business: no new order, no customer; staff may open the existing OPEN one
 -- customer_two has an OPEN order (made while active), customer_four a DISPATCHED one, customer_one and
