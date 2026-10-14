@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
+
+No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).
+The matching app change is rn-warehouse-template PR #45.
+
+- GRN document PDF (`generate-grn-pdf`): the line table's weight column header is now `Kg each`
+  (it is the weight of one package, `goodsreceived_trl.weight`; the values are unchanged).
+  English only, like the rest of that PDF.
+- Report PDFs (`generate-report-pdf`) no longer print weights: the weight column, its total and
+  the weight summary figure are gone from GRN activity (one customer and all customers) and Stock
+  summary (both levels), and the weight figure from the Dispatch activity summary of one customer.
+  The Weight and kg labels are removed from `report-labels.ts`. A request that sorts by `weight`
+  gets the report's default order, like any unknown sort field. The RPCs still return their weights.
+- The pre-printed slips (`print-grn-preprinted`, `print-invoice-preprinted`) are unchanged.
+
 ## Unreleased — Settings UX batch: item rate changes, approving staff, service accounts (2026-10-14)
 
 Migrations 76, 77 and 78; apply with the normal setup rerun, then update the app.
