@@ -44,6 +44,42 @@ field and keeps working.
 - **Tests:** `tests/backlog_80.sql` cart section follows the new rule; new `tests/open_items_82.sql`
   covers the `active` flag (administrator, staff, customer), `set_customer_active`, the delete rules and the data fix.
 
+## Unreleased — one association sign-in for every facility, migration 81 (2026-10-15)
+
+Migration `00000000000081_central_single_sign_in.sql`, applied by the setup rerun; then recreate
+the functions container (`bash scripts/compose.sh up -d --force-recreate functions`). Owner
+decision of 2026-10-15, which replaces the earlier rule "the central service's word alone never
+opens an existing profile": the association sends the only sign-in code, and with it a person
+opens every facility that trusts the association.
+
+- **The association's token opens an existing person profile.** A profile found by the
+  central-verified phone number and not linked yet is linked to the identity and signed in (an
+  approved one), made pending (a waiting request) or refused (`account_unavailable`: rejected,
+  disabled, deactivated), with no SMS code of this facility. After that it is found by the central
+  subject. **Accepted consequence:** whoever controls the central service, or a number's SMS
+  there, can open any person profile with that number at a facility that leaves the extra code
+  off, administrators included. `identity_conflict` (the number's profile is linked to another
+  identity) is unchanged.
+- **A service account is never opened this way**: `account_unavailable`, found by phone or by
+  subject, and it is not linked (migration 78's `is_service_account`).
+- **A facility's own code, optional, default off.** `setup.sh --central-local-code on|off`
+  (stored as `CENTRAL_LOCAL_CODE` in `compose.env` and as `auth_config` key `central_local_code`
+  by `scripts/configure-central.sql`). With it on, an approved profile, linked or not, gets
+  `link_required` without `otp_code` at **every** exchange, and with `otp_code` the code is checked
+  by `operator_verify_otp` (all its limits) and its answer, with the link fields, is returned.
+  Refused unless central sign-in is configured. A rerun without the flag keeps the stored value,
+  as for the issuer and the keys; `--central-issuer off` clears it. The `link_required` message is
+  now "This facility asks for its own code each time you sign in."
+- **`get-public-config`** adds `centralLogin.localCode` (boolean), only when `centralLogin` is
+  advertised; `CENTRAL_LOCAL_CODE` is passed to that function's worker and the functions
+  container.
+- **Pending answers name the link** (`central_issuer`, `central_subject` in their short
+  `data.user`), as the link answer already did since migration 64.
+- **Tests:** `tests/central_login.sql` rewritten for the new rule (setting off and on),
+  `tests/configure.test.mjs` and `tests/migrations.sh` for the flag, `tests/central-exchange.test.mjs`
+  for the message and `localCode`.
+- **Docs:** `CLAUDE.md`, `docs/CENTRAL_LOGIN.md`, `docs/OPERATOR_INSTALL.md`.
+
 ## Unreleased — backlog fixes, migration 80 (2026-10-14)
 
 Migration `00000000000080_backlog_fixes.sql`, applied by the setup rerun; then recreate the

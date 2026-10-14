@@ -330,8 +330,9 @@ sent by this facility. SMS sign-in keeps working. What you then rely on the
 central service for, and what you do not, is the first section of
 [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-relies-on-the-central-service-for):
 in short, it vouches that a phone number belongs to a central account; it
-cannot approve anyone here, and it cannot take over a profile that already
-exists here without an SMS code that this facility sent.
+cannot approve anyone here, but its sign-in alone opens an existing person
+profile with that number (administrators included) unless you switch on this
+facility's own extra code, `--central-local-code on` below.
 
 Turn it on with the issuer the association gives you and **one** source for
 its public keys, added to the usual setup command (first installation or
@@ -377,10 +378,24 @@ bash setup.sh --operator \
 - Turn it off again with `--central-issuer off` (and no key option). People
   who signed in centrally keep their profiles and sessions; they sign in with
   an SMS code from then on.
+- `--central-local-code on|off` (default **off**): with `on`, this facility also
+  sends its own SMS code and asks for it at **every** new central sign-in, for
+  every approved profile. Leave it off to let the association's single sign-in
+  open this facility; the price is that whoever controls the central service,
+  or a number's SMS there, can open any person profile with that number here.
+  It is refused unless central sign-in is configured (in the same command or
+  already). A rerun without the flag **keeps** the stored value, like the
+  other central settings (also when the issuer or the keys change);
+  `--central-local-code off` switches it off and `--central-issuer off` clears
+  it with the rest. It is stored as `CENTRAL_LOCAL_CODE` in `config/compose.env`
+  and written to the database (`auth_config` key `central_local_code`) by the
+  setup run. A service account (a machine, migration 78) is never opened by the
+  central sign-in whatever this says.
 - Changing these settings recreates the functions container during that setup
   run. The database container is not touched.
 - Check: `curl -s https://<your origin>/functions/v1/get-public-config` shows
-  `"centralLogin":{"issuer":"…"}` when it is on and `"centralLogin":null` when
+  `"centralLogin":{"issuer":"…","localCode":false}` when it is on (`localCode` is
+  `true` with `--central-local-code on`) and `"centralLogin":null` when
   it is off or a value is unusable.
 
 With an address, the functions container must be able to reach it over HTTPS.
@@ -395,8 +410,9 @@ sign-in answers "not available" until setup has run. The key file
 `public/central-jwks.json` is not part of a backup: after recovering a lost
 host, pass `--central-jwks-file` again.
 
-A person who already has a profile here links it to the central account once,
-with an SMS code from this facility; approving, revoking and the one new
+A person who already has a profile here is linked to the central account by
+the first central sign-in with the same phone number (no code, unless the
+facility's own code is on); approving, revoking and the one new
 administrator action (unlinking a profile) are described in
 [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#what-the-facility-administrator-does).
 
