@@ -241,3 +241,36 @@ for any other value; the earlier refusals are unchanged. Returned as `error_code
   Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
   `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
 
+## Customers: deactivate, delete, restore (migration 82, 2026-10-15)
+
+A deactivated business (`active = false`) is offered by no staff customer picker (`search_customers`: new GRN, dispatch, order, and the list-filter
+customer search) and not by the all-customers branch of `search_customer_items_for_order`, and
+`assign_customer_to_user` cannot give it a new customer login. Everything else keeps working for it: its
+customer logins read all past records and order their goods out,
+staff and administrators still see its stock, invoices and activity, and `save_grn` / dispatch creation
+accept it (`update_grn` too). A DELETED business (`deleted_at` set) is refused by `get_or_create_cart`, `save_grn`, `update_grn` (when moving a GRN to it) and both
+`create_dispatch_with_stock_check` overloads with `Business is not active` (P0001). Nothing with data is
+ever deleted.
+
+- `set_customer_active(p_customer_id uuid, p_active boolean)`: administrators and supervisors (staff and
+  customers get 42501). `false` sets `active = false` only (no stock check, never `deleted_at`); `true` sets
+  `active = true` and clears `deleted_at` / `deleted_by`. Answer `{success:true, message, data:{id, active}}`
+  (message `... is already inactive` / `... is already active` when nothing changes); `{success:false,
+  message}` for an unknown id (`Customer not found`) or a missing argument.
+- `safe_delete_customer(p_customer_id uuid, p_permanent boolean DEFAULT false)`. "Data" means any GRN,
+  dispatch or invoice row (deleted rows count), any payment, any customer-specific rate
+  (`item_storage_prices.customer_id`), any active user assignment, and any order that has lines or is not
+  OPEN. For a business WITH data: soft (`p_permanent = false`) deactivates it instead and answers
+  `{success:true, delete_type:'deactivated', message:'"<name>" has records, so it was deactivated instead of
+  deleted.', related_records}`; permanent answers `{success:false, message:'Cannot delete "<name>": it has
+  GRNs, dispatches, invoices, payments, rates, linked users or orders. Deactivate it instead.', related_records}`. `related_records` is
+  `{grn_count, dispatch_count, invoice_count, order_count, payment_count, rate_count, assignment_count}`.
+  A business without data: soft delete as before (`delete_type:'soft'`, its empty OPEN carts stay);
+  permanent (`delete_type:'permanent'`) also removes its empty OPEN carts and switched-off assignments.
+- `restore_customer(p_customer_id uuid)`: takes a business that is deleted OR inactive and makes it active
+  with `deleted_at` / `deleted_by` cleared (same as `set_customer_active(id, true)`); an active, undeleted
+  business answers `{success:false, message:'Customer not found or not deleted'}`.
+- `get_orders_list` leaves out orders of a deleted business.
+- Five readers that no longer hide a deactivated business from staff and administrators (filter is
+  `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
+  customers), `get_all_customer_activity_summary`, `get_item_dispatch_records`.
