@@ -15,7 +15,7 @@ docker run -d --name "$container" --label purpose=warehouse-migration-test \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
   -e POSTGRES_PASSWORD=disposable-test-database-only \
-  supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc >/dev/null
+  supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6 >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do

@@ -327,7 +327,7 @@ test('restore verifier sizes the disposable database from the dumps and can be o
     let result = verify(small, scratch, { WAREHOUSE_VERIFY_STORAGE: 'tmpfs' });
     assert.equal(result.status, 0, result.stderr);
     assert.match(runLine(result), /--memory 1024m .*--tmpfs \/var\/lib\/postgresql\/data:rw,size=768m /);
-    assert.match(runLine(result), /supabase\/postgres:15\.8\.1\.060@sha256:[0-9a-f]{64}$/, 'the image is pinned by digest');
+    assert.match(runLine(result), /supabase\/postgres:15\.8\.1\.135@sha256:[0-9a-f]{64}$/, 'the image is pinned by digest');
     // 1 MiB of dumps x 300 = 300 MiB of data, as much again for WAL, 256 MiB for the cluster.
     result = verify(small, scratch, { WAREHOUSE_VERIFY_STORAGE: 'tmpfs', WAREHOUSE_VERIFY_SIZE_FACTOR: '300' });
     assert.equal(result.status, 0, result.stderr);

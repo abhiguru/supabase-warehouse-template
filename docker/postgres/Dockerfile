@@ -21,7 +21,7 @@ RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     go mod download && go mod verify \
     && go test -mod=readonly -p=2 ./utility/... \
     && CGO_ENABLED=0 go build -mod=readonly -p=2 -trimpath -ldflags='-X github.com/wal-g/wal-g/cmd/pg.walgVersion=v3.0.9-warehouse.1' -o /out/wal-g ./main/pg
-FROM supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc
+FROM supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6
 RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade linux-libc-dev && rm -rf /var/lib/apt/lists/*
 COPY --from=gosu /out/gosu /usr/local/bin/gosu
 COPY --from=walg /out/wal-g /usr/local/bin/wal-g
