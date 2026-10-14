@@ -108,8 +108,12 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
- ('get_item_storage_prices',true,'no'),('find_or_create_item_storage_price',true,'no'),
+ ('get_item_storage_prices',true,'no'),
+ -- migration 76: no app code calls it; administrators and supervisors only
+ ('find_or_create_item_storage_price',false,'no'),
  ('create_item_storage_price',true,'no'),('update_item_storage_price',true,'no'),('delete_item_storage_price',true,'no'),
+ -- migration 76: a rate change "from a date"
+ ('replace_item_rates',true,'no'),('undo_rate_change',true,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),
@@ -130,7 +134,9 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('clear_user_central_identity',false,'no'),
  -- migration 74: a sensor's settings, administrators only; the guard refuses
  -- a supervisor as well (section 5 and tests/sensor_ingest.sql)
- ('update_sensor_device',false,'no');
+ ('update_sensor_device',false,'no'),
+ -- migration 78: marking a service account, administrators only (tests/service_accounts.sql)
+ ('set_service_account',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.
@@ -514,28 +520,36 @@ SELECT public.get_item_storage_prices() AS staff_prices \gset
 SELECT pg_temp.ra_assert(:'staff_prices'::jsonb->>'success'='true' AND :'staff_prices'::jsonb::text LIKE '%Role Matrix Rice%',
  'staff read the price list: '||:'staff_prices');
 SELECT public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>7,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>'2026-01-01',
+ p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>CURRENT_DATE+30,
  p_customer_id=>:'alpha'::uuid,p_tax_percent=>5) AS staff_price \gset
 SELECT pg_temp.ra_assert(:'staff_price'::jsonb->>'success'='true','staff add a price: '||:'staff_price');
 RESET ROLE;
 SELECT id AS alpha_price FROM public.item_storage_prices WHERE customer_id=:'alpha'::uuid \gset
-SELECT id AS gamma_price FROM public.item_storage_prices WHERE customer_id=:'gamma'::uuid \gset
+-- Staff change and delete only a rate that has not started (migration 76): an upcoming
+-- Gamma rate for staff to delete, added here without the RPCs and without a caller.
+SELECT current_setting('request.jwt.claims') AS keep_claims \gset
+SELECT set_config('request.jwt.claims','{}',true);
+INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,
+  effective_from,unit_price_one_time,unit_price_monthly)
+ VALUES (:'item_id'::uuid,:'gamma'::uuid,'monthly',6,101,200,2,5,CURRENT_DATE+30,0,6);
+SELECT set_config('request.jwt.claims',:'keep_claims',true);
+SELECT id AS gamma_price FROM public.item_storage_prices WHERE customer_id=:'gamma'::uuid AND effective_from=CURRENT_DATE+30 \gset
 SET LOCAL ROLE authenticated;
 SELECT public.update_item_storage_price(p_id=>:'alpha_price'::uuid,p_unit_price=>8,p_weight_min=>0,p_weight_max=>100,
- p_labour_rate=>1,p_tax_percent=>5,p_effective_from=>'2026-01-01',p_effective_to=>NULL) AS staff_price_update \gset
+ p_labour_rate=>1,p_tax_percent=>5,p_effective_from=>CURRENT_DATE+30,p_effective_to=>NULL) AS staff_price_update \gset
 SELECT pg_temp.ra_assert(:'staff_price_update'::jsonb->>'success'='true','staff change a price: '||:'staff_price_update');
-SELECT public.find_or_create_item_storage_price(:'item_id'::uuid,:'beta'::uuid,10,'monthly') AS staff_price_found \gset
-SELECT pg_temp.ra_assert(:'staff_price_found'::jsonb->>'success'='true','staff find or create a price: '||:'staff_price_found');
+SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,''monthly'')',:'item_id',:'beta')),
+ 'staff can no longer find or create a price (migration 76)');
 SELECT public.delete_item_storage_price(:'gamma_price'::uuid) AS staff_price_delete \gset
 SELECT pg_temp.ra_assert(:'staff_price_delete'::jsonb->>'success'='true','staff delete a price: '||:'staff_price_delete');
 RESET ROLE;
 SELECT pg_temp.ra_assert((SELECT unit_price=8 FROM public.item_storage_prices WHERE id=:'alpha_price'::uuid)
  AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE id=:'gamma_price'::uuid)
- AND (SELECT count(*)=1 FROM public.item_storage_prices WHERE customer_id=:'beta'::uuid),
+ AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE customer_id=:'beta'::uuid),
  'the staff price changes are stored');
--- Each of the four is in the price history under the staff profile (migration
+-- Each of the three is in the price history under the staff profile (migration
 -- 48; tests/item_price_history.sql has the details).
-SELECT pg_temp.ra_assert((SELECT array_agg(h.action ORDER BY h.id)=ARRAY['insert','update','insert','delete']
+SELECT pg_temp.ra_assert((SELECT array_agg(h.action ORDER BY h.id)=ARRAY['insert','update','delete']
   FROM public.item_price_history h WHERE h.changed_by=:'staff_profile'::uuid AND h.changed_by_role='staff'),
  'the staff price changes are in the price history');
 SET LOCAL ROLE authenticated;

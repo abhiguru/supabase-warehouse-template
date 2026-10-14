@@ -180,6 +180,18 @@ SELECT pg_temp.inc_assert(:'suggested'='1' AND :'renumbered'::jsonb->>'success'=
  AND (SELECT inv_no=1 FROM public.invoice WHERE id=:'invoice_id'::uuid),
  'with 20260929 gone the suggestion is 1 and it can be saved: '||:'suggested'||' '||:'renumbered');
 
+-- 6b. Whitespace the integer cast accepts (tab, newline, CR, VT, FF) is stripped by the check,
+-- so a padded out-of-range number is refused like the plain one (migration 79).
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.inc_assert(pg_temp.inc_call(format('SELECT public.save_invoice(NULL::uuid,%L::jsonb,ARRAY[%L::jsonb])',
+   :'header'::jsonb || jsonb_build_object('inv_no',n.value),:'line'))
+  =jsonb_build_object('raised','Invoice number must be between 1 and 99999999','state','WH422'),
+ 'padded inv_no '||to_jsonb(n.value)::text||' is refused with WH422: '
+  ||pg_temp.inc_call(format('SELECT public.save_invoice(NULL::uuid,%L::jsonb,ARRAY[%L::jsonb])',
+   :'header'::jsonb || jsonb_build_object('inv_no',n.value),:'line'))::text)
+FROM (VALUES (E'\t100000000'),(E'\n0'),(E'\r-5'),(E'100000000\n'),(E'\v0'),(E'\f0\f')) AS n(value);
+RESET ROLE;
+
 -- 7. The check sits after the guard and before the first write (or the call
 -- that writes) in each path.
 SELECT pg_temp.inc_assert(position('warehouse_security.authorize_rpc' IN d) < position('warehouse_security.check_invoice_number' IN d)

@@ -65,7 +65,7 @@ Client → Kong (with JWT) → PostgREST → Data (RLS enforced)
 ### Sensor readings
 ```
 Tapo hubs (LAN) ◀── sensor-bridge ──▶ Kong :8000 ──▶ ingest-sensor-readings ──▶ record_sensor_batch
-   (poll 30 s)      (queue in volume)  (no user JWT;   (service key, ingest       → sensor_readings, sensor_latest,
+   (poll 5 min)     (queue in volume)  (no user JWT;   (service key, ingest       → sensor_readings, sensor_latest,
                                         ingest key)     key checked in SQL)          sensor_hubs → Realtime → app
 ```
 The bridge is the optional `sensors` profile, or the same image as its own

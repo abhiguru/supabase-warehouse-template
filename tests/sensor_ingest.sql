@@ -105,8 +105,8 @@ SELECT pg_temp.si_assert(EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubna
       AND schemaname = 'public' AND tablename = 'sensor_latest')
     AND (SELECT relreplident FROM pg_class WHERE oid = 'public.sensor_latest'::regclass) = 'f',
   'sensor_latest is in the supabase_realtime publication with REPLICA IDENTITY FULL');
-SELECT pg_temp.si_assert((SELECT days FROM warehouse_maintenance.retention_policy WHERE key = 'sensor_readings') = 400,
-  'sensor readings are kept 400 days by default');
+SELECT pg_temp.si_assert((SELECT days FROM warehouse_maintenance.retention_policy WHERE key = 'sensor_readings') = 90,
+  'sensor readings are kept 90 days by default (migration 75)');
 SELECT pg_temp.si_assert(to_regprocedure('public.record_sensor_reading(character varying,numeric,numeric,character varying,character varying)') IS NULL
     AND to_regprocedure('public.update_sensor(character varying,text,text,integer,jsonb)') IS NULL,
   'the MAC-based writers are gone');
@@ -546,20 +546,20 @@ SELECT pg_temp.si_assert(pg_temp.si_row(:'poll_back'::jsonb->'devices', 'id', :'
   'E1 is ONLINE again with its hub');
 
 -- ---------------------------------------------------------------------------
--- 10. Retention: 400 days
+-- 10. Retention: 90 days (migration 75)
 -- ---------------------------------------------------------------------------
 INSERT INTO public.sensor_readings(device_id, temperature, humidity, measured_at) VALUES
-  (:'d1'::uuid, 4, 70, now() - interval '401 days'), (:'d1'::uuid, 4, 70, now() - interval '399 days');
+  (:'d1'::uuid, 4, 70, now() - interval '91 days'), (:'d1'::uuid, 4, 70, now() - interval '89 days');
 SELECT warehouse_maintenance.run_database_retention(now(), false) AS retention_preview \gset
 SELECT pg_temp.si_assert((:'retention_preview'::jsonb#>>'{rows,sensor_readings}')::int = 1
     AND (SELECT count(*) FROM public.sensor_readings WHERE device_id = :'d1'::uuid) = 7,
-  'the preview counts the reading of 401 days only and deletes nothing: ' || (:'retention_preview'::jsonb->'rows')::text);
+  'the preview counts the reading of 91 days only and deletes nothing: ' || (:'retention_preview'::jsonb->'rows')::text);
 SELECT warehouse_maintenance.run_database_retention(now(), true) AS retention_applied \gset
 SELECT pg_temp.si_assert((:'retention_applied'::jsonb#>>'{rows,sensor_readings}')::int = 1
-    AND NOT EXISTS (SELECT 1 FROM public.sensor_readings WHERE measured_at = now() - interval '401 days')
-    AND EXISTS (SELECT 1 FROM public.sensor_readings WHERE measured_at = now() - interval '399 days')
+    AND NOT EXISTS (SELECT 1 FROM public.sensor_readings WHERE measured_at = now() - interval '91 days')
+    AND EXISTS (SELECT 1 FROM public.sensor_readings WHERE measured_at = now() - interval '89 days')
     AND (SELECT count(*) FROM public.sensor_readings) = 9,
-  'retention deletes the reading of 401 days and keeps the one of 399 days and the recent ones');
+  'retention deletes the reading of 91 days and keeps the one of 89 days and the recent ones');
 
 -- ---------------------------------------------------------------------------
 -- 11. A batch exactly as docker/sensor-bridge builds it
@@ -600,4 +600,4 @@ SELECT pg_temp.si_assert(:'answer_unreached'::jsonb#>>'{data,hub_id}' = '192.0.2
   'a hub never reached is reported under its host: ' || :'answer_unreached');
 
 ROLLBACK;
-SELECT 'sensor ingest: keys, hub and readings checked; idempotent re-send; each value newest-only with its own age; heartbeats, stale and hub-offline status; readers ignore missing values; staff read, administrators change, customers and anon refused; rename survives; Realtime publication; 400-day retention' AS result;
+SELECT 'sensor ingest: keys, hub and readings checked; idempotent re-send; each value newest-only with its own age; heartbeats, stale and hub-offline status; readers ignore missing values; staff read, administrators change, customers and anon refused; rename survives; Realtime publication; 90-day retention' AS result;

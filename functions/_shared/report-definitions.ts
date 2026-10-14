@@ -148,7 +148,6 @@ export function oneRowPerInvoice(invoices: Row[]): Row[] {
   });
 }
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
-const kg = ['weight', 'kg'] as const;
 /**
  * The oldest stock of the stock aging report, as the app's screen shows it (app/reports/stock-aging.tsx): the count of the
  * over-364-days bucket of the RPC's answer, by_bucket['364+'].item_count, which is also what the red bar of the screen
@@ -197,10 +196,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     title: 'titleGrnActivity',
     customer: {
       rpc: request => ({ name: 'get_customer_grn_activity', args: { p_customer_uuid: request.customerId, ...period(request) } }),
-      // Until migration 59 the RPC's own total_weight per GRN added up per-bag
-      // weights without the bags. The weight received is computed here from each
-      // line (its bag weight times its bags), which is right with or without that
-      // migration.
       // With an Invoiced / Not invoiced choice only the GRNs of that choice are listed, by the app's own test
       // (grnActivity.ts, grnRecordsView): invoice_status.is_invoiced, a missing one being not invoiced.
       rows: (body, request) => list(body.grns).map(grn => ({
@@ -208,7 +203,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         date: grn.grn_date,
         items: grn.total_items,
         quantity: grn.total_qty,
-        weight: list(grn.items).reduce((total, item) => total + (num(item.weight) ?? 0) * (num(item.quantity) ?? 0), 0),
         stock: (grn.dispatch_summary as Row | undefined)?.current_stock,
         invoice: (grn.invoice_status as Row | undefined)?.invoice_number ?? '',
         invoiced: Boolean((grn.invoice_status as Row | undefined)?.is_invoiced),
@@ -218,7 +212,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { key: 'date', label: 'date', kind: 'date' },
         { key: 'items', label: 'items', kind: 'number', total: true },
         { key: 'quantity', label: 'quantity', kind: 'number', total: true },
-        { key: 'weight', label: kg, kind: 'number', total: true },
         { key: 'stock', label: 'stock', kind: 'number', total: true },
         { key: 'invoice', label: 'invoiceNumber', kind: 'text' },
       ],
@@ -226,7 +219,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       summary: [
         { label: 'grns', kind: 'number', value: (body, rows, request) => request.invoicing ? rows.length : body.summary?.total_grns },
         { label: 'quantity', kind: 'number', value: (body, rows, request) => request.invoicing ? sum(rows, 'quantity') : body.summary?.total_quantity },
-        { label: kg, kind: 'number', value: (_, rows) => sum(rows, 'weight') },
         { label: 'invoiced', kind: 'number',
           value: (body, rows, request) => request.invoicing ? rows.filter(row => row.invoiced).length : body.summary?.total_invoiced_grns },
       ],
@@ -235,25 +227,19 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     },
     all: {
       rpc: request => ({ name: 'get_all_grn_activity', args: period(request) }),
-      // The weight is the RPC's own: get_all_grn_activity has always added up bags
-      // times bag weight (kg of the received lines, summary.total_weight and
-      // by_customer[].total_weight), and migration 59 makes get_customer_grn_activity
-      // agree with it and checks this is still so.
       rows: body => list(body.by_customer).map(row => ({
-        customer: row.customer_name, grns: row.grn_count, quantity: row.total_qty, weight: row.total_weight, latest: row.latest_grn,
+        customer: row.customer_name, grns: row.grn_count, quantity: row.total_qty, latest: row.latest_grn,
       })),
       columns: [
         { key: 'customer', label: 'customer', kind: 'text' },
         { key: 'grns', label: 'grns', kind: 'number', total: true },
         { key: 'quantity', label: 'quantity', kind: 'number', total: true },
-        { key: 'weight', label: kg, kind: 'number', total: true },
         { key: 'latest', label: 'latestGrn', kind: 'date' },
       ],
       summary: [
         { label: 'grns', kind: 'number', value: body => body.summary?.total_grns },
         { label: 'customers', kind: 'number', value: body => body.summary?.total_customers },
         { label: 'quantity', kind: 'number', value: body => body.summary?.total_quantity },
-        { label: kg, kind: 'number', value: body => body.summary?.total_weight },
       ],
       defaultSort: { field: 'quantity', order: 'desc' },
       empty: 'emptyGrns',
@@ -280,7 +266,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       summary: [
         { label: 'dispatches', kind: 'number', value: body => body.summary?.total_dispatches },
         { label: 'bagsDispatched', kind: 'number', value: body => body.summary?.total_quantity },
-        { label: kg, kind: 'number', value: body => body.summary?.total_weight },
       ],
       defaultSort: { field: 'date', order: 'desc' },
       empty: 'emptyDispatches',
@@ -396,7 +381,6 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         mark: grn.package_mark,
         rack: grn.rack,
         stock: grn.stock,
-        weight: (num(grn.item_weight) ?? 0) * (num(grn.stock) ?? 0),
       }))),
       columns: [
         { key: 'item', label: 'item', kind: 'text' },
@@ -405,12 +389,10 @@ export const reportDefinitions: Record<ReportName, Definition> = {
         { key: 'mark', label: 'packageMark', kind: 'text' },
         { key: 'rack', label: 'rack', kind: 'text' },
         { key: 'stock', label: 'stock', kind: 'number', total: true },
-        { key: 'weight', label: kg, kind: 'number', total: true },
       ],
       summary: [
         { label: 'itemsInStorage', kind: 'number', value: body => body.summary?.total_items },
         { label: 'unitsInStock', kind: 'number', value: body => body.summary?.total_quantity },
-        { label: kg, kind: 'number', value: body => body.summary?.total_weight_kg },
         { label: 'grnsWithStock', kind: 'number', value: body => body.summary?.grn_count },
       ],
       defaultSort: { field: 'item', order: 'asc' },
@@ -419,20 +401,18 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     all: {
       rpc: () => ({ name: 'get_all_stock_summary', args: {} }),
       rows: body => list(body.customers).map(row => ({
-        customer: row.customer_name, items: row.item_count, grns: row.grn_count, stock: row.total_stock, weight: row.total_weight,
+        customer: row.customer_name, items: row.item_count, grns: row.grn_count, stock: row.total_stock,
       })),
       columns: [
         { key: 'customer', label: 'customer', kind: 'text' },
         { key: 'items', label: 'items', kind: 'number' },
         { key: 'grns', label: 'grns', kind: 'number', total: true },
         { key: 'stock', label: 'stock', kind: 'number', total: true },
-        { key: 'weight', label: kg, kind: 'number', total: true },
       ],
       summary: [
         { label: 'customersWithStock', kind: 'number', value: body => body.summary?.total_customers_with_stock },
         { label: 'itemsInStorage', kind: 'number', value: body => body.summary?.total_items },
         { label: 'unitsInStock', kind: 'number', value: body => body.summary?.total_quantity },
-        { label: kg, kind: 'number', value: body => body.summary?.total_weight_kg },
       ],
       defaultSort: { field: 'stock', order: 'desc' },
       empty: 'emptyStock',

@@ -10,6 +10,9 @@
 #   2. Migration 44: the same for two administrators who demote each other.
 #   3. Migrations 41 and 46: two users invoice the same receipt. Both would
 #      read invoiced = false and both would save.
+#   4. Migration 76: two users change the same item rate from the same day.
+#      The second waits for the first, then replaces its rows: exactly one
+#      open row is left (no duplicate band, no unique violation).
 set -euo pipefail
 container="${1:?disposable test container name required}"
 export PGPASSWORD=disposable-test-database-only
@@ -143,6 +146,35 @@ SQL
 )
 [[ "$stored" = t ]] || { echo 'Concurrent invoice: the receipt does not have exactly one invoice.' >&2; exit 1; }
 echo 'Concurrent invoice: of two saves for one receipt, one was refused and one invoice exists.'
+
+# Migration 76: two replace_item_rates calls for one scope and one start day.
+call_as "$claims_one" "public.create_item('Concurrent Rate Item','Bag')" > "$scratch/rate-item"
+rate_item=$(psql_exec -At <<'SQL'
+SELECT id FROM public.items WHERE name='Concurrent Rate Item'
+SQL
+)
+[[ "$rate_item" =~ ^[0-9a-f-]{36}$ ]] || { echo 'Concurrent rate change: the item was not created.' >&2; exit 1; }
+rate_call() { # rent, replace_later (the second caller knowingly replaces the first's planned rate)
+  echo "public.replace_item_rates('$rate_item'::uuid, NULL, 'monthly', CURRENT_DATE + 10, jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',$1,'labour_rate',2,'tax_percent',5)), ${2:-false})"
+}
+call_as "$claims_one" "$(rate_call 11)" 4 > "$scratch/rate-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(rate_call 12 true)" > "$scratch/rate-second"
+wait "$holder" || { echo 'Concurrent rate change: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/rate-first"); second=$(answer "$scratch/rate-second")
+[[ "$first" == *'"success": true'* && "$second" == *'"success": true'* ]] ||
+  { echo "Concurrent rate change: a call did not succeed: $first / $second" >&2; exit 1; }
+stored=$(psql_exec -At -v item="$rate_item" <<'SQL'
+SELECT count(*)=1 AND bool_and(unit_price=12 AND effective_to IS NULL) FROM public.item_storage_prices WHERE item_id=:'item'::uuid;
+SQL
+)
+removed=$(psql_exec -At -v item="$rate_item" <<'SQL'
+SELECT count(*) FROM public.item_price_history WHERE item_id=:'item'::uuid AND action='delete' AND (old_values->>'unit_price')::numeric=11;
+SQL
+)
+[[ "$stored" = t && "$removed" = 1 ]] || { echo 'Concurrent rate change: not exactly one open row (the second call must replace the first).' >&2; exit 1; }
+echo 'Concurrent rate change: two changes from one day left one open row; the second replaced the first.'
 
 # The administrators set aside at the start get their place back.
 psql_exec -v others="$others" <<'SQL'

@@ -1,5 +1,86 @@
 # Changelog
 
+## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
+
+No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).
+The matching app change is rn-warehouse-template PR #45.
+
+- GRN document PDF (`generate-grn-pdf`): the line table's weight column header is now `Kg each`
+  (it is the weight of one package, `goodsreceived_trl.weight`; the values are unchanged).
+  A weight of 0 or none prints `—`, like the app (0 means not recorded).
+  English only, like the rest of that PDF.
+- Report PDFs (`generate-report-pdf`) no longer print weights: the weight column, its total and
+  the weight summary figure are gone from GRN activity (one customer and all customers) and Stock
+  summary (both levels), and the weight figure from the Dispatch activity summary of one customer.
+  The Weight and kg labels are removed from `report-labels.ts`. A request that sorts by `weight`
+  gets the report's default order, like any unknown sort field; this replaces the `weight` sort fields
+  listed in the migration 53 entry. The RPCs still return their weights.
+- The pre-printed slips (`print-grn-preprinted`, `print-invoice-preprinted`) are unchanged.
+
+## Unreleased — Settings UX batch: item rate changes, approving staff, service accounts (2026-10-14)
+
+Migrations 76, 77 and 78; apply with the normal setup rerun, then update the app.
+
+- Migration 76: `replace_item_rates` (change an item's default or customer rate from a date in
+  one step) and `undo_rate_change` (undo the change that starts on a day: its rows go and the rows it
+  ended are opened again); a one-day rate is valid; creating or editing a rate refuses overlapping rows
+  (`BANDS_OVERLAP`); one-time rates store labour 0; staff can no longer change, delete or
+  back-date a rate that is already in force (`RATE_IN_FORCE_MANAGER_ONLY`); `search_customers`
+  matches words anywhere in the name; the price list pages stably. Dates use the India day.
+  Code-review fixes: `replace_item_rates` has `p_mode` ('change' keeps a scheduled stop; 'correct'
+  replaces only the rows starting that day and never touches later rates) and `p_move_from` (move a
+  planned rate in one step); new `error_code`s `INVALID_MODE`, `NOT_A_RATE_START`, `NOTHING_TO_MOVE`;
+  staff get `RATE_IN_FORCE_MANAGER_ONLY` for a rate that began today; `find_or_create_item_storage_price`
+  is administrators and supervisors only and checks overlap, one-time labour and the India day;
+  `get_item_storage_prices` hides expired rows by the India day.
+- Migration 77: `operator_review_enrollment` takes `p_role` (customer, staff, supervisor); the
+  three-argument call still works. `scripts/backup-integrity.sql` now checks it by name.
+- Migration 78: `user_profiles.is_service_account`, `set_service_account`; such a profile cannot be
+  given another role, deactivated or deleted and does not count as an administrator. Nothing is
+  marked by the migration: mark the FAS sync profile with `set_service_account`. Customer
+  assignment, its removal, clearing the central link and the access-request review refuse such a
+  profile too (`SERVICE_ACCOUNT_READ_ONLY`).
+
+## Unreleased — sensors sampled every 5 minutes, kept 90 days (2026-10-13)
+
+The owner wants a sample every 5 minutes and three months of history.
+
+**Operator action** (only where sensors are used): apply migration 75 (the
+normal setup rerun does). Then either accept the new bridge defaults (leave
+`SENSOR_BRIDGE_POLL_SECONDS` and `SENSOR_BRIDGE_HEARTBEAT_SECONDS` empty in
+`config/compose.env`, or the standalone `sensor-bridge.env`) or set them there,
+and recreate the bridge (`bash scripts/compose.sh --profile sensors up -d
+--force-recreate sensor-bridge`). At its next `retention:apply` the retention
+job deletes every reading older than 90 days, legacy history included; check
+the count with `npm run retention:preview` first, and take a backup or export
+before that run if older readings are still wanted.
+
+- Bridge defaults: `SENSOR_BRIDGE_POLL_SECONDS` 30 -> 300 and
+  `SENSOR_BRIDGE_HEARTBEAT_SECONDS` 900 -> 300 (`config.py`, the Compose
+  service, both env examples). With both at 300 every poll queues one reading
+  per sensor, a change or a heartbeat, so each sensor is sampled every 5
+  minutes: one row per 5 minutes, about 288 a day. The allowed ranges are
+  unchanged (poll 5 to 3600, heartbeat 60 to 86400). A shorter poll with the
+  heartbeat at 300 still catches changes sooner. Consequences of the longer
+  poll: a value change reaches the backend up to about 5 minutes later than
+  before, and a hub is reported offline after three failed polls, about 10
+  minutes after the first one instead of about a minute. The hub status is
+  re-sent every 5 minutes instead of every 15. The container healthcheck is
+  unaffected: the health file is rewritten on every pass of the 1-second loop,
+  not per poll, so `SENSOR_BRIDGE_HEALTH_MAX_AGE` (120 s) still holds.
+- Migration 75 `sensor_retention_90_days`: retention key `sensor_readings` is
+  90 days instead of 400 (it stops with an error unless exactly one policy row
+  is updated). Nothing is deleted by the migration itself.
+- Staleness is unchanged: `staleness_threshold_minutes` stays 30 by default.
+  With 5-minute samples that is about six missed samples; two missed samples
+  (10 minutes, for example a bridge restart or a failed poll or two) do not
+  mark a sensor stale, so 30 stays a safe default.
+- Tests: the bridge unit tests pin the new defaults and check that the default
+  settings give one reading per sensor per 5 minutes (the state-machine tests
+  keep a 30 s poll and a 15-minute heartbeat); `tests/sensor_ingest.sql`
+  checks 90 days and that retention deletes a reading of 91 days and keeps one
+  of 89 days.
+
 ## Unreleased — Tapo sensors through the template (2026-10-13)
 
 Tapo T310 temperature and humidity sensors on H200 hubs now reach this backend
