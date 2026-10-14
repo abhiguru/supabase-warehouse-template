@@ -1,3 +1,5 @@
+import { formatCell } from './report-definitions.ts';
+
 export const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g,
   char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 
@@ -5,6 +7,10 @@ export const escapeHtml = (value: unknown): string => String(value ?? '').replac
 // undefined and anything that is not a finite number print an em dash, like the app. Every other value is printed as it is.
 export const kgEach = (value: unknown): unknown =>
   value === null || value === undefined || value === 0 || (typeof value === 'number' && !Number.isFinite(value)) ? '\u2014' : value;
+
+// The Date line of a GRN, dispatch, invoice or stock document: DD-MM-YYYY on India's calendar, as the report PDFs print
+// dates (a receipt's "2026-10-13T00:00:00+00:00" is 13-10-2026). A value that cannot be read as a date is printed as it is.
+export const documentDate = (value: unknown): string => formatCell('date', value, 'en') || String(value ?? '');
 
 export function documentHtml(title: string, company: string, metadata: Record<string, unknown>, columns: string[], rows: unknown[][]): string {
   return `<!doctype html><html><head><meta charset="utf-8">

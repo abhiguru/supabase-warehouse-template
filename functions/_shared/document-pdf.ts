@@ -3,7 +3,7 @@ import { createClient } from '../vendor/supabase-js.mjs';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf } from './gotenberg-client.ts';
-import { documentHtml, kgEach } from './document-html.ts';
+import { documentDate, documentHtml, kgEach } from './document-html.ts';
 import { headerColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';
 
@@ -72,7 +72,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     }
     if (details.error || !rows) throw { status: 503, message: 'Document items unavailable' };
     if (rows.length > 1000 || (details.count || 0) > 1000) throw { status: 400, message: 'Document exceeds the starter limit of 1000 rows' };
-    const metadata: Record<string,unknown> = { Number: number, Date: date, Customer: header.customer_name };
+    const metadata: Record<string,unknown> = { Number: number, Date: documentDate(date), Customer: header.customer_name };
     if (kind === 'invoice') Object.assign(metadata, { 'Financial year': header.inv_fin_year, Labour: header.labour, Tax: header.tax_amount, Discount: header.discount, Total: header.total });
     // Installation and supported administration use the same company setting.
     // Keep warehouse record reads on the caller's RLS-protected client above.

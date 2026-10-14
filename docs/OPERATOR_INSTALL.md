@@ -1283,6 +1283,20 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
 
+**A change to function code needs the functions container recreated.** The
+edge functions (`functions/`, including `functions/_shared/`) are bind-mounted
+into the `functions` container, not built into an image, and the edge runtime
+keeps the modules it has loaded. The setup rerun above neither rebuilds an image
+for them nor recreates the container, so after a `git pull` that changes
+anything under `functions/` the running functions keep serving the old code
+until you run:
+
+```bash
+bash scripts/compose.sh up -d --force-recreate functions
+```
+
+Database migrations need no such step: setup applies them.
+
 **Setup rebuilds the images whose recipes changed.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
 image recipe (the files under its `docker/` build directory, its Dockerfile
