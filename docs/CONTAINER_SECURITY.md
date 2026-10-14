@@ -22,7 +22,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
-| PostgreSQL | 15.8.1.060 | Same database server/extensions; upgrade linux-libc-dev, rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
+| PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade linux-libc-dev, rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
 
 Go rebuilds use the versions locked in their Dockerfiles. No vulnerability
 ignore list is added. Required applications are retained. The source and license

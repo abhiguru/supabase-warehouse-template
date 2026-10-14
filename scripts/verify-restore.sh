@@ -14,7 +14,7 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
-IMAGE='supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc'
+IMAGE='supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6'
 usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP' >&2; exit 1; }
 allow_unsigned=false
 backup=''

@@ -107,7 +107,7 @@ cat > "$stage/metadata.txt" <<EOF
 format=warehouse-backup-v5
 created_at_utc=$timestamp
 source_commit=${source_commit:-unknown}
-database_image=supabase/postgres:15.8.1.060@sha256:0e2279598bc0224fb5960c3a61eb23270cd60119427f3a7bdec86ba282600dcc
+database_image=supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6
 consistency=write-facing services stopped during database/storage capture
 EOF
 (cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${tunnel_files[@]}" > SHA256SUMS)

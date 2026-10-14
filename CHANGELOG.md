@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — supabase/postgres 15.8.1.135 (2026-10-14)
+
+No migration. `docker/postgres/Dockerfile`: the setup rerun rebuilds the database image; the database container is recreated on the next start.
+
+- **supabase/postgres 15.8.1.135** (was 15.8.1.060), same PostgreSQL 15.8 line and Ubuntu base.
+  The backup script, the restore check (`scripts/verify-restore.sh`) and the migration test
+  (`tests/migrations.sh`) use the same image digest, so a backup is checked against the
+  image it came from. `docs/CONTAINER_SECURITY.md` names the new tag.
+
 ## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
 
 No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).
