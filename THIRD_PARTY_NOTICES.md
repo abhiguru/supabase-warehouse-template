@@ -74,7 +74,7 @@ own premises is not distribution.
 
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
-| python-kasa | 0.10.2 (`python-kasa==0.10.2` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
+| python-kasa | 0.11.0.1 (`python-kasa==0.11.0.1` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
 
 The other packages pinned in that file keep their own upstream licences.
 
@@ -88,14 +88,14 @@ redistributing them. Versions are the ones pinned in
 | --- | --- | --- | --- |
 | Kong Gateway (open source) | 3.9.3 (`kong:3.9.3-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
 | PostgREST | v16.4 (`postgrest/postgrest:v16.4`) | MIT | https://github.com/PostgREST/postgrest |
-| Supabase Realtime | v2.143.1 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
+| Supabase Realtime | v2.143.3 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Supabase Studio | 2026.10.05-sha-94b8b06 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
 | Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`) | MIT | https://github.com/gotenberg/gotenberg |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
 | Grafana | 13.2.3 (`grafana/grafana:13.2.3`) | AGPL-3.0 | https://github.com/grafana/grafana |
-| Sensor bridge base image: Python | 3.12-slim-bookworm (`python:3.12-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
+| Sensor bridge base image: Python | 3.14-slim-bookworm (`python:3.14-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
 
 ## Maintained container source recipes (2026-09-22)
 

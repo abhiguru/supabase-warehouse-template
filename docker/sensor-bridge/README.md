@@ -3,7 +3,7 @@
 A small container that reads the temperature and humidity sensors (Tapo T310/T315 and
 the like) paired to one or more Tapo hubs (H100, H200) on the facility's network, and
 posts their readings to this backend's `ingest-sensor-readings` edge function. It talks to
-the hubs with [python-kasa](https://github.com/python-kasa/python-kasa) 0.10.2 over the
+the hubs with [python-kasa](https://github.com/python-kasa/python-kasa) 0.11.0.1 over the
 local network; nothing goes through the Tapo cloud.
 
 **Licence.** python-kasa is GPL-3.0, so everything in this folder is
@@ -161,7 +161,7 @@ The queue lives in the volume `sensor-bridge_data`; `docker compose down` keeps 
 
 ## Image
 
-`python:3.12-slim-bookworm` pinned by digest; dependencies pinned in `requirements.txt` and
+`python:3.14-slim-bookworm` pinned by digest; dependencies pinned in `requirements.txt` and
 installed from wheels only; runs as uid 10001 with `/data` as its only writable place;
 HEALTHCHECK `python -m sensor_bridge.health` (the health file is younger than 120 s).
 
