@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT, exportJWK, exportSPKI, generateKeyPair } from 'jose';
 import { TOKEN_TYPE, createKeyCache, handle } from '../functions/central-exchange/handler.ts';
-import { advertisedCentralIssuer, httpsAddress } from '../functions/_shared/https-address.ts';
+import { advertisedCentralIssuer, advertisedCentralLogin, httpsAddress } from '../functions/_shared/https-address.ts';
 
 // No network and no central service: the tests make their own ES256 keys, serve
 // the key set through the injected fetch, and stand in for the PostgREST RPC.
@@ -115,11 +115,11 @@ test('names: the body wins over the token, and a missing or malformed address is
   assert.equal(h.rpcCalls[1].body.p_display_name, null);
 });
 
-test('otp_code is passed on for linking an existing profile, and only when it is six digits', async () => {
+test('otp_code is passed on for the facility\'s own code, and only when it is six digits', async () => {
   const h = harness();
   assert.equal((await h.exchange(await sign(claims(START)), { otp_code: '012345' })).status, 200);
   assert.equal(h.rpcCalls[0].body.p_otp_code, '012345');
-  // The two-step flow: link_required first, then a fresh token with the code.
+  // The two-step flow where the facility asks for its own code: link_required first, then a fresh token with the code.
   h.rpcAnswer = { success: false, code: 'link_required' };
   const asked = await h.exchange(await sign(claims(START, { jti: 'token-id-0000000000000002' })));
   assert.equal(asked.status, 409);
@@ -417,7 +417,7 @@ test('each failure code of the RPC maps to its status and message', async () => 
       error: 'This phone number is linked to another sign-in. Ask the facility administrator.', code: 'identity_conflict' } },
     enrollment_limited: { status: 429, body: { success: false, error: 'Too many new access requests. Try again tomorrow.', code: 'enrollment_limited' } },
     link_required: { status: 409, body: { success: false,
-      error: 'Confirm this phone number with a code from this facility to finish linking.', code: 'link_required' } },
+      error: 'This facility asks for its own code each time you sign in.', code: 'link_required' } },
     // What the SMS check answered for otp_code, with operator-otp's texts.
     invalid_otp: { status: 400, body: { success: false, error: 'Invalid or expired OTP', code: 'invalid_otp' } },
     rate_limited: { status: 429, body: { success: false, error: 'Too many OTP requests. Try again later.', code: 'rate_limited' } },
@@ -479,6 +479,14 @@ test('get-public-config advertises central sign-in only where a token could be a
     { jwksUrl: 'https://user:secret@login.association.example.test/jwks.json' }]) {
     assert.equal(advertisedCentralIssuer({ ...on, ...changes }), null, JSON.stringify(changes));
   }
+  // centralLogin.localCode (migration 81): only 'on' is true, and only next to an advertised issuer.
+  assert.deepEqual(advertisedCentralLogin(on), { issuer: ISSUER, localCode: false });
+  assert.deepEqual(advertisedCentralLogin({ ...on, localCode: '' }), { issuer: ISSUER, localCode: false });
+  assert.deepEqual(advertisedCentralLogin({ ...on, localCode: 'off' }), { issuer: ISSUER, localCode: false });
+  assert.deepEqual(advertisedCentralLogin({ ...on, localCode: 'ON' }), { issuer: ISSUER, localCode: false });
+  assert.deepEqual(advertisedCentralLogin({ ...on, localCode: 'on' }), { issuer: ISSUER, localCode: true });
+  assert.equal(advertisedCentralLogin({ ...on, localCode: 'on', issuer: '' }), null);
+  assert.equal(advertisedCentralLogin({ ...on, localCode: 'on', authMode: 'demo' }), null);
   for (const value of [undefined, '', 'https://', 'HTTPS://login.example.test', ' https://login.example.test', 'https://user@login.example.test']) {
     assert.equal(httpsAddress(value), false, String(value));
   }

@@ -120,6 +120,26 @@ for pass in 1 2; do
 done
 configure_central -v central_issuer=https://login.association.example.test/v2
 [[ "$(central_issuer)" = https://login.association.example.test/v2 ]] || { echo 'The trusted issuer was not replaced.' >&2; exit 1; }
+# central_local_code (migration 81): off unless the variable is exactly 'on'; stored only with a valid issuer;
+# removed with the issuer; the stored value follows the variable on every run.
+central_local_code() {
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres \
+    -c "SELECT COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='central_local_code'),'off')"
+}
+[[ "$(central_local_code)" = off ]] || { echo 'The facility''s own code must be off by default.' >&2; exit 1; }
+for pass in 1 2; do
+  configure_central -v central_issuer=https://login.association.example.test/v2 -v central_local_code=on
+  [[ "$(central_local_code)" = on ]] || { echo 'central_local_code=on was not stored.' >&2; exit 1; }
+done
+configure_central -v central_issuer=https://login.association.example.test/v2 -v central_local_code=yes
+[[ "$(central_local_code)" = off ]] || { echo 'Only the exact value on may switch the facility''s own code on.' >&2; exit 1; }
+configure_central -v central_issuer=https://login.association.example.test/v2 -v central_local_code=on
+configure_central -v central_issuer=https://login.association.example.test/v2
+[[ "$(central_local_code)" = off ]] || { echo 'A run without central_local_code must store it as off.' >&2; exit 1; }
+configure_central -v central_issuer=https://login.association.example.test/v2 -v central_local_code=on
+configure_central -v central_issuer= -v central_local_code=on
+[[ "$(central_issuer)" = off && "$(central_local_code)" = off ]] || { echo 'Turning central sign-in off must remove the facility''s own code too.' >&2; exit 1; }
+configure_central -v central_issuer=https://login.association.example.test/v2
 # The value is quoted as a literal: text that would end a string is refused as an address, not run.
 for refused in 'http://login.association.example.test' 'https://login.association.example.test/a b' 'login.association.example.test' \
   "https://x.example.test'); DELETE FROM warehouse_security.auth_config; --"; do

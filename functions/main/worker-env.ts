@@ -12,7 +12,7 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // INSTANCE_MANIFEST_JSON is not in the container environment: the router
   // reads the manifest file and passes its text.
   'get-public-config': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON',
-    'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE'],
+    'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE', 'CENTRAL_LOCAL_CODE'],
   'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
   // Central sign-in: the trusted issuer, its public keys (an address, or a
   // file whose text the router passes as CENTRAL_JWKS_JSON, which is not in
