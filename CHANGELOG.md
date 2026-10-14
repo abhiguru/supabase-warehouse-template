@@ -9,6 +9,22 @@ No migration. `docker/sensor-bridge/Dockerfile`: the setup rerun rebuilds the se
 - Tested against the built image: 82 unit tests pass on Python 3.14.8 with the pinned
   requirements. Not verified: a real Tapo hub.
 
+## Unreleased — python-kasa 0.11.0.1 (sensor bridge) (2026-10-14)
+
+No migration. `docker/sensor-bridge/requirements.txt`: the setup rerun rebuilds the sensor bridge image.
+
+- **python-kasa 0.11.0.1** (was 0.10.2), with its pinned dependencies. The bridge code is unchanged
+  (see the test line below). `THIRD_PARTY_NOTICES.md`, `docs/ATTRIBUTION_REVIEW.md` and the bridge
+  README name the new version.
+- Tested against the built image: 82 unit tests pass on Python 3.12.15 with python-kasa 0.11.0.1; the `kasa` names the bridge imports and the hub connection settings still exist. Not verified: a real Tapo hub.
+
+## Unreleased — Realtime v2.143.3 (2026-10-14)
+
+No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
+
+- **Realtime v2.143.3** (was v2.143.1), a patch release. `THIRD_PARTY_NOTICES.md` and
+  `docs/ATTRIBUTION_REVIEW.md` name the new version.
+
 ## Unreleased — PDFs: one-package weight, no total weights (2026-10-14)
 
 No migration. Recreate the `functions` container (`scripts/compose.sh up -d --force-recreate functions`).

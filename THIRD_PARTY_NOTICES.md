@@ -74,7 +74,7 @@ own premises is not distribution.
 
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
-| python-kasa | 0.10.2 (`python-kasa==0.10.2` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
+| python-kasa | 0.11.0.1 (`python-kasa==0.11.0.1` in `docker/sensor-bridge/requirements.txt`) | GPL-3.0 | https://github.com/python-kasa/python-kasa |
 
 The other packages pinned in that file keep their own upstream licences.
 
@@ -88,7 +88,7 @@ redistributing them. Versions are the ones pinned in
 | --- | --- | --- | --- |
 | Kong Gateway (open source) | 3.9.3 (`kong:3.9.3-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
 | PostgREST | v16.4 (`postgrest/postgrest:v16.4`) | MIT | https://github.com/PostgREST/postgrest |
-| Supabase Realtime | v2.143.1 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
+| Supabase Realtime | v2.143.3 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Supabase Studio | 2026.10.05-sha-94b8b06 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
