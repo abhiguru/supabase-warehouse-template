@@ -174,8 +174,8 @@ code; an app that ignores it is answered `link_required` at the exchange.
      does not change that, and is not consumed).
    - A profile found this way that is **not linked** is linked to the identity
      (the token's phone number is the proof) and then treated like any
-     linked profile below, unless it is a service account (`account_unavailable`,
-     not linked).
+     linked profile below, unless it is a service account or is rejected,
+     disabled or deactivated (`account_unavailable`, not linked).
 3. Otherwise a new pending profile is created with the identity, under the
    same limit on new access requests as an SMS sign-in (3 per source address
    and 30 for the facility in 24 hours).
@@ -189,9 +189,10 @@ order, after the issuer, argument and single-use checks:
 2. Found by phone and linked to another identity: `identity_conflict`.
 3. A service account (`is_service_account`): `account_unavailable`; not linked.
 4. No profile: a pending profile and an enrollment token, no code.
-5. Found by phone and not linked: it is linked to the identity.
-6. Rejected, disabled or deactivated: `account_unavailable` (the link of step 5
-   is not undone).
+5. Rejected, disabled or deactivated: `account_unavailable`. A refusal writes
+   nothing: such a profile is not linked and not marked verified.
+6. Found by phone and not linked, and not refused above: it is linked to the
+   identity and its mobile is marked verified.
 7. Pending: an enrollment token; the pending answer names the link
    (`central_issuer`, `central_subject`) in its short `data.user`.
 8. Approved: with `central_local_code` off (the default) the session is issued;
@@ -209,7 +210,7 @@ sign-in):
 1. The app calls `central-exchange` with the identity token. The answer is
    409 `link_required` (the wire code is the one earlier app builds already
    handle). No session is issued; a profile found by phone has been linked by
-   step 5.
+   step 6.
 2. The app asks this facility for a code for that phone number
    (`POST /functions/v1/operator-otp/request`), the person reads it from the
    SMS, and the app calls `central-exchange` again with a **fresh** identity

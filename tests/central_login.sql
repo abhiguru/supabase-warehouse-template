@@ -274,12 +274,18 @@ SELECT pg_temp.cl_exchange('central-user-0006','919000000106','token-id-00000000
 SELECT pg_temp.cl_assert(:'rejected_answer'::jsonb = '{"success":false,"code":"account_unavailable"}'::jsonb
  AND :'disabled_answer'::jsonb = '{"success":false,"code":"account_unavailable"}'::jsonb,
  'an unlinked rejected or disabled profile answers account_unavailable: '||:'rejected_answer'||' '||:'disabled_answer');
-SELECT pg_temp.cl_assert((SELECT enrollment_status='rejected' AND NOT active FROM public.user_profiles WHERE mobile='919000000105')
- AND (SELECT enrollment_status='disabled' AND NOT active FROM public.user_profiles WHERE mobile='919000000106')
+SELECT pg_temp.cl_assert((SELECT enrollment_status='rejected' AND NOT active AND central_issuer IS NULL AND central_subject IS NULL
+     AND NOT mobile_verified AND mobile_verified_at IS NULL FROM public.user_profiles WHERE mobile='919000000105')
+ AND (SELECT enrollment_status='disabled' AND NOT active AND central_issuer IS NULL AND central_subject IS NULL
+     AND NOT mobile_verified AND mobile_verified_at IS NULL FROM public.user_profiles WHERE mobile='919000000106')
+ AND NOT EXISTS (SELECT 1 FROM public.user_profiles WHERE central_subject IN ('central-user-0005','central-user-0006'))
+ AND (SELECT count(*)=2 FROM warehouse_security.central_token_use WHERE token_hash IN (
+      encode(extensions.digest('https://login.association.example.test token-id-0000000000000058','sha256'),'hex'),
+      encode(extensions.digest('https://login.association.example.test token-id-0000000000000059','sha256'),'hex')))
  AND pg_temp.cl_sessions('919000000105')=0 AND pg_temp.cl_sessions('919000000106')=0
  AND NOT EXISTS (SELECT 1 FROM warehouse_security.enrollment_tokens t JOIN public.user_profiles p ON p.auth_user_id=t.user_id
    WHERE p.mobile IN ('919000000105','919000000106')),
- 'a refused profile gets no session, no enrollment token, and keeps its status');
+ 'a refused profile is not linked or marked verified, gets no session or enrollment token, keeps its status, and its token is spent');
 -- A service account is never opened by the association's token, and is not linked.
 SELECT pg_temp.cl_exchange('central-user-0008','919000000108','token-id-0000000000000065') AS service_answer \gset
 SELECT pg_temp.cl_assert(:'service_answer'::jsonb = '{"success":false,"code":"account_unavailable"}'::jsonb

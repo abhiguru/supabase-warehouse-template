@@ -55,7 +55,7 @@ opens every facility that trusts the association.
 - **The association's token opens an existing person profile.** A profile found by the
   central-verified phone number and not linked yet is linked to the identity and signed in (an
   approved one), made pending (a waiting request) or refused (`account_unavailable`: rejected,
-  disabled, deactivated), with no SMS code of this facility. After that it is found by the central
+  disabled, deactivated; a refused profile is not linked), with no SMS code of this facility. After that it is found by the central
   subject. **Accepted consequence:** whoever controls the central service, or a number's SMS
   there, can open any person profile with that number at a facility that leaves the extra code
   off, administrators included. `identity_conflict` (the number's profile is linked to another

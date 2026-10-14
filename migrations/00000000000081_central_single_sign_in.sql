@@ -24,11 +24,13 @@
 --   2. found by mobile and linked to another identity: identity_conflict
 --   3. service account: account_unavailable
 --   4. no profile: pending insert (enrollment token), no code
---   5. found by mobile, not linked: link it (central_issuer, central_subject)
---   6. rejected, disabled or deactivated: account_unavailable
+--   5. found by mobile, not linked: link it (central_issuer, central_subject) -- but only after
+--      step 6 below has let it through; the order of the code is 1, 2, 3, 4, 6, 5, 7, 8
+--   6. rejected, disabled or deactivated: account_unavailable; a refusal writes nothing, so such a
+--      profile is not linked (and not marked verified)
 --   7. pending: enrollment token
 --   8. approved: central_local_code on -> link_required / operator_verify_otp; off -> session
--- The link of step 5 is written in every case; with the setting on, step 8's code still guards
+-- The link of step 5 is written for every profile that is not refused; with the setting on, step 8's code still guards
 -- every session. The code is checked for the profile's own mobile (the facility's record of the
 -- number), so a token whose phone differs from a profile found by subject cannot create or open
 -- another profile through operator_verify_otp.
@@ -83,10 +85,15 @@ BEGIN
     IF by_phone.is_service_account THEN
       RETURN jsonb_build_object('success',false,'code','account_unavailable');
     END IF;
-    -- 5. The central-verified mobile identifies the person: link the profile to the identity.
-    UPDATE public.user_profiles SET central_issuer=p_issuer,central_subject=p_subject,updated_at=now()
-      WHERE id=by_phone.id RETURNING * INTO profile;
+    -- The profile is used as found; it is linked at step 5 below, only once it is known not to be
+    -- refused (a refusal writes nothing).
+    profile := by_phone;
   END IF;$r$);
+
+  -- Step 1 of the tail: a profile found by phone is not touched here (no verified mark) until step 5.
+  PERFORM pg_temp.patch_once(fn,
+    $m$  ELSIF profile.mobile = phone THEN$m$,
+    $r$  ELSIF profile.mobile = phone AND by_phone.id IS NULL THEN$r$);
 
   -- 3 for a profile found by subject (the new-profile and phone cases are decided above).
   PERFORM pg_temp.patch_once(fn,
@@ -95,6 +102,18 @@ BEGIN
     RETURN jsonb_build_object('success',false,'code','account_unavailable');
   END IF;
   IF profile.enrollment_status IN ('rejected','disabled') OR (NOT profile.active AND profile.enrollment_status<>'pending') THEN$r$);
+
+  -- 5. After the refusals (service account, rejected, disabled, inactive): the central-verified
+  -- mobile identifies the person, so the profile found by phone is linked and marked verified. Only a
+  -- profile that answers pending or goes on to a session (or the own-code question) is written.
+  PERFORM pg_temp.patch_once(fn,
+    $m$  IF profile.enrollment_status='pending' THEN$m$,
+    $r$  IF by_phone.id IS NOT NULL THEN
+    UPDATE public.user_profiles SET central_issuer=p_issuer,central_subject=p_subject,
+      mobile_verified=true,mobile_verified_at=now(),updated_at=now()
+      WHERE id=by_phone.id RETURNING * INTO profile;
+  END IF;
+  IF profile.enrollment_status='pending' THEN$r$);
 
   -- 7. A pending answer names the link, as migration 64 made the link answer do: the profile may
   -- have been linked by this very exchange (step 5), and the two keys are the only addition.
