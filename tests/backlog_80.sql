@@ -2,8 +2,8 @@
 --   1. save_grn, update_grn, create_dispatch_with_stock_check and update_dispatch_smart refuse a service
 --      account as supervisor (P0001) unless it is the caller's own profile (the FAS sync names itself);
 --      the two edits let a document keep the supervisor it already has.
---   2. get_or_create_cart refuses a deactivated or deleted business ('Business is not active'): never a
---      new order, never a customer; administrator, supervisor and staff may open the existing OPEN one.
+--   2. get_or_create_cart refuses only a DELETED business ('Business is not active'); a deactivated one
+--      still orders for customers and staff alike (migration 82 replaced migration 80's stricter rule).
 --   3. Total weights are bags x kg per bag: get_grn_details statistics.total_weight, and the stock
 --      aging report's summary.total_weight_kg and by_bucket total_weight (bags still in stock).
 --   4. get_my_access_status(): 'active' | 'revoked' | 'none'; not callable without signing in.
@@ -304,7 +304,7 @@ RESET ROLE;
 SELECT pg_temp.bl_assert(:'upd_same'::jsonb->>'success'='true' AND (SELECT supervisor_id=:'other_sync_id'::uuid FROM public.dispatch WHERE id=:'disp_id'::uuid),
  'update_dispatch_smart: the unchanged supervisor is kept: '||:'upd_same');
 
--- ---- 2. An inactive or deleted business: no new order, no customer; staff may open the existing OPEN one
+-- ---- 2. A deleted business is refused; a deactivated one (customers.active=false) still orders (migration 82)
 -- customer_two has an OPEN order (made while active), customer_four a DISPATCHED one, customer_one and
 -- customer_three none. Callers: customer (owns all four), administrator, supervisor, staff.
 SELECT set_config('request.jwt.claims',:'active_claims',true);
@@ -314,46 +314,67 @@ SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uui
 RESET ROLE;
 SELECT pg_temp.bl_assert(NOT (:'cart_ok'::jsonb ? 'raised') AND NOT (:'cart_four'::jsonb ? 'raised')
  AND (SELECT count(*)=1 FROM public.orders WHERE customer_id=:'customer_two'::uuid),'an active business gets its order: '||:'cart_ok');
+SELECT id AS cart_two FROM public.orders WHERE customer_id=:'customer_two'::uuid \gset
 UPDATE public.orders SET status='DISPATCHED' WHERE customer_id=:'customer_four'::uuid;
 UPDATE public.customers SET active=false WHERE id IN (:'customer_one'::uuid,:'customer_two'::uuid,:'customer_four'::uuid);
 UPDATE public.customers SET deleted_at=now() WHERE id=:'customer_three'::uuid;
--- the customer: refused everywhere, also for the existing open order
+-- the customer: a deactivated business works (existing and new order, DISPATCHED reset), a deleted one is refused
 SELECT set_config('request.jwt.claims',:'active_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_one')) AS c_new_inactive \gset
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_three')) AS c_new_deleted \gset
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_two')) AS c_existing \gset
+SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_four')) AS c_dispatched \gset
 RESET ROLE;
-SELECT pg_temp.bl_assert(:'c_new_inactive'::jsonb->>'raised'='Business is not active' AND :'c_new_inactive'::jsonb->>'state'='P0001'
- AND :'c_new_deleted'::jsonb->>'raised'='Business is not active' AND :'c_existing'::jsonb->>'raised'='Business is not active',
- 'customer: refused for new (inactive, deleted) and for the existing open order: '||:'c_new_inactive'||:'c_new_deleted'||:'c_existing');
--- administrator, supervisor and staff: the existing open order is returned, nothing new is made, a DISPATCHED one is not reset
+SELECT id AS cart_one FROM public.orders WHERE customer_id=:'customer_one'::uuid \gset
+SELECT pg_temp.bl_assert(:'c_new_inactive'::jsonb=to_jsonb(:'cart_one'::uuid) AND :'c_existing'::jsonb=to_jsonb(:'cart_two'::uuid)
+ AND (SELECT count(*)=1 FROM public.orders WHERE customer_id=:'customer_one'::uuid)
+ AND (SELECT status='OPEN' FROM public.orders WHERE customer_id=:'customer_four'::uuid) AND NOT (:'c_dispatched'::jsonb ? 'raised'),
+ 'customer: a deactivated business gets a new order, its existing order and the DISPATCHED reset: '||:'c_new_inactive'||:'c_existing'||:'c_dispatched');
+SELECT pg_temp.bl_assert(:'c_new_deleted'::jsonb->>'raised'='Business is not active' AND :'c_new_deleted'::jsonb->>'state'='P0001'
+ AND NOT EXISTS (SELECT 1 FROM public.orders WHERE customer_id=:'customer_three'::uuid),
+ 'customer: a deleted business is refused: '||:'c_new_deleted');
+-- administrator, supervisor and staff: the same. For each of them customer_one's cart is removed first, so
+-- the call really creates a new one: the returned id must be the one new row.
+UPDATE public.orders SET status='DISPATCHED' WHERE customer_id IN (:'customer_two'::uuid,:'customer_four'::uuid);
+DELETE FROM public.orders WHERE customer_id=:'customer_one'::uuid;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_two')) AS a_existing,
        pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_one')) AS a_new,
-       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_three')) AS a_deleted,
-       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_four')) AS a_dispatched \gset
+       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_three')) AS a_deleted \gset
 RESET ROLE;
+SELECT count(*) AS a_rows, min(id::text) AS a_cart FROM public.orders WHERE customer_id=:'customer_one'::uuid \gset
+DELETE FROM public.orders WHERE customer_id=:'customer_one'::uuid;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_two')) AS s_existing,
-       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_one')) AS s_new \gset
+       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_one')) AS s_new,
+       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_three')) AS s_deleted \gset
 RESET ROLE;
+SELECT count(*) AS s_rows, min(id::text) AS s_cart FROM public.orders WHERE customer_id=:'customer_one'::uuid \gset
+DELETE FROM public.orders WHERE customer_id=:'customer_one'::uuid;
+UPDATE public.orders SET status='DISPATCHED' WHERE customer_id=:'customer_four'::uuid;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_two')) AS t_existing,
        pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_one')) AS t_new,
+       pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_three')) AS t_deleted,
        pg_temp.bl_call(format('SELECT to_jsonb(public.get_or_create_cart(%L::uuid))',:'customer_four')) AS t_dispatched \gset
 RESET ROLE;
-SELECT id AS cart_two FROM public.orders WHERE customer_id=:'customer_two'::uuid \gset
-SELECT pg_temp.bl_assert(:'a_existing'::jsonb=to_jsonb(:'cart_two'::uuid) AND :'s_existing'::jsonb=to_jsonb(:'cart_two'::uuid) AND :'t_existing'::jsonb=to_jsonb(:'cart_two'::uuid),
- 'administrator, supervisor and staff get the existing open order: '||:'a_existing'||:'s_existing'||:'t_existing');
-SELECT pg_temp.bl_assert(:'a_new'::jsonb->>'raised'='Business is not active' AND :'s_new'::jsonb->>'raised'='Business is not active'
- AND :'t_new'::jsonb->>'raised'='Business is not active' AND :'a_deleted'::jsonb->>'raised'='Business is not active'
- AND NOT EXISTS (SELECT 1 FROM public.orders WHERE customer_id IN (:'customer_one'::uuid,:'customer_three'::uuid)),
- 'nobody creates an order for an inactive or deleted business: '||:'a_new'||:'s_new'||:'t_new'||:'a_deleted');
-SELECT pg_temp.bl_assert(:'a_dispatched'::jsonb->>'raised'='Business is not active' AND :'t_dispatched'::jsonb->>'raised'='Business is not active'
- AND (SELECT status='DISPATCHED' FROM public.orders WHERE customer_id=:'customer_four'::uuid),
- 'a DISPATCHED order of an inactive business is not reset to OPEN: '||:'a_dispatched'||:'t_dispatched');
+SELECT count(*) AS t_rows, min(id::text) AS t_cart FROM public.orders WHERE customer_id=:'customer_one'::uuid \gset
+SELECT pg_temp.bl_assert(:'a_existing'::jsonb=to_jsonb(:'cart_two'::uuid) AND :'s_existing'::jsonb=to_jsonb(:'cart_two'::uuid) AND :'t_existing'::jsonb=to_jsonb(:'cart_two'::uuid)
+ AND (SELECT status='OPEN' FROM public.orders WHERE customer_id=:'customer_two'::uuid),
+ 'administrator, supervisor and staff: a deactivated business gets its existing order: '||:'a_existing'||:'s_existing'||:'t_existing');
+SELECT pg_temp.bl_assert(:'a_rows'::int=1 AND :'a_new'::jsonb=to_jsonb(:'a_cart'::text)
+ AND :'s_rows'::int=1 AND :'s_new'::jsonb=to_jsonb(:'s_cart'::text)
+ AND :'t_rows'::int=1 AND :'t_new'::jsonb=to_jsonb(:'t_cart'::text),
+ 'administrator, supervisor and staff each create a new order for a deactivated business, the returned id is the new row: '||:'a_new'||:'s_new'||:'t_new');
+SELECT pg_temp.bl_assert(:'a_deleted'::jsonb->>'raised'='Business is not active' AND :'s_deleted'::jsonb->>'raised'='Business is not active'
+ AND :'t_deleted'::jsonb->>'raised'='Business is not active'
+ AND NOT EXISTS (SELECT 1 FROM public.orders WHERE customer_id=:'customer_three'::uuid),
+ 'nobody gets an order for a deleted business: '||:'a_deleted'||:'s_deleted'||:'t_deleted');
+SELECT pg_temp.bl_assert(NOT (:'t_dispatched'::jsonb ? 'raised')
+ AND (SELECT status='OPEN' FROM public.orders WHERE customer_id=:'customer_four'::uuid),
+ 'a DISPATCHED order of a deactivated business is reset to OPEN: '||:'t_dispatched');
 ROLLBACK;

@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — deactivated businesses can still order, migration 82 (2026-10-15)
+
+Migration `00000000000082_inactive_business_orders.sql`, applied by the setup rerun. The matching
+app branch is rn-warehouse-template's `fix/open-items-2026-10-15`; an older app ignores the new
+field and keeps working.
+
+- **`get_or_create_cart` refuses only a deleted business.** Migration 80 also refused a business
+  with `active = false`; that is reversed (owner decision, 2026-10-15) and migration 80's entry
+  below about deactivated businesses is superseded by this one. A deactivated business is treated like an
+  active one, for its customer logins and for staff: existing order, new order, DISPATCHED to OPEN
+  reset. A deleted business (`deleted_at` set) is still refused with `Business is not active`
+  (P0001) for everyone; since only a business without data can be deleted (below), no order is stuck.
+- **Deactivate is not delete (owner decisions A and B).** New `set_customer_active(p_customer_id,
+  p_active)` (administrators and supervisors; staff and customers are refused): `false` sets
+  `active = false` only, with no stock check and never `deleted_at`; `true` sets `active = true` and
+  clears `deleted_at`/`deleted_by`. What deactivation hides, exactly: the business is no longer
+  offered by the staff pickers that use `search_customers` (new GRN, dispatch, order, and the list-filter
+  customer search) and by the all-customers branch of `search_customer_items_for_order`, and
+  `assign_customer_to_user` cannot give it a new customer login. Nothing else is hidden: its customer logins
+  still see all its GRNs, dispatches, invoices, stock and reports and can order their goods out; `save_grn`,
+  `update_grn` and the dispatch RPCs do not check `customers.active`; and staff and administrators see it in
+  five readers that used to hide it (the filter is now `deleted_at IS NULL`): `get_invoices_list`,
+  `get_all_stock_summary`, `get_item_wise_stock_list` (all customers), `get_all_customer_activity_summary`
+  and `get_item_dispatch_records`.
+  (`get_customers_with_stock` was already removed by migration 71.)
+- **Nothing with data is ever deleted.** Data = any GRN, dispatch or invoice row (deleted rows too), any
+  payment, any customer-specific rate, any active assignment, any order with lines or not OPEN.
+  `safe_delete_customer` for such a business: soft deactivates it instead (`delete_type: 'deactivated'`,
+  message `"<name>" has records, so it was deactivated instead of deleted.`; `active = false` only), permanent
+  refuses with `Cannot delete "<name>": it has GRNs, dispatches, invoices, payments, rates, linked users or orders. Deactivate it instead.`
+  and `related_records` with the counts. Without data the old delete flow applies; only a permanent delete
+  removes the empty OPEN carts (and switched-off assignments). `restore_customer` takes a deleted or an
+  inactive business and makes it active. So the released app's Deactivate and Activate keep working.
+- **Deleted businesses get no new documents:** `save_grn`, both `create_dispatch_with_stock_check`
+  overloads, and `update_grn` when it moves a GRN to a deleted business, raise `Business is not active` (P0001) for a deleted business; a deactivated one is accepted.
+- **Data fix in migration 82:** a soft-deleted business that has such data gets `deleted_at` and
+  `deleted_by` cleared and stays `active = false`, so it shows as deactivated; the count is logged
+  with `RAISE NOTICE`.
+- **`get_orders_list`** leaves out orders of a deleted business (so its leftover empty cart is never listed) and adds `active` (boolean) inside each row's `customer` object, next to `name`.
+  Nothing else changes. The released app on migration 82 keeps working (its Deactivate and Activate calls are
+  handled above), but still disables "+" for a deactivated business until the new app ships.
+- **Tests:** `tests/backlog_80.sql` cart section follows the new rule; new `tests/open_items_82.sql`
+  covers the `active` flag (administrator, staff, customer), `set_customer_active`, the delete rules and the data fix.
+
 ## Unreleased — backlog fixes, migration 80 (2026-10-14)
 
 Migration `00000000000080_backlog_fixes.sql`, applied by the setup rerun; then recreate the
@@ -15,7 +59,7 @@ sends a service account as supervisor on its own and treats a missing `get_my_ac
   working) or the document's unchanged supervisor. `update_grn` answers `GRN not found` first.
   `update_dispatch_smart` reports it in its usual `{success: false, error}` form. New helper
   `warehouse_security.require_person_supervisor`.
-- **`get_or_create_cart` and a switched-off business.** For a business with `active = false` or
+- **`get_or_create_cart` and a switched-off business (superseded by migration 82: only a deleted business is refused).** For a business with `active = false` or
   `deleted_at` set it raises `Business is not active` (P0001): no new order for anyone (also no
   DISPATCHED → OPEN reset), and a customer login is refused even for an existing order. Admin,
   supervisor and staff can still open an existing OPEN order to look at it or clear it.
