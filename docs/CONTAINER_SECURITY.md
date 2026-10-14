@@ -596,7 +596,7 @@ is the one container that talks to devices on the facility LAN. What limits it:
   service. The log formatter replaces the Tapo password, the ingest key and any
   URL query with `***`; `scripts/sensor-bridge-check.sh` fails if the
   configuration check prints a fictional password or key.
-- **Image:** `python:3.12-slim-bookworm` pinned by digest in
+- **Image:** `python:3.14-slim-bookworm` pinned by digest in
   `docker/sensor-bridge/Dockerfile`; python-kasa and its dependencies pinned in
   `requirements.txt` and updated by Dependabot (`pip`). The image is built on
   the operator's host, like the other recipes.
