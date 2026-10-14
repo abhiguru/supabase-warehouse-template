@@ -197,9 +197,9 @@ const build = (report, level, lang, extra = {}) => {
 // The columns of each PDF, in English and Gujarati. Labels without Gujarati in the app print the English.
 const expectedColumns = {
   'grn-activity': {
-    customer: [['GRN number', 'Date', 'Items', 'Quantity', 'Weight (kg)', 'Stock', 'Invoice number'],
-      ['આવક નં.', 'તારીખ', 'આઇટમ', 'નંગ', 'વજન (કિલો)', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
-    all: [['Customer', 'GRNs', 'Quantity', 'Weight (kg)', 'Latest GRN'], ['વેપારી', 'આવક પાવતી', 'નંગ', 'વજન (કિલો)', 'છેલ્લી આવક પાવતી']],
+    customer: [['GRN number', 'Date', 'Items', 'Quantity', 'Stock', 'Invoice number'],
+      ['આવક નં.', 'તારીખ', 'આઇટમ', 'નંગ', 'સ્ટોક', 'ઇન્વૉઇસ નંબર']],
+    all: [['Customer', 'GRNs', 'Quantity', 'Latest GRN'], ['વેપારી', 'આવક પાવતી', 'નંગ', 'છેલ્લી આવક પાવતી']],
   },
   'dispatch-activity': {
     customer: [['Dispatch number', 'Date', 'GRN', 'Items', 'Quantity'], ['જાવક નંબર', 'તારીખ', 'આવક પાવતી', 'આઇટમ', 'નંગ']],
@@ -211,9 +211,9 @@ const expectedColumns = {
     all: [['Customer', 'Invoices', 'Amount', 'Latest invoice'], ['વેપારી', 'ઇન્વૉઇસ', 'રકમ', 'છેલ્લું ઇન્વૉઇસ']],
   },
   'stock-summary': {
-    customer: [['Item', 'GRN number', 'Date', 'Package mark', 'Rack', 'Stock', 'Weight (kg)'],
-      ['આઇટમ', 'આવક નં.', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક', 'વજન (કિલો)']],
-    all: [['Customer', 'Items', 'GRNs', 'Stock', 'Weight (kg)'], ['વેપારી', 'આઇટમ', 'આવક પાવતી', 'સ્ટોક', 'વજન (કિલો)']],
+    customer: [['Item', 'GRN number', 'Date', 'Package mark', 'Rack', 'Stock'],
+      ['આઇટમ', 'આવક નં.', 'તારીખ', 'માર્કો', 'રેક', 'સ્ટોક']],
+    all: [['Customer', 'Items', 'GRNs', 'Stock'], ['વેપારી', 'આઇટમ', 'આવક પાવતી', 'સ્ટોક']],
   },
   'stock-aging': {
     customer: [['Item', 'GRN number', 'Date', 'Rack', 'Stock', 'Stock age (days)', 'Last dispatch'],
@@ -292,14 +292,14 @@ test('the Gujarati table holds only the app\'s wording, and the labels it lacks 
 
 test('rows, summary figures and totals come from the RPC answer and are printed with Indian grouping', () => {
   const grn = build('grn-activity', 'customer', 'en');
-  // Newest GRN first by default; weight is each line's bag weight times its bags.
+  // Newest GRN first by default; no weight column or figure since 2026-10-14.
   assert.deepEqual(grn.rows, [
-    ['Z0002', '20-01-2026', '1', '50', '1,500', '50', ''],
-    ['Z0010', '05-01-2026', '2', '100', '4,020', '40', '2026-7'],
+    ['Z0002', '20-01-2026', '1', '50', '50', ''],
+    ['Z0010', '05-01-2026', '2', '100', '40', '2026-7'],
   ]);
-  assert.deepEqual(grn.totals, ['Total', '', '3', '150', '5,520', '90', '']);
-  assert.deepEqual(grn.summary, [['GRNs', '2'], ['Quantity', '150'], ['Weight (kg)', '5,520'], ['Invoiced', '1']]);
-  assert.deepEqual(grn.columns.map(column => column.numeric), [false, false, true, true, true, true, false]);
+  assert.deepEqual(grn.totals, ['Total', '', '3', '150', '90', '']);
+  assert.deepEqual(grn.summary, [['GRNs', '2'], ['Quantity', '150'], ['Invoiced', '1']]);
+  assert.deepEqual(grn.columns.map(column => column.numeric), [false, false, true, true, true, false]);
   assert.deepEqual(grn.sort, { field: 'date', order: 'desc', label: 'Date (descending)' });
 
   const invoices = build('invoice-history', 'customer', 'gu');
@@ -309,14 +309,14 @@ test('rows, summary figures and totals come from the RPC answer and are printed 
 
   assert.deepEqual(build('dispatch-activity', 'customer', 'en').rows, [['I0001', '12-01-2026', 'Z0002, Z0010', '3', '12']]);
   assert.deepEqual(build('stock-summary', 'customer', 'en').rows, [
-    ['Cumin', 'Z0002', '20-01-2026', 'AT', 'R1', '50', '2,500'],
-    ['Cumin', 'Z0010', '05-01-2026', 'AT', 'R2', '40', '2,000'],
+    ['Cumin', 'Z0002', '20-01-2026', 'AT', 'R1', '50'],
+    ['Cumin', 'Z0010', '05-01-2026', 'AT', 'R2', '40'],
   ]);
   assert.deepEqual(build('customer-activity', 'customer', 'en').rows[1], ['01-2026', '2', '150', '1', '12', '1,180.00', '90']);
   // Item stock: the whole-list summary of migration 52 when present, otherwise the rows read.
   assert.deepEqual(build('item-stock-summary', 'all', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
   assert.deepEqual(build('item-stock-summary', 'customer', 'en').summary, [['Items', '2'], ['Units in stock', '95'], ['Received quantity', '170']]);
-  assert.equal(build('grn-activity', 'all', 'en').summary[3][1], '1,234.5');
+  assert.equal(build('grn-activity', 'all', 'en').summary.length, 3);
   assert.equal(formatCell('number', 12345678.456, 'en'), '1,23,45,678.46');
   assert.equal(formatCell('number', 'x', 'en'), '');
   assert.equal(formatCell('date', '2026-01-05T10:00:00+00:00', 'en'), '05-01-2026');
@@ -698,6 +698,9 @@ test('the handler takes the header choices from reportFilters and reports status
 // pending invoice with no payment, which prints 'Pending' as before. The review fixes of 2026-10-12 change none of the 28 either (no
 // change on purpose): no fixture holds a cut table (the label 'Total of rows shown'), a packaging sort, a status word other than
 // paid or pending, or two rows with one invoice_id, and the item list's sort keys change nothing for the default sort.
+// The weight change of 2026-10-14 changes nine documents on purpose, GRN activity, stock summary and the one-customer dispatch
+// activity in English and Gujarati, which lost their weight columns, totals and figures (`oldWeight` puts the old text back piece by
+// piece); the other nineteen are untouched, so no hash below was re-pinned.
 const baselineHtml = {
   'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
   'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
@@ -757,6 +760,60 @@ function oldInvoiceHistory(level, lang) {
   ];
 }
 
+// The nine documents that printed a weight until 2026-10-14 (GRN activity, stock summary and the one-customer dispatch activity) in
+// the old text, as [new text, old text, times]: the colspan, the header cell, each row's cell, the totals cell and the summary figure.
+// The old label "Weight (kg)" is no longer in report-labels.ts, so the test holds the old words itself. The weights are those of the
+// fixtures: GRN activity 1,500 and 4,020 (bag weight times bags, total 5,520) one customer, 234.5 and 1,000 (1,234.5) all customers;
+// dispatch activity 600; stock summary 2,500 and 2,000 (4,500) one customer, 4,500 all customers.
+function oldWeight(report, level, lang) {
+  const word = key => label(lang, key);
+  const W = { en: 'Weight (kg)', gu: 'વજન (કિલો)' }[lang];
+  const num = value => `<td class="num">${value}</td>`;
+  const th = `<th class="num">${W}</th>`;
+  const kpi = value => `<div class="kpi"><dt>${W}</dt><dd>${value}</dd></div>`;
+  const figure = (key, value) => `<div class="kpi"><dt>${word(key)}</dt><dd>${value}</dd></div>`;
+  if (report === 'grn-activity' && level === 'customer') {
+    return [
+      ['<th colspan="6">', '<th colspan="7">', 1],
+      [`<th class="num">${word('quantity')}</th><th class="num">${word('stock')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th class="num">${word('stock')}</th>`, 1],
+      [`${num('50')}${num('50')}<td></td></tr>`, `${num('50')}${num('1,500')}${num('50')}<td></td></tr>`, 1],
+      [`${num('100')}${num('40')}<td>2026-7</td>`, `${num('100')}${num('4,020')}${num('40')}<td>2026-7</td>`, 1],
+      [`${num('150')}${num('90')}<td></td></tr></tbody>`, `${num('150')}${num('5,520')}${num('90')}<td></td></tr></tbody>`, 1],
+      [figure('quantity', '150'), figure('quantity', '150') + kpi('5,520'), 1],
+    ];
+  }
+  if (report === 'grn-activity') {
+    return [
+      ['<th colspan="4">', '<th colspan="5">', 1],
+      [`<th class="num">${word('quantity')}</th><th>${word('latestGrn')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th>${word('latestGrn')}</th>`, 1],
+      [`${num('800')}<td>15-01-2026</td>`, `${num('800')}${num('234.5')}<td>15-01-2026</td>`, 1],
+      [`${num('100')}<td>10-01-2026</td>`, `${num('100')}${num('1,000')}<td>10-01-2026</td>`, 1],
+      [`${num('900')}<td></td></tr></tbody>`, `${num('900')}${num('1,234.5')}<td></td></tr></tbody>`, 1],
+      [`${figure('quantity', '900')}</dl>`, `${figure('quantity', '900')}${kpi('1,234.5')}</dl>`, 1],
+    ];
+  }
+  if (report === 'dispatch-activity') {
+    return [[`${figure('bagsDispatched', '12')}</dl>`, `${figure('bagsDispatched', '12')}${kpi('600')}</dl>`, 1]];
+  }
+  if (level === 'customer') {
+    return [
+      ['<th colspan="6">', '<th colspan="7">', 1],
+      [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
+      [`${num('50')}</tr>`, `${num('50')}${num('2,500')}</tr>`, 1],
+      [`${num('40')}</tr>`, `${num('40')}${num('2,000')}</tr>`, 1],
+      [`${num('90')}</tr></tbody>`, `${num('90')}${num('4,500')}</tr></tbody>`, 1],
+      [`${figure('unitsInStock', '90')}${figure('grnsWithStock', '2')}`, `${figure('unitsInStock', '90')}${kpi('4,500')}${figure('grnsWithStock', '2')}`, 1],
+    ];
+  }
+  return [
+    ['<th colspan="4">', '<th colspan="5">', 1],
+    [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
+    [`<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}</tr>`, `<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}${num('4,500')}</tr>`, 1],
+    [`${num('2')}${num('90')}</tr></tbody>`, `${num('2')}${num('90')}${num('4,500')}</tr></tbody>`, 1],
+    [`${figure('unitsInStock', '90')}</dl>`, `${figure('unitsInStock', '90')}${kpi('4,500')}</dl>`, 1],
+  ];
+}
+
 test('without status every existing fixture prints byte for byte the HTML it printed before, but for the time stamp and the changes on purpose', () => {
   // The stock aging figure is a count of stock lines: 'Lots over 364 days' since 2026-10-13 (it said 'Items over 364 days').
   const english = ['<div class="kpi"><dt>Lots over 364 days</dt><dd>0</dd></div>', '<div class="kpi"><dt>Over 1 year</dt><dd>0</dd></div>'];
@@ -807,6 +864,12 @@ test('without status every existing fixture prints byte for byte the HTML it pri
             html = html.replaceAll(added, old);
           }
         }
+        if (['grn-activity', 'dispatch-activity', 'stock-summary'].includes(report) && !(report === 'dispatch-activity' && level === 'all')) {
+          for (const [added, old, times] of oldWeight(report, level, lang)) {
+            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
+            html = html.replaceAll(added, old);
+          }
+        }
         assert.equal(createHash('sha256').update(html).digest('hex'), baselineHtml[key], key);
         compared += 1;
       }
@@ -816,8 +879,9 @@ test('without status every existing fixture prints byte for byte the HTML it pri
   assert.deepEqual(Object.keys(baselineHtml).length, 28);
 });
 
-test('the one-customer GRN PDF weighs each GRN from its lines, with or without migration 59, and the all-customers one prints the RPC weight', () => {
+test('the one-customer GRN PDF prints the same document with or without migration 59, and no report PDF prints a weight', () => {
   // Before migration 59 the RPC's total_weight of a GRN was the sum of its per-bag weights (30 and 75); after it, the kg (1500 and 4020).
+  // The report ignores both: weights are no longer printed (2026-10-14).
   const before = structuredClone(fixtures['grn-activity'].customer);
   const after = structuredClone(fixtures['grn-activity'].customer);
   after.data.grns[0].total_weight = 1500;
@@ -826,12 +890,48 @@ test('the one-customer GRN PDF weighs each GRN from its lines, with or without m
   const request = parseReportRequest({ report: 'grn-activity', customer_id: customer, from: '2026-01-01', to: '2026-01-31' });
   const built = [before, after].map(answer => buildReport(request, unwrapReportBody(answer)));
   assert.deepEqual(built[0], built[1]);
-  assert.deepEqual(built[1].rows.map(row => row[4]), ['1,500', '4,020']);
-  assert.deepEqual(built[1].summary[2], ['Weight (kg)', '5,520']);
-  // The all-customers level prints get_all_grn_activity's own weights.
-  const all = build('grn-activity', 'all', 'en');
-  assert.deepEqual(all.rows.map(row => row[3]), ['234.5', '1,000']);
-  assert.deepEqual(all.summary[3], ['Weight (kg)', '1,234.5']);
+  // No column label, summary label or cell of any document says weight or kg, although the RPC answers still carry weights.
+  const words = /weight|kg|વજન|કિલો/i;
+  for (const report of reportNames) {
+    for (const level of ['customer', 'all']) {
+      for (const lang of ['en', 'gu']) {
+        const document = build(report, level, lang);
+        const where = `${report}/${level}/${lang}`;
+        assert.deepEqual(document.columns.map(column => column.label).filter(text => words.test(text)), [], where);
+        assert.deepEqual(document.summary.map(figure => figure[0]).filter(text => words.test(text)), [], where);
+        for (const row of document.rows) assert.equal(row.length, document.columns.length, where);
+        if (document.totals) assert.equal(document.totals.length, document.columns.length, where);
+      }
+    }
+  }
+});
+
+test('a sort on weight is no longer known: the default order applies, and no sortable column is called weight', () => {
+  const defaults = { 'grn-activity/customer': 'date', 'grn-activity/all': 'quantity', 'stock-summary/customer': 'item', 'stock-summary/all': 'stock' };
+  for (const [key, field] of Object.entries(defaults)) {
+    const [report, level] = key.split('/');
+    const requested = build(report, level, 'en', { sort: { field: 'weight', order: 'desc' } });
+    const plain = build(report, level, 'en');
+    assert.equal(requested.sort.field, field, key);
+    assert.deepEqual(requested.sort, plain.sort, key);
+    assert.deepEqual(requested.rows, plain.rows, key);
+    const period = periodReports.has(report) ? { from: '2026-01-01', to: '2026-01-31' } : {};
+    const request = parseReportRequest({ report, ...period, ...(level === 'customer' ? { customer_id: customer } : {}) });
+    assert.ok(!sortFields(request).includes('weight'), key);
+  }
+});
+
+test('the dispatch activity summary of one customer has two figures, with no weight', () => {
+  assert.deepEqual(build('dispatch-activity', 'customer', 'en').summary, [['Dispatches', '1'], ['Bags dispatched', '12']]);
+  assert.deepEqual(build('dispatch-activity', 'customer', 'gu').summary, [['જાવક', '1'], ['જાવકના નંગ', '12']]);
+});
+
+test('the label table holds no weight or kg label, and the GRN document PDF says Kg each for the weight of one package', () => {
+  assert.ok(!labelKeys.includes('weight'));
+  assert.ok(!labelKeys.includes('kg'));
+  const source = readFileSync(new URL('../functions/_shared/document-pdf.ts', import.meta.url), 'utf8');
+  assert.match(source, /columns = \['Item','Packaging','Quantity','Stock','Kg each','Rack','Mark'\];/);
+  assert.ok(!source.includes("'Weight'"));
 });
 
 test('migration 59 is ASCII, patches only the weight totals with counted markers, and its SQL test is registered after the dispatch weight one', () => {
@@ -1405,7 +1505,7 @@ test('the days the database already gives as plain days print as they are, whate
   for (const lang of ['en', 'gu']) {
     assert.deepEqual(documentOf('dispatch-activity', 'customer', lang, dispatch).built.rows.map(row => row[1]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('dispatch-activity', 'all', lang, dispatchAll).built.rows.map(row => row[3]), ['31-01-2026'], lang);
-    assert.deepEqual(documentOf('grn-activity', 'all', lang, grnAll).built.rows.map(row => row[4]), ['31-01-2026'], lang);
+    assert.deepEqual(documentOf('grn-activity', 'all', lang, grnAll).built.rows.map(row => row[3]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('stock-summary', 'customer', lang, stock).built.rows.map(row => row[2]), ['31-01-2026'], lang);
     assert.deepEqual(documentOf('customer-activity', 'customer', lang, months).built.rows.map(row => row[0]), ['01-2026', '02-2026'], lang);
   }
@@ -1766,8 +1866,8 @@ test('the GRN activity PDF reads invoice_number of invoice_status and needs noth
   const without = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101' })));
   const withKey = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101', invoice_count: 2 })));
   assert.deepEqual(withKey, without);
-  assert.equal(withKey.rows[0][6], '2026-7101');
-  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][6], '');
+  assert.equal(withKey.rows[0][5], '2026-7101');
+  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][5], '');
 });
 
 // ---------------------------------------------------------------------------
@@ -1888,10 +1988,10 @@ function documentWith(req, answer, customerName = 'Amar Traders') {
 
 test('with invoicing only the GRNs of that choice are listed, and the summary is worked out from them, in English and Gujarati', () => {
   const cases = {
-    not_invoiced: { numbers: ['Z0004', 'Z0002'], totals: ['', '2', '45', '1,100', '45', ''],
-      en: [['GRNs', '2'], ['Quantity', '45'], ['Weight (kg)', '1,100'], ['Invoiced', '0']], word: ['Not invoiced', 'ઇન્વૉઇસ બાકી'] },
-    invoiced: { numbers: ['Z0003', 'Z0001'], totals: ['', '3', '110', '5,300', '60', ''],
-      en: [['GRNs', '2'], ['Quantity', '110'], ['Weight (kg)', '5,300'], ['Invoiced', '2']], word: ['Invoiced', 'ઇન્વૉઇસ બન્યું'] },
+    not_invoiced: { numbers: ['Z0004', 'Z0002'], totals: ['', '2', '45', '45', ''],
+      en: [['GRNs', '2'], ['Quantity', '45'], ['Invoiced', '0']], word: ['Not invoiced', 'ઇન્વૉઇસ બાકી'] },
+    invoiced: { numbers: ['Z0003', 'Z0001'], totals: ['', '3', '110', '60', ''],
+      en: [['GRNs', '2'], ['Quantity', '110'], ['Invoiced', '2']], word: ['Invoiced', 'ઇન્વૉઇસ બન્યું'] },
   };
   for (const [invoicing, expected] of Object.entries(cases)) {
     const en = documentWith(grnRequest({ invoicing }), grnMix);
@@ -1906,7 +2006,7 @@ test('with invoicing only the GRNs of that choice are listed, and the summary is
 
     const gu = documentWith(grnRequest({ invoicing, lang: 'gu' }), grnMix);
     assert.deepEqual(gu.built.rows, en.built.rows);
-    assert.deepEqual(gu.built.summary, [['આવક પાવતી', expected.en[0][1]], ['નંગ', expected.en[1][1]], ['વજન (કિલો)', expected.en[2][1]], ['ઇન્વૉઇસ બન્યું', expected.en[3][1]]]);
+    assert.deepEqual(gu.built.summary, [['આવક પાવતી', expected.en[0][1]], ['નંગ', expected.en[1][1]], ['ઇન્વૉઇસ બન્યું', expected.en[2][1]]]);
     assert.deepEqual(gu.filters[2], ['ઇન્વૉઇસ', expected.word[1]]);
     assert.equal(gu.html.split(`<span class="filter"><strong>ઇન્વૉઇસ:</strong> ${expected.word[1]}</span>`).length - 1, 2);
   }
@@ -1914,14 +2014,14 @@ test('with invoicing only the GRNs of that choice are listed, and the summary is
   for (const fields of [{}, { invoicing: null }]) {
     const all = documentWith(grnRequest(fields), grnMix);
     assert.deepEqual(all.built.rows.map(row => row[0]), ['Z0004', 'Z0003', 'Z0002', 'Z0001']);
-    assert.deepEqual(all.built.summary, [['GRNs', '4'], ['Quantity', '155'], ['Weight (kg)', '6,400'], ['Invoiced', '2']]);
+    assert.deepEqual(all.built.summary, [['GRNs', '4'], ['Quantity', '155'], ['Invoiced', '2']]);
     assert.ok(!all.filters.some(([key]) => key === 'Invoicing'));
     assert.ok(!all.html.includes('Invoicing'));
   }
   // A choice that lists nothing: the empty text, no totals row, and zeros, not the RPC's figures.
   const none = documentWith(grnRequest({ invoicing: 'invoiced' }), fixtures['grn-activity'].customer);
   assert.deepEqual([none.built.rows, none.built.totals, none.built.empty], [[], null, 'No GRNs in this period']);
-  assert.deepEqual(none.built.summary, [['GRNs', '0'], ['Quantity', '0'], ['Weight (kg)', '0'], ['Invoiced', '0']]);
+  assert.deepEqual(none.built.summary, [['GRNs', '0'], ['Quantity', '0'], ['Invoiced', '0']]);
   // The choice works with a sort, and the RPC is asked exactly as without it.
   assert.deepEqual(documentWith(grnRequest({ invoicing: 'not_invoiced', sort: { field: 'quantity', order: 'desc' } }), grnMix).built.rows.map(row => row[0]), ['Z0002', 'Z0004']);
   assert.deepEqual(reportLevel(grnRequest({ invoicing: 'invoiced' })).rpc(grnRequest({ invoicing: 'invoiced' })), reportLevel(grnRequest()).rpc(grnRequest()));
