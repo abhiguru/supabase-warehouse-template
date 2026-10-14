@@ -142,7 +142,7 @@ GRANT SELECT ON ra_rpc TO authenticated;
 -- own-account calls that authorize themselves.
 CREATE FUNCTION pg_temp.ra_unguarded() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['check_session','refresh_jwt_token','logout_session','get_current_user_profile_id',
-    'get_current_user_role','user_accessible_customers','get_my_language','set_my_language',
+    'get_current_user_role','user_accessible_customers','get_my_language','set_my_language','get_my_access_status',
     'operator_review_enrollment','get_available_stock'] $$;
 -- Runs as the caller. Calls every granted, guarded function whose name is not
 -- in `admitted` and names those the guard did NOT refuse; the result is empty

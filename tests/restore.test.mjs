@@ -127,7 +127,8 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     const order = [
       'run -d --pull missing', // disposable verification first
       'up -d --wait --wait-timeout 180 db',
-      'db:/tmp/database.dump', 'db:/tmp/_supabase.dump',
+      // A leading space: the verification container is warehouse-restore-<12 random hex digits>, whose name can end in "db".
+      ' db:/tmp/database.dump', ' db:/tmp/_supabase.dump',
       'DROP DATABASE postgres WITH (FORCE)',
       '-d postgres --no-acl --section=pre-data -L /tmp/main.list', '-d postgres --no-acl --section=data -L /tmp/main.list',
       '-d postgres --no-acl --section=post-data -L /tmp/main.list',

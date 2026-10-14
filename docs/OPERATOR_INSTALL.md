@@ -1276,12 +1276,20 @@ npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 bash scripts/backup-disk.sh sync       # only if you use a backup disk
 (umask 022; git pull --ff-only)
 bash setup.sh --operator ...           # the same inputs as the installation
+bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
+
+The `--force-recreate functions` line is needed because the edge functions
+(`functions/`, including `functions/_shared/`) are bind-mounted into the
+`functions` container and the edge runtime keeps the modules it has loaded: a
+setup rerun neither rebuilds an image for them nor recreates the container, so
+without that line the running functions keep serving the old code. Database
+migrations need no such step: setup applies them.
 
 **Setup rebuilds the images whose recipes changed.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
