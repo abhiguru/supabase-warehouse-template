@@ -44,13 +44,13 @@ END $$;
 DO $patch$ BEGIN
   -- 1. A service account is not a supervisor.
   PERFORM pg_temp.patch_rpc('public.save_grn(varchar,timestamptz,uuid,varchar,uuid,varchar,uuid,varchar,varchar,varchar,boolean,varchar,jsonb,jsonb,text,varchar)',
-  $m$IF NULLIF(btrim(p_gr_no), '') IS NULL OR p_date IS NULL OR p_customer_id IS NULL THEN$m$,
+  $m$IF warehouse_security.is_blank_text(p_gr_no) OR p_date IS NULL OR p_customer_id IS NULL THEN$m$,
   $r$IF p_supervisor_id IS NOT NULL
          AND EXISTS (SELECT 1 FROM user_profiles WHERE id = p_supervisor_id AND is_service_account) THEN
           RAISE EXCEPTION 'Supervisor must be a person, not a service account' USING ERRCODE = 'P0001';
       END IF;
 
-      IF NULLIF(btrim(p_gr_no), '') IS NULL OR p_date IS NULL OR p_customer_id IS NULL THEN$r$);
+      IF warehouse_security.is_blank_text(p_gr_no) OR p_date IS NULL OR p_customer_id IS NULL THEN$r$);
   PERFORM pg_temp.patch_rpc('public.update_grn(uuid,varchar,timestamptz,uuid,varchar,uuid,varchar,uuid,varchar,varchar,varchar,boolean,varchar,jsonb,jsonb,varchar,text)',
   $m$IF NOT EXISTS (SELECT 1 FROM goodsreceived WHERE id = p_grn_id) THEN$m$,
   $r$IF p_supervisor_id IS NOT NULL
