@@ -483,6 +483,8 @@ Deno.serve(async (req) => {
         JSON.stringify({
           success: false,
           error: 'The printer did not confirm the job',
+          // The job may be on paper: true even when it could not be logged (print_job_id null).
+          unconfirmed: true,
           print_job_id: printJobRecord?.id || null,
           timestamp: new Date().toISOString()
         }, null, 2),

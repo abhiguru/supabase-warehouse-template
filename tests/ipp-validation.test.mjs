@@ -116,3 +116,14 @@ test('all six places that read an IPP reply validate it', () => {
   assert.doesNotMatch(types, /\benum\b/, 'no enum: node cannot strip it');
   assert.match(types, /from '\.\/ipp-validate\.ts'/);
 });
+
+test('every "printer did not confirm" 502 says unconfirmed: true, also when the job could not be logged (print_job_id null)', () => {
+  for (const path of ['print-grn-preprinted/index.ts', 'print-dispatch-preprinted/index.ts', 'print-invoice-preprinted/index.ts']) {
+    const source = read(path);
+    const bodies = [...source.matchAll(/error: 'The printer did not confirm the job',([\s\S]*?)status: 502/g)];
+    assert.equal(bodies.length, 1, path);
+    assert.match(bodies[0][1], /unconfirmed: true,/, path);
+    assert.match(bodies[0][1], /print_job_id: printJobRecord\?\.id \|\| null/, `${path}: existing field kept`);
+  }
+  assert.match(read('print-via-ipp/index.ts'), /error: 'The printer did not confirm the job', unconfirmed: true \}/);
+});

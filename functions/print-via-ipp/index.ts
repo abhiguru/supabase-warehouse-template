@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
     if (!submitted.ok) {
       console.error('print-via-ipp: the printer reply did not confirm the job');
       return new Response(
-        JSON.stringify({ success: false, error: 'The printer did not confirm the job' }),
+        JSON.stringify({ success: false, error: 'The printer did not confirm the job', unconfirmed: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 }
       );
     }
