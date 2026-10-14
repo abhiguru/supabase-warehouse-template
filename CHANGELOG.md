@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — no new GRN for a deactivated business, migration 83 (2026-10-15)
+
+Migration `00000000000083_grn_deactivated_business.sql`, applied by the setup rerun. The matching
+app branch is rn-warehouse-template's `fix/grn-deactivated-2026-10-15`, which shows the message.
+
+- **`save_grn` refuses a business with `active = false`** (owner decision, 2026-10-15): `This business
+  is deactivated. Activate it in Customers to receive new goods.` (P0001), for every caller, next to the
+  deleted-business refusal of migration 82. Only NEW GRNs: `update_grn`, dispatches and orders of a
+  deactivated business are unchanged. `update_grn` can still move an existing GRN to a deactivated business (the owner's rule covers only
+  new GRNs). The refusal is raised outside `save_grn`'s inner exception block, so the client gets the bare text
+  (P0001), not wrapped in "Error creating GRN". This narrows migration 82's entry below, which said `save_grn`
+  accepts a deactivated business.
+- **FAS sync:** its GRN push (`create_grn` in `fassync/push.py`) calls `save_grn`, so a push for a
+  deactivated business now fails with that message until the business is activated in Customers.
+- **`update_customer(p_active => true)` also clears `deleted_at` / `deleted_by`**, so a business is never
+  active and deleted at once (as `set_customer_active(true)` and `restore_customer`). `false` and NULL
+  are unchanged.
+- New test `tests/grn_deactivated_83.sql`, registered before `report_grn_invoices.sql`.
+
 ## Unreleased — deactivated businesses can still order, migration 82 (2026-10-15)
 
 Migration `00000000000082_inactive_business_orders.sql`, applied by the setup rerun. The matching

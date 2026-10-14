@@ -144,6 +144,15 @@ SELECT pg_temp.oi_assert((:'save_d'::jsonb->>'success')='true','GRN saved for D:
 SELECT g.id AS grn_d FROM public.goodsreceived g WHERE g.customer_id=:'cust_d'::uuid \gset
 UPDATE public.orders SET status='DISPATCHED' WHERE customer_id=:'cust_g'::uuid;
 
+-- second GRN of D, made while D is still active (migration 83: a deactivated business gets no NEW GRN)
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'OI82B',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
+  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Open Items Ginger','packaging','Bag','qty',3,'weight',10,'rack','A2')),
+  p_idempotency_key=>'oi82-d2') AS save_d2 \gset
+RESET ROLE;
+SELECT pg_temp.oi_assert((:'save_d2'::jsonb->>'success')='true','second GRN saved for the active D: '||:'save_d2');
+
 -- set_customer_active: staff and a customer login are refused, nothing changes
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
@@ -172,12 +181,9 @@ SELECT pg_temp.oi_assert((:'sca_off_again'::jsonb->>'success')='true' AND (:'sca
  AND (:'sca_missing'::jsonb->>'success')='false' AND (:'sca_missing'::jsonb->>'message')='Customer not found',
  'set_customer_active: already inactive and unknown id answers: '||:'sca_off_again'||:'sca_missing');
 
--- a deactivated business still gets a new GRN; a DELETED one is refused for GRN and for both dispatch overloads
+-- a DELETED one is refused for GRN and for both dispatch overloads
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.save_grn(p_gr_no=>'OI82B',p_date=>now(),p_customer_id=>:'cust_d'::uuid,p_customer_name=>'Open Items D with data',
-  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Open Items Ginger','packaging','Bag','qty',3,'weight',10,'rack','A2')),
-  p_idempotency_key=>'oi82-d2') AS save_d2 \gset
 SELECT pg_temp.oi_call(format($q$SELECT public.save_grn(p_gr_no=>'OI82Q',p_date=>now(),p_customer_id=>%L::uuid,p_customer_name=>'Open Items Q deleted',
   p_idempotency_key=>'oi82-q')$q$,:'cust_q')) AS save_q \gset
 SELECT pg_temp.oi_call(format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb,ARRAY[]::jsonb[],false,0,'oi82-dq')$q$,
@@ -185,7 +191,7 @@ SELECT pg_temp.oi_call(format($q$SELECT public.create_dispatch_with_stock_check(
 SELECT pg_temp.oi_call(format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb,ARRAY[]::jsonb[],0,'oi82-dq4')$q$,
   jsonb_build_object('disp_no','OI82DR','disp_date',now(),'customer_id',:'cust_q','customer_name','Open Items Q deleted')::text)) AS disp_q4 \gset
 RESET ROLE;
-SELECT pg_temp.oi_assert((:'save_d2'::jsonb->>'success')='true','a deactivated business still gets a GRN: '||:'save_d2');
+-- (a NEW GRN for a deactivated business is refused since migration 83: see tests/grn_deactivated_83.sql)
 SELECT pg_temp.oi_assert(:'save_q'::jsonb->>'raised'='Business is not active' AND :'save_q'::jsonb->>'state'='P0001'
  AND :'disp_q5'::jsonb->>'raised'='Business is not active' AND :'disp_q5'::jsonb->>'state'='P0001'
  AND :'disp_q4'::jsonb->>'raised'='Business is not active' AND :'disp_q4'::jsonb->>'state'='P0001'

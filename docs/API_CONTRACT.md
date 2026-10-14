@@ -247,8 +247,9 @@ A deactivated business (`active = false`) is offered by no staff customer picker
 customer search) and not by the all-customers branch of `search_customer_items_for_order`, and
 `assign_customer_to_user` cannot give it a new customer login. Everything else keeps working for it: its
 customer logins read all past records and order their goods out,
-staff and administrators still see its stock, invoices and activity, and `save_grn` / dispatch creation
-accept it (`update_grn` too). A DELETED business (`deleted_at` set) is refused by `get_or_create_cart`, `save_grn`, `update_grn` (when moving a GRN to it) and both
+staff and administrators still see its stock, invoices and activity, and dispatch creation accepts it
+(`update_grn` too, so an existing GRN can still be edited). Since migration 83 `save_grn` (a NEW GRN) refuses
+it with `This business is deactivated. Activate it in Customers to receive new goods.` (P0001, every caller, bare text). `update_grn` may still move an existing GRN to a deactivated business. A DELETED business (`deleted_at` set) is refused by `get_or_create_cart`, `save_grn`, `update_grn` (when moving a GRN to it) and both
 `create_dispatch_with_stock_check` overloads with `Business is not active` (P0001). Nothing with data is
 ever deleted.
 
@@ -257,6 +258,8 @@ ever deleted.
   `active = true` and clears `deleted_at` / `deleted_by`. Answer `{success:true, message, data:{id, active}}`
   (message `... is already inactive` / `... is already active` when nothing changes); `{success:false,
   message}` for an unknown id (`Customer not found`) or a missing argument.
+- `update_customer(..., p_active)` (migration 83): `p_active = true` also clears `deleted_at` / `deleted_by`, so a
+  business is never active and deleted at once; `false` and NULL leave `deleted_at` untouched.
 - `safe_delete_customer(p_customer_id uuid, p_permanent boolean DEFAULT false)`. "Data" means any GRN,
   dispatch or invoice row (deleted rows count), any payment, any customer-specific rate
   (`item_storage_prices.customer_id`), any active user assignment, and any order that has lines or is not
