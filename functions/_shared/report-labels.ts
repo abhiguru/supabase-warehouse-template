@@ -93,8 +93,6 @@ const table = {
   items: ['Items', 'આઇટમ'], // common.items
   quantity: ['Quantity', 'નંગ'], // common.quantity
   receivedQuantity: ['Received quantity', 'આવકના નંગ'], // reports.stockAging.receivedQuantity
-  weight: ['Weight', 'વજન'], // common.weight
-  kg: ['kg', 'કિલો'], // reports.operations.kg
   stock: ['Stock', 'સ્ટોક'], // common.stock
   totalStock: ['Total stock', 'કુલ સ્ટોક'], // reports.operations.totalStock
   unitsInStock: ['Units in stock', 'સ્ટોકમાં નંગ'], // (wording kept from an earlier app version)
@@ -147,7 +145,7 @@ export function label(lang: ReportLang, key: LabelKey, values: Record<string, st
   return text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? '');
 }
 
-/** A label with a unit after it, as "Weight (kg)". */
+/** A label with a unit after it, as "Stock age (days)". */
 export function withUnit(lang: ReportLang, key: LabelKey, unit: LabelKey): string {
   return `${label(lang, key)} (${label(lang, unit)})`;
 }
