@@ -149,6 +149,26 @@ SELECT pg_temp.gl_assert(r->>'success' = 'true'
   'a receipt of 50000 x 50000 kg lists total_weight 2500000000: ' || r::text)
 FROM (SELECT public.get_grn_list(:'end_day', :'end_day', 'date', 'desc', 50, 0,
   jsonb_build_object('gr_no', 'GLEW1')) AS r) answer;
+-- The dispatch list sums the same way: a dispatch of the whole receipt weighs 2500000000 kg, not an overflow.
+RESET ROLE;
+SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '919888888561' \gset
+SELECT id AS huge_lot FROM public.goodsreceived_trl WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'GLEW1') \gset
+-- (A dispatch this size cannot be made through create_dispatch_with_stock_check: the refresh of
+-- mv_dispatch_list stops with "integer out of range". The rows are written directly with the triggers off,
+-- because the point here is get_dispatch_list_with_items.)
+SET LOCAL session_replication_role = replica;
+INSERT INTO public.dispatch(disp_no, disp_date, customer_id, customer_name)
+ VALUES ('GLEWD1', '2026-05-02', :'quince'::uuid, 'GRN List Day Quince Cold');
+INSERT INTO public.dispatch_trl(gr_id, gr_trl_id, disp_id, disp_qty)
+ SELECT t.gr_id, t.id, (SELECT id FROM public.dispatch WHERE disp_no = 'GLEWD1'), 50000
+ FROM public.goodsreceived_trl t WHERE t.id = :'huge_lot'::uuid;
+SET LOCAL session_replication_role = origin;
+SELECT set_config('request.jwt.claims', :'admin_claims', true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.gl_assert(r->>'success' = 'true'
+  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,dispatches}') x WHERE x->>'disp_no' = 'GLEWD1') = 2500000000,
+  'a dispatch of 50000 x 50000 kg lists total_weight 2500000000: ' || r::text)
+FROM (SELECT public.get_dispatch_list_with_items(:'quince'::uuid, '{}'::jsonb, 'dispatch_date', 'desc', 1, 50, false) AS r) answer;
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
