@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased — every item always has a rate: standard rate (migration 85) and rates set on the GRN sheet (migration 86) (2026-10-15)
+
+Migrations `00000000000085_standard_rate.sql` and `00000000000086_grn_rates.sql`, applied by the setup
+rerun. App: the matching rn-warehouse-template release (Standard rate screen, Add on the Item pricing
+list, Rates section on the GRN Review step). Owner decisions of 2026-10-15; the design is in the app
+repository's plan record. Deploy at a quiet moment: migration 86 re-creates `save_grn` and `update_grn`
+in one transaction and reloads PostgREST.
+
+- **Standard rate** (`standard_rate_tiers`, `get_standard_rate`, `set_standard_rate`): the facility's
+  monthly weight tiers (0–10, 11–20, 21–30, 31–50 kg by default) with rent, labour and tax each,
+  set by administrators and supervisors. Saving it gives every active item that has no default rate
+  rows the tiers from the India day of the item's first non-deleted GRN (today without a GRN) and
+  answers `items_priced`. A later change applies to items added after it only (no bulk change).
+- **`create_item(…, p_rate_from_item)`**: a new item gets the standard tiers from today, or a copy of
+  another item's default rows in force today (both price types, one row per band, no customer rows);
+  `data.rate_source` = `standard` | `copied` | `none`. `update_item` gives a reactivated item without
+  default rows the standard tiers. Both take the shared `standard_rate` advisory lock so a save of the
+  standard rate and an item creation never cross.
+- **Rates set on the GRN sheet** (`save_grn` and `update_grn` gain `p_rates jsonb DEFAULT NULL`, last
+  parameter; old named calls, FAS sync included, are unchanged). With an array the save refuses
+  `RATE_MISSING` when a line has no rate for the GRN's customer, weight, India day and price type, and
+  applies the entries first: `customer` / `everyone` entries insert one bounded rate row from the GRN
+  day (the overlapped row ends the day before, resumes after `to` with its old figures, and the
+  scope's other bands are split on the same days so Correct and Undo on Item pricing keep working;
+  a planned later rate answers `RATE_PLANNED`, a partial band clash `BANDS_OVERLAP` with
+  `data.starts_on`); `grn` entries are the GRN's own rates in the new table `grn_rates` (upserted by
+  band, `updated_by`/`updated_at` on change). Staff may do all three from the GRN day (the Item
+  pricing past-day rule does not apply here). An invoiced GRN keeps its set (`GRN_INVOICED` on a
+  change) and is not checked line by line, so a note-only edit saves. `update_grn` drops a GRN's own
+  rates whose price type or band no longer fits its lines. `delete_item_safe` refuses an item with
+  `grn_rates`. Customers never read `grn_rates`; `get_grn_details` answers `rates` = `[]` to them.
+- **Invoices** (`build_invoice_recalculation_rows`): a line's rent, labour and tax come from one
+  source — the stored invoice figure, else the GRN's own rate, else `find_storage_price`. A saved
+  invoice keeps its figures ("archived once invoiced"); deleting it lets the GRN rate apply again.
+  `get_grn_details` returns `grn.rates` with `archived`; new `get_item_grn_rates(p_item_id)` lists an
+  item's GRN-only rates (administrators, supervisors, staff).
+- **Rate start floor** (`warehouse_security.rate_start_floor`): `replace_item_rates` and
+  `undo_rate_change` accept a start as far back as the facility's oldest non-deleted GRN or three
+  years, whichever is earlier (the three-year guard of migration 76 only grows backwards);
+  `INVALID_DATE` names the day in `data.earliest`, and `get_item_storage_prices` answers a top-level
+  `earliest_start`.
+- `replace_item_rates` and `set_standard_rate` accept weights written as `50.0`.
+- `scripts/data-fingerprint.sh` and `scripts/backup-integrity.sql` cover `standard_rate_tiers` and
+  `grn_rates`. Tests `tests/standard_rate.sql`, `tests/grn_rates.sql`, two new cases in
+  `tests/concurrent_rules.sh`; `docs/API_CONTRACT.md`, `docs/INVOICE_RULES.md`,
+  `docs/STAFF_GRN_POLICY.md` updated.
+
 ## Unreleased — no GRN moved onto a deactivated business (migration 84); bridge skips offline sensors (2026-10-15)
 
 Migration `00000000000084_grn_move_deactivated_business.sql`, applied by the setup rerun; the sensor

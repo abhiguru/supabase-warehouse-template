@@ -12,7 +12,8 @@ test('the data fingerprint covers the three histories beside the business tables
   assert.ok(list, 'data-fingerprint.sh has no tables=(...) list');
   const tables = list[1].split(/\s+/).filter(Boolean);
   for (const table of ['customers', 'users_customers_new', 'items', 'item_storage_prices', 'goodsreceived', 'goodsreceived_trl', 'grn_images',
-    'dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'stock_movements', 'user_profiles', ...histories]) {
+    'dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'stock_movements', 'user_profiles', ...histories,
+    'standard_rate_tiers', 'grn_rates']) {
     assert.ok(tables.includes(table), `${table} is not fingerprinted`);
   }
   assert.equal(new Set(tables).size, tables.length);
