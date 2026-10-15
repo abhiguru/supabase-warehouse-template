@@ -15,11 +15,15 @@
 --           first read of the scope; find_storage_price gets a final tie-break on the row id.
 -- 7. BR-08  Weight totals are summed as numeric (get_grn_list, get_customer_dispatch_items).
 -- 8. cancel_grn_image_upload and cancel_dispatch_image_upload answer ALREADY_CONFIRMED for a
---    confirmed upload instead of NOT_FOUND, and change nothing.
+--    confirmed upload instead of NOT_FOUND, and change nothing; they read the row FOR UPDATE, so a
+--    confirm in flight is waited for.
+-- 9. BR-06 readers: v_orders_list (get_orders_list) and get_order_with_items show only the dispatch of
+--    the cart's own customer. get_dispatch_list_with_items sums weights as numeric. The migration ends
+--    with a NOTICE counting dispatches linked to another customer's cart (read only).
 
 -- Replaces one marker in a function body, failing unless it occurs exactly
 -- `expected` times. Dropped at the end of this migration. A second direct run of the
--- file fails at the first patch; the ledger skips an applied file, so it never runs twice.
+-- file fails in its first DO block; the ledger skips an applied file, so it never runs twice.
 CREATE FUNCTION pg_temp.patch_rpc(fn regprocedure, marker text, replacement text, expected integer DEFAULT 1) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE definition text := pg_get_functiondef(fn); occurrences integer;
@@ -159,7 +163,7 @@ BEGIN
   $r$    -- A lot appears once in the dispatch lines (migration 87).
     IF EXISTS (
         SELECT 1 FROM unnest(p_dispatch_items) AS d
-        GROUP BY (d->>'gr_trl_id') HAVING count(*) > 1
+        GROUP BY (d->>'gr_trl_id')::uuid HAVING count(*) > 1
     ) THEN
         RAISE EXCEPTION 'The same lot appears twice in the dispatch lines' USING ERRCODE = 'WH409';
     END IF;
@@ -170,7 +174,7 @@ BEGIN
   $r$    -- A lot appears once in the dispatch lines (migration 87).
     IF EXISTS (
         SELECT 1 FROM unnest(p_dispatch_items) AS d
-        GROUP BY (d->>'gr_trl_id') HAVING count(*) > 1
+        GROUP BY (d->>'gr_trl_id')::uuid HAVING count(*) > 1
     ) THEN
         RAISE EXCEPTION 'The same lot appears twice in the dispatch lines' USING ERRCODE = 'WH409';
     END IF;
@@ -243,6 +247,35 @@ $m$,
 
     -- A rate that is already in force is changed by administrators and supervisors (migration 76).
 $r$);
+  -- The legacy overload answers BANDS_OVERLAP like the 8-argument one: same price type, any shared weight and day.
+  PERFORM pg_temp.patch_rpc('public.update_item_storage_price(uuid,numeric,numeric,numeric,numeric,numeric,numeric,date,date)',
+  $m$    -- Validation 4: Check for overlapping ranges (excluding current record)
+    SELECT COUNT(*) INTO v_overlap_count
+    FROM item_storage_prices
+    WHERE id != p_id
+      AND item_id = v_existing.item_id
+      AND COALESCE(customer_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(v_existing.customer_id, '00000000-0000-0000-0000-000000000000'::uuid)
+      AND weight_min = p_weight_min::integer
+      AND weight_max = p_weight_max::integer
+      AND (
+          (p_effective_from, COALESCE(p_effective_to, '9999-12-31'::date))
+          OVERLAPS
+          (effective_from, COALESCE(effective_to, '9999-12-31'::date))
+      );
+
+    IF v_overlap_count > 0 THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Overlapping price configuration exists for this item/customer/weight range'
+        );
+    END IF;
+$m$,
+  $r$    -- Validation 4: no other row of this item, customer and price type may share a weight and a day (migration 87).
+    IF warehouse_security.price_rows_overlap(v_existing.item_id, v_existing.customer_id, v_existing.price_type,
+         p_weight_min::integer, p_weight_max::integer, p_effective_from, p_effective_to, p_id) THEN
+        RETURN warehouse_security.rate_failure('BANDS_OVERLAP', 'Weight bands overlap');
+    END IF;
+$r$);
 
   -- find or create
   PERFORM pg_temp.patch_rpc('public.find_or_create_item_storage_price(uuid,uuid,numeric,text,numeric,numeric,numeric,numeric,numeric)',
@@ -266,7 +299,7 @@ $r$);
 $m$,
   $r$    -- One change of this scope at a time, as in replace_item_rates; the row is locked before it is removed (migration 87).
     PERFORM pg_advisory_xact_lock(hashtextextended('item_rates:' || v_existing.item_id || ':' || COALESCE(v_existing.customer_id::text, 'default') || ':' || v_existing.price_type, 0));
-    PERFORM 1 FROM item_storage_prices WHERE id = p_id FOR UPDATE;
+    SELECT effective_from INTO v_existing.effective_from FROM item_storage_prices WHERE id = p_id FOR UPDATE;
     IF NOT FOUND THEN
         RETURN jsonb_build_object('success', false, 'error', 'Price record not found');
     END IF;
@@ -279,7 +312,7 @@ $r$);
   $m$        isp.effective_from DESC               -- 3. Most recent effective date first
 $m$,
   $r$        isp.effective_from DESC,              -- 3. Most recent effective date first
-        isp.id ASC                            -- 4. Same figures: the row that was entered first (migration 87)
+        isp.id ASC                            -- 4. Same figures: a fixed tie-break by row id (migration 87)
 $r$);
 END $patch$;
 
@@ -291,6 +324,9 @@ BEGIN
   PERFORM pg_temp.patch_rpc('public.get_grn_list(date,date,text,text,integer,integer,jsonb)',
   $m$SUM(trl.weight * trl.stock)$m$,
   $r$SUM(trl.weight::numeric * trl.stock)$r$);
+  PERFORM pg_temp.patch_rpc('public.get_dispatch_list_with_items(uuid,jsonb,text,text,integer,integer,boolean)',
+  $m$SUM(dt.disp_qty * grt.weight)$m$,
+  $r$SUM(dt.disp_qty * grt.weight::numeric)$r$);
   PERFORM pg_temp.patch_rpc('public.get_customer_dispatch_items(uuid,timestamptz,timestamptz,jsonb,text,text,integer,integer)',
   $m$SUM(grt.weight * dt.disp_qty)$m$,
   $r$SUM(grt.weight::numeric * dt.disp_qty)$r$);
@@ -302,9 +338,14 @@ END $patch$;
 DO $patch$
 BEGIN
   PERFORM pg_temp.patch_rpc('public.cancel_grn_image_upload(uuid)',
-  $m$    IF v_storage_path IS NULL THEN
+  $m$         OR warehouse_security.active_role() IN ('admin','supervisor'));
+
+    IF v_storage_path IS NULL THEN
 $m$,
-  $r$    IF v_storage_path IS NULL THEN
+  $r$         OR warehouse_security.active_role() IN ('admin','supervisor'))
+    FOR UPDATE;  -- a confirm in flight is waited for and then seen (migration 87)
+
+    IF v_storage_path IS NULL THEN
         -- A confirmed upload stays; the caller must keep its file (migration 87).
         SELECT storage_path INTO v_storage_path
         FROM grn_images
@@ -324,9 +365,14 @@ $m$,
 
 $r$);
   PERFORM pg_temp.patch_rpc('public.cancel_dispatch_image_upload(uuid)',
-  $m$    IF v_storage_path IS NULL THEN
+  $m$         OR warehouse_security.active_role() IN ('admin','supervisor'));
+
+    IF v_storage_path IS NULL THEN
 $m$,
-  $r$    IF v_storage_path IS NULL THEN
+  $r$         OR warehouse_security.active_role() IN ('admin','supervisor'))
+    FOR UPDATE;  -- a confirm in flight is waited for and then seen (migration 87)
+
+    IF v_storage_path IS NULL THEN
         -- A confirmed upload stays; the caller must keep its file (migration 87).
         SELECT storage_path INTO v_storage_path
         FROM dispatch_images
@@ -345,12 +391,101 @@ $m$,
         END IF;
 
 $r$);
+  PERFORM pg_temp.patch_rpc('public.cancel_grn_image_upload(uuid)',
+  $m$
+    -- 4. Return success with storage_path$m$,
+  $r$
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Pending upload not found', 'code', 'NOT_FOUND');
+    END IF;
+
+    -- 4. Return success with storage_path$r$);
+  PERFORM pg_temp.patch_rpc('public.cancel_dispatch_image_upload(uuid)',
+  $m$
+    -- 4. Return success with storage_path$m$,
+  $r$
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Pending upload not found', 'code', 'NOT_FOUND');
+    END IF;
+
+    -- 4. Return success with storage_path$r$);
+END $patch$;
+
+-- ---------------------------------------------------------------------------
+-- 9. BR-06 readers: the order list and the order detail show only the cart customer's dispatch
+-- ---------------------------------------------------------------------------
+-- A dispatch linked to a cart of another customer (made before this migration) is not shown.
+CREATE OR REPLACE VIEW public.v_orders_list AS
+ WITH order_items_data AS (
+         SELECT oi.order_id,
+            count(*) FILTER (WHERE (oi.item_status = 'pending'::text)) AS total_items,
+            COALESCE(sum(oi.requested_quantity) FILTER (WHERE (oi.item_status = 'pending'::text)), (0)::bigint) AS total_quantity,
+            jsonb_agg(jsonb_build_object('id', oi.id, 'order_id', oi.order_id, 'requested_quantity', oi.requested_quantity, 'fulfilled_quantity', oi.fulfilled_quantity, 'grn_items_id', oi.grn_items_id, 'grn_items_item_id', oi.grn_items_item_id, 'grn_items_item_name', oi.grn_items_item_name, 'grn_items_package_mark', oi.grn_items_package_mark, 'grn_items_packaging', oi.grn_items_packaging, 'grn_items_rack', oi.grn_items_rack, 'grn_items_weight', oi.grn_items_weight, 'grn_items_image_url', oi.grn_items_image_url, 'grns_id', oi.grns_id, 'grns_gr_no', oi.grns_gr_no, 'grns_date', oi.grns_date, 'grns_customer_id', oi.grns_customer_id, 'grns_customer_name', oi.grns_customer_name, 'available_stock_at_order', oi.available_stock_at_order, 'current_stock', oi.current_stock, 'item_status', oi.item_status, 'sort_order', oi.sort_order, 'created_at', oi.created_at, 'updated_at', oi.updated_at) ORDER BY oi.sort_order, oi.created_at) AS items_jsonb
+           FROM public.order_items oi
+          GROUP BY oi.order_id
+        ), latest_dispatch AS (
+         SELECT DISTINCT ON (dispatch.source_order_id) dispatch.source_order_id,
+            dispatch.id AS dispatch_id,
+            dispatch.disp_no AS dispatch_no,
+            dispatch.created_at AS dispatch_created_at
+           FROM public.dispatch
+             JOIN public.orders ord ON ord.id = dispatch.source_order_id
+          WHERE (dispatch.source_order_id IS NOT NULL)
+            AND dispatch.customer_id = ord.customer_id
+          ORDER BY dispatch.source_order_id, dispatch.created_at DESC
+        )
+ SELECT o.id AS order_id,
+    o.order_no,
+    o.status,
+    o.priority,
+    o.customer_id,
+    o.customer_name,
+    o.customer_email,
+    o.customer_phone,
+    o.is_ignored,
+    o.ignored_at,
+    o.ignored_by,
+    o.ignored_reason,
+    o.cancelled_at,
+    o.cancelled_by,
+    o.cancellation_reason,
+    o.created_at,
+    o.updated_at,
+    o.created_by,
+    o.updated_by,
+    c.name AS customer_name_detail,
+    c.city AS customer_city,
+    c.mobile AS customer_mobile,
+    c.address AS customer_address,
+    up.name AS updated_by_name,
+    up.display_name AS updated_by_display_name,
+    (COALESCE(oid.total_items, (0)::bigint))::integer AS total_items,
+    (COALESCE(oid.total_quantity, (0)::bigint))::numeric AS total_quantity,
+    COALESCE(oid.items_jsonb, '[]'::jsonb) AS items_jsonb,
+    ld.dispatch_id,
+    ld.dispatch_no,
+    ld.dispatch_created_at
+   FROM ((((public.orders o
+     JOIN public.customers c ON ((c.id = o.customer_id)))
+     LEFT JOIN order_items_data oid ON ((oid.order_id = o.id)))
+     LEFT JOIN public.user_profiles up ON ((up.id = o.updated_by)))
+     LEFT JOIN latest_dispatch ld ON ((ld.source_order_id = o.id)))
+  WHERE (o.deleted_at IS NULL);;
+
+DO $patch$
+BEGIN
+  PERFORM pg_temp.patch_rpc('public.get_order_with_items(uuid)',
+  $m$    WHERE d.source_order_id = p_order_id
+    LIMIT 1;$m$,
+  $r$    WHERE d.source_order_id = p_order_id
+    AND d.customer_id = (SELECT o.customer_id FROM orders o WHERE o.id = p_order_id)
+    LIMIT 1;$r$);
 END $patch$;
 
 DROP FUNCTION pg_temp.patch_rpc(regprocedure, text, text, integer);
 
 -- ---------------------------------------------------------------------------
--- 9. Closing checks: every patch is in the stored function
+-- 10. Closing checks: every patch is in the stored function
 -- ---------------------------------------------------------------------------
 DO $check$
 DECLARE
@@ -402,8 +537,15 @@ BEGIN
   END IF;
 
   IF position('SUM(trl.weight::numeric * trl.stock)' IN pg_get_functiondef('public.get_grn_list(date,date,text,text,integer,integer,jsonb)'::regprocedure)) = 0
+     OR position('SUM(dt.disp_qty * grt.weight::numeric)' IN pg_get_functiondef('public.get_dispatch_list_with_items(uuid,jsonb,text,text,integer,integer,boolean)'::regprocedure)) = 0
      OR position('SUM(grt.weight::numeric * dt.disp_qty)' IN pg_get_functiondef('public.get_customer_dispatch_items(uuid,timestamptz,timestamptz,jsonb,text,text,integer,integer)'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'Migration 87: a weight total is still summed as an integer product';
+  END IF;
+
+  IF position('d.customer_id = (SELECT o.customer_id FROM orders o WHERE o.id = p_order_id)'
+      IN pg_get_functiondef('public.get_order_with_items(uuid)'::regprocedure)) = 0
+     OR position('ord.customer_id' IN pg_get_viewdef('public.v_orders_list'::regclass)) = 0 THEN
+    RAISE EXCEPTION 'Migration 87: an order reader does not filter the dispatch by the cart customer';
   END IF;
 
   FOR d IN SELECT pg_get_functiondef(f) FROM unnest(ARRAY[
@@ -414,5 +556,16 @@ BEGIN
     END IF;
   END LOOP;
 END $check$;
+
+-- Read only, never fails: dispatches linked to a cart of another customer (made before this
+-- migration). The readers above no longer show them; the operator may want to look at them.
+DO $count$
+DECLARE mismatched integer;
+BEGIN
+  SELECT count(*) INTO mismatched
+  FROM public.dispatch d JOIN public.orders o ON o.id = d.source_order_id
+  WHERE d.customer_id IS DISTINCT FROM o.customer_id;
+  RAISE NOTICE 'Migration 87: % dispatch(es) are linked to a cart of another customer', mismatched;
+END $count$;
 
 NOTIFY pgrst, 'reload schema';

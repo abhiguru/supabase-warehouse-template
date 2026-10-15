@@ -422,7 +422,7 @@ rows). `create_item_storage_price` has no window, as before.
   deleted or other customer's cart with `The order belongs to another customer` (`WH409`);
   `update_dispatch_smart` refuses moving a dispatch that has a `source_order_id` to a customer other than
   the cart's (same text and code; a dispatch already for another customer can still be edited without
-  changing its customer). `get_cart_dispatches` lists only the cart customer's dispatches.
+  changing its customer). `get_cart_dispatches`, `get_orders_list` and `get_order_with_items` show only a dispatch of the cart customer's own.
 - Create takes the document lock (advisory 71040) before it looks up the idempotency key, so a retry that
   overlaps its first call waits and is then answered from the cache (`from_cache:true`), never with a
   unique-key error. A dispatch from a cart reads the cart line `FOR UPDATE`: a concurrent change of the line's
@@ -439,7 +439,7 @@ rows). `create_item_storage_price` has no window, as before.
   `find_or_create_item_storage_price` and `delete_item_storage_price` take the same per-scope advisory lock as
   `replace_item_rates` (item, customer or `default`, price type) before they read the scope, so writers of one
   scope take turns and the later one sees the earlier one's rows (`BANDS_OVERLAP` for an overlap).
-  `find_storage_price` breaks a last tie by row id (the row entered first).
+  `find_storage_price` breaks a last tie by row id (a fixed tie-break, the lower row id).
 
 ### Image upload cancellation
 
