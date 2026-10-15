@@ -277,3 +277,47 @@ ever deleted.
 - Five readers that no longer hide a deactivated business from staff and administrators (filter is
   `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
   customers), `get_all_customer_activity_summary`, `get_item_dispatch_records`.
+
+## Standard rate (migration 85, 2026-10-15)
+
+The facility's standard monthly rate: weight tiers (whole kilograms, inclusive, from 0, no gaps) with
+rent, labour and tax, kept in `standard_rate_tiers` (read by administrators and supervisors, written
+only by `set_standard_rate`). A tier is
+`{ weight_min, weight_max, unit_price, labour_rate, tax_percent }`. Errors are
+`{ success: false, error, error_code, data }`. A later change of the standard rate never changes an
+item that already has a rate.
+
+### `get_standard_rate()`
+
+Roles: admin, supervisor, staff. Answer
+`{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
+(`updated_at` and `updated_by_name` are null when never saved).
+
+### `set_standard_rate(p_tiers jsonb)`
+
+Roles: admin, supervisor (anyone else who passes the guard, staff, gets `STANDARD_RATE_MANAGER_ONLY`; a
+customer is refused by the guard). Checks, in this order and with the limits and texts of
+`replace_item_rates`: not a list, no tier or more than 10 -> `INVALID_BANDS`; weights not whole 0 to
+100000 or start after end -> `INVALID_BAND` (`data.index`, `data.field`); rent and labour 0 to 999999,
+tax 0 to 100, two decimals at most, all three required -> `INVALID_AMOUNT` (`data.index`,
+`data.field`); sorted by start, an overlap -> `BANDS_OVERLAP` (`data.index`), a first tier not at 0 or
+a gap -> `BANDS_GAP` (`data.index`, `data.expected_min`). Tiers may be sent in any order.
+
+In one transaction it replaces the tiers, then gives every **active item with no default rate row at
+all** (any dates; customer rates do not count) one monthly default row per tier, starting on the India
+day of the item's first GRN that is not deleted, else today, without an end date, authored by the
+caller (so the price history names them). Items whose default rate ended or was stopped, and inactive
+items, are not touched. Answer
+`{ success: true, data: { tiers: [tier, ...], items_priced } }`.
+
+### `create_item(p_name, p_packaging, p_description, p_active, p_rate_from_item uuid DEFAULT NULL)`
+
+One overload (the four-argument call works unchanged). Same checks and answer as before, and
+`data.rate_source`: `copied` when `p_rate_from_item` has default rows in force today, which are copied
+(monthly and one-time, one-time labour 0, no customer rates) as new rows from today without an end;
+else `standard` when a standard rate is saved (its tiers from today); else `none` and no rate rows.
+
+### `update_item` (signature unchanged)
+
+An item that turns from inactive to active and has no default rate row at all gets the standard tiers
+from today (nothing when no standard rate is saved). The answer is unchanged.

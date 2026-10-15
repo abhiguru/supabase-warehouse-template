@@ -114,6 +114,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('create_item_storage_price',true,'no'),('update_item_storage_price',true,'no'),('delete_item_storage_price',true,'no'),
  -- migration 76: a rate change "from a date"
  ('replace_item_rates',true,'no'),('undo_rate_change',true,'no'),
+ -- migration 85: the standard rate; set_standard_rate admits staff to its body, which refuses them
+ ('get_standard_rate',true,'no'),('set_standard_rate',true,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),
