@@ -46,6 +46,16 @@ future or older than 30 days.
   `staleness_threshold_minutes` (30 by default), that is after about six missed 5-minute
   samples, so a bridge restart or one or two failed polls do not flag it:
   the sensor's battery died, it lost its hub, or the bridge or the hub is down.
+- A sensor the hub reports as **offline** (its `status` is `offline`: the hub cannot hear it
+  and only holds its last cached values) is **not posted at all**, neither as a change nor
+  as a heartbeat. Its last reading therefore ages, and after the staleness threshold the
+  app shows "No recent data" (this holds only for a sensor the backend already knows). A
+  sensor that is offline the first time the bridge sees it (a new install, a fresh `/data`,
+  a newly paired sensor) is never posted, so the backend never registers it and the app does
+  not list it until it first reports online. When the hub reports it online again it is handled as
+  usual: a changed value is sent at once, an unchanged one as a heartbeat once the
+  heartbeat interval has passed since the last value sent. A sensor whose firmware reports
+  no `status` is treated as online.
 - A hub that fails three polls (or connections) in a row is reported `online=false` (with
   the 5-minute poll, about 10 minutes after the first failed poll), and
   that status is repeated every heartbeat interval while it lasts; the app shows its
@@ -107,7 +117,8 @@ docker run --rm --network none IMAGE python -m unittest discover -s tests   # un
 ```
 
 - `--dump` connects to every hub and prints, per sensor, its id, name, model, values,
-  battery, signal, report interval, and the **names** of the fields the hub reports and
+  battery, signal, report interval, its `status` exactly as the hub sends it (any string, for example `online` or
+  `offline`; null only when it is missing or not text), and the **names** of the fields the hub reports and
   the modules python-kasa found (not their raw values). It needs no backend settings and
   stores nothing. Exit 0 when every hub answered.
 - `--once` polls each hub once, posts what is due and exits 0 when every hub answered and
@@ -119,7 +130,8 @@ docker run --rm --network none IMAGE python -m unittest discover -s tests   # un
 
 Logs go to standard error, one line per event (`event=hub_online`, `readings`, `post_ok`,
 `post_failed`, `post_refused`, `auth_refused`, `hub_error`, `hub_offline`,
-`offline_heartbeat`, `hub_reboot`, ...). The password, the key and the URL's query are
+`offline_heartbeat`, `sensor_offline` / `sensor_online` (a sensor the hub reports offline
+is not posted; each change is logged once per process, so after a restart `sensor_offline` is logged again for each sensor still offline), `hub_reboot`, ...). The password, the key and the URL's query are
 never written; every line is also filtered for them.
 
 ## Standalone run (outside the warehouse stack)

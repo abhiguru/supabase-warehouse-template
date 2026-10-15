@@ -41,7 +41,8 @@ def config(**overrides):
 def child(n: int, temperature=21.5, humidity=60.0, battery_low=False, **extra) -> ChildReading:
     return ChildReading(external_id=cid(n), name=f"TH{n}", model="T310", temperature=temperature, humidity=humidity,
                         battery_low=battery_low, battery_percent=extra.get("battery_percent"),
-                        signal_level=extra.get("signal_level", 3), report_interval_s=extra.get("report_interval_s", 16))
+                        signal_level=extra.get("signal_level", 3), report_interval_s=extra.get("report_interval_s", 16),
+                        online=extra.get("online"))
 
 
 class FakeHub:

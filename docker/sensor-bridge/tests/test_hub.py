@@ -20,7 +20,7 @@ class Raising:
         raise KeyError(name)
 
 
-def t310(n: int, temp=21.5, unit="celsius", humidity=60, low=False, battery=None, signal=3, interval=16):
+def t310(n: int, temp=21.5, unit="celsius", humidity=60, low=False, battery=None, signal=3, interval=16, status=None):
     modules = {
         "TemperatureSensor": SimpleNamespace(temperature=temp, temperature_unit=unit),
         "HumiditySensor": SimpleNamespace(humidity=humidity),
@@ -28,9 +28,11 @@ def t310(n: int, temp=21.5, unit="celsius", humidity=60, low=False, battery=None
         else type("B", (Raising,), {"battery_low": low})(),
         "ReportMode": SimpleNamespace(report_interval=interval),
     }
+    sys_info = {"device_id": cid(n), "nickname": "VEgy", "current_temp": temp}
+    if status is not None:
+        sys_info["status"] = status
     return SimpleNamespace(device_id=cid(n), alias=f"TH{n}", model="T310", rssi=-60, modules=modules,
-                           features={"signal_level": SimpleNamespace(value=signal)},
-                           sys_info={"device_id": cid(n), "nickname": "VEgy", "current_temp": temp})
+                           features={"signal_level": SimpleNamespace(value=signal)}, sys_info=sys_info)
 
 
 def h200(*children, device_id="HUB" + "1" * 37):
@@ -72,6 +74,20 @@ class ReadChildTest(unittest.TestCase):
         self.assertEqual([c.external_id for c in snap.children], [cid(1), cid(2)])
         for missing in (None, "", "None"):  # kasa returns str(None) when the hub sends no id
             self.assertEqual(snapshot_of(h200(device_id=missing), "192.0.2.10", NAMES).hub_id, "192.0.2.10")
+
+    def test_status_online_offline_or_unknown(self):
+        self.assertIs(read_child(t310(1, status="online"), NAMES).online, True)
+        self.assertIs(read_child(t310(1, status="offline"), NAMES).online, False)
+        self.assertIsNone(read_child(t310(1), NAMES).online, "older firmware: no status field")
+        for other in ("Online", "unknown", "", 1, True):
+            self.assertIsNone(read_child(t310(1, status=other), NAMES).online, repr(other))
+
+    def test_dump_shows_the_status_and_no_other_raw_value(self):
+        data = dump_of(h200(t310(1, status="offline"), t310(2, status="online"), t310(3)), "192.0.2.10", NAMES)
+        self.assertEqual([c["status"] for c in data["children"]], ["offline", "online", None])
+        self.assertIs(data["children"][0]["reading"]["online"], False)
+        self.assertNotIn("VEgy", str(data))
+        self.assertEqual(data["children"][0]["sys_info_keys"], ["current_temp", "device_id", "nickname", "status"])
 
     def test_dump_lists_field_names_not_raw_values(self):
         data = dump_of(h200(t310(1)), "192.0.2.10", NAMES)
