@@ -263,5 +263,91 @@ SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_b'::uuid AND note IS DI
 SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_a'::uuid AND customer_name='Lot Rule Customer A' FROM public.goodsreceived WHERE id=:'grn_b3'::uuid),'free receipt moved to A');
 SELECT pg_temp.lot_assert((SELECT bool_and(tgenabled='O') FROM pg_trigger WHERE tgrelid='public.goodsreceived_trl'::regclass AND tgname='trg_mark_stock_mvs_dirty_grn'),
  'refused receipt edits leave the item triggers enabled');
+
+-- Migration 87 (BR-06): a dispatch made from a cart belongs to the cart's customer. B's cart (cart_b)
+-- holds 2 bags of LOTB2.
+INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status)
+ VALUES (gen_random_uuid(),'919888888846','Lot Rule Customer B Reader','customer',true,'approved');
+INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
+ SELECT id,:'customer_b'::uuid,true FROM public.user_profiles WHERE mobile='919888888846';
+SELECT pg_temp.lot_login('9888888846') AS reader_b_claims \gset
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+-- A's lot, A's header, B's cart: refused with the text, nothing stored.
+SELECT public.create_dispatch_with_stock_check(:'for_a'::jsonb || jsonb_build_object('disp_no','LOTC1','source_order_id',:'cart_b'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_a2','disp_qty',1)],false,0,'lot-rule-other-cart') AS other_cart \gset
+SELECT pg_temp.lot_assert(:'other_cart'::jsonb->>'success'='false' AND :'other_cart'::jsonb->>'error'='The order belongs to another customer'
+ AND :'other_cart'::jsonb->>'error_code'='WH409','a dispatch cannot be made from another customer''s cart: ' || :'other_cart');
+-- A cart that does not exist is refused the same way.
+SELECT public.create_dispatch_with_stock_check(:'for_a'::jsonb || jsonb_build_object('disp_no','LOTC1','source_order_id',gen_random_uuid()),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_a2','disp_qty',1)],false,0,'lot-rule-no-cart') AS no_cart \gset
+SELECT pg_temp.lot_assert(:'no_cart'::jsonb->>'success'='false' AND :'no_cart'::jsonb->>'error'='The order belongs to another customer',
+ 'a missing cart is refused: ' || :'no_cart');
+RESET ROLE;
+SELECT pg_temp.lot_assert((SELECT count(*)=0 FROM public.dispatch WHERE disp_no='LOTC1')
+ AND (SELECT stock=50 FROM public.goodsreceived_trl WHERE id=:'lot_a2'::uuid)
+ AND (SELECT requested_quantity=2 FROM public.order_items WHERE order_id=:'cart_b'::uuid AND grn_items_id=:'lot_b2'::uuid),
+ 'the refused cart dispatches stored nothing, moved no stock and left B''s cart line');
+-- B's own cart still works: 1 of the 2 bags.
+SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','LOTC3','disp_date','2026-05-02T12:00:00Z','customer_id',:'customer_b',
+ 'customer_name','Lot Rule Customer B','supervisor_id',:'admin_profile','supervisor_name','Lot Rule Administrator','source_order_id',:'cart_b'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_b2','disp_qty',1)],false,0,'lot-rule-own-cart') AS own_cart \gset
+SELECT pg_temp.lot_assert(:'own_cart'::jsonb->>'success'='true','a dispatch from the customer''s own cart is made: ' || :'own_cart');
+SELECT (:'own_cart'::jsonb->>'dispatch_id') AS dispatch_c3 \gset
+RESET ROLE;
+-- A record that links A's dispatch to B's cart (made before this rule) is not listed in B's cart.
+INSERT INTO public.dispatch(disp_no,disp_date,customer_id,customer_name,source_order_id)
+ VALUES ('LOTC2','2026-05-02',:'customer_a'::uuid,'Lot Rule Customer A',:'cart_b'::uuid);
+SELECT set_config('request.jwt.claims',:'reader_b_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_cart_dispatches(:'cart_b'::uuid) AS cart_list \gset
+SELECT pg_temp.lot_assert(:'cart_list'::jsonb->>'success'='true'
+ AND jsonb_array_length(:'cart_list'::jsonb->'data')=1
+ AND :'cart_list'::jsonb#>>'{data,0,dispatch_no}'='LOTC3',
+ 'B''s cart lists its own dispatch LOTC3 and not A''s LOTC2: ' || :'cart_list');
+-- The order list and the order detail do not name A's LOTC2 either (migration 87). B's own LOTC3 is
+-- unlinked for the first reading so that LOTC2 is the only dispatch that follows the cart.
+RESET ROLE;
+UPDATE public.dispatch SET source_order_id=NULL WHERE id=:'dispatch_c3'::uuid;
+SELECT set_config('request.jwt.claims',:'reader_b_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_orders_list(:'customer_b'::uuid) AS b_orders \gset
+SELECT public.get_order_with_items(:'cart_b'::uuid) AS b_order \gset
+SELECT pg_temp.lot_assert(:'b_orders'::jsonb->>'success'='true' AND position('LOTC2' IN :'b_orders')=0
+ AND position('"id": "' || :'cart_b' || '"' IN :'b_orders')>0,
+ 'B''s order list does not name A''s LOTC2: ' || :'b_orders');
+SELECT pg_temp.lot_assert(:'b_order'::jsonb->>'success'='true' AND position('LOTC2' IN :'b_order')=0,
+ 'B''s order detail does not name A''s LOTC2: ' || :'b_order');
+RESET ROLE;
+UPDATE public.dispatch SET source_order_id=:'cart_b'::uuid WHERE id=:'dispatch_c3'::uuid;
+SELECT set_config('request.jwt.claims',:'reader_b_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_order_with_items(:'cart_b'::uuid) AS b_order \gset
+SELECT public.get_orders_list(:'customer_b'::uuid) AS b_orders \gset
+SELECT pg_temp.lot_assert(position('LOTC3' IN :'b_order')>0 AND position('LOTC2' IN :'b_order')=0
+ AND position('LOTC3' IN :'b_orders')>0 AND position('LOTC2' IN :'b_orders')=0,
+ 'with its own dispatch linked again, B''s order detail and list name LOTC3 and not LOTC2: ' || :'b_order');
+-- A cart-sourced dispatch cannot be handed to another customer (all lines removed so only this rule can refuse).
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SELECT public.update_dispatch_smart(:'dispatch_c3'::uuid,jsonb_build_object('customer_id',:'customer_a','customer_name','Lot Rule Customer A'),
+ ARRAY[]::jsonb[]) AS move_cart \gset
+SELECT pg_temp.lot_assert(:'move_cart'::jsonb->>'success'='false' AND :'move_cart'::jsonb->>'error'='The order belongs to another customer',
+ 'a cart dispatch cannot change customer: ' || :'move_cart');
+RESET ROLE;
+SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_b'::uuid FROM public.dispatch WHERE id=:'dispatch_c3'::uuid)
+ AND (SELECT count(*)=1 FROM public.dispatch_trl WHERE disp_id=:'dispatch_c3'::uuid),
+ 'the refused customer change left the dispatch and its line');
+-- A record that was linked to another customer's cart before this rule can be repaired by moving it to
+-- the cart's customer (LOTC2: A's dispatch, B's cart, no lines).
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart((SELECT id FROM public.dispatch WHERE disp_no='LOTC2'),
+ jsonb_build_object('customer_id',:'customer_b','customer_name','Lot Rule Customer B'),NULL) AS repair_cart \gset
+RESET ROLE;
+SELECT pg_temp.lot_assert(:'repair_cart'::jsonb->>'success'='true'
+ AND (SELECT customer_id=:'customer_b'::uuid FROM public.dispatch WHERE disp_no='LOTC2'),
+ 'a mismatched cart dispatch can be moved to the cart''s customer: ' || :'repair_cart');
 ROLLBACK;
 \echo 'Dispatch lot ownership, dispatch edit refusals and receipt customer change checks passed.'

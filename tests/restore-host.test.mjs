@@ -81,7 +81,7 @@ exec ${bin}/docker "$@"
     signArchive(`${tar}.enc`);
     return `${tar}.enc`;
   };
-  return { scratch, root, backup, parent, run, tarball, encrypted, resum, keyFile, original, state: join(parent, 'acme') };
+  return { scratch, root, backup, parent, run, tarball, encrypted, signArchive, resum, keyFile, original, state: join(parent, 'acme') };
 }
 const clean = f => rmSync(f.scratch, { recursive: true, force: true });
 const nothingCreated = (f, result) => {
@@ -245,6 +245,66 @@ test('restore-host takes a USB archive after checking it, and accepts an existin
     assert.equal(readFileSync(join(f.state, 'public/instance.json'), 'utf8'), instanceJson);
     assert.ok(existsSync(join(f.state, 'backups', NAME, 'database.dump')));
     assert.deepEqual(readdirSync(f.parent), ['acme'], 'the unpacked archive was moved, not left behind');
+  } finally { clean(f); }
+});
+
+test('restore-host binds the checksum record to the selected archive', () => {
+  const f = fixture('warehouse-restore-host-bind-');
+  try {
+    const drive = join(f.scratch, 'drive');
+    const other = `${NAME.replace('000000Z', '000001Z')}`;
+    const tar = f.tarball();
+    // A second, different archive B next to A.
+    const b = join(drive, `${other}.tar`);
+    writeFileSync(b, Buffer.concat([readFileSync(tar), Buffer.alloc(1024)]));
+    writeFileSync(`${b}.sha256`, spawnSync('sha256sum', [`${other}.tar`], { cwd: drive, encoding: 'utf8' }).stdout);
+    // B's own record is bound to B, so the copy of A's record is the only thing wrong below.
+    const run = (file) => f.run(['--yes', '--state-dir', f.state, file]);
+    copyFileSync(`${tar}.sha256`, `${b}.sha256`); copyFileSync(`${tar}.hmac`, `${b}.hmac`);
+    let result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /names a different archive/); nothingCreated(f, result);
+    // Two records.
+    const own = spawnSync('sha256sum', [`${other}.tar`], { cwd: drive, encoding: 'utf8' }).stdout;
+    writeFileSync(`${b}.sha256`, own + readFileSync(`${tar}.sha256`, 'utf8')); f.signArchive(b);
+    result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /must hold one record/); nothingCreated(f, result);
+    // The right name with a wrong hash.
+    writeFileSync(`${b}.sha256`, `${'a'.repeat(64)}  ${other}.tar\n`); f.signArchive(b);
+    result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /does not match/); nothingCreated(f, result);
+    // The record is correct and signed: B is taken from its own files.
+    writeFileSync(`${b}.sha256`, own); f.signArchive(b);
+    // Same record, wrong signature: the signature stage runs and refuses.
+    writeFileSync(`${b}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
+    result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of .* does not match the backup key/); nothingCreated(f, result);
+    // A companion written with CRLF line endings is refused with a message that names CRLF.
+    writeFileSync(`${b}.sha256`, own.replace(/\n$/, '\r\n')); f.signArchive(b);
+    result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /CRLF line endings/); nothingCreated(f, result);
+    // Correct and signed: the checksum and the signature both pass, so B is stopped only later, on its tar entries.
+    writeFileSync(`${b}.sha256`, own); f.signArchive(b);
+    result = run(b);
+    assert.doesNotMatch(result.stderr, /different archive|one record|does not match \S+\.sha256|signature of|CRLF/);
+    assert.match(result.stderr, /unexpected entries/);
+  } finally { clean(f); }
+});
+
+test('restore-host refuses an encrypted archive with the record of another archive', () => {
+  const f = fixture('warehouse-restore-host-bind-enc-');
+  try {
+    const drive = join(f.scratch, 'drive');
+    const enc = f.encrypted();
+    const other = NAME.replace('000000Z', '000001Z');
+    const b = join(drive, `${other}.tar.enc`);
+    writeFileSync(b, Buffer.concat([readFileSync(enc), Buffer.alloc(16)]));
+    copyFileSync(`${enc}.sha256`, `${b}.sha256`); copyFileSync(`${enc}.hmac`, `${b}.hmac`);
+    const result = f.run(['--yes', '--state-dir', f.state, b]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /names a different archive/); nothingCreated(f, result);
+    // The untouched original still restores.
+    mkdirSync(f.state, { mode: 0o700 });
+    const ok = f.run(['--yes', '--state-dir', f.state, enc]);
+    assert.equal(ok.status, 0, ok.stderr + ok.stdout);
   } finally { clean(f); }
 });
 

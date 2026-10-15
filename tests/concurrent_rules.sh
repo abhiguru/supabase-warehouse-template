@@ -17,6 +17,16 @@
 #      still open gets the tiers that save commits (not "no rate").
 #   6. Migration 86: a GRN saved with an "everyone" rate entry waits for a rate change
 #      of the same item, then sees it (RATE_PLANNED) and is not saved.
+#   7. Migration 87 (BR-01): a supervisor changes a user an administrator is promoting at the same
+#      moment: the supervisor waits, then is refused (the user stays an administrator).
+#   8. Migration 87 (BR-02): a dispatch from a cart waits for a change of the cart line it consumes
+#      and takes the new quantity (no lost update).
+#   9. Migration 87 (BR-07): a retry that overlaps its first call (same user, inputs and key) waits and
+#      is answered from the cache: one dispatch, one movement, stock reduced once.
+#  10. Migration 87 (BR-04): the item rate writers (create, update) serialise per scope: the second
+#      one sees the first one's committed row and answers BANDS_OVERLAP.
+#  11. Migration 87 (BR-05/D1): a cancel of an upload whose confirm is still open (GRN and dispatch)
+#      waits, then answers ALREADY_CONFIRMED (success false); the row stays confirmed.
 set -euo pipefail
 container="${1:?disposable test container name required}"
 export PGPASSWORD=disposable-test-database-only
@@ -248,6 +258,219 @@ SQL
 )
 [[ "$stored" = t ]] || { echo 'Concurrent GRN rate: the GRN was saved, or the rate rows are not the change alone.' >&2; exit 1; }
 echo 'Concurrent GRN rate: a GRN save with a rate entry waited for the rate change, saw it and was refused as RATE_PLANNED.'
+
+# Case 7. Migration 87 (BR-01): the supervisor (the second user, demoted by case 2) sets the staff
+# member to customer while the administrator promotes the same staff member and keeps the transaction open.
+staff_id=$(psql_exec -At <<'SQL'
+SELECT id FROM public.user_profiles WHERE mobile='919888888894'
+SQL
+)
+[[ "$staff_id" =~ ^[0-9a-f-]{36}$ ]] || { echo 'Concurrent role change: the staff fixture is missing.' >&2; exit 1; }
+call_as "$claims_one" "public.update_user_role('$staff_id'::uuid,'admin'::public.user_role)" 4 > "$scratch/role-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "public.update_user_role('$staff_id'::uuid,'customer'::public.user_role)" > "$scratch/role-second"
+wait "$holder" || { echo 'Concurrent role change: the administrator call failed.' >&2; exit 1; }
+first=$(answer "$scratch/role-first"); second=$(answer "$scratch/role-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent role change: the promotion did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": false'* && "$second" == *'Supervisors cannot modify admin users'* ]] ||
+  { echo "Concurrent role change: the supervisor was not refused as acting on an administrator: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<'SQL'
+SELECT role FROM public.user_profiles WHERE mobile='919888888894'
+SQL
+)" = admin ]] || { echo 'Concurrent role change: the promoted user did not keep the administrator role.' >&2; exit 1; }
+# The same for a status change: the supervisor deactivates the user the administrator is promoting.
+psql_exec <<'SQL'
+UPDATE public.user_profiles SET role='staff' WHERE mobile='919888888894';
+SQL
+call_as "$claims_one" "public.update_user_role('$staff_id'::uuid,'admin'::public.user_role)" 4 > "$scratch/role-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "public.update_user_status('$staff_id'::uuid,false)" > "$scratch/role-second"
+wait "$holder" || { echo 'Concurrent status change: the administrator call failed.' >&2; exit 1; }
+second=$(answer "$scratch/role-second")
+[[ "$second" == *'"success": false'* && "$second" == *'Supervisors cannot modify admin users'* ]] ||
+  { echo "Concurrent status change: the supervisor was not refused as acting on an administrator: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<'SQL'
+SELECT role='admin' AND active FROM public.user_profiles WHERE mobile='919888888894'
+SQL
+)" = t ]] || { echo 'Concurrent status change: the promoted user is not an active administrator.' >&2; exit 1; }
+psql_exec <<'SQL'
+UPDATE public.user_profiles SET role='staff' WHERE mobile='919888888894';
+SQL
+echo 'Concurrent role and status change: a supervisor acting while an administrator promoted the user waited and was refused; the user stayed an administrator.'
+
+# Case 8. Migration 87 (BR-02): the cart line asks for 10 of a lot holding 100; the administrator raises
+# it to 20 (transaction held); a dispatch of 4 from that cart starts meanwhile and must take the 20.
+psql_exec -v claims="$claims_one" > "$scratch/fixture87" <<'SQL'
+SELECT set_config('request.jwt.claims',:'claims',false);
+SET ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'CONCC',p_date=>'2026-04-01T12:00:00Z',
+  p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
+  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'concurrent-rule-cart-lot',
+  p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Rule Potatoes'),
+    'item_name','Concurrent Rule Potatoes','packaging','Bag','qty',100,'weight',10,'rack','R2')))->>'success';
+SELECT public.save_grn(p_gr_no=>'CONCD',p_date=>'2026-04-01T12:00:00Z',
+  p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),p_customer_name=>'Concurrent Rule Customer',
+  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'concurrent-rule-retry-lot',
+  p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Rule Potatoes'),
+    'item_name','Concurrent Rule Potatoes','packaging','Bag','qty',50,'weight',10,'rack','R3')))->>'success';
+SELECT public.get_or_create_cart((SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'))::text;
+SQL
+cart_lot=$(psql_exec -At <<'SQL'
+SELECT t.id FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CONCC'
+SQL
+)
+cart_id=$(psql_exec -At <<'SQL'
+SELECT id FROM public.orders WHERE customer_id=(SELECT id FROM public.customers WHERE name='Concurrent Rule Customer')
+  AND status='OPEN' AND deleted_at IS NULL ORDER BY created_at LIMIT 1
+SQL
+)
+[[ "$cart_lot" =~ ^[0-9a-f-]{36}$ && "$cart_id" =~ ^[0-9a-f-]{36}$ ]] ||
+  { echo "Concurrent cart line: the fixture failed: $(tr '\n' ' ' < "$scratch/fixture87")" >&2; exit 1; }
+call_as "$claims_one" "public.add_item_to_order('$cart_id'::uuid,'$cart_lot'::uuid,10)" > "$scratch/cart-add"
+cart_line=$(psql_exec -At <<SQL
+SELECT id FROM public.order_items WHERE order_id='$cart_id'::uuid AND grn_items_id='$cart_lot'::uuid
+SQL
+)
+[[ "$cart_line" =~ ^[0-9a-f-]{36}$ ]] || { echo "Concurrent cart line: the cart line was not created: $(answer "$scratch/cart-add")" >&2; exit 1; }
+cart_dispatch_call() { # disp_no, idempotency key, lot, quantity, source order or empty
+  cat <<SQL
+public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','$1','disp_date','2026-05-02','customer_id',
+  (SELECT id FROM public.customers WHERE name='Concurrent Rule Customer'),'customer_name','Concurrent Rule Customer',
+  'supervisor_id','$admin_one','supervisor_name','Concurrent Administrator One'$5),
+  ARRAY[jsonb_build_object('gr_trl_id','$3'::uuid,'disp_qty',$4)],0,'$2')
+SQL
+}
+call_as "$claims_one" "public.update_order_item_quantity('$cart_line'::uuid,20)" 4 > "$scratch/cart-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(cart_dispatch_call CONCE concurrent-cart-key "$cart_lot" 4 ",'source_order_id','$cart_id'")" > "$scratch/cart-second"
+wait "$holder" || { echo 'Concurrent cart line: the quantity change failed.' >&2; exit 1; }
+first=$(answer "$scratch/cart-first"); second=$(answer "$scratch/cart-second")
+[[ "$first" == *'"success": true'* && "$second" == *'"success": true'* ]] ||
+  { echo "Concurrent cart line: a call did not succeed: $first / $second" >&2; exit 1; }
+stored=$(psql_exec -At <<SQL
+SELECT (SELECT requested_quantity=16 FROM public.order_items WHERE id='$cart_line'::uuid)
+  AND (SELECT count(*)=1 AND bool_and(cart_quantity_consumed=4 AND source_order_item_id='$cart_line'::uuid) FROM public.dispatch_trl WHERE gr_trl_id='$cart_lot'::uuid)
+  AND (SELECT stock=96 FROM public.goodsreceived_trl WHERE id='$cart_lot'::uuid);
+SQL
+)
+[[ "$stored" = t ]] || { echo 'Concurrent cart line: the cart line is not 16 (20 - 4), or the dispatch did not take 4 from it, or the stock is not 96.' >&2; exit 1; }
+echo 'Concurrent cart line: a dispatch from the cart waited for the quantity change and took the new 20 (16 left, stock 96).'
+
+# Case 9. Migration 87 (BR-07): the same user sends the same dispatch with the same key twice, overlapping.
+retry_lot=$(psql_exec -At <<'SQL'
+SELECT t.id FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CONCD'
+SQL
+)
+[[ "$retry_lot" =~ ^[0-9a-f-]{36}$ ]] || { echo 'Concurrent retry: the fixture lot is missing.' >&2; exit 1; }
+call_as "$claims_one" "$(cart_dispatch_call CONCF concurrent-retry-key "$retry_lot" 5 '')" 4 > "$scratch/retry-first" &
+holder=$!
+sleep 1
+call_as "$claims_one" "$(cart_dispatch_call CONCF concurrent-retry-key "$retry_lot" 5 '')" > "$scratch/retry-second"
+wait "$holder" || { echo 'Concurrent retry: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/retry-first"); second=$(answer "$scratch/retry-second")
+[[ "$first" == *'"success": true'* && "$first" != *'from_cache'* ]] ||
+  { echo "Concurrent retry: the first call did not create the dispatch: $first" >&2; exit 1; }
+[[ "$second" == *'"success": true'* && "$second" == *'"from_cache": true'* ]] ||
+  { echo "Concurrent retry: the overlapping retry was not answered from the cache: $second" >&2; exit 1; }
+stored=$(psql_exec -At <<SQL
+SELECT (SELECT count(*)=1 FROM public.dispatch WHERE disp_no='CONCF')
+  AND (SELECT count(*)=1 FROM public.dispatch_trl WHERE gr_trl_id='$retry_lot'::uuid)
+  AND (SELECT count(*)=1 FROM public.stock_movements WHERE gr_trl_id='$retry_lot'::uuid AND movement_type='dispatch')
+  AND (SELECT stock=45 FROM public.goodsreceived_trl WHERE id='$retry_lot'::uuid);
+SQL
+)
+[[ "$stored" = t ]] || { echo 'Concurrent retry: not exactly one dispatch, one line, one movement and stock 45.' >&2; exit 1; }
+echo 'Concurrent retry: an overlapping retry waited, was answered from the cache; one dispatch, one movement, stock reduced once.'
+
+# Case 10. Migration 87 (BR-04): rate writers of one scope (item, everyone, monthly) take turns.
+call_as "$claims_one" "public.create_item('Concurrent Rate Writer A','Bag')" > "$scratch/rw-item"
+call_as "$claims_one" "public.create_item('Concurrent Rate Writer B','Bag')" > "$scratch/rw-item"
+rw_item_a=$(psql_exec -At <<'SQL'
+SELECT id FROM public.items WHERE name='Concurrent Rate Writer A'
+SQL
+)
+rw_item_b=$(psql_exec -At <<'SQL'
+SELECT id FROM public.items WHERE name='Concurrent Rate Writer B'
+SQL
+)
+[[ "$rw_item_a" =~ ^[0-9a-f-]{36}$ && "$rw_item_b" =~ ^[0-9a-f-]{36}$ ]] || { echo 'Concurrent rate writers: the items were not created.' >&2; exit 1; }
+create_price_call() { # item, weight min, weight max, unit price
+  echo "public.create_item_storage_price(p_item_id=>'$1'::uuid,p_price_type=>'monthly',p_unit_price=>$4,p_weight_min=>$2,p_weight_max=>$3,p_labour_rate=>2,p_effective_from=>CURRENT_DATE + 10,p_tax_percent=>5)"
+}
+call_as "$claims_one" "$(create_price_call "$rw_item_a" 0 100 5)" 4 > "$scratch/rw-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(create_price_call "$rw_item_a" 50 150 9)" > "$scratch/rw-second"
+wait "$holder" || { echo 'Concurrent rate writers: the first create failed.' >&2; exit 1; }
+first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the first create did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": false'* && "$second" == *'BANDS_OVERLAP'* ]] ||
+  { echo "Concurrent rate writers: the second create was not refused as BANDS_OVERLAP: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<SQL
+SELECT count(*)=1 AND bool_and(weight_min=0 AND weight_max=100 AND unit_price=5) FROM public.item_storage_prices WHERE item_id='$rw_item_a'::uuid
+SQL
+)" = t ]] || { echo 'Concurrent rate writers: the item does not have exactly the first row.' >&2; exit 1; }
+# An update and a create of the same scope: the update widens the one row to 0..100 while a create of 50..150 waits.
+call_as "$claims_one" "$(create_price_call "$rw_item_b" 0 49 5)" > "$scratch/rw-base"
+rw_row=$(psql_exec -At <<SQL
+SELECT id FROM public.item_storage_prices WHERE item_id='$rw_item_b'::uuid
+SQL
+)
+[[ "$rw_row" =~ ^[0-9a-f-]{36}$ ]] || { echo "Concurrent rate writers: the base row was not created: $(answer "$scratch/rw-base")" >&2; exit 1; }
+call_as "$claims_one" "public.update_item_storage_price(p_id=>'$rw_row'::uuid,p_unit_price=>5,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>CURRENT_DATE + 10)" 4 > "$scratch/rw-first"  &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(create_price_call "$rw_item_b" 50 150 9)" > "$scratch/rw-second"
+wait "$holder" || { echo 'Concurrent rate writers: the update failed.' >&2; exit 1; }
+first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the update did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": false'* && "$second" == *'BANDS_OVERLAP'* ]] ||
+  { echo "Concurrent rate writers: the create after the update was not refused as BANDS_OVERLAP: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<SQL
+SELECT count(*)=1 AND bool_and(weight_min=0 AND weight_max=100) FROM public.item_storage_prices WHERE item_id='$rw_item_b'::uuid
+SQL
+)" = t ]] || { echo 'Concurrent rate writers: the item does not have exactly the widened row.' >&2; exit 1; }
+echo 'Concurrent rate writers: a create and an update of one scope took turns; the later one was refused as BANDS_OVERLAP and no bands overlap.'
+
+# Case 11. Migration 87 (D1): a cancel waits for a confirm in flight and then answers ALREADY_CONFIRMED.
+psql_exec -v admin="$admin_one" <<'SQL'
+INSERT INTO public.grn_images(grn_id,image_type,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ SELECT g.id,'header','concurrent-rules/grn-inflight','fixture.webp',32,'image/webp','pending',:'admin'::uuid
+ FROM public.goodsreceived g WHERE g.gr_no='CONCD';
+INSERT INTO public.dispatch_images(dispatch_id,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ SELECT d.id,'concurrent-rules/dispatch-inflight','fixture.webp',32,'image/webp','pending',:'admin'::uuid
+ FROM public.dispatch d WHERE d.disp_no='CONCF';
+SQL
+for kind in grn dispatch; do
+  table="${kind}_images"; path="concurrent-rules/${kind}-inflight"
+  image_id=$(psql_exec -At <<SQL
+SELECT id FROM public.$table WHERE storage_path='$path'
+SQL
+  )
+  [[ "$image_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "Concurrent cancel ($kind): the pending upload was not created." >&2; exit 1; }
+  # The confirm: its UPDATE is done, its transaction stays open.
+  psql_exec <<SQL > "$scratch/cancel-confirm" &
+BEGIN;
+UPDATE public.$table SET status='confirmed' WHERE id='$image_id'::uuid;
+SELECT pg_sleep(4);
+COMMIT;
+SQL
+  holder=$!
+  sleep 1
+  call_as "$claims_one" "public.cancel_${kind}_image_upload('$image_id'::uuid)" > "$scratch/cancel-second"
+  wait "$holder" || { echo "Concurrent cancel ($kind): the confirm failed." >&2; exit 1; }
+  second=$(answer "$scratch/cancel-second")
+  [[ "$second" == *'"success": false'* && "$second" == *'ALREADY_CONFIRMED'* && "$second" == *"$path"* ]] ||
+    { echo "Concurrent cancel ($kind): the cancel was not answered ALREADY_CONFIRMED: $second" >&2; exit 1; }
+  [[ "$(psql_exec -At <<SQL
+SELECT count(*)=1 AND bool_and(status='confirmed') FROM public.$table WHERE id='$image_id'::uuid
+SQL
+  )" = t ]] || { echo "Concurrent cancel ($kind): the row is not left confirmed." >&2; exit 1; }
+  echo "Concurrent cancel ($kind): a cancel that overlapped a confirm waited and was answered ALREADY_CONFIRMED; the upload stays."
+done
 
 # The administrators set aside at the start get their place back.
 psql_exec -v others="$others" <<'SQL'

@@ -762,6 +762,9 @@ three things:
   can write to a backup drive can regenerate them, and a restore replays the
   dump as the database superuser and adopts the backup's `compose.env`. The
   signature is what tells your backup from an edited one;
+  for an archive, `db:restore-host` also requires its `.sha256` to hold exactly one
+  record, naming that archive, with the SHA-256 of its bytes, so a checksum and
+  signature copied from another archive are refused before anything is opened;
 - a USB drive is **enrolled** with it (see [USB backup drive](#usb-backup-drive));
 - USB archives are **encrypted** with it when you switch encryption on.
 

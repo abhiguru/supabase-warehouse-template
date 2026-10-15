@@ -12,10 +12,30 @@ DO $$ BEGIN
   END IF;
 END $$;
 ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+-- Administrators and supervisors read, upload and replace image objects freely,
+-- but delete only an object that nothing references any more: no grn_images or
+-- dispatch_images row and no document header column names it. (The staff helper
+-- warehouse_security.staff_may_remove_image_file is staff-only and also needs a
+-- live document, so the manager rule is written out here; it covers the files of
+-- deleted documents too.)
 DROP POLICY IF EXISTS starter_staff_images ON storage.objects;
-CREATE POLICY starter_staff_images ON storage.objects FOR ALL TO authenticated
+DROP POLICY IF EXISTS starter_manager_images_select ON storage.objects;
+CREATE POLICY starter_manager_images_select ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+DROP POLICY IF EXISTS starter_manager_images_insert ON storage.objects;
+CREATE POLICY starter_manager_images_insert ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+DROP POLICY IF EXISTS starter_manager_images_update ON storage.objects;
+CREATE POLICY starter_manager_images_update ON storage.objects FOR UPDATE TO authenticated
 USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'))
 WITH CHECK (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+DROP POLICY IF EXISTS starter_manager_images_delete ON storage.objects;
+CREATE POLICY starter_manager_images_delete ON storage.objects FOR DELETE TO authenticated
+USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor')
+  AND NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.storage_path=name)
+  AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
+  AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)
+  AND NOT EXISTS (SELECT 1 FROM public.dispatch d WHERE d.disp_image_url IS NOT NULL AND position(name IN d.disp_image_url) > 0));
 DROP POLICY IF EXISTS starter_customer_grn_images ON storage.objects;
 CREATE POLICY starter_customer_grn_images ON storage.objects FOR SELECT TO authenticated USING (
   bucket_id='grn-images' AND EXISTS (SELECT 1 FROM public.grn_images i JOIN public.goodsreceived g ON g.id=i.grn_id

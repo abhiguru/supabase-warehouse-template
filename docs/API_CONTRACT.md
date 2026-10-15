@@ -410,3 +410,41 @@ always three years before today). `INVALID_DATE` reads 'The start date must be o
 two years after today' and carries `data.earliest` (ISO date). `get_item_storage_prices` answers
 `earliest_start` (ISO date) as a key of the answer next to `data` and `pagination` (`data` is the list of
 rows). `create_item_storage_price` has no window, as before.
+
+## Outside review fixes (migration 87, 2026-10-15)
+
+### Dispatch
+
+- `create_dispatch_with_stock_check` (both overloads) and `update_dispatch_smart` refuse the same lot
+  twice in the lines: `The same lot appears twice in the dispatch lines` (SQLSTATE `WH409`; the create answer
+  is `{success:false, error, error_code:'WH409'}`, the edit answer `{success:false, error}`). Nothing is stored.
+- A dispatch made from a cart (`source_order_id`) must be for the cart's customer: create refuses a missing,
+  deleted or other customer's cart with `The order belongs to another customer` (`WH409`);
+  `update_dispatch_smart` refuses moving a dispatch that has a `source_order_id` to a customer other than
+  the cart's (same text and code; a dispatch already for another customer can still be edited without
+  changing its customer). `get_cart_dispatches`, `get_orders_list` and `get_order_with_items` show only a dispatch of the cart customer's own.
+- Create takes the document lock (advisory 71040) before it looks up the idempotency key, so a retry that
+  overlaps its first call waits and is then answered from the cache (`from_cache:true`), never with a
+  unique-key error. A dispatch from a cart reads the cart line `FOR UPDATE`: a concurrent change of the line's
+  quantity is not lost.
+- `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`total_weight`) sum weight as numeric: a
+  total above 2147483647 kg is a number, not an error.
+
+### Users and rates
+
+- `update_user_role` and `update_user_status` take the user lock (advisory 71043) after the caller check and
+  read the target row `FOR UPDATE`: a supervisor who acts at the same moment as an administrator promoting
+  the target waits and is refused (`Supervisors cannot modify admin users`).
+- `create_item_storage_price` (with `p_price_type`), both `update_item_storage_price` overloads,
+  `find_or_create_item_storage_price` and `delete_item_storage_price` take the same per-scope advisory lock as
+  `replace_item_rates` (item, customer or `default`, price type) before they read the scope, so writers of one
+  scope take turns and the later one sees the earlier one's rows (`BANDS_OVERLAP` for an overlap).
+  `find_storage_price` breaks a last tie by row id (a fixed tie-break, the lower row id).
+
+### Image upload cancellation
+
+`cancel_grn_image_upload` and `cancel_dispatch_image_upload` answer, for an upload the caller may cancel:
+`{success:true, storage_path, message}` (pending, removed), `{success:false, code:'ALREADY_CONFIRMED',
+error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing is changed), or `{success:false,
+code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
+the stored file only after `success:true`.
