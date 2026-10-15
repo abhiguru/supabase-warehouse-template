@@ -9,15 +9,17 @@
 --    GRN's own rates; entries with scope "customer" or "everyone" change the item's customer or
 --    default rate from the GRN's India day (to an optional last day), for administrators,
 --    supervisors and staff alike; then every line of the GRN must have a rate (RATE_MISSING
---    otherwise). Any failure undoes the whole call. Helpers: warehouse_security.apply_grn_rates.
+--    otherwise; not for an invoiced GRN, which keeps its archived rates and needs none). Any failure undoes the
+--    whole call. update_grn also removes the GRN's own rates whose pricing kind or band no longer fits its lines. Helpers: warehouse_security.apply_grn_rates.
 -- 3. build_invoice_recalculation_rows: rent, labour and tax of a line come from one source, in
 --    this order: the stored invoice figure, the GRN's own rate, the item's rate.
 -- 4. get_grn_details: grn.rates (always [] for a customer account). 5. public.get_item_grn_rates(p_item_id): the GRN-only rates of
 --    an item (admin, supervisor, staff).
--- 6. warehouse_security.rate_start_floor(): the earliest day a rate may start = the India day of
---    the first GRN that is not deleted (today when there is none, and never after today).
---    replace_item_rates and undo_rate_change use it instead of "today - 1095 days";
---    get_item_storage_prices answers it as earliest_start.
+-- 6. warehouse_security.rate_start_floor(): the earliest day a rate may start = the earlier of the
+--    India day of the first GRN that is not deleted and today - 1095 days (the old window, which
+--    a facility with older GRNs extends further back; never later than before). replace_item_rates
+--    and undo_rate_change use it instead of "today - 1095 days"; get_item_storage_prices answers
+--    it as earliest_start.
 -- 7. The guard admits get_item_grn_rates for staff.
 --
 -- Errors follow migration 74: {success:false, error, error_code, data}; those of save_grn and
@@ -52,6 +54,8 @@ CREATE TABLE public.grn_rates (
   tax_percent numeric(5,2) NOT NULL,
   created_by uuid REFERENCES public.user_profiles(id),
   created_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid REFERENCES public.user_profiles(id),
+  updated_at timestamptz,
   CONSTRAINT grn_rates_price_type_valid CHECK (price_type IN ('monthly','one_time')),
   CONSTRAINT grn_rates_weight_valid CHECK (weight_min >= 0 AND weight_min <= weight_max AND weight_max <= 100000),
   CONSTRAINT grn_rates_unit_price_valid CHECK (unit_price >= 0 AND unit_price <= 999999),
@@ -73,12 +77,13 @@ CREATE POLICY starter_staff ON public.grn_rates FOR SELECT TO authenticated
 -- ---------------------------------------------------------------------------
 -- 2. The rate start floor
 -- ---------------------------------------------------------------------------
--- The earliest day a rate may start: the India day of the first GRN that is not deleted, never
--- after today (today when the facility has no GRN).
+-- The earliest day a rate may start: never later than the old window (today - 1095 days), and
+-- earlier when the facility has older GRNs (the India day of the first one that is not deleted).
+-- LEAST ignores the NULL of a facility with no GRN.
 CREATE FUNCTION warehouse_security.rate_start_floor() RETURNS date
 LANGUAGE sql STABLE SET search_path = pg_catalog, public AS $$
   SELECT LEAST(warehouse_security.business_date((SELECT min(g.date) FROM public.goodsreceived g WHERE g.deleted_at IS NULL)),
-               warehouse_security.business_date(now()))
+               warehouse_security.business_date(now()) - 1095)
 $$;
 REVOKE ALL ON FUNCTION warehouse_security.rate_start_floor() FROM PUBLIC, anon, authenticated;
 
@@ -113,6 +118,13 @@ $m$, $r$  IF p_starts_on IS NULL OR p_starts_on NOT BETWEEN warehouse_security.r
       jsonb_build_object('earliest', warehouse_security.rate_start_floor()));
   END IF;
 $r$);
+  -- replace_item_rates: whole kilograms may be written 50.0 (as set_standard_rate and apply_grn_rates accept).
+  PERFORM pg_temp.patch_rpc('public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])',
+  $m$v_min := (v_band->>'weight_min')::integer; v_max := (v_band->>'weight_max')::integer;$m$,
+  $r$v_min := (v_band->>'weight_min')::numeric::integer; v_max := (v_band->>'weight_max')::numeric::integer;$r$);
+  PERFORM pg_temp.patch_rpc('public.replace_item_rates(uuid,uuid,text,date,jsonb,boolean,text,date,uuid[])',
+  $m$(v_band->>'weight_min')::integer, (v_band->>'weight_max')::integer,$m$,
+  $r$(v_band->>'weight_min')::numeric::integer, (v_band->>'weight_max')::numeric::integer,$r$);
   -- get_item_storage_prices: the floor beside the rows. data is the list of rows, so the floor is
   -- a key of the answer next to data and pagination.
   PERFORM pg_temp.patch_rpc('public.get_item_storage_prices(jsonb,text,text,integer,integer)',
@@ -202,8 +214,10 @@ BEGIN
     -- The item must be on the GRN, with a line whose weight the band holds.
     v_item := CASE WHEN jsonb_typeof(v_e->'item_id') = 'string' AND (v_e->>'item_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                    THEN (v_e->>'item_id')::uuid END;
-    IF v_item IS NULL OR NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t
-         WHERE t.gr_id = p_gr_id AND t.item_id = v_item AND COALESCE(t.weight, 0) BETWEEN v_min AND v_max) THEN
+    -- (An invoiced GRN's own rates are archived: the stored set may no longer fit a line that
+    -- changed after the invoice, and re-sending it must still save.)
+    IF v_item IS NULL OR (NOT (v_invoiced AND v_scope = 'grn') AND NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t
+         WHERE t.gr_id = p_gr_id AND t.item_id = v_item AND COALESCE(t.weight, 0) BETWEEN v_min AND v_max)) THEN
       RETURN warehouse_security.grn_rate_failure('RATE_NOT_FOR_GRN', 'The rate is not for any line of this GRN',
         jsonb_build_object('index', v_ord, 'item_id', v_e->'item_id'));
     END IF;
@@ -235,11 +249,13 @@ BEGIN
     v_unit := (v_e->>'unit_price')::numeric; v_tax := (v_e->>'tax_percent')::numeric;
     v_lab := CASE WHEN v_type = 'one_time' THEN 0 ELSE (v_e->>'labour_rate')::numeric END;
     -- Another band that shares a weight and a day with the new row.
-    IF EXISTS (SELECT 1 FROM public.item_storage_prices r
-                WHERE r.item_id = v_item AND r.customer_id IS NOT DISTINCT FROM v_cust AND r.price_type = v_type
-                  AND r.weight_min <= v_max AND v_min <= r.weight_max AND (r.weight_min <> v_min OR r.weight_max <> v_max)
-                  AND r.effective_from <= COALESCE(v_to, 'infinity'::date) AND COALESCE(r.effective_to, 'infinity'::date) >= v_day) THEN
-      RETURN warehouse_security.grn_rate_failure('BANDS_OVERLAP', 'Weight bands overlap', jsonb_build_object('index', v_ord));
+    SELECT min(r.effective_from) INTO v_starts FROM public.item_storage_prices r
+     WHERE r.item_id = v_item AND r.customer_id IS NOT DISTINCT FROM v_cust AND r.price_type = v_type
+       AND r.weight_min <= v_max AND v_min <= r.weight_max AND (r.weight_min <> v_min OR r.weight_max <> v_max)
+       AND r.effective_from <= COALESCE(v_to, 'infinity'::date) AND COALESCE(r.effective_to, 'infinity'::date) >= v_day;
+    IF v_starts IS NOT NULL THEN
+      RETURN warehouse_security.grn_rate_failure('BANDS_OVERLAP', 'Weight bands overlap',
+        jsonb_build_object('index', v_ord, 'starts_on', v_starts));
     END IF;
     -- The same band planned after the GRN day, inside the new row's days.
     SELECT min(r.effective_from) INTO v_starts FROM public.item_storage_prices r
@@ -262,6 +278,35 @@ BEGIN
         DELETE FROM public.item_storage_prices WHERE id = v_row.id;
       ELSE
         UPDATE public.item_storage_prices SET effective_to = v_day - 1 WHERE id = v_row.id;
+      END IF;
+      IF v_to IS NOT NULL AND (v_old_to IS NULL OR v_old_to > v_to) THEN
+        INSERT INTO public.item_storage_prices (
+          item_id, customer_id, price_type, unit_price, weight_min, weight_max, labour_rate, tax_percent,
+          effective_from, effective_to, created_by, unit_price_one_time, unit_price_monthly)
+        VALUES (v_row.item_id, v_row.customer_id, v_row.price_type, v_row.unit_price, v_row.weight_min, v_row.weight_max,
+          v_row.labour_rate, v_row.tax_percent, v_to + 1, v_old_to, v_profile, v_row.unit_price_one_time, v_row.unit_price_monthly);
+      END IF;
+    END LOOP;
+    -- The other bands of the scope in force on the GRN day follow on the same days, so every band of
+    -- the scope still starts and ends together and Item pricing's Correct and Undo keep working: ended
+    -- the day before, copied unchanged from the GRN day (to the last day), and resumed after it.
+    FOR v_row IN SELECT * FROM public.item_storage_prices r
+        WHERE r.item_id = v_item AND r.customer_id IS NOT DISTINCT FROM v_cust AND r.price_type = v_type
+          AND (r.weight_min <> v_min OR r.weight_max <> v_max)
+          AND r.effective_from <= v_day AND COALESCE(r.effective_to, 'infinity'::date) >= v_day
+        ORDER BY r.weight_min, r.effective_from, r.id FOR UPDATE LOOP
+      v_old_to := v_row.effective_to;
+      IF v_row.effective_from < v_day THEN
+        UPDATE public.item_storage_prices SET effective_to = v_day - 1 WHERE id = v_row.id;
+        INSERT INTO public.item_storage_prices (
+          item_id, customer_id, price_type, unit_price, weight_min, weight_max, labour_rate, tax_percent,
+          effective_from, effective_to, created_by, unit_price_one_time, unit_price_monthly)
+        VALUES (v_row.item_id, v_row.customer_id, v_row.price_type, v_row.unit_price, v_row.weight_min, v_row.weight_max,
+          v_row.labour_rate, v_row.tax_percent, v_day,
+          CASE WHEN v_to IS NOT NULL AND (v_old_to IS NULL OR v_old_to > v_to) THEN v_to ELSE v_old_to END,
+          v_profile, v_row.unit_price_one_time, v_row.unit_price_monthly);
+      ELSIF v_to IS NOT NULL AND (v_old_to IS NULL OR v_old_to > v_to) THEN
+        UPDATE public.item_storage_prices SET effective_to = v_to WHERE id = v_row.id;
       END IF;
       IF v_to IS NOT NULL AND (v_old_to IS NULL OR v_old_to > v_to) THEN
         INSERT INTO public.item_storage_prices (
@@ -301,15 +346,26 @@ BEGIN
       RETURN warehouse_security.grn_rate_failure('GRN_INVOICED', 'The rates of an invoiced GRN cannot change');
     END IF;
   ELSE
-    DELETE FROM public.grn_rates WHERE gr_id = p_gr_id;
+    -- By (item, band): a row that is no longer in the list goes; a new one is inserted; an unchanged
+    -- one is left alone (id, author and time stay); a changed one is updated and names who changed it.
+    DELETE FROM public.grn_rates g WHERE g.gr_id = p_gr_id AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(p_rates) e WHERE e->>'scope' = 'grn' AND (e->>'item_id')::uuid = g.item_id
+         AND (e->>'weight_min')::numeric::integer = g.weight_min AND (e->>'weight_max')::numeric::integer = g.weight_max);
     INSERT INTO public.grn_rates (gr_id, item_id, price_type, weight_min, weight_max, unit_price, labour_rate, tax_percent, created_by)
     SELECT p_gr_id, (e->>'item_id')::uuid, v_type, (e->>'weight_min')::numeric::integer, (e->>'weight_max')::numeric::integer,
            (e->>'unit_price')::numeric, CASE WHEN v_type = 'one_time' THEN 0 ELSE (e->>'labour_rate')::numeric END,
            (e->>'tax_percent')::numeric, v_profile
-      FROM jsonb_array_elements(p_rates) e WHERE e->>'scope' = 'grn';
+      FROM jsonb_array_elements(p_rates) e WHERE e->>'scope' = 'grn'
+    ON CONFLICT (gr_id, item_id, weight_min, weight_max) DO UPDATE
+      SET price_type = EXCLUDED.price_type, unit_price = EXCLUDED.unit_price, labour_rate = EXCLUDED.labour_rate,
+          tax_percent = EXCLUDED.tax_percent, updated_by = v_profile, updated_at = now()
+      WHERE (public.grn_rates.price_type, public.grn_rates.unit_price, public.grn_rates.labour_rate, public.grn_rates.tax_percent)
+            IS DISTINCT FROM (EXCLUDED.price_type, EXCLUDED.unit_price, EXCLUDED.labour_rate, EXCLUDED.tax_percent);
   END IF;
 
-  -- 4. Every line has a rate: the GRN's own, else the item's.
+  -- 4. Every line has a rate: the GRN's own, else the item's. (Not for an invoiced GRN: its invoice
+  -- carries its own figures, and no rate is read again.)
+  IF NOT v_invoiced THEN
   SELECT jsonb_agg(jsonb_build_object('item_id', x.item_id, 'item_name', x.item_name, 'weight', x.weight) ORDER BY x.item_name, x.weight, x.item_id)
     INTO v_missing
     FROM (SELECT DISTINCT t.item_id, t.item_name, COALESCE(t.weight, 0) AS weight
@@ -320,6 +376,7 @@ BEGIN
              AND (public.find_storage_price(t.item_id, v_customer, COALESCE(t.weight, 0), v_day, v_type)).id IS NULL) x;
   IF v_missing IS NOT NULL THEN
     RETURN warehouse_security.grn_rate_failure('RATE_MISSING', 'Some lines of this GRN have no rate', jsonb_build_object('lines', v_missing));
+  END IF;
   END IF;
   RETURN NULL;
 END $$;
@@ -1087,6 +1144,16 @@ BEGIN
             v_images_deleted := 0;
         END IF;
 
+        -- The GRN's own rates follow its lines, whether or not p_rates came: a rate of another pricing
+        -- kind, or one whose band holds no weight of its item's lines any more, goes. An invoiced
+        -- GRN keeps its (archived) rates.
+        DELETE FROM public.grn_rates gr WHERE gr.gr_id = p_grn_id
+          AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = p_grn_id AND g.invoiced IS TRUE)
+          AND (gr.price_type <> (SELECT CASE WHEN upper(COALESCE(g.pricing_mode, '')) = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END
+                                   FROM public.goodsreceived g WHERE g.id = p_grn_id)
+               OR NOT EXISTS (SELECT 1 FROM public.goodsreceived_trl t WHERE t.gr_id = p_grn_id AND t.item_id = gr.item_id
+                                AND COALESCE(t.weight, 0) BETWEEN gr.weight_min AND gr.weight_max));
+
         -- Rates typed on the GRN sheet (migration 86), after the lines are written. A failure
         -- raises out of this block, which undoes the update, and the handler answers it.
         IF p_rates IS NOT NULL THEN
@@ -1309,6 +1376,14 @@ $m$, $r$                    'duration_mode', gr.duration_mode,
                     ) ELSE '[]'::jsonb END,
                     'created_at', gr.created_at,
 $r$);
+  -- delete_item_safe: a GRN-only rate is data, like a line (never cascaded).
+  PERFORM pg_temp.patch_rpc('public.delete_item_safe(uuid)',
+  $m$IF v_grn_count > 0 OR v_order_count > 0 THEN$m$,
+  $r$IF v_grn_count > 0 OR v_order_count > 0 OR EXISTS (SELECT 1 FROM public.grn_rates WHERE item_id = p_item_id) THEN$r$);
+  PERFORM pg_temp.patch_rpc('public.delete_item_safe(uuid)',
+  $m$'order_items_count', v_order_count,$m$,
+  $r$'order_items_count', v_order_count,
+                'grn_rates_count', (SELECT count(*) FROM public.grn_rates WHERE item_id = p_item_id),$r$);
   -- The guard: staff reach get_item_grn_rates.
   PERFORM pg_temp.patch_rpc('warehouse_security.authorize_rpc(text,jsonb)',
   $m$    'get_standard_rate','set_standard_rate',
@@ -1333,7 +1408,7 @@ BEGIN
            'weight_min', r.weight_min, 'weight_max', r.weight_max, 'unit_price', r.unit_price,
            'labour_rate', r.labour_rate, 'tax_percent', r.tax_percent,
            'archived', COALESCE(g.invoiced, false), 'created_at', r.created_at)
-         ORDER BY COALESCE(g.invoiced, false), g.date DESC, g.gr_no, r.weight_min, r.id), '[]'::jsonb)
+         ORDER BY COALESCE(g.invoiced, false), warehouse_security.business_date(g.date) DESC, g.gr_no, r.weight_min, r.id), '[]'::jsonb)
     INTO v_rates
     FROM public.grn_rates r JOIN public.goodsreceived g ON g.id = r.gr_id
    WHERE r.item_id = p_item_id AND g.deleted_at IS NULL;

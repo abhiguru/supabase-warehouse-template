@@ -346,30 +346,40 @@ app's before this migration and fas-sync's, works unchanged). Roles as before: a
      `INVALID_AMOUNT` (`data.index`, `data.field`); `to` not a date or before the GRN day ->
      `INVALID_DATE` (`data.index`); an item that is not on the GRN, or a band that holds none of that
      item's line weights (a line without weight counts as 0 kg) -> `RATE_NOT_FOR_GRN` (`data.index`,
-     `data.item_id`); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
+     `data.item_id`; not checked for the `grn` entries of an invoiced GRN, whose stored set may no longer fit
+     a changed line); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
   2. `customer` (the GRN's business) and `everyone` (the default rate) entries change the item's rate
      of the GRN's price type from the GRN's India day, any day, for staff too (the staff past-day rule
      of `replace_item_rates` does not apply here). For the rows of that scope that share a weight and a
      day with the days from the GRN day to `to`: a row of a different band -> `BANDS_OVERLAP`
-     (`data.index`); a row of the same band that starts after the GRN day -> `RATE_PLANNED`
+     (`data.index`, `data.starts_on` = the earliest start of the clashing rows); a row of the same band that starts after the GRN day -> `RATE_PLANNED`
      (`data.index`, `data.starts_on`); a row of the same band that starts on the GRN day is replaced,
      else it ends the day before the GRN day; with `to` set and the old row open or ending after `to`,
      a copy of it with its old figures starts the day after `to`. The new row runs from the GRN day to
-     `to` (open when `to` is null: the old row then ends for good). Entries are applied in list order;
-     the history rows name the caller.
-  3. The `grn` entries replace the GRN's own rates in `grn_rates`. When the GRN is invoiced and the new
+     `to` (open when `to` is null: the old row then ends for good). The other bands of the scope that
+     are in force on the GRN day follow on the same days (ended the day before, copied unchanged from the
+     GRN day to `to`, resumed after `to`), so every band of the scope still starts and ends together and
+     Item pricing's Correct and Undo work on the day. Entries are applied in list order; the history rows
+     name the caller.
+  3. The `grn` entries replace the GRN's own rates in `grn_rates`, by item and band: a row that is no
+     longer listed goes, a new one is added, an unchanged one keeps its id, author and time, a changed one
+     gets `updated_by` / `updated_at`. When the GRN is invoiced and the new
      set differs from the stored one (item, band, figures) -> `GRN_INVOICED` ('The rates of an invoiced
      GRN cannot change'); an equal set is accepted without change.
   4. Every line must have a rate: a GRN-only rate whose band holds the line's weight, else the item's
      rate (`find_storage_price`, for the GRN's business, India day and price type). Otherwise
      `RATE_MISSING` with `data.lines = [{item_id, item_name, weight}]` (distinct, by item name and
-     weight).
+     weight). Not checked for an invoiced GRN (its invoice carries its own figures); a note-only edit of an
+     invoiced GRN saves even when a line has no rate.
+  `update_grn` also deletes, whether or not `p_rates` came, the GRN's own rates of another pricing kind and
+  those whose band holds no weight of that item's lines any more (not for an invoiced GRN, which keeps its
+  archived rates). `delete_item_safe` refuses an item that has GRN-only rates, like one on a line.
 - The success answers are unchanged.
 
 ### `grn_rates` and where a GRN-only rate is used
 
 `grn_rates` (`gr_id`, `item_id`, `price_type`, `weight_min`, `weight_max`, `unit_price`, `labour_rate`,
-`tax_percent`, `created_by`, `created_at`) is written only by `save_grn` / `update_grn`; administrators,
+`tax_percent`, `created_by`, `created_at`, `updated_by`, `updated_at`) is written only by `save_grn` / `update_grn`; administrators,
 supervisors can read it directly (like `item_storage_prices`); customer accounts never can. Invoice rows
 (`build_invoice_recalculation_rows`, and so the invoice preview and `save_invoice`) take rent, labour
 and tax of a line from one source: the stored invoice figure if the line is already invoiced, else the
@@ -392,10 +402,11 @@ GRNs that are not deleted: not archived first, then newest GRN first, then GRN n
 
 ### The rate start floor
 
-`warehouse_security.rate_start_floor()` is the India day of the first GRN that is not deleted, never
-after today (today when there is no GRN). `replace_item_rates` (`p_starts_on`, `p_move_from`) and
+`warehouse_security.rate_start_floor()` is the earlier of the India day of the first GRN that is not
+deleted and today minus 1095 days (so never later than the old three-year window; a facility with older
+GRNs can start rates further back, one with no GRN keeps today minus 1095). `replace_item_rates` (`p_starts_on`, `p_move_from`) and
 `undo_rate_change` (`p_starts_on`) accept a start from the floor to two years after today (it used to be
-three years before today). `INVALID_DATE` reads 'The start date must be on or after <floor> and within
+always three years before today). `INVALID_DATE` reads 'The start date must be on or after <floor> and within
 two years after today' and carries `data.earliest` (ISO date). `get_item_storage_prices` answers
 `earliest_start` (ISO date) as a key of the answer next to `data` and `pagination` (`data` is the list of
 rows). `create_item_storage_price` has no window, as before.
