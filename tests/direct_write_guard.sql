@@ -1,4 +1,4 @@
--- Migration 42: the nineteen business tables are written only through the
+-- Migration 42 (grn_rates added by migration 86): the twenty business tables are written only through the
 -- guarded RPCs. For the administrator and the supervisor a direct INSERT, UPDATE
 -- or DELETE is refused on every one of them, reads are unchanged, and the RPC
 -- paths still apply their rules (server totals, rate limits, stock checks, the
@@ -18,9 +18,9 @@ END $$;
 CREATE FUNCTION pg_temp.guard_tables() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['customers','items','item_storage_prices','goodsreceived','goodsreceived_trl',
     'dispatch','dispatch_trl','invoice','invoice_trl','payments','orders','order_items','grn_images','dispatch_images',
-    'stock_movements','print_jobs','sensor_devices','sensor_readings','sensor_health_events'] $$;
+    'stock_movements','print_jobs','sensor_devices','sensor_readings','sensor_health_events','grn_rates'] $$;
 -- Runs as the caller. Names every business table on which a direct INSERT,
--- UPDATE or DELETE is NOT refused; the result is empty when all 57 are refused.
+-- UPDATE or DELETE is NOT refused; the result is empty when all 60 are refused.
 -- The statements touch no row (DEFAULT VALUES fails on a NOT NULL column when
 -- it is allowed to run, WHERE false matches nothing), so a table that lets one
 -- through is reported, not changed.
@@ -75,8 +75,8 @@ SELECT pg_temp.guard_assert((SELECT bool_and(
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'INSERT')
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'UPDATE')
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'DELETE'))
-  AND count(*)=19 FROM unnest(pg_temp.guard_tables()) AS t),
- 'authenticated reads and cannot write the 19 business tables; service_role still writes them');
+  AND count(*)=20 FROM unnest(pg_temp.guard_tables()) AS t),
+ 'authenticated reads and cannot write the 20 business tables; service_role still writes them');
 SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM pg_class c
   WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m') AND c.relname<>'user_profiles'
     AND (has_any_column_privilege('authenticated',c.oid,'INSERT,UPDATE') OR has_table_privilege('authenticated',c.oid,'DELETE,TRUNCATE'))),
@@ -87,7 +87,7 @@ SELECT pg_temp.guard_assert((SELECT array_agg(column_name::text ORDER BY column_
  'the profile column grant UPDATE(name, display_name) is unchanged');
 SELECT pg_temp.guard_assert(NOT has_any_column_privilege('authenticated','public.user_profiles','INSERT')
   AND NOT has_table_privilege('authenticated','public.user_profiles','DELETE'),'profiles are not inserted or deleted directly');
-SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=19 FROM pg_policies
+SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=20 FROM pg_policies
   WHERE schemaname='public' AND policyname='starter_staff' AND tablename=ANY(pg_temp.guard_tables())),
  'the administrator and supervisor policy on each business table is read-only');
 SELECT pg_temp.guard_assert((SELECT count(*)=1 AND bool_and(tablename='user_profiles' AND policyname='starter_profile_update' AND cmd='UPDATE')

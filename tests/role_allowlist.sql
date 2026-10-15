@@ -116,6 +116,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('replace_item_rates',true,'no'),('undo_rate_change',true,'no'),
  -- migration 85: the standard rate; set_standard_rate admits staff to its body, which refuses them
  ('get_standard_rate',true,'no'),('set_standard_rate',true,'no'),
+ -- migration 86: the GRN-only rates of an item
+ ('get_item_grn_rates',true,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),

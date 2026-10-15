@@ -35,6 +35,12 @@ labour in the current preview. Rates are selected using item, customer, weight,
 GRN date and pricing mode; existing invoice line rates take precedence when
 previewing an existing invoice. Missing prices are reported to the caller.
 
+A rate typed for one GRN only (migration 86, `grn_rates`) sits between the two: a line's rent,
+labour and tax come from one source, in this order, never mixed: the stored invoice figure, then
+the GRN's own rate whose weight band holds the line's weight (the narrowest band wins), then the
+item's rate. Once the invoice is saved its figures win; if the invoice is deleted, the GRN's own
+rate applies again.
+
 ## Header rounding and save contract
 
 Preview subtotal sums line bases. Header tax is the ceiling of the sum of

@@ -148,11 +148,11 @@ SELECT pg_temp.edit_assert((SELECT sum(current_stock)=75 FROM public.mv_customer
 -- the line the first one added (the app does not know its id) and adds it
 -- again as a new row; with the key the first row and its id stay.
 SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn')
- AND (SELECT proargnames[cardinality(proargnames)]='p_idempotency_key' AND pronargdefaults=16 FROM pg_proc
+ AND (SELECT proargnames[cardinality(proargnames)-1]='p_idempotency_key' AND proargnames[cardinality(proargnames)]='p_rates' AND pronargdefaults=17 FROM pg_proc
         WHERE pronamespace='public'::regnamespace AND proname='update_grn')
  AND (SELECT has_function_privilege('authenticated',oid,'EXECUTE') AND has_function_privilege('service_role',oid,'EXECUTE')
         AND NOT has_function_privilege('anon',oid,'EXECUTE') FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
- 'one update_grn exists; the key is its last parameter, optional like every parameter but the receipt id, and the grants are as before');
+ 'one update_grn exists; the key is its last parameter but p_rates (migration 86), optional like every parameter but the receipt id, and the grants are as before');
 SELECT jsonb_build_array(:'line_50'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,
  jsonb_build_object('item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',7,'weight',12,'rack','R4','package_mark','RETRY')) AS retry_items \gset
 SET LOCAL ROLE authenticated;

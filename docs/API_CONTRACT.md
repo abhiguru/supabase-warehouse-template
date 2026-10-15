@@ -204,7 +204,7 @@ stop" work: the rate in force before the change continues. Roles: admin, supervi
 only for a change that has not begun (`p_starts_on` after today), managers also for one that has.
 The history trigger records the deletes and updates. Answer:
 `{success:true, message:'Change undone', data:{item_id, customer_id, price_type, starts_on, removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}]}}`.
-`error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`),
+`error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`; since migration 86 the earliest day is the rate start floor, `data.earliest`),
 `PAST_DATE_NOT_ALLOWED` (staff, change starting today or earlier), `ITEM_NOT_FOUND`,
 `CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
 `BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
@@ -295,9 +295,9 @@ Roles: admin, supervisor, staff. Answer
 
 ### `set_standard_rate(p_tiers jsonb)`
 
-Roles: admin, supervisor (anyone else who passes the guard, staff, gets `STANDARD_RATE_MANAGER_ONLY`; a
-customer is refused by the guard). Checks, in this order and with the limits and texts of
-`replace_item_rates`: not a list, no tier or more than 10 -> `INVALID_BANDS`; weights not whole 0 to
+Roles: admin, supervisor. The role is checked first: anyone else who passes the guard, staff, gets
+`STANDARD_RATE_MANAGER_ONLY` whatever tiers they send (a customer is refused by the guard). Then the
+checks, in this order and with the limits and texts of `replace_item_rates`: not a list, no tier or more than 10 -> `INVALID_BANDS`; weights not whole 0 to
 100000 or start after end -> `INVALID_BAND` (`data.index`, `data.field`); rent and labour 0 to 999999,
 tax 0 to 100, two decimals at most, all three required -> `INVALID_AMOUNT` (`data.index`,
 `data.field`); sorted by start, an overlap -> `BANDS_OVERLAP` (`data.index`), a first tier not at 0 or
@@ -321,3 +321,81 @@ else `standard` when a standard rate is saved (its tiers from today); else `none
 
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
 from today (nothing when no standard rate is saved). The answer is unchanged.
+
+## Rates on the GRN sheet and the rate start floor (migration 86, 2026-10-15)
+
+Errors are `{ success: false, error, error_code, data }`; those of `save_grn` and `update_grn` also carry
+`message` (the same text), which is what the app reads there. Dates are India days. A band is whole
+kilograms, inclusive at both ends.
+
+### `save_grn(..., p_rates jsonb DEFAULT NULL)` and `update_grn(..., p_rates jsonb DEFAULT NULL)`
+
+`p_rates` is the last parameter of each (one overload each; every call that does not name it, the
+app's before this migration and fas-sync's, works unchanged). Roles as before: admin, supervisor, staff.
+
+- `p_rates` NULL: exactly the old behaviour. No rate is checked or changed; a GRN with an unpriced line
+  still saves.
+- `p_rates` a list (also `[]`): checked and applied inside the GRN's transaction, after the GRN and its
+  lines are written. A failure rolls the whole call back: the GRN is not saved, an update is undone.
+  Entries are
+  `{scope:'grn', item_id, weight_min, weight_max, unit_price, labour_rate, tax_percent}` or
+  `{scope:'customer'|'everyone', item_id, weight_min, weight_max, to:'YYYY-MM-DD'|null, unit_price, labour_rate, tax_percent}`.
+  A monthly GRN needs labour; a ONE_TIME GRN does not read it and stores 0.
+  1. Validation: not a list or an entry not an object -> `INVALID_BANDS`; unknown scope ->
+     `INVALID_SCOPE`; weights -> `INVALID_BAND` (`data.index`, `data.field`); amounts ->
+     `INVALID_AMOUNT` (`data.index`, `data.field`); `to` not a date or before the GRN day ->
+     `INVALID_DATE` (`data.index`); an item that is not on the GRN, or a band that holds none of that
+     item's line weights (a line without weight counts as 0 kg) -> `RATE_NOT_FOR_GRN` (`data.index`,
+     `data.item_id`); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
+  2. `customer` (the GRN's business) and `everyone` (the default rate) entries change the item's rate
+     of the GRN's price type from the GRN's India day, any day, for staff too (the staff past-day rule
+     of `replace_item_rates` does not apply here). For the rows of that scope that share a weight and a
+     day with the days from the GRN day to `to`: a row of a different band -> `BANDS_OVERLAP`
+     (`data.index`); a row of the same band that starts after the GRN day -> `RATE_PLANNED`
+     (`data.index`, `data.starts_on`); a row of the same band that starts on the GRN day is replaced,
+     else it ends the day before the GRN day; with `to` set and the old row open or ending after `to`,
+     a copy of it with its old figures starts the day after `to`. The new row runs from the GRN day to
+     `to` (open when `to` is null: the old row then ends for good). Entries are applied in list order;
+     the history rows name the caller.
+  3. The `grn` entries replace the GRN's own rates in `grn_rates`. When the GRN is invoiced and the new
+     set differs from the stored one (item, band, figures) -> `GRN_INVOICED` ('The rates of an invoiced
+     GRN cannot change'); an equal set is accepted without change.
+  4. Every line must have a rate: a GRN-only rate whose band holds the line's weight, else the item's
+     rate (`find_storage_price`, for the GRN's business, India day and price type). Otherwise
+     `RATE_MISSING` with `data.lines = [{item_id, item_name, weight}]` (distinct, by item name and
+     weight).
+- The success answers are unchanged.
+
+### `grn_rates` and where a GRN-only rate is used
+
+`grn_rates` (`gr_id`, `item_id`, `price_type`, `weight_min`, `weight_max`, `unit_price`, `labour_rate`,
+`tax_percent`, `created_by`, `created_at`) is written only by `save_grn` / `update_grn`; administrators,
+supervisors and, for their own businesses' GRNs, customer accounts can read it directly. Invoice rows
+(`build_invoice_recalculation_rows`, and so the invoice preview and `save_invoice`) take rent, labour
+and tax of a line from one source: the stored invoice figure if the line is already invoiced, else the
+GRN-only rate whose band holds the line's weight (the narrowest wins), else the item's rate. Once an
+invoice is saved its figures win and the GRN-only rate is "archived"; delete the invoice and it applies
+again.
+
+### `get_grn_details(p_grn_id)`: `data.grn.rates`
+
+The `grn` object gains `rates`: `[{id, item_id, item_name, price_type, weight_min, weight_max,
+unit_price, labour_rate, tax_percent, archived}]` ordered by item name and `weight_min` (`[]` when none);
+`archived` is true when the GRN is invoiced.
+
+### `get_item_grn_rates(p_item_id uuid)`
+
+Roles: admin, supervisor, staff (a customer account is refused with SQLSTATE 42501). Answer
+`{success:true, data:{rates:[{id, gr_id, gr_no, grn_date:'YYYY-MM-DD', customer_id, customer_name,
+price_type, weight_min, weight_max, unit_price, labour_rate, tax_percent, archived, created_at}]}}` for
+GRNs that are not deleted: not archived first, then newest GRN first, then GRN number.
+
+### The rate start floor
+
+`warehouse_security.rate_start_floor()` is the India day of the first GRN that is not deleted, never
+after today (today when there is no GRN). `replace_item_rates` (`p_starts_on`, `p_move_from`) and
+`undo_rate_change` (`p_starts_on`) accept a start from the floor to two years after today (it used to be
+three years before today). `INVALID_DATE` reads 'The start date must be on or after <floor> and within
+two years after today' and carries `data.earliest` (ISO date). `get_item_storage_prices` answers
+`earliest_start` (ISO date) as a key of the answer next to `data` and `pagination` (`data` is the list of
+rows). `create_item_storage_price` has no window, as before.

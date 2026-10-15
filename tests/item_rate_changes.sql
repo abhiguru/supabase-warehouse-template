@@ -91,6 +91,11 @@ SELECT id AS cumin FROM public.items WHERE name='Rate Changes Cumin' \gset
 SELECT id AS retired FROM public.items WHERE name='Rate Changes Retired' \gset
 UPDATE public.customers SET active=false WHERE id=:'closed'::uuid;
 UPDATE public.items SET active=false WHERE id=:'retired'::uuid;
+-- Migration 86: a rate may start on or after the first GRN's India day (today when there is no GRN).
+-- A receipt 1095 days back keeps the window these tests were written for: dpast (1100 days back) is
+-- before it, everything else is after it.
+INSERT INTO public.goodsreceived(id,gr_no,date,customer_id,customer_name) VALUES
+ ('77770000-0000-4000-8000-000000000001','RCFLOOR',((:'today'::date-1095)::text||'T12:00:00Z')::timestamptz,:'north'::uuid,'Rate Changes North Orchard');
 SELECT pg_temp.rc_assert(public.assign_customer_to_user('919777777704',:'north'::uuid,'Rate changes fixture'),'customer login assigned');
 
 -- ---------------------------------------------------------------------------
