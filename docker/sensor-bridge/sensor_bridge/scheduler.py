@@ -51,6 +51,7 @@ class HubRunner:
         self.hub_id = detector.get(f"hub_id:{host}") or host
         self.firmware: str | None = None
         self.last_error = ""
+        self.offline_sensors: set[str] = set()  # sensors logged offline, to log each change once
 
     def hub_payload(self, online: bool) -> dict:
         return {"id": self.hub_id, "host": self.host, "online": online, "firmware": self.firmware}
@@ -91,6 +92,8 @@ class HubRunner:
         self._queue_hub(True, now)
         measured_at, readings = iso(now), []
         for child in snap.children:
+            if self._offline(snap.hub_id, child):
+                continue  # the hub only has cached values for a sensor it cannot hear
             if child.temperature is None and child.humidity is None:
                 continue
             kind = self.detector.observe(child, now)
@@ -105,6 +108,18 @@ class HubRunner:
         if readings:
             log.info("event=readings hub=%s sensors=%d changes=%d heartbeats=%d", self.hub_id, len(snap.children),
                      sum(r["kind"] == "change" for r in readings), sum(r["kind"] == "heartbeat" for r in readings))
+
+    def _offline(self, hub_id: str, child) -> bool:
+        """True when the hub reports the sensor offline; logs each transition once."""
+        if child.online is False:
+            if child.external_id not in self.offline_sensors:
+                self.offline_sensors.add(child.external_id)
+                log.info("event=sensor_offline hub=%s sensor=%s name=%s", hub_id, child.external_id, child.name)
+            return True
+        if child.external_id in self.offline_sensors:
+            self.offline_sensors.discard(child.external_id)
+            log.info("event=sensor_online hub=%s sensor=%s name=%s", hub_id, child.external_id, child.name)
+        return False
 
     async def _failed(self, now: float, exc: HubError) -> None:
         self.last_error = str(exc)

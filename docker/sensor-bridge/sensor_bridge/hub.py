@@ -27,6 +27,9 @@ class ChildReading:
     battery_percent: int | None
     signal_level: int | None
     report_interval_s: int | None
+    # The hub's own status for the sensor: True "online", False "offline", None when absent or unknown.
+    # An offline sensor still has cached values on the hub; they are not a measurement.
+    online: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,12 @@ def to_celsius(value, unit) -> float | None:
     return round(number, 2)
 
 
+def status_of(child) -> str | None:
+    """The raw `status` of a sensor ("online" / "offline"), or None when not reported as text."""
+    value = (_get(child, "sys_info") or {}).get("status")
+    return value if isinstance(value, str) else None
+
+
 def read_child(child, names) -> ChildReading | None:
     """One sensor of the hub, or None when it reports neither temperature nor humidity."""
     temp_name, humidity_name, battery_name, report_name = names
@@ -86,6 +95,7 @@ def read_child(child, names) -> ChildReading | None:
         battery_percent=_int(_get(battery, "battery")) if battery is not None else None,
         signal_level=_int(signal),
         report_interval_s=_int(_get(report, "report_interval")) if report is not None else None,
+        online={"online": True, "offline": False}.get(status_of(child)),
     )
 
 
@@ -112,6 +122,7 @@ def dump_of(device, host: str, names) -> dict:
             "alias": _get(child, "alias"),
             "model": _get(child, "model"),
             "rssi": _int(_get(child, "rssi")),
+            "status": status_of(child),
             "sys_info_keys": sorted(str(k) for k in (_get(child, "sys_info") or {})),
             "modules": sorted(str(k) for k in (_get(child, "modules") or {})),
             "reading": readings.get(cid),

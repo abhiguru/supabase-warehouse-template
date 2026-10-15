@@ -133,6 +133,97 @@ class ChangeAndHeartbeatTest(unittest.TestCase):
         self.assertEqual(len(h.poster.payloads), 5)
 
 
+class OfflineSensorTest(unittest.TestCase):
+    def harness(self, **statuses):
+        return Harness(FakeHub(children=[child(1, online=statuses.get("a")), child(2, online=statuses.get("b")),
+                                         child(3, online=statuses.get("c"))]))
+
+    def events(self, logs):
+        return [m for m in logs.output if "event=sensor_" in m]
+
+    def test_an_offline_sensor_is_never_posted_but_the_others_are(self):
+        h = self.harness(a=False, b=True)  # c: status unknown
+        h.run(0, 1800, 30)
+        sent = h.sent()
+        self.assertNotIn(cid(1), [i for i, _ in sent], "no change, no heartbeat, even after the heartbeat interval")
+        self.assertEqual(sent[:2], [(cid(2), "change"), (cid(3), "change")])
+        self.assertEqual(sent[2:], [(cid(2), "heartbeat"), (cid(3), "heartbeat")] * 2)
+        self.assertIsNone(h.detector.db.execute("SELECT 1 FROM last_sent WHERE external_id=?", (cid(1),)).fetchone())
+
+    def test_transitions_are_logged_once(self):
+        h = self.harness(a=False)
+        with self.assertLogs("sensor_bridge", "INFO") as logs:
+            h.run(0, 120, 30)
+            self.assertEqual(len(self.events(logs)), 1)
+            self.assertIn(f"event=sensor_offline hub={h.hub.hub_id} sensor={cid(1)} name=TH1", self.events(logs)[0])
+            h.hub.update(1, online=True)
+            h.run(150, 300, 30)
+            h.hub.update(1, online=None)  # unknown status after online: nothing new
+            h.run(330, 400, 30)
+        events = self.events(logs)
+        self.assertEqual(len(events), 2)
+        self.assertIn(f"event=sensor_online hub={h.hub.hub_id} sensor={cid(1)} name=TH1", events[1])
+
+    def test_unknown_status_after_offline_counts_as_back_online(self):
+        h = self.harness(a=False)
+        with self.assertLogs("sensor_bridge", "INFO") as logs:
+            h.run(0, 60, 30)
+            h.hub.update(1, online=None)
+            h.run(90, 150, 30)
+        self.assertEqual([m.split("event=")[1].split()[0] for m in self.events(logs)], ["sensor_offline", "sensor_online"])
+
+    def test_nothing_is_logged_for_a_sensor_that_was_never_offline(self):
+        h = self.harness(a=True)
+        with self.assertLogs("sensor_bridge", "INFO") as logs:
+            h.run(0, 120, 30)
+        self.assertEqual(self.events(logs), [])
+
+    def test_back_online_with_the_same_value_sends_a_heartbeat_only_when_due(self):
+        h = self.harness(a=True)
+        h.run(0)
+        h.hub.update(1, online=False)
+        h.run(30, 1000, 30)  # the 900 s heartbeat interval passes while it is offline
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change"])
+        h.hub.update(1, online=True)
+        h.run(1020)
+        self.assertEqual([(k, r["measured_at"]) for p in h.poster.payloads[-1:] for r in p["readings"]
+                          for k in [r["kind"]] if r["external_id"] == cid(1)],
+                         [("heartbeat", "2026-10-03T04:17:00Z")])
+        h.run(1050, 1700, 30)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change", "heartbeat"], "not due again yet")
+
+    def test_back_online_before_the_interval_sends_nothing(self):
+        h = self.harness(a=True)
+        h.run(0)
+        h.hub.update(1, online=False)
+        h.run(30, 300, 30)
+        h.hub.update(1, online=True)
+        h.run(330, 800, 30)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change"])
+
+    def test_back_online_with_a_new_value_is_a_change(self):
+        h = self.harness(a=True)
+        h.run(0)
+        h.hub.update(1, online=False)
+        h.run(30, 120, 30)
+        h.hub.update(1, online=True, temperature=25.0)
+        h.run(150)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change", "change"])
+        self.assertEqual(h.poster.readings()[0]["temperature"], 25.0)
+
+    def test_restart_with_an_offline_sensor_re_emits_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = {"SENSOR_BRIDGE_QUEUE_PATH": os.path.join(tmp, "b.sqlite3")}
+            kids = [child(1, online=False), child(2, online=True)]
+            first = Harness(FakeHub(children=kids), db=open_db(settings["SENSOR_BRIDGE_QUEUE_PATH"]), **settings)
+            first.run(0, 60, 30)
+            first.db.close()
+            second = Harness(FakeHub(children=kids), db=open_db(settings["SENSOR_BRIDGE_QUEUE_PATH"]), **settings)
+            second.run(90, 600, 30)
+            self.assertEqual(second.poster.payloads, [])
+            second.db.close()
+
+
 class ConnectionStateTest(unittest.TestCase):
     def connect_times(self, h: Harness, start: float, end: float) -> list[float]:
         times = []

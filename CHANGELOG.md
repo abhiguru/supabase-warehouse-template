@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — no GRN moved onto a deactivated business (migration 84); bridge skips offline sensors (2026-10-15)
+
+Migration `00000000000084_grn_move_deactivated_business.sql`, applied by the setup rerun; the sensor
+bridge image is rebuilt. No app change: the app's Edit GRN customer picker (`search_customers`) never
+offers a deactivated business, and its save path already shows the migration 83 text.
+
+- **`update_grn` refuses to move a GRN onto a business with `active = false`**, with the migration 83 text
+  `This business is deactivated. Activate it in Customers to receive new goods.` (P0001, every caller, bare
+  text). This closes the gap noted under migration 83 below. A deleted business keeps `Business is not
+  active`; editing a GRN that already belongs to a deactivated business, without changing the business,
+  stays allowed. A FAS sync push that moves a GRN onto a deactivated business fails the same way and is
+  dropped in its dry run with that reason.
+- Migration 84 drops a `pg_temp.patch_rpc` left by migration 83 before it creates its own, so the
+  migrations still run in one session.
+- **Sensor bridge: a sensor the hub reports offline is no longer posted.** The hub keeps returning the
+  last values of a sensor it cannot hear; the bridge sent them as fresh heartbeats, so the app showed a
+  dead sensor as live (seen on the dev facility: "th4 anti chamber" at a constant 31.6 °C / 68 % for two
+  days with the hub reporting it offline). The bridge now reads the hub's `status` for each sensor and
+  skips one that is `offline`: no change and no heartbeat, so the app shows "No recent data" once the
+  sensor's staleness threshold (30 minutes by default) passes. `event=sensor_offline` and
+  `event=sensor_online` are logged once per transition, and `--dump` shows each sensor's status. A
+  sensor without a `status` field is handled as before. The queue and change-detector state on `/data`
+  are unchanged.
+- New test `tests/grn_move_deactivated_84.sql`, registered after `grn_deactivated_83.sql`; ten new
+  bridge unit tests.
+
 ## Unreleased — no new GRN for a deactivated business, migration 83 (2026-10-15)
 
 Migration `00000000000083_grn_deactivated_business.sql`, applied by the setup rerun. The matching

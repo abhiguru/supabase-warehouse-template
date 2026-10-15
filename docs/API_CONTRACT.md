@@ -249,7 +249,7 @@ customer search) and not by the all-customers branch of `search_customer_items_f
 customer logins read all past records and order their goods out,
 staff and administrators still see its stock, invoices and activity, and dispatch creation accepts it
 (`update_grn` too, so an existing GRN can still be edited). Since migration 83 `save_grn` (a NEW GRN) refuses
-it with `This business is deactivated. Activate it in Customers to receive new goods.` (P0001, every caller, bare text). `update_grn` may still move an existing GRN to a deactivated business. A DELETED business (`deleted_at` set) is refused by `get_or_create_cart`, `save_grn`, `update_grn` (when moving a GRN to it) and both
+it with `This business is deactivated. Activate it in Customers to receive new goods.` (P0001, every caller, bare text). Since migration 84 `update_grn` refuses to move an existing GRN onto a deactivated business with the same text (a deleted business keeps `Business is not active`); editing a GRN that already belongs to a deactivated business, without changing the business, stays allowed. A DELETED business (`deleted_at` set) is refused by `get_or_create_cart`, `save_grn`, `update_grn` (when moving a GRN to it) and both
 `create_dispatch_with_stock_check` overloads with `Business is not active` (P0001). Nothing with data is
 ever deleted.
 
