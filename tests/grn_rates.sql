@@ -114,8 +114,8 @@ SELECT pg_temp.gr_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.
  AND NOT has_table_privilege('authenticated','public.grn_rates','INSERT') AND NOT has_table_privilege('authenticated','public.grn_rates','UPDATE')
  AND NOT has_table_privilege('authenticated','public.grn_rates','DELETE') AND NOT has_table_privilege('authenticated','public.grn_rates','TRUNCATE')
  AND NOT has_table_privilege('anon','public.grn_rates','SELECT') AND has_table_privilege('authenticated','public.grn_rates','SELECT')
- AND (SELECT count(*)=2 AND bool_and(cmd='SELECT') FROM pg_policies WHERE schemaname='public' AND tablename='grn_rates'),
- 'grn_rates has row level security, two read policies and no write privilege');
+ AND (SELECT count(*)=1 AND bool_and(cmd='SELECT' AND policyname='starter_staff') FROM pg_policies WHERE schemaname='public' AND tablename='grn_rates'),
+ 'grn_rates has row level security, one read policy (admin, supervisor) and no write privilege');
 
 -- ---------------------------------------------------------------------------
 -- 2. The floor without any GRN is today
@@ -414,8 +414,12 @@ SELECT pg_temp.gr_assert(:'orchard_rates'::int>0 AND :'all_rates'::int>:'orchard
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_admin \gset
 SELECT pg_temp.gr_as(:'staff_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_staff \gset
 SELECT pg_temp.gr_as(:'customer_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_customer \gset
-SELECT pg_temp.gr_assert(:'n_admin'::int=:'all_rates'::int AND :'n_customer'::int=:'orchard_rates'::int AND :'n_staff'::int=0,
- 'direct reads: administrator all ('||:'n_admin'||'), customer its own business only ('||:'n_customer'||' of '||:'all_rates'||'), staff only through the RPCs ('||:'n_staff'||')');
+SELECT pg_temp.gr_assert(:'n_admin'::int=:'all_rates'::int AND :'n_customer'::int=0 AND :'n_staff'::int=0,
+ 'direct reads: administrator all ('||:'n_admin'||'), customer 0 even for its own GRNs ('||:'orchard_rates'||' exist), staff only through the RPCs ('||:'n_staff'||')');
+SELECT pg_temp.gr_as(:'customer_claims'::jsonb,format($q$SELECT public.get_grn_details(%L::uuid)$q$,pg_temp.gr_grn('GRN-G1'))) AS det_cust \gset
+SELECT pg_temp.gr_assert(:'det_cust'::jsonb->>'success'='true' AND :'det_cust'::jsonb#>>'{data,grn,gr_no}'='GRN-G1'
+ AND :'det_cust'::jsonb#>'{data,grn,rates}'='[]'::jsonb AND :'det_cust'::jsonb::text NOT LIKE '%GR Plum 0%' AND (pg_temp.gr_own('GRN-G1')<>'(none)'),
+ 'a customer reads its GRN but rates is []: '||(:'det_cust'::jsonb#>>'{data,grn,rates}'));
 SELECT pg_temp.gr_assert(pg_temp.gr_as(:'admin_claims'::jsonb,$q$WITH d AS (DELETE FROM public.grn_rates RETURNING 1) SELECT jsonb_build_object('n',count(*)) FROM d$q$)->>'state'='42501',
  'a direct delete is refused even for an administrator');
 

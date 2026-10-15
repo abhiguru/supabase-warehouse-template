@@ -1,8 +1,8 @@
 -- Migration 86: rates typed on the GRN sheet, and the rate start floor (owner decisions of 2026-10-15).
 --
 -- 1. public.grn_rates: a rate that belongs to one GRN only (item, weight band, rent, labour, tax).
---    Row level security is on; administrators and supervisors read it (and customers the rates
---    of their own GRNs), no app role writes it: save_grn and update_grn do.
+--    Row level security is on; administrators and supervisors read it (customer accounts never),
+--    no app role writes it: save_grn and update_grn do.
 -- 2. public.save_grn and public.update_grn get a last parameter p_rates jsonb DEFAULT NULL (DROP +
 --    CREATE; owner, options, grants unchanged, checked below). NULL = as before. A list (also
 --    []) is checked and applied in the GRN's transaction: entries with scope "grn" replace the
@@ -12,7 +12,7 @@
 --    otherwise). Any failure undoes the whole call. Helpers: warehouse_security.apply_grn_rates.
 -- 3. build_invoice_recalculation_rows: rent, labour and tax of a line come from one source, in
 --    this order: the stored invoice figure, the GRN's own rate, the item's rate.
--- 4. get_grn_details: grn.rates. 5. public.get_item_grn_rates(p_item_id): the GRN-only rates of
+-- 4. get_grn_details: grn.rates (always [] for a customer account). 5. public.get_item_grn_rates(p_item_id): the GRN-only rates of
 --    an item (admin, supervisor, staff).
 -- 6. warehouse_security.rate_start_floor(): the earliest day a rate may start = the India day of
 --    the first GRN that is not deleted (today when there is none, and never after today).
@@ -65,12 +65,10 @@ CREATE INDEX grn_rates_gr_id_idx ON public.grn_rates (gr_id);
 ALTER TABLE public.grn_rates ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.grn_rates FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.grn_rates TO authenticated;
--- Read like the GRN: administrators and supervisors (staff through the RPCs), and a customer the
--- rates of the GRNs of its own businesses. No write policy and no write grant.
+-- Read like item_storage_prices: administrators and supervisors (staff through the RPCs); a
+-- customer account never reads a rate. No write policy and no write grant.
 CREATE POLICY starter_staff ON public.grn_rates FOR SELECT TO authenticated
   USING (warehouse_security.active_role() IN ('admin','supervisor'));
-CREATE POLICY starter_customer ON public.grn_rates FOR SELECT TO authenticated
-  USING (EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.id = gr_id AND warehouse_security.owns_customer(g.customer_id)));
 
 -- ---------------------------------------------------------------------------
 -- 2. The rate start floor
@@ -1285,7 +1283,8 @@ $r$);
   $m$                    'duration_mode', gr.duration_mode,
                     'created_at', gr.created_at,
 $m$, $r$                    'duration_mode', gr.duration_mode,
-                    'rates', COALESCE(
+                    'rates', CASE WHEN v_role IN ('admin', 'supervisor', 'staff') OR auth.jwt() ->> 'role' = 'service_role'
+                      THEN COALESCE(
                         (
                             SELECT jsonb_agg(
                                 jsonb_build_object(
@@ -1307,7 +1306,7 @@ $m$, $r$                    'duration_mode', gr.duration_mode,
                             WHERE rt.gr_id = gr.id
                         ),
                         '[]'::jsonb
-                    ),
+                    ) ELSE '[]'::jsonb END,
                     'created_at', gr.created_at,
 $r$);
   -- The guard: staff reach get_item_grn_rates.

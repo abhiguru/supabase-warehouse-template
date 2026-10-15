@@ -370,7 +370,7 @@ app's before this migration and fas-sync's, works unchanged). Roles as before: a
 
 `grn_rates` (`gr_id`, `item_id`, `price_type`, `weight_min`, `weight_max`, `unit_price`, `labour_rate`,
 `tax_percent`, `created_by`, `created_at`) is written only by `save_grn` / `update_grn`; administrators,
-supervisors and, for their own businesses' GRNs, customer accounts can read it directly. Invoice rows
+supervisors can read it directly (like `item_storage_prices`); customer accounts never can. Invoice rows
 (`build_invoice_recalculation_rows`, and so the invoice preview and `save_invoice`) take rent, labour
 and tax of a line from one source: the stored invoice figure if the line is already invoiced, else the
 GRN-only rate whose band holds the line's weight (the narrowest wins), else the item's rate. Once an
@@ -381,7 +381,7 @@ again.
 
 The `grn` object gains `rates`: `[{id, item_id, item_name, price_type, weight_min, weight_max,
 unit_price, labour_rate, tax_percent, archived}]` ordered by item name and `weight_min` (`[]` when none);
-`archived` is true when the GRN is invoiced.
+`archived` is true when the GRN is invoiced. For a customer account `rates` is always `[]`.
 
 ### `get_item_grn_rates(p_item_id uuid)`
 
