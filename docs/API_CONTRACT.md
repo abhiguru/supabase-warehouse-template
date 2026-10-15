@@ -427,7 +427,7 @@ rows). `create_item_storage_price` has no window, as before.
   overlaps its first call waits and is then answered from the cache (`from_cache:true`), never with a
   unique-key error. A dispatch from a cart reads the cart line `FOR UPDATE`: a concurrent change of the line's
   quantity is not lost.
-- `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`summary` weight) sum weight as numeric: a
+- `get_grn_list` (`total_weight`) and `get_customer_dispatch_items` (`total_weight`) sum weight as numeric: a
   total above 2147483647 kg is a number, not an error.
 
 ### Users and rates
