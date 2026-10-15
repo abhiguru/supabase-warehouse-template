@@ -14,7 +14,7 @@ compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 # charges, item prices), which must come back from a restore row for row.
 tables=(customers users_customers_new items item_storage_prices goodsreceived goodsreceived_trl
   grn_images dispatch dispatch_trl dispatch_images invoice invoice_trl stock_movements user_profiles
-  invoice_discount_history invoice_zero_charge_history item_price_history)
+  invoice_discount_history invoice_zero_charge_history item_price_history standard_rate_tiers grn_rates)
 sql=''
 for t in "${tables[@]}"; do
   sql+="SELECT 'table public.$t rows=' || count(*) || ' sha256=' || encode(sha256(convert_to(coalesce(string_agg(r::text, E'\n' ORDER BY r::text), ''), 'UTF8')), 'hex') FROM public.$t r;"$'\n'

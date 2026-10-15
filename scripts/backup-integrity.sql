@@ -62,3 +62,12 @@ DO $$ BEGIN
   END IF;
 END $$;
 \endif
+-- The standard rate tiers (migration 85) and the rates typed on a GRN (migration 86): counted only
+-- when migration 86 is in the restored ledger (and, like the block above, only when 48 is, which
+-- every database with 86 has; the restore drill removes 48 to imitate an earlier backup).
+SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000086_grn_rates.sql')
+   AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql') AS grn_rates_recorded \gset
+\if :grn_rates_recorded
+SELECT 'standard_rate_tiers_count=' || count(*) FROM public.standard_rate_tiers;
+SELECT 'grn_rates_count=' || count(*) FROM public.grn_rates;
+\endif
