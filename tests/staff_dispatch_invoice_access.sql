@@ -240,6 +240,16 @@ END $$;
 SELECT pg_temp.core_assert(public.confirm_dispatch_image_upload((:'dispatch_upload'::jsonb->>'image_id')::uuid,
  (:'dispatch_upload'::jsonb->>'upload_token')::uuid)->>'success'='true','staff confirms own dispatch attachment');
 SELECT pg_temp.core_assert((SELECT count(*)=1 FROM storage.objects WHERE bucket_id='dispatch-images'),'confirmed dispatch object readable');
+-- Migration 87: a confirmed upload is not cancelled; the answer says so and the row stays.
+SELECT public.cancel_dispatch_image_upload((:'dispatch_upload'::jsonb->>'image_id')::uuid) AS cancel_confirmed \gset
+SELECT pg_temp.core_assert(:'cancel_confirmed'::jsonb->>'success'='false' AND :'cancel_confirmed'::jsonb->>'code'='ALREADY_CONFIRMED'
+ AND :'cancel_confirmed'::jsonb->>'error'='Upload already confirmed'
+ AND :'cancel_confirmed'::jsonb->>'image_id'=:'dispatch_upload'::jsonb->>'image_id'
+ AND :'cancel_confirmed'::jsonb->>'storage_path'=:'dispatch_upload'::jsonb->>'storage_path',
+ 'staff cancelling own confirmed dispatch upload is told ALREADY_CONFIRMED: '||:'cancel_confirmed');
+SELECT pg_temp.core_assert(public.cancel_dispatch_image_upload(gen_random_uuid())->>'code'='NOT_FOUND','an unknown upload is still NOT_FOUND');
+SELECT pg_temp.core_assert((SELECT status='confirmed' FROM public.dispatch_images WHERE id=(:'dispatch_upload'::jsonb->>'image_id')::uuid),
+ 'the confirmed dispatch upload row is unchanged');
 SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.dispatch_images),'staff reads fixture and own confirmed metadata');
 DO $$ DECLARE affected integer; BEGIN
  UPDATE storage.objects SET name=name WHERE bucket_id='dispatch-images'; GET DIAGNOSTICS affected=ROW_COUNT;
@@ -253,6 +263,30 @@ SELECT set_config('request.jwt.claims',jsonb_build_object('role','authenticated'
  'session_id',(SELECT id FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid LIMIT 1))::text,true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.core_assert(public.cancel_dispatch_image_upload(:'foreign_pending_image'::uuid)->>'success'='true','administrator cancels any pending upload');
+-- Migration 87: the administrator is told ALREADY_CONFIRMED for the confirmed fixture; a GRN upload answers the same.
+SELECT public.cancel_dispatch_image_upload((SELECT id FROM public.dispatch_images WHERE storage_path='document-policy/confirmed')) AS admin_cancel_confirmed \gset
+SELECT pg_temp.core_assert(:'admin_cancel_confirmed'::jsonb->>'code'='ALREADY_CONFIRMED'
+ AND :'admin_cancel_confirmed'::jsonb->>'storage_path'='document-policy/confirmed','administrator, confirmed dispatch upload: '||:'admin_cancel_confirmed');
+RESET ROLE;
+INSERT INTO public.grn_images(grn_id,image_type,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ VALUES (:'grn_id'::uuid,'header','document-policy/grn-confirmed','fixture.webp',32,'image/webp','confirmed',:'admin_profile'::uuid),
+        (:'grn_id'::uuid,'header','document-policy/grn-pending','fixture.webp',32,'image/webp','pending',:'admin_profile'::uuid);
+SELECT set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',:'admin_user',
+ 'session_id',(SELECT id FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid LIMIT 1))::text,true);
+SET LOCAL ROLE authenticated;
+SELECT public.cancel_grn_image_upload((SELECT id FROM public.grn_images WHERE storage_path='document-policy/grn-confirmed')) AS grn_cancel_confirmed \gset
+SELECT pg_temp.core_assert(:'grn_cancel_confirmed'::jsonb->>'success'='false' AND :'grn_cancel_confirmed'::jsonb->>'code'='ALREADY_CONFIRMED'
+ AND :'grn_cancel_confirmed'::jsonb->>'error'='Upload already confirmed'
+ AND :'grn_cancel_confirmed'::jsonb->>'storage_path'='document-policy/grn-confirmed','confirmed GRN upload, ALREADY_CONFIRMED: '||:'grn_cancel_confirmed');
+SELECT pg_temp.core_assert(public.cancel_grn_image_upload(gen_random_uuid())->>'code'='NOT_FOUND','an unknown GRN upload is NOT_FOUND');
+SELECT pg_temp.core_assert(public.cancel_grn_image_upload((SELECT id FROM public.grn_images WHERE storage_path='document-policy/grn-pending'))
+ @> '{"success":true,"storage_path":"document-policy/grn-pending"}','a pending GRN upload is still removed');
+RESET ROLE;
+SELECT pg_temp.core_assert((SELECT count(*)=1 AND bool_and(status='confirmed') FROM public.grn_images WHERE storage_path LIKE 'document-policy/grn-%'),
+ 'the confirmed GRN upload stays, the pending one is gone');
+SELECT set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',:'admin_user',
+ 'session_id',(SELECT id FROM warehouse_security.refresh_sessions WHERE user_id=:'admin_user'::uuid LIMIT 1))::text,true);
+SET LOCAL ROLE authenticated;
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'customer_a_claims',true);
 SET LOCAL ROLE authenticated;
