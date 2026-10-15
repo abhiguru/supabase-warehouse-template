@@ -10,8 +10,9 @@ offers a deactivated business, and its save path already shows the migration 83 
   `This business is deactivated. Activate it in Customers to receive new goods.` (P0001, every caller, bare
   text). This closes the gap noted under migration 83 below. A deleted business keeps `Business is not
   active`; editing a GRN that already belongs to a deactivated business, without changing the business,
-  stays allowed. A FAS sync push that moves a GRN onto a deactivated business fails the same way and is
-  dropped in its dry run with that reason.
+  stays allowed. FAS sync is not affected: its `update_grn` call never passes a business (a business that
+  differs between FAS and the facility is left as it is), and its new GRNs were already refused by
+  migration 83.
 - Migration 84 drops a `pg_temp.patch_rpc` left by migration 83 before it creates its own, so the
   migrations still run in one session.
 - **Sensor bridge: a sensor the hub reports offline is no longer posted.** The hub keeps returning the

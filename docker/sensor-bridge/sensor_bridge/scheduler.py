@@ -114,11 +114,11 @@ class HubRunner:
         if child.online is False:
             if child.external_id not in self.offline_sensors:
                 self.offline_sensors.add(child.external_id)
-                log.info("event=sensor_offline hub=%s sensor=%s name=%s", hub_id, child.external_id, child.name)
+                log.info("event=sensor_offline hub=%s sensor=%s name=%r", hub_id, child.external_id, child.name)
             return True
         if child.external_id in self.offline_sensors:
             self.offline_sensors.discard(child.external_id)
-            log.info("event=sensor_online hub=%s sensor=%s name=%s", hub_id, child.external_id, child.name)
+            log.info("event=sensor_online hub=%s sensor=%s name=%r", hub_id, child.external_id, child.name)
         return False
 
     async def _failed(self, now: float, exc: HubError) -> None:

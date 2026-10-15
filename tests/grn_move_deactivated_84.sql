@@ -34,9 +34,11 @@ UPDATE public.sms_config SET provider='msg91',production_mode=true,msg91_auth_ke
  WHERE true;
 SELECT warehouse_security.bootstrap_first_admin('9555560401','GRN84 Admin') AS admin_user \gset
 INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status) VALUES
- (gen_random_uuid(),'919555560404','GRN84 Staff','staff',true,'approved');
+ (gen_random_uuid(),'919555560404','GRN84 Staff','staff',true,'approved'),
+ (gen_random_uuid(),'919555560405','GRN84 Supervisor','supervisor',true,'approved');
 SELECT pg_temp.g84_login('9555560401') AS admin_claims \gset
 SELECT pg_temp.g84_login('9555560404') AS staff_claims \gset
+SELECT pg_temp.g84_login('9555560405') AS supervisor_claims \gset
 INSERT INTO public.customers(name,mobile) VALUES ('GRN84 Active','9555560411') RETURNING id AS cust_a \gset
 INSERT INTO public.customers(name,mobile) VALUES ('GRN84 Second active','9555560412') RETURNING id AS cust_b \gset
 INSERT INTO public.customers(name,mobile) VALUES ('GRN84 Later deactivated','9555560413') RETURNING id AS cust_d \gset
@@ -74,6 +76,15 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS refuse_staff \gset
 RESET ROLE;
 SELECT customer_id=:'cust_a'::uuid AS kept_staff FROM public.goodsreceived WHERE id=:'grn_1'::uuid \gset
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>%L::uuid)',:'grn_1',:'cust_d')) AS refuse_supervisor \gset
+RESET ROLE;
+SELECT customer_id=:'cust_a'::uuid AS kept_supervisor FROM public.goodsreceived WHERE id=:'grn_1'::uuid \gset
+SELECT pg_temp.g84_assert(
+ :'refuse_supervisor'::jsonb->>'raised'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_supervisor'::jsonb->>'state'='P0001'
+ AND :'kept_supervisor'::boolean,
+ 'a move onto a deactivated business is refused, GRN unchanged (supervisor): '||:'refuse_supervisor');
 SELECT pg_temp.g84_assert(
  :'refuse_admin'::jsonb->>'raised'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_admin'::jsonb->>'state'='P0001'
  AND :'refuse_staff'::jsonb->>'raised'='This business is deactivated. Activate it in Customers to receive new goods.' AND :'refuse_staff'::jsonb->>'state'='P0001'
@@ -88,6 +99,15 @@ RESET ROLE;
 SELECT pg_temp.g84_assert(:'edit_d'::jsonb->>'raised' IS NULL AND (:'edit_d'::jsonb->>'success')='true'
  AND (SELECT note='edited 84' AND registration='GJ84REG' AND customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_3'::uuid),
  'editing a GRN of a deactivated business still works: '||:'edit_d');
+
+-- 2b. the call shape FAS sync uses (it never passes a customer): editing a GRN of a deactivated business is allowed
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.g84_call(format('SELECT public.update_grn(p_grn_id=>%L::uuid,p_customer_id=>NULL,p_note=>%L)',:'grn_3','edited by sync 84')) AS edit_null \gset
+RESET ROLE;
+SELECT pg_temp.g84_assert(:'edit_null'::jsonb->>'raised' IS NULL AND (:'edit_null'::jsonb->>'success')='true'
+ AND (SELECT note='edited by sync 84' AND customer_id=:'cust_d'::uuid FROM public.goodsreceived WHERE id=:'grn_3'::uuid),
+ 'an edit with no customer on a GRN of a deactivated business works: '||:'edit_null');
 
 -- 3. a move onto an active business still works
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

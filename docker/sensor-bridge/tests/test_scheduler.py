@@ -155,14 +155,14 @@ class OfflineSensorTest(unittest.TestCase):
         with self.assertLogs("sensor_bridge", "INFO") as logs:
             h.run(0, 120, 30)
             self.assertEqual(len(self.events(logs)), 1)
-            self.assertIn(f"event=sensor_offline hub={h.hub.hub_id} sensor={cid(1)} name=TH1", self.events(logs)[0])
+            self.assertIn(f"event=sensor_offline hub={h.hub.hub_id} sensor={cid(1)} name='TH1'", self.events(logs)[0])
             h.hub.update(1, online=True)
             h.run(150, 300, 30)
             h.hub.update(1, online=None)  # unknown status after online: nothing new
             h.run(330, 400, 30)
         events = self.events(logs)
         self.assertEqual(len(events), 2)
-        self.assertIn(f"event=sensor_online hub={h.hub.hub_id} sensor={cid(1)} name=TH1", events[1])
+        self.assertIn(f"event=sensor_online hub={h.hub.hub_id} sensor={cid(1)} name='TH1'", events[1])
 
     def test_unknown_status_after_offline_counts_as_back_online(self):
         h = self.harness(a=False)
@@ -196,17 +196,24 @@ class OfflineSensorTest(unittest.TestCase):
         h = self.harness(a=True)
         h.run(0)
         h.hub.update(1, online=False)
-        h.run(30, 300, 30)
+        h.run(30, 1000, 30)  # the 900 s heartbeat interval passes while it is offline
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change"], "no heartbeat while offline")
         h.hub.update(1, online=True)
-        h.run(330, 800, 30)
-        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change"])
+        h.run(1020)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change", "heartbeat"], "due on return")
+        h.hub.update(1, online=False)
+        h.run(1050, 1200, 30)
+        h.hub.update(1, online=True)
+        h.run(1230, 1700, 30)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change", "heartbeat"], "not due yet on return")
 
     def test_back_online_with_a_new_value_is_a_change(self):
         h = self.harness(a=True)
         h.run(0)
-        h.hub.update(1, online=False)
+        h.hub.update(1, online=False, temperature=25.0)  # the value changes while it is offline
         h.run(30, 120, 30)
-        h.hub.update(1, online=True, temperature=25.0)
+        self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change"], "nothing sent while offline")
+        h.hub.update(1, online=True)
         h.run(150)
         self.assertEqual([k for i, k in h.sent() if i == cid(1)], ["change", "change"])
         self.assertEqual(h.poster.readings()[0]["temperature"], 25.0)
@@ -219,8 +226,8 @@ class OfflineSensorTest(unittest.TestCase):
             first.run(0, 60, 30)
             first.db.close()
             second = Harness(FakeHub(children=kids), db=open_db(settings["SENSOR_BRIDGE_QUEUE_PATH"]), **settings)
-            second.run(90, 600, 30)
-            self.assertEqual(second.poster.payloads, [])
+            second.run(90, 1000, 30)  # past the 900 s heartbeat interval
+            self.assertEqual(second.sent(), [(cid(2), "heartbeat")], "only the online neighbour")
             second.db.close()
 
 
