@@ -206,6 +206,10 @@ SET LOCAL ROLE authenticated;
 SELECT (:'second'::jsonb->>'dispatch_id') AS dispatch_2 \gset
 CREATE FUNCTION pg_temp.dw_edit(dispatch uuid, header jsonb, lines jsonb[]) RETURNS text LANGUAGE sql AS $$
   SELECT COALESCE(r->>'error','saved') FROM public.update_dispatch_smart(dispatch,header,lines) AS r $$;
+RESET ROLE;
+SELECT count(*) AS movements_before_edits FROM public.stock_movements WHERE gr_trl_id=:'lot_1'::uuid \gset
+SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',0)])
  ='Dispatch quantity must be a whole number greater than 0','quantity 0 refused');
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',1.5)])
@@ -216,11 +220,18 @@ SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_ob
  jsonb_build_object('gr_trl_id',gen_random_uuid(),'disp_qty',1)])='Dispatch item does not exist in inventory','unknown lot refused, not dropped');
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3),
  jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',1)])='The same lot appears twice in the dispatch lines','a duplicated lot is refused on edit (migration 87)');
+-- The same existing lot written once in lower case and once in upper case is still one lot.
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3),
+ jsonb_build_object('gr_trl_id',upper(:'lot_1'),'disp_qty',3)])='The same lot appears twice in the dispatch lines','the same lot in upper case is refused on edit (migration 87)');
+-- Identical duplicates of a line the dispatch already has are refused too.
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3),
+ jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3)])='The same lot appears twice in the dispatch lines','identical duplicates of an existing line are refused on edit');
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',jsonb_build_object('disp_no',E'\t','note','blank number'),NULL)='disp_no is required','blank number refused on edit');
 RESET ROLE;
 SELECT pg_temp.dw_assert((SELECT disp_no='DWD2' AND note IS DISTINCT FROM 'blank number' FROM public.dispatch WHERE id=:'dispatch_2'::uuid)
  AND (SELECT count(*)=1 AND bool_and(disp_qty=3) FROM public.dispatch_trl WHERE disp_id=:'dispatch_2'::uuid)
- AND (SELECT stock=13 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'refused edits changed nothing');
+ AND (SELECT stock=13 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid)
+ AND (SELECT count(*)=:'movements_before_edits'::integer FROM public.stock_movements WHERE gr_trl_id=:'lot_1'::uuid),'refused edits changed nothing: no stock, line or movement changed');
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',jsonb_build_object('note','five now'),ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',5)])='saved','a valid edit is saved');
