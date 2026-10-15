@@ -72,7 +72,16 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   name="${file%.enc}"; name="${name%.tar}"
   [[ "$name" =~ ^warehouse-[0-9]{8}T[0-9]{6}Z$ ]] || die "Not a backup archive name (warehouse-<utc>.tar or .tar.enc): $archive"
   [[ -f "$archive.sha256" ]] || die "Missing checksum file $archive.sha256; refusing an unverified archive."
-  (cd "$(dirname -- "$archive")" && sha256sum -c --quiet -- "$file.sha256") || die "The archive does not match $file.sha256; choose another backup."
+  # The checksum record must be for this very archive: one record, naming the selected file,
+  # holding the SHA-256 of the selected bytes. A record copied from another archive is refused.
+  records="$(grep -c '' -- "$archive.sha256" || true)"
+  record="$(head -n 1 -- "$archive.sha256")"
+  [[ "$records" == 1 && -n "${record//[[:space:]]/}" ]] || die 'The checksum file must hold one record'
+  [[ "$record" =~ ^([0-9a-fA-F]{64})\ [\ \*](.+)$ ]] || die "The checksum file $file.sha256 is not a '<sha256>  <name>' record."
+  recorded_hash="${BASH_REMATCH[1]}"; recorded_name="${BASH_REMATCH[2]}"
+  [[ "$recorded_name" == "$file" ]] || die "The checksum file names a different archive ($recorded_name)"
+  actual_hash="$(sha256sum -- "$archive" | cut -d' ' -f1)"
+  [[ "${recorded_hash,,}" == "$actual_hash" ]] || die "The archive does not match $file.sha256; choose another backup."
   # The archive signature covers its checksum, so it is checked before the archive is opened.
   # Without one, nothing vouches for the archive until the backup inside it has been unpacked.
   if [[ -n "$BACKUP_KEY" && -e "$archive.hmac" ]]; then
