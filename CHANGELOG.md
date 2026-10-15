@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — fixes from the outside backend review of 2026-10-15 (migration 87)
+
+Migration `00000000000087_review_fixes.sql` (patches existing functions in place; no new RPC, no
+signature change) plus two operator scripts that `setup.sh` re-applies. The review's ten findings
+(seven Medium, three Low; none High) against main `b41ec58`; all were still present on `02ec401`.
+App: the matching rn-warehouse-template release (photo rollback after a lost confirm, Leon flag).
+
+- **Users** (BR-01): `update_user_role` and `update_user_status` take the last-administrator lock
+  and read the target row `FOR UPDATE` before any check, so a supervisor's change can no longer
+  overwrite an administrator promotion committed meanwhile (the supervisor is refused instead).
+- **Dispatch** (BR-02, 03, 06, 07): a dispatch locks the cart line it consumes, so a quantity edit
+  committed meanwhile is not lost; the same lot twice in the lines is refused ("The same lot appears
+  twice in the dispatch lines", on create and edit) instead of writing duplicate stock movements; a
+  `source_order_id` must be a live cart of the dispatch's customer ("The order belongs to another
+  customer"; an edit may not move a cart-sourced dispatch to another customer), and
+  `get_cart_dispatches` lists only that customer's dispatches; the document lock is taken before the
+  idempotency lookup, so an overlapping retry with the same key answers the cached result
+  (`from_cache: true`) instead of a `23505` duplicate-number error.
+- **Rates** (BR-04): `create_item_storage_price`, both `update_item_storage_price` overloads,
+  `find_or_create_item_storage_price` and `delete_item_storage_price` take the same per-scope
+  advisory lock as `replace_item_rates`, so two concurrent writers cannot commit overlapping bands;
+  `find_storage_price` has a final `id` tie-break.
+- **GRN list** (BR-08): `total_weight` in `get_grn_list` and the weight sum in
+  `get_customer_dispatch_items` are computed in numeric (a 50 000 kg × 50 000 line no longer
+  overflows the list).
+- **Photos** (BR-05): `cancel_grn_image_upload` / `cancel_dispatch_image_upload` answer
+  `ALREADY_CONFIRMED` (with `image_id`, `storage_path`) for a row the confirm already committed, so
+  the app keeps the file and reports the photo as attached. `scripts/configure-storage.sql`: an
+  administrator or supervisor can delete an object in `grn-images`, `dispatch-images` or
+  `customer-images` only when no `grn_images` / `dispatch_images` row and no document image URL
+  references it (policy `starter_staff_images` replaced by `starter_manager_images_*`).
+- **Restore** (BR-10): `scripts/restore-host.sh` binds the checksum record to the selected
+  archive — exactly one record, its filename must be the selected archive, and the archive's bytes
+  are hashed directly — before the signature check and before anything is listed or extracted.
+  A companion copied from another archive is refused.
+- Tests: `tests/concurrent_rules.sh` cases 7–10 (role lock, cart line lock, overlapping retry,
+  rate writers), new `tests/storage_delete_rules.sql`, cases in `document_write_consistency`,
+  `dispatch_lot_ownership`, `grn_list_end_day`, `staff_dispatch_invoice_access`, `restore-host.test.mjs`.
+
 ## Unreleased — every item always has a rate: standard rate (migration 85) and rates set on the GRN sheet (migration 86) (2026-10-15)
 
 Migrations `00000000000085_standard_rate.sql` and `00000000000086_grn_rates.sql`, applied by the setup
