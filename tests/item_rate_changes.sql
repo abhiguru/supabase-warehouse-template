@@ -415,6 +415,34 @@ SELECT public.update_item_storage_price(p_id=>:'other_row'::uuid,p_unit_price=>9
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'overlap_update'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'one_day_update'::jsonb->>'success'='true','update refuses an overlap, accepts a one-day rate: '||:'overlap_update'||:'one_day_update');
 -- The nine-argument legacy update still works for a manager (it never overlaps its own row).
+-- Migration 87: the nine-argument overload answers BANDS_OVERLAP for a partial overlap in its own price type
+-- and ignores a row of the other price type. A new item for South: monthly 0-49 and 50-100, one-time 0-49.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_item('Rate Changes Legacy Overload','Bag')->>'success' AS lg_item \gset
+RESET ROLE;
+SELECT id AS lgitem FROM public.items WHERE name='Rate Changes Legacy Overload' \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>49,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_a,
+       public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>50,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_b,
+       public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'one_time',p_unit_price=>9,p_weight_min=>0,p_weight_max=>49,p_labour_rate=>0,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_c \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'lg_a'::jsonb->>'success'='true' AND :'lg_b'::jsonb->>'success'='true' AND :'lg_c'::jsonb->>'success'='true','legacy overload fixture rows: '||:'lg_a'||:'lg_b'||:'lg_c');
+SELECT id AS lg_row FROM public.item_storage_prices WHERE item_id=:'lgitem'::uuid AND customer_id=:'south'::uuid AND price_type='monthly' AND weight_min=0 \gset
+SELECT pg_temp.rc_rows(:'lgitem'::uuid,:'south'::uuid,'monthly') AS lg_before \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_item_storage_price(:'lg_row'::uuid,0,70,0,9,2,5,:'d30'::date,NULL) AS lg_partial,
+       public.update_item_storage_price(:'lg_row'::uuid,0,49,0,9.5,2,5,:'d30'::date,NULL) AS lg_other_type \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'lg_partial'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'lg_partial'::jsonb->>'success'='false',
+ 'the legacy overload refuses a partial overlap (0-70 against 50-100): '||:'lg_partial');
+SELECT pg_temp.rc_assert(:'lg_other_type'::jsonb->>'success'='true',
+ 'the legacy overload ignores a one-time row with the same band: '||:'lg_other_type');
+SELECT pg_temp.rc_assert((SELECT weight_max=49 FROM public.item_storage_prices WHERE id=:'lg_row'::uuid)
+ AND (SELECT count(*)=2 FROM public.item_storage_prices WHERE item_id=:'lgitem'::uuid AND customer_id=:'south'::uuid AND price_type='monthly'),
+ 'the refused overlap changed nothing; rows: '||pg_temp.rc_rows(:'lgitem'::uuid,:'south'::uuid,'monthly'));
 
 -- ---------------------------------------------------------------------------
 -- 14. search_customers: every typed word anywhere in the name; order starts-with first
