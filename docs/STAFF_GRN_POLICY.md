@@ -317,6 +317,10 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   failed for unassigned customers and dropped photos silently.
 - **Cancellation ownership.** Pending GRN and dispatch uploads can be cancelled
   only by the registering profile or an administrator/supervisor.
+  The answer is `success:true` with `storage_path` for a pending upload,
+  `code:'NOT_FOUND'` when there is no such pending upload for the caller, and
+  (migration 87) `code:'ALREADY_CONFIRMED'` with `image_id` and `storage_path` when the
+  upload was confirmed meanwhile: nothing is deleted and the caller must keep the file.
 - **Refusals roll back.** A refused dispatch edit (invoiced lines, insufficient
   stock) no longer leaves a half-applied header (migration 25).
 - **Status changes.** `update_user_status(false)` disables the enrollment and
@@ -428,6 +432,10 @@ What that means for each entry point:
   timestamp.
 - `confirm_*_image_upload` confirms only after the file was uploaded to the
   registered path (`IMAGE_NOT_VERIFIED` otherwise).
+- `cancel_*_image_upload` removes a pending row (`success:true`, `storage_path`, the app then
+  deletes the file); a confirmed row is answered `ALREADY_CONFIRMED` (`success:false`, with
+  `image_id` and `storage_path`) and kept; no such row is `NOT_FOUND`. The app deletes the stored
+  file only after `success:true`.
 - `update_grn` keeps the images already on the receipt, named by id (or by
   their path). An id of another receipt's image no longer re-links that image.
   Any other entry is a new attachment and must pass the rule.
