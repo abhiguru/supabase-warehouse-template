@@ -138,6 +138,17 @@ SELECT pg_temp.gl_assert(pg_temp.gl_numbers(public.get_grn_list(NULL, :'end_day'
   AND pg_temp.gl_numbers(public.get_grn_list(:'start_day', NULL, 'date', 'desc', 50, 0,
       jsonb_build_object('gr_no', 'GLE'))) = ARRAY['GLE4', 'GLE3', 'GLE2', 'GLE1'],
   'staff, receipts with only an end day (up to E) and only a start day (from S)');
+-- Migration 87: a total weight above int4 is summed as numeric, not an overflow error.
+-- One more receipt: 50000 bags of 50000 kg = 2500000000 kg (an int4 product would overflow).
+SELECT pg_temp.gl_assert(public.save_grn(p_gr_no => 'GLEW1', p_date => (:'end_day'::date::text || 'T10:00:00+05:30')::timestamptz,
+  p_customer_id => :'quince'::uuid, p_customer_name => 'GRN List Day Quince Cold', p_idempotency_key => 'grn-list-end-day-GLEW1',
+  p_items => jsonb_build_array(jsonb_build_object('item_id', :'turmeric', 'item_name', 'GRN List Day Turmeric', 'packaging', 'Bag',
+    'qty', 50000, 'weight', 50000)))->>'success' = 'true', 'fixture receipt GLEW1 with a huge weight');
+SELECT pg_temp.gl_assert(r->>'success' = 'true'
+  AND (SELECT (x->>'total_weight')::numeric FROM jsonb_array_elements(r#>'{data,grns}') x WHERE x->>'gr_no' = 'GLEW1') = 2500000000,
+  'a receipt of 50000 x 50000 kg lists total_weight 2500000000: ' || r::text)
+FROM (SELECT public.get_grn_list(:'end_day', :'end_day', 'date', 'desc', 50, 0,
+  jsonb_build_object('gr_no', 'GLEW1')) AS r) answer;
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
