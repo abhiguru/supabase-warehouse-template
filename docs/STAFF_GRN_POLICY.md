@@ -61,7 +61,8 @@ capacity claim.
 
 Use the documented setup sequence from the reviewed source. Migrations 18–20
 are additive; never edit an applied migration. Setup also runs
-scripts/configure-storage.sql for the scoped Storage policies. Existing frozen
+scripts/configure-storage.sql for the scoped Storage policies. Administrators and supervisors can delete an image object only when no
+image row or document header column still names it. Existing frozen
 campaign warehouses and APK10 were not changed by this source/test work.
 
 On 3 October at 15:25 UTC, the final authorized disposable database run passed
