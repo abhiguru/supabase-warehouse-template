@@ -317,4 +317,69 @@ SELECT pg_temp.sr_assert(:'got2'::jsonb#>>'{data,updated_by_name}'='Standard Rat
 -- A save when nothing is unpriced counts 0.
 SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":0,"weight_max":50,"unit_price":9,"labour_rate":3,"tax_percent":18}]') AS save3 \gset
 SELECT pg_temp.sr_assert((:'save3'::jsonb#>>'{data,items_priced}')::int=0,'a save with nothing to price reports 0: '||:'save3');
+-- ---------------------------------------------------------------------------
+-- 9. Review fixes (B3-B8 of the 2026-10-15 review)
+-- ---------------------------------------------------------------------------
+-- A staff member sending bad tiers is refused as staff (the role is checked first).
+SELECT pg_temp.sr_set(:'staff_claims'::jsonb,'[]') AS staff_bad \gset
+SELECT pg_temp.sr_assert(:'staff_bad'::jsonb->>'error_code'='STANDARD_RATE_MANAGER_ONLY','staff sending no tiers get STANDARD_RATE_MANAGER_ONLY, not INVALID_BANDS: '||:'staff_bad');
+-- Renaming an item that is already active adds no rows, even when it has none: only turning active does.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Bare','Bag')$q$)->>'success' AS made_bare \gset
+DELETE FROM public.item_storage_prices WHERE item_id=pg_temp.sr_item('SR Bare');
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR Bare Renamed','Bag',NULL,true)$q$,pg_temp.sr_item('SR Bare'))) AS bare_rename \gset
+SELECT pg_temp.sr_assert(:'bare_rename'::jsonb->>'success'='true' AND pg_temp.sr_rows(pg_temp.sr_item('SR Bare Renamed'),NULL)='(none)',
+ 'active to active adds no rows: '||pg_temp.sr_rows(pg_temp.sr_item('SR Bare Renamed'),NULL));
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR Bare Renamed','Bag',NULL,false)$q$,pg_temp.sr_item('SR Bare Renamed'))) AS bare_off \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR Bare Renamed','Bag',NULL,true)$q$,pg_temp.sr_item('SR Bare Renamed'))) AS bare_on \gset
+SELECT pg_temp.sr_assert(pg_temp.sr_rows(pg_temp.sr_item('SR Bare Renamed'),NULL)=format('0-50@9.00/3.00/18 %s..open',:'today'),
+ 'the same item turned off and on again is priced: '||pg_temp.sr_rows(pg_temp.sr_item('SR Bare Renamed'),NULL));
+-- Any default row counts, also a one-time one, an ended one is covered above, and a planned one.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR One Time Only','Bag')$q$)->>'success' AS made_ot \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Planned Only','Bag')$q$)->>'success' AS made_pl \gset
+DELETE FROM public.item_storage_prices WHERE item_id IN (pg_temp.sr_item('SR One Time Only'),pg_temp.sr_item('SR Planned Only'));
+INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,effective_from,effective_to,unit_price_one_time,unit_price_monthly) VALUES
+ (pg_temp.sr_item('SR One Time Only'),NULL,'one_time',30,0,50,0,18,:'d100',NULL,30,0),
+ (pg_temp.sr_item('SR Planned Only'),NULL,'monthly',6,0,50,1,5,:'d10',NULL,0,6);
+SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":0,"weight_max":50,"unit_price":9,"labour_rate":3,"tax_percent":18}]') AS save4 \gset
+SELECT pg_temp.sr_assert((:'save4'::jsonb#>>'{data,items_priced}')::int=0
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR One Time Only'),NULL,'monthly')='(none)' AND pg_temp.sr_rows(pg_temp.sr_item('SR One Time Only'),NULL,'one_time')=format('0-50@30.00/0.00/18 %s..open',:'d100')
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR Planned Only'),NULL)=format('0-50@6.00/1.00/5 %s..open',:'d10'),
+ 'a save leaves an item with only a one-time or only a planned default row alone: '||:'save4');
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR One Time Only','Bag',NULL,false)$q$,pg_temp.sr_item('SR One Time Only'))) AS ot_off \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR One Time Only','Bag',NULL,true)$q$,pg_temp.sr_item('SR One Time Only'))) AS ot_on \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR Planned Only','Bag',NULL,false)$q$,pg_temp.sr_item('SR Planned Only'))) AS pl_off \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.update_item(%L::uuid,'SR Planned Only','Bag',NULL,true)$q$,pg_temp.sr_item('SR Planned Only'))) AS pl_on \gset
+SELECT pg_temp.sr_assert(pg_temp.sr_rows(pg_temp.sr_item('SR One Time Only'),NULL,'monthly')='(none)' AND pg_temp.sr_rows(pg_temp.sr_item('SR Planned Only'),NULL)=format('0-50@6.00/1.00/5 %s..open',:'d10'),
+ 'a reactivation leaves them alone too');
+-- Copy from an item whose only rate in force is a customer rate: the standard tiers.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Cust Source','Bag')$q$)->>'success' AS made_cs \gset
+DELETE FROM public.item_storage_prices WHERE item_id=pg_temp.sr_item('SR Cust Source');
+INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,effective_from,effective_to,unit_price_one_time,unit_price_monthly) VALUES
+ (pg_temp.sr_item('SR Cust Source'),:'orchard'::uuid,'monthly',9,0,100,1,5,:'d100',NULL,0,9);
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item('SR From Customer Only','Bag',NULL,true,%L::uuid)$q$,pg_temp.sr_item('SR Cust Source'))) AS from_cust \gset
+SELECT pg_temp.sr_assert(:'from_cust'::jsonb#>>'{data,rate_source}'='standard' AND pg_temp.sr_rows(pg_temp.sr_item('SR From Customer Only'),NULL)=format('0-50@9.00/3.00/18 %s..open',:'today')
+ AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE item_id=pg_temp.sr_item('SR From Customer Only') AND customer_id IS NOT NULL),
+ 'copy from an item with customer rates only gives the standard tiers: '||:'from_cust');
+-- B4: a source with two open rows for one band (data from before migration 76) copies the one find_storage_price
+-- would use; a source whose rows overlap in different bands cannot be copied and gives the standard tiers.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Legacy Dup','Bag')$q$)->>'success' AS made_dup \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Legacy Nested','Bag')$q$)->>'success' AS made_nested \gset
+DELETE FROM public.item_storage_prices WHERE item_id IN (pg_temp.sr_item('SR Legacy Dup'),pg_temp.sr_item('SR Legacy Nested'));
+INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,effective_from,effective_to,unit_price_one_time,unit_price_monthly) VALUES
+ (pg_temp.sr_item('SR Legacy Dup'),NULL,'monthly',4,0,50,1,5,:'today'::date-200,NULL,0,4),
+ (pg_temp.sr_item('SR Legacy Dup'),NULL,'monthly',6,0,50,2,5,:'d100',NULL,0,6),
+ (pg_temp.sr_item('SR Legacy Nested'),NULL,'monthly',3,0,100,1,5,:'d100',NULL,0,3),
+ (pg_temp.sr_item('SR Legacy Nested'),NULL,'monthly',5,0,10,1,5,:'d100',NULL,0,5);
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item('SR Copy Dup','Bag',NULL,true,%L::uuid)$q$,pg_temp.sr_item('SR Legacy Dup'))) AS copy_dup \gset
+SELECT pg_temp.sr_assert(:'copy_dup'::jsonb->>'success'='true' AND :'copy_dup'::jsonb#>>'{data,rate_source}'='copied'
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR Copy Dup'),NULL)=format('0-50@6.00/2.00/5 %s..open',:'today'),
+ 'two open rows of one band: the later start is copied, once: '||:'copy_dup'||' '||pg_temp.sr_rows(pg_temp.sr_item('SR Copy Dup'),NULL));
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item('SR Copy Nested','Bag',NULL,true,%L::uuid)$q$,pg_temp.sr_item('SR Legacy Nested'))) AS copy_nested \gset
+SELECT pg_temp.sr_assert(:'copy_nested'::jsonb->>'success'='true' AND :'copy_nested'::jsonb#>>'{data,rate_source}'='standard'
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR Copy Nested'),NULL)=format('0-50@9.00/3.00/18 %s..open',:'today'),
+ 'overlapping bands in the source: the standard tiers, not a copy that overlaps: '||:'copy_nested');
+-- B6: whole weights written with a decimal point are accepted (they used to raise 22P02).
+SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":0.0,"weight_max":10.0,"unit_price":3,"labour_rate":1,"tax_percent":5},{"weight_min":11,"weight_max":50.00,"unit_price":4,"labour_rate":1,"tax_percent":5}]') AS save5 \gset
+SELECT pg_temp.sr_assert(:'save5'::jsonb->>'success'='true' AND (SELECT string_agg(weight_min||'-'||weight_max,',' ORDER BY weight_min)='0-10,11-50' FROM public.standard_rate_tiers),
+ 'weights with a decimal point: '||:'save5');
 ROLLBACK;

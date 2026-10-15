@@ -23,8 +23,8 @@
 -- the new functions follow migration 74: {success:false, error, error_code, data}.
 
 -- Replaces one marker in a function body, failing unless it occurs exactly
--- `expected` times. Dropped at the end of this migration. Every before-text below
--- is absent from its after-text, so a second direct run fails on the count.
+-- `expected` times. Dropped at the end of this migration. A second direct run of the
+-- file fails at CREATE TABLE; the ledger skips an applied file, so it never runs twice.
 CREATE FUNCTION pg_temp.patch_rpc(fn regprocedure, marker text, replacement text, expected integer DEFAULT 1) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE definition text := pg_get_functiondef(fn); occurrences integer;
@@ -109,7 +109,7 @@ BEGIN
   v_prev_max := NULL; v_expected := 0;
   FOR v_band, v_ord IN SELECT e.value, (e.ord - 1)::integer FROM jsonb_array_elements(p_tiers) WITH ORDINALITY e(value, ord)
       ORDER BY (e.value->>'weight_min')::numeric, e.ord LOOP
-    v_min := (v_band->>'weight_min')::integer; v_max := (v_band->>'weight_max')::integer;
+    v_min := (v_band->>'weight_min')::numeric::integer; v_max := (v_band->>'weight_max')::numeric::integer;
     IF v_prev_max IS NOT NULL AND v_min <= v_prev_max THEN
       RETURN warehouse_security.rate_failure('BANDS_OVERLAP', 'Weight bands overlap', jsonb_build_object('index', v_ord));
     END IF;
@@ -149,12 +149,20 @@ REVOKE ALL ON FUNCTION warehouse_security.give_standard_rate(uuid, date) FROM PU
 
 -- Copies the default rows of p_from_item that are in force on p_day (both price types, no
 -- customer rate) to p_to_item as rows from p_day without an end. Labour of a one-time rate is 0.
--- Returns the rows added (0 = the source has nothing in force).
+-- One row per band, the one find_storage_price would use (the latest start). When the rows
+-- picked still overlap (data written before migration 76's overlap check), nothing is copied.
+-- Returns the rows added (0 = the source has nothing usable in force).
 CREATE FUNCTION warehouse_security.copy_default_rates(p_from_item uuid, p_to_item uuid, p_day date) RETURNS integer
 LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
 DECLARE v_profile uuid; v_added integer;
 BEGIN
   SELECT up.id INTO v_profile FROM public.user_profiles up WHERE up.auth_user_id = auth.uid() AND up.active;
+  WITH picked AS (
+    SELECT DISTINCT ON (r.price_type, r.weight_min, r.weight_max) r.*
+      FROM public.item_storage_prices r
+     WHERE r.item_id = p_from_item AND r.customer_id IS NULL
+       AND r.effective_from <= p_day AND (r.effective_to IS NULL OR r.effective_to >= p_day)
+     ORDER BY r.price_type, r.weight_min, r.weight_max, r.effective_from DESC, r.id)
   INSERT INTO public.item_storage_prices (
     item_id, customer_id, price_type, unit_price, weight_min, weight_max, labour_rate, tax_percent,
     effective_from, effective_to, created_by, unit_price_one_time, unit_price_monthly)
@@ -163,9 +171,9 @@ BEGIN
          p_day, NULL, v_profile,
          CASE WHEN r.price_type = 'one_time' THEN r.unit_price ELSE 0 END,
          CASE WHEN r.price_type = 'monthly' THEN r.unit_price ELSE 0 END
-    FROM public.item_storage_prices r
-   WHERE r.item_id = p_from_item AND r.customer_id IS NULL
-     AND r.effective_from <= p_day AND (r.effective_to IS NULL OR r.effective_to >= p_day)
+    FROM picked r
+   WHERE NOT EXISTS (SELECT 1 FROM picked a JOIN picked b ON a.price_type = b.price_type AND a.id <> b.id
+                      AND a.weight_min <= b.weight_max AND b.weight_min <= a.weight_max)
    ORDER BY r.price_type, r.weight_min;
   GET DIAGNOSTICS v_added = ROW_COUNT;
   RETURN v_added;
@@ -218,7 +226,7 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('standard_rate', 0));
   DELETE FROM public.standard_rate_tiers WHERE true;
   INSERT INTO public.standard_rate_tiers (weight_min, weight_max, unit_price, labour_rate, tax_percent, updated_at, updated_by)
-  SELECT (e.value->>'weight_min')::integer, (e.value->>'weight_max')::integer, (e.value->>'unit_price')::numeric,
+  SELECT (e.value->>'weight_min')::numeric::integer, (e.value->>'weight_max')::numeric::integer, (e.value->>'unit_price')::numeric,
          (e.value->>'labour_rate')::numeric, (e.value->>'tax_percent')::numeric, now(), v_profile
     FROM jsonb_array_elements(p_tiers) e;
 
@@ -291,7 +299,9 @@ BEGIN
     RETURNING id INTO v_new_id;
 
     -- The item's rate (migration 85): a copy of another item's default rows in force today, else
-    -- the standard tiers from today, else none.
+    -- the standard tiers from today, else none. A save of the standard rate in progress is waited
+    -- for (it holds the same lock exclusively), so the tiers read below are the committed ones.
+    PERFORM pg_advisory_xact_lock_shared(hashtextextended('standard_rate', 0));
     IF p_rate_from_item IS NOT NULL
        AND warehouse_security.copy_default_rates(p_rate_from_item, v_new_id, v_today) > 0 THEN
         v_source := 'copied';
@@ -340,6 +350,7 @@ $r$);
   $m$    -- Return updated item
 $m$, $r$    -- An item that turns active and has no default rate gets the standard tiers from today (migration 85).
     IF COALESCE(v_was_active, false) = false AND p_active IS TRUE THEN
+        PERFORM pg_advisory_xact_lock_shared(hashtextextended('standard_rate', 0));
         PERFORM warehouse_security.give_standard_rate(p_item_id, warehouse_security.business_date(now()));
     END IF;
 

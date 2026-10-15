@@ -13,6 +13,8 @@
 #   4. Migration 76: two users change the same item rate from the same day.
 #      The second waits for the first, then replaces its rows: exactly one
 #      open row is left (no duplicate band, no unique violation).
+#   5. Migration 85: an item created while the first save of the standard rate is
+#      still open gets the tiers that save commits (not "no rate").
 set -euo pipefail
 container="${1:?disposable test container name required}"
 export PGPASSWORD=disposable-test-database-only
@@ -175,6 +177,34 @@ SQL
 )
 [[ "$stored" = t && "$removed" = 1 ]] || { echo 'Concurrent rate change: not exactly one open row (the second call must replace the first).' >&2; exit 1; }
 echo 'Concurrent rate change: two changes from one day left one open row; the second replaced the first.'
+
+# Migration 85: an item created while the first save of the standard rate is still open must
+# get the tiers that save commits, not "no rate" (create_item waits for the same lock).
+standard_started=$(psql_exec -At <<'SQL'
+SELECT clock_timestamp()
+SQL
+)
+call_as "$claims_one" "public.set_standard_rate('[{\"weight_min\":0,\"weight_max\":50,\"unit_price\":7,\"labour_rate\":2,\"tax_percent\":5}]'::jsonb)" 4 > "$scratch/std-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "public.create_item('Concurrent Standard Item','Bag')" > "$scratch/std-second"
+wait "$holder" || { echo 'Concurrent standard rate: the save failed.' >&2; exit 1; }
+first=$(answer "$scratch/std-first"); second=$(answer "$scratch/std-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent standard rate: the save did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": true'* && "$second" == *'"rate_source": "standard"'* ]] ||
+  { echo "Concurrent standard rate: the item created during the save did not get the standard rate: $second" >&2; exit 1; }
+stored=$(psql_exec -At <<'SQL'
+SELECT count(*)=1 AND bool_and(unit_price=7 AND weight_min=0 AND weight_max=50 AND effective_to IS NULL)
+  FROM public.item_storage_prices WHERE item_id=(SELECT id FROM public.items WHERE name='Concurrent Standard Item');
+SQL
+)
+[[ "$stored" = t ]] || { echo 'Concurrent standard rate: the new item does not have the saved tier.' >&2; exit 1; }
+echo 'Concurrent standard rate: an item created during the first save got the tiers that save committed.'
+# Put the database back for the tests that follow: no tiers, none of the rows this case gave out.
+psql_exec -v started="$standard_started" <<'SQL'
+DELETE FROM public.standard_rate_tiers;
+DELETE FROM public.item_storage_prices WHERE created_at >= :'started'::timestamptz;
+SQL
 
 # The administrators set aside at the start get their place back.
 psql_exec -v others="$others" <<'SQL'
