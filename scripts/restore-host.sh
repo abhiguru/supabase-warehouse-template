@@ -77,10 +77,13 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   records="$(grep -c '' -- "$archive.sha256" || true)"
   record="$(head -n 1 -- "$archive.sha256")"
   [[ "$records" == 1 && -n "${record//[[:space:]]/}" ]] || die 'The checksum file must hold one record'
+  # A copy that went through a Windows tool ends the record with CR LF. The signature covers the file
+  # byte for byte, so it cannot be "fixed" here: say what is wrong instead of a name mismatch.
+  [[ "$record" != *$'\r' ]] || die "The checksum file $file.sha256 has CRLF line endings; copy it again without converting it."
   [[ "$record" =~ ^([0-9a-fA-F]{64})\ [\ \*](.+)$ ]] || die "The checksum file $file.sha256 is not a '<sha256>  <name>' record."
   recorded_hash="${BASH_REMATCH[1]}"; recorded_name="${BASH_REMATCH[2]}"
   [[ "$recorded_name" == "$file" ]] || die "The checksum file names a different archive ($recorded_name)"
-  actual_hash="$(sha256sum -- "$archive" | cut -d' ' -f1)"
+  actual_hash="$(sha256sum < "$archive" | cut -d' ' -f1)"
   [[ "${recorded_hash,,}" == "$actual_hash" ]] || die "The archive does not match $file.sha256; choose another backup."
   # The archive signature covers its checksum, so it is checked before the archive is opened.
   # Without one, nothing vouches for the archive until the backup inside it has been unpacked.

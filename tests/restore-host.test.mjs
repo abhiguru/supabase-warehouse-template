@@ -274,8 +274,19 @@ test('restore-host binds the checksum record to the selected archive', () => {
     assert.equal(result.status, 1); assert.match(result.stderr, /does not match/); nothingCreated(f, result);
     // The record is correct and signed: B is taken from its own files.
     writeFileSync(`${b}.sha256`, own); f.signArchive(b);
+    // Same record, wrong signature: the signature stage runs and refuses.
+    writeFileSync(`${b}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
     result = run(b);
-    assert.doesNotMatch(result.stderr, /different archive|one record|does not match \S+\.sha256/);
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of .* does not match the backup key/); nothingCreated(f, result);
+    // A companion written with CRLF line endings is refused with a message that names CRLF.
+    writeFileSync(`${b}.sha256`, own.replace(/\n$/, '\r\n')); f.signArchive(b);
+    result = run(b);
+    assert.equal(result.status, 1); assert.match(result.stderr, /CRLF line endings/); nothingCreated(f, result);
+    // Correct and signed: the checksum and the signature both pass, so B is stopped only later, on its tar entries.
+    writeFileSync(`${b}.sha256`, own); f.signArchive(b);
+    result = run(b);
+    assert.doesNotMatch(result.stderr, /different archive|one record|does not match \S+\.sha256|signature of|CRLF/);
+    assert.match(result.stderr, /unexpected entries/);
   } finally { clean(f); }
 });
 
