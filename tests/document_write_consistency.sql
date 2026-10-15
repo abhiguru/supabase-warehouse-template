@@ -181,6 +181,26 @@ SELECT pg_temp.dw_dispatch(U&'\00A0 ',:'orchard',:'lot_1',1,NULL) AS blank_dispa
 SELECT pg_temp.dw_assert(:'blank_dispatch'::jsonb->>'error'='Invalid dispatch data'
  AND :'blank_dispatch'::jsonb->'validation_errors' @> '[{"field":"disp_no","error":"disp_no is required"}]',
  'blank dispatch number is a validation error: ' || :'blank_dispatch');
+-- Migration 87 (BR-03): the same lot twice in the lines is refused at creation, and nothing is stored.
+RESET ROLE;
+SELECT stock AS stock_before_dup FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid \gset
+SELECT count(*) AS movements_before_dup FROM public.stock_movements WHERE gr_trl_id=:'lot_1'::uuid \gset
+SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','DWDUP','disp_date','2026-05-02T12:00:00Z',
+ 'customer_id',:'orchard','customer_name','Consistency','supervisor_id',current_setting('test.dw_supervisor'),
+ 'supervisor_name','Consistency Administrator'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',1),jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',2)],0,NULL) AS dup_dispatch \gset
+SELECT pg_temp.dw_assert(:'dup_dispatch'::jsonb->>'success'='false' AND :'dup_dispatch'::jsonb->>'error'='The same lot appears twice in the dispatch lines'
+ AND :'dup_dispatch'::jsonb->>'error_code'='WH409','a duplicated lot is refused at creation: ' || :'dup_dispatch');
+RESET ROLE;
+SELECT pg_temp.dw_assert((SELECT count(*)=0 FROM public.dispatch WHERE disp_no='DWDUP')
+ AND (SELECT stock=:'stock_before_dup'::integer FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid)
+ AND (SELECT count(*)=:'movements_before_dup'::integer FROM public.stock_movements WHERE gr_trl_id=:'lot_1'::uuid),
+ 'the refused duplicate dispatch stored nothing and moved no stock');
+SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
+SET LOCAL ROLE authenticated;
+
 
 -- 3 and 4. Dispatch edit (DWD2: 3 boxes of lot 1).
 SELECT (:'second'::jsonb->>'dispatch_id') AS dispatch_2 \gset
@@ -194,6 +214,8 @@ SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_ob
  ='Dispatch quantity must be a whole number greater than 0','missing quantity refused');
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3),
  jsonb_build_object('gr_trl_id',gen_random_uuid(),'disp_qty',1)])='Dispatch item does not exist in inventory','unknown lot refused, not dropped');
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',3),
+ jsonb_build_object('gr_trl_id',:'lot_1','disp_qty',1)])='The same lot appears twice in the dispatch lines','a duplicated lot is refused on edit (migration 87)');
 SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',jsonb_build_object('disp_no',E'\t','note','blank number'),NULL)='disp_no is required','blank number refused on edit');
 RESET ROLE;
 SELECT pg_temp.dw_assert((SELECT disp_no='DWD2' AND note IS DISTINCT FROM 'blank number' FROM public.dispatch WHERE id=:'dispatch_2'::uuid)
