@@ -25,6 +25,8 @@
 #      is answered from the cache: one dispatch, one movement, stock reduced once.
 #  10. Migration 87 (BR-04): the item rate writers (create, update) serialise per scope: the second
 #      one sees the first one's committed row and answers BANDS_OVERLAP.
+#  11. Migration 87 (BR-05/D1): a cancel of an upload whose confirm is still open (GRN and dispatch)
+#      waits, then answers ALREADY_CONFIRMED (success false); the row stays confirmed.
 set -euo pipefail
 container="${1:?disposable test container name required}"
 export PGPASSWORD=disposable-test-database-only
@@ -432,6 +434,43 @@ SELECT count(*)=1 AND bool_and(weight_min=0 AND weight_max=100) FROM public.item
 SQL
 )" = t ]] || { echo 'Concurrent rate writers: the item does not have exactly the widened row.' >&2; exit 1; }
 echo 'Concurrent rate writers: a create and an update of one scope took turns; the later one was refused as BANDS_OVERLAP and no bands overlap.'
+
+# Case 11. Migration 87 (D1): a cancel waits for a confirm in flight and then answers ALREADY_CONFIRMED.
+psql_exec -v admin="$admin_one" <<'SQL'
+INSERT INTO public.grn_images(grn_id,image_type,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ SELECT g.id,'header','concurrent-rules/grn-inflight','fixture.webp',32,'image/webp','pending',:'admin'::uuid
+ FROM public.goodsreceived g WHERE g.gr_no='CONCD';
+INSERT INTO public.dispatch_images(dispatch_id,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
+ SELECT d.id,'concurrent-rules/dispatch-inflight','fixture.webp',32,'image/webp','pending',:'admin'::uuid
+ FROM public.dispatch d WHERE d.disp_no='CONCF';
+SQL
+for kind in grn dispatch; do
+  table="${kind}_images"; path="concurrent-rules/${kind}-inflight"
+  image_id=$(psql_exec -At <<SQL
+SELECT id FROM public.$table WHERE storage_path='$path'
+SQL
+  )
+  [[ "$image_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "Concurrent cancel ($kind): the pending upload was not created." >&2; exit 1; }
+  # The confirm: its UPDATE is done, its transaction stays open.
+  psql_exec <<SQL > "$scratch/cancel-confirm" &
+BEGIN;
+UPDATE public.$table SET status='confirmed' WHERE id='$image_id'::uuid;
+SELECT pg_sleep(4);
+COMMIT;
+SQL
+  holder=$!
+  sleep 1
+  call_as "$claims_one" "public.cancel_${kind}_image_upload('$image_id'::uuid)" > "$scratch/cancel-second"
+  wait "$holder" || { echo "Concurrent cancel ($kind): the confirm failed." >&2; exit 1; }
+  second=$(answer "$scratch/cancel-second")
+  [[ "$second" == *'"success": false'* && "$second" == *'ALREADY_CONFIRMED'* && "$second" == *"$path"* ]] ||
+    { echo "Concurrent cancel ($kind): the cancel was not answered ALREADY_CONFIRMED: $second" >&2; exit 1; }
+  [[ "$(psql_exec -At <<SQL
+SELECT count(*)=1 AND bool_and(status='confirmed') FROM public.$table WHERE id='$image_id'::uuid
+SQL
+  )" = t ]] || { echo "Concurrent cancel ($kind): the row is not left confirmed." >&2; exit 1; }
+  echo "Concurrent cancel ($kind): a cancel that overlapped a confirm waited and was answered ALREADY_CONFIRMED; the upload stays."
+done
 
 # The administrators set aside at the start get their place back.
 psql_exec -v others="$others" <<'SQL'
