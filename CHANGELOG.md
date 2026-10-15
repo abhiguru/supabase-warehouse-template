@@ -35,9 +35,19 @@ App: the matching rn-warehouse-template release (photo rollback after a lost con
   archive — exactly one record, its filename must be the selected archive, and the archive's bytes
   are hashed directly — before the signature check and before anything is listed or extracted.
   A companion copied from another archive is refused.
-- Tests: `tests/concurrent_rules.sh` cases 7–10 (role lock, cart line lock, overlapping retry,
-  rate writers), new `tests/storage_delete_rules.sql`, cases in `document_write_consistency`,
-  `dispatch_lot_ownership`, `grn_list_end_day`, `staff_dispatch_invoice_access`, `restore-host.test.mjs`.
+- **From the second (Opus) review of this change:** the duplicate-lot check compares lot ids as
+  uuids, so the same lot in a different spelling is refused too; the old nine-argument
+  `update_item_storage_price` refuses overlapping rates of its own price type (`BANDS_OVERLAP`);
+  the order list and the order detail show only a dispatch of the cart's own customer; cancelling an
+  upload waits for a confirm that is still open and then answers `ALREADY_CONFIRMED`;
+  `get_dispatch_list_with_items` sums weights in numeric; the rate delete re-reads the start date
+  under its lock. Migration 87 ends with a notice counting dispatches linked to another customer's
+  cart (0 on the three development facilities). `restore-host.sh` hashes the archive from standard
+  input and refuses a checksum file with CRLF line endings, naming CRLF.
+- Tests: `tests/concurrent_rules.sh` cases 7–11 (role lock, cart line lock, overlapping retry,
+  rate writers, cancel during confirm), new `tests/storage_delete_rules.sql`, cases in
+  `document_write_consistency`, `dispatch_lot_ownership`, `grn_list_end_day`, `item_rate_changes`,
+  `staff_dispatch_invoice_access`, `restore-host.test.mjs`.
 
 ## Unreleased — every item always has a rate: standard rate (migration 85) and rates set on the GRN sheet (migration 86) (2026-10-15)
 
