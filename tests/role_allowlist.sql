@@ -74,7 +74,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_items',true,'any'),('get_item',true,'any'),('search_items_autocomplete',true,'any'),
  ('get_orders_list',true,'any'),('delete_user_account',true,'any'),
  -- a customer's own documents, carts and reports; staff for every customer
- ('get_grn_details',true,'own'),('get_grn_item_dispatches',true,'own'),('get_dispatch_details',true,'own'),
+ ('get_grn_details',true,'own'),('get_grn_item_dispatches',true,'own'),('get_grn_item_rates',true,'own'),('get_dispatch_details',true,'own'),
  ('get_invoice_data',true,'own'),('get_invoice_detail',true,'own'),('get_invoice_items_detailed',true,'own'),
  ('get_order_with_items',true,'own'),('get_cart_dispatches',true,'own'),('add_item_to_order',true,'own'),
  ('update_order_item_quantity',true,'own'),('remove_item_from_order',true,'own'),('get_order_change_log',true,'own'),
