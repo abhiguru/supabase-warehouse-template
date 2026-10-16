@@ -1,5 +1,7 @@
 -- Migration 88 (2026-10-16): get_grn_item_rates, the rate each lot of a GRN is invoiced at, and its
 -- guard (staff, and a customer account for the GRNs of a customer it owns).
+-- Migration 89 (same day): a customer account gets the same figures with every rate that is not an
+-- invoice figure as source 'customer' (its own rate) and no band edges (sections 4 and 5).
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -220,6 +222,10 @@ UPDATE public.invoice SET deleted_at=now() WHERE gr_no='IR-INV';
 SELECT pg_temp.ir_assert(pg_temp.ir_row(public.get_grn_item_rates(pg_temp.ir_grn('IR-INV')),'IR Fig',10)='item 4/1.5/5 0-50 false','an invoice with deleted_at is skipped');
 UPDATE public.invoice SET deleted_at=NULL WHERE gr_no='IR-INV';
 SELECT pg_temp.ir_assert(pg_temp.ir_row(public.get_grn_item_rates(pg_temp.ir_grn('IR-INV')),'IR Fig',10)='invoice 7/2/5 null-null true','back to the invoice figure');
+-- Migration 89: the customer keeps 'invoice' for an invoiced lot and sees the uninvoiced lot's default rate as its own.
+SELECT pg_temp.ir_get(:'customer_claims'::jsonb,'IR-INV') AS inv_cust \gset
+SELECT pg_temp.ir_assert(:'inv_cust'::jsonb#>>'{data,invoiced}'='true' AND pg_temp.ir_row(:'inv_cust'::jsonb,'IR Fig',10)='invoice 7/2/5 null-null true'
+ AND pg_temp.ir_row(:'inv_cust'::jsonb,'IR Pear',10)='customer 3/1/5 null-null false','customer view of the invoiced GRN: '||:'inv_cust');
 
 -- ---------------------------------------------------------------------------
 -- 5. Access
@@ -228,8 +234,27 @@ SELECT pg_temp.ir_assert(pg_temp.ir_get(:'admin_claims'::jsonb,'IR-A')->>'succes
 SELECT pg_temp.ir_assert(pg_temp.ir_get(:'supervisor_claims'::jsonb,'IR-A')->>'success'='true','supervisor reads');
 SELECT pg_temp.ir_assert(pg_temp.ir_get(:'staff_claims'::jsonb,'IR-A')->>'success'='true','staff reads');
 SELECT pg_temp.ir_get(:'customer_claims'::jsonb,'IR-A') AS own_a \gset
-SELECT pg_temp.ir_assert(:'own_a'::jsonb->>'success'='true' AND :'own_a'::jsonb#>'{data,rates}'=:'ans_a'::jsonb#>'{data,rates}',
- 'the GRN''s own customer reads the same rates as staff: '||:'own_a');
+-- Migration 89: the GRN's own customer reads the same header, lots, order and figures as staff, but every
+-- rate that is not an invoice figure is its own ('customer') and no entry carries band edges.
+SELECT pg_temp.ir_assert(:'own_a'::jsonb->>'success'='true' AND :'own_a'::jsonb#>'{data,gr_id}'=:'ans_a'::jsonb#>'{data,gr_id}'
+ AND :'own_a'::jsonb#>'{data,grn_date}'=:'ans_a'::jsonb#>'{data,grn_date}' AND :'own_a'::jsonb#>'{data,price_type}'=:'ans_a'::jsonb#>'{data,price_type}'
+ AND :'own_a'::jsonb#>'{data,invoiced}'=:'ans_a'::jsonb#>'{data,invoiced}','the customer reads the same header as staff: '||:'own_a');
+SELECT pg_temp.ir_assert(
+  (SELECT jsonb_agg(r - 'source' - 'weight_min' - 'weight_max' ORDER BY n) FROM jsonb_array_elements(:'own_a'::jsonb#>'{data,rates}') WITH ORDINALITY e(r,n))
+  = (SELECT jsonb_agg(r - 'source' - 'weight_min' - 'weight_max' ORDER BY n) FROM jsonb_array_elements(:'ans_a'::jsonb#>'{data,rates}') WITH ORDINALITY e(r,n)),
+ 'the customer reads the same lots, order, figures and varies as staff');
+SELECT pg_temp.ir_assert(pg_temp.ir_row(:'own_a'::jsonb,'IR Pear',10)='customer 7/2/12 null-null false','customer view, Pear 10 kg: the GRN''s own rate as its own, no band: '||pg_temp.ir_row(:'own_a'::jsonb,'IR Pear',10));
+SELECT pg_temp.ir_assert(pg_temp.ir_row(:'own_a'::jsonb,'IR Apple',10)='customer 9/1/6 null-null false','customer view, Apple: its customer rate, no band: '||pg_temp.ir_row(:'own_a'::jsonb,'IR Apple',10));
+SELECT pg_temp.ir_assert(pg_temp.ir_row(:'own_a'::jsonb,'IR Lime',8)='customer 3/1/5 null-null false','customer view, Lime 8 kg: the default rate as its own, no band: '||pg_temp.ir_row(:'own_a'::jsonb,'IR Lime',8));
+SELECT pg_temp.ir_assert(pg_temp.ir_row(:'own_a'::jsonb,'IR Lime',30)='customer 4/2/5 null-null false','customer view, Lime 30 kg: '||pg_temp.ir_row(:'own_a'::jsonb,'IR Lime',30));
+SELECT pg_temp.ir_assert(pg_temp.ir_row(:'own_a'::jsonb,'IR Plum',10)='null null/null/null null-null false','customer view, Plum: still no rate: '||pg_temp.ir_row(:'own_a'::jsonb,'IR Plum',10));
+SELECT pg_temp.ir_assert(NOT EXISTS (SELECT 1 FROM jsonb_array_elements(:'own_a'::jsonb#>'{data,rates}') r
+  WHERE r->>'source' IN ('item','grn') OR r->'weight_min'<>'null'::jsonb OR r->'weight_max'<>'null'::jsonb),
+ 'no entry of the customer''s answer names the default or GRN rate or carries a band: '||:'own_a');
+-- Staff of every kind still get the source and the band.
+SELECT pg_temp.ir_assert(pg_temp.ir_row(pg_temp.ir_get(:'admin_claims'::jsonb,'IR-A'),'IR Lime',8)='item 3/1/5 0-10 false'
+ AND pg_temp.ir_row(pg_temp.ir_get(:'supervisor_claims'::jsonb,'IR-A'),'IR Pear',10)='grn 7/2/12 0-20 false'
+ AND pg_temp.ir_row(pg_temp.ir_get(:'staff_claims'::jsonb,'IR-A'),'IR Lime',30)='item 4/2/5 11-50 false','staff views keep the source and the band');
 SELECT pg_temp.ir_get(:'other_claims'::jsonb,'IR-A') AS other_a \gset
 SELECT pg_temp.ir_assert(:'other_a'::jsonb->>'raised'='Customer access denied' AND :'other_a'::jsonb->>'state'='42501','another customer is refused: '||:'other_a');
 SELECT pg_temp.ir_as(jsonb_build_object('role','authenticated','sub',gen_random_uuid()),format('SELECT public.get_grn_item_rates(%L::uuid)',pg_temp.ir_grn('IR-A'))) AS noprofile \gset

@@ -415,6 +415,12 @@ weight_min, weight_max, varies}]}}`, one entry per lot in the order of `get_grn_
 `find_storage_price`; null = no rate (figures null). A missing or deleted GRN answers
 `{success:false, error:'GRN not found', error_code:'GRN_NOT_FOUND', data:null}`.
 
+**A customer account's answer (migration 89, owner decision of 2026-10-16):** the same header, lots, order,
+figures and `varies`, but `source` is `customer` for every rate that is not an invoice figure (`grn`,
+`customer` and `item` alike: the rate is presented as the customer's own) and `weight_min` / `weight_max`
+are null on every entry. `invoice` and null are unchanged. Staff, and a caller with no app role (service
+role), get the full answer above.
+
 ### The rate start floor
 
 `warehouse_security.rate_start_floor()` is the earlier of the India day of the first GRN that is not

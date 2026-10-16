@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased: a customer sees its GRN rates as its own (migration 89)
+
+Migration `00000000000089_customer_rate_view.sql`, owner decision of 2026-10-16: a customer account must see
+only the rate that applies to it, the default rate presented as its own. An audit of everything a customer
+account can call or read found one function that said more: `get_grn_item_rates` named the default rate
+(`source = 'item'`) and returned the band edges of the default or customer rate row. It now answers a
+customer account with `source = 'customer'` for every rate that is not an invoice figure and
+`weight_min` / `weight_max` null; figures, lots and order are unchanged, and staff get the full answer.
+No other function or table gives a customer default rates, standard tiers or another customer's rates
+(the rate tables are administrator and supervisor only; invoices and dispatches carry only the
+customer's own invoiced figures). Test: `tests/grn_item_rates_88.sql` (customer view, sections 4 and 5).
+
 ## Unreleased: `get_grn_item_rates` (migration 88)
 
 Migration `00000000000088_grn_item_rates.sql`. New `get_grn_item_rates(p_grn_id)`: the rate each lot of a GRN
