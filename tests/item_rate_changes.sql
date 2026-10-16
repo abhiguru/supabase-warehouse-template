@@ -1,6 +1,8 @@
 -- Migration 76 (2026-10-14): replace_item_rates, the overlap check and one-day rates in
 -- create/update_item_storage_price, the staff rule for rates in force, labour 0 for one-time
 -- rates, search_customers by any word, and the id tie-breaker of get_item_storage_prices.
+-- Migration 90 (2026-10-16): staff are refused all of it by the guard; the staff blocks below assert the
+-- refusal and run the same change as a supervisor.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -109,27 +111,34 @@ SELECT pg_temp.rc_assert(public.create_item_storage_price(p_item_id=>:'onion'::u
 RESET ROLE;
 SELECT pg_temp.rc_assert(pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),'the rate before the tests: '||pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly'));
 
--- Administrator, supervisor and staff succeed (future start); a customer account is refused.
+-- Administrator and supervisor succeed (future start); staff and a customer account are refused.
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'onion'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS customer_try \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'customer_try'::jsonb->>'state'='42501','a customer account is refused with 42501: '||:'customer_try');
 SELECT pg_temp.rc_assert(pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),'the refusal changed nothing');
+-- Migration 90 (owner decision, 2026-10-16): staff are refused by the guard (42501), whatever the date.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rc_replace(:'onion'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS staff_change \gset
+SELECT pg_temp.rc_replace(:'onion'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS staff_try \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_change'::jsonb->>'success'='true','staff change a rate from a future date: '||:'staff_change');
+SELECT pg_temp.rc_assert(:'staff_try'::jsonb->>'state'='42501' AND :'staff_try'::jsonb->>'raised'='Staff access required','a staff account is refused with 42501: '||:'staff_try');
+SELECT pg_temp.rc_assert(pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),'the staff refusal changed nothing');
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_replace(:'onion'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS first_change \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'first_change'::jsonb->>'success'='true','supervisor change a rate from a future date: '||:'first_change');
 SELECT pg_temp.rc_assert(pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..%s | 0-100@7.00/2.50/5 %s..open',:'old_start',:'d29',:'d30'),
- 'staff change: '||pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly'));
+ 'supervisor change: '||pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly'));
 -- The answer: ended, removed, added.
-SELECT pg_temp.rc_assert(:'staff_change'::jsonb#>>'{data,starts_on}'=:'d30' AND :'staff_change'::jsonb#>>'{data,price_type}'='monthly'
- AND jsonb_array_length(:'staff_change'::jsonb#>'{data,ended}')=1 AND (:'staff_change'::jsonb#>>'{data,ended,0,effective_to}')=:'d29'
- AND (:'staff_change'::jsonb#>>'{data,ended,0,effective_from}')=:'old_start'
- AND :'staff_change'::jsonb#>'{data,removed}'='[]'::jsonb AND jsonb_array_length(:'staff_change'::jsonb#>'{data,added}')=1
- AND (:'staff_change'::jsonb#>>'{data,added,0,unit_price}')::numeric=7 AND (:'staff_change'::jsonb#>>'{data,added,0,id}') IS NOT NULL
- AND :'staff_change'::jsonb->>'message'='Rates saved' AND :'staff_change'::jsonb#>'{data,customer_id}'='null'::jsonb,'the answer names ended, removed and added: '||:'staff_change');
+SELECT pg_temp.rc_assert(:'first_change'::jsonb#>>'{data,starts_on}'=:'d30' AND :'first_change'::jsonb#>>'{data,price_type}'='monthly'
+ AND jsonb_array_length(:'first_change'::jsonb#>'{data,ended}')=1 AND (:'first_change'::jsonb#>>'{data,ended,0,effective_to}')=:'d29'
+ AND (:'first_change'::jsonb#>>'{data,ended,0,effective_from}')=:'old_start'
+ AND :'first_change'::jsonb#>'{data,removed}'='[]'::jsonb AND jsonb_array_length(:'first_change'::jsonb#>'{data,added}')=1
+ AND (:'first_change'::jsonb#>>'{data,added,0,unit_price}')::numeric=7 AND (:'first_change'::jsonb#>>'{data,added,0,id}') IS NOT NULL
+ AND :'first_change'::jsonb->>'message'='Rates saved' AND :'first_change'::jsonb#>'{data,customer_id}'='null'::jsonb,'the answer names ended, removed and added: '||:'first_change');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'garlic'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,5))) AS sup_change \gset
@@ -331,57 +340,57 @@ SELECT pg_temp.rc_assert(:'one_time2'::jsonb->>'success'='true' AND pg_temp.rc_r
 -- ---------------------------------------------------------------------------
 -- 13. Owner decisions: past dates, rates in force, one-time labour, create/update overlap, one-day
 -- ---------------------------------------------------------------------------
--- 1. A start in the past is for administrators and supervisors.
+-- 1. A start in the past is for administrators and supervisors (staff are refused every change since migration 90).
 SELECT pg_temp.rc_hist() AS hist_pd, pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly') AS rows_pd \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'cumin'::uuid,NULL,'monthly',:'yesterday',jsonb_build_array(pg_temp.rc_band(0,100,5))) AS staff_past,
        pg_temp.rc_replace(:'cumin'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,5))) AS staff_today \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_past'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED' AND :'staff_past'::jsonb->>'error'='Only administrators and supervisors can start a rate in the past'
- AND :'staff_today'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly')=:'rows_pd',
- 'staff: yesterday refused with PAST_DATE_NOT_ALLOWED; today refused with RATE_IN_FORCE_MANAGER_ONLY because a rate began today (CR-32), rows unchanged: '||:'staff_past'||:'staff_today');
+SELECT pg_temp.rc_assert(:'staff_past'::jsonb->>'state'='42501' AND :'staff_past'::jsonb->>'raised'='Staff access required'
+ AND :'staff_today'::jsonb->>'state'='42501' AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly')=:'rows_pd',
+ 'staff: yesterday and today are both refused by the guard (migration 90), rows unchanged: '||:'staff_past'||:'staff_today');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'cumin'::uuid,NULL,'monthly',:'yesterday',jsonb_build_array(pg_temp.rc_band(0,100,5)),true) AS sup_past \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'sup_past'::jsonb->>'success'='true','a supervisor may start a rate yesterday ("correct" path)');
--- 2. Staff and rates in force: update, create, delete.
+-- 2. Staff and the price writers (migration 90: refused by the guard); a supervisor creates, edits and deletes.
 SELECT id AS cumin_row FROM public.item_storage_prices WHERE item_id=:'cumin'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_from=:'yesterday'::date \gset
+SELECT pg_temp.rc_hist() AS hist_st, pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly') AS rows_st, pg_temp.rc_rows(:'cumin'::uuid,:'north'::uuid,'monthly') AS rows_st_north \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>:'cumin_row'::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>:'yesterday',p_effective_to=>NULL) AS st_update,
-       public.delete_item_storage_price(:'cumin_row'::uuid) AS st_delete,
-       public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'yesterday',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS st_create_past,
-       public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS st_create_future \gset
+SELECT pg_temp.rc_call(format($q$SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>%L,p_effective_to=>NULL)$q$,:'cumin_row',:'yesterday')) AS st_update,
+       pg_temp.rc_call(format($q$SELECT public.delete_item_storage_price(%L::uuid)$q$,:'cumin_row')) AS st_delete,
+       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'cumin',:'yesterday',:'north')) AS st_create_past,
+       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'cumin',:'d30',:'north')) AS st_create_future,
+       pg_temp.rc_call(format($q$SELECT public.update_item_storage_price(%L::uuid,0,100,9,0,2,5,%L::date,NULL)$q$,:'cumin_row',:'yesterday')) AS st_legacy_update \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'st_update'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND :'st_delete'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY'
- AND :'st_create_past'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND :'st_update'::jsonb->>'success'='false'
- AND :'st_update'::jsonb->>'error'='Only administrators and supervisors can change a rate that is already in force',
- 'staff refused on update, delete and create-in-the-past: '||:'st_update'||:'st_delete'||:'st_create_past');
-SELECT pg_temp.rc_assert(:'st_create_future'::jsonb->>'success'='true','staff may create an upcoming rate: '||:'st_create_future');
-SELECT (:'st_create_future'::jsonb#>>'{data,id}') AS north_future \gset
--- An upcoming row stays editable and deletable by staff; moving it into the past is refused.
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SELECT pg_temp.rc_assert((SELECT bool_and(COALESCE(a->>'success','false')<>'true' AND a::text LIKE '%Staff access required%')
+   FROM (VALUES (:'st_update'::jsonb),(:'st_delete'::jsonb),(:'st_create_past'::jsonb),(:'st_create_future'::jsonb),(:'st_legacy_update'::jsonb)) v(a))
+ AND pg_temp.rc_hist()=:hist_st AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly')=:'rows_st' AND pg_temp.rc_rows(:'cumin'::uuid,:'north'::uuid,'monthly')=:'rows_st_north',
+ 'staff refused on update, delete, create (past and upcoming) and the legacy update overload; nothing changed: '||:'st_update'||:'st_delete'||:'st_create_past'||:'st_create_future'||:'st_legacy_update');
+-- A supervisor creates an upcoming rate, edits and deletes it, and may move it into the past.
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS sup_create_future \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'sup_create_future'::jsonb->>'success'='true','a supervisor may create an upcoming rate: '||:'sup_create_future');
+SELECT (:'sup_create_future'::jsonb#>>'{data,id}') AS north_future \gset
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_item_storage_price(p_id=>:'north_future'::uuid,p_unit_price=>10,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2.5,p_tax_percent=>5,p_effective_from=>:'d30',p_effective_to=>NULL) AS st_upd_future,
        public.update_item_storage_price(p_id=>:'north_future'::uuid,p_unit_price=>10,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2.5,p_tax_percent=>5,p_effective_from=>:'yesterday',p_effective_to=>NULL) AS st_upd_to_past,
        public.delete_item_storage_price(:'north_future'::uuid) AS st_del_future \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'st_upd_future'::jsonb->>'success'='true' AND :'st_upd_to_past'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND :'st_del_future'::jsonb->>'success'='true',
- 'staff edit and delete an upcoming row, not move it into the past: '||:'st_upd_future'||:'st_upd_to_past'||:'st_del_future');
+SELECT pg_temp.rc_assert(:'st_upd_future'::jsonb->>'success'='true' AND :'st_upd_to_past'::jsonb->>'success'='true' AND :'st_del_future'::jsonb->>'success'='true',
+ 'a supervisor edits an upcoming row, moves it into the past and deletes it: '||:'st_upd_future'||:'st_upd_to_past'||:'st_del_future');
 -- Managers still may.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_item_storage_price(p_id=>:'cumin_row'::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>:'yesterday',p_effective_to=>NULL) AS sup_update \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'sup_update'::jsonb->>'success'='true','a supervisor may update a rate in force');
--- The old nine-argument update overload follows the same rule for staff.
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(:'cumin_row'::uuid,0,100,9,0,2,5,:'yesterday'::date,NULL) AS st_legacy_update \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'st_legacy_update'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY','the legacy update overload refuses staff on a rate in force: '||:'st_legacy_update');
 -- 3. One-time labour stays 0 through create and update.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
@@ -531,8 +540,15 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ua','monthly',:'d30')) AS undo_customer \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'undo_customer'::jsonb->>'state'='42501' AND pg_temp.rc_rent(:'ua'::uuid,NULL,50,:'d30'::date+4)='7.00','a customer account is refused with 42501: '||:'undo_customer');
--- Staff may undo a change that has not begun.
+-- Staff are refused (migration 90), even for a change that has not begun.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ua','monthly',:'d30')) AS undo_staff \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'undo_staff'::jsonb->>'state'='42501' AND :'undo_staff'::jsonb->>'raised'='Staff access required' AND pg_temp.rc_rent(:'ua'::uuid,NULL,50,:'d30'::date+4)='7.00',
+ 'a staff account is refused with 42501 and nothing is undone: '||:'undo_staff');
+-- A supervisor may undo a change that has not begun.
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ua','monthly',:'d30')) AS undo_a \gset
 RESET ROLE;
@@ -598,9 +614,9 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ud','monthly',:'yesterday')) AS ud_staff,
        pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ue','monthly',:'today')) AS ue_staff \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'ud_staff'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED' AND :'ue_staff'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED'
+SELECT pg_temp.rc_assert(:'ud_staff'::jsonb->>'state'='42501' AND :'ue_staff'::jsonb->>'state'='42501'
  AND pg_temp.rc_rows(:'ud'::uuid,NULL,'monthly')=:'ud_before' AND pg_temp.rc_rows(:'ue'::uuid,NULL,'monthly')=:'ue_before' AND pg_temp.rc_hist()=:'hist_ud',
- '(d) staff: a change from yesterday and one from today are refused, nothing changed: '||:'ud_staff'||:'ue_staff');
+ '(d) staff (migration 90): the guard refuses both, nothing changed: '||:'ud_staff'||:'ue_staff');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L)',:'ud','monthly',:'yesterday')) AS ud_sup \gset
@@ -632,9 +648,9 @@ SELECT pg_temp.rc_assert(:'undo_overlap'::jsonb->>'error_code'='BANDS_OVERLAP' A
  '(overlap) BANDS_OVERLAP and the removed row is back: '||:'undo_overlap'||pg_temp.rc_rows(:'ue'::uuid,NULL,'monthly'));
 
 -- ---------------------------------------------------------------------------
--- 16. The guard still refuses staff what is not listed
+-- 16. The guard refuses staff what is not listed (item pricing since migration 90)
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.rc_assert(pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) ~ '''delete_item_storage_price'',\s*-- A change "from a date" \(migration 76\)\.\s*''replace_item_rates'',\s*''undo_rate_change''','the guard lists replace_item_rates and undo_rate_change for staff');
+SELECT pg_temp.rc_assert(pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) !~ '''(replace_item_rates|undo_rate_change|delete_item_storage_price)''','the guard no longer lists replace_item_rates, undo_rate_change or the price writers for staff (migration 90)');
 
 -- ---------------------------------------------------------------------------
 -- 15c. Code-review fixes: modes, kept stop, move, staff and rates in force, find_or_create, India-day filter
@@ -755,20 +771,27 @@ SELECT pg_temp.rc_replace(:'mm4'::uuid,NULL,'monthly',:'today',jsonb_build_array
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'move_refused'::jsonb->>'error_code'='LATER_RATES_EXIST' AND pg_temp.rc_rows(:'mm4'::uuid,NULL,'monthly')=:'mm4_before',
  'a refusal after the undo leaves the rows as they were: '||:'move_refused'||pg_temp.rc_rows(:'mm4'::uuid,NULL,'monthly'));
--- Staff move planned rates (both days after today); a start today or a rate that has begun is for managers.
+-- Staff are refused every move (migration 90: the guard); a supervisor moves a planned rate.
 SELECT pg_temp.rc_row(:'mm3'::uuid,NULL,0,100,11,:'old_start',:'d29');
 SELECT pg_temp.rc_row(:'mm3'::uuid,NULL,0,100,12,:'d30',NULL);
+SELECT pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly') AS mm3_before \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'mm3'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,13)),false,'change',:'d30') AS staff_move_today,
        pg_temp.rc_replace(:'mm3'::uuid,NULL,'monthly',:'d120',jsonb_build_array(pg_temp.rc_band(0,100,13)),false,'change',:'old_start') AS staff_move_begun,
        pg_temp.rc_replace(:'mm3'::uuid,NULL,'monthly',:'d120',jsonb_build_array(pg_temp.rc_band(0,100,13)),false,'change',:'d30') AS staff_move_ok \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_move_today'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED' AND :'staff_move_begun'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED'
- AND :'staff_move_ok'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly')=format('0-100@11.00/2.50/5 %s..%s | 0-100@13.00/2.50/5 %s..open',:'old_start',:'d120'::date-1,:'d120'),
- 'staff move: today and begun refused, planned allowed: '||:'staff_move_today'||:'staff_move_begun'||:'staff_move_ok'||pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly'));
+SELECT pg_temp.rc_assert(:'staff_move_today'::jsonb->>'state'='42501' AND :'staff_move_begun'::jsonb->>'state'='42501' AND :'staff_move_ok'::jsonb->>'state'='42501'
+ AND pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly')=:'mm3_before',
+ 'staff move: all three refused by the guard, rows unchanged: '||:'staff_move_today'||:'staff_move_begun'||:'staff_move_ok'||pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly'));
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_replace(:'mm3'::uuid,NULL,'monthly',:'d120',jsonb_build_array(pg_temp.rc_band(0,100,13)),false,'change',:'d30') AS sup_move_ok \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'sup_move_ok'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly')=format('0-100@11.00/2.50/5 %s..%s | 0-100@13.00/2.50/5 %s..open',:'old_start',:'d120'::date-1,:'d120'),
+ 'a supervisor moves a planned rate: '||:'sup_move_ok'||pg_temp.rc_rows(:'mm3'::uuid,NULL,'monthly'));
 
--- CR-32: staff and a rate that began today. S: a rate started today (by an administrator).
+-- CR-32: staff (refused by the guard since migration 90) and a rate that began today. S: a rate started today (by an administrator).
 SELECT pg_temp.rc_row(:'ms'::uuid,NULL,0,100,5,:'old_start',:'yesterday');
 SELECT pg_temp.rc_row(:'ms'::uuid,NULL,0,100,6,:'today',NULL);
 SELECT pg_temp.rc_rows(:'ms'::uuid,NULL,'monthly') AS ms_before \gset
@@ -778,32 +801,45 @@ SELECT pg_temp.rc_replace(:'ms'::uuid,NULL,'monthly',:'today',jsonb_build_array(
        pg_temp.rc_replace(:'ms'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,9)),false,'correct') AS staff_today_correct,
        pg_temp.rc_replace(:'ms'::uuid,NULL,'monthly',:'today',jsonb_build_array()) AS staff_today_stop \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_today_change'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND :'staff_today_correct'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY'
- AND :'staff_today_stop'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY' AND pg_temp.rc_rows(:'ms'::uuid,NULL,'monthly')=:'ms_before',
- 'staff cannot replace or stop a rate that began today: '||:'staff_today_change'||:'staff_today_correct'||:'staff_today_stop');
+SELECT pg_temp.rc_assert(:'staff_today_change'::jsonb->>'state'='42501' AND :'staff_today_correct'::jsonb->>'state'='42501'
+ AND :'staff_today_stop'::jsonb->>'state'='42501' AND pg_temp.rc_rows(:'ms'::uuid,NULL,'monthly')=:'ms_before',
+ 'staff cannot replace or stop a rate that began today (the guard refuses them): '||:'staff_today_change'||:'staff_today_correct'||:'staff_today_stop');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'ms'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,9)),false,'correct') AS sup_today_correct \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'sup_today_correct'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'ms'::uuid,NULL,'monthly')=format('0-100@5.00/2.50/5 %s..%s | 0-100@9.00/2.50/5 %s..open',:'old_start',:'yesterday',:'today'),
  'a supervisor corrects it: '||pg_temp.rc_rows(:'ms'::uuid,NULL,'monthly'));
--- Staff may still start a change today when nothing started today.
+-- Staff are refused a change from today even when nothing started today (migration 90); a supervisor may.
 SELECT pg_temp.rc_row(:'ms2'::uuid,NULL,0,100,5,:'old_start',NULL);
+SELECT pg_temp.rc_rows(:'ms2'::uuid,NULL,'monthly') AS ms2_before \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_replace(:'ms2'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,9))) AS staff_today_refused \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'staff_today_refused'::jsonb->>'state'='42501' AND pg_temp.rc_rows(:'ms2'::uuid,NULL,'monthly')=:'ms2_before','staff change from today refused, rows unchanged: '||:'staff_today_refused');
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'ms2'::uuid,NULL,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,100,9))) AS staff_today_ok \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_today_ok'::jsonb->>'success'='true','staff change from today when no rate started today: '||:'staff_today_ok');
--- Staff correct a planned rate (D after today).
+SELECT pg_temp.rc_assert(:'staff_today_ok'::jsonb->>'success'='true','a supervisor changes from today when no rate started today: '||:'staff_today_ok');
+-- Staff are refused a correction (migration 90); a supervisor corrects a planned rate (D after today).
 SELECT pg_temp.rc_row(:'mp'::uuid,NULL,0,100,6,:'old_start',:'d29');
 SELECT pg_temp.rc_row(:'mp'::uuid,NULL,0,100,7,:'d30',NULL);
+SELECT pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly') AS mp_before \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'mp'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7.5)),false,'correct') AS staff_correct_plan,
        pg_temp.rc_replace(:'mp'::uuid,NULL,'monthly',:'old_start',jsonb_build_array(pg_temp.rc_band(0,100,7.5)),false,'correct') AS staff_correct_past \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'staff_correct_plan'::jsonb->>'success'='true' AND :'staff_correct_past'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED'
- AND pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..%s | 0-100@7.50/2.50/5 %s..open',:'old_start',:'d29',:'d30'),'staff correct a planned rate only: '||pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly'));
+SELECT pg_temp.rc_assert(:'staff_correct_plan'::jsonb->>'state'='42501' AND :'staff_correct_past'::jsonb->>'state'='42501'
+ AND pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly')=:'mp_before','staff corrections refused, rows unchanged: '||:'staff_correct_plan'||:'staff_correct_past');
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_replace(:'mp'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7.5)),false,'correct') AS sup_correct_plan \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'sup_correct_plan'::jsonb->>'success'='true'
+ AND pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..%s | 0-100@7.50/2.50/5 %s..open',:'old_start',:'d29',:'d30'),'a supervisor corrects a planned rate: '||pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly'));
 
 -- CR-33: find_or_create_item_storage_price is for administrators and supervisors.
 SELECT pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) NOT LIKE '%''find_or_create_item_storage_price''%' AS guard_dropped \gset
@@ -955,27 +991,29 @@ SELECT pg_temp.rc_assert(:'pp_replace'::jsonb->>'success'='true' AND pg_temp.rc_
 -- ---------------------------------------------------------------------------
 -- 17. The India day, not the UTC day: 2026-04-01 00:30 India time is 2026-03-31 19:00 UTC.
 -- now() cannot be frozen, so business_date is replaced for this transaction by a version that
--- reads the clock as that moment (rolled back at the end). Staff starting a rate on 2026-04-01
--- ("today" in India) must succeed; 2026-03-31 is the past.
+-- reads the clock as that moment (rolled back at the end).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION warehouse_security.business_date(moment timestamptz) RETURNS date
 LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
   SELECT ((moment - (pg_catalog.now() - timestamptz '2026-03-31 19:00:00+00')) AT TIME ZONE 'Asia/Kolkata')::date $$;
 SELECT pg_temp.rc_assert(warehouse_security.business_date(now())='2026-04-01'::date,'the emulated clock is 1 April in India: '||warehouse_security.business_date(now()));
+-- Migration 90: the staff rules of the India day (a start today is allowed, yesterday is the past, a row
+-- starting today is in force) are no longer reachable: the guard refuses staff before any date is read.
+SELECT pg_temp.rc_rows(:'clockitem'::uuid,NULL,'monthly') AS clock_before \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-04-01',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_today,
        pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-03-31',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_yesterday,
-       public.create_item_storage_price(p_item_id=>:'garlic'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>101,p_weight_max=>150,p_labour_rate=>2,p_effective_from=>'2026-04-01',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS ist_create_today \gset
+       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>101,p_weight_max=>150,p_labour_rate=>2,p_effective_from=>'2026-04-01',p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'garlic',:'north')) AS ist_create_today \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'ist_today'::jsonb->>'success'='true'
- AND :'ist_yesterday'::jsonb->>'error_code'='PAST_DATE_NOT_ALLOWED' AND :'ist_create_today'::jsonb->>'success'='true',
- 'at 00:30 India time staff may start a rate on 1 April, not on 31 March: '||:'ist_today'||:'ist_yesterday'||:'ist_create_today');
--- A row that starts on the India day is already in force, so staff are refused.
-SELECT (:'ist_create_today'::jsonb#>>'{data,id}') AS ist_row \gset
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SELECT pg_temp.rc_assert(:'ist_today'::jsonb->>'state'='42501' AND :'ist_yesterday'::jsonb->>'state'='42501'
+ AND :'ist_create_today'::jsonb::text LIKE '%Staff access required%' AND COALESCE(:'ist_create_today'::jsonb->>'success','false')<>'true'
+ AND pg_temp.rc_rows(:'clockitem'::uuid,NULL,'monthly')=:'clock_before',
+ 'at 00:30 India time staff are refused on 1 April and on 31 March alike: '||:'ist_today'||:'ist_yesterday'||:'ist_create_today');
+-- A supervisor starts a rate on 1 April (the India day) as before.
+SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.delete_item_storage_price(:'ist_row'::uuid) AS ist_delete_started \gset
+SELECT pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-04-01',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_sup \gset
 RESET ROLE;
-SELECT pg_temp.rc_assert(:'ist_delete_started'::jsonb->>'error_code'='RATE_IN_FORCE_MANAGER_ONLY','a rate starting on the India day is already in force: '||:'ist_delete_started');
+SELECT pg_temp.rc_assert(:'ist_sup'::jsonb->>'success'='true' AND :'ist_sup'::jsonb#>>'{data,starts_on}'='2026-04-01','a supervisor starts a rate on 1 April: '||:'ist_sup');
 ROLLBACK;

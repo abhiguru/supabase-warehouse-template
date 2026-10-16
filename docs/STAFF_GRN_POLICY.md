@@ -131,6 +131,8 @@ table/storage policies, pricing mutations or destructive permissions.
 > Superseded in part on 11 October 2026 (migration 45): staff may now read and
 > change item prices and remove photos. Invoice deletion and role
 > administration stay refused for staff.
+> **Superseded again on 16 October 2026 (migration 90):** staff lose item pricing
+> again (see "Staff lose item pricing, 16 October 2026").
 
 The isolated regression found an independent dispatch-list error: a varchar[]
 materialized-view column was compared with a text[] GRN filter. The migration
@@ -283,6 +285,11 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   which calls the refusal deliberate, describes the rule that held from 8 to
   11 October. The table policy is still closed; staff reach prices through the
   RPCs only.
+  **Superseded on 16 October 2026 (migration 90):** the owner took item pricing
+  from staff again; the price list and every price writer are refused to staff
+  once more, as in migration 23. Staff still get a GRN's applicable rates through
+  `get_grn_item_rates` (migration 88) and the invoice preview through
+  `generate_invoice_data_for_grn_with_pricing`.
 - **Totals are server-computed.** `save_invoice` (both signatures) and
   `update_invoice` ignore client-supplied `labour`, `tax_amount` and `total` for
   every role and derive them from the saved lines and the stored `discount`
@@ -488,8 +495,9 @@ list and one customer:
 already.) The operations dashboard is not shown to staff by the app and
 `get_operations_dashboard` stays with administrators and supervisors.
 
-**Staff — item pricing, read and write. This is a material change: staff can
-change what customers are charged.** `get_item_storage_prices` (every
+**Staff — item pricing, read and write (superseded on 16 October 2026, migration 90:
+staff lose it again, see the section below). This was a material change: staff
+could change what customers are charged.** `get_item_storage_prices` (every
 customer's prices), `create_item_storage_price`, `update_item_storage_price`,
 `delete_item_storage_price` and `find_or_create_item_storage_price`. When
 migration 45 opened this, a price change was not recorded anywhere. **Since
@@ -598,10 +606,10 @@ several customers calls once per customer.
 | Reports: all customers | yes | yes | **yes** | no |
 | Reports: one customer | yes | yes | **yes** | assigned customers (**now also stock aging and item-wise stock**) |
 | Operations dashboard | yes | yes | no | no |
-| Item pricing: read | yes | yes | **yes** | no |
-| Item pricing: add, change, delete | yes | yes | **yes** | no |
-| Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | yes / **no** (refused in the function) | no |
-| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, `get_item_grn_rates`, migration 86): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **yes** (the past-day rule of Item pricing does not apply) | no |
+| Item pricing: read | yes | yes | **no** (migration 90) | no |
+| Item pricing: add, change, delete (`create/update/delete_item_storage_price`, `replace_item_rates`, `undo_rate_change`) | yes | yes | **no** (migration 90) | no |
+| Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | **no / no** (refused by the guard, migration 90) | no |
+| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, `get_item_grn_rates`, migration 86): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **no** (migration 90): a staff call with `p_rates`, `[]` included, is answered `RATES_MANAGER_ONLY`; `get_item_grn_rates` is refused; `get_grn_details` answers `rates` = `[]` | no |
 | The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
 | Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
@@ -796,9 +804,42 @@ column added later is closed until a migration grants it. The row policies are
 unchanged. [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
 `tests/invoice_column_grants.sql`, `tests/security_baseline.sql`.
 
+## Staff lose item pricing, 16 October 2026
+
+The owner decided that item pricing is for administrators and supervisors only
+(migration 90). This supersedes the staff access of 11 October 2026 (migration
+45, widened by migrations 76, 85 and 86), which the sections above describe.
+
+- **Refused to staff by the guard** (SQLSTATE `42501`, "Staff access required"):
+  `get_item_storage_prices`, `create_item_storage_price`,
+  `update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`,
+  `undo_rate_change`, `get_standard_rate`, `set_standard_rate` and
+  `get_item_grn_rates`. (`find_or_create_item_storage_price` was already refused,
+  migration 76.) The staff branches inside those function bodies (the rate in force
+  rule of migration 76, `STANDARD_RATE_MANAGER_ONLY` of migration 85) are left in
+  place and can no longer be reached by staff.
+- **Rates typed on the GRN sheet.** A staff call of `save_grn` or `update_grn`
+  that carries `p_rates` (any value that is not NULL, `[]` included) is answered
+  `{success: false, error_code: 'RATES_MANAGER_ONLY'}` before anything is written.
+  The same calls without `p_rates` work for staff as before.
+- **`get_grn_details`** answers `grn.rates` = `[]` to staff, as it does to customers;
+  administrators, supervisors and the service role get the rates as before.
+- **What staff keep:** `get_grn_item_rates` (the rate each line of a GRN is
+  invoiced at, with its source and band; migration 88, answer unchanged) and
+  `generate_invoice_data_for_grn_with_pricing`, so staff still see applicable
+  rates on a GRN and still invoice.
+- The rate tables were already readable by administrators and supervisors only;
+  no row policy changes. The app release that hides the pricing screens and the
+  rate fields of the GRN sheet from staff must go first or together with this
+  migration. `tests/staff_pricing_90.sql` proves it; the staff blocks of
+  `tests/role_allowlist.sql`, `tests/item_rate_changes.sql`, `tests/standard_rate.sql`,
+  `tests/grn_rates.sql`, `tests/item_price_history.sql` and
+  `tests/staff_dispatch_invoice_access.sql` now assert the refusal (the supervisor
+  runs the changes they used to run as staff).
+
 ### Every price change is recorded
 
-Staff keep the price RPCs that migration 45 gave them. What was missing was a
+Staff kept, until migration 90 (16 October 2026), the price RPCs that migration 45 gave them. What was missing was a
 record: a changed or deleted price left no trace of what it had been or who
 changed it. Now **every insert, update and delete of `item_storage_prices`
 writes one row to `item_price_history`**: when, the profile with its name and

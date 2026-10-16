@@ -220,7 +220,8 @@ SQL
 
 # Migration 86: a GRN saved with an "everyone" rate entry takes the same lock as replace_item_rates. The
 # save starts while the rate change is still open; it waits, then sees the committed change (a planned
-# rate in its way, RATE_PLANNED with that day) and the GRN is not saved.
+# rate in its way, RATE_PLANNED with that day) and the GRN is not saved. The saver is the second user, a
+# supervisor: staff may not send rates (migration 90).
 call_as "$claims_one" "public.create_item('Concurrent Grn Rate Item','Bag')" > "$scratch/grn-item"
 grn_item=$(psql_exec -At <<'SQL'
 SELECT id FROM public.items WHERE name='Concurrent Grn Rate Item'
@@ -245,7 +246,7 @@ SQL
 call_as "$claims_one" "$(grn_rate_call 1 11)" 4 > "$scratch/grn-first" &
 holder=$!
 sleep 1
-call_as "$claims_staff" "$(grn_save_call)" > "$scratch/grn-second"
+call_as "$claims_two" "$(grn_save_call)" > "$scratch/grn-second"
 wait "$holder" || { echo 'Concurrent GRN rate: the rate change failed.' >&2; exit 1; }
 first=$(answer "$scratch/grn-first"); second=$(answer "$scratch/grn-second")
 [[ "$first" == *'"success": true'* ]] || { echo "Concurrent GRN rate: the rate change did not succeed: $first" >&2; exit 1; }

@@ -131,7 +131,7 @@ SELECT pg_temp.ir_assert(has_function_privilege('authenticated','public.get_grn_
  AND (SELECT prosecdef AND proconfig::text LIKE '%search_path=pg_catalog, public%' FROM pg_proc WHERE oid='public.get_grn_item_rates(uuid)'::regprocedure),
  'get_grn_item_rates is security definer with a search_path and granted to authenticated and service_role only');
 SELECT pg_temp.ir_assert((SELECT pg_get_functiondef(oid) LIKE '%ELSIF rpc IN (''get_grn_details'',''get_grn_item_dispatches'',''get_grn_item_rates'') THEN%'
-   AND pg_get_functiondef(oid) LIKE '%''get_item_grn_rates'',%''get_grn_item_rates'',%'
+   AND pg_get_functiondef(oid) LIKE '%-- The rate of each line of a GRN (migration 88).%''get_grn_item_rates'',%'
   FROM pg_proc WHERE oid='warehouse_security.authorize_rpc(text,jsonb)'::regprocedure),'the guard names the new function in the staff list and the GRN branch');
 
 -- ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
--- Migration 48, owner decision 5 of 2026-10-11: staff may create, change and
--- delete item prices, and every change is recorded. Each insert, update and
+-- Migration 48, owner decision 5 of 2026-10-11: every change to an item price is
+-- recorded (migration 90, 2026-10-16: prices are changed by administrators and
+-- supervisors only, so the authors below are supervisors; staff are refused). Each insert, update and
 -- delete of item_storage_prices, through whichever RPC, leaves one row in the
 -- append-only item_price_history with the acting profile and the old and new
 -- values; get_item_price_history returns it to administrators and supervisors
@@ -54,17 +55,19 @@ SELECT warehouse_security.bootstrap_first_admin('9888888891','Price History Admi
 SELECT id AS admin_profile FROM public.user_profiles WHERE auth_user_id=:'admin_user'::uuid \gset
 INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status) VALUES
  (gen_random_uuid(),'919888888892','Price History Supervisor','supervisor',true,'approved'),
- (gen_random_uuid(),'919888888893','Price History Staff','staff',true,'approved'),
- (gen_random_uuid(),'919888888894','Price History Second Staff','staff',true,'approved'),
+ (gen_random_uuid(),'919888888893','Price History Creator','supervisor',true,'approved'),
+ (gen_random_uuid(),'919888888894','Price History Second Creator','supervisor',true,'approved'),
+ (gen_random_uuid(),'919888888897','Price History Staff','staff',true,'approved'),
  (gen_random_uuid(),'919888888895','Price History Customer Reader','customer',true,'approved'),
  (gen_random_uuid(),'919888888896','Price History Past Supervisor','supervisor',false,'disabled');
 SELECT id AS supervisor_profile FROM public.user_profiles WHERE mobile='919888888892' \gset
-SELECT id AS staff_profile FROM public.user_profiles WHERE mobile='919888888893' \gset
-SELECT id AS staff2_profile FROM public.user_profiles WHERE mobile='919888888894' \gset
+SELECT id AS creator_profile FROM public.user_profiles WHERE mobile='919888888893' \gset
+SELECT id AS creator2_profile FROM public.user_profiles WHERE mobile='919888888894' \gset
 SELECT pg_temp.ph_login('9888888891') AS admin_claims \gset
 SELECT pg_temp.ph_login('9888888892') AS supervisor_claims \gset
-SELECT pg_temp.ph_login('9888888893') AS staff_claims \gset
-SELECT pg_temp.ph_login('9888888894') AS staff2_claims \gset
+SELECT pg_temp.ph_login('9888888893') AS creator_claims \gset
+SELECT pg_temp.ph_login('9888888894') AS creator2_claims \gset
+SELECT pg_temp.ph_login('9888888897') AS staff_claims \gset
 SELECT pg_temp.ph_login('9888888895') AS customer_claims \gset
 SELECT jsonb_build_object('role','authenticated','sub',auth_user_id) AS former_claims
  FROM public.user_profiles WHERE mobile='919888888896' \gset
@@ -96,24 +99,23 @@ SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_price_history),'no 
 -- ---------------------------------------------------------------------------
 -- 1. One row per insert, update and delete, with the acting profile
 -- ---------------------------------------------------------------------------
--- Staff create a price: Chillies for North, monthly, 5 a bag.
--- Staff change only a rate that has not started (migration 76), so the prices below start
--- in 30 days and end in 400.
+-- A supervisor creates a price: Chillies for North, monthly, 5 a bag.
+-- The prices below start in 30 days and end in 400.
 SELECT (CURRENT_DATE+30) AS f, (CURRENT_DATE+400) AS t \gset
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SELECT set_config('request.jwt.claims',:'creator_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ph_assert(warehouse_security.active_role()='staff','actual staff role');
+SELECT pg_temp.ph_assert(warehouse_security.active_role()='supervisor','actual supervisor role');
 SELECT public.create_item_storage_price(p_item_id=>:'chillies'::uuid,p_price_type=>'monthly',p_unit_price=>5,
  p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'f',
  p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS created \gset
-SELECT pg_temp.ph_assert(:'created'::jsonb->>'success'='true','staff create a price: '||:'created');
+SELECT pg_temp.ph_assert(:'created'::jsonb->>'success'='true','the first supervisor creates a price: '||:'created');
 SELECT (:'created'::jsonb#>>'{data,id}') AS north_price \gset
 RESET ROLE;
-SELECT pg_temp.ph_assert(pg_temp.ph_rows()=jsonb_build_array(jsonb_build_array('insert',NULL,5,:'staff_profile','staff')),
- 'the insert is recorded for the staff member: '||pg_temp.ph_rows()::text);
+SELECT pg_temp.ph_assert(pg_temp.ph_rows()=jsonb_build_array(jsonb_build_array('insert',NULL,5,:'creator_profile','supervisor')),
+ 'the insert is recorded for the creating supervisor: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillies'::uuid AND h.item_name='Price History Chillies'
  AND h.customer_id=:'north'::uuid AND h.customer_name='Price History North' AND h.changed_at=now() AND h.old_values IS NULL
- AND h.changed_by_name='Price History Staff'
+ AND h.changed_by_name='Price History Creator'
  AND h.new_values @> ('{"price_type":"monthly","unit_price":5,"unit_price_monthly":5,"unit_price_one_time":0,"weight_min":0,"weight_max":100,"labour_rate":2,"tax_percent":5,"effective_from":"'||:'f'||'","effective_to":null}')::jsonb
  AND NOT h.new_values ?| ARRAY['id','item_id','customer_id','created_at','created_by'],
  'the row names the price, the item and the customer and holds the new values: '||to_jsonb(h)::text)
@@ -132,19 +134,19 @@ SELECT pg_temp.ph_assert(h.price_id=:'north_price'::uuid AND h.item_id=:'chillie
  AND h.new_values @> ('{"unit_price":8,"unit_price_monthly":8,"labour_rate":3,"effective_to":"'||:'t'||'","price_type":"monthly"}')::jsonb,
  'the row holds the old and the new values: '||to_jsonb(h)::text)
 FROM pg_temp.ph_last() h;
--- The second staff member adds a one-time price for South (one row); adding it again is refused
--- and leaves no row. (find_or_create_item_storage_price is no longer a staff call, migration 76.)
-SELECT set_config('request.jwt.claims',:'staff2_claims',true);
+-- The second supervisor adds a one-time price for South (one row); adding it again is refused
+-- and leaves no row. (find_or_create_item_storage_price is not a staff call, migration 76.)
+SELECT set_config('request.jwt.claims',:'creator2_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.create_item_storage_price(p_item_id=>:'turmeric'::uuid,p_price_type=>'one_time',p_unit_price=>12,
  p_weight_min=>0,p_weight_max=>10,p_labour_rate=>1,p_effective_from=>:'f',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS found_first \gset
-SELECT pg_temp.ph_assert(:'found_first'::jsonb->>'success'='true','the second staff member creates the price: '||:'found_first');
+SELECT pg_temp.ph_assert(:'found_first'::jsonb->>'success'='true','the second supervisor creates the price: '||:'found_first');
 SELECT (:'found_first'::jsonb#>>'{data,id}') AS south_price \gset
 SELECT pg_temp.ph_assert(public.create_item_storage_price(p_item_id=>:'turmeric'::uuid,p_price_type=>'one_time',p_unit_price=>12,
  p_weight_min=>0,p_weight_max=>10,p_labour_rate=>1,p_effective_from=>:'f',p_customer_id=>:'south'::uuid,p_tax_percent=>5)->>'error_code'='BANDS_OVERLAP',
  'adding it again is refused');
 RESET ROLE;
-SELECT pg_temp.ph_assert(pg_temp.ph_rows()->2=jsonb_build_array('insert',NULL,12,:'staff2_profile','staff') AND jsonb_array_length(pg_temp.ph_rows())=3,
+SELECT pg_temp.ph_assert(pg_temp.ph_rows()->2=jsonb_build_array('insert',NULL,12,:'creator2_profile','supervisor') AND jsonb_array_length(pg_temp.ph_rows())=3,
  'find-or-create leaves one insert row, and none for the price it found: '||pg_temp.ph_rows()::text);
 SELECT pg_temp.ph_assert(h.price_id=:'south_price'::uuid AND h.item_name='Price History Turmeric' AND h.customer_name='Price History South'
  AND h.new_values @> '{"price_type":"one_time","unit_price":12,"unit_price_one_time":12,"unit_price_monthly":0}'::jsonb,
@@ -152,7 +154,7 @@ SELECT pg_temp.ph_assert(h.price_id=:'south_price'::uuid AND h.item_name='Price 
 FROM pg_temp.ph_last() h;
 -- A refused write records nothing: a price that already exists, and a change
 -- the function turns down.
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SELECT set_config('request.jwt.claims',:'creator_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_assert(public.create_item_storage_price(p_item_id=>:'chillies'::uuid,p_price_type=>'monthly',p_unit_price=>6,
   p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'f',p_customer_id=>:'north'::uuid,p_tax_percent=>5,
@@ -268,7 +270,7 @@ SELECT pg_temp.ph_assert(warehouse_security.active_role()='supervisor' AND publi
 -- ---------------------------------------------------------------------------
 -- 3. Nobody else reads it
 -- ---------------------------------------------------------------------------
--- Staff change prices but do not read the history.
+-- Staff neither change prices (migration 90) nor read the history.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SELECT pg_temp.ph_assert(warehouse_security.active_role()='staff','actual staff role');
 SELECT pg_temp.ph_assert(pg_temp.ph_call(statement)=jsonb_build_object('raised','Staff access required','state','42501'),
@@ -277,6 +279,15 @@ FROM (VALUES ('SELECT public.get_item_price_history()'),
   (format('SELECT public.get_item_price_history(p_customer_id=>%L::uuid)',:'north')),
   (format('SELECT public.get_item_price_history(p_item_id=>%L::uuid,p_limit=>1)',:'chillies'))) AS s(statement);
 SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_price_history),'staff read no history row from the table');
+SET LOCAL ROLE authenticated;
+SELECT public.create_item_storage_price(p_item_id=>:'chillies'::uuid,p_price_type=>'monthly',p_unit_price=>5,
+ p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'f',
+ p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS staff_create \gset
+RESET ROLE;
+SELECT pg_temp.ph_assert(COALESCE(:'staff_create'::jsonb->>'success','false')<>'true' AND :'staff_create'::jsonb::text LIKE '%Staff access required%',
+ 'staff are refused a price write: '||:'staff_create');
+SELECT pg_temp.ph_assert((SELECT count(*)=5 FROM public.item_price_history),'the refused staff write left no history row (5 rows as before)');
+SET LOCAL ROLE authenticated;
 -- A customer account, also with its own customer's id.
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SELECT pg_temp.ph_assert(warehouse_security.active_role()='customer' AND warehouse_security.owns_customer(:'north'::uuid),'actual customer role, assigned to North');
@@ -317,17 +328,17 @@ SELECT pg_temp.ph_assert(public.delete_item_storage_price(:'south_price'::uuid)-
 SELECT public.delete_item_safe(:'turmeric'::uuid) AS item_deleted \gset
 SELECT pg_temp.ph_assert(:'item_deleted'::jsonb->>'success'='true','the item of a deleted price can be deleted: '||:'item_deleted');
 RESET ROLE;
-DELETE FROM public.user_profiles WHERE id=:'staff2_profile'::uuid;
+DELETE FROM public.user_profiles WHERE id=:'creator2_profile'::uuid;
 SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.items WHERE id=:'turmeric'::uuid)
- AND (SELECT count(*)=0 FROM public.user_profiles WHERE id=:'staff2_profile'::uuid)
+ AND (SELECT count(*)=0 FROM public.user_profiles WHERE id=:'creator2_profile'::uuid)
  AND (SELECT count(*)=2 AND bool_and(h.item_name='Price History Turmeric' AND h.customer_name='Price History South')
-        AND bool_or(h.action='insert' AND h.changed_by=:'staff2_profile'::uuid) AND bool_or(h.action='delete' AND h.changed_by=:'admin_profile'::uuid)
+        AND bool_or(h.action='insert' AND h.changed_by=:'creator2_profile'::uuid) AND bool_or(h.action='delete' AND h.changed_by=:'admin_profile'::uuid)
       FROM public.item_price_history h WHERE h.item_id=:'turmeric'::uuid),
  'the history outlives the price, the item and the profile');
 SET LOCAL ROLE authenticated;
 SELECT public.get_item_price_history(p_item_id=>:'turmeric'::uuid) AS after_removal \gset
-SELECT pg_temp.ph_assert(:'after_removal'::jsonb#>>'{data,1,item_name}'='Price History Turmeric' AND :'after_removal'::jsonb#>>'{data,1,changed_by}'=:'staff2_profile'
- AND :'after_removal'::jsonb#>>'{data,1,changed_by_name}'='Price History Second Staff' AND :'after_removal'::jsonb#>>'{data,0,changed_by_name}'='Price History Administrator',
+SELECT pg_temp.ph_assert(:'after_removal'::jsonb#>>'{data,1,item_name}'='Price History Turmeric' AND :'after_removal'::jsonb#>>'{data,1,changed_by}'=:'creator2_profile'
+ AND :'after_removal'::jsonb#>>'{data,1,changed_by_name}'='Price History Second Creator' AND :'after_removal'::jsonb#>>'{data,0,changed_by_name}'='Price History Administrator',
  'the RPC still names the item and the removed profile: '||:'after_removal');
 RESET ROLE;
 
@@ -335,17 +346,17 @@ RESET ROLE;
 -- 5. The author's name is the one at the time of the change
 -- ---------------------------------------------------------------------------
 -- delete_user_account, which every signed-in user may call for the own
--- account, renames the profile to "Deleted User". The staff member who created
+-- account, renames the profile to "Deleted User". The supervisor who created
 -- North's price and the supervisor who changed it delete their accounts: the
 -- history still names them, with the role each had.
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
+SELECT set_config('request.jwt.claims',:'creator_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ph_assert(public.delete_user_account()->>'success'='true','the staff member deletes the own account');
+SELECT pg_temp.ph_assert(public.delete_user_account()->>'success'='true','the creating supervisor deletes the own account');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SELECT pg_temp.ph_assert(public.delete_user_account()->>'success'='true','the supervisor deletes the own account');
 RESET ROLE;
 SELECT pg_temp.ph_assert((SELECT count(*)=2 AND bool_and(name='Deleted User' AND NOT active) FROM public.user_profiles
-  WHERE id IN (:'staff_profile'::uuid,:'supervisor_profile'::uuid)),'both profiles are renamed to Deleted User');
+  WHERE id IN (:'creator_profile'::uuid,:'supervisor_profile'::uuid)),'both profiles are renamed to Deleted User');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.get_item_price_history(p_customer_id=>:'north'::uuid) AS after_deletion \gset
@@ -354,7 +365,7 @@ SELECT pg_temp.ph_assert((SELECT jsonb_agg(jsonb_build_array(r->'action',r->'cha
  = jsonb_build_array(
     jsonb_build_array('delete',:'admin_profile','Price History Administrator','admin'),
     jsonb_build_array('update',:'supervisor_profile','Price History Supervisor','supervisor'),
-    jsonb_build_array('insert',:'staff_profile','Price History Staff','staff')),
+    jsonb_build_array('insert',:'creator_profile','Price History Creator','supervisor')),
  'the history names its authors after they deleted their accounts: '||:'after_deletion');
 RESET ROLE;
 -- A row without a stored name shows the profile's present name.

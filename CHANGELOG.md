@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased: staff lose item pricing (migration 90)
+
+Migration `00000000000090_staff_no_pricing.sql`, owner decision of 2026-10-16: item pricing is for administrators
+and supervisors only. This takes back the staff access of 11 October 2026 (migrations 45, 76, 85, 86).
+
+- The guard (`warehouse_security.authorize_rpc`) no longer lists `get_item_storage_prices`,
+  `create_item_storage_price`, `update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`,
+  `undo_rate_change`, `get_standard_rate`, `set_standard_rate` and `get_item_grn_rates` for staff: a staff call is
+  refused with SQLSTATE 42501, 'Staff access required'. Administrators and supervisors are unchanged. Staff keep
+  `get_grn_item_rates` (migration 88, answer unchanged) and `generate_invoice_data_for_grn_with_pricing`, so they still
+  see the rate that applies to a GRN and still invoice.
+- `save_grn` and `update_grn`: a staff call with `p_rates` (a list or `[]`) is answered `RATES_MANAGER_ONLY` before
+  anything is written; without `p_rates` it works as before.
+- `get_grn_details` answers `grn.rates = []` to staff (as to a customer account).
+- The staff branches inside the bodies (migration 76 rate-in-force rule, migration 85 `STANDARD_RATE_MANAGER_ONLY`)
+  are left in place and are now unreachable. No row policy changes.
+- Tests: new `tests/staff_pricing_90.sql`; the staff blocks of `tests/role_allowlist.sql`, `tests/item_rate_changes.sql`,
+  `tests/standard_rate.sql`, `tests/grn_rates.sql`, `tests/item_price_history.sql`,
+  `tests/staff_dispatch_invoice_access.sql`, `tests/grn_item_rates_88.sql` and `tests/concurrent_rules.sh` now assert the
+  refusal, and the changes they ran as staff run as a supervisor.
+- Deploy order: the app release that hides the pricing screens and the rate fields of the GRN sheet from staff must go
+  first or together with this migration; an older app shows those screens to staff and they fail.
+- Docs: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table, "Staff lose item pricing, 16 October 2026"),
+  [docs/API_CONTRACT.md](docs/API_CONTRACT.md) (`RATES_MANAGER_ONLY`, roles).
+
 ## Unreleased: a customer sees its GRN rates as its own (migration 89)
 
 Migration `00000000000089_customer_rate_view.sql`, owner decision of 2026-10-16: a customer account must see

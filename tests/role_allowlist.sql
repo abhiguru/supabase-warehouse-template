@@ -108,16 +108,17 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
- ('get_item_storage_prices',true,'no'),
+ -- migration 90: item pricing is for administrators and supervisors only
+ ('get_item_storage_prices',false,'no'),
  -- migration 76: no app code calls it; administrators and supervisors only
  ('find_or_create_item_storage_price',false,'no'),
- ('create_item_storage_price',true,'no'),('update_item_storage_price',true,'no'),('delete_item_storage_price',true,'no'),
+ ('create_item_storage_price',false,'no'),('update_item_storage_price',false,'no'),('delete_item_storage_price',false,'no'),
  -- migration 76: a rate change "from a date"
- ('replace_item_rates',true,'no'),('undo_rate_change',true,'no'),
- -- migration 85: the standard rate; set_standard_rate admits staff to its body, which refuses them
- ('get_standard_rate',true,'no'),('set_standard_rate',true,'no'),
+ ('replace_item_rates',false,'no'),('undo_rate_change',false,'no'),
+ -- migration 85: the standard rate (staff refused by the guard since migration 90)
+ ('get_standard_rate',false,'no'),('set_standard_rate',false,'no'),
  -- migration 86: the GRN-only rates of an item
- ('get_item_grn_rates',true,'no'),
+ ('get_item_grn_rates',false,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),
@@ -130,7 +131,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
  ('update_order_metadata',false,'no'),
- -- the price history of migration 48: staff change prices but do not read it
+ -- the price history of migration 48: administrators and supervisors only
  ('get_item_price_history',false,'no'),
  -- migration 49: administrators only; the guard refuses a supervisor as well
  -- (tests/central_login.sql). operator_central_exchange is, like
@@ -520,19 +521,10 @@ SELECT pg_temp.ra_assert(public.get_sensor_history(:'sensor_id'::uuid,7)->>'succ
 SELECT pg_temp.ra_assert(public.get_sensor_device(:'sensor_id'::uuid)#>>'{data,device_name}'='Role Matrix Chamber'
  AND pg_temp.ra_refused(format('SELECT public.update_sensor_device(%L::uuid,''Renamed'')',:'sensor_id')),
  'staff open one sensor and may not change it: '||public.get_sensor_device(:'sensor_id'::uuid)::text);
--- Item pricing: read, and the write path of the pricing form. Staff can now
--- change prices (material change, docs/STAFF_GRN_POLICY.md).
-SELECT public.get_item_storage_prices() AS staff_prices \gset
-SELECT pg_temp.ra_assert(:'staff_prices'::jsonb->>'success'='true' AND :'staff_prices'::jsonb::text LIKE '%Role Matrix Rice%',
- 'staff read the price list: '||:'staff_prices');
-SELECT public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>7,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>CURRENT_DATE+30,
- p_customer_id=>:'alpha'::uuid,p_tax_percent=>5) AS staff_price \gset
-SELECT pg_temp.ra_assert(:'staff_price'::jsonb->>'success'='true','staff add a price: '||:'staff_price');
+-- Item pricing (migration 90): staff are refused every read and write of it by the guard, as
+-- any call outside their list. An upcoming Gamma rate is added here without the RPCs and without a
+-- caller, to be the target of the update and the delete.
 RESET ROLE;
-SELECT id AS alpha_price FROM public.item_storage_prices WHERE customer_id=:'alpha'::uuid \gset
--- Staff change and delete only a rate that has not started (migration 76): an upcoming
--- Gamma rate for staff to delete, added here without the RPCs and without a caller.
 SELECT current_setting('request.jwt.claims') AS keep_claims \gset
 SELECT set_config('request.jwt.claims','{}',true);
 INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,
@@ -541,23 +533,25 @@ INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price
 SELECT set_config('request.jwt.claims',:'keep_claims',true);
 SELECT id AS gamma_price FROM public.item_storage_prices WHERE customer_id=:'gamma'::uuid AND effective_from=CURRENT_DATE+30 \gset
 SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>:'alpha_price'::uuid,p_unit_price=>8,p_weight_min=>0,p_weight_max=>100,
- p_labour_rate=>1,p_tax_percent=>5,p_effective_from=>CURRENT_DATE+30,p_effective_to=>NULL) AS staff_price_update \gset
-SELECT pg_temp.ra_assert(:'staff_price_update'::jsonb->>'success'='true','staff change a price: '||:'staff_price_update');
+SELECT pg_temp.ra_assert(COALESCE(bool_and(COALESCE(pg_temp.ra_call(statement)->>'success','false')<>'true' AND pg_temp.ra_call(statement)::text LIKE '%Staff access required%'),false),
+ 'staff are refused item pricing: '||string_agg(statement||' -> '||pg_temp.ra_call(statement)::text,' | ')
+   FILTER (WHERE NOT (COALESCE(pg_temp.ra_call(statement)->>'success','false')<>'true' AND pg_temp.ra_call(statement)::text LIKE '%Staff access required%')))
+FROM (VALUES ('SELECT public.get_item_storage_prices()'),
+  (format('SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>''monthly'',p_unit_price=>7,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>CURRENT_DATE+30,p_customer_id=>%L::uuid,p_tax_percent=>5)',:'item_id',:'alpha')),
+  (format('SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>8,p_weight_min=>101,p_weight_max=>200,p_labour_rate=>1,p_tax_percent=>5,p_effective_from=>CURRENT_DATE+30,p_effective_to=>NULL)',:'gamma_price')),
+  (format('SELECT public.delete_item_storage_price(%L::uuid)',:'gamma_price')),
+  (format('SELECT public.replace_item_rates(%L::uuid,NULL,''monthly'',CURRENT_DATE+30,''[]''::jsonb)',:'item_id')),
+  (format('SELECT public.undo_rate_change(%L::uuid,NULL,''monthly'',CURRENT_DATE+30)',:'item_id')),
+  ('SELECT public.get_standard_rate()'),
+  ('SELECT public.set_standard_rate(''[]''::jsonb)'),
+  (format('SELECT public.get_item_grn_rates(%L::uuid)',:'item_id'))) s(statement);
 SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,''monthly'')',:'item_id',:'beta')),
  'staff can no longer find or create a price (migration 76)');
-SELECT public.delete_item_storage_price(:'gamma_price'::uuid) AS staff_price_delete \gset
-SELECT pg_temp.ra_assert(:'staff_price_delete'::jsonb->>'success'='true','staff delete a price: '||:'staff_price_delete');
 RESET ROLE;
-SELECT pg_temp.ra_assert((SELECT unit_price=8 FROM public.item_storage_prices WHERE id=:'alpha_price'::uuid)
- AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE id=:'gamma_price'::uuid)
- AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE customer_id=:'beta'::uuid),
- 'the staff price changes are stored');
--- Each of the three is in the price history under the staff profile (migration
--- 48; tests/item_price_history.sql has the details).
-SELECT pg_temp.ra_assert((SELECT array_agg(h.action ORDER BY h.id)=ARRAY['insert','update','delete']
-  FROM public.item_price_history h WHERE h.changed_by=:'staff_profile'::uuid AND h.changed_by_role='staff'),
- 'the staff price changes are in the price history');
+SELECT pg_temp.ra_assert((SELECT count(*)=1 FROM public.item_storage_prices WHERE id=:'gamma_price'::uuid AND unit_price=6)
+ AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE customer_id=:'alpha'::uuid OR customer_id=:'beta'::uuid)
+ AND (SELECT count(*)=0 FROM public.item_price_history h WHERE h.changed_by_role='staff'),
+ 'the refused staff price calls changed nothing and left no history');
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM public.item_storage_prices),'the price table itself stays closed to staff; prices are read through the RPC');
 -- The order queue: staff read every order row (what Realtime checks), still

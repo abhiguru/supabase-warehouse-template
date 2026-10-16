@@ -138,6 +138,17 @@ from the router until printing is accepted ([PRINTING.md](PRINTING.md),
 
 ## Settings UX batch (migrations 76 to 78, 2026-10-14)
 
+**Staff lose item pricing (migration 90, 2026-10-16, owner decision).** Every function of this section
+and of the next ones that reads or writes rates (`get_item_storage_prices`, `create_item_storage_price`,
+`update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`, `undo_rate_change`,
+`get_standard_rate`, `set_standard_rate`, `get_item_grn_rates`) is for administrators and supervisors
+only: a staff call is refused by the guard with SQLSTATE 42501 and the message 'Staff access required'
+(the price functions that catch errors answer `{ success: false, error: 'Staff access required', error_code: '42501' }`).
+The staff rules described below for these functions (`PAST_DATE_NOT_ALLOWED` for staff,
+`RATE_IN_FORCE_MANAGER_ONLY`, `STANDARD_RATE_MANAGER_ONLY`) are therefore unreachable. New error code
+`RATES_MANAGER_ONLY`: `save_grn` or `update_grn` called by staff with `p_rates` (see below). Staff keep
+`get_grn_item_rates` and `generate_invoice_data_for_grn_with_pricing`.
+
 Errors of `replace_item_rates`, `undo_rate_change` and the rate functions are
 `{ success: false, error, error_code, data }`. The service-account answers (`set_service_account`
 and `SERVICE_ACCOUNT_READ_ONLY`) are `{ success: false, error, error_code, message }` with no `data`
@@ -152,8 +163,8 @@ Changes one scope (item, customer or NULL for the default rate, price type) "fro
 transaction (a refusal after the first write undoes all of them). A band is
 `{weight_min, weight_max, unit_price, labour_rate, tax_percent}` (up to 10; whole kilograms; amounts
 with at most two decimals; labour is not read and is stored as 0 for `one_time`). Default-rate bands
-must start at 0 and follow on without gaps; customer bands may have gaps. Roles: admin, supervisor,
-staff.
+must start at 0 and follow on without gaps; customer bands may have gaps. Roles: admin, supervisor
+(staff are refused since migration 90).
 
 - `p_mode = 'change'` (default): rows in force on `p_starts_on` end the day before, rows starting on
   that day that are already in force are deleted, the bands are added from that day. A rate
@@ -175,7 +186,7 @@ staff.
   end, move or delete that is not listed was changed by someone else: the answer is `STALE_RATES`
   (`data.ids` = the unseen ids) and nothing is written. NULL skips the check. Moving or undoing a
   planned rate that carried a scheduled stop gives the stop back to the rows it reopens.
-- Staff: `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
+- Staff (before migration 90; now refused by the guard): `p_starts_on` today or later, and for a move both `p_move_from` and `p_starts_on` after
   today (`PAST_DATE_NOT_ALLOWED`); rows of the scope that start on `p_starts_on` when that day is
   today give `RATE_IN_FORCE_MANAGER_ONLY` (a rate that began today is for administrators and
   supervisors), in either mode.
@@ -200,12 +211,12 @@ Undoes the change of one scope that starts on `p_starts_on` in one transaction: 
 `effective_from = p_starts_on` are deleted, and the rows that ended the day before
 (`effective_to = p_starts_on - 1`) are opened again, up to the day before the next planned rate of
 the scope, or without an end if there is none. This is how "cancel the new rate" and "undo the
-stop" work: the rate in force before the change continues. Roles: admin, supervisor, staff; staff
-only for a change that has not begun (`p_starts_on` after today), managers also for one that has.
+stop" work: the rate in force before the change continues. Roles: admin, supervisor (staff are refused
+since migration 90; before it staff could undo only a change that had not begun).
 The history trigger records the deletes and updates. Answer:
 `{success:true, message:'Change undone', data:{item_id, customer_id, price_type, starts_on, removed:[{id,effective_from}], reopened:[{id,effective_from,effective_to}]}}`.
 `error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`; since migration 86 the earliest day is the rate start floor, `data.earliest`),
-`PAST_DATE_NOT_ALLOWED` (staff, change starting today or earlier), `ITEM_NOT_FOUND`,
+`PAST_DATE_NOT_ALLOWED` (unreachable since migration 90: it was staff, change starting today or earlier), `ITEM_NOT_FOUND`,
 `CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
 `BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
 refused with SQLSTATE 42501.
@@ -214,11 +225,13 @@ refused with SQLSTATE 42501.
 
 - `create_item_storage_price`, `update_item_storage_price`: refuse an overlap of the same item,
   customer, price type, weight and days (`BANDS_OVERLAP`); a one-day rate is valid
-  (`effective_to >= effective_from`); `one_time` stores labour 0; staff get
-  `RATE_IN_FORCE_MANAGER_ONLY` (message "Only administrators and supervisors can change a rate that
-  is already in force") when the row has started or the new start is in the past.
-- `delete_item_storage_price`: the same refusal for staff on a row that has started. The old
-  nine-argument `update_item_storage_price` follows the same staff rule.
+  (`effective_to >= effective_from`); `one_time` stores labour 0. Roles: admin, supervisor. Staff were
+  given `RATE_IN_FORCE_MANAGER_ONLY` (message "Only administrators and supervisors can change a rate
+  that is already in force") when the row had started or the new start was in the past; since
+  migration 90 staff are refused by the guard and that answer is unreachable.
+- `delete_item_storage_price`: admin, supervisor (the same staff rule above, now unreachable). The old
+  nine-argument `update_item_storage_price` follows the same rule.
+- `get_item_storage_prices`: admin, supervisor (staff were admitted from migration 45 to migration 90).
 - `get_item_storage_prices`: a final `id` sort key. `search_customers`: every typed word may occur
   anywhere in the name (mobile still by prefix); names starting with the text come first.
 
@@ -289,14 +302,15 @@ item that already has a rate.
 
 ### `get_standard_rate()`
 
-Roles: admin, supervisor, staff. Answer
+Roles: admin, supervisor (staff are refused by the guard since migration 90). Answer
 `{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
 (`updated_at` and `updated_by_name` are null when never saved).
 
 ### `set_standard_rate(p_tiers jsonb)`
 
-Roles: admin, supervisor. The role is checked first: anyone else who passes the guard, staff, gets
-`STANDARD_RATE_MANAGER_ONLY` whatever tiers they send (a customer is refused by the guard). Then the
+Roles: admin, supervisor. Staff and customers are refused by the guard (SQLSTATE 42501) whatever tiers they
+send; `STANDARD_RATE_MANAGER_ONLY`, which migration 85 answered to staff from the body, is unreachable since
+migration 90. The
 checks, in this order and with the limits and texts of `replace_item_rates`: not a list, no tier or more than 10 -> `INVALID_BANDS`; weights not whole 0 to
 100000 or start after end -> `INVALID_BAND` (`data.index`, `data.field`); rent and labour 0 to 999999,
 tax 0 to 100, two decimals at most, all three required -> `INVALID_AMOUNT` (`data.index`,
@@ -332,6 +346,10 @@ kilograms, inclusive at both ends.
 
 `p_rates` is the last parameter of each (one overload each; every call that does not name it, the
 app's before this migration and fas-sync's, works unchanged). Roles as before: admin, supervisor, staff.
+**Migration 90: `p_rates` is for administrators and supervisors.** A staff call that carries `p_rates`
+(any value that is not NULL, `[]` included) is answered
+`{ success: false, error: 'Only administrators and supervisors can set rates on a GRN', error_code: 'RATES_MANAGER_ONLY', data: {} }`
+before anything is written; without `p_rates` a staff call works as before.
 
 - `p_rates` NULL: exactly the old behaviour. No rate is checked or changed; a GRN with an unpriced line
   still saves.
@@ -349,8 +367,8 @@ app's before this migration and fas-sync's, works unchanged). Roles as before: a
      `data.item_id`; not checked for the `grn` entries of an invoiced GRN, whose stored set may no longer fit
      a changed line); two GRN-only bands of one item that share a weight -> `BANDS_OVERLAP`.
   2. `customer` (the GRN's business) and `everyone` (the default rate) entries change the item's rate
-     of the GRN's price type from the GRN's India day, any day, for staff too (the staff past-day rule
-     of `replace_item_rates` does not apply here). For the rows of that scope that share a weight and a
+     of the GRN's price type from the GRN's India day, any day (the staff past-day rule
+     of `replace_item_rates` does not apply here; staff cannot send `p_rates` since migration 90). For the rows of that scope that share a weight and a
      day with the days from the GRN day to `to`: a row of a different band -> `BANDS_OVERLAP`
      (`data.index`, `data.starts_on` = the earliest start of the clashing rows); a row of the same band that starts after the GRN day -> `RATE_PLANNED`
      (`data.index`, `data.starts_on`); a row of the same band that starts on the GRN day is replaced,
@@ -391,11 +409,11 @@ again.
 
 The `grn` object gains `rates`: `[{id, item_id, item_name, price_type, weight_min, weight_max,
 unit_price, labour_rate, tax_percent, archived}]` ordered by item name and `weight_min` (`[]` when none);
-`archived` is true when the GRN is invoiced. For a customer account `rates` is always `[]`.
+`archived` is true when the GRN is invoiced. For a customer account and, since migration 90, for staff, `rates` is always `[]`.
 
 ### `get_item_grn_rates(p_item_id uuid)`
 
-Roles: admin, supervisor, staff (a customer account is refused with SQLSTATE 42501). Answer
+Roles: admin, supervisor (since migration 90; staff and a customer account are refused with SQLSTATE 42501). Answer
 `{success:true, data:{rates:[{id, gr_id, gr_no, grn_date:'YYYY-MM-DD', customer_id, customer_name,
 price_type, weight_min, weight_max, unit_price, labour_rate, tax_percent, archived, created_at}]}}` for
 GRNs that are not deleted: not archived first, then newest GRN first, then GRN number.

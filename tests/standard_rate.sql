@@ -146,15 +146,17 @@ SELECT pg_temp.sr_assert(:unpriced_before >= 4,'the fixtures leave at least four
 SELECT pg_temp.sr_as(:'admin_claims'::jsonb,'SELECT public.get_standard_rate()') AS got_empty \gset
 SELECT pg_temp.sr_assert(:'got_empty'::jsonb->>'success'='true' AND :'got_empty'::jsonb#>'{data,tiers}'='[]'::jsonb
  AND :'got_empty'::jsonb#>'{data,updated_at}'='null'::jsonb AND :'got_empty'::jsonb#>'{data,updated_by_name}'='null'::jsonb,'never saved: '||:'got_empty');
-SELECT pg_temp.sr_assert(pg_temp.sr_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()')->>'success'='true'
- AND pg_temp.sr_as(:'supervisor_claims'::jsonb,'SELECT public.get_standard_rate()')->>'success'='true','staff and supervisor read it');
+SELECT pg_temp.sr_assert(pg_temp.sr_as(:'supervisor_claims'::jsonb,'SELECT public.get_standard_rate()')->>'success'='true','a supervisor reads it');
+-- Migration 90 (owner decision, 2026-10-16): staff no longer read it (migration 85 admitted them).
+SELECT pg_temp.sr_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()') AS staff_get \gset
+SELECT pg_temp.sr_assert(:'staff_get'::jsonb->>'state'='42501' AND :'staff_get'::jsonb->>'raised'='Staff access required','a staff account is refused get_standard_rate: '||:'staff_get');
 SELECT pg_temp.sr_as(:'customer_claims'::jsonb,'SELECT public.get_standard_rate()') AS cust_get \gset
 SELECT pg_temp.sr_assert(:'cust_get'::jsonb->>'state'='42501','a customer account is refused get_standard_rate: '||:'cust_get');
 SELECT pg_temp.sr_set(:'customer_claims'::jsonb,'[{"weight_min":0,"weight_max":10,"unit_price":3,"labour_rate":1,"tax_percent":5}]') AS cust_set \gset
 SELECT pg_temp.sr_assert(:'cust_set'::jsonb->>'state'='42501','a customer account is refused set_standard_rate: '||:'cust_set');
 SELECT pg_temp.sr_set(:'staff_claims'::jsonb,'[{"weight_min":0,"weight_max":10,"unit_price":3,"labour_rate":1,"tax_percent":5}]') AS staff_set \gset
-SELECT pg_temp.sr_assert(:'staff_set'::jsonb->>'success'='false' AND :'staff_set'::jsonb->>'error_code'='STANDARD_RATE_MANAGER_ONLY'
- AND :'staff_set'::jsonb->>'error'='Only administrators and supervisors can change the standard rate','staff are refused set_standard_rate: '||:'staff_set');
+-- Migration 90: refused by the guard now; the body's STANDARD_RATE_MANAGER_ONLY answer is unreachable.
+SELECT pg_temp.sr_assert(:'staff_set'::jsonb->>'state'='42501' AND :'staff_set'::jsonb->>'raised'='Staff access required','staff are refused set_standard_rate: '||:'staff_set');
 SELECT pg_temp.sr_assert((SELECT count(*)=0 FROM public.standard_rate_tiers) AND pg_temp.sr_unpriced()=:unpriced_before,'the refusals changed nothing');
 
 -- ---------------------------------------------------------------------------
@@ -208,7 +210,7 @@ SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":11,"weight_max":20,
 SELECT pg_temp.sr_assert(:'save1'::jsonb->>'success'='true' AND (:'save1'::jsonb#>>'{data,items_priced}')::int=:unpriced_before
  AND jsonb_array_length(:'save1'::jsonb#>'{data,tiers}')=3 AND :'save1'::jsonb#>>'{data,tiers,0,weight_min}'='0'
  AND :'save1'::jsonb#>>'{data,tiers,2,tax_percent}'='5.50','first save answer, items_priced = '||:unpriced_before||': '||:'save1');
-SELECT pg_temp.sr_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()') AS got1 \gset
+SELECT pg_temp.sr_as(:'supervisor_claims'::jsonb,'SELECT public.get_standard_rate()') AS got1 \gset
 SELECT pg_temp.sr_assert(:'got1'::jsonb#>'{data,tiers,0}'='{"weight_min": 0, "weight_max": 10, "unit_price": 3, "labour_rate": 1, "tax_percent": 5}'::jsonb
  AND :'got1'::jsonb#>>'{data,tiers,1,weight_min}'='11' AND :'got1'::jsonb#>>'{data,tiers,2,unit_price}'='5.00'
  AND jsonb_array_length(:'got1'::jsonb#>'{data,tiers}')=3 AND :'got1'::jsonb#>>'{data,updated_by_name}'='Standard Rate Administrator'
@@ -311,7 +313,7 @@ SELECT pg_temp.sr_assert(pg_temp.sr_rows(pg_temp.sr_item('SR Later'),NULL)=forma
 SELECT pg_temp.sr_assert(pg_temp.sr_rows(pg_temp.sr_item('SR Grn'),NULL)=
  '0-10@3.00/1.00/5 2026-03-02..open | 11-20@4.00/1.50/5 2026-03-02..open | 21-30@5.00/2.00/5.5 2026-03-02..open','an item priced by the first save is unchanged');
 SELECT pg_temp.sr_assert((SELECT count(*)=1 FROM public.standard_rate_tiers),'the second save replaced the tiers');
-SELECT pg_temp.sr_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()') AS got2 \gset
+SELECT pg_temp.sr_as(:'supervisor_claims'::jsonb,'SELECT public.get_standard_rate()') AS got2 \gset
 SELECT pg_temp.sr_assert(:'got2'::jsonb#>>'{data,updated_by_name}'='Standard Rate Supervisor' AND jsonb_array_length(:'got2'::jsonb#>'{data,tiers}')=1,
  'updated_by_name is the supervisor after the second save: '||:'got2');
 -- A save when nothing is unpriced counts 0.
@@ -320,9 +322,9 @@ SELECT pg_temp.sr_assert((:'save3'::jsonb#>>'{data,items_priced}')::int=0,'a sav
 -- ---------------------------------------------------------------------------
 -- 9. Review fixes (B3-B8 of the 2026-10-15 review)
 -- ---------------------------------------------------------------------------
--- A staff member sending bad tiers is refused as staff (the role is checked first).
+-- A staff member sending bad tiers is refused as staff (the guard comes first, migration 90).
 SELECT pg_temp.sr_set(:'staff_claims'::jsonb,'[]') AS staff_bad \gset
-SELECT pg_temp.sr_assert(:'staff_bad'::jsonb->>'error_code'='STANDARD_RATE_MANAGER_ONLY','staff sending no tiers get STANDARD_RATE_MANAGER_ONLY, not INVALID_BANDS: '||:'staff_bad');
+SELECT pg_temp.sr_assert(:'staff_bad'::jsonb->>'state'='42501' AND :'staff_bad'::jsonb->>'error_code' IS NULL,'staff sending no tiers are refused by the guard, not told INVALID_BANDS: '||:'staff_bad');
 -- Renaming an item that is already active adds no rows, even when it has none: only turning active does.
 SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Bare','Bag')$q$)->>'success' AS made_bare \gset
 DELETE FROM public.item_storage_prices WHERE item_id=pg_temp.sr_item('SR Bare');

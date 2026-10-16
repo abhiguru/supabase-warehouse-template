@@ -151,18 +151,16 @@ SELECT pg_temp.core_assert(:'staff_recent'::jsonb->>'success'='true',
 -- probe could never fail because authenticated has no EXECUTE on the guard.
 SELECT pg_temp.core_denied(format('SELECT public.delete_invoice(%L::uuid)',:'saved'::jsonb->>'invoice_id'));
 SELECT pg_temp.core_denied(format('SELECT public.update_user_role(%L::uuid,''admin''::public.user_role)',:'admin_profile'));
--- Migration 45 (owner decision, 2026-10-11) supersedes the pricing refusal of
--- migration 23: staff read the price list through the RPC, for every customer
--- and for one. Staff price writes are proven in tests/role_allowlist.sql; the
--- price table itself stays closed to staff (asserted below).
-SELECT pg_temp.core_assert(public.get_item_storage_prices()->>'success'='true'
- AND public.get_item_storage_prices()::text LIKE '%Core Demo Potatoes%','staff read the price list: '||public.get_item_storage_prices()::text);
-SELECT pg_temp.core_assert(public.get_item_storage_prices(jsonb_build_object('customer_ids',jsonb_build_array(:'customer_id')))->>'success'='true',
- 'staff read one customer''s prices');
+-- Migration 90 (owner decision, 2026-10-16): item pricing is for administrators and supervisors, so
+-- staff are refused the price list (migration 45 had opened it on 2026-10-11). The refusal
+-- is proven for every pricing function in tests/staff_pricing_90.sql; the price table itself stays
+-- closed to staff (asserted below).
+SELECT pg_temp.core_denied('SELECT public.get_item_storage_prices()');
+SELECT pg_temp.core_denied(format('SELECT public.get_item_storage_prices(jsonb_build_object(''customer_ids'',jsonb_build_array(%L)))',:'customer_id'));
 RESET ROLE;
 SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid AND deleted_at IS NULL),'denied deletion leaves the invoice');
 SELECT pg_temp.core_assert((SELECT role='admin' FROM public.user_profiles WHERE id=:'admin_profile'::uuid),'denied role change leaves the administrator');
-SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.item_storage_prices),'reading the price list changes no price');
+SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.item_storage_prices),'the refused price list reads change no price');
 SET LOCAL ROLE authenticated;
 
 
