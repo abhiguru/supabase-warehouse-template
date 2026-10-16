@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased: `get_grn_item_rates` (migration 88)
+
+Migration `00000000000088_grn_item_rates.sql`. New `get_grn_item_rates(p_grn_id)`: the rate each lot of a GRN
+is invoiced at and where it comes from (`invoice`, `grn`, `customer`, `item` or none), with the weight band and
+a `varies` flag for an invoiced lot whose lines differ. The guard admits it for staff and, owner decision of
+2026-10-16, for a customer account on the GRNs of a customer it owns (`get_grn_details` still answers
+`grn.rates = []` to them). Test `tests/grn_item_rates_88.sql`.
+
 ## Unreleased — fixes from the outside backend review of 2026-10-15 (migration 87)
 
 Migration `00000000000087_review_fixes.sql` (patches existing functions in place; no new RPC, no

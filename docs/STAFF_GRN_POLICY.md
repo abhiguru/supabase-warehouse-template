@@ -602,6 +602,7 @@ several customers calls once per customer.
 | Item pricing: add, change, delete | yes | yes | **yes** | no |
 | Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | yes / **no** (refused in the function) | no |
 | Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, `get_item_grn_rates`, migration 86): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **yes** (the past-day rule of Item pricing does not apply) | no |
+| The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16) |
 | Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
 | Customers and items: create, edit, delete | yes | yes | no | no |

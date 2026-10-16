@@ -400,6 +400,21 @@ Roles: admin, supervisor, staff (a customer account is refused with SQLSTATE 425
 price_type, weight_min, weight_max, unit_price, labour_rate, tax_percent, archived, created_at}]}}` for
 GRNs that are not deleted: not archived first, then newest GRN first, then GRN number.
 
+### `get_grn_item_rates(p_grn_id uuid)` (migration 88)
+
+Roles: admin, supervisor, staff, and a customer account for the GRNs of a customer it owns (owner decision of
+2026-10-16; `get_grn_details` still answers `grn.rates = []` to a customer account). Another customer's GRN is
+refused with 'Customer access denied' (42501). The rate each lot is invoiced at, chosen as
+`build_invoice_recalculation_rows` does. Answer
+`{success:true, data:{gr_id, grn_date:'YYYY-MM-DD', price_type:'monthly'|'one_time', invoiced, rates:[{grn_item_id,
+item_id, item_name, weight, source:'invoice'|'grn'|'customer'|'item'|null, unit_price, labour_rate, tax_percent,
+weight_min, weight_max, varies}]}}`, one entry per lot in the order of `get_grn_details` (by lot id). `source`:
+`invoice` = the first line (by dispatch date, then id) of the lot on an invoice that is not deleted or cancelled
+(`weight_min`/`weight_max` null; `varies` true when the lot's lines carry more than one charge / labour / tax);
+`grn` = a GRN-only rate (narrowest band); `customer` / `item` = the business's or the item's default rate from
+`find_storage_price`; null = no rate (figures null). A missing or deleted GRN answers
+`{success:false, error:'GRN not found', error_code:'GRN_NOT_FOUND', data:null}`.
+
 ### The rate start floor
 
 `warehouse_security.rate_start_floor()` is the earlier of the India day of the first GRN that is not
