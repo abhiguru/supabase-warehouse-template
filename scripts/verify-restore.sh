@@ -74,6 +74,12 @@ if [[ -e "$backup/tunnel" || -L "$backup/tunnel" ]]; then
     grep -Fqx "$(cd "$backup" && sha256sum "$file")" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
   done < <(find "$backup/tunnel" -mindepth 1 -print0)
 fi
+# Optional central sign-in key set (scripts/backup.sh copies public/central-jwks.json): a regular,
+# checksummed file when present. db:restore-host installs it, so what it installs must be what was signed.
+if [[ -e "$backup/central-jwks.json" || -L "$backup/central-jwks.json" ]]; then
+  [[ -f "$backup/central-jwks.json" && ! -L "$backup/central-jwks.json" ]] || { echo 'Backup entry central-jwks.json is not a regular file.' >&2; exit 1; }
+  grep -Fqx "$(cd "$backup" && sha256sum central-jwks.json)" "$backup/SHA256SUMS" || { echo 'Backup checksum missing for central-jwks.json' >&2; exit 1; }
+fi
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 

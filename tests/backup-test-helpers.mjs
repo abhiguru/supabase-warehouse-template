@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 export const repo = fileURLToPath(new URL('..', import.meta.url));
 export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n';
+// A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
+export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
+  x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] }, null, 2) + '\n';
 export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n') =>
   `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\n` +
   `WAREHOUSE_STORAGE_PATH=${state}/data/storage\nWAREHOUSE_MANIFEST_PATH=${state}/public/instance.json\n${extra}`;
@@ -38,7 +41,8 @@ export function makeState(scratch, { env } = {}) {
 // entries (<bucket>/<name>/<version>); `files` are archive paths relative to
 // the storage root, defaulting to the tenant-prefixed layout of every object.
 // v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
-export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n',
+// `centralKey` adds the optional central-jwks.json (text), checksummed like the rest.
+export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null,
   objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
@@ -59,6 +63,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKe
     content['_supabase.dump'] = 'fake supabase dump\n';
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
   }
+  if (centralKey !== null) content['central-jwks.json'] = centralKey;
   for (const [name, body] of Object.entries(content)) writeFileSync(join(dir, name), body, { mode: 0o600 });
   const listed = ['storage.tar.gz', ...Object.keys(content)];
   const sums = spawnSync('sha256sum', listed, { cwd: dir, encoding: 'utf8' });

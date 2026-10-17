@@ -402,13 +402,33 @@ With an address, the functions container must be able to reach it over HTTPS.
 When it cannot, central sign-in answers "temporarily unavailable" and SMS
 sign-in is unaffected.
 
-**After a restore, run `setup.sh` again** with your usual inputs. The trusted
-issuer lives in the database as well as in `compose.env`, and setup is what
-makes the two agree: a database restored from before you turned central
-sign-in on (or off) otherwise disagrees with the configuration, and central
-sign-in answers "not available" until setup has run. The key file
-`public/central-jwks.json` is not part of a backup: after recovering a lost
-host, pass `--central-jwks-file` again.
+**After an in-place restore, check that the database and the configuration
+agree.** The trusted issuer lives in the database as well as in `compose.env`,
+and setup is what makes the two agree: a database restored from before you
+turned central sign-in on (or off) otherwise disagrees with the configuration,
+and central sign-in answers "not available" until you have run `setup.sh` again
+with your usual inputs.
+
+**The key file travels with the backup.** `public/central-jwks.json` (public
+keys only) is copied into every backup as `central-jwks.json`, listed in
+`SHA256SUMS` and so covered by the signature; `db:verify-restore` checks it and
+a [lost-host restore](#recover-a-lost-host-from-the-usb-drive)
+(`db:restore-host`) puts it back, mode 0644, with no setup run. A backup written
+before that holds no copy: `db:restore-host` then ends by printing the exact
+`setup.sh --operator … --central-issuer … --central-jwks-file …` rerun, which
+keeps the instance identity and replaces nothing but the key file, and
+`node scripts/doctor.mjs` fails until you have run it. Keep the key set the
+association sent you for that case.
+
+An in-place `db:restore --restore-config` can bring back a `compose.env` that names
+a key file this state no longer has (setup deletes it when central sign-in moves
+to an address or off). `db:restore` does not touch `public/`, so it finishes,
+its last `doctor --local` only warns, and it prints the same `setup.sh` rerun.
+
+`doctor` (`--local` and the full run) fails whenever `CENTRAL_JWKS_FILE` is set
+and `public/central-jwks.json` is missing, not a regular file, larger than
+64 KB, not JSON or without a usable P-256 key: without the file every central
+sign-in fails while the app still offers it.
 
 A person who already has a profile here is linked to the central account by
 the first central sign-in with the same phone number (no code, unless the
@@ -701,6 +721,7 @@ only the services that were running. The directory contains:
 | `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
+| `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
 | `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 
@@ -1116,7 +1137,7 @@ recorded after the backup is lost.
 **Never run the old and the new host at the same time.** They would answer as
 the same warehouse with the same keys. If the old host might come back, wipe
 its disk or keep it disconnected; if in doubt, rotate the keys afterwards
-(step 8).
+(step 9).
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
@@ -1125,8 +1146,13 @@ copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
 after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
-JSON, or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
-different warehouse.
+JSON, or the dashboard token file). If this facility's central sign-in reads its
+keys from a file, backups taken with this release carry that file too
+(`central-jwks.json`); for older backups keep the key set the association sent
+you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
+would create a new, different warehouse. After `db:restore-host` has finished,
+`setup.sh` on the restored state keeps the identity; step 7 is the one case
+that needs it.
 
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
@@ -1178,10 +1204,14 @@ different warehouse.
    written before format v5 has no signature and is accepted only with
    `--allow-unsigned` (then `--backup-key` may be left out); use that only for
    a drive that never left your custody. It then creates the state from the backup's `compose.env` and
-   `instance.json`, changing only the three state-path lines, keeps a copy of the
+   `instance.json`, changing only the three state-path lines (and installs the
+   central sign-in key file, `public/central-jwks.json`, when the backup
+   carries one), keeps a copy of the
    backup under `backups/`, and runs the in-place restore: a new database from
    the pinned image, replay of both databases and the stored files, integrity
-   comparison, newer migrations, all services started and `doctor --local`. It
+   comparison, newer migrations, all services started and `doctor --local` (for a
+   backup that lacks the central key file named by `compose.env`, that one finding
+   is only a warning, and step 7 says how to fix it). It
    ends by printing the remaining steps. A backup directory (already extracted)
    works as well as the `.tar`. If it fails after creating the state, it says so
    and how to start over; nothing else on the host is changed.
@@ -1210,10 +1240,29 @@ different warehouse.
    two commands. The DNS route already exists; do not create a new tunnel. If
    the credential is lost too, create a new tunnel and point the existing
    hostname at it in the Cloudflare dashboard, replacing the old tunnel's record.
-7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
+7. **Central sign-in from a key file.** Skip this unless `CENTRAL_JWKS_FILE` is set
+   in `config/compose.env` (central sign-in with keys from a file, see
+   [Central sign-in](#central-sign-in)). A backup taken with this release brought
+   `public/central-jwks.json` back with the rest, and
+   `node scripts/doctor.mjs --local` confirms it. A backup written before that did
+   not, and `db:restore-host` printed a step with this command; run it with your
+   usual administrator phone and name and the key set the association sent you:
+
+   ```bash
+   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+     --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+     --central-issuer https://login.association.example \
+     --central-jwks-file /secure/association-jwks.json
+   ```
+
+   Setup keeps the instance identity and the data, copies the file to
+   `public/central-jwks.json`, and rebuilds the images once (a restored state has no
+   build record). Until then every central sign-in fails while the app still
+   offers it, and `doctor` says so; SMS sign-in is unaffected.
+8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
-8. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
+9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), replace

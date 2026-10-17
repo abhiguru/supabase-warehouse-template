@@ -211,3 +211,36 @@ test('restore takes an unsigned v4 backup only with --allow-unsigned and tells t
     assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+// Review finding 5 (TW-BE-020): --restore-config brings back a compose.env that names a central key file the
+// state no longer has (setup deleted it when central sign-in moved to an address). The restore completed, so
+// the final doctor must only warn, and the rerun that puts the file back is printed.
+test('restore --restore-config onto a state without the key file the restored configuration names finishes, with a rerun', () => {
+  const run = (keyOnDisk, extraEnv) => {
+    const { scratch, state, backup } = fixture('warehouse-restore-keyfile-');
+    try {
+      const env = composeEnv(state, `JWT_SECRET=old-secret\nCENTRAL_ISSUER=https://login.association.example.test\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=central-jwks.json\n`);
+      writeFileSync(join(backup, 'compose.env'), env, { mode: 0o600 });
+      spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
+      signBackup(backup);
+      if (keyOnDisk) writeFileSync(join(state, 'public/central-jwks.json'), '{"keys":[]}\n');
+      const seen = join(scratch, 'doctor-saw.txt');
+      const result = restore(scratch, ['--yes', '--restore-config', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), DOCTOR_SEEN: seen, ...extraEnv }, root => {
+        writeFileSync(join(root, 'scripts/migrate.sh'), '#!/usr/bin/env bash\nexit 0\n');
+        writeFileSync(join(root, 'scripts/doctor.mjs'), "import { appendFileSync } from 'node:fs';\nappendFileSync(process.env.DOCTOR_SEEN, `pending=${process.env.WAREHOUSE_CENTRAL_KEY_PENDING ?? ''}\\n`);\n");
+      });
+      return { result, state, saw: existsSync(seen) ? readFileSync(seen, 'utf8') : null };
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  };
+  const missing = run(false);
+  assert.equal(missing.result.status, 0, missing.result.stderr);
+  assert.equal(missing.saw, 'pending=yes\n', 'doctor --local is told the missing key file is to be put back');
+  assert.doesNotMatch(missing.result.stderr, /Restore failed/);
+  assert.ok(missing.result.stdout.includes(`bash setup.sh --operator --state-dir ${missing.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`));
+  assert.match(missing.result.stdout, /--central-issuer https:\/\/login\.association\.example\.test --central-jwks-file \/absolute\/path\/to\/association-jwks\.json/);
+  // The file is there: nothing to warn about or rerun.
+  const present = run(true);
+  assert.equal(present.result.status, 0, present.result.stderr);
+  assert.equal(present.saw, 'pending=\n');
+  assert.doesNotMatch(present.result.stdout, /setup\.sh/);
+});
