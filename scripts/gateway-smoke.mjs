@@ -71,9 +71,9 @@ for (let attempt = 0; attempt < 10 && !log.includes(`smoke-${marker}.pdf`); atte
   await new Promise(done => setTimeout(done, 500));
   log = gatewayLog();
 }
+if (/token=|apikey=|smoke-token-|smoke-apikey-/.test(log)) throw new Error('The gateway log keeps a query-string credential (token= or apikey=).');
 if (!log.includes(`"GET /storage/v1/object/sign/documents/smoke-${marker}.pdf HTTP/`) || !log.includes('"GET /realtime/v1/websocket HTTP/')) {
   throw new Error('The gateway access log has no line for the smoke requests (or it is not in the redacted format).');
 }
-if (/token=|apikey=|smoke-token-|smoke-apikey-/.test(log)) throw new Error('The gateway log keeps a query-string credential (token= or apikey=).');
 
 console.log('Exact-origin CORS, request-size limit, per-client rate limit and a query-free gateway log passed on the loopback gateway.');
