@@ -20,6 +20,7 @@
 --    the operator sets it, and an absent or malformed value means no ceiling. Text '0' blocks every
 --    send, as the other caps do: that is the documented no-send switch.
 --
+-- get_otp_stats (the reader of msg91_status = 'success', service key only) counts success_no_id too.
 -- operator_prepare_otp is patched in place and operator_finish_otp is replaced by the same body with
 -- a fourth, optional argument (the old three-argument signature is dropped, so a call with three
 -- arguments still resolves to the new function). Owner, SECURITY DEFINER, search_path and grants are
@@ -61,6 +62,7 @@ DECLARE
   definition text;
   prepare_owner oid; prepare_secdef boolean; prepare_acl aclitem[]; prepare_config text[];
   finish_owner oid; finish_secdef boolean; finish_acl aclitem[]; finish_config text[];
+  stats_fn regprocedure; stats_owner oid; stats_secdef boolean; stats_acl aclitem[]; stats_config text[];
   after_owner oid; after_secdef boolean; after_acl aclitem[]; after_config text[];
 BEGIN
   -- 1. operator_prepare_otp: the ceiling and the reservation.
@@ -146,6 +148,21 @@ $r$);
   IF after_owner IS DISTINCT FROM finish_owner OR NOT after_secdef OR after_secdef IS DISTINCT FROM finish_secdef
      OR after_acl IS DISTINCT FROM finish_acl OR after_config IS DISTINCT FROM finish_config THEN
     RAISE EXCEPTION 'operator_finish_otp changed owner, SECURITY DEFINER, grants or settings: % became %', finish_acl, after_acl;
+  END IF;
+
+  -- 3. The one reader of msg91_status = 'success' (get_otp_stats, service key only) counts a send without
+  -- an ID as sent too.
+  stats_fn := 'public.get_otp_stats(character varying)'::regprocedure;
+  SELECT proowner, prosecdef, proacl, proconfig INTO STRICT stats_owner, stats_secdef, stats_acl, stats_config
+    FROM pg_proc WHERE oid = stats_fn;
+  EXECUTE pg_temp.patch_text(pg_get_functiondef(stats_fn), stats_fn,
+$m$COUNT(*) FILTER (WHERE msg91_status = 'success') as successful_sent,$m$,
+$r$COUNT(*) FILTER (WHERE msg91_status IN ('success','success_no_id')) as successful_sent,$r$);
+  SELECT proowner, prosecdef, proacl, proconfig INTO STRICT after_owner, after_secdef, after_acl, after_config
+    FROM pg_proc WHERE oid = stats_fn;
+  IF after_owner IS DISTINCT FROM stats_owner OR after_secdef IS DISTINCT FROM stats_secdef
+     OR after_acl IS DISTINCT FROM stats_acl OR after_config IS DISTINCT FROM stats_config THEN
+    RAISE EXCEPTION 'get_otp_stats changed owner, SECURITY DEFINER, grants or settings';
   END IF;
 END $patch$;
 

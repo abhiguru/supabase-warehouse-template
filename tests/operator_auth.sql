@@ -85,6 +85,8 @@ SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='
   'a success without an ID is accepted and recorded as success_no_id, the code kept');
 SELECT pg_temp.assert_true((SELECT attempts=1 AND status='success_no_id' FROM warehouse_security.otp_provider_attempts
   WHERE request_id=(:'no_id_delivery'::jsonb#>>'{data,request_id}')::uuid),'the attempt log carries the same status');
+SELECT pg_temp.assert_true((public.get_otp_stats('919888888831')#>>'{data,0,successful_sent}')::integer=1,
+  'the OTP statistics count a send without an ID as sent');
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888831',:'no_id_delivery'::jsonb#>>'{data,otp_code}','No Id Customer')#>>'{data,action}')='pending',
   'the code of a send without an ID still verifies');
 SELECT public.operator_prepare_otp('9888888832') AS empty_id_delivery \gset
