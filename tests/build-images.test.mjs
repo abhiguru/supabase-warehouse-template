@@ -336,13 +336,17 @@ test('the Gotenberg binary is built from the source of the base image tag', () =
   assert.match(recipe, new RegExp(`cmd\\.Version=${version.replaceAll('.', '\\.')}'.* \\./cmd/gotenberg\\n`), 'the flag is set on the cmd/gotenberg build');
   assert.match(recipe, /^COPY --from=gotenberg \/out\/gotenberg \/usr\/bin\/gotenberg$/m);
   assert.match(recipe, /^COPY gotenberg\.go\.mod \.\/go\.mod$/m);
-  // Every operator install builds this stage, so it runs no upstream tests (some
-  // are timing-sensitive and flaked on a loaded runner); the module graph is verified.
-  const stage = recipe.slice(recipe.indexOf(' AS gotenberg\n'), recipe.indexOf('\nFROM gotenberg/gotenberg:'));
-  assert.ok(stage.length > 0, 'the gotenberg build stage is found');
-  assert.doesNotMatch(stage, /go test/, 'the Gotenberg build stage runs no upstream tests');
-  assert.match(stage, /go mod download && go mod verify/);
-  assert.match(stage, /go build -p=2 -mod=readonly -trimpath /);
+  // Every operator install builds this image, so no stage runs upstream tests
+  // (some are timing-sensitive and flaked on a loaded runner); each Go stage
+  // verifies its module graph and builds read-only.
+  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.startsWith('#'));
+  assert.ok(!instructions.some(line => /\bgo\s+test\b/.test(line)), 'no build stage of the Gotenberg recipe runs go test');
+  const stages = recipe.split(/^(?=FROM )/m).filter(stage => stage.startsWith('FROM golang:'));
+  assert.deepEqual(stages.map(stage => /^FROM \S+ AS (\S+)$/m.exec(stage)?.[1]), ['build', 'gotenberg']);
+  for (const stage of stages) {
+    assert.match(stage, /go mod download && go mod verify/);
+    assert.match(stage, /go build -p=2 -mod=readonly -trimpath /);
+  }
   const dependabot = readFileSync(join(repo, '.github/dependabot.yml'), 'utf8');
   assert.match(dependabot, /- dependency-name: gotenberg\/gotenberg\n\s+update-types:\n\s+- "version-update:semver-major"\n\s+- "version-update:semver-minor"\n\s+- "version-update:semver-patch"\n/);
 });

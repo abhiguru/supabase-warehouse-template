@@ -6,7 +6,8 @@ Existing release tags are unchanged. No image binaries are published.
 Each source recipe pins the upstream source archive checksum, builder image
 digest, and runtime base digest. Copied dependency manifests record the modified
 resolution. Go module verification and selected upstream tests run during the
-build. Shared BuildKit caches avoid duplicating module/build data in image layers.
+build, except in the Gotenberg recipe, which since 2026-10-18 runs no upstream
+tests (see "Exception ledger and the two-pass scan"). Shared BuildKit caches avoid duplicating module/build data in image layers.
 OS package repositories remain live: rebuild without stale layers and rescan
 before deployment. A previous passing scan is not a current security guarantee.
 
@@ -808,14 +809,17 @@ What changed, per image:
   `docker/gotenberg/gotenberg.go.{mod,sum}`, which differ from upstream only in
   `golang.org/x/{net,crypto,sys,term,text}` (net 0.60.0), verifies the module
   graph (`go mod verify`), builds read-only, and replaces the publisher binary;
-  the version stays `8.37.0`. Upstream's own test suite is not run at image
-  build: every operator install builds this image, and the suite has
-  timing-sensitive tests (`TestProcessSupervisor_ReqQueueSize` failed on a
-  loaded hosted CI runner on 2026-10-17, "expected queue size to be 10 but got
-  8"), so an upstream flake would fail a real install. The `pkg/gotenberg` and
-  `pkg/modules/api` tests passed on this source and module set when the recipe
-  was written; the document tests of CI's operator-install job exercise the
-  binary. The MIT licence is in
+  the version stays `8.37.0`. No stage of this recipe runs upstream tests
+  any more, neither Gotenberg's nor the pdfcpu stage's (`go test
+  ./pkg/pdfcpu/model`, removed on 2026-10-18): every operator install builds
+  this image, so an upstream test that fails on some host would fail a real
+  install. Gotenberg's suite has timing-sensitive tests
+  (`TestProcessSupervisor_ReqQueueSize` failed on a loaded hosted CI runner on
+  2026-10-17, "expected queue size to be 10 but got 8"). The checks that stay
+  are the pinned source archives, `go mod verify` and the read-only builds.
+  The `pkg/gotenberg`, `pkg/modules/api` and `pkg/pdfcpu/model` tests passed
+  on these sources and module sets when the recipe was written; the document
+  tests of CI's operator-install job exercise the binaries. The MIT licence is in
   `LICENSES/gotenberg/` and in the image.
 - **studio** (`docker/studio/Dockerfile`): moved to `2026.10.12-sha-3699278`,
   the newest tag, which fixes `@modelcontextprotocol/sdk` (1.32.0). It still

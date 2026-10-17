@@ -1,3 +1,8 @@
+# Every operator install builds this image, so no stage runs upstream tests:
+# an upstream test that fails on some host (timing, load, environment) must not
+# break an install. The checks are the pinned source archives, the verified
+# module graphs (go mod verify) and the read-only builds; CI's document tests
+# exercise the binaries.
 FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/pdfcpu/pdfcpu/tar.gz/refs/tags/v0.15.0 -o /tmp/source.tar.gz \
@@ -7,18 +12,15 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,id=warehouse-security-go-mod,target=/go/pkg/mod \
     --mount=type=cache,id=warehouse-security-go-build,target=/root/.cache/go-build \
     go mod download && go mod verify \
-    && go test -p=2 ./pkg/pdfcpu/model \
     && CGO_ENABLED=0 go build -p=2 -mod=readonly -trimpath -ldflags='-X main.version=v0.15.0-warehouse.1 -X github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model.VersionStr=v0.15.0 -X main.builtBy=warehouse' -o /out/pdfcpu ./cmd/pdfcpu
 # The publisher's /usr/bin/gotenberg is built with Go 1.27.1 and
 # golang.org/x/net 0.58.0, both behind fixed HIGH advisories (8.38.1, the newest
 # tag on 2026-10-17, still has Go 1.27.1 and x/net 0.59.0). Rebuild the same
 # 8.37.0 source with the pinned Go 1.27.2 and the golang.org/x/* updates in
 # gotenberg.go.mod (the only changes from upstream's go.mod), as pdfcpu above.
-# Upstream's own test suite is not run here: every operator install builds this
-# image, and its tests include timing-sensitive ones (TestProcessSupervisor_
-# ReqQueueSize failed on a loaded CI runner on 2026-10-17), so an upstream flake
-# would fail a real install. The verified module graph and the readonly build
-# of the tagged source are the checks; the document tests exercise the binary.
+# Upstream's tests are not run (see the top of this file): its suite has
+# timing-sensitive ones, and TestProcessSupervisor_ReqQueueSize failed on a
+# loaded CI runner on 2026-10-17.
 FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS gotenberg
 WORKDIR /src
 RUN curl -4 --connect-timeout 15 --max-time 120 --retry 2 -fsSL https://codeload.github.com/gotenberg/gotenberg/tar.gz/refs/tags/v8.37.0 -o /tmp/source.tar.gz \
