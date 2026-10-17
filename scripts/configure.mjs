@@ -217,22 +217,25 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;
+      // Every check that can refuse runs before the first write, so a refused flag changes nothing.
+      let gatewayPortChanged = false;
+      let newPortText = null;
+      {
+        const text = readFileSync(envPath, 'utf8');
+        if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text);
+        if (port !== null && text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1] !== port) {
+          // Containers keep the published port they were created with, so the change waits for a stopped installation.
+          if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
+          if (!portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
+          newPortText = port;
+        }
+      }
+      if (providerEnv) providerValues(providerEnv, checkout);
       if (providerEnv) {
         const provider = providerValues(providerEnv, checkout);
         const current = readFileSync(envPath, 'utf8');
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
-      }
-      let gatewayPortChanged = false;
-      if (port !== null) {
-        const current = readFileSync(envPath, 'utf8');
-        if (current.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1] !== port) {
-          // Containers keep the published port they were created with, so the change waits for a stopped installation.
-          if (containersRunning(current.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
-          if (!portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
-          replaceFileAtomically(envPath, replaceEnvLines(current, { KONG_HTTP_PORT: port }));
-          gatewayPortChanged = true;
-        }
       }
       if (central || centralLocalCode !== undefined) {
         const current = readFileSync(envPath, 'utf8');
@@ -245,6 +248,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         // The key file first: compose.env never names a file that is not there.
         if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
+      }
+      if (newPortText !== null) {
+        replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
+        gatewayPortChanged = true;
       }
       // An installation made before signed backups gets its backup key here;
       // an existing key is never replaced.

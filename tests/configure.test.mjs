@@ -645,6 +645,12 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
     assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'taken'), gatewayPort: '18003', portFree: () => false }), /already in use/);
     assert.equal(existsSync(join(scratch, 'taken')), false, 'a refused port creates no state');
     assert.equal(envText(state), frozen);
+    // A refused central flag in the same call leaves the port as it was (an outage otherwise: the tunnel still
+    // points at the old port and no reminder is printed).
+    const beforeRefused = envText(state);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', centralLocalCode: 'on', ...hooks }), /needs central sign-in/);
+    assert.equal(envText(state), beforeRefused);
+    assert.equal(port(state), '18002');
     // The project name handed to the running check is this state's.
     let asked;
     configure(root, { stateDir: state, gatewayPort: '18004', portFree: () => true, containersRunning: project => { asked = project; return false; } });
