@@ -841,6 +841,10 @@ log).
   socket address (`?apikey=`) are credentials in a query string: a retained log
   that holds one can replay a still-valid document link or call the API as the
   public client.
+- **Realtime still logs the anon key.** Realtime writes the socket address
+  (`?apikey=`) to its own container log, independently of the gateway, so the
+  redaction above does not cover it. The value is the public anon key, not a
+  session token or a signed link; the Realtime log was not changed.
 - **Client addresses are allowed in the gateway log, for its rotation life.**
   Owner decision of 2026-10-17. The address is useful to the operator (who is
   hammering the gateway) and leaves with the rotation. Nothing else identifies a

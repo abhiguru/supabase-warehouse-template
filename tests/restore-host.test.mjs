@@ -197,6 +197,7 @@ test('restore-host takes the same v5 backup with --allow-unsigned and no --backu
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
     assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.stderr, /the backup key was missing/, 'the banner says why no signature was required');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
   } finally { clean(f); }
   // Owner decision of 2026-10-17: an unsigned backup labelled v4 is taken with the flag even with the key in hand

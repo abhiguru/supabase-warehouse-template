@@ -142,7 +142,9 @@ MSG
     fi
     if [[ "$allow" == true ]]; then
       backup_checksums "$dir" || return 1
-      backup_unsigned_warning "this backup carries no signature ($BACKUP_SIGNATURE_FILE)."; return 0
+      local note="this backup carries no signature ($BACKUP_SIGNATURE_FILE)."
+      if backup_format_is_signed "$dir"; then note+=" It is a signed format and the backup key was missing, so the signature could not be required."; fi
+      backup_unsigned_warning "$note"; return 0
     fi
     cat >&2 <<MSG
 Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE).
