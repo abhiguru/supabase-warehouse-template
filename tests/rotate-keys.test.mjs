@@ -30,6 +30,7 @@ case "$1" in
   compose)
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
+      'compose up --help') printf '      --wait-timeout int   Maximum duration to wait\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;

@@ -50,6 +50,36 @@ A 502 from the gateway usually means the service behind it (`rest`,
 for this operator instance" **by design** (`functions/main/index.ts`): that 503
 is not a fault ([PRINTING.md](PRINTING.md)).
 
+## Realtime is slow to connect after a start
+
+Symptom: the first live-update connection after a start or restart times out
+(the app retries and then works), while later ones answer in milliseconds.
+Cause: Realtime connects to the database for each tenant on the first join and
+asks for an IPv6 address of `db` first. If the host's DHCP gave the machine a
+search domain (`search lan` in the host's `/etc/resolv.conf`) and the router
+is slow to refuse the extra question, that one lookup took about 8 seconds and
+the connection check ran past its 15 second window.
+
+The compose file now gives Realtime `dns_search: "."`, so the host's search
+domain is not asked, which is what keeps every first join fast. `setup.sh` and
+`start.sh` also join one channel once the services are up
+(`scripts/realtime-warmup.mjs`); that proves after each start that the tenant
+connection opens and shows how long it took. It does not keep the connection
+open: Realtime closes an idle tenant connection after a few minutes, and the
+next person to open the app opens it again, in tens of milliseconds. To check by hand:
+
+```bash
+bash scripts/compose.sh exec -T realtime /app/bin/realtime eval \
+  ':timer.tc(:inet, :gethostbyname, [~c"db", :inet6]) |> IO.inspect()'
+```
+
+The first number is microseconds; it should be well under 100 000 (100 ms).
+`bash scripts/compose.sh exec -T realtime cat /etc/resolv.conf` must show no
+`search` line. If it still does, recreate the service after an update:
+`bash scripts/compose.sh up -d --force-recreate realtime`. Run
+`node scripts/realtime-warmup.mjs` to repeat the warm-up by hand; it only
+joins one channel and prints how long that took.
+
 ## Database connection issues
 
 ```bash

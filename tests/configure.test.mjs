@@ -376,7 +376,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--gateway-port\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -667,4 +667,96 @@ test('central local code (--central-local-code): off by default, kept on a rerun
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, /Configure: --central-local-code on needs central sign-in/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, replaced alone while stopped, bad values refused', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const envText = dir => readFileSync(join(dir, 'config/compose.env'), 'utf8');
+    const port = dir => readEnv(join(dir, 'config/compose.env')).KONG_HTTP_PORT;
+
+    // Without the option the template's port stays.
+    const plain = join(scratch, 'plain');
+    configure(root, { ...base, stateDir: plain, ...hooks });
+    assert.equal(port(plain), '18000');
+
+    const state = join(scratch, 'state');
+    assert.equal(configure(root, { ...base, stateDir: state, gatewayPort: '18001', ...hooks }).created, true);
+    assert.equal(port(state), '18001');
+    assert.equal(validateOperatorEnv(readEnv(join(state, 'config/compose.env')), state).origin, base.apiUrl);
+
+    // A rerun without the option preserves it, byte for byte.
+    const before = envText(state);
+    assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortChanged, false);
+    assert.equal(envText(state), before);
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'the same port changes nothing');
+    assert.equal(envText(state), before);
+
+    // A rerun with another port replaces that one line and nothing else.
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18002', ...hooks }).gatewayPortChanged, true);
+    assert.equal(envText(state), before.replace('KONG_HTTP_PORT=18001', 'KONG_HTTP_PORT=18002'));
+    assert.equal(statSync(join(state, 'config/compose.env')).mode & 0o777, 0o600);
+
+    // Refused while the project's containers run, and when the port is taken; nothing changes.
+    const frozen = envText(state);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', portFree: () => true, containersRunning: () => true }), /containers are running/);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', portFree: () => false, containersRunning: () => false }), /already in use/);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'taken'), gatewayPort: '18003', portFree: () => false }), /already in use/);
+    assert.equal(existsSync(join(scratch, 'taken')), false, 'a refused port creates no state');
+    assert.equal(envText(state), frozen);
+    // A refused central flag in the same call leaves the port as it was (an outage otherwise: the tunnel still
+    // points at the old port and no reminder is printed).
+    const beforeRefused = envText(state);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', centralLocalCode: 'on', ...hooks }), /needs central sign-in/);
+    assert.equal(envText(state), beforeRefused);
+    assert.equal(port(state), '18002');
+    // The project name handed to the running check is this state's.
+    let asked;
+    configure(root, { stateDir: state, gatewayPort: '18004', portFree: () => true, containersRunning: project => { asked = project; return false; } });
+    assert.equal(asked, readEnv(join(state, 'config/compose.env')).WAREHOUSE_PROJECT_NAME);
+
+    // Out-of-range and non-numeric values are refused before anything is written.
+    for (const bad of ['80', '1023', '65536', '70000', 'abc', '18001abc', '1e4', '-18001', '0x4650', '']) {
+      assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'bad'), gatewayPort: bad, ...hooks }), /--gateway-port must be a whole number from 1024 to 65535/, bad);
+    }
+    assert.equal(existsSync(join(scratch, 'bad')), false);
+    assert.deepEqual(parseConfigureArgs(['--state-dir', state, '--gateway-port', '18001']), { stateDir: state, gatewayPort: '18001' });
+
+    // The command line reports the change and reminds the operator of the tunnel ingress; a real bind test runs.
+    const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args],
+      { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+    const refused = cli('--state-dir', join(scratch, 'cli'), '--gateway-port', '80');
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /--gateway-port must be a whole number/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the real port test refuses a loopback port that is in use and accepts a free one', async () => {
+  const { createServer } = await import('node:net');
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const busy = server.address().port;
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-bind-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://a.example.test', company: 'Acme Stores', providerEnv };
+    if (busy < 1024) return; // not an unprivileged port; cannot be a valid --gateway-port anyway
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'busy'), gatewayPort: String(busy) }), /already in use/);
+    assert.equal(existsSync(join(scratch, 'busy')), false);
+    server.close();
+    await new Promise(resolve => server.once('close', resolve));
+    assert.equal(configure(root, { ...base, stateDir: join(scratch, 'free'), gatewayPort: String(busy) }).created, true);
+    assert.equal(readEnv(join(scratch, 'free/config/compose.env')).KONG_HTTP_PORT, String(busy));
+  } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
 });

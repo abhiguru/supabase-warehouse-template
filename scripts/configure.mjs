@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, statSync
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
@@ -167,7 +168,26 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, faultAfterManifest = false } = {}) {
+// --gateway-port: the loopback port of this installation's gateway (KONG_HTTP_PORT).
+export function gatewayPortValue(value) {
+  if (value === undefined) return null;
+  if (!/^[0-9]{4,5}$/.test(String(value)) || Number(value) < 1024 || Number(value) > 65535) throw new Error('--gateway-port must be a whole number from 1024 to 65535.');
+  return String(Number(value));
+}
+// Test-bind 127.0.0.1:<port> in a child process, so configure() stays synchronous.
+function loopbackPortFree(port) {
+  const probe = "const s=require('net').createServer();s.once('error',()=>process.exit(1));s.listen(Number(process.argv[1]),'127.0.0.1',()=>s.close(()=>process.exit(0)));";
+  return spawnSync(process.execPath, ['-e', probe, port], { timeout: 10000 }).status === 0;
+}
+function projectContainersRunning(project) {
+  const listed = spawnSync('docker', ['ps', '-q', '--filter', `label=com.docker.compose.project=${project}`], { encoding: 'utf8', timeout: 30000 });
+  if (listed.status !== 0) throw new Error('Cannot check whether this installation\'s containers are running (docker ps failed); stop them first and retry.');
+  return listed.stdout.trim() !== '';
+}
+export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
+
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+  const port = gatewayPortValue(gatewayPort);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
@@ -207,6 +227,20 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;
+      // Every check that can refuse runs before the first write, so a refused flag changes nothing.
+      let gatewayPortChanged = false;
+      let newPortText = null;
+      {
+        const text = readFileSync(envPath, 'utf8');
+        if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text);
+        if (port !== null && text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1] !== port) {
+          // Containers keep the published port they were created with, so the change waits for a stopped installation.
+          if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
+          if (!portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
+          newPortText = port;
+        }
+      }
+      if (providerEnv) providerValues(providerEnv, checkout, manifest.canonicalOrigin);
       if (providerEnv) {
         const provider = providerValues(providerEnv, checkout, manifest.canonicalOrigin);
         const current = readFileSync(envPath, 'utf8');
@@ -225,6 +259,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
       }
+      if (newPortText !== null) {
+        replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
+        gatewayPortChanged = true;
+      }
       // An installation made before per-role database passwords gets them here
       // (docs/CONTAINER_SECURITY.md, "Database passwords"); a value that exists
       // is never replaced. setup.sh then sets them in the database with
@@ -239,7 +277,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before they existed gets them here; unchanged files are left alone.
       const project = readFileSync(envPath, 'utf8').match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1];
       const monitoringUpdated = placeMonitoringConfig(state, { project, webhook });
-      return { created: false, state, manifest, providerUpdated, centralUpdated, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated, webhook: webhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -248,6 +286,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\x00-\x1f]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
   const provider = providerValues(providerEnv, checkout, canonical);
+  if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
     capabilities: { sensors: false, printing: false } };
@@ -256,7 +295,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     SITE_URL: application, ADDITIONAL_REDIRECT_URLS: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
-    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(),
+    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { KONG_HTTP_PORT: port }),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
   for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
@@ -274,16 +313,16 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     placeMonitoringConfig(stage, { project: values.WAREHOUSE_PROJECT_NAME, webhook });
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
+  return { created: true, state, manifest, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
 }
 
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile' };
+    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--gateway-port': 'gatewayPort' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--gateway-port 1024-65535]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -295,13 +334,18 @@ if (isMain(import.meta.url)) {
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
-          : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
-            : 'Preserved existing operator state unchanged.');
+          : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
+            : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
+              : 'Preserved existing operator state unchanged.');
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
     if (result.dbValuesAdded?.length) console.log(`Added ${result.dbValuesAdded.join(', ')} to the existing operator state: every database login now gets its own password (setup applies them to the database).`);
     if (result.monitoringUpdated && !result.created) console.log('Updated the monitoring files in the state (docs/MONITORING.md).');
     if (result.webhook) console.log('Stored the alert webhook address for Alertmanager (mode 0600, in the state).');
     else if (result.webhook === null) console.log('Removed the alert webhook address: Alertmanager keeps alerts on this host only.');
+    if (result.gatewayPortChanged) {
+      const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^KONG_HTTP_PORT=(.*)$/m)?.[1];
+      console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);
+    }
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }

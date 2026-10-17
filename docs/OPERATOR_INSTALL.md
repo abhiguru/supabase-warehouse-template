@@ -10,6 +10,7 @@ validates a new installation.
 
 Sections: [host prerequisites](#host-prerequisites),
 [private inputs](#private-inputs), [setup](#setup),
+[several facilities on one host](#several-facilities-on-one-host),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
@@ -22,8 +23,19 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
-- Linux x86-64; Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
-- Docker Engine with the Compose v2 plugin, enabled at boot.
+- Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot;
+  Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
+  The requirement is a Compose plugin whose `docker compose up` accepts
+  `--wait-timeout`. Setup, start and the backup scripts wait for services with
+  `docker compose up --wait --wait-timeout`; `doctor` checks at the start that
+  the plugin knows the flag and stops with a message if not. It checks nothing
+  else about the version, and no version number is required. The central
+  identity service states the same requirement and the same list below, so one
+  host can run both services. Tested with:
+  - Docker Compose v2.40.3 with Docker Engine 29.9.1 (the review host; verified for
+    this service and for the facility backend);
+  - Docker Compose v5.6.0 with Docker Engine 29.9.1 (the development host; verified
+    for this service and for the facility backend).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`).
 - A non-root user in the `docker` group. Do not run setup as root and do not
   make the Docker socket world-writable.
@@ -64,8 +76,9 @@ and add it to `~/.profile` so new logins see it. The checksum file comes from
 Node's HTTPS site; this is not a release-signature verification.
 
 Install Docker from [Docker's Ubuntu repository](https://docs.docker.com/engine/install/ubuntu/).
-Select an available Compose **v2** plugin build explicitly; the unversioned
-package can install a newer major that these scripts have not been tested with.
+Any Compose plugin whose `up` accepts `--wait-timeout` works (see the host
+prerequisites for the tested builds). The commands below install the build the
+review verified.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -73,7 +86,7 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyring
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo tee /etc/apt/sources.list.d/docker.sources
 sudo apt-get update
-apt-cache madison docker-compose-plugin        # pick a 2.x build for the next line
+apt-cache madison docker-compose-plugin        # lists the available builds
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)"
@@ -205,6 +218,47 @@ refuses an active administrator with a different phone, a state path through
 a symlink or inside the checkout, a running project owned by another checkout,
 and another operator command holding the lock. Private configuration belongs
 outside the checkout; no source edit is needed for the documented installation.
+
+## Several facilities on one host
+
+One installation serves one facility: its own state directory, its own Compose
+project (`warehouse-<instance id>`) and its own Cloudflare Tunnel. To run a
+second facility on the same host, give it a separate state directory and its
+own loopback gateway port with `--gateway-port` (1024 to 65535; the default is
+18000):
+
+```bash
+bash setup.sh --operator --state-dir /srv/warehouse/second \
+  --api-url https://backend-two.example.test --company 'Second Facility' \
+  --provider-env /srv/warehouse/second-provider.env \
+  --admin-phone 91XXXXXXXXXX --admin-name 'Second Administrator' \
+  --gateway-port 18001
+```
+
+- Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use.
+  The port is saved as `KONG_HTTP_PORT` in the state's `config/compose.env`;
+  no manual edit is needed, and `doctor` and the smoke scripts read it from there.
+- A rerun without `--gateway-port` keeps the saved port. A rerun with another
+  port replaces only the `KONG_HTTP_PORT` line, and only while that
+  installation's containers are stopped (`bash stop.sh`, then setup again).
+- Each tunnel's ingress must point at its own port: change the `service:` line
+  of that facility's `cloudflared` configuration to `http://127.0.0.1:<port>`
+  and restart that tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+  Setup prints this reminder when it sets a port.
+- **Give every facility a state directory with a different last part** (here
+  `second`, not `state`). `scripts/tunnel.sh install-service` names the
+  tunnel's systemd unit `warehouse-<last part of the state path>-tunnel.service`,
+  so two facilities whose state paths end the same would share a unit name, and
+  installing the second would replace the first one's unit and restart it with
+  the second facility's credential.
+- **The automatic USB backup serves one installation per host:**
+  `/etc/warehouse-usb-backup.conf` holds one state path, and
+  `backup-usb.sh setup` for a second state refuses with "already set up". Back
+  the second facility up with `npm run db:backup -- /absolute/destination` (run
+  with that facility's `WAREHOUSE_STATE_DIR`) to a drive or directory of its
+  own, or with the backup disk, and keep each facility's backup key separate.
+- The host's Docker daemon and its resources are shared. Never point two
+  installations at the same state directory or port.
 
 ## Authentication and OTP limits
 
@@ -589,7 +643,8 @@ Copy the example config to a private path (mode 0600) and replace the tunnel
 UUID, credentials path and hostname. It routes the hostname to
 `http://127.0.0.1:18000` with `httpHostHeader` set to the hostname and ends
 with an `http_status:404` catch-all; change the port only if the private
-`compose.env` sets a different `KONG_HTTP_PORT`. `http2-origin` stays off
+`compose.env` sets a different `KONG_HTTP_PORT` (chosen with
+`--gateway-port`, see [several facilities on one host](#several-facilities-on-one-host)). `http2-origin` stays off
 because [HTTP/2 to an origin requires HTTPS](https://developers.cloudflare.com/tunnel/reference/origin-parameters/)
 and this origin is private HTTP. Validate with
 `cloudflared --config /private/path/config.yml tunnel ingress validate` and
@@ -812,7 +867,7 @@ only the services that were running. The directory contains:
 | `_supabase.dump` | `pg_dump --format=custom` of the `_supabase` database (pooler and analytics schemas). |
 | `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
@@ -1060,11 +1115,15 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 ```
 
 It prints a row count and a SHA-256 for every business table (customers, items,
-prices, GRNs, dispatches, invoices, stock movements, users), for the three
+prices, GRNs, dispatches, invoices, stock movements, users, orders with their
+lines and revisions, and payments), for the three
 append-only histories (invoice discounts, zero charges, item prices), the
 storage catalog and the stored files. A fingerprint taken before the upgrade to
 migration 48 has no lines for the histories and cannot be compared with one
-taken after it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for
+taken after it, and a fingerprint recorded before the release that added orders,
+order lines, order revisions and payments lacks those four tables' lines, so a
+restore will not print `IDENTICAL` against it; take a new one after upgrading.
+It holds no secrets; keep a copy off the host (for
 example next to the archive on the drive). After a restore the same command
 must print identical lines.
 
@@ -1244,7 +1303,7 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 (step 9).
 
 Before you start you need: the new host prepared as in
-[host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
+[host prerequisites](#host-prerequisites) (Node 22, Docker with a Compose plugin that accepts `up --wait-timeout`,
 `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
@@ -1329,6 +1388,11 @@ that needs it.
    ```bash
    bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
+
+   A fingerprint recorded before this release lacks the lines for orders, order
+   lines, order revisions and payments, so the `diff` shows those four lines
+   added and never prints `IDENTICAL`: compare the other lines, and record a new
+   fingerprint after upgrading.
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
@@ -1821,7 +1885,7 @@ problems seen so far and their causes:
 - **`Operator installation requires Linux x86-64` or `Missing prerequisite`** —
   `scripts/check-readiness.sh` refuses other architectures and missing
   `docker`, `node`, `npm`, `openssl` or `flock`; `doctor` additionally requires
-  Node 22.18+, Compose v2 and a reachable Docker daemon.
+  Node 22.18+, a Compose plugin that accepts `up --wait-timeout` and a reachable Docker daemon.
 - **`node: command not found` in a new terminal or a service** — the user-owned
   Node is only on `PATH` where it was exported; repeat the export and keep it
   in `~/.profile`.
@@ -1931,5 +1995,7 @@ problems seen so far and their causes:
   DLT template ID), the `OTP` variable name and the sender/entity approval in
   the MSG91 console. The per-phone, per-IP and warehouse-wide caps above return
   an explicit refusal, not silence.
-- **Compose reports a 5.x version** — the unversioned plugin package installed
-  a newer major; install an available 2.x build as shown in the host sequence.
+- **`This Docker Compose plugin does not accept up --wait-timeout`** — the
+  Compose plugin is too old for the flag the scripts use. Install a current
+  plugin from Docker's repository (any build listed under the host
+  prerequisites works); a newer major version is not a problem by itself.

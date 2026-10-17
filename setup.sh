@@ -12,7 +12,7 @@ ADMIN_NAME=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--gateway-port)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -88,5 +88,7 @@ bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
 # Optional services (monitoring, printing, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# Realtime opens its database connection on the first join; do that now (best effort, never fails the start).
+node "$ROOT/scripts/realtime-warmup.mjs"
 node "$ROOT/scripts/doctor.mjs" --local
 echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml, deploy/warehouse-tunnel.service.example), then run node scripts/doctor.mjs for external verification.'

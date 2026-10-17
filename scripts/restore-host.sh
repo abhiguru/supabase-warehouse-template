@@ -272,6 +272,8 @@ if [[ "$central_missing" == true ]]; then
          --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json"
 fi
 step "Compare with the fingerprint taken at backup time, if you have one:
+     (A fingerprint recorded before the release that added orders, order lines, order revisions and
+     payments lacks those four lines: the diff will show them added and not be empty; compare the rest.)
        WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -"
 step "Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1"
 step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the

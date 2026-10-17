@@ -112,3 +112,26 @@ test('the OTP section documents the provider-request ceiling, the timeout rule a
   assert.match(guide, /reserved `\.test`\s+domain/);
   assert.match(guide, /without a route to the internet/);
 });
+
+test('the Compose requirement is a capability, as in the identity runbook, and doctor checks it', () => {
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  assert.match(guide, /The requirement is a Compose plugin whose `docker compose up` accepts\s+`--wait-timeout`/);
+  assert.match(guide, /Docker Compose v2\.40\.3 with Docker Engine 29\.9\.1/);
+  assert.match(guide, /Docker Compose v5\.6\.0 with Docker Engine 29\.9\.1 \(the development host; verified\s+for this service and for the facility backend\)/);
+  assert.doesNotMatch(guide, /5\.5\.1/);
+  assert.doesNotMatch(guide, /central-identity-template/, 'a link to a private repository');
+  // No concrete 5.x incompatibility is known (X-6), so the advice to replace a 5.x plugin is gone.
+  assert.doesNotMatch(guide, /replace (any|a) 5\.x|Compose reports a 5\.x|install an available 2\.x/i);
+  assert.doesNotMatch(guide, /pick a 2\.x build/);
+  assert.doesNotMatch(guide, /^- Linux x86-64; Ubuntu/m, 'two bullets start with Linux x86-64');
+});
+
+test('the guide has a section for several facilities on one host that names --gateway-port', () => {
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  assert.ok(guide.includes('## Several facilities on one host'));
+  assert.match(guide, /--gateway-port 18001/);
+  assert.doesNotMatch(guide.slice(guide.indexOf('## Several facilities')), /--admin-phone 91[0-9]{10}/, 'a real-looking phone number in the example');
+  assert.match(guide, /last part of the state path|different last part/);
+  assert.match(guide, /USB backup serves one installation per host/);
+  assert.ok(guide.includes('(#several-facilities-on-one-host)'));
+});

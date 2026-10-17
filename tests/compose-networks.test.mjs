@@ -182,3 +182,12 @@ test('a state without a per-role value fails at compose config with a message, n
     assert.match(result.stderr, /Run setup\.sh to generate the (?:per-role database passwords|Realtime encryption key)/);
   }
 });
+
+test('realtime resolves Compose names at the DNS root, so a host search domain cannot delay the tenant connection', { skip }, () => {
+  // TW-BE-015: the IPv6 lookup of `db` took about 8 s through the host's search domain, past the 15 s window.
+  // Kong has the same setting for the same class of delay.
+  const { services } = topology();
+  assert.deepEqual(services.realtime.dns_search, ['.']);
+  assert.deepEqual(services.kong.dns_search, ['.']);
+  assert.equal(services.realtime.environment.DB_HOST, 'db');
+});
