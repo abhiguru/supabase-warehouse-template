@@ -372,6 +372,16 @@ bash setup.sh --operator \
   running service reads the file when it starts a worker for a sign-in, so
   the new keys should be in use within about a minute; this has not been
   measured, and `bash stop.sh && bash start.sh` makes it certain.
+- **If the association withdraws a signing key in an emergency.** With the
+  address, nothing is needed: the facility refuses the withdrawn key within
+  300 seconds (it uses a fetched key set for at most 4 minutes). With the
+  **file**, the withdrawn key stays trusted until you replace the copy: get the
+  new key set file from the association (without the withdrawn key, with the
+  key that now signs) and rerun the command above with
+  `--central-jwks-file <new file>` and the same `--central-issuer`. Then run
+  `bash stop.sh && bash start.sh` so the next sign-in surely reads the new file
+  (it is read when a worker starts, within about a minute without a restart).
+  Do this as soon as the association tells you; nothing else ends the trust.
 - The settings are `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL` and
   `CENTRAL_JWKS_FILE` in `config/compose.env`; setup also writes the issuer to
   the database. A later rerun without the central options keeps everything.
@@ -748,6 +758,14 @@ the backup. Run it against every retained backup; it never touches the installed
 instance. Backups written before v5 carry no signature: the verifier, `db:restore`
 and `db:restore-host` refuse them unless you add `--allow-unsigned`, which prints
 a warning and proves nothing about where the backup came from.
+`--allow-unsigned` is only for a backup written before format v5, or when the
+backup key is lost (see [Backup key](#backup-key)). A v5 backup is always signed:
+if its `SHA256SUMS.hmac` file is missing and the key is available, all three
+commands refuse it even with `--allow-unsigned`, because the signature was taken
+away. Use another copy of the backup. (The format is read from `metadata.txt`,
+which is not signed in an unsigned copy; someone who can edit the backup can
+relabel it v4 and use the flag. That residual is accepted: the flag and its
+warning stay required, and the medium must never have left your custody.)
 
 The disposable database is sized from the backup: the two dumps times 10, the
 same again (up to 1 GiB) for the write-ahead log, plus 256 MiB, and never less
@@ -800,9 +818,11 @@ cat "$WAREHOUSE_STATE_DIR/config/backup.key"     # 64 hexadecimal characters; co
 
 What the copy is for: after the host is lost, `db:restore-host` refuses a backup
 unless you give it the key (`--backup-key FILE`), and an encrypted archive
-cannot be opened at all without it. Without the key, a signed backup can only
-be restored with `--allow-unsigned`, on your own judgement that the drive never
-left your hands; an encrypted archive is lost. Check your copy once: put it in
+cannot be opened at all without it. Without the key (lost), a signed backup can
+only be restored with `--allow-unsigned`, on your own judgement that the drive
+never left your hands; an encrypted archive is lost. This is the one case where
+the flag accepts a v5 backup; it does not accept a v5 backup whose signature
+file is missing while a key is given or installed. Check your copy once: put it in
 a file and run
 `WAREHOUSE_BACKUP_KEY_FILE=/path/to/copy npm run db:verify-restore -- /path/to/backup`.
 
@@ -1204,7 +1224,9 @@ that needs it.
    written or belongs to another installation: do not restore it. A backup
    written before format v5 has no signature and is accepted only with
    `--allow-unsigned` (then `--backup-key` may be left out); use that only for
-   a drive that never left your custody. It then creates the state from the backup's `compose.env` and
+   a drive that never left your custody. A v5 backup whose `SHA256SUMS.hmac` is
+   missing is refused even with `--allow-unsigned` while `--backup-key` is given:
+   leave `--backup-key` out only when the key is really lost. It then creates the state from the backup's `compose.env` and
    `instance.json`, changing only the three state-path lines (and installs the
    central sign-in key file, `public/central-jwks.json`, when the backup
    carries one), keeps a copy of the

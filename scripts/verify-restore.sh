@@ -3,6 +3,7 @@
 #   npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP
 # The backup signature is checked first with the backup key
 # (WAREHOUSE_BACKUP_KEY_FILE, else $WAREHOUSE_STATE_DIR/config/backup.key).
+# --allow-unsigned is only for a backup written before format v5, or when the backup key is lost.
 # Optional environment:
 #   WAREHOUSE_VERIFY_DATA_MB      size of the disposable data directory (default: from the dump sizes, at least 768)
 #   WAREHOUSE_VERIFY_SIZE_FACTOR  restored size estimate per dump byte (default 10)
@@ -15,7 +16,7 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
 IMAGE='supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6'
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP   (--allow-unsigned: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
 allow_unsigned=false
 backup=''
 while (($#)); do
@@ -61,10 +62,8 @@ case "$format" in
     ;;
   *) echo 'Unsupported backup format.' >&2; exit 1 ;;
 esac
-# From v5 on every backup is signed; a v5 backup without a verified signature was tampered with or mislabelled.
-if [[ "$format" == warehouse-backup-v5 && "$BACKUP_SIGNED" != true && "$allow_unsigned" != true ]]; then
-  echo 'Refusing: a warehouse-backup-v5 backup must carry a valid signature.' >&2; exit 1
-fi
+# A v5 backup is always signed: backup_authenticate refused one whose signature file is gone while the
+# backup key is available, and --allow-unsigned does not change that (scripts/backup-key.sh).
 # Optional tunnel credential (scripts/tunnel.sh): only known regular files, each checksummed.
 if [[ -e "$backup/tunnel" || -L "$backup/tunnel" ]]; then
   [[ -d "$backup/tunnel" && ! -L "$backup/tunnel" ]] || { echo 'Backup tunnel entry is not a directory.' >&2; exit 1; }
