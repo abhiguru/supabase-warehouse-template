@@ -139,6 +139,22 @@ are mandatory: there is no fixed-OTP or local delivery mode. Keep the file out
 of shell history and version control, and include it in your encrypted
 off-host backups.
 
+**Test installations (CI, review fixtures).** An installation that is not a real
+facility never gets a real MSG91 key, because every accepted code request is a
+real SMS. It uses the sentinel `MSG91_AUTH_KEY=isolated-no-delivery-key` (any
+value that starts with `isolated-`) and an address under the reserved `.test`
+domain, for example `https://backend-core.example.test`. The installer and the
+doctor accept the sentinel only for such an address, and they never accept the
+template text of this file's example (`your-…`, `changeme…`, `fake_…`). The OTP
+function sends nothing to MSG91 when the key or the Flow ID is empty, template
+text or the sentinel (the same rule, `scripts/provider-placeholder.mjs`), so no
+SMS leaves even if the container has internet access. Do not rely on that alone:
+start a fixture's `functions` container without a route to the internet (for
+example on an `internal: true` Compose network, or with a firewall rule for its
+address) and prove it with a request from inside that must fail. Tests that
+need the provider's answer inject their own `fetch` and never call the real
+service.
+
 **First administrator.** The 12-digit phone number with the `91` prefix
 (prepend `91` to ten Indian digits) and a display name. The administrator is
 created locally and must complete a real SMS login before receiving a session.
@@ -192,10 +208,20 @@ for it: a full acceptance run with three roles, a restore and a key rotation
 used about 24 codes. Limits enforced by the database:
 
 - OTPs expire after 5 minutes.
+- A code is stored only as a keyed hash, HMAC-SHA256 over `phone:code:request id`
+  keyed with the instance's JWT secret (the `jwt_secret` entry of
+  `warehouse_security.auth_config`), never as the code itself and never as a bare
+  SHA-256 of it. A signing-key rotation changes that secret
+  ([Rotate signing keys](#rotate-signing-keys)), so codes issued before it stop
+  verifying and the user asks for a new one.
 - A resend does not void the earlier code: every delivered code stays valid
   until its own expiry, and a successful verification consumes all of them.
-- Expired OTPs are cleaned up by `pg_cron`; sessions are HS256 JWTs signed with
-  the instance's `JWT_SECRET`.
+- Expired OTP rows are not removed on a timer. Every 100th new code removes the rows that expired more than an
+  hour ago or were verified more than a day ago, and `npm run retention:apply`
+  removes expired OTP rows older than 7 days (the `ephemeral_auth` retention
+  policy; see [Retention](#retention)). On a site with few sign-ins the rows stay
+  until then, so run the retention command from the same scheduler as your
+  backups. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
 
 Anyone can ask for a code for any number. The limits therefore have a fixed
 order of priority: first, a code cannot be guessed more than five times;
@@ -214,7 +240,8 @@ last five such sources are kept).
 | Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
 | Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
-| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour | every request | same 429 |
+| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour; text `0` is the no-send switch (below) | every request | same 429 |
+| Provider requests | `otp_daily_provider_attempt_cap`, **off until you set it**: the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
 | Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
 | Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
@@ -272,10 +299,54 @@ sources. If the requests continue, the limits fill again within the hour: put
 the WAF rule in place first, then clear. Each clearing allows up to 30 further
 SMS to that number.
 
-- A send that MSG91 did not accept (outage, rejection, timeout) is not counted
-  against the phone or the warehouse cap, so a provider outage does not lock
-  users out; a number MSG91 calls invalid stays counted. The per-source count
-  is kept either way.
+- A send that MSG91 did not accept (outage, rejection) is not counted against
+  the phone or the warehouse cap, so a provider outage does not lock users out.
+  Two outcomes stay counted: a number MSG91 calls invalid, and a **timeout**
+  (`provider_ambiguous`), because MSG91 may have accepted and billed the request
+  before the answer was lost. The per-source count is kept either way.
+- **Spend ceiling.** Those allowances count codes, not what MSG91 bills: a
+  refunded send may still have cost a request, and one code can cost two
+  requests (the function repeats a request once when MSG91 answers 429, 502, 503
+  or 504 with an explicit error; it never repeats after a timeout). The database
+  therefore also counts every request made to MSG91 for every code, whatever the
+  outcome, in `warehouse_security.otp_provider_attempts` (kept two days, never
+  refunded). To cap them, set `otp_daily_provider_attempt_cap` to the number of
+  requests you are willing to pay for in 24 hours; when it is reached the
+  request answers 429 and nothing is sent until older requests leave the 24-hour
+  window or you raise it. It does not exist until you create it, and a value that
+  is not a whole number means no ceiling:
+
+  ```sql
+  -- as supabase_admin: set, or change, the ceiling
+  INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_daily_provider_attempt_cap','2000')
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+  -- requests made in the last 24 hours
+  SELECT COALESCE(sum(attempts),0) FROM warehouse_security.otp_provider_attempts WHERE created_at>now()-interval '24 hours';
+  -- remove the ceiling
+  DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
+  ```
+- **No-send switch.** A cap of text `0` is accepted and blocks every send: set
+  `otp_global_hourly_cap` to `0` to stop all SMS at once (every request answers
+  429 and no code is created), then back to its value (default `300`) to resume.
+  `otp_daily_provider_attempt_cap` set to `0` does the same.
+- **What the facility keeps of MSG91's answer** (the contract the central
+  identity service mirrors). A success answer carries MSG91's request ID in its
+  `message`. The facility trims it, accepts at most 255 characters of
+  `A-Z a-z 0-9 . _ : -`, and stores it in `otp_verifications.msg91_request_id`
+  with `msg91_status` `success`. It lives in that sign-in row and goes with it
+  (the cleanup bullet above; `retention:apply` removes it 7 days after the code
+  expired). It is never returned to a client or written to a log, and nothing
+  else of MSG91's answer is stored or logged. A success **without** such an ID is still a success: the code is
+  treated as sent and stays valid, no second SMS is sent, the status is
+  `success_no_id` and the function logs the fixed line
+  `operator-otp: MSG91 accepted a send without a request ID`. An answer whose
+  `type` and `status` disagree (one says success, the other error) is not an
+  acceptance: it is refused as `provider_invalid_response` and is not repeated.
+  To count the sends without an ID in the last two days:
+
+  ```sql
+  SELECT count(*) FROM warehouse_security.otp_provider_attempts WHERE status='success_no_id';
+  ```
 - While the unknown-number share of the warehouse cap is used up, a known and
   an unknown number get different answers, so a caller can tell during that
   time whether a number is registered. A used-up open lane answers the same

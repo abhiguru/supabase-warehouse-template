@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -45,4 +45,68 @@ test('the container security record names commands that exist', () => {
   for (const name of [...guide.matchAll(/npm run ([a-z:-]+)/g)].map(match => match[1])) {
     assert.ok(scripts[name], `docs/CONTAINER_SECURITY.md names npm run ${name}, which package.json does not have`);
   }
+});
+
+// The OTP section of docs/OPERATOR_INSTALL.md, kept to what the code and the migrations do
+// (TW-BE-014, TW-CFG-001, TW-CFG-002, TW-CFG-005, X-7).
+const otpSection = () => {
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  const from = guide.indexOf('## Authentication and OTP limits');
+  const to = guide.indexOf('**Sessions.**', from);
+  assert.ok(from > 0 && to > from, 'the OTP section was found');
+  return guide.slice(from, to);
+};
+
+test('the OTP cleanup is described as it runs, and pg_cron is named only where a migration creates it', () => {
+  // TW-BE-014: the installation does not install pg_cron; cleanup is opportunistic (every 100th insert,
+  // trigger_auto_cleanup_otps) and the rest is the manual retention command.
+  const createsPgCron = readdirSync(new URL('../migrations/', import.meta.url))
+    .some(name => /CREATE\s+EXTENSION[^;]*pg_cron/i.test(read(`migrations/${name}`)));
+  if (!createsPgCron) assert.doesNotMatch(read('docs/OPERATOR_INSTALL.md'), /pg_cron/);
+  const section = otpSection();
+  assert.match(section, /OTPs expire after 5 minutes/);
+  assert.match(section, /not removed on a timer/);
+  assert.match(section, /Every 100th new code/);
+  assert.match(section, /retention:apply/);
+  assert.match(read('migrations/00000000000000_initial_schema.sql'), /Run cleanup every 100 OTP insertions/);
+  assert.match(read('docs/OPERATOR_INSTALL.md'), /## Retention\n\nNothing is deleted on a timer/);
+});
+
+test('the OTP section names the HMAC-SHA256 construction and what a key rotation does to pending codes', () => {
+  // TW-CFG-001 (owner decision D13): HMAC-SHA256 over phone:code:request id, keyed with the JWT secret.
+  const section = otpSection();
+  assert.match(section, /HMAC-SHA256 over `phone:code:request id`/);
+  assert.match(section, /never as a bare\s+SHA-256/);
+  assert.match(section, /rotation changes that secret[\s\S]*codes issued before it stop\s+verifying/);
+  assert.match(read('migrations/00000000000047_review_followups.sql'), /extensions\.hmac\(phone\|\|':'\|\|code\|\|':'\|\|request_id::text,secret,'sha256'\)/);
+  assert.match(read('scripts/rotate-auth.sql'), /Pending challenges hold HMACs of the previous secret/);
+});
+
+test('the OTP section states the provider request-ID contract and the success without an ID', () => {
+  // TW-CFG-002 / TW-CFG-003 / X-3: the contract identity mirrors.
+  const section = otpSection();
+  assert.match(section, /`message`\. The facility trims it, accepts at most 255 characters/);
+  assert.match(section, /`otp_verifications\.msg91_request_id`/);
+  assert.match(section, /never returned to\s+a client or written to a log/);
+  assert.match(section, /`success_no_id`/);
+  assert.match(section, /no second SMS is sent/);
+  assert.match(section, /`type`\s+and `status` disagree/);
+  assert.match(read('migrations/00000000000097_otp_provider_status.sql'), /'success_no_id'/);
+});
+
+test('the OTP section documents the provider-request ceiling, the timeout rule and the no-send switch', () => {
+  // TW-CFG-005 (owner decision D15).
+  const section = otpSection();
+  assert.match(section, /`otp_daily_provider_attempt_cap`, \*\*off until you set it\*\*/);
+  assert.match(section, /`provider_ambiguous`/);
+  assert.match(section, /warehouse_security\.otp_provider_attempts/);
+  assert.match(section, /A cap of text `0` is accepted and blocks every send/);
+  const migration = read('migrations/00000000000097_otp_provider_status.sql');
+  for (const name of ['otp_daily_provider_attempt_cap', 'provider_ambiguous', 'otp_provider_attempts']) assert.ok(migration.includes(name), name);
+  // The one rule for which values are placeholders is described where fixtures are installed (X-7).
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  assert.match(guide, /\*\*Test installations \(CI, review fixtures\)\.\*\*/);
+  assert.match(guide, /isolated-no-delivery-key/);
+  assert.match(guide, /reserved `\.test`\s+domain/);
+  assert.match(guide, /without a route to the internet/);
 });
