@@ -1066,7 +1066,9 @@ wrapper and replays ACLs exactly as the verifier does, recreates `_supabase`
 the same way and restores `_supabase.dump`, re-asserts the database JWT
 settings from `compose.env`, diffs `scripts/backup-integrity.sql` against the
 backup's `integrity.txt`, runs `scripts/migrate.sh --operator` (a no-op unless
-this checkout added migrations after the backup), starts every service with
+this checkout added migrations after the backup), runs
+`scripts/configure-list-refresh.sql` (the list refresher's role came back
+without `LOGIN`; see [Lists refresh after the commit](#lists-refresh-after-the-commit)), starts every service with
 `--wait` and runs `doctor --local`. Role passwords always come from the active
 `compose.env`; the backup never contains them. Pass `--restore-config` only when
 the keys in the backup are the ones the restored data was signed with, that is,
@@ -1274,6 +1276,43 @@ backup onto a spare machine with `db:restore-host`, try the change there, and
 only then repeat it on the real host. Splitting this one password into
 per-role passwords, with a rotation command, is planned; the design and its
 rehearsal steps are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-shared-value-and-the-plan-to-split-it).
+
+## Lists refresh after the commit
+
+Since migration 91 the invoice list, the dispatch list of `get_dispatch_list` and
+the legacy GRN list are materialized views that a background job refreshes
+after each write, instead of the write itself (on a populated warehouse that
+refresh took most of a dispatch's 8 s and made concurrent writers time out).
+What to know:
+
+- **The job.** pg_cron (preloaded by the database image and
+  `docker-compose.override.yml`) runs `warehouse-list-refresh` every 5 seconds
+  as the role `warehouse_list_refresher`, inside the db container. Nothing new
+  runs outside it and no port, image or Compose service is added. The role has
+  no password: it connects over 127.0.0.1 inside the container, and every
+  network address needs a password.
+- **Staleness.** A committed change reaches those lists within 15 seconds,
+  usually within 5 to 7; the answer of the write itself is immediate. Other
+  lists read the tables directly.
+- **The doctor** (`health-check.sh`, also run by setup and restore) fails with
+  `list refresh: ...` when the job is missing or paused, the role cannot log in,
+  a refresh fails, or a list has waited more than 15 s. The first run after a
+  start gets 30 s to catch up. `setup.sh` (or
+  `bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres < scripts/configure-list-refresh.sql`)
+  puts the job and the role back.
+- **By hand.** `SELECT warehouse_security.list_refresh_status();` shows the same
+  as the doctor; `CALL warehouse_security.refresh_dirty_lists_worker();` runs
+  one refresh now (as `supabase_admin`, outside a transaction block).
+- **Logs.** Each run is one connection: about five lines per run in the db log
+  (`connection received`, `connection authorized`, `cron job ... starting` and
+  `completed`, `disconnection`), roughly 13 MB a day, which the db log's
+  3 x 10 MB rotation holds for about two days. `cron.job_run_details` keeps one
+  day of runs.
+- **Upgrade.** Setup applies migration 91 and the job starts at once; no extra
+  step. **Restore** runs `scripts/configure-list-refresh.sql` itself, after the
+  migrations. `db:verify-restore` leaves pg_cron's own objects (the job table
+  and its history) out of its check, because that extension can only be created
+  in the `postgres` database.
 
 ## Rerun and upgrade
 
