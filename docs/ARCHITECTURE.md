@@ -92,7 +92,11 @@ write RPC ──▶ statement trigger ──▶ mark_lists_dirty()      pg_cron 
   (`warehouse_security.mark_lists_dirty`). A mark always raises the list's `mark_seq`, locks the queue
   rows in one order, and keeps `last_marked_dirty` as the start of the current wait.
 - **The worker** takes the session advisory lock 71046 (a run already in progress makes the next one
-  return), never the document lock 71040, so a writer never waits for a refresh. It claims the dirty
+  return), never the document lock 71040, so a writer never waits for a refresh. 71040 therefore no
+  longer keeps anything away from a view refresh: a migration that refreshes or replaces a list, or locks
+  a table one reads, must not rely on it (migrations 19 and 68 took 71040 for that). Instead the migration
+  run itself holds 71046 from before the first migration to its end (`scripts/migration-plan.mjs`, with a
+  120 s lock timeout naming the holder), so no refresh overlaps a migration. It claims the dirty
   lists with their `mark_seq` after any writer still marking one has committed, then refreshes each
   list (`CONCURRENTLY`; whole only when a view cannot be refreshed concurrently) and commits per list.
   A list becomes clean only if no mark arrived since the claim; a refresh that fails or is stopped
@@ -107,8 +111,9 @@ write RPC ──▶ statement trigger ──▶ mark_lists_dirty()      pg_cron 
   (`statement_timeout` 120 s, `lock_timeout` 30 s) and both jobs; migration 91 and
   `scripts/configure-list-refresh.sql` (setup and restore) call it.
 - `health-check.sh` (doctor) reads `warehouse_security.list_refresh_status()`: the job active and run
-  by the role, the role able to log in, no failing refresh, the last run succeeded, and no list waiting
-  more than 15 s. `public.get_list_freshness()` gives the app the same per list.
+  by the role, the role able to log in, no failing refresh, the last run succeeded, no list waiting
+  more than 15 s, and no session other than the runner holding 71046 (a worker `CALL` that stops on an
+  error keeps the lock for the rest of its session; the procedure cannot release it on an error). `public.get_list_freshness()` gives the app the same per list.
 - SQL tests run in one transaction and cannot call a procedure that commits; they call
   `warehouse_security.refresh_dirty_lists()`, the same claim, refresh and record steps in the caller's
   transaction.

@@ -105,7 +105,9 @@ bash scripts/compose.sh exec -T db psql -X -A -t -U supabase_admin -d postgres \
   -c "SELECT warehouse_security.list_refresh_status()"
 ```
 
-`problems` names what is wrong. A missing or paused job, or a role that cannot
+`problems` names what is wrong. A session holding the refresh lock 71046 (pid,
+user and application are shown; for example a worker `CALL` left open in psql):
+end that session. A missing or paused job, or a role that cannot
 log in: rerun `setup.sh` (or run `scripts/configure-list-refresh.sql`, see
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lists-refresh-after-the-commit)). A
 failing refresh: the SQLSTATE is shown; `cron.job_run_details` and the db log

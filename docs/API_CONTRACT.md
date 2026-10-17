@@ -527,8 +527,8 @@ Administrators, supervisors and staff (`authorize_rpc`; a customer account is re
     ] } }
 ```
 
-`lists` has the seven views in name order. `needs_refresh`: a write committed or in progress has
-changed what the view shows. `dirty_since`: the start of that wait (null when current), so
+`lists` has the seven views in name order. `needs_refresh`: a committed write has changed what the
+view shows since its last refresh (a mark is invisible until its writer commits). `dirty_since`: the start of that wait (null when current), so
 `checked_at - dirty_since` is how far behind the list may be. `last_refresh`: the view holds every
 write committed before this time. `refresh_failing`: the last refresh of the view failed (the view
 stays marked; the doctor names it). A list screen that wants to say "updating" asks this RPC after a
