@@ -465,3 +465,16 @@ hardware need explicit human input or access where unavailable.
 
 - [GitHub repository security quickstart](https://docs.github.com/en/code-security/getting-started/quickstart-for-securing-your-repository)
 - [Mobile repository](https://github.com/abhiguru/rn-warehouse-template) (its dated readiness evidence is archived with its history)
+
+## Image rebuild and rescan before every release (2026-10-18)
+
+Operating-system layers of the images are built from live distribution repositories, so the
+image content drifts with the build date (see
+[CONTAINER_SECURITY.md](CONTAINER_SECURITY.md), "Build-date drift and the release rebuild").
+Before every release:
+
+- [ ] Rebuild every image with `--no-cache`; never release from images built from cache.
+- [ ] Rescan the rebuilt images (`scripts/scan-images.sh`) and attach the report, with the
+      build date, to the release evidence.
+- [ ] Confirm the sensor bridge built with `--require-hashes` and the storage build did not
+      report a changed `package-lock.json`.

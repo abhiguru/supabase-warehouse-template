@@ -1089,3 +1089,29 @@ step that fails points at the change.
 | Actions pinned to commits | the hashes resolve | every job |
 | Sensor bridge service (profile `sensors`, `cap_drop: [ALL]`, `no-new-privileges`, read-only root, `default` network only) | the bridge starts under Compose, reaches the hubs and posts through Kong | none: `npm run test:sensors` runs the image with the same flags but without Compose or hubs; the first `up` on an installation is the first run |
 
+
+## Build-date drift and the release rebuild (2026-10-18, decision D5)
+
+Not every input of an image build is immutable. Each recipe that runs `apt-get upgrade`,
+`apt-get install` or `apk upgrade` (for example gotenberg, realtime, storage and the sensor
+bridge) reads the distribution's live repositories, so two builds of the same recipe on
+different days can contain different operating-system packages. The base-image digests,
+npm lockfiles and the hashed Python requirements are fixed; the operating-system layer is not.
+This is accepted and documented, not hidden:
+
+- **No snapshot mirrors.** The project does not pin the operating-system repositories to a
+  dated snapshot. The cost of keeping a mirror for every recipe is higher than the risk it
+  removes, and a frozen snapshot would also freeze security fixes.
+- **Mandatory before every release:** rebuild every image with `--no-cache` (a cached layer
+  can hide a fixed package or show an old one, see the cached-build note above), then rescan
+  the rebuilt images with `scripts/scan-images.sh` and keep the report with the release
+  evidence. A release is not cut from images built from cache or from a scan older than the
+  build.
+- Record the build date with the scan. A finding is read against that date: a package that is
+  fixed upstream after the build shows up at the next rebuild, not before.
+- Python (sensor bridge): `requirements.txt` carries `--hash=sha256:` lines for every package
+  and is installed with `--require-hashes` (Dockerfile and `.github/workflows/ci.yml`).
+  `tests/supply-chain.test.mjs` fails if a package line has no hash or either install
+  drops the flag.
+- Storage: the Dockerfile keeps `npm install` but fails the build if `package-lock.json`
+  changes during it (sha256 before and after) and prints `npm ls --omit=dev --all`.

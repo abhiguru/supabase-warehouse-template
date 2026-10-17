@@ -16,7 +16,7 @@ RUN apt-get update \
 
 # Wheels only: nothing is compiled, so the image needs no compiler.
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --only-binary=:all: --requirement /app/requirements.txt \
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement /app/requirements.txt \
     && groupadd --system --gid 10001 bridge \
     && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --no-create-home \
        --shell /usr/sbin/nologin bridge \
