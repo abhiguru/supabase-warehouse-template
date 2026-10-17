@@ -21,7 +21,8 @@ configured since 2026-10-17 (see [Several installations on one host](#several-in
 `npm run test:alert-rules` runs only the rule checks: `promtool` from the
 pinned Prometheus image, with no network, on the Prometheus configuration that
 setup would render, on `docker/alert-rules.yml` and on every case in
-`docker/alert-rules.test.yml`. It needs Docker and no state.
+`docker/alert-rules.test.yml`, and `amtool` from the pinned Alertmanager image
+on both Alertmanager files setup can render. It needs Docker and no state.
 
 ## Endpoints
 
