@@ -678,10 +678,11 @@ database, and then:
    newly signed `ANON_KEY` and `SERVICE_ROLE_KEY` (only those three lines change);
 2. in one database transaction under advisory lock 71042: stores the new secret
    in `warehouse_security.auth_config`, deletes every refresh session, voids
-   pending OTP challenges, removes the self-hosted Realtime tenant row so the
-   recreated service re-seeds it with the new secret, and updates the database
-   `app.settings.jwt_secret` setting. The secret reaches `psql` only on standard
-   input, never as an argument;
+   pending OTP challenges, and removes the self-hosted Realtime tenant row so the
+   recreated service re-seeds it with the new secret. The secret is not stored as
+   a database setting (migration 92 removed `app.settings.jwt_secret`, which
+   every database role could read). It reaches `psql` only on standard input,
+   never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
 4. recreates the running key consumers (`db kong rest realtime storage functions
    studio`, plus `supavisor` when the pooler profile is running) with

@@ -1043,17 +1043,55 @@ building an image or starting the stack.
   `eval` with Kong's own environment references needs Kong to load the result.
   The new test catches a character the `eval` would alter.
 - **`net.http_get` and `net.http_post` executable by `anon` and
-  `authenticated`.** The grants come from `docker/volumes/db/webhooks.sql` (an
-  init script) and from the event trigger it installs, which re-grants on
-  `CREATE EXTENSION`. The fix is to remove the two roles from both `GRANT`
-  lists there and add a migration that revokes them where the `net` schema
-  exists. The migration test database is the plain publisher image without
-  these init scripts, so the migration could not be exercised by
-  `tests/migrations.sh`; mount `webhooks.sql` in that test first. The `net`
-  schema is not exposed through PostgREST.
-- **`app.settings.jwt_secret` readable by every database role.** Unchanged;
-  see the earlier review note (needs a migration and the removal of
-  `PGRST_APP_SETTINGS_JWT_SECRET`, then a check that nothing reads it).
+  `authenticated`: done on 2026-10-17 (migration 93).** The grants came from
+  `docker/volumes/db/webhooks.sql` (an init script), from the event trigger
+  it installs (which re-granted on `CREATE EXTENSION`) and from the publisher
+  image's own migrations, which run after the init scripts at the first start
+  (`20220713082019`, `20250220051611`). On an installed database the two
+  functions were `SECURITY INVOKER` and executable by `PUBLIC`, `anon` and
+  `authenticated` had `USAGE` on `net`, and pg_net itself grants `USAGE` on
+  `net` and `ALL` on its request tables (`net.http_request_queue`,
+  `net._http_response`) to `PUBLIC`: a role with `USAGE` could enqueue a
+  request with the function or with a plain `INSERT`. Migration 93 revokes
+  `USAGE` on `net` from `PUBLIC`, `anon` and `authenticated` (without it no
+  object in `net` can be named) and `EXECUTE` on the two functions from the
+  same three, then grants `USAGE` and `EXECUTE` explicitly to
+  `supabase_functions_admin`, `postgres` and `service_role`, which had them
+  only through `PUBLIC`. It does nothing where `net` does not exist, and
+  replaces the event trigger function `extensions.grant_pg_net_access()` (owner
+  and grants kept) with a body that grants nothing to `anon` or `authenticated`
+  and takes `PUBLIC`'s `USAGE` back, so `DROP EXTENSION pg_net` followed by
+  `CREATE EXTENSION pg_net` leaves the same state. `webhooks.sql` carries the
+  same least-privilege lines, although the image's migrations run after it.
+  Database webhooks (`supabase_functions.http_request`, a `SECURITY DEFINER`
+  function of `supabase_functions_admin`) still send. `tests/migrations.sh`
+  applies `webhooks.sql` and the image's two pg_net migrations to its database
+  in the order a container runs them, and `tests/pg_net_grants.sql` checks the
+  grants, the calls and a webhook, including after `DROP EXTENSION` and
+  `CREATE EXTENSION`. The `net` schema is not exposed through PostgREST.
+  Migration 93 also revokes `EXECUTE` on the trigger function
+  `supabase_functions.http_request()` from `PUBLIC`, `anon` and `authenticated`
+  (`webhooks.sql` likewise): it is `SECURITY DEFINER`, may call `net.http_post`,
+  and takes the destination from the arguments of whoever creates the trigger,
+  and `PUBLIC` may create temporary tables, so those roles could author a
+  request without touching `net`. A webhook created by `postgres` (Studio) still
+  fires on an insert by `anon`; `tests/pg_net_grants.sql` checks both, and that
+  `anon` and `authenticated` cannot attach their own trigger.
+  Remaining, by design: `net.http_delete`, `net.http_collect_response` and the
+  request tables keep pg_net's `PUBLIC` privileges; they are unreachable without
+  `USAGE` on `net`, so that one revoke is what protects them (defence in depth
+  would be a further revoke on each, which pg_net undoes on every
+  `CREATE EXTENSION`).
+- **`app.settings.jwt_secret` readable by every database role: done on
+  2026-10-17 (migration 92).** The migration resets the database setting (and a
+  role-level copy, if any); `scripts/configure-auth.sql` repeats the reset on
+  every setup run; `docker/volumes/db/jwt.sql`, `scripts/rotate-auth.sql` and
+  the PostgREST variable `PGRST_APP_SETTINGS_JWT_SECRET` no longer set it. The
+  database code reads `warehouse_security.auth_config`; no function in the
+  database mentions the setting (checked by `tests/migrations.sh`). PostgREST
+  (`PGRST_JWT_SECRET`), Realtime (`API_JWT_SECRET`) and Storage keep taking the
+  secret from their own environment. Not done, by owner decision D13: a
+  separate key for the one-time-code HMAC, which would void pending codes.
 - **`no-new-privileges`, dropped capabilities, read-only root filesystems.**
   Not a blanket change: Realtime's start script runs `sudo -u nobody`
   (`/app/run.sh` in the pinned image), which `no-new-privileges` blocks, and

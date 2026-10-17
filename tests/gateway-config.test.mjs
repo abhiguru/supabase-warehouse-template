@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const kong = readFileSync(new URL('../docker/kong.yml', import.meta.url), 'utf8');
 const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
@@ -168,6 +169,36 @@ test('every REST request passes the session check before its function runs', () 
   // migration 38 checks active only) rely on it for the enrollment state; see
   // tests/preferred_language.sql.
   assert.match(compose, /\n\s+PGRST_DB_PRE_REQUEST: public\.check_session\n/);
+});
+
+const withoutComments = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+
+test('the JWT signing secret is not published as a database or PostgREST setting', () => {
+  // TW-BE-003: "app.settings.jwt_secret" is readable by every database role through current_setting().
+  // The database code reads warehouse_security.auth_config; PostgREST takes the secret from PGRST_JWT_SECRET.
+  assert.doesNotMatch(compose, /APP_SETTINGS_JWT_SECRET/, 'PostgREST must not set the secret as an app setting');
+  assert.match(compose, /\n\s+PGRST_JWT_SECRET: \$\{JWT_SECRET\}\n/, 'PostgREST still verifies tokens');
+  assert.match(compose, /\n\s+PGRST_APP_SETTINGS_JWT_EXP: \$\{JWT_EXPIRY\}\n/, 'the expiry setting is not part of this change');
+  const jwtSql = withoutComments('docker/volumes/db/jwt.sql');
+  assert.doesNotMatch(jwtSql, /jwt_secret|JWT_SECRET/i, 'jwt.sql must not set or read the secret');
+  assert.match(jwtSql, /ALTER DATABASE postgres SET "app\.settings\.jwt_exp"/, 'jwt.sql still sets the expiry');
+  assert.doesNotMatch(withoutComments('scripts/rotate-auth.sql'), /app\.settings\.jwt_secret/, 'rotation must not set the secret as a database setting');
+  // Every run of the auth configuration removes it again, at database level and for roles.
+  const configure = withoutComments('scripts/configure-auth.sql');
+  assert.match(configure, /ALTER DATABASE %I RESET "app\.settings\.jwt_secret"/);
+  assert.match(configure, /ALTER ROLE %I IN DATABASE %I RESET "app\.settings\.jwt_secret"/);
+  assert.match(configure, /ALTER ROLE %I RESET "app\.settings\.jwt_secret"/);
+  assert.doesNotMatch(configure, /(?<![A-Z])SET "app\.settings\.jwt_secret"/, 'configure-auth.sql must only reset the setting');
+});
+
+test('the rendered Compose project has no app setting that carries the JWT signing secret', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const { services } = renderedCompose();
+  assert.ok(services.rest.environment.PGRST_JWT_SECRET, 'PostgREST has no secret to verify tokens with');
+  for (const [name, definition] of Object.entries(services)) {
+    const settings = Object.keys(definition.environment ?? {}).filter(key => /APP_SETTINGS_JWT_SECRET/.test(key));
+    assert.deepEqual(settings, [], `${name} publishes the signing secret as an app setting`);
+  }
+  assert.ok(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, 'the expiry app setting must stay');
 });
 
 test('ingress is Cloudflare Tunnel only', () => {
