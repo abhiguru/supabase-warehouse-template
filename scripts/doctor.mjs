@@ -5,6 +5,7 @@ import { createConnection } from 'node:net';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
+import { validateDbValues } from './db-roles.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
@@ -27,6 +28,8 @@ export function validateOperatorEnv(env, stateDir) {
   const port = Number(env.KONG_HTTP_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid KONG_HTTP_PORT.');
   if (!/^[0-9a-f]{96}$/.test(env.JWT_SECRET || '')) throw new Error('Invalid JWT_SECRET.');
+  // One password per database login (docs/CONTAINER_SECURITY.md, "Database passwords").
+  validateDbValues(env);
   for (const [key, role] of [['ANON_KEY', 'anon'], ['SERVICE_ROLE_KEY', 'service_role']]) {
     const parts = (env[key] || '').split('.');
     if (parts.length !== 3) throw new Error(`Invalid ${key}.`);

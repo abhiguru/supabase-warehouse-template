@@ -20,8 +20,9 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 DELETE FROM warehouse_security.refresh_sessions;
 -- Pending challenges hold HMACs of the previous secret and can never verify.
 UPDATE public.otp_verifications SET verified=true, otp_code_hash=NULL WHERE NOT verified;
--- Realtime seeds its self-hosted tenant from API_JWT_SECRET only while the row
--- is absent; remove it so the recreated service registers the new secret.
+-- Realtime rewrites its self-hosted tenant from API_JWT_SECRET at every start
+-- while SEED_SELF_HOST is on (v2.143.3, priv/repo/seeds.exs); removing it here
+-- too keeps the rotation right for a release that seeds only an absent tenant.
 DO $$ BEGIN
   IF to_regclass('_realtime.extensions') IS NOT NULL THEN
     DELETE FROM _realtime.extensions WHERE tenant_external_id='realtime-dev';

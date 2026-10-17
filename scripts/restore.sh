@@ -76,6 +76,17 @@ if ! cmp -s "$backup/instance.json" "$state/public/instance.json"; then
   echo 'Refusing: the backup instance.json differs from this state; in-place restore only replaces the instance that produced the backup.' >&2
   exit 1
 fi
+# A backup taken before every database login had its own password lacks those
+# lines (scripts/db-roles.mjs). This state's values are then the ones the restored
+# database gets, so they are left out of the comparisons below; a value the backup
+# does carry must match, as every other line must.
+added_since=()
+while IFS= read -r name; do
+  grep -q "^$name=" "$backup/compose.env" || added_since+=("$name")
+done < <(node "$ROOT/scripts/db-roles.mjs" names)
+without_added() {
+  if ((${#added_since[@]})); then grep -v -E "^($(IFS='|'; printf '%s' "${added_since[*]}"))=" || true; else cat; fi
+}
 if [[ "$restore_config" == true ]]; then
   for key in WAREHOUSE_PROJECT_NAME WAREHOUSE_DB_PATH WAREHOUSE_STORAGE_PATH WAREHOUSE_MANIFEST_PATH; do
     if [[ "$(sed -n "s/^$key=//p" "$backup/compose.env")" != "$(sed -n "s/^$key=//p" "$state/config/compose.env")" ]]; then
@@ -84,12 +95,12 @@ if [[ "$restore_config" == true ]]; then
     fi
   done
 elif [[ "$relocated" == true ]]; then
-  without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' "$1" || true; }
-  if ! cmp -s <(without_paths "$backup/compose.env") <(without_paths "$state/config/compose.env"); then
+  without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' || true; }
+  if ! cmp -s <(without_paths < "$backup/compose.env") <(without_added < "$state/config/compose.env" | without_paths); then
     echo 'Refusing: config/compose.env differs from the backup copy in more than the state paths.' >&2
     exit 1
   fi
-elif ! cmp -s "$backup/compose.env" "$state/config/compose.env"; then
+elif ! cmp -s "$backup/compose.env" <(without_added < "$state/config/compose.env"); then
   echo 'Refusing: config/compose.env differs from the backup copy (keys rotated or configuration changed after it was taken). Pass --restore-config to restore the backup configuration together with its data, or use a backup taken after the change.' >&2
   exit 1
 fi
@@ -152,12 +163,16 @@ if [[ "$restore_config" == true ]]; then
   cp "$backup/compose.env" "$state/config/compose.env.restoring"
   chmod 600 "$state/config/compose.env.restoring"
   mv "$state/config/compose.env.restoring" "$state/config/compose.env"
+  # What configure.mjs's existing-state branch does: a backup taken before every
+  # database login had its own password gets them now, before the database starts.
+  node "$ROOT/scripts/db-roles.mjs" add-missing "$state/config/compose.env"
   compose config --quiet
 fi
 
 # 4. Fresh cluster initialization from the pinned image, then logical replay with
 #    the original owners. Role passwords come from compose.env through the init
-#    scripts; the backup never contains them.
+#    scripts (and scripts/configure-db-roles.sql after the migrations); the backup
+#    never contains them.
 phase='initialize database'
 compose up -d --wait --wait-timeout 180 db
 db_psql() { compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin "$@"; }
@@ -243,6 +258,11 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
+# Every service login gets its password from compose.env again, and the monitoring
+# login, which the replay recreated as a bare name, its pg_monitor membership. The
+# pooler rewrites its pool user and Realtime its tenant when they start.
+phase='database logins'
+bash "$ROOT/scripts/db-roles.sh" apply
 # Roles came back without LOGIN and without their settings (step 4); the list refresher of
 # migration 91 needs both before the lists refresh again.
 phase='list refresher'

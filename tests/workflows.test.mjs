@@ -87,3 +87,23 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
   });
   assert.equal(entries, 11, 'every ignore entry was read');
 });
+
+test('the operator-install job proves the per-role database logins after install, rotation and both restores', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-install:'));
+  const steps = job.split(/\n      - /).slice(1);
+  const find = pattern => { const index = steps.findIndex(step => pattern.test(step)); assert.ok(index >= 0, String(pattern)); return index; };
+  const install = find(/^name: Fresh private operator configuration and local services/);
+  const fresh = find(/^name: Per-role database logins after a fresh install\n/);
+  const rotation = find(/^name: Database password rotation/);
+  const inPlace = find(/^name: In-place restore drill/);
+  const lostHost = find(/^name: Lost-host restore drill/);
+  assert.ok(install < fresh && fresh < rotation && rotation < inPlace && inPlace < lostHost);
+  assert.match(steps[fresh], /run: npm run test:db-roles\n/);
+  assert.match(steps[rotation], /npm run db:rotate-passwords -- --yes\n\s+npm run test:db-roles\n\s+npm run db:rotate-passwords -- --yes --superuser\n\s+npm run test:db-roles\n/);
+  for (const index of [inPlace, lostHost]) assert.match(steps[index], /\n\s+npm run test:db-roles\n/, steps[index].split('\n')[0]);
+  assert.ok(steps[lostHost].indexOf('npm run test:db-roles') > steps[lostHost].indexOf('npm run db:restore-host -- --state-dir "$restored" --backup-key'), 'after the restored state is in use');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.scripts['test:db-roles'], 'bash scripts/db-roles.sh check');
+  assert.equal(pkg.scripts['db:rotate-passwords'], 'bash scripts/rotate-db-passwords.sh');
+});

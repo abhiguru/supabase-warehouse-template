@@ -437,6 +437,72 @@ test('compose strips inherited values before loading private config', () => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('per-role database passwords: a fresh state has them, a rerun keeps them, a state of the previous release gains them', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-db-roles-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING'];
+  const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const stateDir = join(scratch, 'state');
+    const envPath = join(stateDir, 'config/compose.env');
+    const options = { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+
+    // Fresh: every login has its own 64-hex value, none equals the superuser password, and the
+    // Realtime key replaces the fixed text of earlier releases.
+    const fresh = configure(root, options);
+    assert.deepEqual(fresh.dbValuesAdded, []);
+    const env = readEnv(envPath);
+    for (const name of names) assert.match(env[name], /^[0-9a-f]{64}$/, name);
+    assert.equal(new Set([env.POSTGRES_PASSWORD, ...names.map(name => env[name])]).size, names.length + 1);
+    assert.match(env.REALTIME_DB_ENC_KEY, /^[A-Za-z0-9_-]{16}$/);
+    assert.notEqual(env.REALTIME_DB_ENC_KEY, 'supabaserealtime');
+    assert.doesNotMatch(readFileSync(envPath, 'utf8'), /generated-by-setup/);
+    assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+
+    // Rerun: byte for byte the same file.
+    const current = readFileSync(envPath, 'utf8');
+    assert.deepEqual(configure(root, options).dbValuesAdded, []);
+    assert.deepEqual(configure(root, { stateDir }).dbValuesAdded, []);
+    assert.equal(readFileSync(envPath, 'utf8'), current);
+
+    // A state written by the previous release has none of the six lines. The next run appends
+    // them, changes no other line, keeps the file private and leaves no temporary file.
+    const previous = current.replace(/^(?:DB_PASSWORD_[A-Z]+|REALTIME_DB_ENC_KEY)=.*\n/gm, '');
+    assert.doesNotMatch(previous, /^(?:DB_PASSWORD_|REALTIME_DB_ENC_KEY)/m);
+    writeFileSync(envPath, previous, { mode: 0o600 });
+    assert.throws(() => validateOperatorEnv(readEnv(envPath), stateDir), /Invalid DB_PASSWORD_AUTHENTICATOR: run setup\.sh/);
+    const upgraded = configure(root, { stateDir });
+    assert.deepEqual(upgraded.dbValuesAdded, [...names, 'REALTIME_DB_ENC_KEY']);
+    const after = readFileSync(envPath, 'utf8');
+    assert.ok(after.startsWith(previous), 'every earlier line is kept in place');
+    assert.deepEqual(after.slice(previous.length).trimEnd().split('\n').map(line => line.split('=')[0]), [...names, 'REALTIME_DB_ENC_KEY']);
+    const upgradedEnv = readEnv(envPath);
+    for (const name of names) assert.notEqual(upgradedEnv[name], env[name], `${name} is a new value, not the fresh state's`);
+    assert.equal(upgradedEnv.POSTGRES_PASSWORD, env.POSTGRES_PASSWORD);
+    assert.equal(statSync(envPath).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.equal(validateOperatorEnv(upgradedEnv, stateDir).origin, options.apiUrl);
+    // ...and then it is stable, also through the CLI, which says what it added only once.
+    assert.match(cli('--state-dir', stateDir).stdout, /^Preserved existing operator state unchanged\.\n$/);
+    assert.equal(readFileSync(envPath, 'utf8'), after);
+
+    // A value that exists is never replaced, even a shorter one an operator chose; an empty
+    // line counts as missing and is filled where it is.
+    const chosen = 'operator-chosen-value-0123456789abcdef';
+    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_AUTH=.*$/m, 'DB_PASSWORD_AUTH='), { mode: 0o600 });
+    const filled = cli('--state-dir', stateDir);
+    assert.equal(filled.status, 0, filled.stderr);
+    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_AUTH to the existing operator state/);
+    assert.equal(readEnv(envPath).DB_PASSWORD_STORAGE, chosen);
+    assert.match(readEnv(envPath).DB_PASSWORD_AUTH, /^[0-9a-f]{64}$/);
+    assert.equal(readFileSync(envPath, 'utf8').split('\n').length, after.split('\n').length);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('interruption while staging leaves state unpublished and rerun succeeds', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-interrupt-'));
   const root = join(scratch, 'checkout');
