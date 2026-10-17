@@ -4,7 +4,8 @@
 -- are split between the requester and other sources, the per-source failure
 -- limit, the open and trusted send lanes with the 24 hour cap per phone and
 -- the reserve for trusted sources, the installer's reset, the warehouse cap
--- split, the refund of undelivered sends, and the bounds on new access requests.
+-- split, the refund of undelivered sends (not of a timeout), the provider-attempt counter and
+-- its ceiling (migration 97), and the bounds on new access requests.
 -- Runs only in migrations.sh's disposable, network-disabled database; every
 -- fixture row rolls back. Addresses are documentation ranges.
 \set ON_ERROR_STOP on
@@ -308,6 +309,115 @@ UPDATE warehouse_security.auth_config SET value='300' WHERE key='otp_global_hour
 UPDATE warehouse_security.auth_config SET value='60' WHERE key='otp_unknown_hourly_cap';
 UPDATE warehouse_security.operator_otp_global_limit SET hourly_count=0,unknown_count=0,window_started=now() WHERE id;
 
+-- H. Migration 97 (TW-CFG-005, owner decision D15): provider requests are counted and never given
+-- back; a timeout (provider_ambiguous) is not refunded; an operator ceiling stops the sends.
+CREATE FUNCTION pg_temp.attempts_used() RETURNS bigint LANGUAGE sql AS $$
+  SELECT COALESCE(sum(attempts),0) FROM warehouse_security.otp_provider_attempts WHERE created_at>now()-interval '24 hours'
+$$;
+DO $$ DECLARE outcome jsonb; req uuid; before_global record; after_global record; base bigint; first_req uuid; second_req uuid; BEGIN
+  -- H1. The outcome that may have been billed is counted and not given back.
+  SELECT hourly_count,unknown_count INTO before_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  outcome := public.operator_prepare_otp('9888888811','203.0.113.131');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM pg_temp.otp_assert((SELECT attempts=1 AND status IS NULL FROM warehouse_security.otp_provider_attempts WHERE request_id=req),
+    'a code request reserves one provider attempt');
+  PERFORM public.operator_finish_otp(req,false,'provider_ambiguous',1);
+  PERFORM pg_temp.otp_assert((SELECT delivery_status='failed' AND msg91_status='provider_ambiguous' AND otp_code_hash IS NULL
+      AND NOT quota_refunded FROM public.otp_verifications WHERE id=req),
+    'a timeout seals the code and is recorded as provider_ambiguous, not refunded');
+  PERFORM pg_temp.otp_assert((SELECT hourly_count=1 AND daily_count=1 FROM public.otp_rate_limits WHERE phone_number='919888888811')
+    AND (SELECT count(*)=1 FROM warehouse_security.otp_send_log WHERE phone_number='919888888811'),
+    'a timeout keeps the phone allowance charged');
+  SELECT hourly_count,unknown_count INTO after_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  PERFORM pg_temp.otp_assert(after_global.hourly_count=before_global.hourly_count+1 AND after_global.unknown_count=before_global.unknown_count+1,
+    'a timeout keeps the warehouse allowance charged');
+  PERFORM pg_temp.otp_assert((SELECT attempts=1 AND status='provider_ambiguous' FROM warehouse_security.otp_provider_attempts WHERE request_id=req),
+    'the attempt and the outcome are recorded');
+  -- The same send failing in a way that is certain not to have been billed is given back, but its attempts stay.
+  SELECT hourly_count,unknown_count INTO before_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  outcome := public.operator_prepare_otp('9888888812','203.0.113.132');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM public.operator_finish_otp(req,false,'provider_unavailable',2);
+  SELECT hourly_count,unknown_count INTO after_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  PERFORM pg_temp.otp_assert((SELECT quota_refunded FROM public.otp_verifications WHERE id=req)
+    AND (SELECT hourly_count=0 FROM public.otp_rate_limits WHERE phone_number='919888888812')
+    AND after_global.hourly_count=before_global.hourly_count AND after_global.unknown_count=before_global.unknown_count,
+    'a refused send is still given back');
+  PERFORM pg_temp.otp_assert((SELECT attempts=2 AND status='provider_unavailable' FROM warehouse_security.otp_provider_attempts WHERE request_id=req),
+    'the two provider requests of a refused send stay counted');
+  -- A failure before any request is sent counts none; an old caller (no p_attempts) counts one.
+  outcome := public.operator_prepare_otp('9888888813','203.0.113.133');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM public.operator_finish_otp(req,false,'provider_configuration',0);
+  PERFORM pg_temp.otp_assert((SELECT attempts=0 FROM warehouse_security.otp_provider_attempts WHERE request_id=req),'no request sent, no attempt counted');
+  outcome := public.operator_prepare_otp('9888888814','203.0.113.134');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM public.operator_finish_otp(req,true,'provider-accepted');
+  PERFORM pg_temp.otp_assert((SELECT attempts=1 AND status='success' FROM warehouse_security.otp_provider_attempts WHERE request_id=req),
+    'a call without p_attempts counts one');
+  outcome := public.operator_prepare_otp('9888888815','203.0.113.135');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM public.operator_finish_otp(req,true,'provider-accepted-after-retry',2);
+  PERFORM pg_temp.otp_assert((SELECT attempts=2 FROM warehouse_security.otp_provider_attempts WHERE request_id=req),'a retried send counts two attempts');
+  PERFORM pg_temp.otp_assert((SELECT count(*)=0 FROM warehouse_security.otp_provider_attempts WHERE attempts NOT BETWEEN 0 AND 5),'attempts stay in bounds');
+  outcome := public.operator_prepare_otp('9888888816','203.0.113.136');
+  req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM public.operator_finish_otp(req,false,'provider_unavailable',99);
+  PERFORM pg_temp.otp_assert((SELECT attempts=5 FROM warehouse_security.otp_provider_attempts WHERE request_id=req),'a bogus count is cut to 5');
+
+  -- H2. With no ceiling set, nothing is stopped however many attempts were made.
+  PERFORM pg_temp.otp_assert(NOT EXISTS (SELECT 1 FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap'),'the ceiling is off until the operator sets it');
+  -- H3. The ceiling.
+  base := pg_temp.attempts_used();
+  INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_daily_provider_attempt_cap',(base+2)::text);
+  outcome := public.operator_prepare_otp('9888888821','203.0.113.141');
+  first_req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM pg_temp.otp_assert(outcome->>'success'='true','a send below the ceiling');
+  outcome := public.operator_prepare_otp('9888888822','203.0.113.142');
+  second_req := (outcome#>>'{data,request_id}')::uuid;
+  PERFORM pg_temp.otp_assert(outcome->>'success'='true' AND pg_temp.attempts_used()=base+2,'the send that reaches the ceiling is served');
+  SELECT hourly_count,unknown_count INTO before_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888823','203.0.113.143')->>'code'='rate_limited',
+    'at the ceiling a code request is refused as rate_limited');
+  SELECT hourly_count,unknown_count INTO after_global FROM warehouse_security.operator_otp_global_limit WHERE id;
+  PERFORM pg_temp.otp_assert(NOT EXISTS (SELECT 1 FROM public.otp_verifications WHERE phone_number='919888888823')
+    AND NOT EXISTS (SELECT 1 FROM warehouse_security.otp_send_log WHERE phone_number='919888888823')
+    AND NOT EXISTS (SELECT 1 FROM public.otp_rate_limits WHERE phone_number='919888888823' AND hourly_count>0)
+    AND NOT EXISTS (SELECT 1 FROM public.ip_rate_limits WHERE ip_address='203.0.113.143')
+    AND after_global.hourly_count=before_global.hourly_count AND after_global.unknown_count=before_global.unknown_count
+    AND pg_temp.attempts_used()=base+2,
+    'a refusal at the ceiling creates no code and charges no counter');
+  -- The real count replaces the reservation: a retried send uses one more, a send that never reached the provider frees one.
+  PERFORM public.operator_finish_otp(first_req,true,'provider-accepted',2);
+  PERFORM pg_temp.otp_assert(pg_temp.attempts_used()=base+3,'a retry of a reserved send adds its second attempt');
+  PERFORM public.operator_finish_otp(second_req,false,'provider_configuration',0);
+  PERFORM pg_temp.otp_assert(pg_temp.attempts_used()=base+2,'a send that never reached the provider releases its reservation');
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888823','203.0.113.143')->>'code'='rate_limited','still at the ceiling');
+  UPDATE warehouse_security.auth_config SET value=(base+3)::text WHERE key='otp_daily_provider_attempt_cap';
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888823','203.0.113.143')->>'success'='true','raising the ceiling serves the request');
+  -- The window slides: attempts older than 24 hours no longer count.
+  UPDATE warehouse_security.otp_provider_attempts SET created_at=created_at-interval '25 hours';
+  PERFORM pg_temp.otp_assert(pg_temp.attempts_used()=0 AND public.operator_prepare_otp('9888888824','203.0.113.144')->>'success'='true',
+    'attempts older than 24 hours do not count');
+  -- Text 0 is the no-send switch; a value that is not a whole number means no ceiling (like an absent one).
+  UPDATE warehouse_security.auth_config SET value='0' WHERE key='otp_daily_provider_attempt_cap';
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888825','203.0.113.145')->>'code'='rate_limited','0 blocks every send');
+  UPDATE warehouse_security.auth_config SET value='ten' WHERE key='otp_daily_provider_attempt_cap';
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888825','203.0.113.145')->>'success'='true','a malformed ceiling is no ceiling');
+  DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
+  PERFORM pg_temp.otp_assert(public.operator_prepare_otp('9888888826','203.0.113.146')->>'success'='true','removing the key switches the ceiling off');
+  -- Old rows are removed when a code is issued.
+  UPDATE warehouse_security.otp_provider_attempts SET created_at=now()-interval '3 days' WHERE request_id=first_req;
+  PERFORM public.operator_prepare_otp('9888888827','203.0.113.147');
+  PERFORM pg_temp.otp_assert(NOT EXISTS (SELECT 1 FROM warehouse_security.otp_provider_attempts WHERE request_id=first_req),'attempts older than two days are removed');
+END $$;
+SELECT pg_temp.otp_assert(NOT has_table_privilege('anon','warehouse_security.otp_provider_attempts','SELECT')
+  AND NOT has_table_privilege('authenticated','warehouse_security.otp_provider_attempts','SELECT')
+  AND NOT has_table_privilege('service_role','warehouse_security.otp_provider_attempts','SELECT')
+  AND NOT has_table_privilege('service_role','warehouse_security.otp_provider_attempts','INSERT')
+  AND (SELECT relrowsecurity FROM pg_class WHERE oid='warehouse_security.otp_provider_attempts'::regclass),
+  'no API role reads the attempt counter');
+
 -- G. New access requests: three per source and a daily warehouse cap; names are checked.
 DO $$ DECLARE challenge jsonb; outcome jsonb; names text[] := ARRAY['<b>Free</b> http://x.example','  રમેશ   પટેલ  ','Asha & Sons (Unjha) Cold Storage Traders'];
   n integer; BEGIN
@@ -346,4 +456,4 @@ SELECT pg_temp.otp_assert(warehouse_security.clean_person_name('Mehul D''Souza-P
   AND warehouse_security.clean_person_name('a'||U&'\202E'||'b') IS NULL
   AND warehouse_security.clean_person_name('<script>') IS NULL,'name rules');
 ROLLBACK;
-\echo 'OTP attempt budget, send lanes, daily cap and reserve, installer reset, warehouse cap split, refunds and access-request bounds passed.'
+\echo 'OTP attempt budget, send lanes, daily cap and reserve, installer reset, warehouse cap split, refunds, provider-attempt counter and ceiling, and access-request bounds passed.'
