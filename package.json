@@ -16,6 +16,8 @@
     "db:restore": "bash scripts/restore.sh",
     "db:restore-host": "bash scripts/restore-host.sh",
     "keys:rotate": "bash rotate-keys.sh",
+    "db:rotate-passwords": "bash scripts/rotate-db-passwords.sh",
+    "test:db-roles": "bash scripts/db-roles.sh check",
     "test:rotation": "node tests/operator-api-rotation.mjs",
     "test:gateway": "node scripts/gateway-smoke.mjs",
     "test:gateway-dns": "bash scripts/gateway-dns-check.sh",
