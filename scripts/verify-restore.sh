@@ -74,6 +74,12 @@ if [[ -e "$backup/tunnel" || -L "$backup/tunnel" ]]; then
     grep -Fqx "$(cd "$backup" && sha256sum "$file")" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
   done < <(find "$backup/tunnel" -mindepth 1 -print0)
 fi
+# Optional central sign-in key set (scripts/backup.sh copies public/central-jwks.json): a regular,
+# checksummed file when present. db:restore-host installs it, so what it installs must be what was signed.
+if [[ -e "$backup/central-jwks.json" || -L "$backup/central-jwks.json" ]]; then
+  [[ -f "$backup/central-jwks.json" && ! -L "$backup/central-jwks.json" ]] || { echo 'Backup entry central-jwks.json is not a regular file.' >&2; exit 1; }
+  grep -Fqx "$(cd "$backup" && sha256sum central-jwks.json)" "$backup/SHA256SUMS" || { echo 'Backup checksum missing for central-jwks.json' >&2; exit 1; }
+fi
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 
@@ -258,15 +264,21 @@ docker cp "$backup/database.dump" "$container:/tmp/database.dump"
 # accepts no connections, and a dump restores completely into a copy of it.
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
   -U supabase_admin -T template0 warehouse_restore
+# pg_cron (migration 91: the list refresher) can only be created in the database that
+# cron.database_name names, postgres, and this check restores into warehouse_restore. The
+# extension and its own objects (schema cron: jobs, run history, their sequences and grants)
+# are left out here; an in-place restore (restore.sh) replays them, and configure-list-refresh.sql
+# re-creates the jobs either way.
+docker exec "$container" sh -c "pg_restore -l /tmp/database.dump | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_cron|COMMENT - EXTENSION pg_cron|ACL - SCHEMA cron|[A-Z ]+ cron) ' > /tmp/restore.list"
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --clean --if-exists \
-  --no-acl --section=pre-data --exit-on-error /tmp/database.dump
+  --no-acl --section=pre-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --no-acl \
-  --section=data --exit-on-error /tmp/database.dump
+  --section=data --exit-on-error -L /tmp/restore.list /tmp/database.dump
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --no-acl \
-  --section=post-data --exit-on-error /tmp/database.dump
+  --section=post-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
 # pg_graphql registers this wrapper only when graphql_public exists during
 # extension initialization. Logical replay may create that schema afterward.
 docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
@@ -282,7 +294,7 @@ CREATE OR REPLACE FUNCTION graphql_public.graphql(
 $$;
 SQL
 # Replay ACLs only after all objects, including extension-owned wrappers, exist.
-docker exec "$container" sh -c "pg_restore -l /tmp/database.dump | awk '/^[0-9]+; .* ACL / { print }' > /tmp/acl.list"
+docker exec "$container" sh -c "awk '/^[0-9]+; .* ACL / { print }' /tmp/restore.list > /tmp/acl.list"
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner -L /tmp/acl.list \
   --exit-on-error /tmp/database.dump

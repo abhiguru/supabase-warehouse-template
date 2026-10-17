@@ -141,6 +141,8 @@ RESET ROLE;
 SELECT pg_temp.dirf_assert((SELECT string_agg(inv_no || ':' || total, ' ' ORDER BY inv_no) FROM public.invoice
     WHERE customer_id = :'juniper'::uuid) = '104:42.00 90101:357.00 90102:357.00 90103:357.00',
   'fixture: the stored totals are 42, 357, 357, 357');
+-- The worker's refresh of the lists the writes above marked, in this transaction (migration 91).
+SELECT warehouse_security.refresh_dirty_lists();
 
 -- ---------------------------------------------------------------------------
 -- The answers
@@ -225,7 +227,7 @@ SELECT pg_temp.dirf_assert(:'juniper_items' = 'Staff access required',
   'I8: a customer is still refused by the guard: ' || :'juniper_items');
 
 -- ---------------------------------------------------------------------------
--- I9 mv_invoice_list / get_invoices_list (no manual refresh: the triggers keep it current)
+-- I9 mv_invoice_list / get_invoices_list (the triggers mark it; refreshed above as the worker does)
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.dirf_assert((pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '90101')->>'total_qty')::numeric = 20
   AND (pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '90102')->>'total_qty')::numeric = 20

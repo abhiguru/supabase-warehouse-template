@@ -89,6 +89,18 @@ tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
 cp "$state/config/compose.env" "$stage/compose.env"
 cp "$state/public/instance.json" "$stage/instance.json"
 chmod 600 "$stage/compose.env" "$stage/instance.json"
+# The central sign-in key set (public keys only) that setup.sh --central-jwks-file copied into the
+# state. compose.env keeps naming it, so db:restore-host must be able to put it back: without it the
+# restored host offers central sign-in and every exchange fails. Absent for an installation that
+# fetches the keys or has no central sign-in.
+optional_files=()
+key_file="$state/public/central-jwks.json"
+if [[ -e "$key_file" || -L "$key_file" ]]; then
+  [[ -f "$key_file" && ! -L "$key_file" ]] || { echo "Refusing: $key_file is not a regular file." >&2; exit 1; }
+  cp "$key_file" "$stage/central-jwks.json"
+  chmod 600 "$stage/central-jwks.json"
+  optional_files+=(central-jwks.json)
+fi
 # The tunnel credential kept by scripts/tunnel.sh, so db:restore-host can bring the
 # public address back on a new host. Only its known regular files are copied.
 tunnel_files=()
@@ -110,7 +122,7 @@ source_commit=${source_commit:-unknown}
 database_image=supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6
 consistency=write-facing services stopped during database/storage capture
 EOF
-(cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${tunnel_files[@]}" > SHA256SUMS)
+(cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${optional_files[@]}" "${tunnel_files[@]}" > SHA256SUMS)
 # The signature covers SHA256SUMS and so every file; the key itself is never copied into the backup.
 backup_sign_dir "$stage" "$BACKUP_KEY"
 find "$stage" -mindepth 1 -type f -exec chmod 600 {} +
