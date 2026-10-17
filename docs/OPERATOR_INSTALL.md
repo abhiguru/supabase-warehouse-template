@@ -1310,7 +1310,9 @@ tunnel: they matter to someone who also reaches the host or its network.
 | `GRAFANA_ADMIN_PASS` | Grafana (monitoring profile). | Manual, below; Grafana keeps its own copy. |
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
-| `POSTGRES_PASSWORD` | Every database login, superuser included, from inside the Compose network or the host. | No supported procedure yet; see below. |
+| `POSTGRES_PASSWORD` | The superuser logins (`postgres`, `supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`, `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING` | Each one database login of one service (PostgREST, Storage, the disabled Auth service, the pooler's pool user, the Postgres exporter and Grafana), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| `REALTIME_DB_ENC_KEY` | Decrypts the database credentials Realtime stores for its tenant. | Rotated with the superuser password (`--superuser`). |
 | `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Realtime and pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
 These procedures are written from the service definitions and are **not
@@ -1334,20 +1336,85 @@ so changing `compose.env` alone does nothing. Change it in Grafana (profile menu
 Change password, signed in as the administrator), then set
 `GRAFANA_ADMIN_PASS` in `compose.env` to the same value so the two do not drift.
 
-`POSTGRES_PASSWORD` is shared by every service role, is stored a second time
-inside the database (the Realtime tenant and the pooler tenant keep their own
-encrypted copies), and `SECRET_KEY_BASE` and `VAULT_ENC_KEY` protect those
-copies. Changing them means altering seven database roles, clearing both stored
-tenants and recreating every service in one step. That is not scripted and has
-not been rehearsed, so this guide does not give a procedure that could leave
-the database unreachable. Until one exists: these values cannot be used from
-outside the host and its Docker network (the database publishes no port and the
-gateway listens on loopback only); keep the host's logins and network closed,
-and if you must replace them now, rehearse on a copy first: restore the newest
-backup onto a spare machine with `db:restore-host`, try the change there, and
-only then repeat it on the real host. Splitting this one password into
-per-role passwords, with a rotation command, is planned; the design and its
-rehearsal steps are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-shared-value-and-the-plan-to-split-it).
+`SECRET_KEY_BASE` signs Realtime's and the pooler's sessions and
+`VAULT_ENC_KEY` encrypts the pooler's stored tenant (which holds the pool
+user's password). Changing them is not scripted and has not been rehearsed,
+so this guide gives no procedure that could leave the pooler unable to read
+its tenant. These values cannot be used from outside the host and its Docker
+network (the database publishes no port and the gateway listens on loopback
+only); keep the host's logins and network closed. If you must replace them
+now, rehearse on a copy first: restore the newest backup onto a spare machine
+with `db:restore-host`, try the change there, and only then repeat it on the
+real host.
+
+### Rotating the database passwords
+
+Every database login has its own password in `compose.env`
+([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)):
+`POSTGRES_PASSWORD` is the superuser's (`postgres`, `supabase_admin`), and
+PostgREST, Storage, the disabled Auth service, the pooler's pool user, the
+Postgres exporter and Grafana each sign in with their own. One command
+replaces them:
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run db:backup
+npm run db:rotate-passwords -- --yes                # every service login
+npm run db:rotate-passwords -- --yes --superuser    # also POSTGRES_PASSWORD and the Realtime key
+npm run test:db-roles                               # each login refuses the superuser password and takes its own
+npm run db:backup                                   # older backups carry the previous values
+```
+
+What it does, in this order:
+
+1. Writes new values into `config/compose.env.rotating-db` (only those lines
+   differ from `compose.env`).
+2. Sets them in the database in one transaction, signed in with the current
+   superuser password. It sends SCRAM verifiers on standard input, never the
+   passwords, so nothing reaches a log, an argument list or
+   `pg_stat_statements`. If this step fails, the command asks the database
+   whether it still has the values of `compose.env`; only then does it remove
+   the staged file (nothing has changed). Otherwise it keeps the file and says
+   so, and the next run sorts it out (below).
+3. Keeps the previous file as `config/compose.env.before-db-rotation`, puts
+   the new one in place, and recreates the database and every running service
+   that signs in to it (PostgREST, Storage, Realtime, postgres-meta, Studio,
+   and the pooler, exporter and Grafana when they run). The command takes
+   about a minute; in the rehearsal the app could not load data for about 11
+   seconds of it (both with and without `--superuser`). A service you stopped on purpose stays
+   stopped and reads its new value when it next starts. No session ends and
+   no phone signs in again: the JWT signing keys are `rotate-keys.sh`'s.
+4. Proves each login (`npm run test:db-roles`) and runs `node scripts/doctor.mjs --local`.
+   If a service does not come back or a login misbehaves, it sets the previous
+   values in the database again, moves the previous file back, recreates the
+   services and exits with an error: nothing is rotated.
+
+If the command stops half-way (a power cut, a killed shell, a full disk, a
+reversal that failed too), it leaves `compose.env.rotating-db`,
+`compose.env.before-db-rotation` or both behind. Do not move or delete them
+yourself: run `npm run db:rotate-passwords -- --yes` again. It does not rotate
+then; it finds out which values the database has, by signing in over the
+network with each file's superuser and PostgREST values as
+`npm run test:db-roles` does. It keeps the file that matches as `compose.env`,
+removes the others (the database does not have their values) and says so:
+
+```text
+The database has the values of compose.env.rotating-db: it is compose.env now.
+Nothing was rotated. Run bash start.sh so every service uses these values, check with npm run test:db-roles, then run npm run db:rotate-passwords -- --yes again if you still want new ones.
+```
+
+Then do what the last line says. If the database is not running, start it
+alone first (`bash scripts/compose.sh up -d --wait db`). If the database takes
+the values of none of the files, or gives no clear answer, the command changes
+nothing and says so; keep every file and ask for help, quoting the message.
+
+A restore of a backup taken before a rotation brings that backup's values
+back together with its data (`db:restore -- --restore-config`, or
+`db:restore-host`); the restored database gets them at start. A backup taken
+before every login had its own password (before this release) has none: both
+restore paths then give the restored configuration new ones before the
+database starts.
 
 ## Lists refresh after the commit
 
@@ -1431,6 +1498,34 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
+
+**The upgrade that splits the database password** (the first release with
+`npm run db:rotate-passwords`) adds a password of its own for every database
+login of the services to `compose.env` and sets them in the database. Run
+`setup.sh` right after the pull, before any other command: until then every
+Compose command, `stop.sh` and `start.sh` included, stops with "Run setup.sh
+to generate the per-role database passwords". The run restarts the database
+and the services that sign in to it; in the rehearsal of 2026-10-18 two of
+225 API requests made every half second during the run failed (once when the
+database restarted, once when PostgREST did), and the whole setup run took two
+minutes. Afterwards check with `npm run test:db-roles`, then replace the
+superuser password too:
+
+```bash
+npm run test:db-roles
+npm run db:rotate-passwords -- --yes --superuser   # about a minute, the API down about 11 s
+npm run db:backup
+```
+
+The upgrade gives every service login a new password but keeps
+`POSTGRES_PASSWORD`, the value that until now every login shared. That value
+sat in the environment of PostgREST, Storage, the Auth service, the Postgres
+exporter and Grafana, and in Grafana's datasource store (encrypted with
+Grafana's published default key, on its data volume). Whoever read it from
+one of those places still holds the superuser password until it is rotated.
+The new backup is taken after the rotation; backups taken before it remain
+restorable (see
+[Rotating the database passwords](#rotating-the-database-passwords)).
 
 The `--force-recreate functions` line is needed because the edge functions
 (`functions/`, including `functions/_shared/`) are bind-mounted into the

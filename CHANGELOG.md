@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased: ops review wave 2, part 2 — one database password per login (migration 94)
+
+Review finding TW-BE-002, owner decision D4. `POSTGRES_PASSWORD` was the password of every database login; it is now
+the superuser's only (`postgres`, `supabase_admin`).
+
+- `setup.sh` (through `scripts/configure.mjs`) generates `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`,
+  `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING` and `REALTIME_DB_ENC_KEY`. An existing state
+  gains the missing ones on the next setup run; a value that exists is never replaced.
+- `scripts/configure-db-roles.sql` sets each login's password on every setup run and after both restores. Values
+  travel as SCRAM-SHA-256 verifiers on standard input (`scripts/db-roles.sh`): no password reaches the server, a
+  log, `pg_stat_statements` or a command line.
+- Migration `00000000000094_monitoring_role.sql`: `warehouse_monitoring` (member of `pg_monitor`, nothing else) for
+  the Postgres exporter and the Grafana datasource, which signed in as `postgres`; `supabase_functions_admin` can no
+  longer sign in.
+- Compose: PostgREST, Storage, Auth, the pooler's pool user, the exporter and Grafana use their own value
+  (`${NAME:?...}`: a state without it stops at `compose config`). Realtime's `DB_ENC_KEY` is the generated
+  `REALTIME_DB_ENC_KEY` instead of the fixed `supabaserealtime`. The pooler rewrites its pool user's password at every
+  start. The Grafana datasource is no longer editable.
+- New commands: `npm run db:rotate-passwords -- --yes [--superuser]` (rotation with automatic rollback; an
+  interrupted rotation is recovered by asking the database which file it matches) and `npm run test:db-roles` (it
+  first proves the superuser password, then that each login refuses `POSTGRES_PASSWORD` and accepts only its own,
+  over SCRAM and the network).
+- Restores: a backup taken before this release restores in place with the installation's values;
+  `--restore-config` and `db:restore-host` give its configuration new values before the database starts.
+- **Upgrade:** run `setup.sh` right after `git pull`, before any other command; it restarts the database and every
+  service once. Then `npm run test:db-roles`, `npm run db:rotate-passwords -- --yes --superuser` (the old shared
+  value sat in five service environments and in Grafana's datasource store) and a new backup.
+- Docs: `docs/CONTAINER_SECURITY.md` ("Database passwords: one per login"), `docs/OPERATOR_INSTALL.md` ("Rotating
+  the database passwords", the upgrade note).
+
 ## Unreleased: ops review wave 2, part 1 — signing secret, pg_net, key cache, gateway log, unsigned backups (migrations 92, 93)
 
 Fixes from the 2026-10-17 operational review (TW-BE-001, TW-BE-003, TW-BE-004, TW-BE-019, TW-BE-022). Ships with

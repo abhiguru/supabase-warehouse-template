@@ -231,6 +231,53 @@ configure_central -v central_issuer=
 # The database container needs no CENTRAL_ISSUER of its own.
 if docker exec "$container" printenv CENTRAL_ISSUER >/dev/null 2>&1; then echo 'The test database must not carry CENTRAL_ISSUER.' >&2; exit 1; fi
 
+# scripts/configure-db-roles.sql (TW-BE-002, migration 94): through the prelude of
+# scripts/db-roles.mjs, as scripts/db-roles.sh sends it. Each login stores exactly the
+# SCRAM verifier it was given (never a password); a rerun applies again; a missing or
+# plaintext value changes nothing; a monitoring role that lost its membership (what a
+# restore replays) gets it back. Logins themselves are proven over the network by
+# `npm run test:db-roles` in the operator-install job: this container has none.
+roles_sql() {
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "$1"
+}
+apply_db_roles() {
+  { cat; cat "$ROOT/scripts/configure-db-roles.sql"; } |
+    docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
+}
+roles_env=$(mktemp "${TMPDIR:-/tmp}/warehouse-db-roles.XXXXXX")
+{
+  printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)"
+  for name in $(node "$ROOT/scripts/db-roles.mjs" names); do
+    if [[ "$name" == REALTIME_DB_ENC_KEY ]]; then printf '%s=%s\n' "$name" "$(openssl rand -hex 8)"; else printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"; fi
+  done
+} > "$roles_env"
+stored_verifiers="SELECT string_agg(rolname || ' ' || rolcanlogin || ' ' || rolpassword, E'\n' ORDER BY rolname) FROM pg_authid WHERE rolname IN ('authenticator','supabase_storage_admin','supabase_auth_admin','pgbouncer','warehouse_monitoring')"
+for pass in 1 2; do
+  prelude=$(node "$ROOT/scripts/db-roles.mjs" prelude "$roles_env")
+  apply_db_roles <<< "$prelude"
+  expected=$(printf '%s\n' "$prelude" | sed -n "s/^\\\\set \\([a-z_]*\\)_verifier '\\(.*\\)'$/\\1 \\2/p" |
+    sed -e 's/^authenticator /authenticator true /' -e 's/^storage /supabase_storage_admin true /' -e 's/^auth /supabase_auth_admin true /' \
+        -e 's/^pooler /pgbouncer true /' -e 's/^monitoring /warehouse_monitoring true /' | LC_ALL=C sort)
+  [[ "$(roles_sql "$stored_verifiers" | LC_ALL=C sort)" == "$expected" ]] || {
+    echo "configure-db-roles.sql pass $pass did not store each login's own verifier with LOGIN." >&2; exit 1; }
+done
+grep -q "$(sed -n 's/^DB_PASSWORD_AUTHENTICATOR=//p' "$roles_env")" <<< "$(roles_sql "$stored_verifiers")" && {
+  echo 'A password reached the database instead of its verifier.' >&2; exit 1; }
+before_refusals=$(roles_sql "$stored_verifiers")
+if apply_db_roles <<< "$(grep -v '^\\set pooler_verifier' <<< "$prelude")" >/dev/null 2>&1; then
+  echo 'configure-db-roles.sql ran without the pool user verifier.' >&2; exit 1; fi
+if apply_db_roles <<< "$(sed "s/^\\\\set storage_verifier .*/\\\\set storage_verifier 'plaintext-password-not-a-verifier'/" <<< "$prelude")" >/dev/null 2>&1; then
+  echo 'configure-db-roles.sql accepted a plaintext password.' >&2; exit 1; fi
+[[ "$(roles_sql "$stored_verifiers")" == "$before_refusals" ]] || { echo 'A refused configure-db-roles.sql run changed a password.' >&2; exit 1; }
+roles_sql 'REVOKE pg_monitor FROM warehouse_monitoring; ALTER ROLE warehouse_monitoring NOLOGIN PASSWORD NULL' >/dev/null
+apply_db_roles <<< "$prelude"
+[[ "$(roles_sql "SELECT pg_has_role('warehouse_monitoring', 'pg_monitor', 'USAGE') AND rolcanlogin FROM pg_roles WHERE rolname = 'warehouse_monitoring'")" == t ]] || {
+  echo 'configure-db-roles.sql did not give warehouse_monitoring back its pg_monitor membership and login.' >&2; exit 1; }
+rm -f "$roles_env"
+unset prelude expected before_refusals
+# The baseline holds after the logins were configured too.
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/security_baseline.sql" >/dev/null
+
 # scripts/sensor-ingest-key.sql (migration 74): each run prints one new key, 64 hex, once;
 # only its SHA-256 is stored; record_sensor_batch takes it until it is revoked. A missing or
 # ill-formed label mints nothing. The key is not echoed here.

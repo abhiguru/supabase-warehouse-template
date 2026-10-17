@@ -239,7 +239,8 @@ services:
     profiles: ["monitoring"]
     networks: [default, database]
     environment:
-      DATA_SOURCE_NAME: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres?sslmode=disable"
+      # warehouse_monitoring: pg_monitor and nothing else (migration 94).
+      DATA_SOURCE_NAME: "postgresql://warehouse_monitoring:${DB_PASSWORD_MONITORING:?Run setup.sh to generate the per-role database passwords}@db:5432/postgres?sslmode=disable"
     depends_on:
       db:
         condition: service_healthy
@@ -298,7 +299,9 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       GF_SERVER_ROOT_URL: http://localhost:13001
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The PostgreSQL datasource signs in as warehouse_monitoring
+      # (volumes/grafana/provisioning/datasources/datasources.yml).
+      DB_PASSWORD_MONITORING: ${DB_PASSWORD_MONITORING:?Run setup.sh to generate the per-role database passwords}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./volumes/grafana/provisioning:/etc/grafana/provisioning:ro

@@ -3,8 +3,9 @@
 # backups: the same instance identity, origin, keys, users and data, as at the
 # moment of the backup. It never runs setup (which would mint a new identity):
 # it creates a new state directory from the backup's own compose.env and
-# instance.json, rewriting only the three state-path lines, and then hands over
-# to scripts/restore.sh --relocated for the database and storage replay. A
+# instance.json, rewriting only the three state-path lines (and adding the
+# per-role database passwords a backup made before them lacks), and then hands
+# over to scripts/restore.sh --relocated for the database and storage replay. A
 # central sign-in key file (public/central-jwks.json) and a tunnel credential
 # in the backup are put back as well.
 #
@@ -209,6 +210,9 @@ if [[ -d "$stage/backups/$name/tunnel" ]]; then
     tunnel=true
   done
 fi
+# What configure.mjs's existing-state branch does: a backup taken before every
+# database login had its own password gets them now, before the database starts.
+node "$ROOT/scripts/db-roles.mjs" add-missing "$stage/config/compose.env"
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
