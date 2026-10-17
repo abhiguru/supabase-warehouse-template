@@ -244,3 +244,55 @@ test('restore --restore-config onto a state without the key file the restored co
   assert.equal(present.saw, 'pending=\n');
   assert.doesNotMatch(present.result.stdout, /setup\.sh/);
 });
+
+// TW-BE-022. A v5 backup is always signed. With the signature file gone and the key in hand, the
+// flag must not wave it through: it is for backups written before v5 and for a lost key.
+test('restore refuses a v5 backup whose signature file was removed, even with --allow-unsigned, while the key is available', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stripped-v5-', { key: null });
+  try {
+    assert.equal(existsSync(join(backup, 'SHA256SUMS.hmac')), false, 'the fixture is a v5 backup without its signature');
+    assert.equal(existsSync(join(state, 'config/backup.key')), true, 'this installation still has its key');
+    let result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/, 'no banner: nothing was accepted');
+    // restore.sh asks Compose whether services run before it looks at the backup; no container is run, started or copied into.
+    assert.doesNotMatch(result.calls, /run |up -d| cp /, 'no container is run or started');
+    untouched(state);
+    // Without the flag it is refused as well, and the message does not send the operator to the flag.
+    result = restore(scratch, ['--yes', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /carries no signature[\s\S]*a v5 backup must be signed/);
+    assert.doesNotMatch(result.calls, /run |up -d| cp /);
+    // The refusal does not wait for the checksums: a damaged file does not change the answer.
+    writeFileSync(join(backup, 'database.dump'), 'damaged after the signature was removed\n');
+    result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
+    assert.match(result.stderr, /a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore takes the same v5 backup with --allow-unsigned and a loud warning once the key is lost', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stripped-v5-lost-key-', { key: null });
+  try {
+    rmSync(join(state, 'config/backup.key'));
+    const result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.calls, /^run -d --pull missing/m, 'the verifier ran');
+    assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore still takes an unsigned v4 backup with --allow-unsigned while the key is available (owner decision of 2026-10-17: a v5 backup relabelled v4 is the accepted residual)', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-v4-with-key-', { format: 'warehouse-backup-v4' });
+  try {
+    assert.equal(existsSync(join(state, 'config/backup.key')), true);
+    const result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});

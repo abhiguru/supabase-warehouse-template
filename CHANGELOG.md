@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased: ops review wave 2, part 1 — signing secret, pg_net, key cache, gateway log, unsigned backups (migrations 92, 93)
+
+Fixes from the 2026-10-17 operational review (TW-BE-001, TW-BE-003, TW-BE-004, TW-BE-019, TW-BE-022). Ships with
+central identity 0.8.1 (key-set caching, TW-ID-001).
+
+- **The JWT signing secret is no longer a database setting (migration 92, TW-BE-003).** The template stored it as
+  `app.settings.jwt_secret` (and PostgREST set it again per request), readable by every role with `current_setting()`.
+  The migration resets it at database level and for any role that holds it; `scripts/configure-auth.sql` repeats the
+  reset on every setup run; `jwt.sql`, `rotate-auth.sql` and the `rest` service no longer set it. Nothing read it.
+- **pg_net is for the service roles only (migration 93, TW-BE-004).** anon, authenticated and PUBLIC lose USAGE on
+  schema `net`, EXECUTE on `net.http_get`/`net.http_post` and EXECUTE on `supabase_functions.http_request()` (which a
+  role with TEMP could otherwise drive from its own trigger); `supabase_functions_admin`, postgres and service_role
+  keep them, so database webhooks still fire. The event-trigger function no longer re-grants on `CREATE EXTENSION`;
+  `webhooks.sql` is corrected for new installs.
+- **The facility's key cache honours the 5-minute withdrawal (TW-BE-001, cross-repo X-1).** A fetched key set is used
+  for at most 4 minutes (was 10), or for the answer's `max-age` less `Age` if shorter, and is fetched with
+  `cache: 'no-store'` and `Cache-Control: no-cache`. The unknown-key-id limit and the back-off are unchanged.
+  Facilities that use a key file rerun `setup.sh --central-jwks-file` with the new file in an emergency.
+- **The gateway access log keeps no query strings (TW-BE-019).** Format `warehouse_redacted`: client address, method,
+  path, status, size, time; signed-URL `?token=` and Realtime `?apikey=` are no longer kept, nor referer or user
+  agent. Storage no longer receives `CF-Connecting-IP` (Kong itself sets `X-Real-IP` and `X-Forwarded-For`, which
+  storage still logs; accepted under owner decision D10). New "Logs" contract in `docs/CONTAINER_SECURITY.md`.
+- **A stripped v5 backup is refused (TW-BE-022).** `db:verify-restore`, `db:restore` and `db:restore-host` refuse a v5
+  backup whose `SHA256SUMS.hmac` is missing while the backup key is available, even with `--allow-unsigned`, which is
+  now only for backups written before v5 or a lost key.
+- Upgrade: `setup.sh --operator` recreates `rest` and Kong (the recreate drops the old gateway logs; links already
+  logged stay valid until they expire).
+
 ## Unreleased: ops review wave 1 — lists refresh after the commit (migration 91), the key file in backups
 
 Fixes from the 2026-10-17 operational review, wave 1 (the acceptance gate TW-BE-016, plus TW-BE-023 and TW-BE-020).

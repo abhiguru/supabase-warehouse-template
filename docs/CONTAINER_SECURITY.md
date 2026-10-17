@@ -829,6 +829,70 @@ hourly window**, like the socket route. It was 300 a minute and 6000 an hour.
   `tests/gateway-config.test.mjs`, which pins the table above, the per-minute
   arithmetic and the wording about bursts.
 
+## Logs (2026-10-17)
+
+What a service log may hold, for the 3 x 10 MB of `json-file` log each service
+keeps (`docker/docker-compose.override.yml`, `x-logging`; the oldest file is
+dropped when the third fills, and a recreated container starts with an empty
+log).
+
+- **The rule.** No log line holds a token, a key, an OTP, a password or a query
+  string. A signed storage link (`?token=`) and the anon key in a Realtime
+  socket address (`?apikey=`) are credentials in a query string: a retained log
+  that holds one can replay a still-valid document link or call the API as the
+  public client.
+- **Realtime still logs the anon key.** Realtime writes the socket address
+  (`?apikey=`) to its own container log, independently of the gateway, so the
+  redaction above does not cover it. The value is the public anon key, not a
+  session token or a signed link; the Realtime log was not changed.
+- **Client addresses are allowed in the gateway log, for its rotation life.**
+  Owner decision of 2026-10-17. The address is useful to the operator (who is
+  hammering the gateway) and leaves with the rotation. Nothing else identifies a
+  person: no user agent, no referer, no phone number, no session.
+- **Gateway access log** (`docker/docker-compose.yml`, Kong environment): the
+  format `warehouse_redacted` replaces Kong's default, which wrote the whole
+  request line, query string and all, plus the referer and user agent. A line is
+  `client-address [time] "METHOD /path HTTP/x" status bytes seconds`, for
+  example `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034`.
+  `$uri` is the path without the query. Do not add `$request`, `$request_uri`,
+  `$args`, `$query_string`, `$http_referer` or `$http_user_agent`;
+  `tests/gateway-config.test.mjs` fails if one appears, and `npm run test:gateway`
+  sends a fictional signed-link request and an `apikey` query and fails if the
+  running gateway's log holds `token=` or `apikey=`. The format is defined with
+  `KONG_NGINX_HTTP_LOG_FORMAT` and selected with `KONG_PROXY_ACCESS_LOG`, not in
+  `docker/kong.yml`, which is `eval`ed by the entrypoint (a `$` there is replaced).
+  In the Compose file `$` is written `$$`. Checked on the pinned Kong 3.9.3:
+  `kong prepare` renders `log_format warehouse_redacted ...;` into
+  `nginx-kong.conf` and `access_log /dev/stdout warehouse_redacted;` on the
+  proxy listener, and the running gateway's log holds the path only.
+- **Storage.** The storage service redacts `token` and the `X-Amz-*` signature
+  parameters in the URL it logs (storage-api 1.80.2). It also writes two request
+  headers into its log: `cf-connecting-ip` and `x-real-ip`. The gateway no
+  longer passes `CF-Connecting-IP` to storage (`request-transformer` on the
+  `storage-v1` service). It cannot do the same for `X-Real-IP` and
+  `X-Forwarded-For`: Kong 3.9.3 sets them itself from the client address after
+  the plugins have run, and a plugin that removes them removes only the copy the
+  client sent (checked with an echo upstream behind the real `kong.yml`). The
+  client address therefore still reaches storage and its log, which rotates like
+  the gateway's. Storage does not use it: its image-render rate limit, the only
+  reader of `x-real-ip`, is off (`RATE_LIMITER_ENABLED` is unset).
+- **Residual: the gateway's error log.** nginx quotes the request line, query
+  string included, in an error line (for example `upstream timed out ...,
+  request: "GET /storage/v1/object/sign/...?token=..."`). This was reproduced by
+  stopping an upstream. These lines appear only while a service fails, but a
+  signed link that failed while it was valid stays in the log until it rotates
+  out. The document functions make a signed link valid for one hour
+  (`createSignedUrl(path, 3600)`), so the exposure ends then.
+- **Not changed here.** The function logs, the sensor bridge (replaces any query
+  with `***`, see "Sensor bridge") and the PDF functions follow the rules in
+  their own sections; they were not re-checked for this change.
+- **Upgrade.** The new format applies when the gateway container is recreated
+  (`bash start.sh` after the update, or the setup rerun: Compose recreates a
+  service whose configuration changed). The recreate also drops the old
+  container's log. A signed link that the old format already wrote to a log stays
+  valid until it expires, at most an hour after it was made; a copy of the old
+  log made earlier still holds it.
+
 ## Database passwords: one shared value, and the plan to split it
 
 Not changed in this release. This section is the design and the procedure for
@@ -1043,17 +1107,55 @@ building an image or starting the stack.
   `eval` with Kong's own environment references needs Kong to load the result.
   The new test catches a character the `eval` would alter.
 - **`net.http_get` and `net.http_post` executable by `anon` and
-  `authenticated`.** The grants come from `docker/volumes/db/webhooks.sql` (an
-  init script) and from the event trigger it installs, which re-grants on
-  `CREATE EXTENSION`. The fix is to remove the two roles from both `GRANT`
-  lists there and add a migration that revokes them where the `net` schema
-  exists. The migration test database is the plain publisher image without
-  these init scripts, so the migration could not be exercised by
-  `tests/migrations.sh`; mount `webhooks.sql` in that test first. The `net`
-  schema is not exposed through PostgREST.
-- **`app.settings.jwt_secret` readable by every database role.** Unchanged;
-  see the earlier review note (needs a migration and the removal of
-  `PGRST_APP_SETTINGS_JWT_SECRET`, then a check that nothing reads it).
+  `authenticated`: done on 2026-10-17 (migration 93).** The grants came from
+  `docker/volumes/db/webhooks.sql` (an init script), from the event trigger
+  it installs (which re-granted on `CREATE EXTENSION`) and from the publisher
+  image's own migrations, which run after the init scripts at the first start
+  (`20220713082019`, `20250220051611`). On an installed database the two
+  functions were `SECURITY INVOKER` and executable by `PUBLIC`, `anon` and
+  `authenticated` had `USAGE` on `net`, and pg_net itself grants `USAGE` on
+  `net` and `ALL` on its request tables (`net.http_request_queue`,
+  `net._http_response`) to `PUBLIC`: a role with `USAGE` could enqueue a
+  request with the function or with a plain `INSERT`. Migration 93 revokes
+  `USAGE` on `net` from `PUBLIC`, `anon` and `authenticated` (without it no
+  object in `net` can be named) and `EXECUTE` on the two functions from the
+  same three, then grants `USAGE` and `EXECUTE` explicitly to
+  `supabase_functions_admin`, `postgres` and `service_role`, which had them
+  only through `PUBLIC`. It does nothing where `net` does not exist, and
+  replaces the event trigger function `extensions.grant_pg_net_access()` (owner
+  and grants kept) with a body that grants nothing to `anon` or `authenticated`
+  and takes `PUBLIC`'s `USAGE` back, so `DROP EXTENSION pg_net` followed by
+  `CREATE EXTENSION pg_net` leaves the same state. `webhooks.sql` carries the
+  same least-privilege lines, although the image's migrations run after it.
+  Database webhooks (`supabase_functions.http_request`, a `SECURITY DEFINER`
+  function of `supabase_functions_admin`) still send. `tests/migrations.sh`
+  applies `webhooks.sql` and the image's two pg_net migrations to its database
+  in the order a container runs them, and `tests/pg_net_grants.sql` checks the
+  grants, the calls and a webhook, including after `DROP EXTENSION` and
+  `CREATE EXTENSION`. The `net` schema is not exposed through PostgREST.
+  Migration 93 also revokes `EXECUTE` on the trigger function
+  `supabase_functions.http_request()` from `PUBLIC`, `anon` and `authenticated`
+  (`webhooks.sql` likewise): it is `SECURITY DEFINER`, may call `net.http_post`,
+  and takes the destination from the arguments of whoever creates the trigger,
+  and `PUBLIC` may create temporary tables, so those roles could author a
+  request without touching `net`. A webhook created by `postgres` (Studio) still
+  fires on an insert by `anon`; `tests/pg_net_grants.sql` checks both, and that
+  `anon` and `authenticated` cannot attach their own trigger.
+  Remaining, by design: `net.http_delete`, `net.http_collect_response` and the
+  request tables keep pg_net's `PUBLIC` privileges; they are unreachable without
+  `USAGE` on `net`, so that one revoke is what protects them (defence in depth
+  would be a further revoke on each, which pg_net undoes on every
+  `CREATE EXTENSION`).
+- **`app.settings.jwt_secret` readable by every database role: done on
+  2026-10-17 (migration 92).** The migration resets the database setting (and a
+  role-level copy, if any); `scripts/configure-auth.sql` repeats the reset on
+  every setup run; `docker/volumes/db/jwt.sql`, `scripts/rotate-auth.sql` and
+  the PostgREST variable `PGRST_APP_SETTINGS_JWT_SECRET` no longer set it. The
+  database code reads `warehouse_security.auth_config`; no function in the
+  database mentions the setting (checked by `tests/migrations.sh`). PostgREST
+  (`PGRST_JWT_SECRET`), Realtime (`API_JWT_SECRET`) and Storage keep taking the
+  secret from their own environment. Not done, by owner decision D13: a
+  separate key for the one-time-code HMAC, which would void pending codes.
 - **`no-new-privileges`, dropped capabilities, read-only root filesystems.**
   Not a blanket change: Realtime's start script runs `sudo -u nobody`
   (`/app/run.sh` in the pinned image), which `no-new-privileges` blocks, and
