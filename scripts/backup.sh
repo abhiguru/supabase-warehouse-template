@@ -13,6 +13,11 @@ state="${WAREHOUSE_STATE_DIR:-}"
 compose config --quiet
 exec 9>"$state/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
+# From here on every exit is a backup attempt, and its result goes to Prometheus (docs/MONITORING.md,
+# "Backup alerts"); cleanup() below takes over this trap and records the final status itself.
+# shellcheck source=scripts/backup-metrics.sh
+source "$ROOT/scripts/backup-metrics.sh"
+trap 'backup_metrics_exit "$state" disk $?' EXIT
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
 backup_key_ensure "$state"
@@ -45,6 +50,7 @@ cleanup() {
     fi
   fi
   [[ ! -d "$stage" ]] || rm -rf "$stage"
+  backup_metrics_exit "$state" disk "$status"
   exit "$status"
 }
 trap cleanup EXIT
