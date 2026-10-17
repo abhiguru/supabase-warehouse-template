@@ -51,7 +51,10 @@
 --    refresh and the RPCs it serves, for administrators, supervisors and staff (authorize_rpc).
 --    Contract: a committed write reaches get_invoices_list, get_dispatch_list and the legacy
 --    get_all_grn_items(p_catalog_id, ...) overload within 15 s; write answers stay authoritative.
--- 8. warehouse_security.list_refresh_status(): what health-check.sh (doctor) checks.
+-- 8. warehouse_security.list_refresh_status(): what health-check.sh (doctor) checks, including a session other
+--    than the runner that holds 71046.
+-- Migrations: scripts/migration-plan.mjs holds 71046 for the whole run, so no refresh overlaps a migration;
+-- taking 71040 in a migration (migrations 19 and 68) no longer keeps refreshes away.
 -- Lock 71046 was unused (71040 documents, 71041 migrations, 71042 auth configuration, 71043 users,
 -- 71045 SMS configuration; 71041/71044/71049 also seed hashtextextended keys). Migration 87's check that
 -- create_dispatch takes 71040 exactly once, before its idempotency lookup, is repeated at the end.
@@ -357,7 +360,7 @@ DO $$ BEGIN PERFORM warehouse_security.ensure_list_refresher(); END $$;
 -- 8. What the doctor checks (scripts are run by the superuser; not granted to any app role).
 CREATE FUNCTION warehouse_security.list_refresh_status() RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
-DECLARE job record; last_run record; oldest numeric; failing text; problems text[] := '{}';
+DECLARE job record; last_run record; oldest numeric; failing text; holder text; problems text[] := '{}';
 BEGIN
   SELECT j.jobid, j.active, j.username INTO job FROM cron.job j WHERE j.jobname = 'warehouse-list-refresh';
   IF NOT FOUND THEN
@@ -377,6 +380,18 @@ BEGIN
     FROM public.mv_refresh_queue q WHERE q.last_error_code IS NOT NULL;
   IF failing IS NOT NULL THEN
     problems := problems || ('the refresh fails for ' || failing);
+  END IF;
+  -- Another session holding 71046 makes every run return at once: a migration in progress, or a CALL of
+  -- the worker left open in psql after an error (the procedure cannot release the lock on an error).
+  SELECT string_agg(format('pid %s (user %s, application %s, %s since %s)', a.pid, a.usename,
+      COALESCE(NULLIF(a.application_name, ''), '-'), a.state, to_char(a.state_change, 'YYYY-MM-DD HH24:MI:SS TZ')), ', ')
+    INTO holder
+    FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+   WHERE l.locktype = 'advisory' AND l.classid = 0 AND l.objid = 71046 AND l.objsubid = 1 AND l.granted
+     AND a.usename IS DISTINCT FROM 'warehouse_list_refresher';
+  IF holder IS NOT NULL THEN
+    problems := problems || ('the list refresh lock 71046 is held by ' || holder
+      || ': no run can refresh until that session ends');
   END IF;
   IF job.jobid IS NOT NULL THEN
     SELECT d.status, d.return_message INTO last_run FROM cron.job_run_details d

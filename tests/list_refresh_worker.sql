@@ -68,8 +68,8 @@ SELECT pg_temp.lr_assert(p.prokind = 'p' AND NOT p.prosecdef AND p.proconfig IS 
     AND p.prosrc LIKE '%pg_try_advisory_lock(71046)%' AND p.prosrc NOT LIKE '%71040%',
   'the worker is a procedure that can commit (invoker, no SET clause), takes 71046 and never 71040')
 FROM pg_proc p WHERE p.oid = 'warehouse_security.refresh_dirty_lists_worker()'::regprocedure;
-SELECT pg_temp.lr_assert(NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.prosrc LIKE '%71046%'
-    AND p.oid <> 'warehouse_security.refresh_dirty_lists_worker()'::regprocedure), 'no other function uses lock 71046');
+SELECT pg_temp.lr_assert(NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.prosrc ~ 'pg_(try_)?advisory(_xact)?_lock(_shared)?\(\s*71046'
+    AND p.oid <> 'warehouse_security.refresh_dirty_lists_worker()'::regprocedure), 'no other function takes lock 71046');
 SELECT pg_temp.lr_assert(bool_and(p.prosecdef AND p.proconfig @> ARRAY['search_path=pg_catalog, public'] AND p.prosrc NOT LIKE '%71040%'),
   'the worker helpers are SECURITY DEFINER with a fixed search_path and never take 71040')
 FROM pg_proc p WHERE p.oid IN ('warehouse_security.list_refresh_claim()'::regprocedure, 'warehouse_security.list_refresh_view(text)'::regprocedure,
@@ -118,6 +118,30 @@ SELECT warehouse_security.ensure_list_refresher();
 SELECT pg_temp.lr_assert((SELECT active FROM cron.job WHERE jobname = 'warehouse-list-refresh')
     AND (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'warehouse_list_refresher')
     AND (SELECT count(*) = 2 FROM cron.job WHERE jobname LIKE 'warehouse-list-refresh%'), 'ensure_list_refresher restores both');
+
+-- The doctor's other checks (review of wave 1, findings 3 and 4), each made true for a moment.
+SAVEPOINT doctor_checks;
+UPDATE public.mv_refresh_queue SET needs_refresh = true, last_marked_dirty = clock_timestamp() - interval '20 seconds',
+  last_error_code = '22003' WHERE mv_name = 'mv_orders_list';
+SELECT pg_temp.lr_assert(NOT (s->>'ok')::boolean AND (s->>'oldest_dirty_seconds')::numeric >= 20
+    AND s->>'problems' LIKE '%a list has waited 2_._ s for its refresh (bound: 15 s)%'
+    AND s->>'problems' LIKE '%the refresh fails for mv_orders_list (SQLSTATE 22003)%',
+  'the status names a list waiting beyond the 15 s bound and a failing refresh: ' || s::text)
+FROM (SELECT warehouse_security.list_refresh_status() s) x;
+INSERT INTO cron.job_run_details(jobid, runid, job_pid, database, username, command, status, return_message, start_time, end_time)
+SELECT jobid, (SELECT COALESCE(max(runid), 0) + 1000000 FROM cron.job_run_details), 0, database, username, command,
+  'failed', 'ERROR:  probe failure for the doctor', now(), now()
+FROM cron.job WHERE jobname = 'warehouse-list-refresh';
+SELECT pg_temp.lr_assert(warehouse_security.list_refresh_status()->>'problems' LIKE '%the last refresh run failed: ERROR:  probe failure for the doctor%',
+  'the status names a failed last run: ' || (warehouse_security.list_refresh_status()->>'problems'));
+ROLLBACK TO SAVEPOINT doctor_checks;
+-- A session other than the runner holding lock 71046 (a CALL left open in psql, a migration) is named.
+SELECT pg_temp.lr_assert(warehouse_security.list_refresh_status()->>'problems' NOT LIKE '%lock 71046 is held%', 'no foreign holder of 71046 before');
+SELECT pg_advisory_lock(71046);
+SELECT pg_temp.lr_assert(warehouse_security.list_refresh_status()->>'problems'
+    LIKE format('%%the list refresh lock 71046 is held by pid %s (user supabase_admin%%', pg_backend_pid()),
+  'the status names the session holding 71046: ' || (warehouse_security.list_refresh_status()->>'problems'));
+SELECT pg_advisory_unlock(71046);
 
 -- ---------------------------------------------------------------------------
 -- 3. Every table marks every list that reads it; the mark is unconditional
