@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
+import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -215,10 +216,17 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
       }
+      // An installation made before per-role database passwords gets them here
+      // (docs/CONTAINER_SECURITY.md, "Database passwords"); a value that exists
+      // is never replaced. setup.sh then sets them in the database with
+      // scripts/configure-db-roles.sql, and both restore paths run this branch
+      // before the database starts, because an older backup carries none.
+      const withDbValues = addMissingDbValues(readFileSync(envPath, 'utf8'));
+      if (withDbValues.added.length) replaceFileAtomically(envPath, withDbValues.text);
       // An installation made before signed backups gets its backup key here;
       // an existing key is never replaced.
       const backupKeyCreated = createBackupKey(join(state, 'config'));
-      return { created: false, state, manifest, providerUpdated, centralUpdated, backupKeyCreated };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, dbValuesAdded: withDbValues.added, backupKeyCreated };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -235,7 +243,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     SITE_URL: application, ADDITIONAL_REDIRECT_URLS: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
-    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generateSigningKeys(),
+    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
   for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
@@ -252,7 +260,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     createBackupKey(join(stage, 'config'));
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, backupKeyCreated: true };
+  return { created: true, state, manifest, dbValuesAdded: [], backupKeyCreated: true };
 }
 
 export function parseConfigureArgs(args) {
@@ -273,8 +281,10 @@ if (isMain(import.meta.url)) {
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
-          : 'Preserved existing operator state unchanged.');
+          : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
+            : 'Preserved existing operator state unchanged.');
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
+    if (result.dbValuesAdded?.length) console.log(`Added ${result.dbValuesAdded.join(', ')} to the existing operator state: every database login now gets its own password (setup applies them to the database).`);
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }
