@@ -3,6 +3,9 @@ apiVersion: 1
 
 datasources:
   - name: Prometheus
+    # Pinned: the dashboard in docker/volumes/grafana/dashboards refers to this uid. It is the uid
+    # Grafana has always derived for this datasource, so an existing installation does not change.
+    uid: PBFA97CFB590B2093
     type: prometheus
     access: proxy
     url: http://prometheus:9090
