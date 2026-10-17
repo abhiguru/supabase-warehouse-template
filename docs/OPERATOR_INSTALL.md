@@ -1291,9 +1291,10 @@ What to know:
   runs outside it and no port, image or Compose service is added. The role has
   no password: it connects over 127.0.0.1 inside the container, and every
   network address needs a password.
-- **Staleness.** A committed change reaches those lists within 15 seconds,
-  usually within 5 to 7; the answer of the write itself is immediate. Other
-  lists read the tables directly.
+- **Staleness.** A committed change reaches those lists within 15 seconds:
+  at most one 5-second interval plus the refresh (about 2 s on a site with
+  12,000 GRNs), typically 3 to 4 seconds. The answer of the write itself is
+  immediate. Other lists read the tables directly.
 - **The doctor** (`health-check.sh`, also run by setup and restore) fails with
   `list refresh: ...` when the job is missing or paused, the role cannot log in,
   a refresh fails, or a list has waited more than 15 s. The first run after a

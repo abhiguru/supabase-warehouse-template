@@ -495,8 +495,9 @@ pg_cron job `warehouse-list-refresh` refreshes the marked lists every 5 seconds,
 (TW-BE-016; the database side is in [ARCHITECTURE.md](ARCHITECTURE.md), "List refresh").
 
 **Contract.** A committed write reaches the lists below within **15 seconds** (owner decision D2,
-2026-10-17); in practice within one run of the job, 5 seconds plus the refresh (measured in
-`tests/list_refresh_worker.sh` and the review batch's populated-scale run). The answer of a write RPC
+2026-10-17); in practice within one interval of the job plus one refresh of the marked lists: at most about 7 s
+and typically 3 to 4 s with 12,000 GRNs and 120,000 lines (measured for the review batch of 2026-10-17;
+`tests/list_refresh_worker.sh` checks the bound). The answer of a write RPC
 (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`, `save_invoice`,
 `update_invoice`, ...) is authoritative at once: a screen that made the change uses that answer, not a
 list.
