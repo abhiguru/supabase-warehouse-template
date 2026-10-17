@@ -23,6 +23,11 @@ for ((i=0; i<60; i++)); do
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Test database did not start' >&2; exit 1; }
+# docker/volumes/db/webhooks.sql is an init script of the real database container (pg_net, the schema
+# supabase_functions, the event trigger that grants on net). This plain publisher image has none of it, so it
+# is applied here, before the migrations, to give migration 93 and tests/pg_net_grants.sql what an install holds.
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
+  psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/docker/volumes/db/webhooks.sql"
 for pass in 1 2; do
   echo "Migration ledger pass $pass (second pass must skip unchanged files)"
   node "$ROOT/scripts/migration-plan.mjs" |
@@ -65,10 +70,61 @@ test_files=(
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
+  "$ROOT/tests/pg_net_grants.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
+
+# Migration 93 (TW-BE-004) on an install that still holds the grants of the template init script: anon and
+# authenticated own USAGE on net and EXECUTE on net.http_get / net.http_post, PUBLIC holds USAGE (pg_net grants
+# it), and the event trigger function is the one webhooks.sql used to install. That state is rebuilt here, shown
+# to be open, and then the migration and tests/pg_net_grants.sql must close it. The first command also proves
+# the migration does nothing and does not fail where the schema net does not exist.
+pg_net_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+no_net=$({ echo 'BEGIN; DROP EXTENSION pg_net;'
+  cat "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
+  echo "SELECT CASE WHEN to_regnamespace('net') IS NULL THEN 'no-op' ELSE 'net came back' END;"
+  echo 'ROLLBACK;'; } | pg_net_psql)
+[[ "$no_net" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
+pg_net_psql <<'SQL'
+CREATE OR REPLACE FUNCTION extensions.grant_pg_net_access()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_event_trigger_ddl_commands() AS ev
+    JOIN pg_extension AS ext
+    ON ev.objid = ext.oid
+    WHERE ext.extname = 'pg_net'
+  )
+  THEN
+    GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
+    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
+    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
+    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
+    REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+  END IF;
+END;
+$$;
+DROP EXTENSION pg_net;
+CREATE EXTENSION pg_net SCHEMA extensions;
+SQL
+[[ "$(pg_net_psql -c "SELECT has_function_privilege('anon','net.http_get(text,jsonb,jsonb,integer)','EXECUTE')
+    AND has_function_privilege('authenticated','net.http_post(text,jsonb,jsonb,jsonb,integer)','EXECUTE')
+    AND has_schema_privilege('anon','net','USAGE') AND has_schema_privilege('authenticated','net','USAGE')")" = t ]] || {
+  echo 'The test could not rebuild the grants of the template init script.' >&2; exit 1; }
+pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
+# A second run of the migration, where it has nothing left to do, changes nothing.
+pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
 for pass in 1 2; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only \
     -e SMS_PROVIDER=msg91 -e SMS_PRODUCTION_MODE=true \
@@ -79,6 +135,37 @@ done
 sms_synced=$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" \
   psql -X -qAt -U supabase_admin -d postgres -c "SELECT count(*)=1 AND bool_and(provider='msg91' AND production_mode AND msg91_auth_key='isolated-test-key' AND msg91_template_id='694a8ea0cd30ae1f432f445a' AND msg91_pe_id='1101817660000088076' AND msg91_sender_id='GCSAMD') FROM public.sms_config")
 [[ "$sms_synced" = t ]] || { echo 'Private MSG91 configuration did not synchronize idempotently.' >&2; exit 1; }
+# TW-BE-003 (migration 92, scripts/configure-auth.sql): the JWT signing secret is not a database setting.
+# Every role reads a database-level setting through current_setting(), so that is checked as anon in a new
+# session. SET ROLE does not apply a role's own settings, so those are read from pg_db_role_setting.
+jwt_sql() {
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1
+}
+anon_secret_setting() { printf '%s\n' 'SET ROLE anon;' "SELECT coalesce(current_setting('app.settings.jwt_secret', true), '');" | jwt_sql; }
+secret_settings_held() {
+  printf '%s\n' "SELECT count(*) FROM pg_db_role_setting s, unnest(s.setconfig) AS item WHERE starts_with(lower(item), 'app.settings.jwt_secret=');" | jwt_sql
+}
+plant_secret_settings() {
+  jwt_sql <<'SQL'
+ALTER DATABASE postgres SET "app.settings.jwt_secret" TO 'fictional-test-secret';
+ALTER ROLE authenticator SET "app.settings.jwt_secret" TO 'fictional-test-secret';
+ALTER ROLE anon IN DATABASE postgres SET "app.settings.jwt_secret" TO 'fictional-test-secret';
+ALTER ROLE ALL SET "app.settings.jwt_secret" TO 'fictional-test-secret';
+SQL
+  [[ "$(anon_secret_setting)" = fictional-test-secret && "$(secret_settings_held)" = 4 ]] || {
+    echo 'The test could not plant the signing secret settings.' >&2; exit 1; }
+}
+[[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
+  echo 'The signing secret is held as a database or role setting after the migrations.' >&2; exit 1; }
+[[ "$(printf '%s\n' "SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%app.settings.jwt_secret%'" | jwt_sql)" = 0 ]] || {
+  echo 'A database function reads the signing secret setting.' >&2; exit 1; }
+# Migration 92 on a database that holds the setting at database level and for three kinds of role setting.
+plant_secret_settings
+jwt_sql < "$ROOT/migrations/00000000000092_jwt_secret_guc.sql"
+[[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
+  echo 'Migration 92 must remove the signing secret setting from the database and from every role.' >&2; exit 1; }
+# The auth configuration below must remove it as well, in case it came back (a restored or hand-edited database).
+plant_secret_settings
 for pass in 1 2; do
   if [[ "$pass" = 1 ]]; then
     docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
@@ -101,6 +188,8 @@ SQL
     echo 'Auth transition must revoke earlier sessions and preserve operator sessions on rerun.' >&2; exit 1;
   }
 done
+[[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
+  echo 'scripts/configure-auth.sql must remove the signing secret setting from the database and from every role.' >&2; exit 1; }
 
 # scripts/configure-central.sql: the trusted issuer is the psql variable
 # setup.sh passes from compose.env; absent or empty turns central sign-in off,
