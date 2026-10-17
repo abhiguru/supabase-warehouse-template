@@ -1069,12 +1069,19 @@ building an image or starting the stack.
   in the order a container runs them, and `tests/pg_net_grants.sql` checks the
   grants, the calls and a webhook, including after `DROP EXTENSION` and
   `CREATE EXTENSION`. The `net` schema is not exposed through PostgREST.
-  Remaining, by design: `net.http_delete` and `net.http_collect_response` keep
-  pg_net's `PUBLIC` `EXECUTE`, and the request tables keep `PUBLIC`'s
-  privileges, both unreachable without `USAGE` on `net`; and `EXECUTE` on the
-  trigger function `supabase_functions.http_request()` stays granted to `anon`
-  and `authenticated` by `webhooks.sql`, which a role cannot call directly (a
-  trigger function) and which is not a path to `net` for them.
+  Migration 93 also revokes `EXECUTE` on the trigger function
+  `supabase_functions.http_request()` from `PUBLIC`, `anon` and `authenticated`
+  (`webhooks.sql` likewise): it is `SECURITY DEFINER`, may call `net.http_post`,
+  and takes the destination from the arguments of whoever creates the trigger,
+  and `PUBLIC` may create temporary tables, so those roles could author a
+  request without touching `net`. A webhook created by `postgres` (Studio) still
+  fires on an insert by `anon`; `tests/pg_net_grants.sql` checks both, and that
+  `anon` and `authenticated` cannot attach their own trigger.
+  Remaining, by design: `net.http_delete`, `net.http_collect_response` and the
+  request tables keep pg_net's `PUBLIC` privileges; they are unreachable without
+  `USAGE` on `net`, so that one revoke is what protects them (defence in depth
+  would be a further revoke on each, which pg_net undoes on every
+  `CREATE EXTENSION`).
 - **`app.settings.jwt_secret` readable by every database role: done on
   2026-10-17 (migration 92).** The migration resets the database setting (and a
   role-level copy, if any); `scripts/configure-auth.sql` repeats the reset on

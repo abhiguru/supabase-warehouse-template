@@ -73,9 +73,19 @@ SELECT pg_temp.pn_assert(pg_temp.pn_as('service_role', $q$SELECT net.http_get('h
 SELECT pg_temp.pn_assert(pg_temp.pn_as('service_role', $q$SELECT net.http_post('http://hook.example.test/', '{}'::jsonb)$q$) = 'ok', 'service_role cannot call net.http_post');
 -- The other net functions are not reachable by name without USAGE on the schema.
 SELECT pg_temp.pn_assert(pg_temp.pn_as('anon', $q$SELECT net.http_delete('http://hook.example.test/')$q$) = '42501', 'anon can reach net.http_delete');
--- The webhook function keeps its grants to anon and authenticated (it is a trigger function and cannot be
--- called directly; docs/CONTAINER_SECURITY.md). It must still refuse a direct call.
-SELECT pg_temp.pn_assert(pg_temp.pn_as('anon', 'SELECT supabase_functions.http_request()') = '0A000', 'anon can call supabase_functions.http_request() directly');
+-- The webhook trigger function is SECURITY DEFINER and may call net.http_post with a destination taken from the
+-- trigger's arguments, so a role that may attach a trigger to it can author a request. Neither role may.
+SELECT pg_temp.pn_assert(NOT has_function_privilege('anon', 'supabase_functions.http_request()', 'EXECUTE'), 'anon holds EXECUTE on supabase_functions.http_request()');
+SELECT pg_temp.pn_assert(NOT has_function_privilege('authenticated', 'supabase_functions.http_request()', 'EXECUTE'), 'authenticated holds EXECUTE on supabase_functions.http_request()');
+SELECT pg_temp.pn_assert(has_function_privilege('postgres', 'supabase_functions.http_request()', 'EXECUTE')
+  AND has_function_privilege('service_role', 'supabase_functions.http_request()', 'EXECUTE')
+  AND has_function_privilege('supabase_functions_admin', 'supabase_functions.http_request()', 'EXECUTE'), 'a webhook role lost EXECUTE on supabase_functions.http_request()');
+SELECT pg_temp.pn_assert(pg_temp.pn_as('anon', $q$CREATE TEMP TABLE pn_anon_source(id integer);
+  CREATE TRIGGER pn_anon AFTER INSERT ON pn_anon_source FOR EACH ROW
+  EXECUTE FUNCTION supabase_functions.http_request('http://hook.example.test/anon', 'GET')$q$) = '42501', 'anon can attach its own webhook trigger');
+SELECT pg_temp.pn_assert(pg_temp.pn_as('authenticated', $q$CREATE TEMP TABLE pn_auth_source(id integer);
+  CREATE TRIGGER pn_auth AFTER INSERT ON pn_auth_source FOR EACH ROW
+  EXECUTE FUNCTION supabase_functions.http_request('http://hook.example.test/auth', 'GET')$q$) = '42501', 'authenticated can attach its own webhook trigger');
 
 -- 3. A database webhook still sends: an insert fires supabase_functions.http_request (SECURITY DEFINER,
 --    supabase_functions_admin), which calls net.http_post and records the request in supabase_functions.hooks.
@@ -85,6 +95,10 @@ CREATE TRIGGER pn_hook AFTER INSERT ON pn_hook_source FOR EACH ROW
 SELECT count(*) AS hooks_before FROM supabase_functions.hooks \gset
 INSERT INTO pn_hook_source VALUES (1);
 SELECT pg_temp.pn_assert((SELECT count(*) FROM supabase_functions.hooks) = :hooks_before + 1, 'a database webhook no longer sends');
+-- A webhook made by an administrator still fires on an insert by anon (the function runs as its owner).
+GRANT INSERT ON pn_hook_source TO anon;
+SELECT pg_temp.pn_assert(pg_temp.pn_as('anon', 'INSERT INTO pn_hook_source VALUES (2)') = 'ok', 'anon cannot insert into the webhook table');
+SELECT pg_temp.pn_assert((SELECT count(*) FROM supabase_functions.hooks) = :hooks_before + 2, 'a database webhook does not fire on an insert by anon');
 
 -- 4. The event trigger function keeps its owner and still exists with its trigger enabled.
 SELECT pg_temp.pn_assert(

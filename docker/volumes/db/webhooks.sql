@@ -221,5 +221,8 @@ BEGIN;
   ALTER function supabase_functions.http_request() SECURITY DEFINER;
   ALTER function supabase_functions.http_request() SET search_path = supabase_functions;
   REVOKE ALL ON FUNCTION supabase_functions.http_request() FROM PUBLIC;
-  GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO postgres, anon, authenticated, service_role;
+  -- Not anon or authenticated: the function runs as its owner with the right to call net.http_post, so whoever may
+  -- create a trigger on it chooses the destination (migration 93).
+  REVOKE ALL ON FUNCTION supabase_functions.http_request() FROM anon, authenticated;
+  GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO postgres, service_role;
 COMMIT;

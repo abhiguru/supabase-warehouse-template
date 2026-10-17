@@ -23,6 +23,7 @@
 --    its body with the one in webhooks.sql minus anon and authenticated, plus the PUBLIC revoke on net, so
 --    DROP EXTENSION pg_net followed by CREATE EXTENSION pg_net does not bring the grants back. The owner and
 --    the grants of the function are kept (CREATE OR REPLACE) and checked.
+-- 3. Where supabase_functions.http_request() exists: EXECUTE is revoked from PUBLIC, anon and authenticated.
 -- Where net does not exist (the plain migration-test image before webhooks.sql, an install without pg_net)
 -- part 1 does nothing. Idempotent.
 
@@ -51,6 +52,14 @@ BEGIN
         EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I', fn.signature, keeper.name);
       END LOOP;
     END LOOP;
+  END IF;
+
+  -- The webhook trigger function is SECURITY DEFINER with the right to call net.http_post, and takes the
+  -- destination from the arguments of whoever creates the trigger (EXECUTE on a trigger function is checked
+  -- when the trigger is created, and PUBLIC may create temporary tables). Anon and authenticated could have
+  -- authored a request. Webhooks made by postgres (Studio) keep working: the function runs as its owner.
+  IF to_regprocedure('supabase_functions.http_request()') IS NOT NULL THEN
+    REVOKE EXECUTE ON FUNCTION supabase_functions.http_request() FROM PUBLIC, anon, authenticated;
   END IF;
 
   IF trigger_fn IS NOT NULL THEN

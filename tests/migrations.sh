@@ -100,9 +100,11 @@ no_net=$({ echo 'BEGIN; DROP EXTENSION pg_net;'
 [[ "${no_net##*$'\n'}" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
 pg_net_image_migration 20250220051611_pg_net_perms_fix.sql
 pg_net_psql -c 'DROP EXTENSION pg_net' -c 'CREATE EXTENSION pg_net SCHEMA extensions'
+pg_net_psql -c 'GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO anon, authenticated'
 [[ "$(pg_net_psql -c "SELECT has_function_privilege('anon','net.http_get(text,jsonb,jsonb,integer)','EXECUTE')
     AND has_function_privilege('authenticated','net.http_post(text,jsonb,jsonb,jsonb,integer)','EXECUTE')
-    AND has_schema_privilege('anon','net','USAGE') AND has_schema_privilege('authenticated','net','USAGE')")" = t ]] || {
+    AND has_schema_privilege('anon','net','USAGE') AND has_schema_privilege('authenticated','net','USAGE')
+    AND has_function_privilege('anon','supabase_functions.http_request()','EXECUTE')")" = t ]] || {
   echo 'The test could not rebuild the grants of the template and the image.' >&2; exit 1; }
 pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
 docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
