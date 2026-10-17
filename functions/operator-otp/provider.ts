@@ -51,12 +51,15 @@ function timedOut(error: unknown): boolean {
   return name === 'TimeoutError' || name === 'AbortError';
 }
 
-// MSG91's request ID: the `message` of a success answer, trimmed, at most 255 characters of
-// [A-Za-z0-9._:-]. Text that is not such an ID (spaces, symbols) counts as no ID (null): the
-// answer is still a success and the caller records `success_no_id`.
-function requestId(message: string): string | null {
-  const id = message.trim().slice(0, 255);
-  return /^[A-Za-z0-9._:-]+$/.test(id) ? id : null;
+// MSG91's request ID: the `message` of a success answer when it is a string that, trimmed, has 1 to
+// 255 characters of [A-Za-z0-9._:-] (the identity service's rule). Anything else (absent, blank, a
+// number, an object, too long, other text) is no ID (null): the answer is still a success, the code
+// is treated as sent, and the caller records `success_no_id`. Never a failure: that would void a
+// code whose SMS MSG91 accepted and bill a second one.
+function requestId(message: unknown): string | null {
+  if (typeof message !== 'string') return null;
+  const id = message.trim();
+  return /^[A-Za-z0-9._:-]{1,255}$/.test(id) ? id : null;
 }
 
 export async function deliverOtp(
@@ -117,10 +120,6 @@ export async function deliverOtp(
     if (!result || typeof result !== 'object') throw new Msg91DeliveryError('provider_invalid_response', attempts);
     if (success && refused) throw new Msg91DeliveryError('provider_invalid_response', attempts);
     if (!success) throw new Msg91DeliveryError('provider_rejected', attempts);
-    if (result.message == null) return { providerId: null, attempts };
-    if (typeof result.message !== 'string' || !result.message.trim()) {
-      throw new Msg91DeliveryError('provider_invalid_response', attempts);
-    }
     return { providerId: requestId(result.message), attempts };
   }
   throw new Msg91DeliveryError('provider_unavailable', attempts);

@@ -85,9 +85,11 @@ test('the OTP section names the HMAC-SHA256 construction and what a key rotation
 test('the OTP section states the provider request-ID contract and the success without an ID', () => {
   // TW-CFG-002 / TW-CFG-003 / X-3: the contract identity mirrors.
   const section = otpSection();
-  assert.match(section, /`message`\. The facility trims it, accepts at most 255 characters/);
+  assert.match(section, /`message`\. The facility trims it, accepts 1 to 255 characters/);
   assert.match(section, /`otp_verifications\.msg91_request_id`/);
   assert.match(section, /never returned to\s+a client or written to a log/);
+  assert.match(section, /a blank or non-text one, one over\s+255 characters/);
+  assert.match(section, /with a\s+failing status as `provider_unavailable`/);
   assert.match(section, /`success_no_id`/);
   assert.match(section, /no second SMS is sent/);
   assert.match(section, /`type`\s+and `status` disagree/);

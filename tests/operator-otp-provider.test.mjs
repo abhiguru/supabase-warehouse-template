@@ -48,7 +48,7 @@ test('refuses missing configuration, invalid input and provider rejections', asy
   await assert.rejects(deliverOtp(phone, code, authKey, templateId,
     async () => Response.json({ type: 'error', message: 'invalid template' })), { code: 'provider_rejected' });
   await assert.rejects(deliverOtp(phone, code, authKey, templateId,
-    async () => Response.json({ type: 'success', message: '' })), { code: 'provider_invalid_response' });
+    async () => Response.json({ type: 'error', message: '' })), { code: 'provider_rejected' });
   await assert.rejects(deliverOtp(phone, code, authKey, templateId,
     async () => Response.json({ type: 'error' }, { status: 401 })), { code: 'provider_auth' });
   await assert.rejects(deliverOtp(phone, code, authKey, templateId,
@@ -101,7 +101,7 @@ test('retries one explicit transient HTTP rejection, never an auth rejection', a
 
 // Every send function below is injected; none can contact the provider.
 test('rejects malformed success responses without retrying or exposing response text', async () => {
-  for (const body of ['not-json', 'null', '42', JSON.stringify({type:'success',message:42}), JSON.stringify({type:'success',message:'   '})]) {
+  for (const body of ['not-json', 'null', '42', ]) {
     let calls=0;
     await assert.rejects(deliverOtp(phone,code,authKey,templateId,async()=>{calls++;return new Response(body,{status:200});}), error=>error instanceof Msg91DeliveryError && error.code==='provider_invalid_response' && error.message==='MSG91 delivery unavailable');
     assert.equal(calls,1);
@@ -112,7 +112,12 @@ test('preserves absent request IDs and bounds accepted request-ID text', async (
   const idOf = async message => (await deliverOtp(phone,code,authKey,templateId,async()=>Response.json({status:'success',message}))).providerId;
   assert.equal(await idOf(null),null);
   assert.equal(await idOf('  accepted-id  '),'accepted-id');
-  assert.equal((await idOf('x'.repeat(300))).length,255);
+  // Review fix: a success is a success whatever its message; anything that is not an ID is no ID.
+  // Never a throw (the code would be voided and a second SMS billed), never a truncated ID.
+  assert.equal(await idOf('x'.repeat(255)),'x'.repeat(255));
+  for (const message of ['x'.repeat(256),'x'.repeat(300),'',' ','   ',42,{id:'x'},['a'],true,0]) {
+    assert.equal(await idOf(message),null,JSON.stringify(message));
+  }
   // X-3: an ID is [A-Za-z0-9._:-]; other text is a success with no ID, not a refusal and not stored.
   assert.equal(await idOf('3566.a1:B2_c3-d4'),'3566.a1:B2_c3-d4');
   for (const text of ['Request queued successfully','id with space','<script>','id\nnext']) assert.equal(await idOf(text),null,text);

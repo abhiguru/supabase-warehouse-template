@@ -216,6 +216,21 @@ test('a success without a request ID is recorded as sent without an ID and warns
   assert.deepEqual(quiet, []);
 });
 
+test('a success with a blank or unusable message is sent without an ID, never a failure', async () => {
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    for (const message of ['', '   ', 42, { id: 'x' }, 'x'.repeat(300)]) {
+      const { calls, call } = harness({ msg91: Response.json({ type: 'success', message }) });
+      const response = await call('request', phone);
+      assert.equal(response.status, 200, JSON.stringify(message));
+      assert.deepEqual(calls.at(-1).body, { p_request_id: requestId, p_delivered: true, p_provider_id: null, p_attempts: 1 });
+    }
+  } finally { console.warn = warn; }
+  assert.equal(warnings.length, 5);
+});
+
 test('the attempts of a retried request and of a timeout reach the database', async () => {
   // TW-CFG-005 / D15: a timeout is reported as provider_ambiguous with its one request; a failure
   // before any request is sent counts none.

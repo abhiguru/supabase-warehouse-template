@@ -166,4 +166,6 @@ $r$COUNT(*) FILTER (WHERE msg91_status IN ('success','success_no_id')) as succes
   END IF;
 END $patch$;
 
+DROP FUNCTION pg_temp.patch_text(text, regprocedure, text, text, integer);
+
 NOTIFY pgrst, 'reload schema';

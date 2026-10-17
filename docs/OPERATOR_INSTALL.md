@@ -331,17 +331,19 @@ SMS to that number.
   `otp_daily_provider_attempt_cap` set to `0` does the same.
 - **What the facility keeps of MSG91's answer** (the contract the central
   identity service mirrors). A success answer carries MSG91's request ID in its
-  `message`. The facility trims it, accepts at most 255 characters of
+  `message`. The facility trims it, accepts 1 to 255 characters of
   `A-Z a-z 0-9 . _ : -`, and stores it in `otp_verifications.msg91_request_id`
   with `msg91_status` `success`. It lives in that sign-in row and goes with it
   (the cleanup bullet above; `retention:apply` removes it 7 days after the code
   expired). It is never returned to a client or written to a log, and nothing
-  else of MSG91's answer is stored or logged. A success **without** such an ID is still a success: the code is
+  else of MSG91's answer is stored or logged. A success **without** such an ID (no message, a blank or non-text one, one over
+  255 characters, other text) is still a success: the code is
   treated as sent and stays valid, no second SMS is sent, the status is
   `success_no_id` and the function logs the fixed line
   `operator-otp: MSG91 accepted a send without a request ID`. An answer whose
   `type` and `status` disagree (one says success, the other error) is not an
-  acceptance: it is refused as `provider_invalid_response` and is not repeated.
+  acceptance: with HTTP 200 it is refused as `provider_invalid_response`, with a
+  failing status as `provider_unavailable`, and it is not repeated.
   To count the sends without an ID in the last two days:
 
   ```sql
