@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "id": "db-os-no-fix",
+      "recipe": "docker/postgres/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Ubuntu 24.04 lists no fixed version for these rows (2026-10-17 scan: 78 HIGH, all Linux kernel advisories reported against the linux-libc-dev header package; containers run on the host kernel). The recipe upgrades the Ubuntu packages that had a fixed advisory (OpenSSL, GnuPG, PackageKit, sudo, linux-libc-dev) and leaves glibc and the locale data, which the database collations depend on, as the base has them. The database has no host port and sits on the database and admin networks only.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "functions-os-no-fix",
+      "recipe": "docker/edge-runtime/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred",
+        "will_not_fix"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 12 packages of the supabase/edge-runtime v1.77.4 base with no fixed version (2026-10-17 scan after the full apt-get upgrade: 59 HIGH, 1 CRITICAL marked will_not_fix by Debian). The recipe applies every Debian update. The container has no host port; outside requests reach it only through Kong.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "gotenberg-os-no-fix",
+      "recipe": "docker/gotenberg/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred",
+        "will_not_fix"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 13 packages of the gotenberg/gotenberg 8.37.0 base with no fixed version (2026-10-17 scan: 116 HIGH, 1 CRITICAL). The recipe applies every Debian update. Gotenberg has no host port and is on the default network only (no database, postgres-meta or Studio access).",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "studio-os-no-fix",
+      "recipe": "docker/studio/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred",
+        "will_not_fix"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 12 packages of the supabase/studio base with no fixed version. The recipe applies every Debian update; Studio is on the admin network only, reachable from postgres-meta and the database, not from the gateway or functions.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "studio-app-awaiting-publisher",
+      "recipe": "docker/studio/Dockerfile",
+      "class": "advisory",
+      "advisories": [
+        "CVE-2026-102826",
+        "CVE-2026-102827",
+        "CVE-2026-102828",
+        "CVE-2026-102829",
+        "CVE-2026-94483"
+      ],
+      "packages": [
+        "simple-git",
+        "@simple-git/argv-parser",
+        "next"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "owner": "abhiguru",
+      "reason": "Fixed upstream (simple-git 4.0.1, @simple-git/argv-parser 2.0.1, next 16.3.8) but no Studio publisher tag ships them: the newest, 2026.10.12-sha-3699278, still has simple-git 3.36.0, @simple-git/argv-parser 1.1.1 and next 16.3.6. Replacing packages inside the publisher's prebuilt application is not safe. Studio is on the admin network only. Move to the first publisher tag with the fixes.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "grafana-plugins-awaiting-publisher",
+      "recipe": "docker/grafana/Dockerfile",
+      "class": "advisory",
+      "advisories": [
+        "CVE-2026-78667",
+        "CVE-2026-78669",
+        "CVE-2026-97031"
+      ],
+      "packages": [
+        "stdlib",
+        "golang.org/x/net"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "owner": "abhiguru",
+      "reason": "The publisher-signed backends of the nine retained data source plugins (elasticsearch, grafana-postgresql-datasource, grafana-pyroscope-datasource, loki, mssql, mysql, opentsdb, prometheus, zipkin) are built with Go 1.26.6, 1.26.7 or 1.27.1 and golang.org/x/net 0.58.0 or 0.59.0 (fixed in Go 1.26.9/1.27.2 and x/net 0.60.0). On 2026-10-17 neither Grafana 13.2.4 nor the newest catalog release of any of them carries the fix (2026-10-17 scan: 36 HIGH). Signed plugin binaries cannot be rebuilt locally. Grafana is in the optional monitoring profile, with no host port.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "grafana-core-awaiting-publisher",
+      "recipe": "docker/grafana/Dockerfile",
+      "class": "advisory",
+      "advisories": [
+        "CVE-2026-100351",
+        "CVE-2026-100352",
+        "CVE-2026-100353",
+        "CVE-2026-100354"
+      ],
+      "packages": [
+        "github.com/getkin/kin-openapi"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "owner": "abhiguru",
+      "reason": "The Grafana 13.2.4 server binary still embeds kin-openapi 0.144.0 (fixed in 0.147.0 to 0.149.0); 13.2.4 is the newest stable release on 2026-10-17 and its go.mod still requires 0.144.0 (2026-10-17 scan: 4 HIGH). Grafana is in the optional monitoring profile, with no host port. Move to the first release with the fix.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "meta-os-no-fix",
+      "recipe": "docker/postgres-meta/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred",
+        "will_not_fix"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 12 packages of the supabase/postgres-meta v0.99.0 base with no fixed version (2026-10-17 scan: 58 HIGH, 1 CRITICAL marked will_not_fix by Debian). The recipe applies every Debian update; postgres-meta is on the admin network only, with Studio and the database.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "realtime-os-no-fix",
+      "recipe": "docker/realtime/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred",
+        "will_not_fix"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 13 packages of the supabase/realtime v2.143.3 base with no fixed version (2026-10-17 scan: 79 HIGH). The recipe applies every Debian update. Realtime has no host port; outside clients reach it only through Kong.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "rest-no-package-inventory",
+      "recipe": "postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df",
+      "class": "no-package-inventory",
+      "digest": "sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df",
+      "compensatingControls": [
+        "No host port: outside requests reach PostgREST only through Kong, which requires the API key (key-auth), caps request bodies at 10 MB and limits each client address to 1800 requests a minute (docs/CONTAINER_SECURITY.md, REST request limit)",
+        "public.check_session runs before every request (PGRST_DB_PRE_REQUEST), and business data is written only through RPCs guarded by warehouse_security.authorize_rpc",
+        "The image is the publisher's v16.4 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
+      ],
+      "owner": "abhiguru",
+      "reason": "The publisher's static PostgREST binary yields no package results in Trivy and the image carries no SBOM, so a clean scan proves nothing (TW-BE-010, option c). Planned replacement: a source build with a recorded dependency closure (option a). The historical aeson advisory HSEC-2026-0007 is unverified for v16.4.",
+      "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    }
+  ]
+}
