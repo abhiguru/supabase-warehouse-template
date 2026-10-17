@@ -148,15 +148,21 @@ BEGIN;
       WHERE extname = 'pg_net'
     )
     THEN
-      GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+      -- Least privilege (migration 93): the HTTP functions are for the service roles and the webhook
+      -- function only. pg_net grants USAGE on net to PUBLIC itself, so that is revoked too. The
+      -- publisher image's own migrations run after this script and grant anon and authenticated again
+      -- (20220713082019, 20250220051611); migration 93, run by setup after the database starts, is
+      -- what leaves the installed database without those grants.
+      GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, service_role;
+      REVOKE USAGE ON SCHEMA net FROM PUBLIC, anon, authenticated;
       ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
       ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
       ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
       ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
-      REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-      REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-      GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
-      GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+      REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC, anon, authenticated;
+      REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC, anon, authenticated;
+      GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, service_role;
+      GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, service_role;
     END IF;
   END
   $$;
@@ -174,15 +180,26 @@ BEGIN;
       WHERE ext.extname = 'pg_net'
     )
     THEN
-      GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+      -- Same least-privilege body as migration 93: no grant to anon or authenticated, and the USAGE
+      -- on net that pg_net gives PUBLIC is taken back each time the extension is created.
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname = 'supabase_functions_admin'
+      )
+      THEN
+        CREATE USER supabase_functions_admin NOINHERIT CREATEROLE LOGIN NOREPLICATION;
+      END IF;
+      GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, service_role;
+      REVOKE USAGE ON SCHEMA net FROM PUBLIC, anon, authenticated;
       ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
       ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
       ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
       ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
-      REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-      REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-      GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
-      GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
+      REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC, anon, authenticated;
+      REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC, anon, authenticated;
+      GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, service_role;
+      GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, service_role;
     END IF;
   END;
   $$;
@@ -204,5 +221,8 @@ BEGIN;
   ALTER function supabase_functions.http_request() SECURITY DEFINER;
   ALTER function supabase_functions.http_request() SET search_path = supabase_functions;
   REVOKE ALL ON FUNCTION supabase_functions.http_request() FROM PUBLIC;
-  GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO postgres, anon, authenticated, service_role;
+  -- Not anon or authenticated: the function runs as its owner with the right to call net.http_post, so whoever may
+  -- create a trigger on it chooses the destination (migration 93).
+  REVOKE ALL ON FUNCTION supabase_functions.http_request() FROM anon, authenticated;
+  GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO postgres, service_role;
 COMMIT;

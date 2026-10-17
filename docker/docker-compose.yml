@@ -106,6 +106,15 @@ services:
       KONG_REAL_IP_HEADER: CF-Connecting-IP
       KONG_REAL_IP_RECURSIVE: "off"
       KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      # Access log without the query string (docs/CONTAINER_SECURITY.md, "Logs"):
+      # Kong's default format writes the whole request line, so a storage
+      # signed-URL `?token=` and a Realtime `?apikey=` stayed in the log for
+      # its 3 x 10 MB of life. `$$uri` is the path alone. The client address
+      # stays (owner decision of 2026-10-17); Referer, User-Agent and the
+      # credential fields of the default format are left out. `$$` is Compose's
+      # escape for `$`. Do not move this into kong.yml, which is `eval`ed below.
+      KONG_NGINX_HTTP_LOG_FORMAT: "warehouse_redacted '$$remote_addr [$$time_local] \"$$request_method $$uri $$server_protocol\" $$status $$body_bytes_sent $$request_time'"
+      KONG_PROXY_ACCESS_LOG: "/dev/stdout warehouse_redacted"
     entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   # GoTrue auth service DISABLED - using custom phone OTP authentication instead
@@ -169,7 +178,6 @@ services:
       PGRST_JWT_SECRET: ${JWT_SECRET}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_DB_PRE_REQUEST: public.check_session
-      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
     command: ["postgrest"]
 

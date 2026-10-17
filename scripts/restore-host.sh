@@ -15,13 +15,15 @@
 # an archive without a `.hmac` is unpacked only with --allow-unsigned).
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
-# encrypted archive cannot be opened without it. An unsigned backup written
-# before format v5 is accepted only with --allow-unsigned. Nothing outside the
-# new state is changed; the source backup is only read.
+# encrypted archive cannot be opened without it. --allow-unsigned is only for a
+# backup written before format v5, or when the backup key is lost (then
+# --backup-key is left out and nothing proves the backup genuine); a v5 backup
+# whose signature file is missing is refused while --backup-key is given. Nothing
+# outside the new state is changed; the source backup is only read.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key only for a backup written before format v5)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
 state='' confirm=false source='' keyfile='' allow_unsigned=false
@@ -46,7 +48,7 @@ if [[ -n "$keyfile" ]]; then
   backup_key_load "$keyfile" || exit 1
   export WAREHOUSE_BACKUP_KEY_FILE="$(realpath -e -- "$keyfile")"
 elif [[ "$allow_unsigned" != true ]]; then
-  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. Only a backup written before format v5 can be restored without it, with --allow-unsigned.'
+  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. --allow-unsigned is only for a backup written before format v5, or when the backup key is lost: the backup is then used WITHOUT proof that it is genuine.'
 fi
 
 # 1. The new state: an absolute, symlink-free path outside the checkout that is
@@ -121,7 +123,6 @@ done
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null)"
 [[ "$format" == warehouse-backup-v5 || ( "$format" == warehouse-backup-v4 && "$allow_unsigned" == true ) ]] || die "Refusing: restore-host requires a warehouse-backup-v5 backup (or an unsigned warehouse-backup-v4 with --allow-unsigned); this one is '${format:-unknown}'."
-[[ "$BACKUP_SIGNED" == true || "$allow_unsigned" == true ]] || die 'Refusing: the backup signature was not verified.'
 env_get() { sed -n "s/^$1=//p" "$backup/compose.env" | head -n 1; }
 project="$(env_get WAREHOUSE_PROJECT_NAME)"
 [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || die 'The backup configuration has no valid WAREHOUSE_PROJECT_NAME.'

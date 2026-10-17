@@ -88,11 +88,25 @@ The operator chooses one of two sources.
 **An address** (`CENTRAL_JWKS_URL`). The facility fetches the key set: `https`
 only, no redirects, a 5 second timeout, at most 64 KB.
 
-- A fetched set is used for at most 10 minutes. It is held in the memory of
+- A fetched set is used for at most **4 minutes**, counted from the start of
+  the fetch. If the answer carries `Cache-Control: max-age=N` the facility
+  uses it for at most `min(240 s, N - Age)` (`Age` is the header a cache on the
+  way would add; no `max-age` means the 4 minutes). The fetch asks for a fresh
+  answer (`cache: 'no-store'` and `Cache-Control: no-cache`), so no cache the
+  facility controls holds the set. It is held in the memory of
   the function's worker and is gone when that worker ends. The router creates
   workers with a 60 second timeout, so in practice the keys may be fetched
   about once a minute while sign-ins arrive. **How long a worker really lives
-  has not been measured on the edge runtime.**
+  has not been measured on the edge runtime**; it can only shorten the window.
+- **The withdrawal promise.** A key the association removes from its key set
+  stops being accepted by every facility that uses an address no later than
+  **300 seconds** after the association starts serving the reduced set: up to
+  4 minutes of use of the old set, plus the fetch. The association's side of the
+  promise is that its key-set response is not held by any shared or edge cache
+  (`s-maxage=0`, and a CDN or tunnel bypass for `/.well-known/jwks.json`;
+  see the central service's operator guide). The window is a limit on keys only:
+  a token that was already exchanged keeps the session it created, which
+  revocation (`update_user_status(false)`) ends.
 - A token that names a `kid` the facility does not hold causes a new fetch, at
   most once a minute, so a rotated key is picked up without anyone acting.
 - After a fetch that failed, none is started for 30 seconds; central sign-in
@@ -107,7 +121,7 @@ anything: a token that names a `kid` the file does not hold is simply invalid.
 |---|---|---|
 | Outbound connection from the facility | needed at sign-in time | none |
 | The association rotates its keys | picked up automatically | the association must send every facility the new file **before** it signs with the new key; each operator reruns `setup.sh` with it. Until then central sign-in fails with "could not be verified"; SMS sign-in is unaffected. |
-| The association withdraws a key | gone within 10 minutes | stays trusted until the operator installs a file without it |
+| The association withdraws a key | refused within 300 seconds (4 minutes of use plus the fetch) | stays trusted until the operator installs a file without it: see [the emergency step](OPERATOR_INSTALL.md#central-sign-in) |
 | The issuer's site is down | central sign-in unavailable when the keys are next needed | no effect |
 
 Choose the address unless the facility's server may not make outbound

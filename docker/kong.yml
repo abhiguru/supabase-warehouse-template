@@ -275,6 +275,16 @@ services:
       - name: request-size-limiting
         config:
           allowed_payload_size: 50
+      # Storage does not use the client address (its image-render rate limit is
+      # off) but writes CF-Connecting-IP into its own request log, so the header
+      # is not passed on. Kong itself adds X-Real-IP and X-Forwarded-For after
+      # the plugins have run; this plugin cannot remove them (checked on Kong
+      # 3.9.3, docs/CONTAINER_SECURITY.md Logs), so they are not listed here.
+      - name: request-transformer
+        config:
+          remove:
+            headers:
+              - CF-Connecting-IP
 
   ## Edge Functions routes
   - name: functions-v1

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const kong = readFileSync(new URL('../docker/kong.yml', import.meta.url), 'utf8');
 const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
@@ -162,12 +163,96 @@ test('gateway configuration survives the entrypoint that fills in its variables'
   assert.deepEqual([...new Set([...kong.matchAll(/\$\{([A-Z_]+)\}/g)].map(match => match[1]))].sort(), Object.keys(values).sort());
 });
 
+// The Kong environment as the container sees it. Compose writes a literal dollar sign as `$$`
+// in the file, and `docker compose config` prints it that way again; the container gets one.
+const dollars = text => String(text).replaceAll('$$', '$');
+const FORBIDDEN_IN_ACCESS_LOG = [
+  // The request line and anything that carries the query string.
+  /\$request(?![_a-z])/, /\$request_uri/, /\$args/, /\$is_args/, /\$query_string/, /\$arg_/, /\$upstream_uri/, /\$upstream_x_forwarded_path/,
+  // Fields that can carry a credential or a person.
+  /\$http_/, /\$remote_user/, /\$cookie_/,
+];
+function assertRedactedAccessLog(environment, where) {
+  const format = dollars(environment.KONG_NGINX_HTTP_LOG_FORMAT);
+  assert.match(format, /^warehouse_redacted '[^']+'$/, `${where}: the format is defined under the name warehouse_redacted`);
+  assert.ok(format.includes('$uri'), `${where}: the path is logged as $uri (no query string)`);
+  assert.ok(format.includes('$remote_addr'), `${where}: the client address stays in the log (owner decision of 2026-10-17)`);
+  for (const pattern of FORBIDDEN_IN_ACCESS_LOG) assert.doesNotMatch(format, pattern, `${where}: the format must not contain ${pattern}`);
+  assert.equal(environment.KONG_PROXY_ACCESS_LOG, '/dev/stdout warehouse_redacted', `${where}: the proxy access log uses the redacted format`);
+}
+
+test('the gateway access log has no query string, so a signed link or an apikey in a URL is not kept', () => {
+  // Kong's default format logs `$request`, the whole request line with ?token= and ?apikey=.
+  const text = compose.match(/^\s+KONG_NGINX_HTTP_LOG_FORMAT: (".*")$/m);
+  assert.ok(text, 'docker-compose.yml sets KONG_NGINX_HTTP_LOG_FORMAT');
+  const [, access] = compose.match(/^\s+KONG_PROXY_ACCESS_LOG: "([^"]+)"$/m) ?? [];
+  assert.equal(access, '/dev/stdout warehouse_redacted');
+  // YAML double-quoted: \" is a quote. Compose then turns $$ into $.
+  const environment = { KONG_NGINX_HTTP_LOG_FORMAT: JSON.parse(text[1]), KONG_PROXY_ACCESS_LOG: access };
+  assertRedactedAccessLog(environment, 'docker-compose.yml');
+  // Written with $$ in the file: a single $ would be read by Compose as a variable (and warned about).
+  assert.ok(!/\$[a-z_]+/.test(environment.KONG_NGINX_HTTP_LOG_FORMAT.replaceAll('$$', '')), 'every dollar sign in the format is doubled for Compose');
+  // The override file adds resources and logging only; it must not put the default format back.
+  const override = readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(override, /KONG_PROXY_ACCESS_LOG|KONG_NGINX_HTTP_LOG_FORMAT/);
+  // kong.yml is evaluated by the entrypoint: no log format may be defined there.
+  assert.doesNotMatch(kong, /log_format|access_log/);
+});
+
+test('the rendered Kong environment selects the redacted access log', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  assertRedactedAccessLog(renderedCompose().services.kong.environment, 'docker compose config');
+});
+
+test('storage is not sent the CF-Connecting-IP header, and the log contract says what it cannot remove', () => {
+  const storage = serviceBlock('storage-v1');
+  assert.match(storage, /- name: request-transformer\n\s+config:\n\s+remove:\n\s+headers:\n\s+- CF-Connecting-IP\n/);
+  // Kong adds X-Real-IP and X-Forwarded-For itself after the plugins ran, so listing them would promise too much.
+  assert.doesNotMatch(storage, /^\s+- (?:X-Real-IP|X-Forwarded-For)$/im);
+  const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
+  const start = docs.indexOf('\n## Logs (2026-10-17)\n');
+  assert.ok(start > 0, 'docs/CONTAINER_SECURITY.md has the Logs section');
+  const section = docs.slice(start + 1, docs.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
+  for (const needed of ['warehouse_redacted', 'no log line holds a token, a key, an OTP', 'X-Real-IP', 'X-Forwarded-For', 'error log', '3 x 10 MB']) {
+    assert.ok(section.toLowerCase().includes(needed.toLowerCase()), `the Logs section does not mention ${needed}`);
+  }
+});
+
 test('every REST request passes the session check before its function runs', () => {
   // public.check_session refuses an ended session and a profile that is disabled or
   // not approved. Functions that resolve the caller themselves (own_profile_id in
   // migration 38 checks active only) rely on it for the enrollment state; see
   // tests/preferred_language.sql.
   assert.match(compose, /\n\s+PGRST_DB_PRE_REQUEST: public\.check_session\n/);
+});
+
+const withoutComments = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+
+test('the JWT signing secret is not published as a database or PostgREST setting', () => {
+  // TW-BE-003: "app.settings.jwt_secret" is readable by every database role through current_setting().
+  // The database code reads warehouse_security.auth_config; PostgREST takes the secret from PGRST_JWT_SECRET.
+  assert.doesNotMatch(compose, /APP_SETTINGS_JWT_SECRET/, 'PostgREST must not set the secret as an app setting');
+  assert.match(compose, /\n\s+PGRST_JWT_SECRET: \$\{JWT_SECRET\}\n/, 'PostgREST still verifies tokens');
+  assert.match(compose, /\n\s+PGRST_APP_SETTINGS_JWT_EXP: \$\{JWT_EXPIRY\}\n/, 'the expiry setting is not part of this change');
+  const jwtSql = withoutComments('docker/volumes/db/jwt.sql');
+  assert.doesNotMatch(jwtSql, /jwt_secret|JWT_SECRET/i, 'jwt.sql must not set or read the secret');
+  assert.match(jwtSql, /ALTER DATABASE postgres SET "app\.settings\.jwt_exp"/, 'jwt.sql still sets the expiry');
+  assert.doesNotMatch(withoutComments('scripts/rotate-auth.sql'), /app\.settings\.jwt_secret/, 'rotation must not set the secret as a database setting');
+  // Every run of the auth configuration removes it again, at database level and for roles.
+  const configure = withoutComments('scripts/configure-auth.sql');
+  assert.match(configure, /ALTER DATABASE %I RESET "app\.settings\.jwt_secret"/);
+  assert.match(configure, /ALTER ROLE %I IN DATABASE %I RESET "app\.settings\.jwt_secret"/);
+  assert.match(configure, /ALTER ROLE %I RESET "app\.settings\.jwt_secret"/);
+  assert.doesNotMatch(configure, /(?<![A-Z])SET "app\.settings\.jwt_secret"/, 'configure-auth.sql must only reset the setting');
+});
+
+test('the rendered Compose project has no app setting that carries the JWT signing secret', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const { services } = renderedCompose();
+  assert.ok(services.rest.environment.PGRST_JWT_SECRET, 'PostgREST has no secret to verify tokens with');
+  for (const [name, definition] of Object.entries(services)) {
+    const settings = Object.keys(definition.environment ?? {}).filter(key => /APP_SETTINGS_JWT_SECRET/.test(key));
+    assert.deepEqual(settings, [], `${name} publishes the signing secret as an app setting`);
+  }
+  assert.ok(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, 'the expiry app setting must stay');
 });
 
 test('ingress is Cloudflare Tunnel only', () => {
