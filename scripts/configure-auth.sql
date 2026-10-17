@@ -31,4 +31,31 @@ INSERT INTO warehouse_security.auth_config(key,value) VALUES
   ('demo_auth_enabled','false'),('auth_mode',:'starter_mode'),
   ('access_seconds',(:'starter_expiry')::integer::text)
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+-- The signing secret lives in warehouse_security.auth_config only. An earlier install, or a restored one,
+-- may still hold it as the database setting app.settings.jwt_secret, which every role can read through
+-- current_setting() (migration 92). Reset it, and a role-level copy, on every run; this holds no secret.
+DO $reset$
+DECLARE
+  this_database oid := (SELECT oid FROM pg_database WHERE datname = current_database());
+  held record;
+BEGIN
+  EXECUTE format('ALTER DATABASE %I RESET "app.settings.jwt_secret"', current_database());
+  FOR held IN
+    SELECT s.setdatabase, s.setrole, r.rolname
+    FROM pg_db_role_setting s
+    LEFT JOIN pg_roles r ON r.oid = s.setrole
+    WHERE s.setdatabase IN (0, this_database)
+      AND NOT (s.setdatabase = this_database AND s.setrole = 0)
+      AND EXISTS (SELECT 1 FROM unnest(s.setconfig) AS item WHERE starts_with(lower(item), 'app.settings.jwt_secret='))
+  LOOP
+    IF held.setrole = 0 THEN
+      EXECUTE 'ALTER ROLE ALL RESET "app.settings.jwt_secret"';
+    ELSIF held.setdatabase = 0 THEN
+      EXECUTE format('ALTER ROLE %I RESET "app.settings.jwt_secret"', held.rolname);
+    ELSE
+      EXECUTE format('ALTER ROLE %I IN DATABASE %I RESET "app.settings.jwt_secret"', held.rolname, current_database());
+    END IF;
+  END LOOP;
+END
+$reset$;
 COMMIT;

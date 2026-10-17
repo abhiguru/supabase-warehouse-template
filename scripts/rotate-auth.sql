@@ -30,5 +30,4 @@ DO $$ BEGIN
     DELETE FROM _realtime.tenants WHERE external_id='realtime-dev';
   END IF;
 END $$;
-ALTER DATABASE postgres SET "app.settings.jwt_secret" TO :'new_secret';
 COMMIT;
