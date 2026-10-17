@@ -272,9 +272,8 @@ test('publisher images are pinned by digest and the notices name the versions in
   const override = readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8');
   const images = [...`${compose}\n${override}`.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]).filter(image => !image.endsWith(':local'));
   assert.ok(images.some(image => /^kong:3\.9\.3-ubuntu@sha256:[0-9a-f]{64}$/.test(image)), 'Kong is not pinned by digest');
-  // PostgREST v16.4 still has no digest: the image was not available to read one
-  // from when Kong was pinned (docs/CONTAINER_SECURITY.md, "Image pins").
-  assert.deepEqual(images.filter(image => !/@sha256:[0-9a-f]{64}$/.test(image)), ['postgrest/postgrest:v16.4']);
+  assert.ok(images.some(image => /^postgrest\/postgrest:v[0-9.]+@sha256:[0-9a-f]{64}$/.test(image)), 'PostgREST is not pinned by digest');
+  assert.deepEqual(images.filter(image => !/@sha256:[0-9a-f]{64}$/.test(image)), [], 'every pulled image is pinned by digest');
 
   const notices = readFileSync(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url), 'utf8');
   const review = readFileSync(new URL('../docs/ATTRIBUTION_REVIEW.md', import.meta.url), 'utf8');

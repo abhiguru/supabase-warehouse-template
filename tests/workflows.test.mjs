@@ -85,5 +85,5 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
     assert.match(body.join('\n'), /^\s+update-types:\n(?:\s+- "version-update:semver-(?:major|minor|patch)"\n?)+/, `dependabot.yml:${index + 1} ${line.trim()}`);
     entries += 1;
   });
-  assert.equal(entries, 11, 'every ignore entry was read');
+  assert.equal(entries, 12, 'every ignore entry was read');
 });
