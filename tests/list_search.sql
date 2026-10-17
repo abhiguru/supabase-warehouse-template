@@ -159,7 +159,10 @@ INSERT INTO public.invoice(inv_fin_year, inv_no, gr_id, gr_no, customer_id, cust
  SELECT v.fin_year, v.inv_no, g.id, g.gr_no, g.customer_id, g.customer_name, now() - v.age, 100
  FROM (VALUES (2026, 12, 'SRB9', interval '2 days'), (2026, 120, 'SRB100', interval '1 day'), (2025, 7, 'SRB10', interval '400 days'))
    AS v(fin_year, inv_no, gr_no, age) JOIN public.goodsreceived g ON g.gr_no = v.gr_no;
-REFRESH MATERIALIZED VIEW public.mv_invoice_list;
+-- The invoice rows marked mv_invoice_list; the worker's refresh, in this transaction (migration 91).
+SELECT pg_temp.search_assert((SELECT needs_refresh FROM public.mv_refresh_queue WHERE mv_name = 'mv_invoice_list'),
+  'the invoice inserts mark mv_invoice_list for the worker');
+SELECT warehouse_security.refresh_dirty_lists();
 SELECT t.id AS lot9 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no = 'SRB9' \gset
 SELECT t.id AS lot100 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id = t.gr_id WHERE g.gr_no = 'SRB100' \gset
 
