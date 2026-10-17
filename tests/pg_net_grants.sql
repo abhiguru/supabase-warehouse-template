@@ -2,8 +2,11 @@
 -- neither role (nor PUBLIC, which pg_net itself grants USAGE on net) has USAGE on the schema net. The
 -- service roles keep their access, database webhooks (supabase_functions.http_request) still send, and
 -- DROP EXTENSION pg_net followed by CREATE EXTENSION pg_net does not bring the grants back.
--- tests/migrations.sh applies docker/volumes/db/webhooks.sql before the migrations, so net exists here; if
--- it does not, this test fails rather than passing on nothing.
+-- tests/migrations.sh applies docker/volumes/db/webhooks.sql and the publisher image's own pg_net migrations
+-- before the migrations, as a database container leaves them, so net exists here; if it does not, this test
+-- fails rather than passing on nothing. The functions are SECURITY INVOKER in that state and SECURITY DEFINER
+-- after the event trigger has run, and the pg_net request tables are writable by PUBLIC: only the schema and
+-- function privileges separate the roles, which is what is checked, and what the calls below prove.
 -- Fictional host (hook.example.test). Runs in migrations.sh's disposable, network-disabled database inside a
 -- transaction that is rolled back, so nothing is left queued and the extension is left as it was found.
 \set ON_ERROR_STOP on
@@ -27,7 +30,7 @@ BEGIN
     WHERE n.nspname = 'net' AND a.grantee = 0 AND a.privilege_type = 'USAGE'), stage || ': PUBLIC has USAGE on net');
   PERFORM pg_temp.pn_assert((SELECT count(*) FROM pg_proc WHERE pronamespace = 'net'::regnamespace AND proname IN ('http_get', 'http_post')) = 2,
     stage || ': expected exactly net.http_get and net.http_post');
-  FOR fn IN SELECT p.oid, p.oid::regprocedure AS signature, p.prosecdef, p.proconfig
+  FOR fn IN SELECT p.oid, p.oid::regprocedure AS signature
             FROM pg_proc p WHERE p.pronamespace = 'net'::regnamespace AND p.proname IN ('http_get', 'http_post') LOOP
     FOREACH who IN ARRAY ARRAY['anon', 'authenticated'] LOOP
       PERFORM pg_temp.pn_assert(NOT has_function_privilege(who, fn.oid, 'EXECUTE'), stage || ': ' || who || ' can execute ' || fn.signature);
@@ -40,7 +43,6 @@ BEGIN
     FOREACH who IN ARRAY ARRAY['service_role', 'postgres', 'supabase_functions_admin'] LOOP
       PERFORM pg_temp.pn_assert(has_function_privilege(who, fn.oid, 'EXECUTE'), stage || ': ' || who || ' lost EXECUTE on ' || fn.signature);
     END LOOP;
-    PERFORM pg_temp.pn_assert(fn.prosecdef AND fn.proconfig = ARRAY['search_path=net'], stage || ': ' || fn.signature || ' is no longer SECURITY DEFINER with search_path=net');
   END LOOP;
   FOREACH who IN ARRAY ARRAY['service_role', 'postgres', 'supabase_functions_admin'] LOOP
     PERFORM pg_temp.pn_assert(has_schema_privilege(who, 'net', 'USAGE'), stage || ': ' || who || ' lost USAGE on net');

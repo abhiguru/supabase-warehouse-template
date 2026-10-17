@@ -149,7 +149,10 @@ BEGIN;
     )
     THEN
       -- Least privilege (migration 93): the HTTP functions are for the service roles and the webhook
-      -- function only. pg_net grants USAGE on net to PUBLIC itself, so that is revoked too.
+      -- function only. pg_net grants USAGE on net to PUBLIC itself, so that is revoked too. The
+      -- publisher image's own migrations run after this script and grant anon and authenticated again
+      -- (20220713082019, 20250220051611); migration 93, run by setup after the database starts, is
+      -- what leaves the installed database without those grants.
       GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, service_role;
       REVOKE USAGE ON SCHEMA net FROM PUBLIC, anon, authenticated;
       ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;

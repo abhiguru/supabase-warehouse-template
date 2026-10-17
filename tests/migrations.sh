@@ -26,8 +26,18 @@ done
 # docker/volumes/db/webhooks.sql is an init script of the real database container (pg_net, the schema
 # supabase_functions, the event trigger that grants on net). This plain publisher image has none of it, so it
 # is applied here, before the migrations, to give migration 93 and tests/pg_net_grants.sql what an install holds.
+# In a real container the image's own migrations run after the init scripts and change what webhooks.sql set up
+# for pg_net: they make net.http_get and net.http_post SECURITY INVOKER and executable by PUBLIC, and give USAGE on
+# net to anon and authenticated again. The two that concern pg_net are run here too, in the same order, from the
+# image's own directory, so that the grants are the ones an installation really starts from.
+pg_net_image_migration() {
+  docker exec -e PGPASSWORD=disposable-test-database-only "$container" \
+    psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -f "/docker-entrypoint-initdb.d/migrations/$1"
+}
 docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
   psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/docker/volumes/db/webhooks.sql"
+pg_net_image_migration 20220713082019_pg_cron-pg_net-temp-perms-fix.sql
+pg_net_image_migration 20250220051611_pg_net_perms_fix.sql
 for pass in 1 2; do
   echo "Migration ledger pass $pass (second pass must skip unchanged files)"
   node "$ROOT/scripts/migration-plan.mjs" |
@@ -76,50 +86,24 @@ for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 
-# Migration 93 (TW-BE-004) on an install that still holds the grants of the template init script: anon and
-# authenticated own USAGE on net and EXECUTE on net.http_get / net.http_post, PUBLIC holds USAGE (pg_net grants
-# it), and the event trigger function is the one webhooks.sql used to install. That state is rebuilt here, shown
-# to be open, and then the migration and tests/pg_net_grants.sql must close it. The first command also proves
-# the migration does nothing and does not fail where the schema net does not exist.
+# Migration 93 (TW-BE-004) on an install that still holds the grants of the template and the image: anon and
+# authenticated have USAGE on net, and net.http_get / net.http_post are executable by PUBLIC (so by them), PUBLIC
+# has USAGE too (pg_net grants it), and the event trigger function is the image's own, which grants anon and
+# authenticated again. That state is rebuilt here from the image's migration, shown to be open, and then the
+# migration and tests/pg_net_grants.sql must close it. The first command also proves the migration does nothing
+# and does not fail where the schema net does not exist.
 pg_net_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
 no_net=$({ echo 'BEGIN; DROP EXTENSION pg_net;'
   cat "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
   echo "SELECT CASE WHEN to_regnamespace('net') IS NULL THEN 'no-op' ELSE 'net came back' END;"
   echo 'ROLLBACK;'; } | pg_net_psql)
 [[ "${no_net##*$'\n'}" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
-pg_net_psql <<'SQL'
-CREATE OR REPLACE FUNCTION extensions.grant_pg_net_access()
-RETURNS event_trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM pg_event_trigger_ddl_commands() AS ev
-    JOIN pg_extension AS ext
-    ON ev.objid = ext.oid
-    WHERE ext.extname = 'pg_net'
-  )
-  THEN
-    GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, anon, authenticated, service_role;
-    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
-    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SECURITY DEFINER;
-    ALTER function net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
-    ALTER function net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) SET search_path = net;
-    REVOKE ALL ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-    REVOKE ALL ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) FROM PUBLIC;
-    GRANT EXECUTE ON FUNCTION net.http_get(url text, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
-    GRANT EXECUTE ON FUNCTION net.http_post(url text, body jsonb, params jsonb, headers jsonb, timeout_milliseconds integer) TO supabase_functions_admin, postgres, anon, authenticated, service_role;
-  END IF;
-END;
-$$;
-DROP EXTENSION pg_net;
-CREATE EXTENSION pg_net SCHEMA extensions;
-SQL
+pg_net_image_migration 20250220051611_pg_net_perms_fix.sql
+pg_net_psql -c 'DROP EXTENSION pg_net' -c 'CREATE EXTENSION pg_net SCHEMA extensions'
 [[ "$(pg_net_psql -c "SELECT has_function_privilege('anon','net.http_get(text,jsonb,jsonb,integer)','EXECUTE')
     AND has_function_privilege('authenticated','net.http_post(text,jsonb,jsonb,jsonb,integer)','EXECUTE')
     AND has_schema_privilege('anon','net','USAGE') AND has_schema_privilege('authenticated','net','USAGE')")" = t ]] || {
-  echo 'The test could not rebuild the grants of the template init script.' >&2; exit 1; }
+  echo 'The test could not rebuild the grants of the template and the image.' >&2; exit 1; }
 pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
 docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
 # A second run of the migration, where it has nothing left to do, changes nothing.

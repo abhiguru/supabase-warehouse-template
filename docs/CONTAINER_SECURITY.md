@@ -1044,24 +1044,37 @@ building an image or starting the stack.
   The new test catches a character the `eval` would alter.
 - **`net.http_get` and `net.http_post` executable by `anon` and
   `authenticated`: done on 2026-10-17 (migration 93).** The grants came from
-  `docker/volumes/db/webhooks.sql` (an init script) and from the event trigger
-  it installs, which re-granted on `CREATE EXTENSION`. `webhooks.sql` no longer
-  names the two roles, and migration 93 revokes them where the `net` schema
-  exists (a no-op where it does not) and replaces the event trigger function
-  `extensions.grant_pg_net_access()` with a body that does not grant to them
-  (owner and grants of the function unchanged). pg_net itself grants `USAGE`
-  on `net` to `PUBLIC`, so the migration and the trigger also revoke that:
-  revoking only from `anon` and `authenticated` would leave them the schema
-  through `PUBLIC`. `service_role`, `postgres` and `supabase_functions_admin`
-  keep `USAGE` and `EXECUTE`. Database webhooks (`supabase_functions.http_request`,
-  a `SECURITY DEFINER` function owned by `supabase_functions_admin`) still work.
-  `tests/migrations.sh` applies `webhooks.sql` to its database, and
-  `tests/pg_net_grants.sql` checks the grants, including after
-  `DROP EXTENSION pg_net; CREATE EXTENSION pg_net`. The `net` schema is not
-  exposed through PostgREST. Still granted: `EXECUTE` on the trigger function
-  `supabase_functions.http_request()` to `anon` and `authenticated`, which a
-  role cannot call directly (a trigger function), and which is not a path to
-  `net` for them.
+  `docker/volumes/db/webhooks.sql` (an init script), from the event trigger
+  it installs (which re-granted on `CREATE EXTENSION`) and from the publisher
+  image's own migrations, which run after the init scripts at the first start
+  (`20220713082019`, `20250220051611`). On an installed database the two
+  functions were `SECURITY INVOKER` and executable by `PUBLIC`, `anon` and
+  `authenticated` had `USAGE` on `net`, and pg_net itself grants `USAGE` on
+  `net` and `ALL` on its request tables (`net.http_request_queue`,
+  `net._http_response`) to `PUBLIC`: a role with `USAGE` could enqueue a
+  request with the function or with a plain `INSERT`. Migration 93 revokes
+  `USAGE` on `net` from `PUBLIC`, `anon` and `authenticated` (without it no
+  object in `net` can be named) and `EXECUTE` on the two functions from the
+  same three, then grants `USAGE` and `EXECUTE` explicitly to
+  `supabase_functions_admin`, `postgres` and `service_role`, which had them
+  only through `PUBLIC`. It does nothing where `net` does not exist, and
+  replaces the event trigger function `extensions.grant_pg_net_access()` (owner
+  and grants kept) with a body that grants nothing to `anon` or `authenticated`
+  and takes `PUBLIC`'s `USAGE` back, so `DROP EXTENSION pg_net` followed by
+  `CREATE EXTENSION pg_net` leaves the same state. `webhooks.sql` carries the
+  same least-privilege lines, although the image's migrations run after it.
+  Database webhooks (`supabase_functions.http_request`, a `SECURITY DEFINER`
+  function of `supabase_functions_admin`) still send. `tests/migrations.sh`
+  applies `webhooks.sql` and the image's two pg_net migrations to its database
+  in the order a container runs them, and `tests/pg_net_grants.sql` checks the
+  grants, the calls and a webhook, including after `DROP EXTENSION` and
+  `CREATE EXTENSION`. The `net` schema is not exposed through PostgREST.
+  Remaining, by design: `net.http_delete` and `net.http_collect_response` keep
+  pg_net's `PUBLIC` `EXECUTE`, and the request tables keep `PUBLIC`'s
+  privileges, both unreachable without `USAGE` on `net`; and `EXECUTE` on the
+  trigger function `supabase_functions.http_request()` stays granted to `anon`
+  and `authenticated` by `webhooks.sql`, which a role cannot call directly (a
+  trigger function) and which is not a path to `net` for them.
 - **`app.settings.jwt_secret` readable by every database role: done on
   2026-10-17 (migration 92).** The migration resets the database setting (and a
   role-level copy, if any); `scripts/configure-auth.sql` repeats the reset on
