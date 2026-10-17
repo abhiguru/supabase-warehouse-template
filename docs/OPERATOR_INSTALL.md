@@ -372,6 +372,16 @@ bash setup.sh --operator \
   running service reads the file when it starts a worker for a sign-in, so
   the new keys should be in use within about a minute; this has not been
   measured, and `bash stop.sh && bash start.sh` makes it certain.
+- **If the association withdraws a signing key in an emergency.** With the
+  address, nothing is needed: the facility refuses the withdrawn key within
+  300 seconds (it uses a fetched key set for at most 4 minutes). With the
+  **file**, the withdrawn key stays trusted until you replace the copy: get the
+  new key set file from the association (without the withdrawn key, with the
+  key that now signs) and rerun the command above with
+  `--central-jwks-file <new file>` and the same `--central-issuer`. Then run
+  `bash stop.sh && bash start.sh` so the next sign-in surely reads the new file
+  (it is read when a worker starts, within about a minute without a restart).
+  Do this as soon as the association tells you; nothing else ends the trust.
 - The settings are `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL` and
   `CENTRAL_JWKS_FILE` in `config/compose.env`; setup also writes the issuer to
   the database. A later rerun without the central options keeps everything.

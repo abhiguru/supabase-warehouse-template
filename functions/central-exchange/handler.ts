@@ -19,7 +19,8 @@ type Jwk = Record<string, unknown>;
 type RpcResult = { success: boolean; code?: string; data?: Record<string, unknown> };
 // The fetched verification keys of the issuer, kept in this worker's memory:
 // they live no longer than the worker does.
-export type KeyCache = { keys: Jwk[]; fetchedAt: number; attemptedAt: number; failedAt: number; pending: Promise<void> | null };
+// `freshForMs` is how long the fetched set may be used, counted from the start of the fetch.
+export type KeyCache = { keys: Jwk[]; fetchedAt: number; freshForMs: number; attemptedAt: number; failedAt: number; pending: Promise<void> | null };
 // Everything the handler reaches outside itself, so tests can stand in for it.
 export type HandlerDeps = {
   env: (name: string) => string | undefined;
@@ -32,7 +33,10 @@ export type HandlerDeps = {
 export const TOKEN_TYPE = 'facility-identity+jwt';
 const MAX_LIFETIME_SECONDS = 600;
 const CLOCK_TOLERANCE_SECONDS = 30;
-const KEYS_FRESH_MS = 10 * 60 * 1000;
+// A key the issuer withdraws must stop working here within 300 seconds of the
+// issuer serving the reduced set (docs/CENTRAL_LOGIN.md, "Keys"): the key set
+// is used for at most 4 minutes, which leaves a minute for the fetch itself.
+const KEYS_FRESH_MS = 4 * 60 * 1000;
 const KEYS_REFETCH_MS = 60 * 1000;
 // After a fetch that failed no new one is started for this long.
 const KEYS_FAILURE_BACKOFF_MS = 30 * 1000;
@@ -41,7 +45,7 @@ const KEYS_TIMEOUT_MS = 5000;
 const BODY_MAX_BYTES = 8192;
 
 export function createKeyCache(): KeyCache {
-  return { keys: [], fetchedAt: -Infinity, attemptedAt: -Infinity, failedAt: -Infinity, pending: null };
+  return { keys: [], fetchedAt: -Infinity, freshForMs: KEYS_FRESH_MS, attemptedAt: -Infinity, failedAt: -Infinity, pending: null };
 }
 const workerKeys = createKeyCache();
 
@@ -129,40 +133,58 @@ function keySet(text: string): Jwk[] {
   }
 }
 
+// How long the issuer lets this answer be used: its max-age less the Age a
+// cache in between reports, never more than KEYS_FRESH_MS. Without a max-age
+// the answer is used for KEYS_FRESH_MS. A max-age of 0, or an Age that has used
+// it up, gives 0: the set is fetched again at the next sign-in.
+export function freshForMs(response: Pick<Response, 'headers'>): number {
+  const maxAge = /(?:^|[\s,])max-age=(\d{1,9})(?=$|[\s,;])/i.exec(response.headers.get('Cache-Control') || '');
+  if (!maxAge) return KEYS_FRESH_MS;
+  const age = /^\s*(\d{1,9})\s*$/.exec(response.headers.get('Age') || '');
+  return Math.min(KEYS_FRESH_MS, Math.max(0, (Number(maxAge[1]) - (age ? Number(age[1]) : 0)) * 1000));
+}
+
 async function fetchKeys(deps: HandlerDeps, address: string): Promise<void> {
   const cache = deps.keys;
-  cache.attemptedAt = deps.now();
+  const startedAt = deps.now();
+  cache.attemptedAt = startedAt;
   try {
-    cache.keys = keySet(await fetchKeyText(deps, address));
-    cache.fetchedAt = deps.now();
+    const { text, freshFor } = await fetchKeyText(deps, address);
+    cache.keys = keySet(text);
+    // Counted from the start of the fetch, so a slow answer does not stretch the window.
+    cache.fetchedAt = startedAt;
+    cache.freshForMs = freshFor;
   } catch (error) {
     cache.failedAt = deps.now();
     throw error;
   }
 }
 
-async function fetchKeyText(deps: HandlerDeps, address: string): Promise<string> {
+async function fetchKeyText(deps: HandlerDeps, address: string): Promise<{ text: string; freshFor: number }> {
   try {
+    // Never from a cache on the way: a withdrawn key must not come back from one.
     const response = await deps.fetch(address, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      cache: 'no-store',
       signal: AbortSignal.timeout(KEYS_TIMEOUT_MS),
       redirect: 'error',
     });
     if (response.status !== 200) throw new KeysUnavailable(`key set answered ${response.status}`);
-    return await readBounded(response, KEY_SET_MAX_BYTES);
+    return { text: await readBounded(response, KEY_SET_MAX_BYTES), freshFor: freshForMs(response) };
   } catch (error) {
     throw error instanceof KeysUnavailable ? error : new KeysUnavailable('key set could not be fetched');
   }
 }
 
 // The fetched keys to verify a token that names `kid`. Keys are kept for at
-// most ten minutes (and no longer than this worker lives). A key id that is
+// most four minutes, less if the issuer's max-age and Age say so (and no
+// longer than this worker lives). A key id that is
 // not among them causes a new fetch, at most once a minute, so a rotated key
 // is picked up without letting callers drive the fetches. After a fetch that
 // failed, none is started for 30 seconds: callers get "keys unavailable".
 async function keysFor(deps: HandlerDeps, address: string, kid: string): Promise<Jwk[]> {
   const cache = deps.keys;
-  const fresh = deps.now() - cache.fetchedAt < KEYS_FRESH_MS;
+  const fresh = deps.now() - cache.fetchedAt < cache.freshForMs;
   const known = cache.keys.some(key => key.kid === kid);
   if (fresh && (known || deps.now() - cache.attemptedAt < KEYS_REFETCH_MS)) return cache.keys;
   // One fetch at a time; requests that arrive meanwhile wait for it.
