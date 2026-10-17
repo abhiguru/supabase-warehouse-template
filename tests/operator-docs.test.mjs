@@ -46,3 +46,21 @@ test('the container security record names commands that exist', () => {
     assert.ok(scripts[name], `docs/CONTAINER_SECURITY.md names npm run ${name}, which package.json does not have`);
   }
 });
+
+test('the Compose requirement is a capability, as in the identity runbook, and doctor checks it', () => {
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  assert.match(guide, /The requirement is a Compose plugin whose `docker compose up` accepts\s+`--wait-timeout`/);
+  assert.match(guide, /Docker Compose v2\.40\.3 with Docker Engine 29\.9\.1/);
+  assert.match(guide, /Docker Compose v5\.5\.1 with Docker Engine 29\.8\.0/);
+  // No concrete 5.x incompatibility is known (X-6), so the advice to replace a 5.x plugin is gone.
+  assert.doesNotMatch(guide, /replace (any|a) 5\.x|Compose reports a 5\.x|install an available 2\.x/i);
+  assert.doesNotMatch(guide, /pick a 2\.x build/);
+  assert.match(read('scripts/doctor.mjs'), /probe\('docker', \['compose', 'up', '--help'\]\)\.output/);
+});
+
+test('the guide has a section for several facilities on one host that names --gateway-port', () => {
+  const guide = read('docs/OPERATOR_INSTALL.md');
+  assert.ok(guide.includes('## Several facilities on one host'));
+  assert.match(guide, /--gateway-port 18001/);
+  assert.ok(guide.includes('(#several-facilities-on-one-host)'));
+});

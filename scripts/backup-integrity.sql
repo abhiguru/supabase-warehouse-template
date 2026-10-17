@@ -71,3 +71,16 @@ SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000
 SELECT 'standard_rate_tiers_count=' || count(*) FROM public.standard_rate_tiers;
 SELECT 'grn_rates_count=' || count(*) FROM public.grn_rates;
 \endif
+-- The payments, order lines and order revisions (TW-BE-011). Counted only when migration 95 is in
+-- the restored ledger, because a backup taken before it has none of these lines and restore.sh
+-- compares before it applies newer migrations. The gate is "a migration numbered 95 or later", so it
+-- does not depend on the file's name. Like the block above it also needs migration 48 (every database
+-- with 95 has it; the restore drill removes 48 to imitate an earlier backup). The orders themselves
+-- are counted above (order_count).
+SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name >= '00000000000095' COLLATE "C")
+   AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql') AS order_detail_recorded \gset
+\if :order_detail_recorded
+SELECT 'payment_count=' || count(*) FROM public.payments;
+SELECT 'order_item_count=' || count(*) FROM public.order_items;
+SELECT 'order_revision_count=' || count(*) FROM public.order_revisions;
+\endif
