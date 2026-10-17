@@ -51,3 +51,39 @@ test('a state that does not exist yet is checked against its parent', () => {
     assert.throws(() => checkStatePlacement('relative/path'), /absolute path outside this checkout/);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
+
+// X-6: the Compose requirement is the `up --wait-timeout` flag, checked by running doctor against a fake docker.
+import { spawnSync } from 'node:child_process';
+import { statfsSync } from 'node:fs';
+
+function doctorWithCompose(help) {
+  const base = mkdtempSync(join(tmpdir(), 'doctor-compose-'));
+  try {
+    const bin = join(base, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh
+case "$*" in
+  'compose version') echo 'Docker Compose version v2.40.3' ;;
+  'info --format {{.ServerVersion}}') echo 29.9.1 ;;
+  'compose up --help') printf '%s\\n' ${JSON.stringify(help)} ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+    const state = join(base, 'state');
+    mkdirSync(state, { mode: 0o700 });
+    return spawnSync(process.execPath, [new URL('../scripts/doctor.mjs', import.meta.url).pathname, '--host-preflight'], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, NODE_TEST_CONTEXT: '' } });
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}
+
+test('doctor passes the Compose check when `up --help` lists --wait-timeout', { skip: Number(statfsSync(tmpdir()).bavail) * Number(statfsSync(tmpdir()).bsize) < 10 * 1024 ** 3 && 'needs 10 GiB free in the temp directory' }, () => {
+  const run = doctorWithCompose('      --wait-timeout int   Maximum duration in seconds to wait for the project to be running|healthy');
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /Host prerequisites and state filesystem preflight passed/);
+});
+
+test('doctor refuses a Compose plugin whose `up --help` lacks --wait-timeout, and says so', () => {
+  const run = doctorWithCompose('      --wait   Wait for services to be running|healthy');
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /does not accept `up --wait-timeout`/);
+});

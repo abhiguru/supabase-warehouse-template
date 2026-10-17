@@ -61,9 +61,12 @@ is slow to refuse the extra question, that one lookup took about 8 seconds and
 the connection check ran past its 15 second window.
 
 The compose file now gives Realtime `dns_search: "."`, so the host's search
-domain is not asked, and `setup.sh` and `start.sh` join one channel once the
-services are up (`scripts/realtime-warmup.mjs`) so the connection is already
-open when people arrive. To check by hand:
+domain is not asked, which is what keeps every first join fast. `setup.sh` and
+`start.sh` also join one channel once the services are up
+(`scripts/realtime-warmup.mjs`); that proves after each start that the tenant
+connection opens and shows how long it took. It does not keep the connection
+open: Realtime closes an idle tenant connection after a few minutes, and the
+next person to open the app opens it again, in tens of milliseconds. To check by hand:
 
 ```bash
 bash scripts/compose.sh exec -T realtime /app/bin/realtime eval \

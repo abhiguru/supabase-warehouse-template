@@ -23,20 +23,19 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
-- Linux x86-64; Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
-- Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot.
+- Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot;
+  Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
   The requirement is a Compose plugin whose `docker compose up` accepts
   `--wait-timeout`. Setup, start and the backup scripts wait for services with
   `docker compose up --wait --wait-timeout`; `doctor` checks at the start that
   the plugin knows the flag and stops with a message if not. It checks nothing
   else about the version, and no version number is required. The central
-  identity service
-  ([central-identity-template](https://github.com/abhiguru/central-identity-template))
-  states the same requirement and the same list below, so one host can run
-  both services. Tested with:
+  identity service states the same requirement and the same list below, so one
+  host can run both services. Tested with:
   - Docker Compose v2.40.3 with Docker Engine 29.9.1 (the review host; verified for
-    this service and for the central identity service);
-  - Docker Compose v5.5.1 with Docker Engine 29.8.0 (the maintainer's host).
+    this service and for the facility backend);
+  - Docker Compose v5.6.0 with Docker Engine 29.9.1 (the development host; verified
+    for this service and for the facility backend).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`).
 - A non-root user in the `docker` group. Do not run setup as root and do not
   make the Docker socket world-writable.
@@ -203,16 +202,16 @@ own loopback gateway port with `--gateway-port` (1024 to 65535; the default is
 18000):
 
 ```bash
-bash setup.sh --operator --state-dir /srv/warehouse-two/state \
+bash setup.sh --operator --state-dir /srv/warehouse/second \
   --api-url https://backend-two.example.test --company 'Second Facility' \
-  --provider-env /srv/warehouse-two/provider.env \
-  --admin-phone 919000000002 --admin-name 'Second Administrator' \
+  --provider-env /srv/warehouse/second-provider.env \
+  --admin-phone 91XXXXXXXXXX --admin-name 'Second Administrator' \
   --gateway-port 18001
 ```
 
 - Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use.
   The port is saved as `KONG_HTTP_PORT` in the state's `config/compose.env`;
-  no manual edit is needed, and `doctor` and the health checks read it from there.
+  no manual edit is needed, and `doctor` and the smoke scripts read it from there.
 - A rerun without `--gateway-port` keeps the saved port. A rerun with another
   port replaces only the `KONG_HTTP_PORT` line, and only while that
   installation's containers are stopped (`bash stop.sh`, then setup again).
@@ -220,8 +219,20 @@ bash setup.sh --operator --state-dir /srv/warehouse-two/state \
   of that facility's `cloudflared` configuration to `http://127.0.0.1:<port>`
   and restart that tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
   Setup prints this reminder when it sets a port.
-- Nothing else is shared except the host's Docker daemon and its resources;
-  never point two installations at the same state directory or port.
+- **Give every facility a state directory with a different last part** (here
+  `second`, not `state`). `scripts/tunnel.sh install-service` names the
+  tunnel's systemd unit `warehouse-<last part of the state path>-tunnel.service`,
+  so two facilities whose state paths end the same would share a unit name, and
+  installing the second would replace the first one's unit and restart it with
+  the second facility's credential.
+- **The automatic USB backup serves one installation per host:**
+  `/etc/warehouse-usb-backup.conf` holds one state path, and
+  `backup-usb.sh setup` for a second state refuses with "already set up". Back
+  the second facility up with `npm run db:backup -- /absolute/destination` (run
+  with that facility's `WAREHOUSE_STATE_DIR`) to a drive or directory of its
+  own, or with the backup disk, and keep each facility's backup key separate.
+- The host's Docker daemon and its resources are shared. Never point two
+  installations at the same state directory or port.
 
 ## Authentication and OTP limits
 
@@ -742,7 +753,7 @@ only the services that were running. The directory contains:
 | `_supabase.dump` | `pg_dump --format=custom` of the `_supabase` database (pooler and analytics schemas). |
 | `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
@@ -979,11 +990,15 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 ```
 
 It prints a row count and a SHA-256 for every business table (customers, items,
-prices, GRNs, dispatches, invoices, stock movements, users), for the three
+prices, GRNs, dispatches, invoices, stock movements, users, orders with their
+lines and revisions, and payments), for the three
 append-only histories (invoice discounts, zero charges, item prices), the
 storage catalog and the stored files. A fingerprint taken before the upgrade to
 migration 48 has no lines for the histories and cannot be compared with one
-taken after it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for
+taken after it, and a fingerprint recorded before the release that added orders,
+order lines, order revisions and payments lacks those four tables' lines, so a
+restore will not print `IDENTICAL` against it; take a new one after upgrading.
+It holds no secrets; keep a copy off the host (for
 example next to the archive on the drive). After a restore the same command
 must print identical lines.
 
@@ -1235,6 +1250,11 @@ different warehouse.
    ```bash
    bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
+
+   A fingerprint recorded before this release lacks the lines for orders, order
+   lines, order revisions and payments, so the `diff` shows those four lines
+   added and never prints `IDENTICAL`: compare the other lines, and record a new
+   fingerprint after upgrading.
 
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
