@@ -16,7 +16,8 @@ const root = new URL('..', import.meta.url).pathname;
 const script = join(root, 'scripts/rotate-db-passwords.sh');
 const roleNames = DB_ROLE_LOGINS.map(({ env }) => env);
 
-// Records every invocation; the `apply` and `check` streams of scripts/db-roles.sh
+// Records every invocation and answers the doctor's probes (the list refresh status
+// of migration 91 included, once that lands); the `apply` and `check` streams of scripts/db-roles.sh
 // go to FAKE_APPLY_INPUT and FAKE_CHECK_INPUT, separated by a line of =. FAKE_FAIL
 // names a step that fails: apply, check, or up (the first recreation only).
 const fakeDocker = `#!/bin/sh
@@ -38,6 +39,7 @@ case "$1" in
       *' exec -T db sh -c IFS= read -r pw;'*) cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"; if [ "$FAKE_FAIL" = apply ]; then exit 3; fi ;;
       *' exec -T db sh -c '*'superuser_password'*) cat >> "$FAKE_CHECK_INPUT"; if [ "$FAKE_FAIL" = check ]; then exit 1; fi ;;
       *' up -d --force-recreate '*) if [ "$FAKE_FAIL" = up ] && [ ! -e "$FAKE_DOCKER_LOG.failed" ]; then : > "$FAKE_DOCKER_LOG.failed"; exit 1; fi ;;
+      *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;
 esac
