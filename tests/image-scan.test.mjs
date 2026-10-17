@@ -20,13 +20,14 @@ test('image scan fails closed on missing inventory and isolates each report run'
     mkdirSync(join(root, 'docker'));
     copyFileSync(new URL('../scripts/scan-images.sh', import.meta.url), join(root, 'scripts/scan-images.sh'));
     copyFileSync(new URL('../scripts/validate-image-report.mjs', import.meta.url), join(root, 'scripts/validate-image-report.mjs'));
+    copyFileSync(new URL('../scripts/is-main.mjs', import.meta.url), join(root, 'scripts/is-main.mjs'));
     writeFileSync(join(root, 'docker/image-exceptions.json'), JSON.stringify({ schemaVersion: 1, exceptions: [] }));
     const scanner = body => writeFileSync(join(root, 'bin/trivy'), `#!/bin/sh\n${body}\n`, { mode: 0o700 });
     scanner('exit 0');
     const reportDir = join(root, 'reports');
     const one = `echo '${composeConfig({ app: { image: 'example.test/image:1' } })}'`;
     const run = inventory => {
-      writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\ncase "$*" in\n  *build*) exit 0;;\n  *) ${inventory};;\nesac\n`);
+      writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\ncase "$*" in\n  *" ps "*) exit 0;;\n  *build*) exit 0;;\n  *) ${inventory};;\nesac\n`);
       return spawnSync('bash', [join(root, 'scripts/scan-images.sh')], {
         encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, WAREHOUSE_SCAN_REPORT_DIR: reportDir },
       });
@@ -69,11 +70,14 @@ test('the scan builds without cache, runs a second pass without --ignore-unfixed
     mkdirSync(join(root, 'docker/app'), { recursive: true });
     copyFileSync(new URL('../scripts/scan-images.sh', import.meta.url), join(root, 'scripts/scan-images.sh'));
     copyFileSync(new URL('../scripts/validate-image-report.mjs', import.meta.url), join(root, 'scripts/validate-image-report.mjs'));
+    copyFileSync(new URL('../scripts/is-main.mjs', import.meta.url), join(root, 'scripts/is-main.mjs'));
     const log = join(root, 'calls.log');
     // A built service (no image name) and a pulled one; the built image has one
     // HIGH row without a fix, covered only by its recipe's no-fix exception.
     const config = composeConfig({ app: { build: { context: join(root, 'docker/app'), dockerfile: 'Dockerfile' } }, rest: { image: 'example.test/rest:1@sha256:' + 'a'.repeat(64) } });
-    writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\necho "compose $*" >> '${log}'\ncase "$*" in\n  *build*) exit 0;;\n  *) echo '${config}';;\nesac\n`);
+    const containers = join(root, 'containers.txt');
+    writeFileSync(containers, '');
+    writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\necho "compose $*" >> '${log}'\ncase "$*" in\n  *" ps "*) cat '${containers}';;\n  *build*) exit 0;;\n  *) echo '${config}';;\nesac\n`);
     const reportFor = (image, rows) => ({ SchemaVersion: 2, ArtifactName: image, ArtifactType: 'container_image', Results: [{ Target: 'test OS', Class: 'os-pkgs', Packages: [{ Name: 'libexample', Version: '1.0' }], Vulnerabilities: rows }] });
     const unfixed = { VulnerabilityID: 'CVE-2026-0001', PkgName: 'libexample', InstalledVersion: '1.0', Severity: 'HIGH', Status: 'affected' };
     const reports = {
@@ -96,16 +100,28 @@ test('the scan builds without cache, runs a second pass without --ignore-unfixed
     ledger([{ ...entry, recipe: 'docker/other/Dockerfile' }]);
     assert.notEqual(run().status, 0, 'an exception for another recipe does not cover the row');
     writeFileSync(log, '');
-    ledger([entry]);
+    const stale = { ...entry, id: 'gone-os-no-fix', recipe: 'docker/gone/Dockerfile' };
+    ledger([entry, stale]);
     const passed = run();
     assert.equal(passed.status, 0, passed.stderr);
     assert.match(passed.stdout, /accepted for warehouse-scan-test-app: 1 HIGH\/CRITICAL row\(s\) covered by exceptions app-os-no-fix/);
+    assert.match(passed.stderr, /Warning: exception gone-os-no-fix .* covered no row in this scan/, 'an unused entry is reported');
+    assert.doesNotMatch(passed.stderr, /exception app-os-no-fix .*covered no row/, 'a used entry is not');
     const calls = readFileSync(log, 'utf8').trim().split('\n');
     assert.ok(calls.some(line => /^compose .*build --no-cache$/.test(line)), 'images are built without the build cache');
     const scans = calls.filter(line => line.startsWith('trivy '));
     assert.equal(scans.length, 4, 'two passes per image');
     assert.equal(scans.filter(line => line.includes('--ignore-unfixed')).length, 2, 'one pass per image without --ignore-unfixed');
     for (const line of scans) assert.match(line, /--severity HIGH,CRITICAL .*--list-all-pkgs --exit-code 0 --format json --output /);
+
+    // A state whose project has containers is an installation: its images are
+    // not rebuilt and re-tagged under it.
+    writeFileSync(log, '');
+    writeFileSync(containers, '3f2a9c1d8e7b\n');
+    const live = run();
+    assert.notEqual(live.status, 0, 'a project with containers is refused');
+    assert.match(live.stderr, /Refusing: this state's project has containers/);
+    assert.ok(!readFileSync(log, 'utf8').includes('build'), 'nothing is built for a live project');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -149,6 +165,15 @@ test('TW-BE-009: a HIGH row passes only with a valid exception for its recipe', 
   refused([{ ...row, Status: 'will_not_fix' }], [noFix], 'a status the entry does not list');
   refused([{ ...fixedRow, VulnerabilityID: 'CVE-2026-0003' }], [advisory], 'an advisory the entry does not name');
   refused([fixedRow, row], [advisory], 'every row needs its own cover');
+  refused([row], [{ ...noFix, pkgClass: 'lang-pkgs' }], 'an os-pkgs row is not covered by a lang-pkgs entry');
+  refused([fixedRow], [{ ...advisory, packages: ['libother'] }], 'an advisory entry covers its IDs only in the packages it names');
+  refused([row], [{ ...noFix, packages: ['linux-libc-dev'] }], 'a no-fix entry with packages covers only those packages');
+  assert.equal(check(report([{ ...row, PkgName: 'linux-libc-dev' }]), image, { entries: [{ ...noFix, packages: ['linux-libc-dev'] }] }).status, 0, 'its own package is covered');
+  refused([fixedRow], [{ ...advisory, targets: ['usr/share/app/plugins/'] }], 'an entry with targets covers only rows under them');
+  const inPlugin = { SchemaVersion: 2, ArtifactName: image, ArtifactType: 'container_image', Results: [{ Target: 'usr/share/app/plugins/x/bin', Class: 'lang-pkgs', Packages: [{ Name: 'libexample', Version: '1.0' }], Vulnerabilities: [fixedRow] }] };
+  assert.equal(check(inPlugin, image, { entries: [{ ...advisory, targets: ['usr/share/app/plugins/'] }] }).status, 0, 'a row under a named target is covered');
+  refused([row], [{ ...noFix, packages: [] }], 'an empty packages list');
+  refused([row], [{ ...noFix, targets: [''] }], 'an empty target');
 
   const expired = { ...noFix, reviewed: date(-30), expires: date(-1) };
   assert.match(refused([row], [expired], 'an expired entry'), /expired on/);

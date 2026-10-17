@@ -8,6 +8,18 @@ command -v trivy >/dev/null || { echo 'Trivy is required for container image sca
 ledger="$ROOT/docker/image-exceptions.json"
 [[ -f "$ledger" ]] || { echo "Exception ledger $ledger is missing; scan refused." >&2; exit 1; }
 
+# The scan rebuilds every image of the state's project with --no-cache, so each
+# gets a new image ID. On an installation that would move every tag under its
+# running containers to that day's packages, which no recorded build made
+# (scripts/build-images.sh) and the next start would pick up. Scan with a
+# throwaway state of its own project name (docs/RELEASE_CHECKLIST.md), never an
+# installation's: refuse while the project has any container, running or not.
+containers=$(compose --profile '*' ps -a -q)
+if [[ -n "$containers" ]]; then
+  echo "Refusing: this state's project has containers. Scan with a throwaway operator state of its own project name, never with an installation's state (docs/RELEASE_CHECKLIST.md, \"Image scan before a release\")." >&2
+  exit 1
+fi
+
 report_dir="${WAREHOUSE_SCAN_REPORT_DIR:-${TMPDIR:-/tmp}/warehouse-image-scan}"
 mkdir -p "$report_dir"
 report_dir=$(mktemp -d "$report_dir/run.XXXXXX")
@@ -35,6 +47,8 @@ images=$(printf '%s' "$config" | node --input-type=module -e '
 ' "$ROOT" | sort -u)
 [[ -n "$images" ]] || { echo "No Compose images found; scan refused." >&2; exit 1; }
 failed=0
+accepted_log="$report_dir/accepted.log"
+: > "$accepted_log"
 while IFS=$'\t' read -r image recipe; do
   [[ -n "$image" ]] || continue
   base="$report_dir/$(printf '%s' "$image" | tr '/:@' '___')"
@@ -50,10 +64,26 @@ while IFS=$'\t' read -r image recipe; do
       echo "Image scan failed for $image ($pass); no usable report was produced." >&2
       failed=1
     fi
-    if ! node "$ROOT/scripts/validate-image-report.mjs" "$report" "$image" --exceptions "$ledger" --recipe "$recipe"; then
+    # Only the validator's acceptance line counts as a pass, never a bare exit 0.
+    if verdict=$(node "$ROOT/scripts/validate-image-report.mjs" "$report" "$image" --exceptions "$ledger" --recipe "$recipe" 2>&1) &&
+      [[ "$verdict" == "Image scan evidence accepted for $image: "* && "$verdict" != *$'\n'* ]]; then
+      printf '%s\n' "$verdict" | tee -a "$accepted_log"
+    else
+      printf '%s\n' "${verdict:-Image scan evidence for $image: the validator printed no verdict.}" >&2
       failed=1
     fi
   done
 done <<< "$images"
 [[ "$failed" == 0 ]] || exit 1
+# An entry that covered nothing in a complete scan is stale (a fixed tag, a
+# removed package): a warning, so the owner removes it or checks its recipe.
+node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const [ledgerPath, logPath] = process.argv.slice(1);
+  const log = readFileSync(logPath, "utf8");
+  for (const { id } of JSON.parse(readFileSync(ledgerPath, "utf8")).exceptions) {
+    const named = log.split(/[\s,]+/).includes(id);
+    if (!named) console.error(`Warning: exception ${id} of docker/image-exceptions.json covered no row in this scan; remove it or check its recipe.`);
+  }
+' "$ledger" "$accepted_log"
 echo "Container image scan passed; machine-readable reports: $report_dir"

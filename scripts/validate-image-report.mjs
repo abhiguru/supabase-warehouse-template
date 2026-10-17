@@ -15,15 +15,18 @@
 // - every entry names a recipe, a class, an owner, a reason, the date the owner
 //   reviewed it and an expiry no later than 90 days after that review; an entry
 //   that has expired, or was reviewed in the future, is invalid;
-// - class "no-fix" covers rows with no fixed version only, by status and severity;
-//   a row with a listed fix is never covered by it;
-// - class "advisory" covers the named advisories in the named packages, with or
-//   without a fix: the way to record a fix the publisher has not shipped yet;
+// - class "no-fix" covers rows with no fixed version only, by status and severity,
+//   optionally only in the named packages; a row with a listed fix is never
+//   covered by it;
+// - class "advisory" covers the named advisories, and only in the named packages,
+//   with or without a fix: the way to record a fix the publisher has not shipped yet;
+// - both may name "targets", prefixes of the result's target (a binary's path for
+//   language packages): then a row elsewhere in the image is not covered;
 // - class "no-package-inventory" accepts a report with no results at all, only for
 //   the exact image digest it names (in the image reference and in the scanned
 //   image's repository digests), with its compensating controls listed.
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 export const MAX_EXCEPTION_DAYS = 90;
@@ -31,8 +34,8 @@ const SEVERITIES = ['HIGH', 'CRITICAL'];
 const NO_FIX_STATUSES = ['affected', 'fix_deferred', 'will_not_fix', 'under_investigation', 'end_of_life', 'unknown'];
 const FIELDS = {
   common: ['id', 'recipe', 'class', 'owner', 'reason', 'reviewed', 'expires'],
-  'no-fix': ['statuses', 'severities', 'pkgClass'],
-  advisory: ['advisories', 'packages', 'severities'],
+  'no-fix': ['statuses', 'severities', 'pkgClass', 'packages', 'targets'],
+  advisory: ['advisories', 'packages', 'severities', 'targets'],
   'no-package-inventory': ['digest', 'compensatingControls'],
 };
 
@@ -83,11 +86,14 @@ export function validateLedger(ledger, today = utcToday()) {
       if (!stringList(entry.statuses, NO_FIX_STATUSES)) fail(`${where}: statuses must list no-fix statuses (${NO_FIX_STATUSES.join(', ')})`);
       if (!stringList(entry.severities, SEVERITIES)) fail(`${where}: severities must list HIGH and/or CRITICAL`);
       if (entry.pkgClass !== undefined && !['os-pkgs', 'lang-pkgs'].includes(entry.pkgClass)) fail(`${where}: pkgClass must be os-pkgs or lang-pkgs`);
+      if (entry.packages !== undefined && !stringList(entry.packages)) fail(`${where}: packages, when given, must list package names`);
     } else if (entry.class === 'advisory') {
       if (!stringList(entry.advisories)) fail(`${where}: advisories must list advisory IDs`);
       if (!stringList(entry.packages)) fail(`${where}: packages must list package names`);
       if (!stringList(entry.severities, SEVERITIES)) fail(`${where}: severities must list HIGH and/or CRITICAL`);
-    } else {
+    }
+    if (entry.targets !== undefined && !stringList(entry.targets)) fail(`${where}: targets, when given, must list target prefixes`);
+    if (entry.class === 'no-package-inventory') {
       if (typeof entry.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(entry.digest)) fail(`${where}: digest must be sha256:<64 hex>`);
       if (!entry.recipe.endsWith(`@${entry.digest}`)) fail(`${where}: recipe must be the image reference pinned to its digest`);
       if (!stringList(entry.compensatingControls)) fail(`${where}: compensatingControls must be listed`);
@@ -100,9 +106,11 @@ const hasFix = row => nonEmptyString(row.FixedVersion) || row.Status === 'fixed'
 
 function covers(entry, row, result) {
   if (!entry.severities?.includes(row.Severity)) return false;
+  if (entry.targets && !entry.targets.some(prefix => typeof result.Target === 'string' && result.Target.startsWith(prefix))) return false;
   if (entry.class === 'advisory') return entry.advisories.includes(row.VulnerabilityID) && entry.packages.includes(row.PkgName);
   if (entry.class !== 'no-fix' || hasFix(row)) return false;
-  return entry.statuses.includes(row.Status ?? 'unknown') && (!entry.pkgClass || entry.pkgClass === result.Class);
+  return entry.statuses.includes(row.Status ?? 'unknown') && (!entry.pkgClass || entry.pkgClass === result.Class) &&
+    (!entry.packages || entry.packages.includes(row.PkgName));
 }
 
 // Returns a summary line, or throws with the reason the evidence is rejected.
@@ -158,7 +166,9 @@ function main(argv) {
   return validateReport(JSON.parse(readFileSync(path, 'utf8')), image, { entries, recipe: options.recipe });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+// isMain compares physical paths: through a symlinked checkout argv keeps the
+// symlink, and a plain URL comparison would skip main() and exit 0 unchecked.
+if (isMain(import.meta.url)) {
   const image = process.argv[3];
   try {
     console.log(`Image scan evidence accepted for ${image}: ${main(process.argv.slice(2))}`);

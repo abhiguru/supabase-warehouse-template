@@ -34,10 +34,14 @@ the packages of the day it was cached (owner decision D5, 2026-10-17: no
 snapshot mirrors; a fresh build and scan before each release instead). Before
 every release tag:
 
-- [ ] On the release commit, with a private operator state of this checkout,
-      run `npm run scan:images` (Trivy 0.74.0). It builds every Compose image
-      with `--no-cache` and scans each twice; it must end with
-      "Container image scan passed".
+- [ ] On the release commit, with a **throwaway** operator state of this
+      checkout (its own project name; never an installation's state, whose
+      running containers would be left on images no recorded build made; the
+      scan refuses a project that has containers), run `npm run scan:images`
+      (Trivy 0.74.0). It builds every Compose image with `--no-cache` and scans
+      each twice; it must end with "Container image scan passed". Read its
+      warnings for exceptions that covered nothing, then remove the throwaway
+      project's `<project>-*` images.
 - [ ] If it fails on an expired exception or a new row, fix the recipe, or have
       the owner review the entry in `docker/image-exceptions.json` (new
       `reviewed` date, `expires` at most 90 days later, reason updated with the
