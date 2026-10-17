@@ -14,9 +14,10 @@ datasources:
     uid: PG_SEC_001
     url: db:5432
     database: postgres
-    user: postgres
+    # pg_monitor and nothing else (migration 94); no superuser, no table rights.
+    user: warehouse_monitoring
     secureJsonData:
-      password: ${POSTGRES_PASSWORD}
+      password: ${DB_PASSWORD_MONITORING}
     jsonData:
       sslmode: "disable"
       postgresVersion: 1500
@@ -24,4 +25,6 @@ datasources:
       maxIdleConns: 2
       connMaxLifetime: 14400
     isDefault: false
-    editable: true
+    # Provisioned from this file at every start: a change in the UI would not
+    # survive the next password rotation, and the datasource must not be repointed.
+    editable: false

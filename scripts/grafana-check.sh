@@ -49,7 +49,7 @@ docker run --rm -d --name "$container" --network "$network" --read-only \
   --tmpfs /tmp:rw,uid=472,gid=0,mode=1777 \
   --mount "type=bind,src=$root/docker/volumes/grafana/provisioning,dst=/etc/grafana/provisioning,readonly" \
   -e GF_SECURITY_ADMIN_PASSWORD=ephemeral-test-only \
-  -e POSTGRES_PASSWORD=ephemeral-test-only \
+  -e DB_PASSWORD_MONITORING=ephemeral-monitoring-only \
   "$image" >/dev/null
 
 if [[ $(docker exec "$container" printenv GF_PLUGINS_PREINSTALL_AUTO_UPDATE) != false ]]; then
@@ -95,8 +95,11 @@ if [[ "$ready" != true ]]; then
   echo 'Grafana datasource fixtures did not become ready.' >&2
   exit 1
 fi
+# The datasource signs in as warehouse_monitoring, which has pg_monitor and nothing
+# else (migration 94), so the fixture role has exactly that and the query reads a
+# statistics view: 4242 comes back only over that login.
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-  -c 'CREATE TABLE grafana_smoke_reading (observed_at timestamptz NOT NULL, reading integer NOT NULL); INSERT INTO grafana_smoke_reading VALUES (now(), 4242)' >/dev/null
+  -c "CREATE ROLE warehouse_monitoring LOGIN PASSWORD 'ephemeral-monitoring-only'; GRANT pg_monitor TO warehouse_monitoring" >/dev/null
 
 scraped=false
 for ((attempt=0; attempt<30; attempt++)); do
@@ -124,7 +127,7 @@ cat > "$report_dir/prometheus-query.json" <<'JSON'
 {"queries":[{"refId":"A","datasource":{"uid":"PBFA97CFB590B2093"},"expr":"up{job=\"prometheus-fixture\"}","instant":true,"range":false}],"from":"now-5m","to":"now"}
 JSON
 cat > "$report_dir/postgres-query.json" <<'JSON'
-{"queries":[{"refId":"A","datasource":{"uid":"PG_SEC_001"},"rawQuery":true,"editorMode":"code","rawSql":"SELECT observed_at AS time, reading AS value FROM grafana_smoke_reading","format":"time_series"}],"from":"now-5m","to":"now"}
+{"queries":[{"refId":"A","datasource":{"uid":"PG_SEC_001"},"rawQuery":true,"editorMode":"code","rawSql":"SELECT now() AS time, 4242 AS value FROM pg_stat_activity WHERE pid = pg_backend_pid() AND usename = 'warehouse_monitoring' AND pg_has_role('pg_monitor', 'USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)","format":"time_series"}],"from":"now-5m","to":"now"}
 JSON
 for source in prometheus postgres; do
   expected=1
