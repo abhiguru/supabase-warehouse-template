@@ -67,16 +67,19 @@ test('the rule checks run promtool from the pinned image with no network', () =>
   const script = read('scripts/alert-rules-check.sh');
   assert.match(script, /--network none/);
   assert.match(script, /prom\\\/prometheus:\[\^ \]\*@sha256/, 'the image is read from the recipe, by digest');
+  assert.match(script, /prom\\\/alertmanager:\[\^ \]\*@sha256/);
+  assert.equal([...script.matchAll(/docker run --rm --network none/g)].length, 2, 'both containers have no network');
   assert.match(read('docker/prometheus/Dockerfile'), /^FROM prom\/prometheus:v[0-9.]+@sha256:[0-9a-f]{64}$/m);
   assert.match(read('package.json'), /"test:alert-rules": "bash scripts\/alert-rules-check\.sh"/);
 });
 
 // With the pinned image on the host (CI pulls it for the monitoring check; a contributor machine may not
 // have it), the real promtool must accept the rules, the rendered configuration and every case. Never pulled here.
-const pinned = /^FROM (prom\/prometheus:[^ ]*@sha256:[0-9a-f]{64})$/m.exec(read('docker/prometheus/Dockerfile'))?.[1];
-const imagePresent = pinned && spawnSync('docker', ['image', 'inspect', pinned], { stdio: 'ignore' }).status === 0;
-test('promtool accepts the rules and passes every case', { skip: imagePresent ? false : 'the pinned Prometheus image is not on this host' }, () => {
+const pinned = [['prometheus', 'prom/prometheus'], ['alertmanager', 'prom/alertmanager']]
+  .map(([recipe, image]) => new RegExp(`^FROM (${image}:[^ ]*@sha256:[0-9a-f]{64})$`, 'm').exec(read(`docker/${recipe}/Dockerfile`))?.[1]);
+const imagePresent = pinned.every(image => image && spawnSync('docker', ['image', 'inspect', image], { stdio: 'ignore' }).status === 0);
+test('promtool and amtool accept the rules, the rendered configuration, both Alertmanager files and every case', { skip: imagePresent ? false : 'the pinned Prometheus and Alertmanager images are not on this host' }, () => {
   const result = spawnSync('bash', [new URL('../scripts/alert-rules-check.sh', import.meta.url).pathname], { encoding: 'utf8', timeout: 240000 });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /passed promtool/);
+  assert.match(result.stdout, /passed promtool and amtool/);
 });
