@@ -245,6 +245,10 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
+# Roles came back without LOGIN and without their settings (step 4); the list refresher of
+# migration 91 needs both before the lists refresh again.
+phase='list refresher'
+db_psql -d postgres < "$ROOT/scripts/configure-list-refresh.sql"
 phase='start services'
 compose up -d --wait --wait-timeout 180
 phase='doctor'
