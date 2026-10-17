@@ -21,7 +21,7 @@
 --
 -- Each function keeps owner, SECURITY DEFINER, search_path and grants, checked below.
 
-CREATE FUNCTION pg_temp.patch_once(fn regprocedure, marker text, replacement text) RETURNS void
+CREATE FUNCTION pg_temp.patch_once_96(fn regprocedure, marker text, replacement text) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE definition text := pg_get_functiondef(fn); n integer;
 BEGIN
@@ -40,12 +40,12 @@ BEGIN
     SELECT p.oid AS fn, p.proowner, p.prosecdef, p.proconfig, p.proacl FROM pg_proc p WHERE p.oid IN (ex, vo);
 
   -- operator_central_exchange
-  PERFORM pg_temp.patch_once(ex,
+  PERFORM pg_temp.patch_once_96(ex,
     $m$  clean_name text; clean_display text;
 BEGIN$m$,
     $r$  clean_name text; clean_display text; created_now boolean := false;
 BEGIN$r$);
-  PERFORM pg_temp.patch_once(ex,
+  PERFORM pg_temp.patch_once_96(ex,
     $m$    INSERT INTO warehouse_security.enrollment_log(ip_address) VALUES (p_ip_address);
   ELSIF profile.mobile = phone AND by_phone.id IS NULL THEN
     UPDATE public.user_profiles SET mobile_verified=true,mobile_verified_at=now() WHERE id=profile.id RETURNING * INTO profile;
@@ -53,7 +53,7 @@ BEGIN$r$);
     $r$    INSERT INTO warehouse_security.enrollment_log(ip_address) VALUES (p_ip_address);
     created_now := true;
   END IF;$r$);
-  PERFORM pg_temp.patch_once(ex,
+  PERFORM pg_temp.patch_once_96(ex,
     $m$      WHERE id=by_phone.id RETURNING * INTO profile;
   END IF;$m$,
     $r$      WHERE id=by_phone.id RETURNING * INTO profile;
@@ -63,12 +63,12 @@ BEGIN$r$);
   END IF;$r$);
 
   -- operator_verify_otp
-  PERFORM pg_temp.patch_once(vo,
+  PERFORM pg_temp.patch_once_96(vo,
     $m$  candidates uuid[]; clean_name text; clean_display text;
 BEGIN$m$,
     $r$  candidates uuid[]; clean_name text; clean_display text; created_now boolean := false;
 BEGIN$r$);
-  PERFORM pg_temp.patch_once(vo,
+  PERFORM pg_temp.patch_once_96(vo,
     $m$    INSERT INTO warehouse_security.enrollment_log(ip_address) VALUES (p_ip_address);
   ELSE
     UPDATE public.user_profiles SET mobile_verified=true,mobile_verified_at=now() WHERE id=profile.id RETURNING * INTO profile;
@@ -101,5 +101,5 @@ BEGIN$r$);
   END IF;
 END $patch$;
 
-DROP FUNCTION pg_temp.patch_once(regprocedure, text, text);
+DROP FUNCTION pg_temp.patch_once_96(regprocedure, text, text);
 NOTIFY pgrst, 'reload schema';
