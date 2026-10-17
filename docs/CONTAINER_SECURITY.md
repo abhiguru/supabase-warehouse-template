@@ -24,8 +24,12 @@ before deployment. A previous passing scan is not a current security guarantee.
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
 | PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade the Ubuntu packages with a fixed advisory (linux-libc-dev; since 2026-10-17 also OpenSSL, GnuPG, PackageKit, sudo) with glibc and locale data unchanged; rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
 
-Go rebuilds use the versions locked in their Dockerfiles. No vulnerability
-ignore list is added. Required applications are retained. The source and license
+Go rebuilds use the versions locked in their Dockerfiles. Nothing is
+suppressed in the scanner. Since 2026-10-17 the rows that cannot be fixed yet
+are listed in `docker/image-exceptions.json`, a time-boxed ignore list: each
+entry is bound to one recipe, has a named owner and expires at most 90 days
+after its review (see "Exception ledger and the two-pass scan"). Required
+applications are retained. The source and license
 inventory is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Acceptance boundaries
@@ -730,6 +734,23 @@ reference for a pulled one. The classes:
 | `advisory` | the named advisories in the named packages, fixed upstream or not: a fix the publisher has not shipped yet | recipe, advisory IDs, package names, severities |
 | `no-package-inventory` | a report with no package results at all | recipe and the exact image digest, in the reference and in the scanned image's repository digests; compensating controls listed |
 
+`no-fix` and `advisory` entries may also name `targets`, prefixes of the
+result's target (a binary's path), and a `no-fix` entry may name `packages`;
+then a row elsewhere is not covered (`db-os-no-fix` covers `linux-libc-dev`
+only, the Grafana entries only the core binary or the plugin directory). The
+scan prints a warning for an entry that covered no row, so a stale one is
+noticed, and it counts a report as passed only on the validator's
+"Image scan evidence accepted" line.
+
+**Where to run it.** Because every image is rebuilt with `--no-cache`, each
+gets a new image ID. Run the scan with a throwaway operator state of its own
+project name, never with an installation's state: on an installation it would
+move every `<project>-*` tag under the running containers to that day's
+packages, images no recorded build made, which the next start would pick up.
+`scripts/scan-images.sh` refuses while the state's project has any container,
+running or stopped. Remove the throwaway project's `<project>-*` images
+afterwards.
+
 Every entry has an owner, a reason, the date the owner reviewed it and an
 expiry at most 90 days after that review. An entry that has expired, has no
 owner, was reviewed in the future or has an unknown field rejects the whole
@@ -772,7 +793,11 @@ What changed, per image:
   under existing indexes. A full `apt-get upgrade` would touch about a hundred
   packages, glibc and `locales` among them, and is deliberately not used. The
   remaining rows are Linux kernel advisories reported against the
-  `linux-libc-dev` header package, with no fixed version.
+  `linux-libc-dev` header package, with no fixed version. If the guard trips, the build
+  stops with a message saying so. The day Ubuntu lists a fix for a glibc or
+  `locales` row, record it as an `advisory` exception, never as an upgrade in
+  this recipe: a collation change needs a planned reindex of every
+  installation.
 - **functions** (`docker/edge-runtime/Dockerfile`): a full `apt-get upgrade`
   replaces the PCRE2-only upgrade (the PCRE2 version check stays); `perl-base`
   moves to `5.36.0-7+deb12u4`. edge-runtime v1.77.4 is still the newest tag.

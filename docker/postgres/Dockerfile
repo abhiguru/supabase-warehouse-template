@@ -25,7 +25,9 @@ FROM supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f
 # Upgrade only the Ubuntu packages with a fixed HIGH/CRITICAL advisory
 # (scripts/scan-images.sh). Not a full upgrade: the Nix-built PostgreSQL reads
 # Ubuntu's locale archive (LOCALE_ARCHIVE), so glibc and the locale data stay
-# as the pinned base has them, and the build fails if either changes.
+# as the pinned base has them, and the build fails if either changes. A fixed
+# glibc or locales advisory goes into docker/image-exceptions.json as an
+# advisory entry, never into this list: a collation change needs a reindex.
 RUN before="$(dpkg-query -W -f='${Package} ${Version}\n' libc6 libc-bin locales; sha256sum /usr/lib/locale/locale-archive)" \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
@@ -33,7 +35,7 @@ RUN before="$(dpkg-query -W -f='${Package} ${Version}\n' libc6 libc-bin locales;
        dirmngr gnupg gnupg-l10n gnupg-utils gpg gpg-agent gpg-wks-client gpgconf gpgsm gpgv keyboxd \
        packagekit packagekit-tools libpackagekit-glib2-18 gir1.2-packagekitglib-1.0 \
     && after="$(dpkg-query -W -f='${Package} ${Version}\n' libc6 libc-bin locales; sha256sum /usr/lib/locale/locale-archive)" \
-    && [ "$before" = "$after" ] \
+    && { [ "$before" = "$after" ] || { echo 'Refused: this upgrade changed glibc, locales or /usr/lib/locale/locale-archive, which the database collations depend on (docker/postgres/Dockerfile).' >&2; exit 1; }; } \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=gosu /out/gosu /usr/local/bin/gosu
 COPY --from=walg /out/wal-g /usr/local/bin/wal-g
