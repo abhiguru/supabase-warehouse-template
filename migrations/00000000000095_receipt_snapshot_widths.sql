@@ -12,11 +12,14 @@
 --    fixed list, records definition, owner, ACL and indexes, drops them (dependents first), widens, and recreates them
 --    in the reverse order. It then checks that each definition, owner, ACL and index list is identical to what was
 --    recorded and that the two columns of every recreated view are now 80 and 40 wide.
--- 2. The two materialized views are recreated WITH DATA, so they are correct at once. They are also marked dirty
---    through warehouse_security.mark_lists_dirty (migration 91), so the list refresher refreshes them once more and the
---    queue keeps its meaning (a dirty list is a list that has not been refreshed since its last mark). The mark
---    triggers of migration 91 are on the tables and name the views, so they need no change; the migration checks that
---    each of the seven lists still has its queue row and that every trigger function still names only existing lists.
+-- 2. The two materialized views are recreated WITH DATA in the same transaction, so they are correct at commit. The
+--    migration does not touch the refresh queue: a list that was dirty stays dirty, and a write to another table that
+--    commits during the rebuild marks its lists itself. (Marking from here would lock the queue rows after
+--    goodsreceived_trl, the opposite order of save_grn, and could deadlock with a GRN save.) The mark triggers of
+--    migration 91 are on the tables and name the views, so they need no change; the migration only checks that each of
+--    the seven lists still exists as a materialized view with its queue row.
+--    The migration takes advisory lock 71040 first, the document lock every GRN, dispatch and invoice writer takes at
+--    its start, so such writers wait for the rebuild instead of queueing on table locks.
 -- 3. save_grn and update_grn check the lengths first, before anything is written, and answer
 --    { success: false, error_code: 'item_name_too_long' | 'packaging_too_long', message, error, data: { limit, index } }
 --    (limit 80 / 40, index = position in p_items, from 0) instead of a database error. This follows migration 90's
@@ -33,6 +36,10 @@ BEGIN
   END IF;
   EXECUTE replace(definition,marker,replacement);
 END $$;
+
+-- The document lock every GRN, dispatch and invoice writer takes first (migration 46): they wait here, not on the
+-- table locks below. The list worker never takes it.
+SELECT pg_advisory_xact_lock(71040);
 
 -- ---------------------------------------------------------------------------
 -- 1. Record, drop, widen, recreate
@@ -179,9 +186,7 @@ END $verify$;
 -- ---------------------------------------------------------------------------
 -- 2. The list refresher sees the recreated views (migration 91)
 -- ---------------------------------------------------------------------------
--- The mark triggers are on tables and name the lists, so they stay valid; check that, then mark the two
--- recreated lists. They stay dirty until the refresher has refreshed them (at most about 7 s); the worker is not
--- called here, a procedure that commits cannot run inside a migration's transaction.
+-- Read-only: the mark triggers are on tables and name the lists, so they stay valid. The queue is not written here.
 DO $queue$
 DECLARE missing text;
 BEGIN
@@ -190,10 +195,6 @@ BEGIN
       OR NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = n AND c.relkind = 'm' AND c.relnamespace = 'public'::regnamespace);
   IF missing IS NOT NULL THEN
     RAISE EXCEPTION 'A list lost its view or its queue row: %', missing;
-  END IF;
-  PERFORM warehouse_security.mark_lists_dirty(ARRAY['mv_grn_list', 'mv_dispatch_list']);
-  IF (SELECT count(*) FROM public.mv_refresh_queue WHERE mv_name IN ('mv_grn_list', 'mv_dispatch_list') AND needs_refresh) <> 2 THEN
-    RAISE EXCEPTION 'The recreated lists were not marked dirty';
   END IF;
 END $queue$;
 

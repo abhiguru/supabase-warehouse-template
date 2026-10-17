@@ -194,7 +194,9 @@ order, after the issuer, argument and single-use checks:
    verified, and its row, `updated_at` and audit rows stay as they were. Only the
    single-use token row is written, as replay protection.
 6. Found by phone and not linked, and not refused above: it is linked to the
-   identity and its mobile is marked verified.
+   identity and its mobile is marked verified. A profile found by `(iss, sub)`
+   whose mobile equals the token's phone is marked verified here too (after the
+   refusals; before migration 96 this happened before step 5).
 7. Pending: an enrollment token; the pending answer names the link
    (`central_issuer`, `central_subject`) in its short `data.user`.
 8. Approved: with `central_local_code` off (the default) the session is issued;

@@ -52,6 +52,9 @@ INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment
  (gen_random_uuid(),'919000000513','Refused Inactive','staff',false,'approved','https://login.association.example.test','central-refusal-0513',false,NULL),
  (gen_random_uuid(),'919000000514','Allowed Approved','staff',true,'approved','https://login.association.example.test','central-refusal-0514',false,NULL),
  (gen_random_uuid(),'919000000515','Allowed Pending','customer',false,'pending','https://login.association.example.test','central-refusal-0515',false,NULL);
+-- A machine account linked to a central identity already (migration 78): found by subject, refused.
+INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status,central_issuer,central_subject,mobile_verified,mobile_verified_at,is_service_account)
+ VALUES (gen_random_uuid(),'919000000522','Refused Service','staff',true,'approved','https://login.association.example.test','central-refusal-0522',false,NULL,true);
 -- Found by the number only (not linked): rejected, and one for the SMS path.
 INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment_status,mobile_verified,mobile_verified_at) VALUES
  (gen_random_uuid(),'919000000516','Refused By Phone','customer',false,'rejected',false,NULL),
@@ -70,11 +73,15 @@ SELECT pg_temp.cr_assert((SELECT enrollment_status='disabled' AND NOT active FRO
 -- 1. Refused: account_unavailable and nothing written
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.cr_snap('919000000511') AS before_rejected, pg_temp.cr_snap('919000000512') AS before_disabled,
-       pg_temp.cr_snap('919000000513') AS before_inactive, pg_temp.cr_snap('919000000516') AS before_phone \gset
+       pg_temp.cr_snap('919000000513') AS before_inactive, pg_temp.cr_snap('919000000516') AS before_phone, pg_temp.cr_snap('919000000522') AS before_service \gset
 SELECT pg_temp.cr_exchange('central-refusal-0511','919000000511','token-refusal-00000511') AS answer_rejected \gset
 SELECT pg_temp.cr_exchange('central-refusal-0512','919000000512','token-refusal-00000512') AS answer_disabled \gset
 SELECT pg_temp.cr_exchange('central-refusal-0513','919000000513','token-refusal-00000513') AS answer_inactive \gset
 SELECT pg_temp.cr_exchange('central-refusal-0516','919000000516','token-refusal-00000516') AS answer_phone \gset
+SELECT pg_temp.cr_exchange('central-refusal-0522','919000000522','token-refusal-00000522') AS answer_service \gset
+SELECT pg_temp.cr_assert(:'answer_service'::jsonb='{"success":false,"code":"account_unavailable"}'::jsonb
+  AND pg_temp.cr_snap('919000000522')=:'before_service',
+ 'a linked service account found by subject: account_unavailable, row, tuple version and audit log unchanged: '||pg_temp.cr_snap('919000000522'));
 SELECT pg_temp.cr_assert(:'answer_rejected'::jsonb='{"success":false,"code":"account_unavailable"}'::jsonb
   AND :'answer_disabled'::jsonb='{"success":false,"code":"account_unavailable"}'::jsonb
   AND :'answer_inactive'::jsonb='{"success":false,"code":"account_unavailable"}'::jsonb
@@ -89,7 +96,7 @@ SELECT pg_temp.cr_assert(pg_temp.cr_snap('919000000513')=:'before_inactive',
 SELECT pg_temp.cr_assert(pg_temp.cr_snap('919000000516')=:'before_phone',
  'a rejected profile found by number only is not linked and not written (migration 81)');
 SELECT pg_temp.cr_assert((SELECT bool_and(NOT mobile_verified AND mobile_verified_at IS NULL) FROM public.user_profiles
-   WHERE mobile IN ('919000000511','919000000512','919000000513','919000000516')),
+   WHERE mobile IN ('919000000511','919000000512','919000000513','919000000516','919000000522')),
  'none of the refused profiles was marked verified');
 SELECT pg_temp.cr_assert((SELECT count(*)=0 FROM warehouse_security.refresh_sessions s JOIN public.user_profiles p ON p.auth_user_id=s.user_id
    WHERE p.mobile IN ('919000000511','919000000512','919000000513','919000000516'))
@@ -142,10 +149,13 @@ SELECT pg_temp.cr_assert(:'answer_allowed'::jsonb#>>'{data,action}'='login'
  AND (SELECT mobile_verified AND mobile_verified_at IS NOT NULL FROM public.user_profiles WHERE mobile='919000000518'),
  'operator_verify_otp: an approved profile still signs in and is marked verified');
 SELECT pg_temp.cr_code('919000000521') AS new_code \gset
+SELECT count(*) AS audit_before_sms_new FROM public.audit_log WHERE table_name='user_profiles' \gset
 SELECT public.operator_verify_otp('919000000521',:'new_code') AS answer_sms_new \gset
 SELECT pg_temp.cr_assert(:'answer_sms_new'::jsonb#>>'{data,action}'='pending'
  AND (SELECT mobile_verified FROM public.user_profiles WHERE mobile='919000000521'),
  'operator_verify_otp: a new person is created verified and pending');
+SELECT pg_temp.cr_assert((SELECT count(*) FROM public.audit_log WHERE table_name='user_profiles')=:audit_before_sms_new+1,
+ 'operator_verify_otp: the new profile is written once');
 
 -- ---------------------------------------------------------------------------
 -- 4. The function kept its owner, options and grants
