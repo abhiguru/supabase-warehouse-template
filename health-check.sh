@@ -15,6 +15,19 @@ for service in db kong rest realtime storage imgproxy meta studio functions gote
   fi
 done
 compose exec -T db pg_isready -U postgres || failed=1
+# Lists (migration 91) are refreshed after the commit by the pg_cron job warehouse-list-refresh.
+# The job must run, and no list may wait longer than the 15 s bound; the first run after a start
+# or restore gets up to 30 s to catch up.
+list_refresh=''
+for ((attempt = 0; attempt < 7; attempt++)); do
+  list_refresh=$(compose exec -T db psql -X -A -t -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+    -c "SELECT CASE WHEN (s->>'ok')::boolean THEN 'current' ELSE s->>'problems' END FROM warehouse_security.list_refresh_status() s" 2>/dev/null) \
+    || list_refresh='status unavailable (is the database on migration 91? run setup.sh)'
+  [[ "$list_refresh" == current ]] && break
+  sleep 5
+done
+echo "list refresh: $list_refresh"
+[[ "$list_refresh" == current ]] || failed=1
 # Probe the intended project internally, never an unrelated server on a fixed host port.
 # Each probe runs in a container that shares a network with its target
 # (docker/docker-compose.yml, `networks:`): the storage service for the gateway

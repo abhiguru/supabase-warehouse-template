@@ -13,8 +13,26 @@ export function migrationPlan(root) {
     const sql = readFileSync(resolve(directory, name), 'utf8');
     return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
   });
+  // 71041 serializes migration runs. 71046 is the list refresh's lock (migration 91): held for the whole
+  // run, so no refresh overlaps a migration. A migration that locks a table a list reads and then
+  // refreshes or drops that list would otherwise deadlock with a refresh holding the view's lock. A refresh
+  // in progress (seconds) finishes first; pg_cron runs started meanwhile return at once. Session level:
+  // released at the end, or when psql stops on an error.
   const result = [String.raw`\set ON_ERROR_STOP on
 SELECT pg_advisory_lock(71041);
+DO $$
+DECLARE holder text;
+BEGIN
+  PERFORM set_config('lock_timeout', '120s', true);
+  PERFORM pg_advisory_lock(71046);
+EXCEPTION WHEN lock_not_available THEN
+  SELECT string_agg(format('pid %s (user %s, application %s)', a.pid, a.usename, a.application_name), ', ') INTO holder
+    FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+   WHERE l.locktype = 'advisory' AND l.classid = 0 AND l.objid = 71046 AND l.objsubid = 1 AND l.granted;
+  RAISE EXCEPTION 'The list refresh lock 71046 has been held by % for more than 120 s; migrations do not run beside a list refresh.',
+    COALESCE(holder, 'another session')
+    USING HINT = 'Let that refresh finish or end that session (a CALL of the worker left open in psql keeps the lock), then run setup again.';
+END $$;
 CREATE SCHEMA IF NOT EXISTS warehouse_migrations;
 REVOKE ALL ON SCHEMA warehouse_migrations FROM PUBLIC,anon,authenticated;
 CREATE TABLE IF NOT EXISTS warehouse_migrations.applied (
@@ -43,7 +61,7 @@ ${sql}
   COMMIT;
 \endif`);
   }
-  result.push("NOTIFY pgrst, 'reload schema';\nSELECT pg_advisory_unlock(71041);\n");
+  result.push("NOTIFY pgrst, 'reload schema';\nSELECT pg_advisory_unlock(71046);\nSELECT pg_advisory_unlock(71041);\n");
   return result.join('\n');
 }
 

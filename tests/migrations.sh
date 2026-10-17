@@ -33,6 +33,7 @@ test_files=(
   "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
   "$ROOT/tests/storage_policy_fixture.sql"
   "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql"
+  "$ROOT/scripts/configure-list-refresh.sql" "$ROOT/scripts/configure-list-refresh.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql"
@@ -63,6 +64,7 @@ test_files=(
   "$ROOT/tests/sensor_ingest.sql"
   "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql"
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
+  "$ROOT/tests/list_refresh_worker.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
 )
@@ -207,6 +209,9 @@ bash "$ROOT/tests/history_author_backfill.sh" "$container"
 
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
+
+# Migration 91: the list refresh worker on committed data (races, parallel writers, the pg_cron runner).
+bash "$ROOT/tests/list_refresh_worker.sh" "$container"
 
 # Applied migration history is immutable: changing an old file must fail closed.
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")

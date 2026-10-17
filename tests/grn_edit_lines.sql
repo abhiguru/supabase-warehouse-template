@@ -86,6 +86,8 @@ SELECT pg_temp.edit_assert((SELECT note='Line added' AND pricing_mode='MONTHLY' 
  'the header edit is saved with the new line and the pricing mode stays on the header');
 SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid)
  AND (SELECT qty=30 AND stock=30 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),'the present lines keep quantity and stock');
+-- The worker's refresh, in this transaction (migration 91: the edit only marks the lists).
+SELECT warehouse_security.refresh_dirty_lists();
 SELECT pg_temp.edit_assert((SELECT sum(current_stock)=95 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_id'::uuid),
  'the customer stock summary counts the new line (40 + 30 + 25)');
 SELECT jsonb_build_object('id',:'lot_new','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',25,'weight',12,'rack','R3','package_mark','NEW') AS line_new \gset
@@ -140,6 +142,7 @@ SELECT pg_temp.edit_assert(:'removed'::jsonb->>'success'='true' AND :'removed'::
 RESET ROLE;
 SELECT pg_temp.edit_assert((SELECT count(*)=0 FROM public.goodsreceived_trl WHERE id=:'lot_new'::uuid)
  AND (SELECT count(*)=2 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid),'two lines remain');
+SELECT warehouse_security.refresh_dirty_lists();
 SELECT pg_temp.edit_assert((SELECT sum(current_stock)=75 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_id'::uuid),
  'the customer stock summary follows (40 + 35)');
 

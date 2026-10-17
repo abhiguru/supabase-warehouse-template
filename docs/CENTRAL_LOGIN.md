@@ -263,7 +263,7 @@ together with the phone number and can ask for access again.
 | `warehouse_security.auth_config`, key `central_issuer` | The trusted issuer. `public.operator_central_exchange` refuses every other issuer, also from a caller that holds the service key. Written by `setup.sh`. |
 | `warehouse_security.auth_config`, key `central_local_code` | `on` when this facility asks for its own code at every central sign-in; absent = off. Written by `setup.sh`. |
 | `config/compose.env`: `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL`, `CENTRAL_JWKS_FILE`, `CENTRAL_LOCAL_CODE` | The operator's settings. |
-| `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. **It is not part of a backup.** |
+| `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. `db:backup` copies it into the backup as `central-jwks.json` (checksummed and signed with the rest), `db:verify-restore` checks it and `db:restore-host` puts it back. A backup written before that holds no copy: `db:restore-host` then prints the `setup.sh` rerun that restores it. `doctor` fails while the file named by `CENTRAL_JWKS_FILE` is missing or not a usable key set. |
 
 The token itself is never stored or logged. The table `public.central_user_links`
 of an earlier design (migration 0) was never written and is dropped by
@@ -283,8 +283,13 @@ source are set.
 
 Set, replace or remove them with `setup.sh`; see
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#central-sign-in). The trusted issuer
-in the database is written by `setup.sh`, so after restoring a database run
-`setup.sh` again before relying on central login.
+in the database is written by `setup.sh`, so after restoring a database that
+disagrees with `config/compose.env` (it was backed up before central login was
+turned on, off or changed) run `setup.sh` again before relying on central login.
+A lost-host restore (`db:restore-host`) brings back the configuration, the
+database and, for a backup that carries it, the key file from the same moment,
+so nothing needs to be redone; for an older backup `db:restore-host` prints the
+one rerun that puts the key file back.
 
 ## Built (2026-10-12)
 

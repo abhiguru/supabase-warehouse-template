@@ -56,6 +56,8 @@ bash "$ROOT/scripts/compose.sh" config --quiet
 bash "$ROOT/scripts/build-images.sh"
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
+# The list refresher (migration 91): pg_cron jobs and their LOGIN role, put back on every run.
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-list-refresh.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
 # Central sign-in: the trusted issuer from compose.env (--central-issuer), or off, and whether this
 # facility also asks for its own SMS code at every sign-in (--central-local-code on; default off).

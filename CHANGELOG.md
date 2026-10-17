@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased: ops review wave 1 — lists refresh after the commit (migration 91), the key file in backups
+
+Fixes from the 2026-10-17 operational review, wave 1 (the acceptance gate TW-BE-016, plus TW-BE-023 and TW-BE-020).
+
+Migration `00000000000091_list_refresh_off_write_path.sql` (TW-BE-016, TW-BE-023; owner decision D2):
+- **Writes no longer refresh materialized views.** They mark the lists they change and return. The pg_cron job
+  `warehouse-list-refresh` refreshes the marked lists every 5 seconds as the password-less LOGIN role
+  `warehouse_list_refresher` (`CALL warehouse_security.refresh_dirty_lists_worker()`): CONCURRENTLY, one commit per
+  list, lock 71046, never the document lock 71040. Measured at 4,000 and 12,000 GRNs: a one-line dispatch takes
+  13–17 ms (was 0.9–5.6 s) and 10 concurrent dispatches all commit with no statement timeout (before: 1 to 8 of 10).
+- `get_invoices_list`, `get_dispatch_list` and the legacy `get_all_grn_items(p_catalog_id, ...)` overload are
+  eventually consistent within 15 s (typically 3–4 s); write answers are authoritative. New `get_list_freshness()`
+  (staff, supervisors, administrators).
+- Every table marks every list that reads it: line changes reach both daily summaries (TW-BE-023), and receipt and
+  customer header changes reach the stock, dispatch and invoice lists. Marks always count (`mark_seq`), so a write
+  committed during a refresh is not lost. `update_grn` marks the seven lists and no longer refreshes them.
+- The migration run holds lock 71046 (waits up to 120 s and names the holder), so no list refresh runs during a
+  migration. The db runs with `cron.log_statement=off`.
+- Setup and restore run `scripts/configure-list-refresh.sql`; `db:verify-restore` leaves pg_cron's own objects out;
+  the doctor (`health-check.sh`) checks the job, the runner, the 15 s bound and names a foreign holder of 71046. For a
+  manual run use the one-shot command in `docs/OPERATOR_INSTALL.md`, never an open psql session.
+- Upgrade: run `setup.sh --operator` (it recreates the db with the new command line and creates the job).
+- Tests: new `tests/list_refresh_worker.sql` and `tests/list_refresh_worker.sh` (lost-refresh race, five parallel
+  dispatches under an 8 s statement timeout, migration/worker overlap); five SQL tests run the refresh before reading.
+
+Backups carry the central sign-in key file (TW-BE-020):
+- `db:backup` copies `public/central-jwks.json` (when the keys come from a file) as `central-jwks.json`, listed in
+  `SHA256SUMS` and so signed; `db:verify-restore` accepts it only as a regular, checksummed file; `db:restore-host`
+  installs it as `public/central-jwks.json` (0644). Format stays `warehouse-backup-v5`: the file is optional.
+- A restore from a backup that names a key file it does not carry (an older backup), by `db:restore-host` or
+  `db:restore --restore-config`, finishes and prints the exact `setup.sh --operator ... --central-jwks-file` rerun;
+  its final `doctor --local` only warns about the missing file.
+- `doctor` fails when `CENTRAL_JWKS_FILE` is set and the file is missing, not a regular file, over 64 KB, not JSON or
+  without a usable P-256 key.
+- Docs: `docs/OPERATOR_INSTALL.md` (restore paragraph reconciled with the lost-host section; new lost-host step 7),
+  `docs/CENTRAL_LOGIN.md` (the key file is part of a backup).
+
 ## Unreleased: staff lose item pricing (migration 90)
 
 Migration `00000000000090_staff_no_pricing.sql`, owner decision of 2026-10-16: item pricing is for administrators

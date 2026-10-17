@@ -7,6 +7,7 @@ import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
+import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
 
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -100,6 +101,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     if (!owned.output.trim() && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
     return 'Operator configuration, private paths and gateway port preflight passed.';
   }
+  // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
+  const keyFileWarning = checkCentralKeyFile(env, state);
+  if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
   // The script probes ten containers plus five HTTP endpoints. Its own
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
@@ -111,6 +115,35 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const json = await response.json();
   if (json.success !== true || json.data?.anonKey !== env.ANON_KEY || json.data?.instanceId !== manifest.instanceId || json.data?.canonicalOrigin !== origin) throw new Error('External public configuration does not match this instance.');
   return `Local services and external HTTPS discovery are healthy.${note}`;
+}
+
+// Central sign-in with keys from a file (CENTRAL_JWKS_FILE, set by setup.sh --central-jwks-file): the
+// functions container reads <state>/public/<file>. compose.env comes back with a backup but the file
+// does not unless the backup carries it, and an unreadable file only produces a log line in the router
+// while get-public-config keeps offering central sign-in. Nothing to check when the keys are fetched
+// from an address or central sign-in is off. Returns '' when the file is fine or none is configured;
+// throws when it is missing or not a usable key set. Only while db:restore-host is waiting for the
+// operator to put a missing file back (WAREHOUSE_CENTRAL_KEY_PENDING=yes, set by restore-host for
+// restore.sh and so for this doctor) is a missing file a returned warning instead of a failure.
+export function checkCentralKeyFile(env, stateDir, { pending = process.env.WAREHOUSE_CENTRAL_KEY_PENDING === 'yes' } = {}) {
+  const name = env.CENTRAL_JWKS_FILE;
+  if (!name) return '';
+  // The router reads only a plain file name from public/; so does this check.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) throw new Error(`CENTRAL_JWKS_FILE must be a plain file name (such as central-jwks.json), not ${name}.`);
+  const path = resolve(stateDir, 'public', name);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) {
+    const message = `Central sign-in reads its keys from ${path}, but that file is missing: every central sign-in fails while the app still offers it. `
+      + `Put it back by rerunning setup.sh --operator with your usual inputs plus --central-issuer ${env.CENTRAL_ISSUER || '<issuer>'} --central-jwks-file <the key set the association sent you> (docs/OPERATOR_INSTALL.md, "Central sign-in").`;
+    if (pending) return message;
+    throw new Error(message);
+  }
+  if (!stat.isFile()) throw new Error(`${path} must be a regular file.`);
+  if (stat.size > KEY_SET_MAX_BYTES) throw new Error(`${path} is larger than 64 KB; central sign-in refuses it. Replace it with setup.sh --central-jwks-file.`);
+  let document;
+  try { document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path))); } catch { throw new Error(`${path} is not a JSON key set; central sign-in cannot verify a token. Replace it with setup.sh --central-jwks-file.`); }
+  try { usableKeys(document); } catch (error) { throw new Error(`${path} is not usable: ${error.message}. Replace it with setup.sh --central-jwks-file.`); }
+  return '';
 }
 
 if (isMain(import.meta.url)) {

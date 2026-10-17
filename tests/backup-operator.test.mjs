@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
+import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +124,35 @@ esac
     assert.equal(statSync(join(withTunnel, 'tunnel/config.yml')).mode & 0o777, 0o600);
     assert.match(readFileSync(join(withTunnel, 'SHA256SUMS'), 'utf8'), /^[0-9a-f]{64} {2}tunnel\/credentials\.json$/m);
     assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: withTunnel }).status, 0);
+
+    // TW-BE-020: the central key file (public keys only) travels with the backup, because compose.env
+    // keeps naming it. Neither earlier backup had one to carry, and says nothing about it.
+    for (const earlier of [destination, withTunnel]) {
+      assert.equal(existsSync(join(earlier, 'central-jwks.json')), false, 'no key file in a backup of a state without one');
+      assert.doesNotMatch(readFileSync(join(earlier, 'SHA256SUMS'), 'utf8'), /central-jwks/);
+    }
+    writeFileSync(join(state, 'public/central-jwks.json'), centralKeySet, { mode: 0o644 });
+    const withKeys = join(scratch, 'backup-keys');
+    const keysRun = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, withKeys], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.equal(keysRun.status, 0, keysRun.stderr);
+    assert.equal(readFileSync(join(withKeys, 'central-jwks.json'), 'utf8'), centralKeySet, 'the key file is copied byte for byte');
+    assert.equal(statSync(join(withKeys, 'central-jwks.json')).mode & 0o777, 0o600, 'private like every file of the backup');
+    const keySums = readFileSync(join(withKeys, 'SHA256SUMS'), 'utf8');
+    assert.match(keySums, /^[0-9a-f]{64} {2}central-jwks\.json$/m, 'listed in SHA256SUMS, which the signature covers');
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: withKeys }).status, 0);
+    assert.equal(readFileSync(join(withKeys, 'SHA256SUMS.hmac'), 'utf8'),
+      `warehouse-backup-hmac-v1 ${hmacHex(key, 'warehouse-backup-manifest-v1', readFileSync(join(withKeys, 'SHA256SUMS')))}\n`);
+    // Something that is not a plain file in its place is refused, and no backup is left behind.
+    rmSync(join(state, 'public/central-jwks.json'));
+    symlinkSync(join(state, 'public/instance.json'), join(state, 'public/central-jwks.json'));
+    const linked = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'backup-linked')], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.notEqual(linked.status, 0);
+    assert.match(linked.stderr, /central-jwks\.json is not a regular file/);
+    assert.equal(existsSync(join(scratch, 'backup-linked')), false);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -226,6 +255,46 @@ test('restore verifier accepts a checksummed tunnel credential and refuses anyth
     assert.notEqual(unexpected.status, 0);
     assert.match(unexpected.stderr, /Unexpected entry in the backup tunnel directory: tunnel\/cert\.pem/);
     assert.doesNotMatch(unexpected.calls, /^run /m, 'no container is started');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier accepts a checksummed central key file and refuses it unlisted, altered or not a plain file', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-central-key-'));
+  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
+  try {
+    const good = makeBackup(join(scratch, 'good'), { centralKey: centralKeySet });
+    const passed = verify(good, scratch, { FAKE_CATALOG_FILE: join(good, 'storage_objects.txt') });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.match(passed.stdout, /signature, checksums/);
+
+    // Present but not named in the signed list: refused before any container.
+    const unlisted = makeBackup(join(scratch, 'unlisted'));
+    writeFileSync(join(unlisted, 'central-jwks.json'), centralKeySet);
+    const missingSum = verify(unlisted, scratch);
+    assert.notEqual(missingSum.status, 0);
+    assert.match(missingSum.stderr, /not exactly the files its signed SHA256SUMS lists/);
+    // An unsigned v4 backup has no signed list; the verifier itself insists on a checksum for the file.
+    const unlistedV4 = makeBackup(join(scratch, 'unlisted-v4'), { format: 'warehouse-backup-v4' });
+    writeFileSync(join(unlistedV4, 'central-jwks.json'), centralKeySet);
+    const missingSumV4 = verify(unlistedV4, scratch, {}, ['--allow-unsigned']);
+    assert.notEqual(missingSumV4.status, 0);
+    assert.match(missingSumV4.stderr, /Backup checksum missing for central-jwks\.json/);
+
+    // Changed after the backup was written: the checksum, which the signature covers, no longer matches.
+    const altered = makeBackup(join(scratch, 'altered'), { centralKey: centralKeySet });
+    writeFileSync(join(altered, 'central-jwks.json'), centralKeySet.replace('central-2026-10', 'planted-key'));
+    const changed = verify(altered, scratch);
+    assert.notEqual(changed.status, 0);
+    assert.match(changed.stderr, /does not match its SHA256SUMS/);
+
+    // A directory of that name (nothing for the signed list to name) is not a key file.
+    const directory = makeBackup(join(scratch, 'directory'));
+    mkdirSync(join(directory, 'central-jwks.json'));
+    resum(directory);
+    const notPlain = verify(directory, scratch);
+    assert.notEqual(notPlain.status, 0);
+    assert.match(notPlain.stderr, /Backup entry central-jwks\.json is not a regular file/);
+    assert.equal(notPlain.calls, '', 'no container is started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
