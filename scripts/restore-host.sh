@@ -4,7 +4,9 @@
 # moment of the backup. It never runs setup (which would mint a new identity):
 # it creates a new state directory from the backup's own compose.env and
 # instance.json, rewriting only the three state-path lines, and then hands over
-# to scripts/restore.sh --relocated for the database and storage replay.
+# to scripts/restore.sh --relocated for the database and storage replay. A
+# central sign-in key file (public/central-jwks.json) and a tunnel credential
+# in the backup are put back as well.
 #
 #   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes BACKUP
 #
@@ -176,6 +178,20 @@ chmod 0600 "$stage/config/compose.env"
 # The rebuilt installation keeps signing with the same backup key.
 if [[ -n "$BACKUP_KEY" ]]; then (umask 077; printf '%s\n' "$BACKUP_KEY" > "$stage/config/backup.key"); chmod 0600 "$stage/config/backup.key"; fi
 install -m 0644 -- "$stage/backups/$name/instance.json" "$stage/public/instance.json"
+# The central sign-in key set (public keys only), when the backup carries one. compose.env names it
+# (CENTRAL_JWKS_FILE), so a restore that left it out would offer central sign-in that cannot work.
+# A backup written before backups carried the file has none: the next steps then say how to put it back.
+central_key=false central_missing=false central_issuer=''
+central_src="$stage/backups/$name/central-jwks.json"
+staged_env="$stage/backups/$name/compose.env"
+if [[ -e "$central_src" || -L "$central_src" ]]; then
+  [[ -f "$central_src" && ! -L "$central_src" ]] || die 'The backup entry central-jwks.json is not a regular file.'
+  install -m 0644 -- "$central_src" "$stage/public/central-jwks.json"
+  central_key=true
+elif [[ -n "$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$staged_env" | head -n 1)" ]]; then
+  central_missing=true
+  central_issuer="$(sed -n 's/^CENTRAL_ISSUER=//p' "$staged_env" | head -n 1)"
+fi
 # The tunnel credential, when the backup carries one (scripts/tunnel.sh adopt).
 tunnel=false
 if [[ -d "$stage/backups/$name/tunnel" ]]; then
@@ -197,10 +213,15 @@ mv -T -- "$stage" "$state"
 trap cleanup EXIT
 
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
+if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
 # 6. The database and storage replay is the in-place restore, unchanged.
 restore_args=(--yes --relocated)
 if [[ "$allow_unsigned" == true ]]; then restore_args+=(--allow-unsigned); fi
-if ! WAREHOUSE_STATE_DIR="$state" WAREHOUSE_BACKUP_KEY_FILE="${WAREHOUSE_BACKUP_KEY_FILE:-}" bash "$ROOT/scripts/restore.sh" "${restore_args[@]}" "$state/backups/$name"; then
+# restore.sh ends with doctor --local, which fails on a missing central key file. While the file is still
+# to be put back (older backup, see the next steps) that is a warning, so the restore itself can finish.
+pending=''
+if [[ "$central_missing" == true ]]; then pending=yes; fi
+if ! WAREHOUSE_CENTRAL_KEY_PENDING="$pending" WAREHOUSE_STATE_DIR="$state" WAREHOUSE_BACKUP_KEY_FILE="${WAREHOUSE_BACKUP_KEY_FILE:-}" bash "$ROOT/scripts/restore.sh" "${restore_args[@]}" "$state/backups/$name"; then
   cat >&2 <<MSG
 restore-host failed after creating $state. Nothing else on this host was changed.
 Inspect the message above, then to start over:
@@ -223,18 +244,29 @@ else
      connector with your private copy (docs/OPERATOR_INSTALL.md, Cloudflare Tunnel ingress), then:
      node scripts/doctor.mjs"
 fi
-cat <<MSG
-
-This host now serves the warehouse from backup $name.
-Next:
-  1. Keep the original host off for good: both must never run at once.
-  2. $address
-  3. Compare with the fingerprint taken at backup time, if you have one:
-       WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -
-  4. Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1
-  5. If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
+# The numbered steps; the central key file step appears only when the backup could not carry the file.
+n=0
+step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$1"; }
+printf '\nThis host now serves the warehouse from backup %s.\nNext:\n' "$name"
+step 'Keep the original host off for good: both must never run at once.'
+step "$address"
+if [[ "$central_missing" == true ]]; then
+  # Printed from the backup's own configuration, so only a plain https address is shown.
+  issuer="$central_issuer"
+  [[ "$issuer" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || issuer='https://ISSUER'
+  step "Put the central sign-in key file back. This backup carries no central sign-in key file (it was
+     written before backups held it), but the configuration still names one, so the app offers association
+     sign-in that fails until you do, and node scripts/doctor.mjs fails on the missing file until then.
+     Rerun setup with your usual administrator inputs and the key set the association sent you; it keeps
+     this identity and its data, and rebuilds the images once:
+       bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
+         --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json"
+fi
+step "Compare with the fingerprint taken at backup time, if you have one:
+       WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -"
+step "Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1"
+step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
-     change" in docs/OPERATOR_INSTALL.md, then take a new backup.
-  6. Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key).
-Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host.
-MSG
+     change" in docs/OPERATOR_INSTALL.md, then take a new backup.'
+step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
+echo "Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host."
