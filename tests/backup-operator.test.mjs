@@ -303,6 +303,47 @@ test('restore verifier refuses a backup whose signature is missing, wrong or unv
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+// TW-BE-022: the verifier gives the same answers as restore and restore-host.
+test('restore verifier refuses a v5 backup whose signature file was removed, even with --allow-unsigned, while the key is available', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-stripped-v5-'));
+  try {
+    const stripped = makeBackup(join(scratch, 'stripped'), { key: null });
+    assert.equal(existsSync(join(stripped, 'SHA256SUMS.hmac')), false);
+    // verify() points WAREHOUSE_BACKUP_KEY_FILE at a key file by default.
+    let result = verify(stripped, scratch, {}, ['--allow-unsigned']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
+    assert.equal(result.calls, '', 'docker is never invoked');
+    // Without the flag too, and before the checksums are run.
+    writeFileSync(join(stripped, 'database.dump'), 'damaged after the signature was removed\n');
+    result = verify(stripped, scratch);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /carries no signature[\s\S]*a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
+    assert.equal(result.calls, '');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier takes the same v5 backup with --allow-unsigned once the key is lost, and an unsigned v4 with the key present', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-stripped-v5-lost-key-'));
+  try {
+    const stripped = makeBackup(join(scratch, 'stripped'), { key: null });
+    let result = verify(stripped, scratch, { WAREHOUSE_BACKUP_KEY_FILE: join(scratch, 'absent.key') }, ['--allow-unsigned']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.stdout, /UNSIGNED/);
+    // Owner decision of 2026-10-17: a v5 backup relabelled v4 is the accepted residual, so an unsigned v4 passes with the key present.
+    const old = makeBackup(join(scratch, 'old'), { format: 'warehouse-backup-v4' });
+    result = verify(old, scratch, {}, ['--allow-unsigned']);
+    assert.equal(existsSync(join(scratch, 'backup.key')), true, 'a key was available');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('restore verifier takes an unsigned v4 backup only with --allow-unsigned and says so loudly', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-v4-unsigned-'));
   try {

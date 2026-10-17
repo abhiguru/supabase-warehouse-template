@@ -4,12 +4,14 @@
 # Destructive by design: requires --yes, stopped services and a backup that passes
 # scripts/verify-restore.sh, signature included. The replaced data directories are
 # kept for rollback. An unsigned warehouse-backup-v4 directory is accepted only
-# with --allow-unsigned.
+# with --allow-unsigned, which is only for a backup written before format v5, or
+# for a lost backup key; a v5 backup whose signature file is missing is refused
+# while this installation's key is available.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
 
 confirm=false
 restore_config=false
@@ -65,10 +67,6 @@ backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
 if [[ "$format" != warehouse-backup-v5 && "$format" != warehouse-backup-v4 ]]; then
   echo "Refusing: in-place restore requires format=warehouse-backup-v5 (or an unsigned warehouse-backup-v4 with --allow-unsigned); this backup is '${format:-unknown}'. Older backups remain checkable with db:verify-restore." >&2
-  exit 1
-fi
-if [[ "$BACKUP_SIGNED" != true && "$allow_unsigned" != true ]]; then
-  echo 'Refusing: the backup signature was not verified.' >&2
   exit 1
 fi
 for file in database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do

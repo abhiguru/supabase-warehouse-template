@@ -168,6 +168,61 @@ test('restore-host takes an unsigned v4 backup only with --allow-unsigned, with 
   } finally { clean(g); }
 });
 
+// TW-BE-022: the same three cases as tests/restore.test.mjs, through restore-host (the key is the one given with --backup-key).
+test('restore-host refuses a v5 backup whose signature file was removed, even with --allow-unsigned, while --backup-key is given', () => {
+  const f = fixture('warehouse-restore-host-stripped-v5-');
+  try {
+    f.resum({ sign: false });
+    assert.equal(existsSync(join(f.backup, 'SHA256SUMS.hmac')), false);
+    let result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
+    nothingCreated(f, result);
+    assert.equal(readFileSync(join(f.scratch, 'docker.log'), 'utf8'), '', 'docker is never invoked');
+    // The refusal comes before the checksums.
+    writeFileSync(join(f.backup, 'database.dump'), 'damaged after the signature was removed\n');
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /a v5 backup must be signed/); assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
+    nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host takes the same v5 backup with --allow-unsigned and no --backup-key (key lost), with the warning, and an unsigned v4 even when the key is given', () => {
+  const f = fixture('warehouse-restore-host-stripped-v5-lost-key-');
+  try {
+    f.resum({ sign: false });
+    const result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
+  } finally { clean(f); }
+  // Owner decision of 2026-10-17: an unsigned backup labelled v4 is taken with the flag even with the key in hand
+  // (a v5 backup relabelled v4 is the accepted residual).
+  const g = fixture('warehouse-restore-host-v4-with-key-');
+  try {
+    g.resum({ format: 'warehouse-backup-v4', sign: false });
+    const result = g.run(['--state-dir', g.state, '--yes', '--allow-unsigned', g.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.equal(result.restoreCalls, `STATE=${g.state} ARGS=--yes --relocated --allow-unsigned ${join(g.state, 'backups', NAME)}\n`);
+  } finally { clean(g); }
+});
+
+test('restore-host usage and key message say what --allow-unsigned is for', () => {
+  const f = fixture('warehouse-restore-host-wording-');
+  try {
+    const usage = f.run(['--help'], {}, { key: null });
+    assert.match(usage.stderr, /--allow-unsigned instead of --backup-key: only for a backup written before format v5, or when the backup key is lost/);
+    f.resum({ sign: false });
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: null });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+  } finally { clean(f); }
+});
+
 test('restore-host opens an encrypted archive with the backup key and refuses it when its signature is wrong or missing', () => {
   const f = fixture('warehouse-restore-host-enc-');
   try {
