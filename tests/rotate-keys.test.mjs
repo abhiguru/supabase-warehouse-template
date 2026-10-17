@@ -29,6 +29,7 @@ case "$1" in
   compose)
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
+      'compose up --help') printf '      --wait-timeout int   Maximum duration to wait\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *'exec -T db psql'*) cat >> "$FAKE_PSQL_INPUT"; if [ "$FAKE_DOCKER_FAIL" = psql ]; then exit 3; fi ;;
