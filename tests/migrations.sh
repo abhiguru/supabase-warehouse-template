@@ -86,7 +86,7 @@ no_net=$({ echo 'BEGIN; DROP EXTENSION pg_net;'
   cat "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
   echo "SELECT CASE WHEN to_regnamespace('net') IS NULL THEN 'no-op' ELSE 'net came back' END;"
   echo 'ROLLBACK;'; } | pg_net_psql)
-[[ "$no_net" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
+[[ "${no_net##*$'\n'}" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
 pg_net_psql <<'SQL'
 CREATE OR REPLACE FUNCTION extensions.grant_pg_net_access()
 RETURNS event_trigger
