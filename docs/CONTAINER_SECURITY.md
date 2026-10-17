@@ -806,9 +806,16 @@ What changed, per image:
   0.59.0. The recipe now builds the same 8.37.0 source (archive SHA-256
   `b6395f7c...`) with the pinned Go 1.27.2 builder and
   `docker/gotenberg/gotenberg.go.{mod,sum}`, which differ from upstream only in
-  `golang.org/x/{net,crypto,sys,term,text}` (net 0.60.0), runs the upstream
-  `pkg/gotenberg` and `pkg/modules/api` tests, and replaces the publisher
-  binary; the version stays `8.37.0`. The MIT licence is in
+  `golang.org/x/{net,crypto,sys,term,text}` (net 0.60.0), verifies the module
+  graph (`go mod verify`), builds read-only, and replaces the publisher binary;
+  the version stays `8.37.0`. Upstream's own test suite is not run at image
+  build: every operator install builds this image, and the suite has
+  timing-sensitive tests (`TestProcessSupervisor_ReqQueueSize` failed on a
+  loaded hosted CI runner on 2026-10-17, "expected queue size to be 10 but got
+  8"), so an upstream flake would fail a real install. The `pkg/gotenberg` and
+  `pkg/modules/api` tests passed on this source and module set when the recipe
+  was written; the document tests of CI's operator-install job exercise the
+  binary. The MIT licence is in
   `LICENSES/gotenberg/` and in the image.
 - **studio** (`docker/studio/Dockerfile`): moved to `2026.10.12-sha-3699278`,
   the newest tag, which fixes `@modelcontextprotocol/sdk` (1.32.0). It still
