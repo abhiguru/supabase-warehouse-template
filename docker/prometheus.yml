@@ -1,6 +1,14 @@
+# Prometheus configuration TEMPLATE. setup.sh renders it for each installation into
+# <state>/config/monitoring/prometheus.yml (scripts/monitoring-config.mjs), which the prometheus service
+# mounts: the installation's Compose project name replaces each of the two placeholders below (a dollar
+# sign and braces around WAREHOUSE_PROJECT_NAME). Do not mount this file as it is.
+# docs/MONITORING.md, "Several installations on one host".
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Sent with every alert, so a receiver shared by several installations can tell them apart.
+  external_labels:
+    installation: ${WAREHOUSE_PROJECT_NAME}
 
 alerting:
   alertmanagers:
@@ -26,6 +34,14 @@ scrape_configs:
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
+    # cAdvisor reports every container on the host, including those of other installations (and of
+    # anything else that runs on it). Keep the series of this installation's Compose project, and the
+    # series that belong to no container (machine_*, cadvisor_version_info: an empty project label).
+    # Without this, every container rule fires for every installation on the host.
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_project]
+        regex: '(${WAREHOUSE_PROJECT_NAME}|)'
+        action: keep
 
   - job_name: 'kong'
     static_configs:

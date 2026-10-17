@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
+import { placeMonitoringConfig, readAlertWebhook } from './monitoring-config.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -161,11 +162,15 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, faultAfterManifest = false } = {}) {
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
+  // Checked before anything is written: a refused file changes nothing.
+  const webhook = readAlertWebhook(alertWebhookFile, checkout);
+  // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
+  const webhookReport = typeof webhook === 'string' ? true : webhook;
   const state = resolve(stateDir);
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));
@@ -218,7 +223,11 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // An installation made before signed backups gets its backup key here;
       // an existing key is never replaced.
       const backupKeyCreated = createBackupKey(join(state, 'config'));
-      return { created: false, state, manifest, providerUpdated, centralUpdated, backupKeyCreated };
+      // The per-installation monitoring files and the textfile directory (docs/MONITORING.md). A state made
+      // before they existed gets them here; unchanged files are left alone.
+      const project = readFileSync(envPath, 'utf8').match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1];
+      const monitoringUpdated = placeMonitoringConfig(state, { project, webhook });
+      return { created: false, state, manifest, providerUpdated, centralUpdated, backupKeyCreated, monitoringUpdated, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -250,18 +259,19 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     if (central?.keyFile) placeCentralKeyFile(join(stage, 'public'), central.keyFile);
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
     createBackupKey(join(stage, 'config'));
+    placeMonitoringConfig(stage, { project: values.WAREHOUSE_PROJECT_NAME, webhook });
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, backupKeyCreated: true };
+  return { created: true, state, manifest, backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
 }
 
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode' };
+    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -275,6 +285,9 @@ if (isMain(import.meta.url)) {
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
           : 'Preserved existing operator state unchanged.');
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
+    if (result.monitoringUpdated && !result.created) console.log('Updated the monitoring files in the state (docs/MONITORING.md).');
+    if (result.webhook) console.log('Stored the alert webhook address for Alertmanager (mode 0600, in the state).');
+    else if (result.webhook === null) console.log('Removed the alert webhook address: Alertmanager keeps alerts on this host only.');
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }
