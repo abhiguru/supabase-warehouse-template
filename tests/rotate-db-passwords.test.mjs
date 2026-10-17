@@ -3,7 +3,7 @@
 // that does not come back puts the previous values back everywhere.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, rmSync, copyFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,11 +17,18 @@ const script = join(root, 'scripts/rotate-db-passwords.sh');
 const roleNames = DB_ROLE_LOGINS.map(({ env }) => env);
 
 // Records every invocation and answers the doctor's probes (the list refresh status
-// of migration 91 included, once that lands); the `apply` and `check` streams of scripts/db-roles.sh
-// go to FAKE_APPLY_INPUT and FAKE_CHECK_INPUT, separated by a line of =. FAKE_FAIL
-// names a step that fails: apply, check, or up (the first recreation only).
+// of migration 91 included, once that lands). The "database" is a file, FAKE_DB_STATE:
+// the compose.env whose values it has. A successful `apply` of scripts/db-roles.sh
+// gives it the values of the file being applied (the staged file for the rotation,
+// the previous one for the reversal); `matches` compares a file's superuser and
+// authenticator values with it. The `apply` and `check` streams go to
+// FAKE_APPLY_INPUT and FAKE_CHECK_INPUT, separated by a line of =. FAKE_FAIL names a
+// step that fails: apply (before the commit), lost (the connection, after the
+// commit), killed (a signal to the whole command, after the commit), up (the first
+// recreation only), check, doctor. FAKE_FAIL_REVERSAL=yes fails the reversal too.
 const fakeDocker = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+config="$WAREHOUSE_STATE_DIR/config"
 case "$1" in
   ps) exit 0 ;;
   info) printf '28.0.0\\n' ;;
@@ -36,10 +43,24 @@ case "$1" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       *' ps -q supavisor'|*' ps -q grafana'|*' ps -q postgres-exporter'|*' ps -q auth') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
-      *' exec -T db sh -c IFS= read -r pw;'*) cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"; if [ "$FAKE_FAIL" = apply ]; then exit 3; fi ;;
+      *' exec -T db sh -c IFS= read -r pw;'*)
+        cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"
+        n=$(( $(cat "$FAKE_APPLY_INPUT.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_APPLY_INPUT.count"
+        if [ "$FAKE_FAIL" = apply ]; then exit 3; fi
+        if [ "$n" -ge 2 ] && [ "\${FAKE_FAIL_REVERSAL:-}" = yes ]; then exit 3; fi
+        if [ -e "$config/compose.env.before-db-rotation" ]; then cp "$config/compose.env.before-db-rotation" "$FAKE_DB_STATE"
+        elif [ -e "$config/compose.env.rotating-db" ]; then cp "$config/compose.env.rotating-db" "$FAKE_DB_STATE"; fi
+        if [ "$FAKE_FAIL" = lost ]; then exit 2; fi
+        if [ "$FAKE_FAIL" = killed ]; then kill -TERM 0; sleep 5; fi ;;
+      *' exec -T db sh -c '*'verdict()'*)
+        IFS= read -r su; IFS= read -r au
+        if [ ! -f "$FAKE_DB_STATE" ]; then echo unknown; exit 0; fi
+        dsu=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$FAKE_DB_STATE"); dau=$(sed -n 's/^DB_PASSWORD_AUTHENTICATOR=//p' "$FAKE_DB_STATE")
+        if [ "$su" = "$dsu" ] && [ "$au" = "$dau" ]; then echo match; else echo 'no match'; fi ;;
       *' exec -T db sh -c '*'superuser_password'*) cat >> "$FAKE_CHECK_INPUT"; if [ "$FAKE_FAIL" = check ]; then exit 1; fi ;;
       *' up -d --force-recreate '*) if [ "$FAKE_FAIL" = up ] && [ ! -e "$FAKE_DOCKER_LOG.failed" ]; then : > "$FAKE_DOCKER_LOG.failed"; exit 1; fi ;;
       *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
+      *'exec -T db pg_isready'*) if [ "$FAKE_FAIL" = doctor ]; then exit 1; fi ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;
 esac
@@ -57,12 +78,17 @@ function fixture(prefix) {
   const envPath = join(state, 'config/compose.env');
   writeFileSync(join(bin, 'docker'), fakeDocker, { mode: 0o700 });
   const log = join(scratch, 'docker.log');
+  // The database starts with the values of compose.env, as setup leaves it.
+  const database = join(scratch, 'database.env');
+  copyFileSync(envPath, database);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log,
-    FAKE_APPLY_INPUT: join(scratch, 'apply.txt'), FAKE_CHECK_INPUT: join(scratch, 'check.txt') };
+    FAKE_APPLY_INPUT: join(scratch, 'apply.txt'), FAKE_CHECK_INPUT: join(scratch, 'check.txt'), FAKE_DB_STATE: database };
   delete env.NODE_TEST_CONTEXT;
-  const run = (args, extra = {}) => spawnSync('bash', [script, ...args], { encoding: 'utf8', env: { ...env, ...extra }, timeout: 120000 });
-  const applies = () => readFileSync(env.FAKE_APPLY_INPUT, 'utf8').split('=====\n').filter(Boolean);
-  return { scratch, state, envPath, log, env, run, applies };
+  // In its own session, so a fake signal to the process group reaches the command and nothing else.
+  const run = (args, extra = {}) => spawnSync('setsid', ['bash', script, ...args], { encoding: 'utf8', env: { ...env, ...extra }, timeout: 120000 });
+  const applies = () => (existsSync(env.FAKE_APPLY_INPUT) ? readFileSync(env.FAKE_APPLY_INPUT, 'utf8') : '').split('=====\n').filter(Boolean);
+  const config = () => readdirSync(join(state, 'config')).sort();
+  return { scratch, state, envPath, database, log, env, run, applies, config };
 }
 const changedLines = (before, after) => before.split('\n').filter((line, index) => line !== after.split('\n')[index]).map(line => line.split('=')[0]).sort();
 // Every \set line of one apply stream is a verifier of the value in `env`; the first line signs in.
@@ -178,19 +204,135 @@ for (const [step, superuser] of [['up', false], ['check', false], ['up', true]])
   });
 }
 
-test('a rotation that stopped half-way is not repeated over its leftover file, and the message names the file the database matches', () => {
-  for (const [leftover, message] of [['compose.env.rotating-db', /may hold the passwords the database has now[\s\S]*mv /], ['compose.env.before-db-rotation', /compose\.env holds the passwords the database has/]]) {
-    const f = fixture('warehouse-rotate-db-leftover-');
+const STAGED = 'compose.env.rotating-db';
+const PREVIOUS = 'compose.env.before-db-rotation';
+const NEXT = /Nothing was rotated\. Run bash start\.sh so every service uses these values, check with npm run test:db-roles, then run npm run db:rotate-passwords -- --yes again if you still want new ones\./;
+// A leftover file as a stopped rotation leaves it: compose.env with new values for the logins (and the superuser).
+function leftover(f, name, { superuser = false } = {}) {
+  const fresh = (length = 64) => [...Array(length)].map(() => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+  let text = readFileSync(f.envPath, 'utf8');
+  for (const role of roleNames) text = text.replace(new RegExp(`^${role}=.*$`, 'm'), `${role}=${fresh()}`);
+  if (superuser) text = text.replace(/^POSTGRES_PASSWORD=.*$/m, `POSTGRES_PASSWORD=${fresh()}`);
+  writeFileSync(join(f.state, 'config', name), text, { mode: 0o600 });
+  return text;
+}
+
+test('a rotation that stopped after its database step leaves the staged file and a message, and the next run puts that file in place', () => {
+  for (const [how, extra] of [['a lost connection', { FAKE_FAIL: 'lost' }], ['a signal', { FAKE_FAIL: 'killed' }]]) {
+    const f = fixture('warehouse-rotate-db-stopped-');
     try {
-      const path = join(f.state, 'config', leftover);
-      writeFileSync(path, 'kept as it is\n', { mode: 0o600 });
-      const before = readFileSync(f.envPath);
-      const result = f.run(['--yes', '--superuser']);
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, message);
-      assert.equal(readFileSync(path, 'utf8'), 'kept as it is\n', `${leftover} is neither replaced nor removed`);
-      assert.deepEqual(readFileSync(f.envPath), before);
-      assert.equal(readFileSync(f.log, 'utf8').includes('exec -T db sh -c IFS= read -r pw;'), false, 'the database is not touched');
+      const before = readFileSync(f.envPath, 'utf8');
+      const stopped = f.run(['--yes', '--superuser'], extra);
+      assert.notEqual(stopped.status, 0, how);
+      assert.match(stopped.stderr, new RegExp(`Stopped during or after the database step\\. ${join(f.state, 'config', STAGED).replaceAll('.', '\\.')} is kept: the database may have its values now\\. Run npm run db:rotate-passwords -- --yes again: it finds out which values the database has`), how);
+      assert.equal(readFileSync(f.envPath, 'utf8'), before, `${how}: compose.env is not changed`);
+      const staged = readFileSync(join(f.state, 'config', STAGED), 'utf8');
+      assert.equal(readFileSync(f.database, 'utf8'), staged, `${how}: the database took the staged values`);
+      // The next run follows the message: the database decides, and nothing is rotated.
+      const next = f.run(['--yes']);
+      assert.equal(next.status, 1, next.stdout + next.stderr);
+      assert.match(next.stdout, /The database has the values of compose\.env\.rotating-db: it is compose\.env now\./);
+      assert.match(next.stdout, NEXT);
+      assert.equal(readFileSync(f.envPath, 'utf8'), staged, 'the new superuser password is kept, in compose.env');
+      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
+      assert.equal(f.applies().length, 1, 'the recovery sets no password');
     } finally { rmSync(f.scratch, { recursive: true, force: true }); }
   }
+});
+
+test('recovery keeps whichever file the database matches and removes only the ones it does not', () => {
+  const cases = [
+    // [leftovers, which one the database has, expected compose.env afterwards, message]
+    [[STAGED], 'live', 'live', /The database has the values of compose\.env\.\nRemoved compose\.env\.rotating-db: the database does not have its values\./],
+    [[PREVIOUS], 'live', 'live', /Removed compose\.env\.before-db-rotation: the database does not have its values\./],
+    [[PREVIOUS], PREVIOUS, PREVIOUS, /The database has the values of compose\.env\.before-db-rotation: it is compose\.env now\./],
+    [[STAGED, PREVIOUS], STAGED, STAGED, /it is compose\.env now\.\nRemoved compose\.env\.before-db-rotation/],
+  ];
+  for (const [names, has, after, message] of cases) {
+    const f = fixture('warehouse-rotate-db-recover-');
+    try {
+      const texts = { live: readFileSync(f.envPath, 'utf8') };
+      for (const name of names) texts[name] = leftover(f, name, { superuser: name === STAGED });
+      writeFileSync(f.database, texts[has]);
+      const result = f.run(['--yes']);
+      assert.equal(result.status, 1, `${names} / ${has}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stdout, message, `${names} / ${has}`);
+      assert.match(result.stdout, NEXT);
+      assert.equal(readFileSync(f.envPath, 'utf8'), texts[after], `${names} / ${has}: compose.env`);
+      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock'], `${names} / ${has}: leftovers`);
+      assert.equal(f.applies().length, 0, 'no password is set');
+      assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false, 'nothing is recreated');
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('recovery changes nothing when the database takes none of the files or gives no answer', () => {
+  for (const [what, database, message] of [
+    ['none of the files', 'unrelated', /Refusing: the database takes the values of none of compose\.env and compose\.env\.rotating-db compose\.env\.before-db-rotation\. Nothing was changed\./],
+    ['no answer', null, /Refusing: the database gave no clear answer for compose\.env\. Nothing was changed/],
+  ]) {
+    const f = fixture('warehouse-rotate-db-unclear-');
+    try {
+      const live = readFileSync(f.envPath, 'utf8');
+      const staged = leftover(f, STAGED, { superuser: true });
+      const previous = leftover(f, PREVIOUS);
+      if (database) writeFileSync(f.database, live.replace(/^DB_PASSWORD_AUTHENTICATOR=.*$/m, `DB_PASSWORD_AUTHENTICATOR=${'f'.repeat(64)}`));
+      else rmSync(f.database);
+      const result = f.run(['--yes']);
+      assert.equal(result.status, 1, what);
+      assert.match(result.stderr, message, what);
+      assert.equal(readFileSync(f.envPath, 'utf8'), live, `${what}: compose.env kept`);
+      assert.equal(readFileSync(join(f.state, 'config', STAGED), 'utf8'), staged, `${what}: staged file kept`);
+      assert.equal(readFileSync(join(f.state, 'config', PREVIOUS), 'utf8'), previous, `${what}: previous file kept`);
+      assert.equal(f.applies().length, 0);
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('a reversal that fails too leaves compose.env with the values the database has, and the next run cleans up', () => {
+  const f = fixture('warehouse-rotate-db-reversal-');
+  try {
+    const before = readFileSync(f.envPath, 'utf8');
+    const result = f.run(['--yes', '--superuser'], { FAKE_FAIL: 'up', FAKE_FAIL_REVERSAL: 'yes' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /putting the previous ones back[\s\S]*Could not put the previous passwords back\. compose\.env holds the new values and .*compose\.env\.before-db-rotation the previous ones; which ones the database has is checked by the next run\. Fix the cause above, then run npm run db:rotate-passwords -- --yes again/);
+    const after = readFileSync(f.envPath, 'utf8');
+    assert.notEqual(after, before, 'compose.env holds the new values');
+    assert.equal(readFileSync(f.database, 'utf8'), after, 'and the database has them');
+    assert.equal(readFileSync(join(f.state, 'config', PREVIOUS), 'utf8'), before, 'the previous values are kept');
+    assert.equal(f.applies().length, 2, 'the rotation and the failed reversal');
+    const next = f.run(['--yes']);
+    assert.equal(next.status, 1);
+    assert.match(next.stdout, /The database has the values of compose\.env\.\nRemoved compose\.env\.before-db-rotation: the database does not have its values\./);
+    assert.match(next.stdout, NEXT);
+    assert.equal(readFileSync(f.envPath, 'utf8'), after);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('a doctor that fails after the rotation puts the previous values back', () => {
+  const f = fixture('warehouse-rotate-db-doctor-');
+  try {
+    const before = readFileSync(f.envPath, 'utf8');
+    const result = f.run(['--yes'], { FAKE_FAIL: 'doctor' });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /Local service health check failed[\s\S]*putting the previous ones back[\s\S]*The previous database passwords are back in place/);
+    assert.equal(readFileSync(f.envPath, 'utf8'), before);
+    assert.equal(readFileSync(f.database, 'utf8'), before, 'the database has the previous values again');
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
+    const calls = readFileSync(f.log, 'utf8');
+    assert.ok(calls.indexOf('superuser_password') < calls.indexOf('exec -T db pg_isready'), 'the login check passed before the doctor ran');
+    assert.equal(calls.split('\n').filter(line => line.includes('--force-recreate')).length, 2);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('a failing database step that the database confirms changed nothing removes the staged file', () => {
+  const f = fixture('warehouse-rotate-db-confirmed-');
+  try {
+    const result = f.run(['--yes', '--superuser'], { FAKE_FAIL: 'apply' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /The database step failed and changed nothing \(the database still has the values of compose\.env\)\./);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
+    assert.match(readFileSync(f.log, 'utf8'), /verdict\(\)/, 'the database was asked');
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });

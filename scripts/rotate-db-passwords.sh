@@ -44,31 +44,66 @@ done
 state="$(operator_state)"
 operator_lock "$state"
 compose config --quiet
-db_id=$(compose ps -q db)
-[[ -n "$db_id" ]] || { echo 'Database service is not running; start the instance first.' >&2; exit 1; }
-docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx healthy || { echo 'Database service is not healthy.' >&2; exit 1; }
-
 live="$state/config/compose.env"
 staged="$state/config/compose.env.rotating-db"
 previous="$state/config/compose.env.before-db-rotation"
-# A rotation that stopped half-way (a power cut, a killed shell) leaves one of
-# these files; which one says where the values the database has now are.
-if [[ -e "$staged" ]]; then
-  echo "Refusing: $staged is left from an interrupted rotation and may hold the passwords the database has now. Run: mv \"$staged\" \"$live\"; bash setup.sh --operator ... (your setup inputs); npm run test:db-roles. If test:db-roles failed before you moved it, the database still has the values of compose.env: then remove $staged instead." >&2
+# A rotation that stopped half-way (a power cut, a killed shell, a full disk) leaves
+# one or both of these files; see recover below.
+leftovers=()
+for file in "$staged" "$previous"; do [[ ! -e "$file" ]] || leftovers+=("$file"); done
+db_id=$(compose ps -q db)
+if [[ -z "$db_id" ]]; then
+  if ((${#leftovers[@]})); then
+    echo 'Database service is not running. An earlier rotation stopped half-way; start the database alone (bash scripts/compose.sh up -d --wait db) and run this command again: it finds out which values the database has.' >&2
+  else
+    echo 'Database service is not running; start the instance first.' >&2
+  fi
   exit 1
 fi
-if [[ -e "$previous" ]]; then
-  echo "Refusing: $previous is left from an interrupted rotation. compose.env holds the passwords the database has; run bash setup.sh --operator ... (your setup inputs) so every service uses them, then npm run test:db-roles, then remove $previous." >&2
+docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx healthy || { echo 'Database service is not healthy.' >&2; exit 1; }
+
+# Which file holds the passwords the database has now is decided by the database:
+# each candidate's values are tried with the network sign-in npm run test:db-roles
+# uses (scripts/db-roles.sh matches). The one that matches becomes compose.env, the
+# others go (the database does not have their values), and nothing is rotated.
+recover() {
+  local file match='' status
+  echo "An earlier rotation stopped half-way and left ${leftovers[*]##*/}. Asking the database which values it has."
+  for file in "$live" "${leftovers[@]}"; do
+    status=0
+    bash "$ROOT/scripts/db-roles.sh" matches "$file" || status=$?
+    case "$status" in
+      0) match="$file"; break ;;
+      1) ;;
+      *) echo "Refusing: the database gave no clear answer for ${file##*/}. Nothing was changed; check that it is running (bash scripts/compose.sh ps db) and run this command again." >&2; exit 1 ;;
+    esac
+  done
+  if [[ -z "$match" ]]; then
+    echo "Refusing: the database takes the values of none of compose.env and ${leftovers[*]##*/}. Nothing was changed. Keep every one of these files and see docs/OPERATOR_INSTALL.md, \"Rotating the database passwords\"." >&2
+    exit 1
+  fi
+  if [[ "$match" == "$live" ]]; then
+    echo 'The database has the values of compose.env.'
+  else
+    mv -f "$match" "$live"
+    echo "The database has the values of ${match##*/}: it is compose.env now."
+  fi
+  for file in "${leftovers[@]}"; do
+    if [[ "$file" != "$match" && -e "$file" ]]; then rm -f "$file"; echo "Removed ${file##*/}: the database does not have its values."; fi
+  done
+  echo 'Nothing was rotated. Run bash start.sh so every service uses these values, check with npm run test:db-roles, then run npm run db:rotate-passwords -- --yes again if you still want new ones.'
   exit 1
-fi
+}
+((${#leftovers[@]} == 0)) || recover
+
+# false: the database was not asked; started: asked, outcome not known; true: it has the staged values.
 applied=false
 cleanup() {
   local status=$?
   trap - EXIT
-  # Before the database step the staged values are unused and are removed. After
-  # it they are the database's: the file stays, and the message says what to do.
   if [[ "$applied" == false ]]; then rm -f "$staged"
-  elif [[ -e "$staged" ]]; then echo "Stopped after the database step: $staged holds the passwords the database has now. Run: mv \"$staged\" \"$live\"; bash setup.sh --operator ... (your setup inputs)." >&2
+  elif [[ -e "$staged" ]]; then
+    echo "Stopped during or after the database step. $staged is kept: the database may have its values now. Run npm run db:rotate-passwords -- --yes again: it finds out which values the database has, puts that file in place and says what to run next." >&2
   fi
   exit "$status"
 }
@@ -76,8 +111,20 @@ trap cleanup EXIT
 
 node "$ROOT/scripts/db-roles.mjs" stage "$live" "$staged" "${superuser[@]}"
 # 1. The database, in one transaction, signed in with the current superuser
-#    password. A failure here changes nothing.
-bash "$ROOT/scripts/db-roles.sh" apply "$staged" "$live" "${superuser[@]}"
+#    password. From here on the staged file is kept unless the database is known
+#    to still have the values of compose.env.
+applied=started
+apply_status=0
+bash "$ROOT/scripts/db-roles.sh" apply "$staged" "$live" "${superuser[@]}" || apply_status=$?
+if ((apply_status)); then
+  match_status=0
+  bash "$ROOT/scripts/db-roles.sh" matches "$live" || match_status=$?
+  if ((match_status == 0)); then
+    applied=false
+    echo 'The database step failed and changed nothing (the database still has the values of compose.env).' >&2
+  fi
+  exit 1
+fi
 applied=true
 # 2. The file: the previous one is kept (mode 0600) until the services are healthy.
 cp -p "$live" "$previous"
@@ -101,7 +148,7 @@ rollback() {
       echo 'The services did not all come back either; see the messages above and run node scripts/doctor.mjs --local.' >&2
     echo 'The previous database passwords are back in place; nothing was rotated.' >&2
   else
-    echo "Could not put the previous passwords back. compose.env holds the new values (they are set in the database); the previous file is $previous." >&2
+    echo "Could not put the previous passwords back. compose.env holds the new values and $previous the previous ones; which ones the database has is checked by the next run. Fix the cause above, then run npm run db:rotate-passwords -- --yes again: it finds out which values the database has, keeps that file as compose.env and says what to run next." >&2
   fi
   exit 1
 }

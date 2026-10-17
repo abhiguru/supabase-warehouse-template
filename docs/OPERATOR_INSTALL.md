@@ -1373,7 +1373,10 @@ What it does, in this order:
 2. Sets them in the database in one transaction, signed in with the current
    superuser password. It sends SCRAM verifiers on standard input, never the
    passwords, so nothing reaches a log, an argument list or
-   `pg_stat_statements`. If this step fails, nothing has changed.
+   `pg_stat_statements`. If this step fails, the command asks the database
+   whether it still has the values of `compose.env`; only then does it remove
+   the staged file (nothing has changed). Otherwise it keeps the file and says
+   so, and the next run sorts it out (below).
 3. Keeps the previous file as `config/compose.env.before-db-rotation`, puts
    the new one in place, and recreates the database and every running service
    that signs in to it (PostgREST, Storage, Realtime, postgres-meta, Studio,
@@ -1387,13 +1390,24 @@ What it does, in this order:
    values in the database again, moves the previous file back, recreates the
    services and exits with an error: nothing is rotated.
 
-If the command stops half-way (a power cut, a killed shell), it leaves
-`compose.env.rotating-db` or `compose.env.before-db-rotation` behind and
-refuses to run again until you have dealt with it; its message names the file
-that holds the passwords the database has now. Put that file in place as
-`compose.env` if it is not already, run `bash setup.sh --operator …` (it sets
-the passwords from `compose.env` and recreates every service with them, as on
-every run), check with `npm run test:db-roles`, then remove the leftover file.
+If the command stops half-way (a power cut, a killed shell, a full disk, a
+reversal that failed too), it leaves `compose.env.rotating-db`,
+`compose.env.before-db-rotation` or both behind. Do not move or delete them
+yourself: run `npm run db:rotate-passwords -- --yes` again. It does not rotate
+then; it finds out which values the database has, by signing in over the
+network with each file's superuser and PostgREST values as
+`npm run test:db-roles` does. It keeps the file that matches as `compose.env`,
+removes the others (the database does not have their values) and says so:
+
+```text
+The database has the values of compose.env.rotating-db: it is compose.env now.
+Nothing was rotated. Run bash start.sh so every service uses these values, check with npm run test:db-roles, then run npm run db:rotate-passwords -- --yes again if you still want new ones.
+```
+
+Then do what the last line says. If the database is not running, start it
+alone first (`bash scripts/compose.sh up -d --wait db`). If the database takes
+the values of none of the files, or gives no clear answer, the command changes
+nothing and says so; keep every file and ask for help, quoting the message.
 
 A restore of a backup taken before a rotation brings that backup's values
 back together with its data (`db:restore -- --restore-config`, or

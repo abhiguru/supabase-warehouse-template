@@ -972,11 +972,14 @@ Still the same:
 
 ### Checking the logins
 
-`npm run test:db-roles` (`scripts/db-roles.sh check`) proves, for each
-service login, that `POSTGRES_PASSWORD` is refused and its own value
-accepted; that `warehouse_monitoring` has `pg_monitor` and no superuser,
-role, database, replication or RLS-bypass right; and that
-`supabase_functions_admin` cannot sign in and has no password. It connects
+`npm run test:db-roles` (`scripts/db-roles.sh check`) proves first that
+`POSTGRES_PASSWORD` is the superuser password the database has
+(`supabase_admin` signs in with it; otherwise no refusal proves anything and
+the check fails), then for each service login that `POSTGRES_PASSWORD` is
+refused and its own value accepted; that `warehouse_monitoring` has
+`pg_monitor` and no superuser, role, database, replication or RLS-bypass
+right; and that `supabase_functions_admin` cannot sign in and has no password
+(a failed read of that state fails the check). It connects
 from inside the database container to the name `db`, which is a network
 address that `pg_hba.conf` authenticates with SCRAM; it also checks that the
 server saw a non-loopback client. A check through `-h 127.0.0.1`, which the
@@ -1040,8 +1043,11 @@ key. It stages the new values, sets them in the database in one transaction,
 swaps `compose.env`, recreates the database and every running service that
 signs in to it, runs `npm run test:db-roles` and the local doctor, and if a
 service does not come back or a login misbehaves it puts the previous values
-back in the database and in the file and recreates the services again. The
-procedure, with what to do after an interruption, is in
+back in the database and in the file and recreates the services again. After
+an interruption the next run does not rotate: it asks the database which of
+the files left behind it matches (`scripts/db-roles.sh matches`, the network
+sign-in of the login check), keeps that one as `compose.env` and removes the
+others. The procedure is in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rotating-the-database-passwords).
 
 ### Adding a login
