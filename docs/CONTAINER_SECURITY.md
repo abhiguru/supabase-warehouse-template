@@ -829,6 +829,66 @@ hourly window**, like the socket route. It was 300 a minute and 6000 an hour.
   `tests/gateway-config.test.mjs`, which pins the table above, the per-minute
   arithmetic and the wording about bursts.
 
+## Logs (2026-10-17)
+
+What a service log may hold, for the 3 x 10 MB of `json-file` log each service
+keeps (`docker/docker-compose.override.yml`, `x-logging`; the oldest file is
+dropped when the third fills, and a recreated container starts with an empty
+log).
+
+- **The rule.** No log line holds a token, a key, an OTP, a password or a query
+  string. A signed storage link (`?token=`) and the anon key in a Realtime
+  socket address (`?apikey=`) are credentials in a query string: a retained log
+  that holds one can replay a still-valid document link or call the API as the
+  public client.
+- **Client addresses are allowed in the gateway log, for its rotation life.**
+  Owner decision of 2026-10-17. The address is useful to the operator (who is
+  hammering the gateway) and leaves with the rotation. Nothing else identifies a
+  person: no user agent, no referer, no phone number, no session.
+- **Gateway access log** (`docker/docker-compose.yml`, Kong environment): the
+  format `warehouse_redacted` replaces Kong's default, which wrote the whole
+  request line, query string and all, plus the referer and user agent. A line is
+  `client-address [time] "METHOD /path HTTP/x" status bytes seconds`, for
+  example `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034`.
+  `$uri` is the path without the query. Do not add `$request`, `$request_uri`,
+  `$args`, `$query_string`, `$http_referer` or `$http_user_agent`;
+  `tests/gateway-config.test.mjs` fails if one appears, and `npm run test:gateway`
+  sends a fictional signed-link request and an `apikey` query and fails if the
+  running gateway's log holds `token=` or `apikey=`. The format is defined with
+  `KONG_NGINX_HTTP_LOG_FORMAT` and selected with `KONG_PROXY_ACCESS_LOG`, not in
+  `docker/kong.yml`, which is `eval`ed by the entrypoint (a `$` there is replaced).
+  In the Compose file `$` is written `$$`. Checked on the pinned Kong 3.9.3:
+  `kong prepare` renders `log_format warehouse_redacted ...;` into
+  `nginx-kong.conf` and `access_log /dev/stdout warehouse_redacted;` on the
+  proxy listener, and the running gateway's log holds the path only.
+- **Storage.** The storage service redacts `token` and the `X-Amz-*` signature
+  parameters in the URL it logs (storage-api 1.80.2). It also writes two request
+  headers into its log: `cf-connecting-ip` and `x-real-ip`. The gateway no
+  longer passes `CF-Connecting-IP` to storage (`request-transformer` on the
+  `storage-v1` service). It cannot do the same for `X-Real-IP` and
+  `X-Forwarded-For`: Kong 3.9.3 sets them itself from the client address after
+  the plugins have run, and a plugin that removes them removes only the copy the
+  client sent (checked with an echo upstream behind the real `kong.yml`). The
+  client address therefore still reaches storage and its log, which rotates like
+  the gateway's. Storage does not use it: its image-render rate limit, the only
+  reader of `x-real-ip`, is off (`RATE_LIMITER_ENABLED` is unset).
+- **Residual: the gateway's error log.** nginx quotes the request line, query
+  string included, in an error line (for example `upstream timed out ...,
+  request: "GET /storage/v1/object/sign/...?token=..."`). This was reproduced by
+  stopping an upstream. These lines appear only while a service fails, but a
+  signed link that failed while it was valid stays in the log until it rotates
+  out. The document functions make a signed link valid for one hour
+  (`createSignedUrl(path, 3600)`), so the exposure ends then.
+- **Not changed here.** The function logs, the sensor bridge (replaces any query
+  with `***`, see "Sensor bridge") and the PDF functions follow the rules in
+  their own sections; they were not re-checked for this change.
+- **Upgrade.** The new format applies when the gateway container is recreated
+  (`bash start.sh` after the update, or the setup rerun: Compose recreates a
+  service whose configuration changed). The recreate also drops the old
+  container's log. A signed link that the old format already wrote to a log stays
+  valid until it expires, at most an hour after it was made; a copy of the old
+  log made earlier still holds it.
+
 ## Database passwords: one shared value, and the plan to split it
 
 Not changed in this release. This section is the design and the procedure for

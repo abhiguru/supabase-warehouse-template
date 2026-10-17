@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const kong = readFileSync(new URL('../docker/kong.yml', import.meta.url), 'utf8');
 const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
@@ -160,6 +161,60 @@ test('gateway configuration survives the entrypoint that fills in its variables'
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.equal(rendered.stdout, kong.replace(/\$\{([A-Z_]+)\}/g, (_, name) => values[name]).replace(/\n*$/, '\n'));
   assert.deepEqual([...new Set([...kong.matchAll(/\$\{([A-Z_]+)\}/g)].map(match => match[1]))].sort(), Object.keys(values).sort());
+});
+
+// The Kong environment as the container sees it. Compose writes a literal dollar sign as `$$`
+// in the file, and `docker compose config` prints it that way again; the container gets one.
+const dollars = text => String(text).replaceAll('$$', '$');
+const FORBIDDEN_IN_ACCESS_LOG = [
+  // The request line and anything that carries the query string.
+  /\$request(?![_a-z])/, /\$request_uri/, /\$args/, /\$is_args/, /\$query_string/, /\$arg_/, /\$upstream_uri/, /\$upstream_x_forwarded_path/,
+  // Fields that can carry a credential or a person.
+  /\$http_/, /\$remote_user/, /\$cookie_/,
+];
+function assertRedactedAccessLog(environment, where) {
+  const format = dollars(environment.KONG_NGINX_HTTP_LOG_FORMAT);
+  assert.match(format, /^warehouse_redacted '[^']+'$/, `${where}: the format is defined under the name warehouse_redacted`);
+  assert.ok(format.includes('$uri'), `${where}: the path is logged as $uri (no query string)`);
+  assert.ok(format.includes('$remote_addr'), `${where}: the client address stays in the log (owner decision of 2026-10-17)`);
+  for (const pattern of FORBIDDEN_IN_ACCESS_LOG) assert.doesNotMatch(format, pattern, `${where}: the format must not contain ${pattern}`);
+  assert.equal(environment.KONG_PROXY_ACCESS_LOG, '/dev/stdout warehouse_redacted', `${where}: the proxy access log uses the redacted format`);
+}
+
+test('the gateway access log has no query string, so a signed link or an apikey in a URL is not kept', () => {
+  // Kong's default format logs `$request`, the whole request line with ?token= and ?apikey=.
+  const text = compose.match(/^\s+KONG_NGINX_HTTP_LOG_FORMAT: (".*")$/m);
+  assert.ok(text, 'docker-compose.yml sets KONG_NGINX_HTTP_LOG_FORMAT');
+  const [, access] = compose.match(/^\s+KONG_PROXY_ACCESS_LOG: "([^"]+)"$/m) ?? [];
+  assert.equal(access, '/dev/stdout warehouse_redacted');
+  // YAML double-quoted: \" is a quote. Compose then turns $$ into $.
+  const environment = { KONG_NGINX_HTTP_LOG_FORMAT: JSON.parse(text[1]), KONG_PROXY_ACCESS_LOG: access };
+  assertRedactedAccessLog(environment, 'docker-compose.yml');
+  // Written with $$ in the file: a single $ would be read by Compose as a variable (and warned about).
+  assert.ok(!/\$[a-z_]+/.test(environment.KONG_NGINX_HTTP_LOG_FORMAT.replaceAll('$$', '')), 'every dollar sign in the format is doubled for Compose');
+  // The override file adds resources and logging only; it must not put the default format back.
+  const override = readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(override, /KONG_PROXY_ACCESS_LOG|KONG_NGINX_HTTP_LOG_FORMAT/);
+  // kong.yml is evaluated by the entrypoint: no log format may be defined there.
+  assert.doesNotMatch(kong, /log_format|access_log/);
+});
+
+test('the rendered Kong environment selects the redacted access log', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  assertRedactedAccessLog(renderedCompose().services.kong.environment, 'docker compose config');
+});
+
+test('storage is not sent the CF-Connecting-IP header, and the log contract says what it cannot remove', () => {
+  const storage = serviceBlock('storage-v1');
+  assert.match(storage, /- name: request-transformer\n\s+config:\n\s+remove:\n\s+headers:\n\s+- CF-Connecting-IP\n/);
+  // Kong adds X-Real-IP and X-Forwarded-For itself after the plugins ran, so listing them would promise too much.
+  assert.doesNotMatch(storage, /^\s+- (?:X-Real-IP|X-Forwarded-For)$/im);
+  const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
+  const start = docs.indexOf('\n## Logs (2026-10-17)\n');
+  assert.ok(start > 0, 'docs/CONTAINER_SECURITY.md has the Logs section');
+  const section = docs.slice(start + 1, docs.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
+  for (const needed of ['warehouse_redacted', 'no log line holds a token, a key, an OTP', 'X-Real-IP', 'X-Forwarded-For', 'error log', '3 x 10 MB']) {
+    assert.ok(section.toLowerCase().includes(needed.toLowerCase()), `the Logs section does not mention ${needed}`);
+  }
 });
 
 test('every REST request passes the session check before its function runs', () => {
