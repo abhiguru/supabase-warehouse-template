@@ -85,9 +85,14 @@ node -e "const yaml=JSON.parse(process.argv[1]).data.yaml;if(!yaml.includes('ins
 
 # Every shipped rule is loaded and healthy, the backup rules among them.
 expected_rules=$(grep -c '^ *- alert: ' "$ROOT/docker/alert-rules.yml")
-rules=$(compose --profile monitoring exec -T prometheus wget -qO- http://localhost:9090/api/v1/rules)
-node -e "const rules=JSON.parse(process.argv[1]).data.groups.flatMap(group=>group.rules);const names=rules.map(rule=>rule.name);if(rules.length!==Number(process.argv[2])||!['BackupMissing','BackupFailed'].every(name=>names.includes(name))||rules.some(rule=>rule.health!=='ok'))process.exit(1)" "$rules" "$expected_rules" ||
-  { echo "Prometheus did not load all $expected_rules alert rules, or a rule is unhealthy." >&2; exit 1; }
+rules_loaded=false
+for ((i=0; i<30; i++)); do
+  rules=$(compose --profile monitoring exec -T prometheus wget -qO- http://localhost:9090/api/v1/rules || true)
+  # A rule is "unknown" until its group has been evaluated once.
+  if node -e "const rules=JSON.parse(process.argv[1]).data.groups.flatMap(group=>group.rules);const names=rules.map(rule=>rule.name);if(rules.length!==Number(process.argv[2])||!['BackupMissing','BackupFailed'].every(name=>names.includes(name))||rules.some(rule=>rule.health!=='ok'))process.exit(1)" "$rules" "$expected_rules" 2>/dev/null; then rules_loaded=true; break; fi
+  sleep 2
+done
+[[ "$rules_loaded" == true ]] || { echo "Prometheus did not load all $expected_rules alert rules, or a rule is unhealthy." >&2; exit 1; }
 
 # Prometheus holds this installation's containers and none of another installation's. cAdvisor reports
 # every container on the host; the scrape job keeps one Compose project (docker/prometheus.yml).

@@ -348,5 +348,5 @@ test('the monitoring and Grafana checks assert what this change added', () => {
   assert.match(grafana, /api\/search\?type=dash-db/);
   assert.match(grafana, /api\/ds\/query/);
   assert.match(grafana, /Cannot read directory/);
-  assert.match(grafana, /meta\.provisioned !== true \|\| meta\.canSave !== false/);
+  assert.match(grafana, /meta\.provisioned !== true/);
 });

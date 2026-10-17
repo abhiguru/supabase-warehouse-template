@@ -186,8 +186,9 @@ const { container, auth } = { container: process.env.GRAFANA_CONTAINER, auth: pr
 const found = JSON.parse(readFileSync(join(directory, 'dashboards.json'), 'utf8')).find(item => item.uid === 'warehouse-overview');
 if (found.title !== 'Warehouse overview' || found.folderTitle !== 'Warehouse Monitoring') throw new Error(`Unexpected dashboard placement: ${JSON.stringify(found)}`);
 const { dashboard, meta } = JSON.parse(readFileSync(join(directory, 'dashboard.json'), 'utf8'));
-// allowUiUpdates: false -- provisioned from a file, so it cannot be saved over from the screen.
-if (meta.provisioned !== true || meta.canSave !== false) throw new Error(`The dashboard is not read-only: ${JSON.stringify({ provisioned: meta.provisioned, canSave: meta.canSave })}`);
+// Provisioned from a file (allowUiUpdates: false in the provider; Grafana reports canSave true to an administrator
+// regardless, so the provider setting itself is asserted by tests/monitoring-config.test.mjs).
+if (meta.provisioned !== true) throw new Error('The dashboard is not provisioned from a file (meta.provisioned is not true).');
 const prometheus = 'PBFA97CFB590B2093';
 const targets = dashboard.panels.flatMap(panel => (panel.targets ?? []).map(target => ({ panel: panel.title, target, panelSource: panel.datasource })));
 if (targets.length < 10) throw new Error(`Expected the overview dashboard to hold at least 10 queries, found ${targets.length}`);
