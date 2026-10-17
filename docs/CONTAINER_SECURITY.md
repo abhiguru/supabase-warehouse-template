@@ -563,7 +563,8 @@ What this does not do:
   `prometheus:9090`). PostgREST, Storage and the functions check tokens
   themselves; imgproxy and Prometheus do not.
 - A service on `database` can open a connection to PostgreSQL; what it can do
-  there is still decided by one shared password (next section).
+  there is decided by the login it holds, and each has its own password
+  ("Database passwords: one per login" below).
 - The networks are ordinary bridges, not `internal: true`: the database needs
   outbound HTTPS for the SMS provider, and Studio and postgres-meta were left
   with the outbound access they had. Making `admin` internal is a possible
@@ -893,135 +894,170 @@ log).
   valid until it expires, at most an hour after it was made; a copy of the old
   log made earlier still holds it.
 
-## Database passwords: one shared value, and the plan to split it
+## Database passwords: one per login
 
-Not changed in this release. This section is the design and the procedure for
-the change, written from the files named in it; nothing in it has been run.
+Changed on 2026-10-18 (review finding TW-BE-002, owner decision D4). Until
+then `POSTGRES_PASSWORD` was the password of every database login, superusers
+and service roles alike, so the credential of any one service opened all of
+them on a reachable database. Since the network change above only services on
+the `database` and `admin` networks can present a password to PostgreSQL at
+all; now each of them presents its own.
 
-### Today
+### Who signs in as whom
 
-`POSTGRES_PASSWORD` is the password of every database login:
+| Login | Password (`config/compose.env`) | Used by | Set by |
+|---|---|---|---|
+| `postgres`, `supabase_admin` (superusers) | `POSTGRES_PASSWORD` | operator scripts (`compose exec db psql -U supabase_admin`), postgres-meta, Studio (it is given the value), Realtime (`DB_USER`), Supavisor's metadata database (`_supabase`) | the image's entrypoint at the first start; `npm run db:rotate-passwords -- --yes --superuser` |
+| `authenticator` | `DB_PASSWORD_AUTHENTICATOR` | PostgREST | `docker/volumes/db/roles.sql` at the first start; `scripts/configure-db-roles.sql` on every setup run, after both restores and on rotation |
+| `supabase_storage_admin` | `DB_PASSWORD_STORAGE` | Storage | the same |
+| `supabase_auth_admin` | `DB_PASSWORD_AUTH` | the disabled Auth service | the same |
+| `pgbouncer` | `DB_PASSWORD_POOLER` | Supavisor's pool user (pooler profile) | the same; `docker/volumes/pooler/pooler.exs` writes it into the stored tenant at every pooler start |
+| `warehouse_monitoring` | `DB_PASSWORD_MONITORING` | the Postgres exporter and the Grafana PostgreSQL datasource (monitoring profile); they used `postgres` | migration 94 creates it `NOLOGIN`, a member of `pg_monitor` and of nothing else; `configure-db-roles.sql` gives it `LOGIN` and its password |
+| `supabase_functions_admin` | none: `NOLOGIN`, no password | nothing; it owns the webhook functions, which run with its rights without a login | migration 94, `roles.sql`, `configure-db-roles.sql` |
 
-| Role | Set by | Used by |
-|---|---|---|
-| `postgres`, `supabase_admin` (superusers) | the database image's entrypoint, first start only | operator scripts (`compose exec db psql -U supabase_admin`), Realtime (`DB_USER`), postgres-meta, Supavisor's own metadata (`_supabase` database), Postgres exporter and Grafana (`postgres`) |
-| `authenticator` | `docker/volumes/db/roles.sql`, first start only | PostgREST |
-| `supabase_storage_admin` | same | Storage |
-| `supabase_auth_admin` | same | the disabled Auth service |
-| `supabase_functions_admin` | same | nothing |
-| `pgbouncer` | same | Supavisor's pool user (pooler profile) |
+`scripts/configure.mjs` generates the five service values (64 hexadecimal
+characters each) and `REALTIME_DB_ENC_KEY` (16 characters) with every fresh
+state, and its existing-state branch appends any that a state lacks; it never
+replaces a value that exists. The doctor refuses a state where one is
+missing, malformed, or repeats `POSTGRES_PASSWORD` or another one. The
+Compose files name each value with `${NAME:?…}`, so a state without it fails
+at `compose config` with "Run setup.sh to generate the per-role database
+passwords", not at the first login. In the rendered configuration
+`POSTGRES_PASSWORD` appears only in db, meta, realtime, supavisor and studio;
+each service value only in its own service and in db, whose first-start init
+script reads them (`tests/compose-networks.test.mjs`).
 
-Three more copies exist: Studio is given the value; Realtime stores its
-tenant's database credentials in `_realtime.extensions`, encrypted with
-`DB_ENC_KEY`, which is the fixed text `supabaserealtime` in
-`docker/docker-compose.yml`; Supavisor stores the pool user's password in its
-tenant record, encrypted with `VAULT_ENC_KEY`, written only when the tenant
-does not exist yet (`docker/volumes/pooler/pooler.exs`).
+How the values reach the database: `scripts/db-roles.sh apply` turns each
+into a SCRAM-SHA-256 verifier (`scripts/db-roles.mjs`, the format PostgreSQL
+stores; `tests/db-roles.test.mjs` compares it with one PostgreSQL made) and
+sends the verifiers, with the superuser password to sign in, on standard input
+of `compose exec`. `ALTER ROLE … PASSWORD` stores a verifier as it is, so the
+server never sees a password: none can appear in a log, in `pg_stat_activity`
+or in `pg_stat_statements` (tracking is off for that transaction all the
+same, because `warehouse_monitoring` may read it). No value is a command-line
+argument or an environment variable of a docker command.
 
-`roles.sql` is an init script: it runs when the data directory is empty and
-never again. `db:backup` dumps databases, not roles, so role passwords are not
-in a backup; a restore onto an empty data directory sets them again from
-`compose.env` through the same init scripts.
+Stored copies:
 
-Since the network change above, only services on the `database` and `admin`
-networks can present this password to PostgreSQL at all.
+- **Realtime** stores its tenant's database credentials (the superuser
+  password) in `_realtime`, encrypted with `DB_ENC_KEY`, which was the fixed
+  text `supabaserealtime` and is now `REALTIME_DB_ENC_KEY`. The pinned
+  release (v2.143.3) deletes and rewrites the `realtime-dev` tenant at every
+  start while `SEED_SELF_HOST` is on (`priv/repo/seeds.exs`), so a recreated
+  container stores them under the current key and nothing has to clear the
+  rows. Compose recreates Realtime whenever its key or password changes. A
+  later Realtime that seeds only an absent tenant would need the rows removed
+  in the same step (as `scripts/rotate-auth.sql` does for the signing key):
+  check `seeds.exs` when the pin moves.
+- **Supavisor** stores its tenant, with the pool user's password, in
+  `_supabase`, encrypted with `VAULT_ENC_KEY`. `pooler.exs` used to write it
+  only when the tenant was absent; it now also rewrites the pool user's
+  credentials of an existing tenant at every start
+  (`Supavisor.Tenants.update_manager_user_credentials`), which covers the
+  upgrade, a rotation and a restore of an older `_supabase` database.
 
-### Target
+Still the same:
 
-- New 64-hex values generated by `scripts/configure.mjs` next to
-  `POSTGRES_PASSWORD`: `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`,
-  `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING`, and
-  `REALTIME_DB_ENC_KEY` (16 characters, the length Realtime requires).
-- `supabase_functions_admin` gets a random password that is stored nowhere, or
-  `NOLOGIN` if a start confirms nothing logs in as it.
-- A new role `warehouse_monitoring` (`LOGIN`, member of `pg_monitor`, no other
-  grant) for the Postgres exporter and the Grafana datasource, which today
-  connect as the `postgres` superuser. The role itself can be created by a
-  migration (`CREATE ROLE ... NOLOGIN` if absent, `GRANT pg_monitor`) and
-  asserted in `tests/security_baseline.sql`; its password and `LOGIN` are set
-  by the step below, because a migration must not contain a secret.
-- `POSTGRES_PASSWORD` stays the superuser password, used by operator scripts,
-  postgres-meta, Realtime and Supavisor's metadata connection. Giving Realtime
-  a non-superuser role is a later, separate step: it creates its own schema
-  and replication slot and its needs must be measured on a running stack.
+- Realtime connects as `supabase_admin`. Giving it a non-superuser role is a
+  later, separate step: it creates its own schema and replication slot, and
+  its needs must be measured on a running stack.
+- `SECRET_KEY_BASE` and `VAULT_ENC_KEY` have no rotation procedure
+  (`docs/OPERATOR_INSTALL.md`, "Secrets that rotate-keys does not change").
+- The image's other login roles (`supabase_replication_admin`,
+  `supabase_etl_admin`, `supabase_read_only_user`) have no password, so they
+  cannot sign in over the network; inside the database container,
+  connections from 127.0.0.1 and ::1 are trusted by the image's
+  `pg_hba.conf` for every role, as before.
+- JWT signing-key rotation is its own command (`rotate-keys.sh`).
 
-### Changes, in order
+### Checking the logins
 
-1. `scripts/configure.mjs`: generate the new values for a fresh state. In the
-   existing-state branch (where the backup key is created for older
-   installs), append any that are missing; never replace one that exists.
-   `tests/configure.test.mjs`: fresh state has them, rerun preserves them, a
-   state written by the previous release gains them.
-2. New `scripts/configure-db-roles.sql`, run by `setup.sh` after the migration
-   ledger and before the services start, with `psql -v`: one
-   `ALTER ROLE ... WITH LOGIN PASSWORD :'value'` per role above. It is
-   idempotent and is what an existing install relies on, because `roles.sql`
-   does not run again. Keep `roles.sql` (it still makes a first start usable
-   before setup reaches this step) but have it read the per-role variables
-   from the database container's environment, which then needs them added
-   under `db: environment:`.
-3. `docker/docker-compose.yml` and the override: `PGRST_DB_URI`
-   (`DB_PASSWORD_AUTHENTICATOR`), Storage `DATABASE_URL`
-   (`DB_PASSWORD_STORAGE`), `GOTRUE_DB_DATABASE_URL` (`DB_PASSWORD_AUTH`),
-   exporter `DATA_SOURCE_NAME` and the Grafana datasource
-   (`warehouse_monitoring`, `DB_PASSWORD_MONITORING`; drop `POSTGRES_PASSWORD`
-   from the Grafana service and set the datasource `editable: false`),
-   `pooler.exs` (`DB_PASSWORD_POOLER`), Realtime `DB_ENC_KEY`. Use
-   `${NAME:?...}` so a state without the value fails at `compose config`
-   with a message, not at first login. `tests/compose-networks.test.mjs` can
-   then assert from the rendered configuration that the superuser password
-   appears only in db, meta, realtime, supavisor and studio.
-4. Stored copies. Supavisor: the script must update the tenant's user when it
-   exists instead of skipping it (or `scripts/pooler-check.sh` must fail with
-   a clear message telling the operator to remove the tenant row). Realtime:
-   changing `DB_ENC_KEY` makes the existing `_realtime.extensions` row
-   unreadable; delete the `realtime-dev` tenant rows in the same step so
-   `SEED_SELF_HOST` writes them again with the new key. `rotate-keys.sh`
-   already removes that tenant row for a signing-key rotation
-   (`docs/OPERATOR_INSTALL.md`), so the statement exists.
-5. `rotate-keys.sh` (or a new `db:rotate-passwords`): generate new per-role
-   values into a staged `compose.env`, run `configure-db-roles.sql`, recreate
-   the consumers, and roll back the file if a consumer does not become
-   healthy, as the signing-key rotation does. Rotating the superuser password
-   is the last piece: `ALTER ROLE postgres` and `supabase_admin`, then both
-   stored tenants, then every service.
-6. Backup and restore: `restore.sh` compares `compose.env` with the backup's
-   copy and `restore-host.sh` adopts the backup's copy; both then start from
-   an empty data directory, so `roles.sql` and `configure-db-roles.sql` apply
-   whatever that file holds. A backup taken before this change has no
-   per-role values: `configure.mjs`'s existing-state branch must run before
-   the database starts in both restore paths.
+`npm run test:db-roles` (`scripts/db-roles.sh check`) proves, for each
+service login, that `POSTGRES_PASSWORD` is refused and its own value
+accepted; that `warehouse_monitoring` has `pg_monitor` and no superuser,
+role, database, replication or RLS-bypass right; and that
+`supabase_functions_admin` cannot sign in and has no password. It connects
+from inside the database container to the name `db`, which is a network
+address that `pg_hba.conf` authenticates with SCRAM; it also checks that the
+server saw a non-loopback client. A check through `-h 127.0.0.1`, which the
+design of this change proposed, would pass with any password, because the
+image trusts loopback connections. CI's operator-install job runs it after the
+fresh install, after both rotations and after the in-place and lost-host
+restores. `tests/security_baseline.sql` asserts in the migration test database
+that `warehouse_monitoring` is a member of `pg_monitor` only, holds no grant,
+owns nothing and can read no application, Storage or private table.
 
 ### Upgrade of an existing install
 
-`git pull`, then the same `setup.sh --operator ...` command. Expected
-sequence: `configure.mjs` appends the missing values; the database starts;
-migrations run; `configure-db-roles.sql` changes the passwords while the old
-containers still hold open connections (those stay valid; a new connection
-from an old container fails until it is recreated); `up -d --wait` recreates
-every consumer with its new address. The window in which PostgREST or Storage
-cannot open a new connection is the time between those two steps.
+`git pull`, then the same `setup.sh --operator …` command. Run setup before
+any other operator command: until it has added the new values, every Compose
+command (`stop.sh` and `start.sh` included) stops with the `${NAME:?…}`
+message. Expected sequence:
 
-### Drill before release
+1. `configure.mjs` appends the six values and says so.
+2. The database container is recreated, because its environment changed (a
+   restart of PostgreSQL).
+3. The migrations run (94 creates `warehouse_monitoring`).
+4. `configure-db-roles.sql` sets every service login's password. Running
+   containers keep their open connections (those stay valid); a new
+   connection from a container that still has the old value fails.
+5. Setup starts Storage (recreated with its value), then everything else, and
+   replaces the running optional services (pooler, monitoring) whose
+   configuration changed.
 
-On a disposable host, never on a facility:
+The window in which PostgREST or Storage cannot open a new connection is the
+time between steps 4 and 5; see the drill below for the measured setup run.
 
-1. Install the previous release with `setup.sh --operator`, run
-   `tests/operator-api-core.mjs`, take a `db:backup`.
-2. Check out the change, run the same `setup.sh` command. `node
-   scripts/doctor.mjs --local` must pass.
-3. For each of `authenticator`, `supabase_storage_admin`, `pgbouncer`:
-   `compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h
-   127.0.0.1 -U <role> -d postgres -c "select 1"'` must fail, and the same
-   with the role's own value must succeed.
-4. `tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs`,
-   `npm run test:pooler`, `npm run test:monitoring`, `npm run test:grafana`.
-5. `npm run keys:rotate`, then step 4 again (Realtime tenant re-seeded).
-6. `db:backup`, `db:verify-restore`, `db:restore --yes`, and on a second
-   state directory `db:restore-host` from the backup taken in step 1 (no
-   per-role values) and from the new one. Step 4 after each.
-7. The `operator-install` CI job covers a fresh install; add the upgrade from
-   the previous tag as a second job before relying on it.
+### Restores
+
+`db:backup` dumps databases, not roles, so no role password is in a backup's
+dump; its `compose.env` copy carries the values of the moment.
+
+- `db:restore` with the installation's own configuration compares
+  `compose.env` with the backup's copy as before, except that the generated
+  lines a backup made before this change lacks are left out of the
+  comparison; that state's values are then the ones the restored database
+  gets. A value the backup does carry must match, so a backup taken before a
+  `db:rotate-passwords` needs `--restore-config`, as one taken before a
+  signing-key rotation does.
+- `db:restore -- --restore-config` and `db:restore-host` put the backup's
+  `compose.env` in place and then add the values it lacks
+  (`node scripts/db-roles.mjs add-missing`, the step of `configure.mjs`'s
+  existing-state branch) before the database starts.
+- Both then start from an empty data directory: `roles.sql` sets the four
+  logins that exist before the migrations, and after the replay and the
+  migrations `configure-db-roles.sql` sets all of them and gives
+  `warehouse_monitoring` back its `pg_monitor` membership (the replay
+  recreates a backup's roles as bare `NOLOGIN` names and does not rerun an
+  applied migration). The pooler and Realtime rewrite their stored copies
+  when they start.
+
+### Rotation
+
+`npm run db:rotate-passwords -- --yes` replaces every service login's
+password; `--superuser` also replaces `POSTGRES_PASSWORD` and the Realtime
+key. It stages the new values, sets them in the database in one transaction,
+swaps `compose.env`, recreates the database and every running service that
+signs in to it, runs `npm run test:db-roles` and the local doctor, and if a
+service does not come back or a login misbehaves it puts the previous values
+back in the database and in the file and recreates the services again. The
+procedure, with what to do after an interruption, is in
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rotating-the-database-passwords).
+
+### Adding a login
+
+A new service login (for example the runner of the list refresh) is one entry
+in `DB_ROLE_LOGINS` in `scripts/db-roles.mjs` (its `compose.env` name, role
+and psql variable), one `ALTER ROLE … WITH LOGIN PASSWORD :'…'` line in
+`scripts/configure-db-roles.sql`, a migration that creates the role `NOLOGIN`
+with its grants, and a `${NAME:?…}` reference in the service that uses it.
+Fresh states then generate the value, existing ones gain it on the next setup,
+restores add it, the rotation replaces it and `npm run test:db-roles` checks
+it; `tests/db-roles.test.mjs` fails until the list and the SQL agree.
+
+### Drill
+
+DRILL-RESULTS-PLACEHOLDER
 
 ## Open items with their steps
 
