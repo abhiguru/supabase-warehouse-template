@@ -535,6 +535,9 @@ const ISSUER = 'https://login.association.example.test';
 const centralEnv = (file = 'central-jwks.json') =>
   composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\nCENTRAL_ISSUER=${ISSUER}\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=${file}\n`);
 
+// The alert webhook step (B9) always names setup.sh; the central key file tests are about a rerun for the key file.
+const withoutAlertStep = out => out.replace(/ *\d+\. Alerts are local only[^]*?compose\.sh --profile monitoring up -d\n/, '');
+
 test('restore-host puts the central key file back byte for byte with mode 0644, and leaves central sign-in nothing to redo', () => {
   const f = fixture('warehouse-restore-host-central-key-', { env: centralEnv() });
   try {
@@ -548,7 +551,7 @@ test('restore-host puts the central key file back byte for byte with mode 0644, 
     assert.deepEqual(readdirSync(join(f.state, 'public')).sort(), ['central-jwks.json', 'instance.json']);
     assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^CENTRAL_JWKS_FILE=(.*)$/m)[1], 'central-jwks.json');
     assert.match(result.stdout, /Restored the central sign-in key file public\/central-jwks\.json/);
-    assert.doesNotMatch(result.stdout, /setup\.sh/, 'nothing to rerun');
+    assert.doesNotMatch(withoutAlertStep(result.stdout), /setup\.sh/, 'nothing to rerun');
     assert.equal(result.keyPending, '', 'doctor --local is not told to expect a missing key file');
   } finally { clean(f); }
 });
@@ -584,7 +587,7 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     assert.ok(result.stdout.includes(`--central-issuer ${ISSUER} --central-jwks-file /absolute/path/to/association-jwks.json`), 'with the issuer the backup names');
     assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
     // The numbered steps stay in order whether or not this step is there.
-    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
   } finally { clean(f); }
 });
 
@@ -595,10 +598,10 @@ test('restore-host says nothing about a key file when central sign-in uses an ad
     try {
       const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
       assert.equal(result.status, 0, label + result.stderr + result.stdout);
-      assert.doesNotMatch(result.stdout, /central|setup\.sh/i, label);
+      assert.doesNotMatch(withoutAlertStep(result.stdout), /central|setup\.sh/i, label);
       assert.equal(result.keyPending, '', label);
       assert.equal(existsSync(join(f.state, 'public/central-jwks.json')), false, label);
-      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6], label);
+      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7], label);
     } finally { clean(f); }
   }
 });

@@ -219,7 +219,7 @@ test('setup.sh passes --alert-webhook-file to configure.mjs and the option is pa
   assert.deepEqual(parseConfigureArgs(['--state-dir', '/s', '--alert-webhook-file', '/w']), { stateDir: '/s', alertWebhookFile: '/w' });
   assert.deepEqual(parseConfigureArgs(['--state-dir', '/s', '--alert-webhook-file', 'off']), { stateDir: '/s', alertWebhookFile: 'off' });
   const setup = read('setup.sh');
-  assert.match(setup, /--central-local-code\|--alert-webhook-file\)/);
+  assert.match(setup, /--central-local-code\|--alert-webhook-file\|--gateway-port\)/);
   assert.match(setup, /\*\) CONFIG_ARGS\+=\("\$1" "\$2"\) ;;/, 'an option setup does not handle itself goes to configure.mjs');
 });
 

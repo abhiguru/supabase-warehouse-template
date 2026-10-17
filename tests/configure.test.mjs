@@ -484,7 +484,7 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     for (const name of names) assert.notEqual(upgradedEnv[name], env[name], `${name} is a new value, not the fresh state's`);
     assert.equal(upgradedEnv.POSTGRES_PASSWORD, env.POSTGRES_PASSWORD);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
     assert.equal(validateOperatorEnv(upgradedEnv, stateDir).origin, options.apiUrl);
     // ...and then it is stable, also through the CLI, which says what it added only once.
     assert.match(cli('--state-dir', stateDir).stdout, /^Preserved existing operator state unchanged\.\n$/);
