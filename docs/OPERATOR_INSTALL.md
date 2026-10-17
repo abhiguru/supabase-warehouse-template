@@ -1508,10 +1508,24 @@ to generate the per-role database passwords". The run restarts the database
 and the services that sign in to it; in the rehearsal of 2026-10-18 two of
 225 API requests made every half second during the run failed (once when the
 database restarted, once when PostgREST did), and the whole setup run took two
-minutes. Afterwards
-check with `npm run test:db-roles`, then take a new backup. Backups taken
-before it remain restorable; see
-[Rotating the database passwords](#rotating-the-database-passwords).
+minutes. Afterwards check with `npm run test:db-roles`, then replace the
+superuser password too:
+
+```bash
+npm run test:db-roles
+npm run db:rotate-passwords -- --yes --superuser   # about a minute, the API down about 11 s
+npm run db:backup
+```
+
+The upgrade gives every service login a new password but keeps
+`POSTGRES_PASSWORD`, the value that until now every login shared. That value
+sat in the environment of PostgREST, Storage, the Auth service, the Postgres
+exporter and Grafana, and in Grafana's datasource store (encrypted with
+Grafana's published default key, on its data volume). Whoever read it from
+one of those places still holds the superuser password until it is rotated.
+The new backup is taken after the rotation; backups taken before it remain
+restorable (see
+[Rotating the database passwords](#rotating-the-database-passwords)).
 
 The `--force-recreate functions` line is needed because the edge functions
 (`functions/`, including `functions/_shared/`) are bind-mounted into the

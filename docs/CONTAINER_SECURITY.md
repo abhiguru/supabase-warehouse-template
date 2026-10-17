@@ -1007,6 +1007,14 @@ message. Expected sequence:
 5. Setup starts Storage (recreated with its value), then everything else, and
    replaces the running optional services (pooler, monitoring) whose
    configuration changed.
+6. The operator runs `npm run test:db-roles`, then
+   `npm run db:rotate-passwords -- --yes --superuser`. The upgrade keeps
+   `POSTGRES_PASSWORD`, the formerly shared value, which was in the
+   environment of PostgREST, Storage, Auth, the exporter and Grafana and in
+   Grafana's datasource store (encrypted with Grafana's published default
+   key, since no `GF_SECURITY_SECRET_KEY` is set). Until it is rotated, a value
+   leaked from any of those before the upgrade is still the superuser
+   password. Then a new backup.
 
 The window in which PostgREST or Storage cannot open a new connection is the
 time between steps 4 and 5; see the drill below for the measured setup run.
