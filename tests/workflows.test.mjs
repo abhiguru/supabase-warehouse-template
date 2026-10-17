@@ -87,3 +87,9 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
   });
   assert.equal(entries, 11, 'every ignore entry was read');
 });
+
+test('the validate job runs the alert rule checks, so docker/alertmanager.webhook.yml is validated in CI', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  validate:'), ci.indexOf('\n  migrations:'));
+  assert.match(job, /\n      - name: Alert rules and Alertmanager files \(promtool and amtool, no network\)\n        run: npm run test:alert-rules\n/);
+});

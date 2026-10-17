@@ -195,6 +195,10 @@ fi
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
+# The monitoring files (config/monitoring, metrics, data/alertmanager) are not in a backup: render them for the
+# restored project with the renderer setup uses, so the monitoring profile can start. The alert webhook address
+# is a secret that is deliberately not in a backup; see the last "Next" line.
+node "$ROOT/scripts/monitoring-config.mjs" "$state" "$project" || die "Could not render the monitoring files of $state."
 
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
 # 6. The database and storage replay is the in-place restore, unchanged.
@@ -236,5 +240,7 @@ Next:
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
      change" in docs/OPERATOR_INSTALL.md, then take a new backup.
   6. Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key).
-Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host.
+  7. Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (the webhook
+     address is not in a backup; skip this if the installation never had one). The monitoring profile
+     starts without it: bash scripts/compose.sh --profile monitoring up -d
 MSG

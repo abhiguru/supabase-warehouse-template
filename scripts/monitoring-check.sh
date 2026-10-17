@@ -11,7 +11,7 @@ state_dir="$state"   # the loop below reuses `state` for container health
 
 # setup.sh renders the per-installation files the monitoring services mount (docs/MONITORING.md); an
 # installation set up before that has none until setup runs again.
-for path in config/monitoring/prometheus.yml config/monitoring/alertmanager/alertmanager.yml metrics; do
+for path in config/monitoring/prometheus.yml config/monitoring/alertmanager/alertmanager.yml metrics data/alertmanager; do
   [[ -e "$state_dir/$path" ]] || { echo "$state_dir/$path is missing: run setup.sh --operator again (docs/MONITORING.md, Several installations on one host)." >&2; exit 1; }
 done
 project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$state_dir/config/compose.env")"
@@ -104,9 +104,9 @@ for ((i=0; i<30; i++)); do
   sleep 2
 done
 [[ "$own_containers" == true ]] || { echo "Prometheus has no container series of the project $project." >&2; exit 1; }
-series=$(compose --profile monitoring exec -T prometheus wget -qO- "$(query "count(container_memory_usage_bytes{container_label_com_docker_compose_project!=\"\",container_label_com_docker_compose_project!=\"$project\"})")")
+series=$(compose --profile monitoring exec -T prometheus wget -qO- "$(query "count(container_memory_usage_bytes{name!=\"\",container_label_com_docker_compose_project!=\"$project\"})")")
 node -e "if(JSON.parse(process.argv[1]).data.result.length!==0)process.exit(1)" "$series" ||
-  { echo "Prometheus holds container series of another Compose project than $project." >&2; exit 1; }
+  { echo "Prometheus holds container series of another Compose project, or of a container Compose did not start, than $project." >&2; exit 1; }
 
 # The textfile directory the backup scripts write (scripts/backup-metrics.sh) reaches Prometheus through node
 # exporter. A probe file of its own, so a real backup metric is never faked; removed on exit.

@@ -1221,6 +1221,12 @@ different warehouse.
 7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
+
+   `db:restore-host` also rendered the monitoring files for the restored
+   project, so the `monitoring` profile starts. The alert webhook address is a
+   secret and is not in a backup: if this installation sent alerts to a webhook,
+   alerts are local only until you run `setup.sh --operator` again with your
+   usual inputs and `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
 8. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in

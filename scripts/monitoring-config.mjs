@@ -6,6 +6,7 @@
 //   <state>/config/monitoring/prometheus.yml                  (mode 0644; read by the prometheus container)
 //   <state>/config/monitoring/alertmanager/alertmanager.yml   (mode 0644)
 //   <state>/config/monitoring/alertmanager/webhook-url        (mode 0600; only with --alert-webhook-file)
+//   <state>/data/alertmanager/                                (mode 0700; Alertmanager's silences and notification log)
 // and creates <state>/metrics (mode 0755), the textfile directory node exporter reads read-only and
 // the backup scripts write (scripts/backup-metrics.sh). docker/docker-compose.override.yml mounts them.
 //
@@ -16,6 +17,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export const PROJECT_PATTERN = /^warehouse-[a-z0-9-]+$/;
 export const PLACEHOLDER = '${WAREHOUSE_PROJECT_NAME}';
@@ -92,6 +94,8 @@ export function placeMonitoringConfig(state, { project, webhook, templates = TEM
   privateDirectory(join(state, 'config/monitoring'), 0o700);
   privateDirectory(join(state, 'config/monitoring/alertmanager'), 0o700);
   privateDirectory(join(state, 'metrics'), 0o755);
+  // Alertmanager runs as the installing user and keeps its state here, so a replaced container keeps its silences.
+  privateDirectory(join(state, 'data/alertmanager'), 0o700);
   let changed = false;
   if (typeof webhook === 'string') changed = place(stored, Buffer.from(`${webhook}\n`), 0o600) || changed;
   if (webhook === null && storedAddress) { rmSync(stored); changed = true; }
@@ -108,4 +112,15 @@ export function alertWebhookConfigured(state) {
 export function alertDeliveryWarning(state) {
   if (alertWebhookConfigured(state)) return null;
   return 'Alerts are local only: Alertmanager is running with no receiver, so no alert leaves this host and nobody is told when a backup fails or the database stops. Give it a webhook: rerun setup.sh --operator with your usual inputs plus --alert-webhook-file <a private file holding one https:// address> (docs/MONITORING.md, "Alert delivery").';
+}
+
+// node scripts/monitoring-config.mjs STATE PROJECT: renders the files into an installed state without
+// touching anything else of it (scripts/restore-host.sh, which never runs setup). The stored webhook
+// address, if there is one, is kept.
+if (isMain(import.meta.url)) {
+  try {
+    const [state, project] = process.argv.slice(2);
+    if (!state || !isAbsolute(state) || !project || process.argv.length !== 4) throw new Error('Usage: monitoring-config.mjs ABSOLUTE_STATE_DIR PROJECT');
+    placeMonitoringConfig(state, { project, webhook: undefined });
+  } catch (error) { console.error(`Monitoring configuration: ${error.message}`); process.exitCode = 1; }
 }

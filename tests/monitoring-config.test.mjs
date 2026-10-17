@@ -18,16 +18,17 @@ const PROJECT = 'warehouse-0f1e2d3c4b5a';
 // Applies the rendered cAdvisor metric_relabel_configs (one `keep` rule) to a series' labels.
 function keptByCadvisorJob(config, labels) {
   const job = config.slice(config.indexOf("job_name: 'cadvisor'"), config.indexOf("job_name: 'kong'"));
-  const source = /source_labels: \[([a-z_]+)\]/.exec(job)[1];
+  const sources = /source_labels: \[([a-z_, ]+)\]/.exec(job)[1].split(/,\s*/);
   const regex = /regex: '([^']*)'/.exec(job)[1];
   assert.match(job, /action: keep/);
-  return new RegExp(`^(?:${regex})$`).test(labels[source] ?? '');
+  // Prometheus joins the source labels with ";" (the default separator) and anchors the regex.
+  return new RegExp(`^(?:${regex})$`).test(sources.map(source => labels[source] ?? '').join(';'));
 }
 
 test('the rendered configuration carries the installation label and nothing is left to substitute', () => {
   const config = renderPrometheusConfig(template, PROJECT);
   assert.match(config, new RegExp(`^  external_labels:\\n    installation: ${PROJECT}$`, 'm'));
-  assert.match(config, new RegExp(`regex: '\\(${PROJECT}\\|\\)'`));
+  assert.match(config, new RegExp(`source_labels: \\[container_label_com_docker_compose_project, name\\]\\n\\s+regex: '${PROJECT};\\.\\*\\|;'`));
   assert.doesNotMatch(config, /\$\{/);
   assert.ok(config.includes('- /etc/prometheus/alert-rules.yml'), 'the rest of the template is unchanged');
   // Another installation gets its own file.
@@ -44,10 +45,13 @@ test('only a Compose project name this repository creates is accepted', () => {
 
 test('the cAdvisor job keeps its own installation and the series of no container, and drops the others', () => {
   const config = renderPrometheusConfig(template, PROJECT);
-  const project = value => ({ container_label_com_docker_compose_project: value });
+  const project = (value, name = `${value}-db-1`) => ({ container_label_com_docker_compose_project: value, name });
   assert.equal(keptByCadvisorJob(config, project(PROJECT)), true, 'its own containers');
-  assert.equal(keptByCadvisorJob(config, {}), true, 'machine_* and cadvisor_version_info have no project label');
-  assert.equal(keptByCadvisorJob(config, project('')), true, 'a container that is not a Compose service');
+  assert.equal(keptByCadvisorJob(config, {}), true, 'machine_* and cadvisor_version_info have no project label and no container name');
+  assert.equal(keptByCadvisorJob(config, project('', '')), true, 'a series with neither a project nor a name');
+  assert.equal(keptByCadvisorJob(config, project('', 'wh-ops-b8-devdb')), false, 'a `docker run` container is not an installation\'s (ContainerOOM has no Compose filter)');
+  assert.equal(keptByCadvisorJob(config, project('', 'warehouse-grafana-smoke-1')), false, 'a helper container named like an installation');
+  assert.equal(keptByCadvisorJob(config, project(PROJECT, '')), true, 'its own project, whatever the name');
   assert.equal(keptByCadvisorJob(config, project('warehouse-ffffffffffff')), false, 'another installation on the host');
   assert.equal(keptByCadvisorJob(config, project('central-identity-dev')), false, 'the identity stack');
   assert.equal(keptByCadvisorJob(config, project(`${PROJECT}0`)), false, 'a project whose name starts with this one');
@@ -105,6 +109,9 @@ test('setup writes the installation\'s Prometheus file, a local-only Alertmanage
     // The directory the backup scripts write and node exporter (another user) reads.
     assert.equal(statSync(f.files.metrics).mode & 0o777, 0o755);
     assert.deepEqual(readdirSync(f.files.metrics), []);
+    // Alertmanager's silences and notification log: private, and the installing user's (it runs as that user).
+    assert.equal(statSync(join(f.stateDir, 'data/alertmanager')).mode & 0o777, 0o700);
+    assert.equal(statSync(join(f.stateDir, 'data/alertmanager')).uid, process.getuid());
     // A rerun with the same inputs changes nothing.
     const again = configure(f.root, f.options);
     assert.equal(again.created, false);
@@ -290,7 +297,12 @@ test('compose replaces the monitoring containers when their rendered configurati
     assert.equal(mount('grafana', '/etc/grafana/dashboards').read_only, true);
     // Alertmanager reads the 0600 address as the installing user, with its own writable storage.
     assert.equal(edited.config.services.alertmanager.user, `${process.getuid()}:${process.getgid()}`);
-    assert.ok(edited.config.services.alertmanager.command.includes('--storage.path=/tmp/alertmanager'));
+    // Silences and the notification log live in a state directory, so they survive the replacement `compose up` does.
+    assert.ok(edited.config.services.alertmanager.command.includes('--storage.path=/alertmanager'));
+    const storage = mount('alertmanager', '/alertmanager');
+    assert.equal(storage.source, join(f.stateDir, 'data/alertmanager'));
+    assert.notEqual(storage.read_only, true);
+    assert.equal(storage.bind.create_host_path, false);
   } finally { f.cleanup(); }
 });
 
@@ -339,7 +351,7 @@ test('the monitoring and Grafana checks assert what this change added', () => {
   const monitoring = read('scripts/monitoring-check.sh');
   assert.match(monitoring, /status\/config/);
   assert.match(monitoring, /'installation: '\+process\.argv\[2\]/);
-  assert.match(monitoring, /container_label_com_docker_compose_project!=\\"\\",container_label_com_docker_compose_project!=\\"\$project\\"/, 'no other project\'s containers');
+  assert.match(monitoring, /name!=\\"\\",container_label_com_docker_compose_project!=\\"\$project\\"/, 'no other project\'s containers and no container Compose did not start');
   assert.match(monitoring, /warehouse_monitoring_check\.prom/, 'a probe file in the backup metrics directory');
   assert.doesNotMatch(monitoring, /warehouse_backup\.prom/, 'the check never writes a backup metric of its own');
   assert.match(monitoring, /grep -c '\^ \*- alert: ' "\$ROOT\/docker\/alert-rules\.yml"/);
@@ -349,4 +361,24 @@ test('the monitoring and Grafana checks assert what this change added', () => {
   assert.match(grafana, /api\/ds\/query/);
   assert.match(grafana, /Cannot read directory/);
   assert.match(grafana, /meta\.provisioned !== true/);
+});
+
+test('the CLI renders the files of a state that restore-host built, keeping no webhook', () => {
+  const f = fixture();
+  try {
+    configure(f.root, f.options);
+    const project = f.project();
+    // What restore-host leaves: no monitoring files, no metrics directory, no Alertmanager state.
+    rmSync(join(f.stateDir, 'config/monitoring'), { recursive: true });
+    rmSync(f.files.metrics, { recursive: true });
+    rmSync(join(f.stateDir, 'data/alertmanager'), { recursive: true });
+    const run = spawnSync(process.execPath, [new URL('../scripts/monitoring-config.mjs', import.meta.url).pathname, f.stateDir, project], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(f.files.prometheus, 'utf8'), renderPrometheusConfig(template, project));
+    assert.equal(statSync(f.files.metrics).mode & 0o777, 0o755);
+    assert.equal(statSync(join(f.stateDir, 'data/alertmanager')).mode & 0o777, 0o700);
+    assert.equal(existsSync(f.files.webhook), false);
+    const bad = spawnSync(process.execPath, [new URL('../scripts/monitoring-config.mjs', import.meta.url).pathname, f.stateDir, 'identity-dev'], { encoding: 'utf8' });
+    assert.notEqual(bad.status, 0);
+  } finally { f.cleanup(); }
 });

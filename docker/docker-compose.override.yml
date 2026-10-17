@@ -231,17 +231,23 @@ services:
       com.warehouse.config-sha256: ${WAREHOUSE_ALERTMANAGER_CONFIG_SHA256:-}
     # The optional webhook address (setup.sh --alert-webhook-file) is a secret kept at mode 0600 in the
     # state, so Alertmanager runs as the installing user, as imgproxy does for the storage directory. Its
-    # notification log and silences go to /tmp: the image's own /alertmanager volume belongs to another user.
+    # notification log and silences go to <state>/data/alertmanager (0700, that user's), which survives a
+    # replacement of the container; the image's own /alertmanager volume belongs to another user.
     user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/tmp/alertmanager
+      - --storage.path=/alertmanager
     volumes:
       # alertmanager.yml, and webhook-url when an address was given: rendered by setup.sh.
       - type: bind
         source: ${WAREHOUSE_MONITORING_PATH:?Run through scripts/compose.sh}/alertmanager
         target: /etc/alertmanager
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WAREHOUSE_ALERTMANAGER_PATH:?Run through scripts/compose.sh}
+        target: /alertmanager
         bind:
           create_host_path: false
     healthcheck:

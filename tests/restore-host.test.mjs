@@ -24,6 +24,9 @@ function fixture(prefix, { integrity = ledger(), env } = {}) {
   mkdirSync(join(root, 'migrations'));
   for (const [name, body] of Object.entries(migrations)) writeFileSync(join(root, 'migrations', name), body);
   writeFileSync(join(root, 'scripts/doctor.mjs'), "console.log('Host prerequisites and state filesystem preflight passed.');\n");
+  // restore-host renders the monitoring files with the renderer setup uses, from the templates next to it.
+  for (const file of ['monitoring-config.mjs', 'is-main.mjs']) copyFileSync(join(repo, 'scripts', file), join(root, 'scripts', file));
+  for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.webhook.yml']) copyFileSync(join(repo, 'docker', file), join(root, 'docker', file));
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.
   writeFileSync(join(root, 'scripts/restore.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$*" >> "$RESTORE_LOG"
@@ -105,9 +108,16 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'backup kept unmodified');
     assert.ok(existsSync(join(f.backup, 'SHA256SUMS')), 'source backup left in place');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
-    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['db', 'storage'], 'empty pre-restore directories removed');
+    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['alertmanager', 'db', 'storage'], 'empty pre-restore directories removed');
     assert.deepEqual(readdirSync(f.parent), ['acme'], 'no staging directory left');
     assert.match(result.stdout, /Keep the original host off/);
+    // The monitoring profile can start: its files are rendered for the restored project, with no webhook.
+    assert.match(readFileSync(join(f.state, 'config/monitoring/prometheus.yml'), 'utf8'), /^    installation: warehouse-backup-test$/m);
+    assert.equal(statSync(join(f.state, 'metrics')).mode & 0o777, 0o755);
+    assert.equal(statSync(join(f.state, 'data/alertmanager')).mode & 0o777, 0o700);
+    assert.equal(readFileSync(join(f.state, 'config/monitoring/alertmanager/alertmanager.yml'), 'utf8'), readFileSync(join(repo, 'docker/alertmanager.yml'), 'utf8'));
+    assert.equal(existsSync(join(f.state, 'config/monitoring/alertmanager/webhook-url')), false, 'the webhook address is not in a backup');
+    assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
   } finally { clean(f); }

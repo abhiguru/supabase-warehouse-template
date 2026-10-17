@@ -61,6 +61,7 @@ templates in `docker/`:
 | `config/monitoring/alertmanager/alertmanager.yml` (0644) | `docker/alertmanager.yml`, or `docker/alertmanager.webhook.yml` with `--alert-webhook-file` | `alertmanager` (the directory, read-only) |
 | `config/monitoring/alertmanager/webhook-url` (0600) | the file given to `--alert-webhook-file` | `alertmanager` (same directory) |
 | `metrics/` (0755) | created empty | `node-exporter` (read-only) |
+| `data/alertmanager/` (0700) | created empty | `alertmanager` (read-write, at `/alertmanager`): silences and the notification log |
 
 What the rendered Prometheus file does:
 
@@ -71,10 +72,13 @@ What the rendered Prometheus file does:
   labels without a feature flag (the old `--enable-feature=expand-external-labels`
   is an unknown option there); the label is nevertheless written into the file,
   because the next item cannot use an environment variable.
-- A `keep` rule on the cAdvisor scrape: only the series whose
-  `container_label_com_docker_compose_project` is this installation's project
-  are stored, plus the series that belong to no container (`machine_*`,
-  `cadvisor_version_info`). The container rules therefore see one installation.
+- A `keep` rule on the cAdvisor scrape, on the labels project and container
+  name joined as `project;name` with the regex `<project>;.*|;`: only the
+  series of this installation's Compose project are stored, plus the series
+  that have neither a project nor a name (`machine_*`, `cadvisor_version_info`,
+  the root cgroup). A container that Compose did not start (a `docker run`
+  helper or test database) is dropped too, so no container rule, `ContainerOOM`
+  included, fires for another installation's or a helper's container.
   `promtool` cannot show that, because it feeds series straight to the rules;
   `tests/monitoring-config.test.mjs` applies the rendered rule to two projects'
   labels, and `npm run test:monitoring` asks the live Prometheus for series of
@@ -85,10 +89,16 @@ Rerun `setup.sh --operator` with your usual inputs after updating the checkout
 is left alone. A start without them stops with Docker's "bind source path does
 not exist" for the file, instead of creating an empty directory.
 
-`db:restore-host` never runs setup, so a state it builds has none of these
-files. Create them with `node scripts/configure.mjs --state-dir "$WAREHOUSE_STATE_DIR"`
-(on an installed state it changes nothing else), then start the monitoring
-profile again.
+`db:restore-host` never runs setup, but it renders these files for the
+restored project itself (`node scripts/monitoring-config.mjs STATE PROJECT`,
+the renderer setup uses), so the monitoring profile starts after a lost-host
+restore. The webhook address is a secret and is not in a backup: alerts are
+local only until you run `setup.sh --operator` again with
+`--alert-webhook-file`, and restore-host's "Next" list says so.
+
+Alertmanager keeps its silences and notification log in `data/alertmanager`,
+so a replacement of the container (every setup that changes its files, every
+change of `docker/alert-rules.yml`) keeps them. It is not part of a backup.
 
 Host-level metrics (CPU, memory, disk from node exporter) are the same for every
 installation on a host. Each installation scrapes its own node exporter.

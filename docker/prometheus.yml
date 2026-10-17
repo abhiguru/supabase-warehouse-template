@@ -34,13 +34,14 @@ scrape_configs:
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
-    # cAdvisor reports every container on the host, including those of other installations (and of
-    # anything else that runs on it). Keep the series of this installation's Compose project, and the
-    # series that belong to no container (machine_*, cadvisor_version_info: an empty project label).
-    # Without this, every container rule fires for every installation on the host.
+    # cAdvisor reports every container on the host: those of other installations, and every container
+    # that Compose did not start (docker run helpers, test databases). Keep the series of this
+    # installation's Compose project, and the series that belong to no container at all (machine_*,
+    # cadvisor_version_info, the root cgroup: no project and no name). The two labels are joined with
+    # ";", so "project;name". Without this, every container rule fires for every installation.
     metric_relabel_configs:
-      - source_labels: [container_label_com_docker_compose_project]
-        regex: '(${WAREHOUSE_PROJECT_NAME}|)'
+      - source_labels: [container_label_com_docker_compose_project, name]
+        regex: '${WAREHOUSE_PROJECT_NAME};.*|;'
         action: keep
 
   - job_name: 'kong'

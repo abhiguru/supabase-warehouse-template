@@ -66,7 +66,7 @@ done < "$ENV_FILE"
 # exporter reads. The two sha256 values are labels of the prometheus and alertmanager services: when a
 # rendered file or the alert rules change, `compose up` sees a changed service and replaces the running
 # container, which does not reload its files by itself (Prometheus runs without --web.enable-lifecycle).
-export WAREHOUSE_MONITORING_PATH="$STATE/config/monitoring" WAREHOUSE_METRICS_PATH="$STATE/metrics"
+export WAREHOUSE_MONITORING_PATH="$STATE/config/monitoring" WAREHOUSE_METRICS_PATH="$STATE/metrics" WAREHOUSE_ALERTMANAGER_PATH="$STATE/data/alertmanager"
 config_sha256() { cat -- "$@" 2>/dev/null | sha256sum | cut -d' ' -f1; }
 export WAREHOUSE_PROMETHEUS_CONFIG_SHA256="$(config_sha256 "$WAREHOUSE_MONITORING_PATH/prometheus.yml" "$ROOT/docker/alert-rules.yml")"
 export WAREHOUSE_ALERTMANAGER_CONFIG_SHA256="$(config_sha256 "$WAREHOUSE_MONITORING_PATH/alertmanager/alertmanager.yml")"

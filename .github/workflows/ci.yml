@@ -30,6 +30,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Alert rules and Alertmanager files (promtool and amtool, no network)
+        run: npm run test:alert-rules
       - name: Container source dependency audit
         run: npm run check:container-dependencies
       - name: Shell syntax
