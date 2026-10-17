@@ -14,7 +14,8 @@ const root = new URL('..', import.meta.url).pathname;
 const script = join(root, 'rotate-keys.sh');
 
 // Fake Docker: records every invocation, answers the health and ownership
-// probes, captures the psql standard input and can fail the SQL step.
+// probes (the list refresh status of migration 91 included), captures the psql
+// standard input and can fail the SQL step.
 const fakeDocker = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
@@ -31,6 +32,7 @@ case "$1" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
+      *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
       *'exec -T db psql'*) cat >> "$FAKE_PSQL_INPUT"; if [ "$FAKE_DOCKER_FAIL" = psql ]; then exit 3; fi ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;

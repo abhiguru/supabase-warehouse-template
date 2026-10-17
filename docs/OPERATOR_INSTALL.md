@@ -402,13 +402,33 @@ With an address, the functions container must be able to reach it over HTTPS.
 When it cannot, central sign-in answers "temporarily unavailable" and SMS
 sign-in is unaffected.
 
-**After a restore, run `setup.sh` again** with your usual inputs. The trusted
-issuer lives in the database as well as in `compose.env`, and setup is what
-makes the two agree: a database restored from before you turned central
-sign-in on (or off) otherwise disagrees with the configuration, and central
-sign-in answers "not available" until setup has run. The key file
-`public/central-jwks.json` is not part of a backup: after recovering a lost
-host, pass `--central-jwks-file` again.
+**After an in-place restore, check that the database and the configuration
+agree.** The trusted issuer lives in the database as well as in `compose.env`,
+and setup is what makes the two agree: a database restored from before you
+turned central sign-in on (or off) otherwise disagrees with the configuration,
+and central sign-in answers "not available" until you have run `setup.sh` again
+with your usual inputs.
+
+**The key file travels with the backup.** `public/central-jwks.json` (public
+keys only) is copied into every backup as `central-jwks.json`, listed in
+`SHA256SUMS` and so covered by the signature; `db:verify-restore` checks it and
+a [lost-host restore](#recover-a-lost-host-from-the-usb-drive)
+(`db:restore-host`) puts it back, mode 0644, with no setup run. A backup written
+before that holds no copy: `db:restore-host` then ends by printing the exact
+`setup.sh --operator … --central-issuer … --central-jwks-file …` rerun, which
+keeps the instance identity and replaces nothing but the key file, and
+`node scripts/doctor.mjs` fails until you have run it. Keep the key set the
+association sent you for that case.
+
+An in-place `db:restore --restore-config` can bring back a `compose.env` that names
+a key file this state no longer has (setup deletes it when central sign-in moves
+to an address or off). `db:restore` does not touch `public/`, so it finishes,
+its last `doctor --local` only warns, and it prints the same `setup.sh` rerun.
+
+`doctor` (`--local` and the full run) fails whenever `CENTRAL_JWKS_FILE` is set
+and `public/central-jwks.json` is missing, not a regular file, larger than
+64 KB, not JSON or without a usable P-256 key: without the file every central
+sign-in fails while the app still offers it.
 
 A person who already has a profile here is linked to the central account by
 the first central sign-in with the same phone number (no code, unless the
@@ -701,6 +721,7 @@ only the services that were running. The directory contains:
 | `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
+| `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit and checksums of every file above. |
 | `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 
@@ -1066,7 +1087,9 @@ wrapper and replays ACLs exactly as the verifier does, recreates `_supabase`
 the same way and restores `_supabase.dump`, re-asserts the database JWT
 settings from `compose.env`, diffs `scripts/backup-integrity.sql` against the
 backup's `integrity.txt`, runs `scripts/migrate.sh --operator` (a no-op unless
-this checkout added migrations after the backup), starts every service with
+this checkout added migrations after the backup), runs
+`scripts/configure-list-refresh.sql` (the list refresher's role came back
+without `LOGIN`; see [Lists refresh after the commit](#lists-refresh-after-the-commit)), starts every service with
 `--wait` and runs `doctor --local`. Role passwords always come from the active
 `compose.env`; the backup never contains them. Pass `--restore-config` only when
 the keys in the backup are the ones the restored data was signed with, that is,
@@ -1114,7 +1137,7 @@ recorded after the backup is lost.
 **Never run the old and the new host at the same time.** They would answer as
 the same warehouse with the same keys. If the old host might come back, wipe
 its disk or keep it disconnected; if in doubt, rotate the keys afterwards
-(step 8).
+(step 9).
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
@@ -1123,8 +1146,13 @@ copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
 after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
 need your private copy of it (the tunnel `config.yml` plus its credentials
-JSON, or the dashboard token file). **Do not run `setup.sh`**: it would create a new,
-different warehouse.
+JSON, or the dashboard token file). If this facility's central sign-in reads its
+keys from a file, backups taken with this release carry that file too
+(`central-jwks.json`); for older backups keep the key set the association sent
+you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
+would create a new, different warehouse. After `db:restore-host` has finished,
+`setup.sh` on the restored state keeps the identity; step 7 is the one case
+that needs it.
 
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
@@ -1176,10 +1204,14 @@ different warehouse.
    written before format v5 has no signature and is accepted only with
    `--allow-unsigned` (then `--backup-key` may be left out); use that only for
    a drive that never left your custody. It then creates the state from the backup's `compose.env` and
-   `instance.json`, changing only the three state-path lines, keeps a copy of the
+   `instance.json`, changing only the three state-path lines (and installs the
+   central sign-in key file, `public/central-jwks.json`, when the backup
+   carries one), keeps a copy of the
    backup under `backups/`, and runs the in-place restore: a new database from
    the pinned image, replay of both databases and the stored files, integrity
-   comparison, newer migrations, all services started and `doctor --local`. It
+   comparison, newer migrations, all services started and `doctor --local` (for a
+   backup that lacks the central key file named by `compose.env`, that one finding
+   is only a warning, and step 7 says how to fix it). It
    ends by printing the remaining steps. A backup directory (already extracted)
    works as well as the `.tar`. If it fails after creating the state, it says so
    and how to start over; nothing else on the host is changed.
@@ -1208,10 +1240,29 @@ different warehouse.
    two commands. The DNS route already exists; do not create a new tunnel. If
    the credential is lost too, create a new tunnel and point the existing
    hostname at it in the Cloudflare dashboard, replacing the old tunnel's record.
-7. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
+7. **Central sign-in from a key file.** Skip this unless `CENTRAL_JWKS_FILE` is set
+   in `config/compose.env` (central sign-in with keys from a file, see
+   [Central sign-in](#central-sign-in)). A backup taken with this release brought
+   `public/central-jwks.json` back with the rest, and
+   `node scripts/doctor.mjs --local` confirms it. A backup written before that did
+   not, and `db:restore-host` printed a step with this command; run it with your
+   usual administrator phone and name and the key set the association sent you:
+
+   ```bash
+   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
+     --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+     --central-issuer https://login.association.example \
+     --central-jwks-file /secure/association-jwks.json
+   ```
+
+   Setup keeps the instance identity and the data, copies the file to
+   `public/central-jwks.json`, and rebuilds the images once (a restored state has no
+   build record). Until then every central sign-in fails while the app still
+   offers it, and `doctor` says so; SMS sign-in is unaffected.
+8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
-8. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
+9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
@@ -1274,6 +1325,61 @@ backup onto a spare machine with `db:restore-host`, try the change there, and
 only then repeat it on the real host. Splitting this one password into
 per-role passwords, with a rotation command, is planned; the design and its
 rehearsal steps are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-shared-value-and-the-plan-to-split-it).
+
+## Lists refresh after the commit
+
+Since migration 91 the invoice list, the dispatch list of `get_dispatch_list` and
+the legacy GRN list are materialized views that a background job refreshes
+after each write, instead of the write itself (on a populated warehouse that
+refresh took most of a dispatch's 8 s and made concurrent writers time out).
+What to know:
+
+- **The job.** pg_cron (preloaded by the database image and
+  `docker-compose.override.yml`) runs `warehouse-list-refresh` every 5 seconds
+  as the role `warehouse_list_refresher`, inside the db container. Nothing new
+  runs outside it and no port, image or Compose service is added. The role has
+  no password: it connects over 127.0.0.1 inside the container, and every
+  network address needs a password.
+- **Staleness.** A committed change reaches those lists within 15 seconds:
+  at most one 5-second interval plus the refresh (about 2 s on a site with
+  12,000 GRNs), typically 3 to 4 seconds. The answer of the write itself is
+  immediate. Other lists read the tables directly.
+- **The doctor** (`health-check.sh`, also run by setup and restore) fails with
+  `list refresh: ...` when the job is missing or paused, the role cannot log in,
+  a refresh fails, the last run failed, a list has waited more than 15 s, or a
+  session other than the job's holds the refresh lock 71046 (it names that
+  session's pid, user and application). The first run after a start gets 30 s
+  to catch up. `setup.sh` (or
+  `bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres < scripts/configure-list-refresh.sql`)
+  puts the job and the role back.
+- **By hand.** `SELECT warehouse_security.list_refresh_status();` shows the same
+  as the doctor. To refresh now, run the worker once, in its own short session:
+
+  ```bash
+  bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres \
+    -c 'CALL warehouse_security.refresh_dirty_lists_worker()'
+  ```
+
+  Do not run that CALL inside an open interactive psql: if it stops on an error
+  or Ctrl-C, that session keeps the refresh lock 71046 until it ends, and every
+  run of the job returns at once meanwhile (the doctor names the session; end
+  it to recover). Outside a transaction block only.
+- **Logs.** The db runs with `cron.log_statement=off`
+  (`docker-compose.override.yml`), so a run writes no `cron job ... starting` or
+  `completed` line; `cron.job_run_details` keeps one day of runs, and the doctor
+  reads that. Each run is still one connection with three lines
+  (`connection received`, `connection authorized`, `disconnection`), about 9 MB
+  a day in Docker's log format. With the db healthcheck's own connection lines
+  (about as many), the db log's 3 x 10 MB rotation holds about a day and a
+  half. The setup rerun that brings migration 91 recreates the db container,
+  because its command changed.
+- **Upgrade.** Setup applies migration 91 and the job starts at once; no extra
+  step. Migrations run under the refresh lock 71046 (`scripts/migration-plan.mjs`),
+  so no refresh runs during them; a refresh in progress finishes first, and setup
+  stops with the holder's pid if the lock is not free within 120 s. **Restore** runs `scripts/configure-list-refresh.sql` itself, after the
+  migrations. `db:verify-restore` leaves pg_cron's own objects (the job table
+  and its history) out of its check, because that extension can only be created
+  in the `postgres` database.
 
 ## Rerun and upgrade
 

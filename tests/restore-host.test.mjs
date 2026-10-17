@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
@@ -27,6 +27,7 @@ function fixture(prefix, { integrity = ledger(), env } = {}) {
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.
   writeFileSync(join(root, 'scripts/restore.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$*" >> "$RESTORE_LOG"
+printf '%s' "\${WAREHOUSE_CENTRAL_KEY_PENDING:-}" > "$RESTORE_LOG.pending"
 [[ "\${FAKE_RESTORE_FAIL:-}" != yes ]] || exit 3
 mv "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/db.pre-restore-20260101T000000Z"
 mv "$WAREHOUSE_STATE_DIR/data/storage" "$WAREHOUSE_STATE_DIR/data/storage.pre-restore-20260101T000000Z"
@@ -61,7 +62,8 @@ exec ${bin}/docker "$@"
   const run = (args, extra = {}, { key = keyFile } = {}) => {
     const result = spawnSync('bash', [join(root, 'scripts/restore-host.sh'), ...(key ? ['--backup-key', key] : []), ...args], { encoding: 'utf8',
       env: { ...process.env, PATH: `${wrap}:${process.env.PATH}`, FAKE_DOCKER_LOG: dockerLog, RESTORE_LOG: log, ...extra } });
-    return { ...result, restoreCalls: readFileSync(log, 'utf8') };
+    // What restore.sh (and so doctor --local) was told about a central key file that is still to be put back.
+    return { ...result, restoreCalls: readFileSync(log, 'utf8'), keyPending: existsSync(`${log}.pending`) ? readFileSync(`${log}.pending`, 'utf8') : null };
   };
   const signArchive = file => writeFileSync(`${file}.hmac`, `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${file}.sha256`))}\n`);
   const tarball = ({ sign = true } = {}) => {
@@ -430,4 +432,78 @@ test('restore-host without a tunnel in the backup points to the manual connector
     assert.equal(existsSync(join(f.state, 'config/tunnel')), false);
     assert.match(result.stdout, /carries no tunnel credential/);
   } finally { clean(f); }
+});
+
+// TW-BE-020. The key file of central sign-in (public keys only) is not in compose.env, which a backup
+// keeps; without it every central exchange fails while get-public-config still offers central sign-in.
+const ISSUER = 'https://login.association.example.test';
+const centralEnv = (file = 'central-jwks.json') =>
+  composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\nCENTRAL_ISSUER=${ISSUER}\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=${file}\n`);
+
+test('restore-host puts the central key file back byte for byte with mode 0644, and leaves central sign-in nothing to redo', () => {
+  const f = fixture('warehouse-restore-host-central-key-', { env: centralEnv() });
+  try {
+    writeFileSync(join(f.backup, 'central-jwks.json'), centralKeySet, { mode: 0o600 });
+    f.resum({ files: 'central-jwks.json' });
+    const result = f.run(['--state-dir', f.state, '--yes', f.tarball()]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const path = join(f.state, 'public/central-jwks.json');
+    assert.equal(readFileSync(path, 'utf8'), centralKeySet);
+    assert.equal(statSync(path).mode & 0o777, 0o644, 'readable by the functions container, like the copy setup makes');
+    assert.deepEqual(readdirSync(join(f.state, 'public')).sort(), ['central-jwks.json', 'instance.json']);
+    assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^CENTRAL_JWKS_FILE=(.*)$/m)[1], 'central-jwks.json');
+    assert.match(result.stdout, /Restored the central sign-in key file public\/central-jwks\.json/);
+    assert.doesNotMatch(result.stdout, /setup\.sh/, 'nothing to rerun');
+    assert.equal(result.keyPending, '', 'doctor --local is not told to expect a missing key file');
+  } finally { clean(f); }
+});
+
+test('restore-host refuses a backup whose central key file was changed, with or without new checksums', () => {
+  const f = fixture('warehouse-restore-host-central-key-edit-', { env: centralEnv() });
+  try {
+    writeFileSync(join(f.backup, 'central-jwks.json'), centralKeySet, { mode: 0o600 });
+    f.resum({ files: 'central-jwks.json' });
+    // A key set of the attacker's choosing, checksums left as they were.
+    writeFileSync(join(f.backup, 'central-jwks.json'), centralKeySet.replace('central-2026-10', 'planted-key'));
+    let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /does not match its SHA256SUMS/); nothingCreated(f, result);
+    // Checksums regenerated, signature not (the signing key is not on the drive).
+    const signature = readFileSync(join(f.backup, 'SHA256SUMS.hmac'), 'utf8');
+    f.resum({ files: 'central-jwks.json', sign: false });
+    writeFileSync(join(f.backup, 'SHA256SUMS.hmac'), signature);
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of this backup does not match the backup key/); nothingCreated(f, result);
+    assert.equal(existsSync(join(f.state, 'public')), false);
+  } finally { clean(f); }
+});
+
+test('restore-host prints the exact setup rerun when central sign-in names a key file the older backup does not carry', () => {
+  const f = fixture('warehouse-restore-host-central-key-older-', { env: centralEnv() });
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(existsSync(join(f.state, 'public/central-jwks.json')), false, 'no key file is invented');
+    assert.equal(result.keyPending, 'yes', 'restore.sh runs doctor --local with the missing file reported as a warning, not a failure');
+    assert.match(result.stdout, /carries no central sign-in key file/);
+    assert.ok(result.stdout.includes(`bash setup.sh --operator --state-dir ${f.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`), 'setup rerun with the state');
+    assert.ok(result.stdout.includes(`--central-issuer ${ISSUER} --central-jwks-file /absolute/path/to/association-jwks.json`), 'with the issuer the backup names');
+    assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
+    // The numbered steps stay in order whether or not this step is there.
+    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7]);
+  } finally { clean(f); }
+});
+
+test('restore-host says nothing about a key file when central sign-in uses an address or is off', () => {
+  for (const [label, extra] of [['address', 'CENTRAL_ISSUER=https://login.association.example.test\nCENTRAL_JWKS_URL=https://login.association.example.test/jwks.json\nCENTRAL_JWKS_FILE=\n'],
+    ['off', 'CENTRAL_ISSUER=\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=\n'], ['never set', '']]) {
+    const f = fixture(`warehouse-restore-host-nokey-`, { env: composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\n${extra}`) });
+    try {
+      const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+      assert.equal(result.status, 0, label + result.stderr + result.stdout);
+      assert.doesNotMatch(result.stdout, /central|setup\.sh/i, label);
+      assert.equal(result.keyPending, '', label);
+      assert.equal(existsSync(join(f.state, 'public/central-jwks.json')), false, label);
+      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6], label);
+    } finally { clean(f); }
+  }
 });

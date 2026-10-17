@@ -94,6 +94,25 @@ skipped when none is running: given no IDs it would list every container on
 the host. A service shown as `Restarting` in `ps` is in a crash loop; read its
 logs.
 
+## A new receipt, dispatch or invoice is missing from a list
+
+The invoice list, `get_dispatch_list` and the legacy GRN list are refreshed by
+a background job within 15 seconds of a write (migration 91); the document
+itself was saved when the app said so. If a list stays behind:
+
+```bash
+bash scripts/compose.sh exec -T db psql -X -A -t -U supabase_admin -d postgres \
+  -c "SELECT warehouse_security.list_refresh_status()"
+```
+
+`problems` names what is wrong. A session holding the refresh lock 71046 (pid,
+user and application are shown; for example a worker `CALL` left open in psql):
+end that session. A missing or paused job, or a role that cannot
+log in: rerun `setup.sh` (or run `scripts/configure-list-refresh.sql`, see
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lists-refresh-after-the-commit)). A
+failing refresh: the SQLSTATE is shown; `cron.job_run_details` and the db log
+(`List refresh of ... failed`) have the run's detail.
+
 ## Printer not responding
 
 Printing is an optional profile (`printing`):

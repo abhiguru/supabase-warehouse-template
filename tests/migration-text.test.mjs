@@ -26,3 +26,20 @@ test('the zero-charge reason is trimmed of the characters migration 41 trims fro
   assert.ok(migration('00000000000048_owner_decisions.sql').includes(`'^${written}|${written}$'`),
     `migration 48 does not trim with ${written} at both ends`);
 });
+
+test('the migration run holds the list-refresh lock 71046 from before the first migration to its end', async () => {
+  // Migration 91 refreshes lists outside the writers' lock 71040, under 71046. A migration that locks a
+  // table a list reads and then refreshes or drops that list would deadlock with a worker run that holds
+  // the view's lock and waits for the table (review of wave 1, finding 1). The run takes 71046 for its
+  // whole session, with a lock timeout, so no worker run overlaps a migration.
+  const { migrationPlan } = await import('../scripts/migration-plan.mjs');
+  const plan = migrationPlan(new URL('..', import.meta.url).pathname);
+  const lock = plan.indexOf('pg_advisory_lock(71046)');
+  const first = plan.indexOf('00000000000000_initial_schema.sql');
+  const last = plan.lastIndexOf('COMMIT;');
+  assert.ok(plan.indexOf('pg_advisory_lock(71041)') >= 0 && plan.indexOf('pg_advisory_lock(71041)') < lock, 'after the migration lock 71041');
+  assert.ok(lock > 0 && lock < first, 'taken before the first migration');
+  assert.match(plan.slice(plan.indexOf('pg_advisory_lock(71041)'), first), /lock_timeout/, 'waited for with a lock timeout');
+  assert.ok(plan.lastIndexOf('pg_advisory_unlock(71046)') > last, 'released after the last migration');
+  assert.equal(plan.split('pg_advisory_lock(71046)').length - 1, 1, 'taken once');
+});

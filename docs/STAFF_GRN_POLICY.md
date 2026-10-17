@@ -43,6 +43,10 @@ mv_refresh_queue, so its existing dirty/refresh triggers had no entries to
 process. Bulk update_grn then suppressed the item dirty trigger and marked
 mv_refresh_status, which the starter's synchronous refresher does not consume.
 
+**Superseded by migration 91 (2026-10-17, TW-BE-016):** writes no longer refresh these lists; they
+mark them, and a pg_cron worker refreshes them after the commit, within 15 s
+([ARCHITECTURE.md](ARCHITECTURE.md), "List refresh"). The history below is kept as it was.
+
 Additive migration 19 registers the seven existing refresh targets and brings
 their views up to date under the existing advisory lock. Migration 20 shares
 one private refresh routine between the normal trigger and the bulk-edit
@@ -622,6 +626,7 @@ several customers calls once per customer.
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
+| How current the materialized lists are (`get_list_freshness`, migration 91) | yes | yes | yes | no |
 
 Bold marks what migration 45 changed. Migration 49 added the unlink row; it is
 the one function the guard names that a supervisor may not call

@@ -51,3 +51,97 @@ test('a state that does not exist yet is checked against its parent', () => {
     assert.throws(() => checkStatePlacement('relative/path'), /absolute path outside this checkout/);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
+
+// TW-BE-020: central sign-in from a key file. The functions container reads public/<CENTRAL_JWKS_FILE>;
+// when it is missing the router only logs a line, every exchange fails and get-public-config still offers
+// central sign-in. A lost-host restore from a backup without the file left exactly that, with doctor passing.
+import { readFileSync, symlinkSync } from 'node:fs';
+import { checkCentralKeyFile } from '../scripts/doctor.mjs';
+import { centralKeySet } from './backup-test-helpers.mjs';
+
+function keyState(file) {
+  const state = mkdtempSync(join(tmpdir(), 'doctor-central-'));
+  mkdirSync(join(state, 'public'));
+  if (file !== undefined) writeFileSync(join(state, 'public/central-jwks.json'), file);
+  return state;
+}
+const fileEnv = { CENTRAL_ISSUER: 'https://login.association.example.test', CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: 'central-jwks.json' };
+
+test('doctor fails when the configured central key file is missing, naming the file and the setup rerun', () => {
+  const state = keyState();
+  try {
+    assert.throws(() => checkCentralKeyFile(fileEnv, state, { pending: false }), error => {
+      assert.match(error.message, new RegExp(`${state}/public/central-jwks\\.json`));
+      assert.match(error.message, /missing/);
+      assert.match(error.message, /setup\.sh --operator[^]*--central-issuer https:\/\/login\.association\.example\.test[^]*--central-jwks-file/);
+      return true;
+    });
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('doctor accepts a usable central key file, and needs none when the keys are fetched or central sign-in is off', () => {
+  const state = keyState(centralKeySet);
+  const empty = keyState();
+  try {
+    assert.equal(checkCentralKeyFile(fileEnv, state, { pending: false }), '');
+    // Nothing configured: no file is needed, whether or not one lies around.
+    for (const env of [{}, { CENTRAL_ISSUER: '', CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: '' },
+      { CENTRAL_ISSUER: fileEnv.CENTRAL_ISSUER, CENTRAL_JWKS_URL: 'https://login.association.example.test/jwks.json', CENTRAL_JWKS_FILE: '' }]) {
+      assert.equal(checkCentralKeyFile(env, empty, { pending: false }), '');
+    }
+  } finally { rmSync(state, { recursive: true, force: true }); rmSync(empty, { recursive: true, force: true }); }
+});
+
+test('doctor fails on a central key file that is not a usable key set, or not a plain file', () => {
+  const bad = {
+    'not JSON': ['<html>moved</html>', /not a JSON key set/],
+    'empty': ['', /not a JSON key set/],
+    'no keys member': [JSON.stringify({ jwks: [] }), /not usable: key set malformed/],
+    'no usable key': [JSON.stringify({ keys: [] }), /not usable: key set holds no P-256 signature key/],
+    'larger than 64 KB': [JSON.stringify({ keys: JSON.parse(centralKeySet).keys, padding: 'x'.repeat(64 * 1024) }), /larger than 64 KB/],
+  };
+  for (const [label, [text, message]] of Object.entries(bad)) {
+    const state = keyState(text);
+    try {
+      assert.throws(() => checkCentralKeyFile(fileEnv, state, { pending: false }), message, label);
+      assert.throws(() => checkCentralKeyFile(fileEnv, state, { pending: true }), message, `${label}: the restore allowance covers a missing file only`);
+    } finally { rmSync(state, { recursive: true, force: true }); }
+  }
+  const state = keyState();
+  try {
+    symlinkSync(join(state, 'public'), join(state, 'public/central-jwks.json'));
+    assert.throws(() => checkCentralKeyFile(fileEnv, state, { pending: false }), /must be a regular file/);
+    for (const name of ['../config/compose.env', '/etc/passwd', '.hidden', 'a b.json']) {
+      assert.throws(() => checkCentralKeyFile({ ...fileEnv, CENTRAL_JWKS_FILE: name }, state, { pending: false }), /plain file name/, name);
+    }
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+test('while a lost-host restore waits for the key file, doctor warns instead of failing the restore', () => {
+  const state = keyState();
+  const before = process.env.WAREHOUSE_CENTRAL_KEY_PENDING;
+  try {
+    const warning = checkCentralKeyFile(fileEnv, state, { pending: true });
+    assert.match(warning, /central-jwks\.json[^]*missing[^]*setup\.sh --operator/);
+    // restore-host hands this to restore.sh, and so to its doctor --local, through the environment; anything else is not an allowance.
+    delete process.env.WAREHOUSE_CENTRAL_KEY_PENDING;
+    assert.throws(() => checkCentralKeyFile(fileEnv, state), /missing/);
+    process.env.WAREHOUSE_CENTRAL_KEY_PENDING = 'no';
+    assert.throws(() => checkCentralKeyFile(fileEnv, state), /missing/);
+    process.env.WAREHOUSE_CENTRAL_KEY_PENDING = 'yes';
+    assert.match(checkCentralKeyFile(fileEnv, state), /missing/);
+  } finally {
+    if (before === undefined) delete process.env.WAREHOUSE_CENTRAL_KEY_PENDING; else process.env.WAREHOUSE_CENTRAL_KEY_PENDING = before;
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
+test('doctor runs the central key file check for --local and the full run, after the preflight return and before the health check', () => {
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const call = source.indexOf('checkCentralKeyFile(env, state)');
+  const preflight = source.indexOf("return 'Operator configuration, private paths and gateway port preflight passed.'");
+  const health = source.indexOf("probe('bash', [resolve(root, 'health-check.sh')]");
+  assert.ok(preflight > 0 && health > preflight, 'the doctor still has the shape this test expects');
+  assert.ok(call > preflight && call < health, 'checkCentralKeyFile(env, state) sits between them');
+  assert.equal(source.split('checkCentralKeyFile(env, state)').length, 2, 'one call site');
+});

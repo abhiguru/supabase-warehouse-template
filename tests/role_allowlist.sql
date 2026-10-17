@@ -108,6 +108,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
+ -- migration 91: how current the materialized lists are
+ ('get_list_freshness',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
  ('get_item_storage_prices',false,'no'),
  -- migration 76: no app code calls it; administrators and supervisors only
