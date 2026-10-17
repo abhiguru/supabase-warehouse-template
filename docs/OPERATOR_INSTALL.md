@@ -1471,6 +1471,61 @@ What to know:
   and its history) out of its check, because that extension can only be created
   in the `postgres` database.
 
+## Lists refresh after the commit
+
+Since migration 91 the invoice list, the dispatch list of `get_dispatch_list` and
+the legacy GRN list are materialized views that a background job refreshes
+after each write, instead of the write itself (on a populated warehouse that
+refresh took most of a dispatch's 8 s and made concurrent writers time out).
+What to know:
+
+- **The job.** pg_cron (preloaded by the database image and
+  `docker-compose.override.yml`) runs `warehouse-list-refresh` every 5 seconds
+  as the role `warehouse_list_refresher`, inside the db container. Nothing new
+  runs outside it and no port, image or Compose service is added. The role has
+  no password: it connects over 127.0.0.1 inside the container, and every
+  network address needs a password.
+- **Staleness.** A committed change reaches those lists within 15 seconds:
+  at most one 5-second interval plus the refresh (about 2 s on a site with
+  12,000 GRNs), typically 3 to 4 seconds. The answer of the write itself is
+  immediate. Other lists read the tables directly.
+- **The doctor** (`health-check.sh`, also run by setup and restore) fails with
+  `list refresh: ...` when the job is missing or paused, the role cannot log in,
+  a refresh fails, the last run failed, a list has waited more than 15 s, or a
+  session other than the job's holds the refresh lock 71046 (it names that
+  session's pid, user and application). The first run after a start gets 30 s
+  to catch up. `setup.sh` (or
+  `bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres < scripts/configure-list-refresh.sql`)
+  puts the job and the role back.
+- **By hand.** `SELECT warehouse_security.list_refresh_status();` shows the same
+  as the doctor. To refresh now, run the worker once, in its own short session:
+
+  ```bash
+  bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres \
+    -c 'CALL warehouse_security.refresh_dirty_lists_worker()'
+  ```
+
+  Do not run that CALL inside an open interactive psql: if it stops on an error
+  or Ctrl-C, that session keeps the refresh lock 71046 until it ends, and every
+  run of the job returns at once meanwhile (the doctor names the session; end
+  it to recover). Outside a transaction block only.
+- **Logs.** The db runs with `cron.log_statement=off`
+  (`docker-compose.override.yml`), so a run writes no `cron job ... starting` or
+  `completed` line; `cron.job_run_details` keeps one day of runs, and the doctor
+  reads that. Each run is still one connection with three lines
+  (`connection received`, `connection authorized`, `disconnection`), about 9 MB
+  a day in Docker's log format. With the db healthcheck's own connection lines
+  (about as many), the db log's 3 x 10 MB rotation holds about a day and a
+  half. The setup rerun that brings migration 91 recreates the db container,
+  because its command changed.
+- **Upgrade.** Setup applies migration 91 and the job starts at once; no extra
+  step. Migrations run under the refresh lock 71046 (`scripts/migration-plan.mjs`),
+  so no refresh runs during them; a refresh in progress finishes first, and setup
+  stops with the holder's pid if the lock is not free within 120 s. **Restore** runs `scripts/configure-list-refresh.sql` itself, after the
+  migrations. `db:verify-restore` leaves pg_cron's own objects (the job table
+  and its history) out of its check, because that extension can only be created
+  in the `postgres` database.
+
 ## Rerun and upgrade
 
 A rerun is the same `setup.sh --operator ...` command with the same inputs
