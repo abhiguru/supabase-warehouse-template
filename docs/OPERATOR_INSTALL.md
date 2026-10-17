@@ -1377,8 +1377,9 @@ What it does, in this order:
 3. Keeps the previous file as `config/compose.env.before-db-rotation`, puts
    the new one in place, and recreates the database and every running service
    that signs in to it (PostgREST, Storage, Realtime, postgres-meta, Studio,
-   and the pooler, exporter and Grafana when they run). Expect about a minute
-   in which the app cannot load data. A service you stopped on purpose stays
+   and the pooler, exporter and Grafana when they run). The command takes
+   about a minute; in the rehearsal the app could not load data for about 11
+   seconds of it (both with and without `--superuser`). A service you stopped on purpose stays
    stopped and reads its new value when it next starts. No session ends and
    no phone signs in again: the JWT signing keys are `rotate-keys.sh`'s.
 4. Proves each login (`npm run test:db-roles`) and runs `node scripts/doctor.mjs --local`.
@@ -1490,7 +1491,10 @@ login of the services to `compose.env` and sets them in the database. Run
 `setup.sh` right after the pull, before any other command: until then every
 Compose command, `stop.sh` and `start.sh` included, stops with "Run setup.sh
 to generate the per-role database passwords". The run restarts the database
-and every service once (about a minute without data in the app). Afterwards
+and the services that sign in to it; in the rehearsal of 2026-10-18 two of
+225 API requests made every half second during the run failed (once when the
+database restarted, once when PostgREST did), and the whole setup run took two
+minutes. Afterwards
 check with `npm run test:db-roles`, then take a new backup. Backups taken
 before it remain restorable; see
 [Rotating the database passwords](#rotating-the-database-passwords).

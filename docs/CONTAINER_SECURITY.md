@@ -1057,7 +1057,27 @@ it; `tests/db-roles.test.mjs` fails until the list and the SQL agree.
 
 ### Drill
 
-DRILL-RESULTS-PLACEHOLDER
+Rehearsed on 2026-10-18 on a disposable, fictional install on the development
+host (project `warehouse-b40b40b4-101`, its own state, loopback port, and an
+override that gave its functions container no route to the SMS provider),
+never on a facility. Each step ran the same checks afterwards:
+`node scripts/doctor.mjs --local`, `npm run test:db-roles`, a probe of every
+service login with `POSTGRES_PASSWORD` over `-h db`,
+`tests/operator-realtime-core.mjs`, `npm run test:pooler`, and after a restore
+`tests/operator-api-restore.mjs` with the restored backup.
+
+| Step | Result |
+|---|---|
+| Install `main` (198bbfa) with `setup.sh --operator`; `tests/operator-api-core.mjs`, `test:pooler`, `test:monitoring`, Grafana's datasource | Pass. The finding reproduced: `authenticator`, `supabase_storage_admin`, `supabase_auth_admin`, `pgbouncer` and `supabase_functions_admin` each accepted `POSTGRES_PASSWORD` over SCRAM. `db:backup` and `db:verify-restore` of this pre-change state |
+| Upgrade: the change, then the same `setup.sh` command, with monitoring and the pooler running | Pass. `configure.mjs` added the six values; setup took 117 s; of 225 API requests sent every half second during it, 2 failed (one when the database restarted, one when PostgREST did). Every login refused `POSTGRES_PASSWORD` and accepted only its own; Realtime rewrote its tenant at start; the pooler rewrote the pool user of its existing tenant; the exporter and Grafana worked as `warehouse_monitoring`; `npm run test:grafana` passed; no login as `supabase_functions_admin` in the database log; a second setup run left `compose.env` byte for byte |
+| `db:restore` of the pre-change backup, this state's configuration | Pass: the older backup was accepted, the restored data served, the pooler fixed the stale pool user of the restored `_supabase` |
+| `db:rotate-passwords -- --yes`, then `--superuser`, then `test:rotation` (signing keys) | Pass. Each rotation took about a minute with about 11 s of failed API requests; every check passed after each of the three |
+| `db:backup` after the rotations; `db:restore` of the pre-change backup | Refused without `--restore-config` (keys rotated since), as intended; with it the backup's configuration gained new values and the restore passed |
+| `db:restore-host` from the pre-change backup on a new state directory, after removing the containers and the database volume | Pass: the backup had none of the six values, the new state all six |
+| `db:restore-host` from the post-change backup | Pass: the backup carried all six values and the new state used them unchanged |
+
+Not rehearsed: a facility with real data and a real tunnel, the pooler under
+load during the upgrade, and an upgrade from a release older than 198bbfa.
 
 ## Open items with their steps
 

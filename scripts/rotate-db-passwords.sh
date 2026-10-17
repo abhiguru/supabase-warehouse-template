@@ -24,7 +24,8 @@ Usage: npm run db:rotate-passwords -- --yes [--superuser]
 Generates a new password for every database login of the services (PostgREST,
 Storage, Auth, the pooler, the Postgres exporter and Grafana), sets them in the
 database, and restarts the database and the services that sign in to it
-(about a minute of interruption). With --superuser, POSTGRES_PASSWORD (the
+(about a minute; the API is unavailable for some seconds of it). With
+--superuser, POSTGRES_PASSWORD (the
 postgres and supabase_admin logins) and the Realtime encryption key change too.
 Take a db:backup first. Nothing was changed. Rerun with --yes to confirm.
 USAGE
