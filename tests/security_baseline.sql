@@ -226,7 +226,8 @@ BEGIN
     RAISE EXCEPTION 'warehouse_monitoring must hold no grant and own nothing: %', grants;
   END IF;
   -- Nor can it read a table of the application, the private schemas, Storage or the
-  -- migration ledger by any other path (a grant to PUBLIC included). The one exception
+  -- migration ledger by any other path (a grant to PUBLIC included). Reaching a table
+  -- needs USAGE on its schema as well as a table right, so both count. The one exception
   -- is pg_cron's own: it grants its job tables to PUBLIC and lets each role see only the
   -- rows of its own jobs through row security (username = current_user); this role owns
   -- no job, so it reads no row there.
@@ -234,12 +235,18 @@ BEGIN
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
     AND n.nspname IN ('public', 'warehouse_security', 'warehouse_maintenance', 'warehouse_migrations', 'storage', 'auth', 'vault', 'pgsodium', '_realtime', 'realtime', 'cron', 'net', 'supabase_functions')
+    AND has_schema_privilege(monitoring, n.oid, 'USAGE')
     AND has_table_privilege(monitoring, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
     AND NOT (n.nspname = 'cron' AND c.relname IN ('job', 'job_run_details') AND c.relrowsecurity
              AND EXISTS (SELECT 1 FROM pg_policy pol WHERE pol.polrelid = c.oid
                          AND pg_get_expr(pol.polqual, pol.polrelid) = '(username = CURRENT_USER)'));
   IF readable IS NOT NULL THEN
     RAISE EXCEPTION 'warehouse_monitoring can read or write: %', readable;
+  END IF;
+  -- pg_stat_statements keeps utility statements verbatim (track = all), the JWT secret of a
+  -- signing-key rotation among them; its views live in `extensions`, which the role must not use.
+  IF to_regnamespace('extensions') IS NOT NULL AND has_schema_privilege(monitoring, 'extensions', 'USAGE') THEN
+    RAISE EXCEPTION 'warehouse_monitoring may use schema extensions (pg_stat_statements history)';
   END IF;
   IF to_regclass('cron.job') IS NOT NULL THEN
     EXECUTE 'SELECT string_agg(jobname, '', '') FROM cron.job WHERE username = $1' INTO readable USING 'warehouse_monitoring';
