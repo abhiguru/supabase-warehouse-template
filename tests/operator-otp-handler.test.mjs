@@ -191,7 +191,45 @@ test('an accepted request prepares, sends, then records delivery, and never retu
   assert.deepEqual(calls.map(entry => entry.name), ['operator_prepare_otp', 'operator_sms_config', 'msg91', 'operator_finish_otp']);
   assert.deepEqual(calls[2].body.recipients, [{ mobiles: '919888888801', OTP: '123456' }]);
   assert.equal(calls[2].body.template_id, 'unit-test-flow');
-  assert.deepEqual(calls[3].body, { p_request_id: requestId, p_delivered: true, p_provider_id: 'provider-request-id' });
+  assert.deepEqual(calls[3].body, { p_request_id: requestId, p_delivered: true, p_provider_id: 'provider-request-id', p_attempts: 1 });
+});
+
+test('a success without a request ID is recorded as sent without an ID and warns without detail', async () => {
+  // TW-CFG-003 / D14: the code is treated as sent (HTTP 200), the finish call carries no ID so the
+  // database records success_no_id, and a fixed warning is logged: no number, code or provider answer.
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const { calls, call } = harness({ msg91: Response.json({ type: 'success' }) });
+    const response = await call('request', phone);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).message, 'OTP sent successfully');
+    assert.deepEqual(calls.at(-1).body, { p_request_id: requestId, p_delivered: true, p_provider_id: null, p_attempts: 1 });
+  } finally { console.warn = warn; }
+  assert.deepEqual(warnings, ['operator-otp: MSG91 accepted a send without a request ID']);
+  assert.ok(!warnings.join().includes('9888888801') && !warnings.join().includes('123456'));
+  // A send with an ID logs nothing.
+  const quiet = [];
+  console.warn = (...args) => quiet.push(args);
+  try { await harness().call('request', phone); } finally { console.warn = warn; }
+  assert.deepEqual(quiet, []);
+});
+
+test('the attempts of a retried request and of a timeout reach the database', async () => {
+  // TW-CFG-005 / D15: a timeout is reported as provider_ambiguous with its one request; a failure
+  // before any request is sent counts none.
+  const timeout = harness({ msg91: new DOMException('timed out', 'TimeoutError') });
+  await timeout.call('request', phone);
+  assert.deepEqual(timeout.calls.at(-1).body, { p_request_id: requestId, p_delivered: false, p_provider_id: 'provider_ambiguous', p_attempts: 1 });
+  const unconfigured = harness({ operator_sms_config: { success: false, code: 'unavailable' } });
+  await unconfigured.call('request', phone);
+  assert.deepEqual(unconfigured.calls.at(-1).body, { p_request_id: requestId, p_delivered: false, p_provider_id: 'provider_configuration', p_attempts: 0 });
+  // The sentinel the CI and the fixtures install with is never sent, even though the stand-in would answer.
+  const fixture = harness({ operator_sms_config: { success: true, data: { auth_key: 'isolated-no-delivery-key', flow_id: '000000000000000000000001' } } });
+  await fixture.call('request', phone);
+  assert.ok(!fixture.calls.some(entry => entry.name === 'msg91'), 'no request left for the provider');
+  assert.deepEqual(fixture.calls.at(-1).body, { p_request_id: requestId, p_delivered: false, p_provider_id: 'provider_configuration', p_attempts: 0 });
 });
 
 test('a provider failure seals the challenge before the 503 is returned', async () => {
@@ -202,6 +240,7 @@ test('a provider failure seals the challenge before the 503 is returned', async 
     [{ operator_sms_config: { success: false, code: 'unavailable' } }, 'provider_configuration'],
     [{ operator_sms_config: { success: true, data: { auth_key: '', flow_id: '' } } }, 'provider_configuration'],
   ];
+  const sent = { provider_auth: 1, provider_rejected: 1, provider_unavailable: 1, provider_configuration: 0 };
   for (const [overrides, expected] of failures) {
     const { calls, call } = harness(overrides);
     const pending = call('request', phone);
@@ -209,7 +248,7 @@ test('a provider failure seals the challenge before the 503 is returned', async 
     // The finish call is already recorded when the response exists.
     const finish = calls.at(-1);
     assert.equal(finish.name, 'operator_finish_otp', expected);
-    assert.deepEqual(finish.body, { p_request_id: requestId, p_delivered: false, p_provider_id: expected });
+    assert.deepEqual(finish.body, { p_request_id: requestId, p_delivered: false, p_provider_id: expected, p_attempts: sent[expected] });
     assert.deepEqual(await bodyOf(response), { status: 503, body: { success: false, error: 'SMS delivery unavailable. Try again later.' } });
   }
 });

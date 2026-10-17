@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
+import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -111,7 +112,7 @@ function setCentralLines(text, values) {
   return replaceEnvLines(result, values);
 }
 
-function providerValues(path, checkout) {
+function providerValues(path, checkout, apiUrl) {
   if (!isAbsolute(path) || resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--provider-env must be an absolute file outside the checkout.');
   const st = lstatSync(path, { throwIfNoEntry: false });
   if (!st?.isFile() || st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('Provider file must be owned by this user and mode 0600.');
@@ -124,7 +125,10 @@ function providerValues(path, checkout) {
   }
   if (values.SMS_PROVIDER !== 'msg91') throw new Error('SMS_PROVIDER=msg91 is required.');
   const keys = ['SMS_PROVIDER', 'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID'];
-  for (const key of keys) if (!values[key] || /^(your-|changeme|fake_)/i.test(values[key])) throw new Error(`Missing production provider setting: ${key}.`);
+  // The same rule as the doctor and the edge function (provider-placeholder.mjs): the fixture sentinel
+  // `isolated-` is accepted only for a reserved .test address.
+  const fixture = isFixtureAddress(apiUrl);
+  for (const key of keys) if (isProviderPlaceholder(values[key], { allowFixtureSentinel: fixture })) throw new Error(`Missing production provider setting: ${key}.`);
   for (const key of Object.keys(values)) if (!keys.includes(key)) throw new Error(`Unsupported provider setting: ${key}.`);
   return values;
 }
@@ -198,7 +202,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       let providerUpdated = false;
       let centralUpdated = false;
       if (providerEnv) {
-        const provider = providerValues(providerEnv, checkout);
+        const provider = providerValues(providerEnv, checkout, manifest.canonicalOrigin);
         const current = readFileSync(envPath, 'utf8');
         const updated = replaceEnvLines(current, provider);
         if (updated !== current) { replaceFileAtomically(envPath, updated); providerUpdated = true; }
@@ -226,7 +230,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   const canonical = canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
   if (company.length > 120 || !/^[^\x00-\x1f]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
-  const provider = providerValues(providerEnv, checkout);
+  const provider = providerValues(providerEnv, checkout, canonical);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
     capabilities: { sensors: false, printing: false } };
