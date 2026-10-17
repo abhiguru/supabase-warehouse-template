@@ -82,8 +82,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
   for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']], ['docker', ['info', '--format', '{{.ServerVersion}}']]]) {
-    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose v2' : ''}.`);
+    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose' : ''}.`);
   }
+  // The requirement is a capability, not a version: the scripts wait with `up --wait --wait-timeout`.
+  if (!/--wait-timeout/.test(probe('docker', ['compose', 'up', '--help']).output)) throw new Error('This Docker Compose plugin does not accept `up --wait-timeout`; install a Compose plugin that does (see the host prerequisites).');
   const state = process.env.WAREHOUSE_STATE_DIR;
   const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);

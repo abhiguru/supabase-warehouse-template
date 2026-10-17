@@ -10,6 +10,7 @@ validates a new installation.
 
 Sections: [host prerequisites](#host-prerequisites),
 [private inputs](#private-inputs), [setup](#setup),
+[several facilities on one host](#several-facilities-on-one-host),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
@@ -23,7 +24,19 @@ Sections: [host prerequisites](#host-prerequisites),
 ## Host prerequisites
 
 - Linux x86-64; Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
-- Docker Engine with the Compose v2 plugin, enabled at boot.
+- Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot.
+  The requirement is a Compose plugin whose `docker compose up` accepts
+  `--wait-timeout`. Setup, start and the backup scripts wait for services with
+  `docker compose up --wait --wait-timeout`; `doctor` checks at the start that
+  the plugin knows the flag and stops with a message if not. It checks nothing
+  else about the version, and no version number is required. The central
+  identity service
+  ([central-identity-template](https://github.com/abhiguru/central-identity-template))
+  states the same requirement and the same list below, so one host can run
+  both services. Tested with:
+  - Docker Compose v2.40.3 with Docker Engine 29.9.1 (the review host; verified for
+    this service and for the central identity service);
+  - Docker Compose v5.5.1 with Docker Engine 29.8.0 (the maintainer's host).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`).
 - A non-root user in the `docker` group. Do not run setup as root and do not
   make the Docker socket world-writable.
@@ -64,8 +77,9 @@ and add it to `~/.profile` so new logins see it. The checksum file comes from
 Node's HTTPS site; this is not a release-signature verification.
 
 Install Docker from [Docker's Ubuntu repository](https://docs.docker.com/engine/install/ubuntu/).
-Select an available Compose **v2** plugin build explicitly; the unversioned
-package can install a newer major that these scripts have not been tested with.
+Any Compose plugin whose `up` accepts `--wait-timeout` works (see the host
+prerequisites for the tested builds). The commands below install the build the
+review verified.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -73,7 +87,7 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyring
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo tee /etc/apt/sources.list.d/docker.sources
 sudo apt-get update
-apt-cache madison docker-compose-plugin        # pick a 2.x build for the next line
+apt-cache madison docker-compose-plugin        # lists the available builds
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)"
@@ -179,6 +193,35 @@ refuses an active administrator with a different phone, a state path through
 a symlink or inside the checkout, a running project owned by another checkout,
 and another operator command holding the lock. Private configuration belongs
 outside the checkout; no source edit is needed for the documented installation.
+
+## Several facilities on one host
+
+One installation serves one facility: its own state directory, its own Compose
+project (`warehouse-<instance id>`) and its own Cloudflare Tunnel. To run a
+second facility on the same host, give it a separate state directory and its
+own loopback gateway port with `--gateway-port` (1024 to 65535; the default is
+18000):
+
+```bash
+bash setup.sh --operator --state-dir /srv/warehouse-two/state \
+  --api-url https://backend-two.example.test --company 'Second Facility' \
+  --provider-env /srv/warehouse-two/provider.env \
+  --admin-phone 919000000002 --admin-name 'Second Administrator' \
+  --gateway-port 18001
+```
+
+- Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use.
+  The port is saved as `KONG_HTTP_PORT` in the state's `config/compose.env`;
+  no manual edit is needed, and `doctor` and the health checks read it from there.
+- A rerun without `--gateway-port` keeps the saved port. A rerun with another
+  port replaces only the `KONG_HTTP_PORT` line, and only while that
+  installation's containers are stopped (`bash stop.sh`, then setup again).
+- Each tunnel's ingress must point at its own port: change the `service:` line
+  of that facility's `cloudflared` configuration to `http://127.0.0.1:<port>`
+  and restart that tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+  Setup prints this reminder when it sets a port.
+- Nothing else is shared except the host's Docker daemon and its resources;
+  never point two installations at the same state directory or port.
 
 ## Authentication and OTP limits
 
@@ -476,7 +519,8 @@ Copy the example config to a private path (mode 0600) and replace the tunnel
 UUID, credentials path and hostname. It routes the hostname to
 `http://127.0.0.1:18000` with `httpHostHeader` set to the hostname and ends
 with an `http_status:404` catch-all; change the port only if the private
-`compose.env` sets a different `KONG_HTTP_PORT`. `http2-origin` stays off
+`compose.env` sets a different `KONG_HTTP_PORT` (chosen with
+`--gateway-port`, see [several facilities on one host](#several-facilities-on-one-host)). `http2-origin` stays off
 because [HTTP/2 to an origin requires HTTPS](https://developers.cloudflare.com/tunnel/reference/origin-parameters/)
 and this origin is private HTTP. Validate with
 `cloudflared --config /private/path/config.yml tunnel ingress validate` and
@@ -1117,7 +1161,7 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 (step 8).
 
 Before you start you need: the new host prepared as in
-[host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
+[host prerequisites](#host-prerequisites) (Node 22, Docker with a Compose plugin that accepts `up --wait-timeout`,
 `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
@@ -1446,7 +1490,7 @@ problems seen so far and their causes:
 - **`Operator installation requires Linux x86-64` or `Missing prerequisite`** —
   `scripts/check-readiness.sh` refuses other architectures and missing
   `docker`, `node`, `npm`, `openssl` or `flock`; `doctor` additionally requires
-  Node 22.18+, Compose v2 and a reachable Docker daemon.
+  Node 22.18+, a Compose plugin that accepts `up --wait-timeout` and a reachable Docker daemon.
 - **`node: command not found` in a new terminal or a service** — the user-owned
   Node is only on `PATH` where it was exported; repeat the export and keep it
   in `~/.profile`.
@@ -1556,5 +1600,7 @@ problems seen so far and their causes:
   DLT template ID), the `OTP` variable name and the sender/entity approval in
   the MSG91 console. The per-phone, per-IP and warehouse-wide caps above return
   an explicit refusal, not silence.
-- **Compose reports a 5.x version** — the unversioned plugin package installed
-  a newer major; install an available 2.x build as shown in the host sequence.
+- **`This Docker Compose plugin does not accept up --wait-timeout`** — the
+  Compose plugin is too old for the flag the scripts use. Install a current
+  plugin from Docker's repository (any build listed under the host
+  prerequisites works); a newer major version is not a problem by itself.

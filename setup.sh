@@ -12,7 +12,7 @@ ADMIN_NAME=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--gateway-port)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
