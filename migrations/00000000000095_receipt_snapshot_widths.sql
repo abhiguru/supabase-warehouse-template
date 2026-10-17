@@ -18,6 +18,7 @@
 --    goodsreceived_trl, the opposite order of save_grn, and could deadlock with a GRN save.) The mark triggers of
 --    migration 91 are on the tables and name the views, so they need no change; the migration only checks that each of
 --    the seven lists still exists as a materialized view with its queue row.
+--    The migration run holds advisory lock 71046 (the runner, B1), so no list refresh runs during the rebuild.
 --    The migration takes advisory lock 71040 first, the document lock every GRN, dispatch and invoice writer takes at
 --    its start, so such writers wait for the rebuild instead of queueing on table locks.
 -- 3. save_grn and update_grn check the lengths first, before anything is written, and answer
