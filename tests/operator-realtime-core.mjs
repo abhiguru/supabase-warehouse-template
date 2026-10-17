@@ -54,8 +54,12 @@ function join(token, ref) {
           postgres_changes: [{ event: '*', schema: 'public', table: 'orders' }] } } })));
   });
 }
+// Every join records its attempt number and how long the subscription took, so the first one after a
+// fresh `up` can be held to the 15 s window (TW-BE-015). Retries stay for the other joins.
+const joins = [];
 async function joinReady(token, ref) {
   let last;
+  const started = Date.now();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     let channel;
     try {
@@ -63,6 +67,7 @@ async function joinReady(token, ref) {
       assert.equal(channel.status, 'ok', 'authenticated Realtime join');
       await waitFor(() => channel.messages.some(m => m.event === 'system' && m.payload?.status === 'ok'),
         'database subscription ready');
+      joins.push({ ref, attempt: attempt + 1, ms: Date.now() - started });
       return channel;
     }
     catch (error) {
@@ -93,6 +98,11 @@ const sockets = [];
 try {
   console.log('Realtime: joining A');
   const chanA = await joinReady(customerA, 'A'); sockets.push(chanA.socket);
+  // The first subscription after a fresh up (setup's warm-up has already opened the tenant) must be ready on
+  // the first attempt, inside the 15 s the client allows. Before TW-BE-015 the first attempt timed out.
+  assert.deepEqual(joins.map(j => j.attempt), [1], `first join needed a retry: ${JSON.stringify(joins)}`);
+  assert.ok(joins[0].ms < 15000, `first subscription took ${joins[0].ms} ms`);
+  console.log(`Realtime: first subscription ready on attempt 1 in ${joins[0].ms} ms`);
   console.log('Realtime: joining B');
   const chanB = await joinReady(customerB, 'B'); sockets.push(chanB.socket);
   console.log('Realtime: joining admin');

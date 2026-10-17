@@ -177,6 +177,11 @@ services:
     build:
       context: ./realtime
     restart: unless-stopped
+    # Realtime looks up the database host for IPv6 first. Without this, the host's
+    # LAN search suffix is tried for the AAAA question, and on a LAN whose resolver
+    # is slow to refuse it (about 8 s) the first tenant connection exceeds the 15 s
+    # window. Resolve Compose names at the DNS root, as for Kong (TW-BE-015).
+    dns_search: "."
     networks:
       default:
         aliases:
