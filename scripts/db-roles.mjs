@@ -149,6 +149,7 @@ export function addMissingDbValuesToFile(envPath) {
 const USAGE = `Usage: node scripts/db-roles.mjs prelude ENV_FILE [--superuser]
        node scripts/db-roles.mjs check-input ENV_FILE
        node scripts/db-roles.mjs stage ENV_FILE STAGED_FILE [--superuser]
+       node scripts/db-roles.mjs add-missing ENV_FILE
        node scripts/db-roles.mjs names`;
 
 if (isMain(import.meta.url)) {
@@ -163,6 +164,12 @@ if (isMain(import.meta.url)) {
     else if (command === 'stage' && rest.length === 2) {
       const { replaced } = stageRotatedDbEnv(rest[0], rest[1], { superuser });
       console.log(`Staged new values for ${replaced.join(', ')}.`);
+    } else if (command === 'add-missing' && rest.length === 1 && !superuser) {
+      // configure.mjs's existing-state step on its own, for the restore paths:
+      // a backup taken before per-role passwords carries none.
+      if (!isAbsolute(rest[0])) throw new Error(USAGE);
+      const added = addMissingDbValuesToFile(rest[0]);
+      if (added.length) console.log(`Added ${added.join(', ')}: the backup was taken before every database login had its own password.`);
     } else if (command === 'names' && rest.length === 0 && !superuser) console.log(GENERATED_DB_NAMES.join('\n'));
     else throw new Error(USAGE);
   } catch (error) { console.error(`Database roles: ${error.message}`); process.exitCode = 1; }

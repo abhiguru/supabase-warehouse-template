@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
@@ -426,6 +426,35 @@ test('restore-host refuses an archive with a link or a path outside the backup f
     assert.match(result.stderr, /unexpected entries/);
     nothingCreated(f, result);
   } finally { clean(f); }
+});
+
+test('restore-host from a backup taken before per-role passwords adds them to the new state before the replay, and restore.sh --relocated accepts that', () => {
+  const f = fixture('warehouse-restore-host-previous-', { env: composeEnv('/srv/warehouse/lost-host', 'JWT_SECRET=kept-secret\n', previousReleaseDbLines) });
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const fromBackup = readFileSync(join(f.backup, 'compose.env'), 'utf8').replaceAll(f.original, f.state);
+    const env = readFileSync(join(f.state, 'config/compose.env'), 'utf8');
+    assert.ok(env.startsWith(fromBackup), 'the backup configuration, with only the three paths rewritten');
+    assert.deepEqual(env.slice(fromBackup.length).trimEnd().split('\n').map(line => line.split('=')[0]),
+      ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING', 'REALTIME_DB_ENC_KEY']);
+    assert.equal(statSync(join(f.state, 'config/compose.env')).mode & 0o777, 0o600);
+    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, .*REALTIME_DB_ENC_KEY: the backup was taken before/);
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
+    assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'the kept backup is unmodified');
+  } finally { clean(f); }
+  // The real restore.sh --relocated: the added lines are the only other difference it lets through.
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-relocated-previous-'));
+  try {
+    const state = makeState(scratch);
+    const log = join(scratch, 'docker.log'); writeFileSync(log, '');
+    const root = scriptRoot(scratch);
+    const backup = makeBackup(join(scratch, 'moved'), { env: composeEnv('/srv/warehouse/elsewhere', undefined, previousReleaseDbLines) });
+    const result = spawnSync('bash', [join(root, 'scripts/restore.sh'), '--yes', '--relocated', backup], { encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeDocker(join(scratch, 'bin'))}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
+        FAKE_DOCKER_LOG: log, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') } });
+    assert.match(result.stderr + result.stdout, /Restoring .* into /, 'past the configuration check');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
 test('restore-host reports how to start over when the replay fails, leaving only the new state', () => {
