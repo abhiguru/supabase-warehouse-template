@@ -420,6 +420,11 @@ keeps the instance identity and replaces nothing but the key file, and
 `node scripts/doctor.mjs` fails until you have run it. Keep the key set the
 association sent you for that case.
 
+An in-place `db:restore --restore-config` can bring back a `compose.env` that names
+a key file this state no longer has (setup deletes it when central sign-in moves
+to an address or off). `db:restore` does not touch `public/`, so it finishes,
+its last `doctor --local` only warns, and it prints the same `setup.sh` rerun.
+
 `doctor` (`--local` and the full run) fails whenever `CENTRAL_JWKS_FILE` is set
 and `public/central-jwks.json` is missing, not a regular file, larger than
 64 KB, not JSON or without a usable P-256 key: without the file every central

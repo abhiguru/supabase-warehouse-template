@@ -248,7 +248,17 @@ bash "$ROOT/scripts/migrate.sh" --operator
 phase='start services'
 compose up -d --wait --wait-timeout 180
 phase='doctor'
-node "$ROOT/scripts/doctor.mjs" --local
+# --restore-config can bring back a compose.env that names a central key file (CENTRAL_JWKS_FILE) which this
+# state no longer has: setup deletes public/central-jwks.json when central sign-in moves to an address or off,
+# and this restore does not touch public/. Doctor then only warns, and the rerun that puts the file back is
+# printed below. (restore-host sets the same variable itself for a backup that lacks the file.)
+pending="${WAREHOUSE_CENTRAL_KEY_PENDING:-}"
+key_rerun=false
+if [[ "$restore_config" == true ]]; then
+  key_name="$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$state/config/compose.env" | head -n 1)"
+  if [[ -n "$key_name" && ! -e "$state/public/$key_name" && ! -L "$state/public/$key_name" ]]; then pending=yes; key_rerun=true; fi
+fi
+WAREHOUSE_CENTRAL_KEY_PENDING="$pending" node "$ROOT/scripts/doctor.mjs" --local
 phase=done
 cat <<MSG
 In-place restore completed from $backup.
@@ -257,6 +267,17 @@ The replaced data was kept; remove it once the restored instance is accepted:
   $old_storage
 MSG
 if [[ "$restore_config" == true ]]; then echo "  $old_config"; fi
+if [[ "$key_rerun" == true ]]; then
+  issuer="$(sed -n 's/^CENTRAL_ISSUER=//p' "$state/config/compose.env" | head -n 1)"
+  [[ "$issuer" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || issuer='https://ISSUER'
+  cat <<MSG
+Central sign-in: the restored configuration reads its keys from public/$key_name, which this state does not have,
+so central sign-in fails until you put the file back (doctor reports it as missing until then). Rerun setup with
+your usual administrator inputs and the key set the association sent you; it keeps this identity and its data:
+  bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
+    --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json
+MSG
+fi
 cat <<MSG
 Rollback if needed: bash stop.sh, remove data/db and data/storage (sudo may be
 required because PostgreSQL files belong to the container's postgres user), move
