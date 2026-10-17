@@ -162,6 +162,9 @@ jobs:
         working-directory: backend
       - name: Fresh private operator configuration and local services
         run: |
+          # The fixture sentinel (docs/OPERATOR_INSTALL.md, "Test installations"): the installer accepts
+          # it only for this .example.test address, and the OTP function never sends with it. The
+          # template text your-... is refused by the installer, so it cannot stand in here.
           install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
           cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
           SMS_PROVIDER=msg91
