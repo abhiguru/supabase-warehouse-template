@@ -24,6 +24,13 @@ value() { psql_exec -At "$@" | tail -n1; }
 # The worker as pg_cron runs it: the runner role over 127.0.0.1 (trust inside the container), no password.
 worker() { docker exec "$container" psql -X -q -h 127.0.0.1 -U warehouse_list_refresher -d postgres -v ON_ERROR_STOP=1 \
   -c 'CALL warehouse_security.refresh_dirty_lists_worker()'; }
+# The same, printing how long the CALL took on the database clock (ms), not counting docker exec.
+timed_worker() { docker exec -i "$container" psql -X -q -At -h 127.0.0.1 -U warehouse_list_refresher -d postgres -v ON_ERROR_STOP=1 <<'SQL' | tail -n1
+SELECT set_config('lr.started', clock_timestamp()::text, false);
+CALL warehouse_security.refresh_dirty_lists_worker();
+SELECT round(extract(epoch FROM clock_timestamp() - current_setting('lr.started')::timestamptz) * 1000);
+SQL
+}
 resume_job() { psql_exec < "$ROOT/scripts/configure-list-refresh.sql" >/dev/null 2>&1 || true; }
 cleanup() { status=$?; trap - EXIT; resume_job; rm -rf "$work"; exit "$status"; }
 trap cleanup EXIT
@@ -52,11 +59,16 @@ SQL
 psql_exec -At >/dev/null <<'SQL'
 SELECT cron.alter_job(jobid, active := false) FROM cron.job WHERE jobname = 'warehouse-list-refresh';
 SQL
-for ((i = 0; i < 40; i++)); do
-  [[ "$(value -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'warehouse_list_refresher'")" = 0 ]] && break
+# pg_cron sees the pause at its next look at the job table, so a run may still start just after it:
+# wait for one whole interval without a new run and without a runner session.
+quiet="SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE usename = 'warehouse_list_refresher')
+  AND NOT EXISTS (SELECT 1 FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid
+    WHERE j.jobname = 'warehouse-list-refresh' AND (d.end_time IS NULL OR d.start_time > now() - interval '6 seconds'))"
+for ((i = 0; i < 60; i++)); do
+  [[ "$(value -c "$quiet")" = t ]] && break
   sleep 0.5
 done
-[[ "$(value -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'warehouse_list_refresher'")" = 0 ]] || fail 'a worker run did not finish.'
+[[ "$(value -c "$quiet")" = t ]] || fail 'the paused job still started runs.'
 
 lot=$(value -v claims="$claims" -v grn_no="LW${run}" <<'SQL'
 INSERT INTO public.customers(name,mobile) VALUES ('List Worker Customer','9888888876') ON CONFLICT DO NOTHING;
@@ -97,30 +109,38 @@ worker
 echo 'list refresh worker: a committed dispatch is listed only after the worker runs, as the runner role.'
 
 # 2a. Writer A on a clean list, open across a worker run.
-{ printf 'BEGIN;\n'; dispatch_sql "LWD1$run"; printf "SELECT pg_sleep(5);\nCOMMIT;\n"; } | psql_exec -At > "$work/a.out" &
+{ printf 'BEGIN;\n'; dispatch_sql "LWD1$run"; printf "SELECT pg_sleep(6);\nCOMMIT;\n"; } | psql_exec -At > "$work/a.out" &
 holder=$!
-sleep 1.5
-started=$(ms); worker; took=$(( $(ms) - started ))
-kill -0 "$holder" 2>/dev/null || fail 'writer A finished before the worker ran; the race was not exercised.'
-(( took < 2500 )) || fail "the worker waited ${took} ms for a writer of a clean list."
+a_open="SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(6)%'"
+for ((i = 0; i < 20; i++)); do [[ "$(value -c "$a_open")" = 1 ]] && break; sleep 0.25; done
+[[ "$(value -c "$a_open")" = 1 ]] || fail 'writer A did not reach its open transaction.'
+took=$(timed_worker)
+[[ "$(value -c "$a_open")" = 1 ]] || fail "the worker returned only after writer A committed (${took} ms): it waited for a writer of a clean list."
+(( took < 2000 )) || fail "the worker took ${took} ms with only a writer of a clean list in flight."
 [[ "$(listed "LWD1$run")" = 0 ]] || fail 'an uncommitted dispatch was listed.'
 wait "$holder" || fail 'writer A failed.'
 grep -qx true "$work/a.out" || fail "writer A's dispatch failed: $(cat "$work/a.out")"
 [[ "$(dirty)" = t ]] || fail "writer A's mark was lost when it committed after the worker's run."
 worker
 [[ "$(listed "LWD1$run")" = 1 ]] || fail "the next run did not list writer A's dispatch."
-echo "list refresh worker: race a: the worker did not wait for an open writer (${took} ms), and listed it on the next run."
+echo "list refresh worker: race a: the worker did not wait for an open writer (${took} ms on the database clock), and listed it on the next run."
 
 # 2b. A dirty list and writer B still marking it: the worker waits for B and covers it.
 [[ "$(dispatch "LWD2$run")" = true ]] || fail 'dispatch LWD2 failed.'
-{ printf 'BEGIN;\n'; dispatch_sql "LWD3$run"; printf "SELECT pg_sleep(4);\nCOMMIT;\n"; } | psql_exec -At > "$work/b.out" &
+{ printf 'BEGIN;\n'; dispatch_sql "LWD3$run"; printf "SELECT pg_sleep(5);\nCOMMIT;\n"; } | psql_exec -At > "$work/b.out" &
 holder=$!
-sleep 1
+b_open="SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(5)%'"
+for ((i = 0; i < 20; i++)); do [[ "$(value -c "$b_open")" = 1 ]] && break; sleep 0.25; done
+[[ "$(value -c "$b_open")" = 1 ]] || fail 'writer B did not reach its open transaction.'
 worker > "$work/worker-b.out" 2>&1 &
 runner=$!
-sleep 1.5
-waiting=$(value -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'warehouse_list_refresher' AND wait_event_type = 'Lock'")
-[[ "$waiting" = 1 ]] || fail "the worker did not wait for writer B (sessions waiting on a lock: $waiting)."
+waiting=0
+for ((i = 0; i < 20; i++)); do
+  waiting=$(value -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'warehouse_list_refresher' AND wait_event_type = 'Lock'")
+  [[ "$waiting" = 1 ]] && break
+  sleep 0.2
+done
+[[ "$waiting" = 1 && "$(value -c "$b_open")" = 1 ]] || fail "the worker did not wait for writer B (sessions waiting on a lock: $waiting)."
 wait "$holder" || fail 'writer B failed.'
 wait "$runner" || fail "the worker failed: $(cat "$work/worker-b.out")"
 [[ "$(listed "LWD2$run")" = 1 && "$(listed "LWD3$run")" = 1 && "$(dirty)" = f ]] || fail 'the worker run that waited for writer B did not list both dispatches.'
@@ -133,19 +153,22 @@ claimed=$(value -c "SELECT mark_seq FROM public.mv_refresh_queue WHERE mv_name =
 psql_exec -At <<'SQL' > /dev/null &
 BEGIN;
 REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_dispatch_list;
-SELECT pg_sleep(4);
+SELECT pg_sleep(7);
 COMMIT;
 SQL
 holder=$!
-sleep 0.5
+l_open="SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(7)%'"
+for ((i = 0; i < 20; i++)); do [[ "$(value -c "$l_open")" = 1 ]] && break; sleep 0.25; done
+[[ "$(value -c "$l_open")" = 1 ]] || fail 'the session holding back the refresh did not take its lock.'
 worker > "$work/worker-c.out" 2>&1 &
 runner=$!
-for ((i = 0; i < 20; i++)); do
+for ((i = 0; i < 25; i++)); do
   [[ "$(value -c "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.usename = 'warehouse_list_refresher' AND NOT l.granted AND l.relation = 'public.mv_dispatch_list'::regclass")" = 1 ]] && break
   sleep 0.2
 done
-(( i < 20 )) || fail 'the worker did not reach the refresh of mv_dispatch_list.'
+(( i < 25 )) || fail 'the worker did not reach the refresh of mv_dispatch_list.'
 [[ "$(dispatch "LWD5$run")" = true ]] || fail 'dispatch LWD5 (during the refresh) failed.'
+[[ "$(value -c "$l_open")" = 1 ]] || fail 'the refresh was released before LWD5 committed; the race was not exercised.'
 wait "$holder"; wait "$runner" || fail "the worker failed: $(cat "$work/worker-c.out")"
 [[ "$(listed "LWD4$run")" = 1 ]] || fail 'the held-back refresh did not list LWD4.'
 late_listed=$(listed "LWD5$run")
@@ -190,13 +213,17 @@ echo 'list refresh worker: five parallel dispatches committed under statement_ti
 # 4. The pg_cron job alone, within the bound.
 psql_exec < "$ROOT/scripts/configure-list-refresh.sql"
 [[ "$(dispatch "LWC1$run")" = true ]] || fail 'dispatch LWC1 failed.'
-committed=$(ms)
+committed=$(value -c "SELECT extract(epoch FROM clock_timestamp())")
 for ((i = 0; i < 60; i++)); do
-  [[ "$(listed "LWC1$run")" = 1 ]] && break
+  seen=$(value -v no="LWC1$run" <<'SQL'
+SELECT CASE WHEN EXISTS (SELECT 1 FROM public.mv_dispatch_list WHERE disp_no = :'no') THEN extract(epoch FROM clock_timestamp())::text ELSE '' END;
+SQL
+)
+  [[ -n "$seen" ]] && break
   sleep 0.5
 done
-delay=$(( $(ms) - committed ))
-[[ "$(listed "LWC1$run")" = 1 ]] || fail 'the pg_cron job did not list a committed dispatch within 30 s.'
+[[ -n "$seen" ]] || fail 'the pg_cron job did not list a committed dispatch within 30 s.'
+delay=$(value -c "SELECT round(($seen - $committed) * 1000)")
 (( delay <= 15000 )) || fail "the pg_cron job listed a committed dispatch after ${delay} ms, beyond the 15 s bound."
 [[ "$(value -c "SELECT count(*) FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE j.jobname = 'warehouse-list-refresh' AND d.username = 'warehouse_list_refresher' AND d.status = 'succeeded'")" -ge 1 ]] \
   || fail 'no succeeded run of the job as the runner role is recorded.'
