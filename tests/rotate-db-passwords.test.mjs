@@ -175,3 +175,20 @@ for (const [step, superuser] of [['up', false], ['check', false], ['up', true]])
     } finally { rmSync(f.scratch, { recursive: true, force: true }); }
   });
 }
+
+test('a rotation that stopped half-way is not repeated over its leftover file, and the message names the file the database matches', () => {
+  for (const [leftover, message] of [['compose.env.rotating-db', /may hold the passwords the database has now[\s\S]*mv /], ['compose.env.before-db-rotation', /compose\.env holds the passwords the database has/]]) {
+    const f = fixture('warehouse-rotate-db-leftover-');
+    try {
+      const path = join(f.state, 'config', leftover);
+      writeFileSync(path, 'kept as it is\n', { mode: 0o600 });
+      const before = readFileSync(f.envPath);
+      const result = f.run(['--yes', '--superuser']);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, message);
+      assert.equal(readFileSync(path, 'utf8'), 'kept as it is\n', `${leftover} is neither replaced nor removed`);
+      assert.deepEqual(readFileSync(f.envPath), before);
+      assert.equal(readFileSync(f.log, 'utf8').includes('exec -T db sh -c IFS= read -r pw;'), false, 'the database is not touched');
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
+});

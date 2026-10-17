@@ -50,14 +50,25 @@ docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx healthy |
 live="$state/config/compose.env"
 staged="$state/config/compose.env.rotating-db"
 previous="$state/config/compose.env.before-db-rotation"
-if [[ -e "$previous" ]]; then
-  echo "Refusing: $previous is left from an interrupted rotation. Check which values the services use (npm run test:db-roles), keep the matching file as compose.env, remove the other and run again." >&2
+# A rotation that stopped half-way (a power cut, a killed shell) leaves one of
+# these files; which one says where the values the database has now are.
+if [[ -e "$staged" ]]; then
+  echo "Refusing: $staged is left from an interrupted rotation and may hold the passwords the database has now. Run: mv \"$staged\" \"$live\"; bash setup.sh --operator ... (your setup inputs); npm run test:db-roles. If test:db-roles failed before you moved it, the database still has the values of compose.env: then remove $staged instead." >&2
   exit 1
 fi
+if [[ -e "$previous" ]]; then
+  echo "Refusing: $previous is left from an interrupted rotation. compose.env holds the passwords the database has; run bash setup.sh --operator ... (your setup inputs) so every service uses them, then npm run test:db-roles, then remove $previous." >&2
+  exit 1
+fi
+applied=false
 cleanup() {
   local status=$?
   trap - EXIT
-  rm -f "$staged"
+  # Before the database step the staged values are unused and are removed. After
+  # it they are the database's: the file stays, and the message says what to do.
+  if [[ "$applied" == false ]]; then rm -f "$staged"
+  elif [[ -e "$staged" ]]; then echo "Stopped after the database step: $staged holds the passwords the database has now. Run: mv \"$staged\" \"$live\"; bash setup.sh --operator ... (your setup inputs)." >&2
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -66,6 +77,7 @@ node "$ROOT/scripts/db-roles.mjs" stage "$live" "$staged" "${superuser[@]}"
 # 1. The database, in one transaction, signed in with the current superuser
 #    password. A failure here changes nothing.
 bash "$ROOT/scripts/db-roles.sh" apply "$staged" "$live" "${superuser[@]}"
+applied=true
 # 2. The file: the previous one is kept (mode 0600) until the services are healthy.
 cp -p "$live" "$previous"
 mv -f "$staged" "$live"
@@ -90,7 +102,6 @@ rollback() {
   else
     echo "Could not put the previous passwords back. compose.env holds the new values (they are set in the database); the previous file is $previous." >&2
   fi
-  rm -f "$staged"
   exit 1
 }
 if ((${#recreate[@]})) && ! compose --profile '*' up -d --force-recreate --wait --wait-timeout 180 "${recreate[@]}"; then rollback; fi
