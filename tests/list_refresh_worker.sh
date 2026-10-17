@@ -12,6 +12,8 @@
 #         lists the late dispatch (a refresh never clears a mark it did not cover).
 #   3. Five parallel dispatches under statement_timeout = 8s all commit; after one run the seven lists
 #      equal their defining queries.
+#   3b. A migration run and the worker never overlap: a worker run during a migration returns at once,
+#      and a migration run waits for a worker run in progress (lock 71046).
 #   4. The pg_cron job alone lists a committed dispatch within the 15 s bound.
 # The job is paused for 1-3 and resumed (by scripts/configure-list-refresh.sql) for 4 and on exit.
 set -euo pipefail
@@ -209,6 +211,41 @@ SQL
 [[ "$diff" =~ ^(mv_[a-z_]+=0,){6}mv_[a-z_]+=0$ ]] || fail "a list differs from its defining query after one run: $diff"
 [[ "$(value -c "SELECT count(*) FROM public.mv_refresh_queue WHERE needs_refresh OR last_error_code IS NOT NULL")" = 0 ]] || fail 'the queue is not clean after the parallel dispatches.'
 echo 'list refresh worker: five parallel dispatches committed under statement_timeout 8s; all seven lists equal their definitions after one run.'
+
+# 3b. Migrations and the worker never overlap (review of wave 1, finding 1): the migration run holds
+#     71046 for its whole session. A migration that locks a table a list reads and then refreshes or
+#     drops that list would otherwise deadlock with a worker run holding the view's lock.
+# (i) A migration in progress blocks the worker: a scratch copy of the plan with one more migration
+#     that sleeps and then fails (so the ledger is unchanged).
+mkdir -p "$work/plan"
+cp -a "$ROOT/migrations" "$ROOT/scripts" "$work/plan/"
+printf 'SELECT pg_sleep(4);\nSELECT 1/0;\n' > "$work/plan/migrations/99999999999999_hold_for_list_refresh_test.sql"
+[[ "$(dispatch "LWM1$run")" = true ]] || fail 'dispatch LWM1 failed.'
+node "$work/plan/scripts/migration-plan.mjs" | psql_exec > "$work/plan.out" 2>&1 &
+planner=$!
+in_plan="SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(4)%'"
+for ((i = 0; i < 40; i++)); do [[ "$(value -c "$in_plan")" = 1 ]] && break; sleep 0.25; done
+[[ "$(value -c "$in_plan")" = 1 ]] || fail "the migration run did not reach its slow migration: $(cat "$work/plan.out")"
+took=$(timed_worker)
+[[ "$(value -c "$in_plan")" = 1 ]] || fail 'the migration finished before the worker was checked; the overlap was not exercised.'
+[[ "$(listed "LWM1$run")" = 0 && "$(dirty)" = t ]] || fail "the worker refreshed while a migration ran (${took} ms)."
+wait "$planner" && fail 'the failing scratch migration was applied.'
+grep -q 'division by zero' "$work/plan.out" || fail "the scratch migration run stopped for another reason: $(cat "$work/plan.out")"
+worker
+[[ "$(listed "LWM1$run")" = 1 && "$(dirty)" = f ]] || fail 'the worker did not refresh once the migration run ended.'
+echo "list refresh worker: a worker run during a migration returned at once (${took} ms) and left the list for after it."
+# (ii) A migration run waits for a worker run in progress (a session holding 71046 stands in for it).
+psql_exec -At -c 'SELECT pg_advisory_lock(71046), pg_sleep(3), pg_advisory_unlock(71046)' > /dev/null &
+holder=$!
+held="SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = 71046 AND objsubid = 1"
+for ((i = 0; i < 20; i++)); do [[ "$(value -c "$held AND granted")" = 1 ]] && break; sleep 0.1; done
+node "$ROOT/scripts/migration-plan.mjs" | psql_exec > "$work/plan2.out" 2>&1 &
+planner=$!
+for ((i = 0; i < 20; i++)); do [[ "$(value -c "$held AND NOT granted")" = 1 ]] && break; sleep 0.1; done
+[[ "$(value -c "$held AND NOT granted")" = 1 ]] || fail 'the migration run did not wait for the list refresh lock.'
+wait "$holder"
+wait "$planner" || fail "the migration run failed after waiting: $(cat "$work/plan2.out")"
+echo 'list refresh worker: a migration run waited for the list refresh in progress, then ran.'
 
 # 4. The pg_cron job alone, within the bound.
 psql_exec < "$ROOT/scripts/configure-list-refresh.sql"
