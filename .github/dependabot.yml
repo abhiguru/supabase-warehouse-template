@@ -83,6 +83,17 @@ updates:
       - dependency-name: imgproxy/imgproxy-base
         update-types:
           - "version-update:semver-major"
+      # The recipe rebuilds /usr/bin/gotenberg from the source of the same tag
+      # (docker/gotenberg/Dockerfile, gotenberg.go.mod). A new image tag alone
+      # would ship the old binary inside the new Chromium/LibreOffice image while
+      # the notices named the new version. Move the source tag, its checksum,
+      # gotenberg.go.mod, the version flag and this image together. Digest
+      # updates of the same tag still come.
+      - dependency-name: gotenberg/gotenberg
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       # A new PostgreSQL major needs a planned upgrade of every installation's
       # data directory, not a changed line in a recipe. So does the publisher's
       # 15.19 line (looked at on 2026-10-12, tag 15.19.0.004): it is a different

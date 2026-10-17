@@ -6,7 +6,8 @@ Existing release tags are unchanged. No image binaries are published.
 Each source recipe pins the upstream source archive checksum, builder image
 digest, and runtime base digest. Copied dependency manifests record the modified
 resolution. Go module verification and selected upstream tests run during the
-build. Shared BuildKit caches avoid duplicating module/build data in image layers.
+build, except in the Gotenberg recipe, which since 2026-10-18 runs no upstream
+tests (see "Exception ledger and the two-pass scan"). Shared BuildKit caches avoid duplicating module/build data in image layers.
 OS package repositories remain live: rebuild without stale layers and rescan
 before deployment. A previous passing scan is not a current security guarantee.
 
@@ -19,13 +20,17 @@ before deployment. A previous passing scan is not a current security guarantee.
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
 | Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest (2026-10-13: `@fastify/busboy` 3.2.3 for [GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9), `fast-copy` 4.1.2 for [GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j), both moderate); Alpine package upgrade; remove unused npm CLI |
-| Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild bundled pdfcpu with patched Go/crypto/image; retain Gotenberg application |
+| Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild the Gotenberg 8.37.0 binary (since 2026-10-17) and bundled pdfcpu with patched Go/net/crypto/image; retain the rest of the Gotenberg image |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
-| PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade linux-libc-dev, rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
+| PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade the Ubuntu packages with a fixed advisory (linux-libc-dev; since 2026-10-17 also OpenSSL, GnuPG, PackageKit, sudo) with glibc and locale data unchanged; rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
 
-Go rebuilds use the versions locked in their Dockerfiles. No vulnerability
-ignore list is added. Required applications are retained. The source and license
+Go rebuilds use the versions locked in their Dockerfiles. Nothing is
+suppressed in the scanner. Since 2026-10-17 the rows that cannot be fixed yet
+are listed in `docker/image-exceptions.json`, a time-boxed ignore list: each
+entry is bound to one recipe, has a named owner and expires at most 90 days
+after its review (see "Exception ledger and the two-pass scan"). Required
+applications are retained. The source and license
 inventory is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Acceptance boundaries
@@ -415,6 +420,23 @@ under the [won't-fix disposition](PRODUCTION_DEPENDENCIES.md#technical-follow-up
 supplied a compiled binary, image-bound inventory, or runtime evidence; the
 PostgREST security gate remains open.
 
+**2026-10-17, v16.4 pinned and a time-boxed exception (TW-BE-010, owner
+decision D3, option c):** Compose now pins `postgrest/postgrest:v16.4` to its
+index digest (see "Image pins"). A Trivy 0.74.0 scan of that image, with the
+flags of `scripts/scan-images.sh`, again returned no package results, so the
+gate still cannot assess it. Instead of a passing result it has the exception
+`rest-no-package-inventory` in `docker/image-exceptions.json`: owner
+`abhiguru`, reviewed 2026-10-17, expiring 2027-01-15, valid only for that
+digest (the image reference and the scanned image's repository digest must
+both carry it), with its compensating controls listed (no host port; outside
+requests only through Kong with key-auth, a 10 MB body limit and the REST rate
+limit; `public.check_session` before every request; business writes only
+through RPCs guarded by `authorize_rpc`). The exception does not establish that
+v16.4 is free of the `aeson` advisory above; it records an accepted, dated gap.
+The planned closure is option (a), a source build whose dependency closure
+(cabal freeze or Nix lock) becomes an image-bound inventory. Do not add
+fabricated packages to the report instead.
+
 ## Source dependency audit follow-up
 
 The image gate scans runtime packages at the fixed HIGH/CRITICAL threshold; it
@@ -666,12 +688,12 @@ Still open:
 ## Image pins (2026-10-11)
 
 Every service image is either built from a Dockerfile whose `FROM` lines carry
-a digest, or referenced with a digest in Compose, with one exception:
+a digest, or referenced with a digest in Compose (PostgREST since 2026-10-17):
 
 | Image | State |
 |---|---|
 | `kong:3.9.3-ubuntu` | Pinned to `sha256:92035d16d7ff86b7bc12fb1d0090d29357d924238b1880f78735f3f2fea6b631`, the multi-platform index (linux/amd64 and linux/arm64) the registry serves for that tag on 2026-10-11, read with `docker buildx imagetools inspect`. The tag was rebuilt after the first pin (`sha256:12972ce1...`, the index of 2026-09-16). Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
-| `postgrest/postgrest:v16.4` | **Tag only.** The image was not available locally to read a digest from. On a host that has pulled it: `docker image inspect --format '{{index .RepoDigests 0}}' postgrest/postgrest:v16.4`, confirm with `docker buildx imagetools inspect` that the digest is an index covering amd64 and arm64, write it after the tag in `docker/docker-compose.yml`, and remove the exception in `tests/gateway-config.test.mjs`. |
+| `postgrest/postgrest:v16.4` | Pinned to `sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df` on 2026-10-17: the manifest list the registry serves for that tag (linux/amd64 `sha256:bee9e1ef...`, linux/arm64 `sha256:c3638ac2...`), read with `docker buildx imagetools inspect`, and the repository digest of the v16.4 image the dev hosts had pulled. `tests/gateway-config.test.mjs` no longer allows a tag-only image. The image has no package inventory; its time-boxed exception is bound to this digest (see "Exception ledger and the two-pass scan"). |
 
 Kong still has no recipe of its own, so its Ubuntu packages are as old as the
 pinned build; the pin makes that explicit instead of leaving it to whichever
@@ -684,6 +706,155 @@ v14.17 and edge-runtime v1.76.2 after Compose and the Dockerfile had moved to
 v16.4 and v1.77.4. They are corrected, and `tests/gateway-config.test.mjs` now
 reads the versions from Compose and the Dockerfiles and fails when either
 document names a different one.
+
+## Exception ledger and the two-pass scan (2026-10-17)
+
+Operational review findings TW-BE-009 (HIGH/CRITICAL rows in the installed
+images), TW-BE-010 (no PostgREST inventory) and TW-BE-005 part 1 (PostgREST
+tag only). Owner decisions: D3, the repository owner `abhiguru` is the named
+owner of every exception, each for at most 90 days; D5, no snapshot mirrors,
+a `--no-cache` rebuild and rescan before each release instead
+([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md#image-scan-before-a-release)).
+
+**The gate.** `npm run scan:images` (`scripts/scan-images.sh`) now builds every
+Compose image with `--no-cache`, then scans each image twice with Trivy
+(`--scanners vuln --severity HIGH,CRITICAL --list-all-pkgs`):
+
+1. with `--ignore-unfixed`: the rows that have a listed fix;
+2. without it: every HIGH/CRITICAL row, the ones with no fix included.
+
+`scripts/validate-image-report.mjs` checks both reports as before (image
+identity, a versioned package inventory in every result) and then requires every
+HIGH/CRITICAL row to match a valid entry of
+[`docker/image-exceptions.json`](../docker/image-exceptions.json) for the
+image's recipe: `docker/<name>/Dockerfile` for a built image, the pinned
+reference for a pulled one. The classes:
+
+| Class | Covers | Bound by |
+|---|---|---|
+| `no-fix` | rows with no fixed version, by Trivy status (`affected`, `fix_deferred`, `will_not_fix`, ...) and severity; never a row with a listed fix | recipe, statuses, severities, optional `os-pkgs`/`lang-pkgs` |
+| `advisory` | the named advisories in the named packages, fixed upstream or not: a fix the publisher has not shipped yet | recipe, advisory IDs, package names, severities |
+| `no-package-inventory` | a report with no package results at all | recipe and the exact image digest, in the reference and in the scanned image's repository digests; compensating controls listed |
+
+`no-fix` and `advisory` entries may also name `targets`, prefixes of the
+result's target (a binary's path), and a `no-fix` entry may name `packages`;
+then a row elsewhere is not covered (`db-os-no-fix` covers `linux-libc-dev`
+only, the Grafana entries only the core binary or the plugin directory). The
+scan prints a warning for an entry that covered no row, so a stale one is
+noticed, and it counts a report as passed only on the validator's
+"Image scan evidence accepted" line.
+
+**Where to run it.** Because every image is rebuilt with `--no-cache`, each
+gets a new image ID. Run the scan with a throwaway operator state of its own
+project name, never with an installation's state: on an installation it would
+move every `<project>-*` tag under the running containers to that day's
+packages, images no recorded build made, which the next start would pick up.
+`scripts/scan-images.sh` refuses while the state's project has any container,
+running or stopped. Remove the throwaway project's `<project>-*` images
+afterwards.
+
+Every entry has an owner, a reason, the date the owner reviewed it and an
+expiry at most 90 days after that review. An entry that has expired, has no
+owner, was reviewed in the future or has an unknown field rejects the whole
+ledger, so the scan fails until the entry is renewed or removed. The validator
+with only a report and an image keeps the old strict behaviour.
+`tests/image-scan.test.mjs` covers the passes and each rule.
+
+**Scan of 2026-10-18.** Trivy 0.74.0 (the release binary, checksum checked),
+one vulnerability database for every report (updated 2026-10-17 18:34 UTC),
+the flags of `scripts/scan-images.sh`, linux/amd64. Every built image was built
+with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
+198bbfa, built the same evening as "after". Counts are HIGH/CRITICAL rows.
+
+| Image (recipe) | Rows with a fix, before | Rows with a fix, after | Rows with no fix, after | Covered by |
+|---|---:|---:|---:|---|
+| db (`postgres`) | 20 H | 0 | 3 C, 128 H | `db-os-no-fix` |
+| functions (`edge-runtime`) | 3 C, 4 H | 0 | 1 C, 59 H | `functions-os-no-fix` |
+| gotenberg | 4 H | 0 | 1 C, 126 H | `gotenberg-os-no-fix` |
+| studio | 2 C, 4 H | 2 C, 3 H | 4 C, 246 H | `studio-app-awaiting-publisher`, `studio-os-no-fix` |
+| grafana | 47 H | 41 H | 0 | `grafana-core-awaiting-publisher` (5), `grafana-plugins-awaiting-publisher` (36) |
+| sensor-bridge | 4 H | 0 | 2 C, 61 H | `sensor-bridge-os-no-fix` |
+| meta (`postgres-meta`), unchanged | 0 | 0 | 1 C, 58 H | `meta-os-no-fix` |
+| realtime, unchanged | 0 | 0 | 74 H | `realtime-os-no-fix` |
+| supavisor, unchanged | 0 | 0 | 10 C, 379 H | `supavisor-os-no-fix` |
+| rest (`postgrest/postgrest:v16.4@sha256:d155c671...`) | no package results | no package results | no package results | `rest-no-package-inventory` |
+| kong, storage, imgproxy, cups, auth, prometheus, alertmanager, node-exporter, postgres-exporter, cadvisor, unchanged | 0 | 0 | 0 | none needed |
+
+With the ledger, both passes of all twenty images are accepted by the
+validator. The review VM's numbers (TW-BE-009) were taken with an older
+database; the rows with a fix match them except Grafana (one more kin-openapi
+advisory, CVE-2026-100349, published since).
+
+What changed, per image:
+
+- **db** (`docker/postgres/Dockerfile`): the recipe upgrades the Ubuntu packages
+  with a fixed advisory (OpenSSL/`libssl3t64`, the GnuPG packages, PackageKit,
+  `sudo`, `linux-libc-dev`) and fails the build if glibc, `locales` or
+  `/usr/lib/locale/locale-archive` change: the Nix-built PostgreSQL reads that
+  archive (`LOCALE_ARCHIVE`), so a locale update could change collation order
+  under existing indexes. A full `apt-get upgrade` would touch about a hundred
+  packages, glibc and `locales` among them, and is deliberately not used. The
+  remaining rows are Linux kernel advisories reported against the
+  `linux-libc-dev` header package, with no fixed version. If the guard trips, the build
+  stops with a message saying so. The day Ubuntu lists a fix for a glibc or
+  `locales` row, record it as an `advisory` exception, never as an upgrade in
+  this recipe: a collation change needs a planned reindex of every
+  installation.
+- **functions** (`docker/edge-runtime/Dockerfile`): a full `apt-get upgrade`
+  replaces the PCRE2-only upgrade (the PCRE2 version check stays); `perl-base`
+  moves to `5.36.0-7+deb12u4`. edge-runtime v1.77.4 is still the newest tag.
+- **gotenberg** (`docker/gotenberg/Dockerfile`): 8.38.1, the newest tag, still
+  ships a `/usr/bin/gotenberg` built with Go 1.27.1 and `golang.org/x/net`
+  0.59.0. The recipe now builds the same 8.37.0 source (archive SHA-256
+  `b6395f7c...`) with the pinned Go 1.27.2 builder and
+  `docker/gotenberg/gotenberg.go.{mod,sum}`, which differ from upstream only in
+  `golang.org/x/{net,crypto,sys,term,text}` (net 0.60.0), verifies the module
+  graph (`go mod verify`), builds read-only, and replaces the publisher binary;
+  the version stays `8.37.0`. No stage of this recipe runs upstream tests
+  any more, neither Gotenberg's nor the pdfcpu stage's (`go test
+  ./pkg/pdfcpu/model`, removed on 2026-10-18): every operator install builds
+  this image, so an upstream test that fails on some host would fail a real
+  install. Gotenberg's suite has timing-sensitive tests
+  (`TestProcessSupervisor_ReqQueueSize` failed on a loaded hosted CI runner on
+  2026-10-17, "expected queue size to be 10 but got 8"). The checks that stay
+  are the pinned source archives, `go mod verify` and the read-only builds.
+  The `pkg/gotenberg`, `pkg/modules/api` and `pkg/pdfcpu/model` tests passed
+  on these sources and module sets when the recipe was written; the document
+  tests of CI's operator-install job exercise the binaries. The MIT licence is in
+  `LICENSES/gotenberg/` and in the image.
+- **studio** (`docker/studio/Dockerfile`): moved to `2026.10.12-sha-3699278`,
+  the newest tag, which fixes `@modelcontextprotocol/sdk` (1.32.0). It still
+  ships simple-git 3.36.0, `@simple-git/argv-parser` 1.1.1 and next 16.3.6, so
+  those advisories are the `advisory` exception `studio-app-awaiting-publisher`
+  until a later tag; replacing packages inside the prebuilt application is not
+  safe. Studio stays on the admin network only.
+- **grafana** (`docker/grafana/Dockerfile`, `plugins.lock`): moved to 13.2.4
+  (core built with a fixed Go standard library and `golang.org/x/net` 0.60.0)
+  and the four pinned plugins to their newest catalog releases (pyroscope
+  13.0.7, opentsdb 13.0.4, prometheus 13.2.3, zipkin 12.4.9; all twelve archive
+  checksums checked against downloads). No signed catalog release of any
+  retained plugin (the four above plus elasticsearch 12.9.2,
+  grafana-postgresql-datasource 13.0.4, loki 13.2.2, mssql 13.0.7, mysql 13.1.4,
+  each scanned from its archive) is built with Go 1.26.9/1.27.2 or
+  `golang.org/x/net` 0.60.0 yet, and 13.2.4's core still has kin-openapi
+  0.144.0 (five advisories, fixed in 0.146.0 to 0.149.0). Those rows are the
+  `advisory` exceptions `grafana-plugins-awaiting-publisher` and
+  `grafana-core-awaiting-publisher`. Signed plugin binaries are not replaced
+  locally (see "Grafana OS patch and remaining publisher dependency"). Pruning
+  the seven retained plugins the template does not provision would remove 28
+  of the 41 rows; that changes what an operator can add, so it is left to the
+  owner.
+- **sensor-bridge** (`docker/sensor-bridge/Dockerfile`): not in the review's
+  table (it was not installed there); this scan found msgpack 1.1.2, urllib3
+  2.7.0 and setuptools 70.3.0 vendored by the base image's pip 26.2.1, each
+  behind a fixed HIGH advisory. pip is a build tool there: the recipe now
+  uninstalls it after `pip install` and checks that it is gone. The
+  configuration check (exit 0 and 78) and the bridge's 92 unit tests passed on
+  the rebuilt image, run as `scripts/sensor-bridge-check.sh` runs them.
+- **rest**: pinned by digest; no package results, accepted by the digest-bound
+  exception `rest-no-package-inventory` (see the PostgREST section).
+- All other images: recipes unchanged; their rows with no fix are `no-fix`
+  entries per recipe, with the counts of this scan in each reason.
 
 ## Gateway limits and metrics (2026-10-11)
 
@@ -1145,25 +1316,26 @@ building an image or starting the stack.
   a pruned cache) before reading scan numbers or deploying.
 - **Studio application advisories.** The recipe applies Debian updates, which
   addresses the operating-system findings at build time. On 2026-10-12 the
-  tag moved from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`. Scanned
-  with Trivy (HIGH and CRITICAL, a `--no-cache` build), findings that have a
-  fixed release went from eight to six: the Critical Next.js advisory
-  (GHSA-vcvr-r3jv-pc5j, next 16.3.5) and the High sharp advisory are gone.
-  Left in the publisher's application: simple-git 3.36.0 (one Critical, two
-  High; fixed in 4.0.1), `@simple-git/argv-parser` 1.1.1 (Critical; 2.0.1),
-  next 16.3.6 (High; 16.3.8) and `@modelcontextprotocol/sdk` 1.29.0 (High;
-  1.31.0). They need a later Studio tag; change the tag and digest in
-  `docker/studio/Dockerfile` and the notices, then `npm run test:studio`.
-  Until then the exposure is bounded by the network change: only
-  postgres-meta and the database can reach Studio. The scan numbers in the
-  table near the top of this page are from 2026-09-22 and an older tag.
-- **Edge runtime operating-system packages.**
-  `docker/edge-runtime/Dockerfile` upgrades one package; replacing that with a
-  full `apt-get upgrade` (keeping the PCRE2 version check) changes an image
-  that every document request depends on. Build, then run the operator API
-  and document tests. (Storage got `apk upgrade --no-cache` with the move to
-  v1.80.2 on 2026-10-12: the Trivy scan of that build has no HIGH or CRITICAL
-  finding, where the v1.79.14 build had 13 in Alpine packages.)
+  tag moved from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`, and on
+  2026-10-17 to `2026.10.12-sha-3699278`, which fixes
+  `@modelcontextprotocol/sdk` (1.32.0). Still in the publisher's application:
+  simple-git 3.36.0 (one Critical, two High; fixed in 4.0.1),
+  `@simple-git/argv-parser` 1.1.1 (Critical; 2.0.1) and next 16.3.6 (High;
+  16.3.8). They are the exception `studio-app-awaiting-publisher` in
+  `docker/image-exceptions.json` until a later Studio tag; then change the tag
+  and digest in `docker/studio/Dockerfile` and the notices, remove the
+  exception and run `npm run test:studio`. The exposure is bounded by the
+  network change: only postgres-meta and the database can reach Studio. The
+  scan numbers in the table near the top of this page are from 2026-09-22 and
+  an older tag.
+- **Edge runtime operating-system packages: done on 2026-10-17.**
+  `docker/edge-runtime/Dockerfile` now runs a full `apt-get upgrade` (keeping
+  the PCRE2 version check), which clears the seven fixed `perl-base` rows. The
+  image was built and its `hello` function answered 200 on an isolated
+  network; the operator API and document tests run in CI's operator-install
+  job. (Storage got `apk upgrade --no-cache` with the move to v1.80.2 on
+  2026-10-12: the Trivy scan of that build has no HIGH or CRITICAL finding,
+  where the v1.79.14 build had 13 in Alpine packages.)
 - **Storage `npm install`.** `npm ci` would fail on lock drift, but it deletes
   `node_modules` first, and the recipe keeps the publisher's prebuilt native
   modules and runs no install scripts, so they would not be rebuilt. Moving
@@ -1233,9 +1405,11 @@ building an image or starting the stack.
 - **cAdvisor and CUPS run privileged.** Both are optional profiles. CUPS also
   accepts print jobs from any container on `default` without a login; no
   function reaches it while the router refuses the printing functions.
-- **Scheduled image scan.** No workflow runs `npm run scan:images`; the image
-  gate was closed as "won't fix in current scope" in
-  [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md).
+- **Scheduled image scan.** No workflow runs `npm run scan:images`. Since
+  2026-10-17 the release checklist requires it before each release, and its
+  exceptions expire (see "Exception ledger and the two-pass scan"); a
+  scheduled workflow would catch an expiry or a new fixed advisory between
+  releases.
 
 ## Changes awaiting a first run (2026-10-11)
 
