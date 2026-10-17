@@ -113,7 +113,7 @@ test('rerun with a changed provider file replaces only the provider lines atomic
     assert.equal(updated.created, false);
     assert.equal(updated.providerUpdated, true);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
     const after = readFileSync(envPath, 'utf8');
     const afterEnv = readEnv(envPath);
     assert.equal(afterEnv.MSG91_AUTH_KEY, 'second-provider-key');
@@ -175,7 +175,7 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(readEnv(envPath).CENTRAL_ISSUER, issuer);
     assert.equal(readEnv(envPath).CENTRAL_JWKS_URL, jwks);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
     assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, base.apiUrl);
 
     // The same values again, or no central option at all: byte-stable.
@@ -376,7 +376,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));

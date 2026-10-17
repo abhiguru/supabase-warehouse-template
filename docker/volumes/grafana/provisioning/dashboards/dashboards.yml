@@ -1,4 +1,6 @@
-# Grafana dashboard provisioning
+# Grafana dashboard provisioning. The dashboards are files in this repository
+# (docker/volumes/grafana/dashboards), mounted read-only at /etc/grafana/dashboards by
+# docker/docker-compose.override.yml. They are read-only in Grafana: change the JSON, not the screen.
 apiVersion: 1
 
 providers:
@@ -9,6 +11,6 @@ providers:
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
-    allowUiUpdates: true
+    allowUiUpdates: false
     options:
-      path: /var/lib/grafana/dashboards
+      path: /etc/grafana/dashboards

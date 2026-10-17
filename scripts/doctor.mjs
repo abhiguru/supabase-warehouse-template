@@ -10,6 +10,7 @@ import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
+import { alertDeliveryWarning } from './monitoring-config.mjs';
 
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -115,7 +116,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   const usb = usbBackupWarning(state);
-  const note = usb ? `\nWarning: ${usb}` : '';
+  // Alertmanager only exists when the monitoring profile was started; then "local only" is worth a warning.
+  const alerts = probe('bash', [resolve(root, 'scripts/compose.sh'), '--profile', '*', 'ps', '-q', 'alertmanager']).output.trim() ? alertDeliveryWarning(state) : null;
+  const note = [usb, alerts].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);

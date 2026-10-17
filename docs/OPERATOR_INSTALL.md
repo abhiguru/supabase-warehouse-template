@@ -189,6 +189,16 @@ up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation),
 then `node scripts/set-capability.mjs sensors on` and a new `db:backup`). A new
 state's `compose.env` carries the `SENSOR_*` and `TAPO_*` lines empty.
 
+Setup also renders the monitoring files of this installation into the state
+(`config/monitoring/`, and the empty `metrics/` directory the backup scripts
+write), whether or not the `monitoring` profile is ever started. The optional
+`--alert-webhook-file /absolute/path` gives Alertmanager one `https://` webhook
+address to send alerts to (`off` removes it); without it alerts stay on this
+host and `npm run doctor` warns while the monitoring profile is running. What
+each file is, the alert rules, the backup alerts and the Grafana dashboard are
+in [MONITORING.md](MONITORING.md); several installations on one host each get
+their own, distinguished by an `installation` label.
+
 Running the same command again is safe: a rerun preserves identity, keys,
 database and stored files (see [rerun and upgrade](#rerun-and-upgrade)). Setup
 refuses an active administrator with a different phone, a state path through
@@ -1358,6 +1368,12 @@ that needs it.
 8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
+
+   `db:restore-host` also rendered the monitoring files for the restored
+   project, so the `monitoring` profile starts. The alert webhook address is a
+   secret and is not in a backup: if this installation sent alerts to a webhook,
+   alerts are local only until you run `setup.sh --operator` again with your
+   usual inputs and `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
 9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
@@ -1692,6 +1708,13 @@ start then replaces only the containers whose image changed. What to expect:
   checkout did not build) is left running unchanged with the warning "the
   <service> image does not match this checkout"; `bash scripts/build-images.sh`
   or the next setup rerun builds it, and the following start replaces it.
+- The monitoring files (`config/monitoring/`, `metrics/`) are written by every setup run; the
+  first run after the release that added them creates them, and the next
+  replacement of Prometheus and Alertmanager (the same step) loads them. A
+  Prometheus or Alertmanager that is running is replaced when those files or
+  `docker/alert-rules.yml` changed. Run `npm run db:backup` once afterwards: the
+  backup alerts (`BackupMissing` after 26 hours) read the time of the last backup
+  that was written down after this release.
 - `start.sh` never builds: a host that restarts offline starts what it has.
 - Every built image is tagged for its installation (`<project>-<service>`).
   Grafana's was the shared `warehouse-grafana:local` until 2026-10-13, so the

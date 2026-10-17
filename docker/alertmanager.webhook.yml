@@ -1,0 +1,29 @@
+# Alertmanager configuration that setup.sh renders when the operator gives it
+# --alert-webhook-file (scripts/monitoring-config.mjs): every alert is posted as JSON to the
+# https:// address in the file, which setup stores at <state>/config/monitoring/alertmanager/webhook-url
+# (mode 0600; never in this repository). Without that option the local-only docker/alertmanager.yml is
+# used. The JSON is Alertmanager's webhook format
+# (https://prometheus.io/docs/alerting/latest/configuration/#webhook_config): point it at a receiver that
+# accepts it (an automation service, a paging gateway, a chat bridge). A Slack incoming webhook takes a
+# different body; for that see alertmanager.slack.example.yml. Prometheus adds the `installation` label
+# to every alert, so one receiver can serve several installations.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: webhook
+  group_by: ['alertname', 'installation']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      - url_file: /etc/alertmanager/webhook-url
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']
