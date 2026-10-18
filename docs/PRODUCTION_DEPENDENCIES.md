@@ -34,7 +34,20 @@ dispositions and the owner inputs.
 
 ## Technical follow-ups and dispositions
 
-- **Item 1 — image security gate: Won’t fix in current scope — user disposition.**
+- **Item 1 — image security gate: time-boxed exceptions since 2026-10-17
+  (owner decisions D3 and D5 of the 2026-10-17 operational review).** The gate
+  (`npm run scan:images`) builds every image without the build cache and scans
+  each twice with Trivy: rows with a listed fix fail unless an `advisory`
+  exception names them, and every other HIGH/CRITICAL row, or a missing package
+  inventory, must match an entry of [`docker/image-exceptions.json`](../docker/image-exceptions.json).
+  Each entry names its recipe, the owner (`abhiguru`), a reason, the review date
+  and an expiry at most 90 days later; expired or ownerless entries fail the
+  scan. The owner accepts the listed rows until the expiry, not beyond it, and
+  the release checklist requires a fresh scan before each release. Results and
+  the remaining rows are in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#exception-ledger-and-the-two-pass-scan-2026-10-17).
+  The disposition below is the earlier record; it granted no risk acceptance and
+  is superseded by the ledger.
+- **Item 1, earlier disposition: Won’t fix in current scope — user disposition.**
   The active Grafana recipe's recorded scan has **3 HIGH** findings: core Thrift and
   gRPC in the required Prometheus and PostgreSQL plugins. The separate combined
   core rebuild/prune **amd64** candidate removes Thrift but retains the two
@@ -173,11 +186,12 @@ public demo exposure, or publication of rebuilt third-party container binaries.
 
 ## Maintained image patch boundaries
 
-`docker/edge-runtime/Dockerfile` upgrades only Debian's PCRE2 library and checks
-the minimum fixed version. `docker/realtime/Dockerfile` applies Debian package
+`docker/edge-runtime/Dockerfile` applies Debian package updates (since
+2026-10-17; it upgraded only PCRE2 before) and checks the minimum fixed PCRE2
+version. `docker/realtime/Dockerfile` applies Debian package
 updates while retaining the digest-pinned Realtime application; the Studio,
-Supavisor and CUPS recipes do the same for their bases. Kong is referenced by
-digest; PostgREST v16.4 by tag only. The Go builder images are
+Supavisor and CUPS recipes do the same for their bases. Kong and PostgREST v16.4
+(since 2026-10-17) are referenced by digest. The Go builder images are
 `golang:1.27.2-bookworm` by digest since 2026-10-11 (they were 1.27.0 and
 1.27.1, behind three fixed standard-library advisories). Package indexes
 remain live: rebuild and rescan when deploying; Docker layer cache is not proof
@@ -187,4 +201,5 @@ published container binaries. Upstream notices remain in the base image.
 The remaining images need package-by-package review. Do not waive findings,
 remove required services, or force incompatible transitive dependency versions
 merely to obtain a green scanner result. The all-profile gate stays nonzero
-until every included image passes.
+until every HIGH/CRITICAL row of every included image is fixed or covered by a
+valid entry of `docker/image-exceptions.json` (Item 1 above).

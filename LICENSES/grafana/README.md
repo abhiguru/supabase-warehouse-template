@@ -10,7 +10,7 @@ https://github.com/grafana/grafana/blob/main/LICENSE.
 
 This repository vendors no Grafana source or binaries. `docker/grafana/`
 contains a build recipe that starts from the publisher's digest-pinned
-`grafana/grafana:13.2.3` image, upgrades two Alpine libraries and replaces the
+`grafana/grafana:13.2.4` image, upgrades two Alpine libraries and replaces the
 bundled plugins with publisher-signed, checksum-pinned releases. Anyone who
 distributes the resulting image, or who modifies Grafana and lets users
 interact with it over a network, must offer the corresponding source under
