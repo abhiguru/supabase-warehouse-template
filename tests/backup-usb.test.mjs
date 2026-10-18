@@ -2,7 +2,7 @@
 // udev rule or systemd unit: /etc, /usr/local/libexec and /run are redirected into a scratch tree.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync, symlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -694,5 +694,67 @@ test('run never opens an archive without a valid signature, and still verifies t
     assert.match(readFileSync(opened, 'utf8'), new RegExp(`${genuine}\\.tar`), 'the genuine archive was');
     assert.match(result.stdout, new RegExp(`Restore verification of the copy on the drive passed: ${genuine}`));
     assert.match(f.last(), /^result=failed$/m);
+  } finally { f.cleanup(); }
+});
+
+// TW-BE-018: the result of every USB run goes to <state>/metrics/warehouse_backup.prom as kind="usb"
+// (docs/MONITORING.md, "Backup alerts"); the disk backup's lines are left alone.
+const usbMetrics = f => {
+  const path = join(f.state, 'metrics/warehouse_backup.prom');
+  return Object.fromEntries(readFileSync(path, 'utf8').split('\n').filter(line => line && !line.startsWith('#'))
+    .map(line => { const [series, value] = line.split(' '); return [series, Number(value)]; }));
+};
+
+test('a USB run records its success time, a later failure keeps it, and the disk lines are not touched', () => {
+  const f = fixture('warehouse-usb-metrics-');
+  try {
+    f.enroll();
+    f.backups(1);
+    mkdirSync(join(f.state, 'metrics'), { mode: 0o755 });
+    writeFileSync(join(f.state, 'metrics/warehouse_backup.prom'), 'warehouse_backup_last_success_timestamp_seconds{kind="disk"} 1700000000\nwarehouse_backup_last_attempt_success{kind="disk"} 1\n', { mode: 0o644 });
+    const before = Math.floor(Date.now() / 1000);
+    const ok = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+    const first = usbMetrics(f);
+    const success = first['warehouse_backup_last_success_timestamp_seconds{kind="usb"}'];
+    assert.ok(success >= before && success <= Math.floor(Date.now() / 1000), 'the success time is when the copy finished');
+    assert.equal(first['warehouse_backup_last_attempt_success{kind="usb"}'], 1);
+    assert.equal(first['warehouse_backup_last_success_timestamp_seconds{kind="disk"}'], 1700000000, 'the disk backup is not this run');
+    assert.equal(first['warehouse_backup_last_attempt_success{kind="disk"}'], 1);
+
+    // The drive is no longer enrolled: the run stops, records a failure, and the success time stays.
+    rmSync(f.markerPath);
+    const refused = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(refused.status, 1);
+    assert.match(f.last(), /^result=failed$/m);
+    const second = usbMetrics(f);
+    assert.equal(second['warehouse_backup_last_attempt_success{kind="usb"}'], 0);
+    assert.equal(second['warehouse_backup_last_success_timestamp_seconds{kind="usb"}'], success);
+    assert.equal(second['warehouse_backup_last_attempt_success{kind="disk"}'], 1);
+  } finally { f.cleanup(); }
+});
+
+test('a drive refused at the mount step is a failed USB attempt for Prometheus too', () => {
+  const f = fixture('warehouse-usb-metrics-refusal-');
+  try {
+    writeFileSync(join(f.etc, 'warehouse-usb-backup.conf'), `STATE=${f.state}\nUID=1000\nGID=1000\n`);
+    rmSync(join(f.fake, 'target.sdb1'));
+    writeFileSync(join(f.etc, 'warehouse-usb-backup.drives'), `${UUID}\n`);
+    assert.equal(f.asRoot(['mount', 'sdb1']).status, 1);
+    assert.deepEqual(usbMetrics(f), { 'warehouse_backup_last_attempt_success{kind="usb"}': 0 }, 'a failure and no success time: nothing has ever been copied');
+    assert.equal(statSync(join(f.state, 'metrics/warehouse_backup.prom')).mode & 0o777, 0o644, 'node exporter can read it');
+  } finally { f.cleanup(); }
+});
+
+test('a USB run still succeeds when the metrics directory cannot be written', () => {
+  const f = fixture('warehouse-usb-metrics-unwritable-');
+  try {
+    f.enroll();
+    f.backups(1);
+    symlinkSync(join(f.scratch, 'nowhere'), join(f.state, 'metrics'));
+    const result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /Warning: could not write .*\/metrics\/warehouse_backup\.prom/);
+    assert.match(f.last(), /^result=ok$/m);
   } finally { f.cleanup(); }
 });

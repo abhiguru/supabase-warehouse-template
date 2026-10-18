@@ -10,7 +10,7 @@ per warehouse. It is used from the companion
 
 Prerequisites, all required:
 
-- A Linux x86-64 host or VM with Docker Engine + Compose v2, Node.js 22.18+,
+- A Linux x86-64 host or VM with Docker Engine + a Compose plugin whose `up` accepts `--wait-timeout`, Node.js 22.18+,
   Git, OpenSSL and util-linux `flock`.
 - Real [MSG91](https://msg91.com) credentials (auth key, approved OTP Flow ID,
   DLT entity ID, sender ID) in a mode-0600 file outside the checkout. There is

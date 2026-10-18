@@ -216,6 +216,10 @@ node "$ROOT/scripts/db-roles.mjs" add-missing "$stage/config/compose.env"
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
+# The monitoring files (config/monitoring, metrics, data/alertmanager) are not in a backup: render them for the
+# restored project with the renderer setup uses, so the monitoring profile can start. The alert webhook address
+# is a secret that is deliberately not in a backup; see the last "Next" line.
+node "$ROOT/scripts/monitoring-config.mjs" "$state" "$project" || die "Could not render the monitoring files of $state."
 
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
 if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
@@ -268,10 +272,21 @@ if [[ "$central_missing" == true ]]; then
          --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json"
 fi
 step "Compare with the fingerprint taken at backup time, if you have one:
+     (A fingerprint recorded before the release that added orders, order lines, order revisions and
+     payments lacks those four lines: the diff will show them added and not be empty; compare the rest.)
        WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -"
 step "Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1"
 step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
      change" in docs/OPERATOR_INSTALL.md, then take a new backup.'
 step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
+alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (the webhook
+     address is not in a backup; skip this if the installation never had one)."
+if [[ "$central_missing" == true ]]; then
+  alert_step+="
+     The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file
+     to that same command, so it is one rerun and not two."
+fi
+step "$alert_step The monitoring profile
+     starts without it: bash scripts/compose.sh --profile monitoring up -d"
 echo "Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host."

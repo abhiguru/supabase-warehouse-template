@@ -204,9 +204,13 @@ order, after the issuer, argument and single-use checks:
 3. A service account (`is_service_account`): `account_unavailable`; not linked.
 4. No profile: a pending profile and an enrollment token, no code.
 5. Rejected, disabled or deactivated: `account_unavailable`. A refusal writes
-   nothing: such a profile is not linked and not marked verified.
+   nothing on the profile (migrations 81 and 96): it is not linked, not marked
+   verified, and its row, `updated_at` and audit rows stay as they were. Only the
+   single-use token row is written, as replay protection.
 6. Found by phone and not linked, and not refused above: it is linked to the
-   identity and its mobile is marked verified.
+   identity and its mobile is marked verified. A profile found by `(iss, sub)`
+   whose mobile equals the token's phone is marked verified here too (after the
+   refusals; before migration 96 this happened before step 5).
 7. Pending: an enrollment token; the pending answer names the link
    (`central_issuer`, `central_subject`) in its short `data.user`.
 8. Approved: with `central_local_code` off (the default) the session is issued;

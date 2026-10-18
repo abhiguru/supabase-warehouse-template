@@ -24,6 +24,9 @@ function fixture(prefix, { integrity = ledger(), env } = {}) {
   mkdirSync(join(root, 'migrations'));
   for (const [name, body] of Object.entries(migrations)) writeFileSync(join(root, 'migrations', name), body);
   writeFileSync(join(root, 'scripts/doctor.mjs'), "console.log('Host prerequisites and state filesystem preflight passed.');\n");
+  // restore-host renders the monitoring files with the renderer setup uses, from the templates next to it.
+  for (const file of ['monitoring-config.mjs', 'is-main.mjs']) copyFileSync(join(repo, 'scripts', file), join(root, 'scripts', file));
+  for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.webhook.yml']) copyFileSync(join(repo, 'docker', file), join(root, 'docker', file));
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.
   writeFileSync(join(root, 'scripts/restore.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$*" >> "$RESTORE_LOG"
@@ -107,9 +110,16 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'backup kept unmodified');
     assert.ok(existsSync(join(f.backup, 'SHA256SUMS')), 'source backup left in place');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
-    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['db', 'storage'], 'empty pre-restore directories removed');
+    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['alertmanager', 'db', 'storage'], 'empty pre-restore directories removed');
     assert.deepEqual(readdirSync(f.parent), ['acme'], 'no staging directory left');
     assert.match(result.stdout, /Keep the original host off/);
+    // The monitoring profile can start: its files are rendered for the restored project, with no webhook.
+    assert.match(readFileSync(join(f.state, 'config/monitoring/prometheus.yml'), 'utf8'), /^    installation: warehouse-backup-test$/m);
+    assert.equal(statSync(join(f.state, 'metrics')).mode & 0o777, 0o755);
+    assert.equal(statSync(join(f.state, 'data/alertmanager')).mode & 0o777, 0o700);
+    assert.equal(readFileSync(join(f.state, 'config/monitoring/alertmanager/alertmanager.yml'), 'utf8'), readFileSync(join(repo, 'docker/alertmanager.yml'), 'utf8'));
+    assert.equal(existsSync(join(f.state, 'config/monitoring/alertmanager/webhook-url')), false, 'the webhook address is not in a backup');
+    assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
   } finally { clean(f); }
@@ -525,6 +535,9 @@ const ISSUER = 'https://login.association.example.test';
 const centralEnv = (file = 'central-jwks.json') =>
   composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\nCENTRAL_ISSUER=${ISSUER}\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=${file}\n`);
 
+// The alert webhook step (B9) always names setup.sh; the central key file tests are about a rerun for the key file.
+const withoutAlertStep = out => out.replace(/ *\d+\. Alerts are local only[^]*?compose\.sh --profile monitoring up -d\n/, '');
+
 test('restore-host puts the central key file back byte for byte with mode 0644, and leaves central sign-in nothing to redo', () => {
   const f = fixture('warehouse-restore-host-central-key-', { env: centralEnv() });
   try {
@@ -538,7 +551,8 @@ test('restore-host puts the central key file back byte for byte with mode 0644, 
     assert.deepEqual(readdirSync(join(f.state, 'public')).sort(), ['central-jwks.json', 'instance.json']);
     assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^CENTRAL_JWKS_FILE=(.*)$/m)[1], 'central-jwks.json');
     assert.match(result.stdout, /Restored the central sign-in key file public\/central-jwks\.json/);
-    assert.doesNotMatch(result.stdout, /setup\.sh/, 'nothing to rerun');
+    assert.doesNotMatch(withoutAlertStep(result.stdout), /setup\.sh/, 'nothing to rerun');
+    assert.doesNotMatch(result.stdout, /one rerun and not two/, 'no key file step, so nothing to combine with');
     assert.equal(result.keyPending, '', 'doctor --local is not told to expect a missing key file');
   } finally { clean(f); }
 });
@@ -573,8 +587,9 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     assert.ok(result.stdout.includes(`bash setup.sh --operator --state-dir ${f.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`), 'setup rerun with the state');
     assert.ok(result.stdout.includes(`--central-issuer ${ISSUER} --central-jwks-file /absolute/path/to/association-jwks.json`), 'with the issuer the backup names');
     assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
+    assert.match(result.stdout, /add --alert-webhook-file \/absolute\/path\/to\/webhook-url-file\s+to that same command, so it is one rerun and not two/);
     // The numbered steps stay in order whether or not this step is there.
-    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
   } finally { clean(f); }
 });
 
@@ -585,10 +600,10 @@ test('restore-host says nothing about a key file when central sign-in uses an ad
     try {
       const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
       assert.equal(result.status, 0, label + result.stderr + result.stdout);
-      assert.doesNotMatch(result.stdout, /central|setup\.sh/i, label);
+      assert.doesNotMatch(withoutAlertStep(result.stdout), /central|setup\.sh/i, label);
       assert.equal(result.keyPending, '', label);
       assert.equal(existsSync(join(f.state, 'public/central-jwks.json')), false, label);
-      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6], label);
+      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7], label);
     } finally { clean(f); }
   }
 });

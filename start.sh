@@ -13,4 +13,6 @@ bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
 # Optional services (monitoring, printing, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# Realtime opens its database connection on the first join; do that now (best effort, never fails the start).
+node "$ROOT/scripts/realtime-warmup.mjs"
 node "$ROOT/scripts/doctor.mjs" --local

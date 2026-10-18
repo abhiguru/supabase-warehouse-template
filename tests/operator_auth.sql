@@ -46,6 +46,15 @@ SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='
   AND otp_code_hash ~ '^[0-9a-f]{64}$' FROM public.otp_verifications
   WHERE id=(:'challenge'::jsonb#>>'{data,request_id}')::uuid),
   'accepted delivery stores a provider ID and hash only');
+-- TW-CFG-001 (owner decision D13): the stored code is a keyed hash, HMAC-SHA256 over
+-- phone:code:request_id with the instance secret, not a bare SHA-256 of the code, and it is valid for
+-- five minutes. docs/OPERATOR_INSTALL.md says so; this pins it.
+SELECT pg_temp.assert_true((SELECT otp_code_hash=encode(extensions.hmac(phone_number||':'||(:'challenge'::jsonb#>>'{data,otp_code}')||':'||id::text,
+      (SELECT value FROM warehouse_security.auth_config WHERE key='jwt_secret'),'sha256'),'hex')
+    AND otp_code_hash<>encode(extensions.digest((:'challenge'::jsonb#>>'{data,otp_code}')::bytea,'sha256'),'hex')
+    AND expires_at-created_at=interval '5 minutes'
+  FROM public.otp_verifications WHERE id=(:'challenge'::jsonb#>>'{data,request_id}')::uuid),
+  'the stored code is HMAC-SHA256(phone:code:request_id, instance secret), valid for five minutes');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888801')->>'code')='resend_cooldown','resend is bounded');
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888801','000000')->>'code')='invalid_otp'
   OR (:'challenge'::jsonb#>>'{data,otp_code}')='000000','wrong OTP denied');
@@ -65,6 +74,40 @@ SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_login'::jsonb#>>'{d
 SELECT pg_temp.assert_true((public.refresh_jwt_token(:'admin_refresh'::jsonb->>'refresh_token')->>'success')='false','a replayed refresh token ends the session');
 ROLLBACK TO SAVEPOINT refresh_replay;
 
+-- TW-CFG-003 (owner decision D14): MSG91 accepted the request but sent no request ID. The code is
+-- treated as sent and stays valid (a second SMS would be billed), and the send is recorded as
+-- success_no_id so that it can be counted. An empty ID is no ID.
+SELECT public.operator_prepare_otp('9888888831') AS no_id_delivery \gset
+SELECT public.operator_finish_otp((:'no_id_delivery'::jsonb#>>'{data,request_id}')::uuid,true,NULL);
+SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='success_no_id' AND msg91_request_id IS NULL
+  AND NOT verified AND NOT quota_refunded AND otp_code_hash ~ '^[0-9a-f]{64}$' FROM public.otp_verifications
+  WHERE id=(:'no_id_delivery'::jsonb#>>'{data,request_id}')::uuid),
+  'a success without an ID is accepted and recorded as success_no_id, the code kept');
+SELECT pg_temp.assert_true((SELECT attempts=1 AND status='success_no_id' FROM warehouse_security.otp_provider_attempts
+  WHERE request_id=(:'no_id_delivery'::jsonb#>>'{data,request_id}')::uuid),'the attempt log carries the same status');
+SELECT pg_temp.assert_true((public.get_otp_stats('919888888831')#>>'{data,0,successful_sent}')::integer=1,
+  'the OTP statistics count a send without an ID as sent');
+SELECT pg_temp.assert_true((public.operator_verify_otp('9888888831',:'no_id_delivery'::jsonb#>>'{data,otp_code}','No Id Customer')#>>'{data,action}')='pending',
+  'the code of a send without an ID still verifies');
+SELECT public.operator_prepare_otp('9888888832') AS empty_id_delivery \gset
+SELECT public.operator_finish_otp((:'empty_id_delivery'::jsonb#>>'{data,request_id}')::uuid,true,'');
+SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='success_no_id' AND msg91_request_id IS NULL
+  FROM public.otp_verifications WHERE id=(:'empty_id_delivery'::jsonb#>>'{data,request_id}')::uuid),
+  'an empty ID is no ID');
+-- Migration 97 replaced operator_finish_otp by the same function with a fourth, optional argument; the
+-- three-argument calls of the whole suite resolve to it, and only the service key may call it.
+SELECT pg_temp.assert_true(to_regprocedure('public.operator_finish_otp(uuid,boolean,text)') IS NULL
+  AND to_regprocedure('public.operator_finish_otp(uuid,boolean,text,integer)') IS NOT NULL
+  AND NOT has_function_privilege('anon','public.operator_finish_otp(uuid,boolean,text,integer)','EXECUTE')
+  AND NOT has_function_privilege('authenticated','public.operator_finish_otp(uuid,boolean,text,integer)','EXECUTE')
+  AND has_function_privilege('service_role','public.operator_finish_otp(uuid,boolean,text,integer)','EXECUTE')
+  AND (SELECT prosecdef AND proconfig=ARRAY['search_path=pg_catalog, public'] FROM pg_proc
+    WHERE oid='public.operator_finish_otp(uuid,boolean,text,integer)'::regprocedure),
+  'operator_finish_otp: one function, SECURITY DEFINER, pinned search_path, service key only');
+SELECT pg_temp.assert_true(NOT has_table_privilege('anon','warehouse_security.otp_provider_attempts','SELECT')
+  AND NOT has_table_privilege('authenticated','warehouse_security.otp_provider_attempts','SELECT')
+  AND (SELECT relrowsecurity FROM pg_class WHERE oid='warehouse_security.otp_provider_attempts'::regclass),
+  'the attempt counter is not readable through the API');
 SELECT public.operator_prepare_otp('9888888804') AS failed_delivery \gset
 SELECT public.operator_finish_otp((:'failed_delivery'::jsonb#>>'{data,request_id}')::uuid,false,'provider_auth');
 SELECT pg_temp.assert_true((SELECT delivery_status='failed' AND msg91_status='provider_auth'
@@ -194,5 +237,11 @@ UPDATE warehouse_security.operator_otp_global_limit SET hourly_count=0,unknown_c
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888811')->>'success')='true','configurable cap: first request');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888812')->>'success')='true','configurable cap: second request');
 SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888813')->>'code')='rate_limited','configurable cap enforced');
+-- TW-CFG-005: text 0 is the documented no-send switch (docs/OPERATOR_INSTALL.md): every request is refused
+-- before a code exists, so nothing can reach the provider.
+UPDATE warehouse_security.auth_config SET value='0' WHERE key='otp_global_hourly_cap';
+UPDATE warehouse_security.operator_otp_global_limit SET hourly_count=0,unknown_count=0,window_started=now() WHERE id;
+SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888833')->>'code')='rate_limited'
+  AND NOT EXISTS (SELECT 1 FROM public.otp_verifications WHERE phone_number='919888888833'),'a cap of text 0 is the no-send switch');
 UPDATE warehouse_security.auth_config SET value='300' WHERE key='otp_global_hourly_cap';
 ROLLBACK;

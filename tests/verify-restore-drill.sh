@@ -63,6 +63,15 @@ done
 earlier="$( { printf "BEGIN;\nDELETE FROM warehouse_migrations.applied WHERE name='00000000000048_owner_decisions.sql';\n"; cat "$ROOT/scripts/backup-integrity.sql"; printf '\nROLLBACK;\n'; } | sql -d postgres | sed 's/=.*//' | tr '\n' ' ')"
 expected='migration_count migration_fingerprint public_table_count public_function_count customer_count user_profile_count grn_count dispatch_count invoice_count order_count storage_object_count acl_anon_feature_flags_select acl_anon_orders_select acl_authenticated_orders_select acl_service_operator_prepare acl_anon_operator_prepare acl_anon_legacy_send_otp acl_authenticated_enrollment_review '
 [[ "$earlier" == "$expected" ]] || { echo "Restore drill: on a database without migration 48 the integrity report is not the earlier one: $earlier" >&2; exit 1; }
+# TW-BE-011: the payment, order line and order revision counts belong to a release with
+# migration 95 or later. A database without one prints none of them; with a ledger row
+# numbered 95 (in a transaction that is rolled back) it prints exactly these three, after the
+# earlier lines. Neither is in the report of this database unless it already carries one.
+with95="$( { printf "BEGIN;\nINSERT INTO warehouse_migrations.applied(name,checksum) VALUES ('00000000000095_restore_drill_marker.sql','drill');\n"; cat "$ROOT/scripts/backup-integrity.sql"; printf '\nROLLBACK;\n'; } | sql -d postgres | sed -n 's/^\(payment_count\|order_item_count\|order_revision_count\)=.*/\1/p' | tr '\n' ' ')"
+[[ "$with95" == 'payment_count order_item_count order_revision_count ' ]] || { echo "Restore drill: with migration 95 in the ledger the report lacks the order detail counts: $with95" >&2; exit 1; }
+if ! sql -A -t -d postgres -c "SELECT 1 FROM warehouse_migrations.applied WHERE name >= '00000000000095' LIMIT 1" | grep -q 1; then
+  ! grep -Eq '^(payment|order_item|order_revision)_count=' "$backup/integrity.txt" || { echo 'Restore drill: the order detail counts are printed without migration 95' >&2; exit 1; }
+fi
 sql -A -t -d postgres -c "SELECT rolname FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY rolname" > "$backup/roles.txt"
 sql -A -t -d postgres -c "SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\"" > "$backup/storage_objects.txt"
 while IFS= read -r object; do
