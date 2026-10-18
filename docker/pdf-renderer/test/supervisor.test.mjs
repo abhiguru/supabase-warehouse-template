@@ -548,3 +548,25 @@ test('a crash during shutdown fails queued jobs at once instead of stranding the
   await new Promise((resolve) => s.server.close(resolve));
   await fs.rm(s.dir, { recursive: true, force: true });
 });
+
+test('after a relaunch the old browser memory figure is gone: /health shows 0 and two jobs may run together', async () => {
+  // Only the first browser reports memory (700 MB, above the 500 MB second-job limit); the new one reports nothing yet.
+  const s = await startService({
+    config: { concurrency: 2 },
+    memoryReader: async (engine) => (engine.id === 1 ? 700 * 1024 * 1024 : null),
+    behavior: { render: (job) => (job.html.includes('hang') ? new Promise(() => {}) : sleep(60).then(ok)) },
+  });
+  try {
+    const running = render(s, { html: '<p>hang</p>' });
+    await waitFor(() => s.behavior.started.length === 1, 1000, 'started');
+    await waitFor(() => s.supervisor.health().body.chromium.memoryMB === 700, 1000, 'the first browser reading reaches /health');
+    s.behavior.engines[0].crash('disconnected');
+    assert.equal((await running).status, 503);
+    await waitFor(() => s.behavior.launches === 2 && s.supervisor.health().body.status === 'up', 3000, 'new browser up');
+    assert.equal(s.supervisor.chromeBytes, 0);
+    assert.equal(s.supervisor.health().body.chromium.memoryMB, 0, 'not the old 700');
+    const both = await Promise.all([render(s, { html: '<p>a</p>' }), render(s, { html: '<p>b</p>' })]);
+    assert.deepEqual(both.map((r) => r.status), [200, 200]);
+    assert.equal(s.behavior.maxActive, 2, 'the stale figure did not make the jobs run one at a time');
+  } finally { await s.stop(); }
+});

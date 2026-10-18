@@ -348,7 +348,8 @@ export class Supervisor {
   async #readChrome(engine) {
     try {
       const used = await this.chromeMemory(engine);
-      if (used !== null && used !== undefined) this.chromeBytes = used;
+      // A reading that arrives after the browser was replaced belongs to the old one.
+      if (used !== null && used !== undefined && engine === this.engine) this.chromeBytes = used;
       return used ?? null;
     } catch {
       return null;
@@ -440,6 +441,9 @@ export class Supervisor {
         await sleep(delay);
       }
       if (this.stopping && reason !== 'boot') return;
+      // The old browser's memory figure says nothing about the one being started: /health and the
+      // second-job rule must not use it (a reading of the new browser replaces the zero).
+      this.chromeBytes = 0;
       const launchId = `${++this.launchCounter}-${randomBytes(3).toString('hex')}`;
       const profileDir = path.join(this.config.profilesDir, launchId);
       const t0 = Date.now();
