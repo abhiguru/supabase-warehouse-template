@@ -1,6 +1,7 @@
 // HTTP front end: POST /render (multipart) and GET /health.
 
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import { mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -92,7 +93,7 @@ export async function parseRenderForm(form) {
   }
 
   return {
-    html: await files['index.html'].text(),
+    html: Buffer.from(await files['index.html'].arrayBuffer()),
     header: files['header.html'] ? await files['header.html'].text() : undefined,
     footer: files['footer.html'] ? await files['footer.html'].text() : undefined,
     params,
@@ -101,67 +102,46 @@ export async function parseRenderForm(form) {
 
 // ---- server -----------------------------------------------------------------------------------------
 
+const DRAIN_MS = 10000;
+
 function sendJson(res, status, error, extraHeaders = {}) {
+  if (res.headersSent || res.writableEnded || res.destroyed) return false;
   const body = JSON.stringify({ error, code: status });
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...extraHeaders });
   res.end(body);
+  return true;
 }
 
-/** After answering without reading the whole body: drain it for a few seconds, then close, so the client sees the response. */
-function drainAndClose(req) {
-  req.resume();
-  const timer = setTimeout(() => req.destroy(), 5000);
+/**
+ * After answering without having read the whole body: keep discarding the upload for a few seconds so the client can
+ * finish sending and read the answer, then close. (Closing at once would reset the connection under the client.)
+ */
+function drain(req, limitBytes) {
+  if (req.complete) return;
+  let seen = 0;
+  req.on('data', (chunk) => { seen += chunk.length; if (seen > limitBytes) req.destroy(); }); // discarded, never buffered
+  const timer = setTimeout(() => req.destroy(), DRAIN_MS);
   timer.unref();
   req.once('close', () => clearTimeout(timer));
-}
-
-function refuseEarly(req, res, status, message) {
-  sendJson(res, status, message, { Connection: 'close' });
-  drainAndClose(req);
-}
-
-/** Read a request body with a byte counter. Never destroys the request, so an error response can still be sent. */
-function readBody(req, limit, onTotal) {
-  let cancel;
-  const promise = new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
-    let done = false;
-    const finish = (fn, value) => {
-      if (done) return;
-      done = true;
-      req.removeListener('data', onData);
-      fn(value);
-    };
-    const onData = (chunk) => {
-      total += chunk.length;
-      if (total > limit) return finish(reject, new HttpError(413, 'body too large'));
-      const refusal = onTotal(total);
-      if (refusal) return finish(reject, refusal);
-      chunks.push(chunk);
-    };
-    cancel = (err) => finish(reject, err);
-    req.on('data', onData);
-    req.once('end', () => finish(resolve, Buffer.concat(chunks, total)));
-    req.once('error', (err) => finish(reject, err));
-    req.once('close', () => finish(reject, new Error('connection closed')));
-  });
-  promise.catch(() => {});
-  return { promise, cancel: (err) => cancel(err) };
+  req.once('end', () => clearTimeout(timer));
 }
 
 export function createServer({ supervisor, config, log }) {
-  const server = http.createServer((req, res) => {
-    handle(req, res).catch((err) => {
-      log('request_error', { reason: safeMessage(err) });
-      if (!res.headersSent) sendJson(res, 500, 'internal error');
-      else res.destroy();
-    });
-  });
+  const server = http.createServer((req, res) => run(req, res, false));
+  // Expect: 100-continue: decide before the client is told to send the body.
+  server.on('checkContinue', (req, res) => run(req, res, true));
   server.keepAliveTimeout = config.keepAliveTimeoutMs;
   server.headersTimeout = config.headersTimeoutMs;
 
-  async function handle(req, res) {
+  function run(req, res, expectContinue) {
+    handle(req, res, expectContinue).catch((err) => {
+      log('request_error', { reason: safeMessage(err) });
+      if (!sendJson(res, 500, 'internal error')) res.destroy();
+      drain(req, config.maxBodyBytes);
+    });
+  }
+
+  async function handle(req, res, expectContinue) {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/health') {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, 'method not allowed');
@@ -170,93 +150,103 @@ export function createServer({ supervisor, config, log }) {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) });
       return res.end(req.method === 'HEAD' ? undefined : text);
     }
-    if (url.pathname !== '/render') return sendJson(res, 404, 'not found');
-    if (req.method !== 'POST') return sendJson(res, 405, 'method not allowed', { Allow: 'POST' });
-    return handleRender(req, res);
+    if (url.pathname !== '/render') { sendJson(res, 404, 'not found'); return drain(req, config.maxBodyBytes); }
+    if (req.method !== 'POST') { sendJson(res, 405, 'method not allowed', { Allow: 'POST' }); return drain(req, config.maxBodyBytes); }
+    return handleRender(req, res, expectContinue);
   }
 
-  async function handleRender(req, res) {
+  async function handleRender(req, res, expectContinue) {
     const arrivedAt = Date.now();
     const id = randomBytes(4).toString('hex');
+    let drainLimit = config.maxBodyBytes; // raised to the declared length so a refused upload can finish
+    const refuse = (status, message, bytes = 0) => {
+      log('job', { id, bytes, pages: 0, queueMs: 0, renderMs: 0, outcome: 'refused', code: status, reason: status === 400 ? 'invalid input' : message });
+      sendJson(res, status, message);
+      drain(req, drainLimit);
+    };
 
     const contentType = req.headers['content-type'] || '';
-    if (!/^multipart\/form-data\s*;/i.test(contentType)) return refuseEarly(req, res, 400, 'content-type must be multipart/form-data');
+    if (!/^multipart\/form-data\s*;/i.test(contentType)) return refuse(400, 'content-type must be multipart/form-data');
 
     const declared = req.headers['content-length'];
-    let declaredBytes = 0;
+    let declaredBytes = null; // unknown (chunked): treated as a large body
     if (declared !== undefined) {
-      if (!/^\d+$/.test(declared)) return refuseEarly(req, res, 400, 'invalid Content-Length');
+      if (!/^\d+$/.test(declared)) return refuse(400, 'invalid Content-Length');
       declaredBytes = Number(declared);
-      if (declaredBytes > config.maxBodyBytes) return refuseEarly(req, res, 413, 'body too large');
+      drainLimit = Math.max(drainLimit, declaredBytes);
+      if (declaredBytes > config.maxBodyBytes) return refuse(413, 'body too large', declaredBytes);
     }
-
-    const admitted = supervisor.reserve(declaredBytes);
-    if (admitted.error) return refuseEarly(req, res, admitted.error.status, admitted.error.message);
-    const reservation = admitted.reservation;
 
     // The client going away cancels the job (dropped from the queue, or the page is closed).
     const clientGone = new AbortController();
     res.once('close', () => { if (!res.writableEnded) clientGone.abort('client'); });
 
-    let handedOver = false;
-    let reader = null;
-    let timedOut = false;
-    const failEarly = (err) => {
-      if (!handedOver) reservation.release();
+    // Admit before reading. The body stays unread on the socket until a slot is free.
+    const admitted = supervisor.admit(declaredBytes, { id, arrivedAt, clientSignal: clientGone.signal });
+    if (admitted.error) return refuse(admitted.error.status, admitted.error.message, declaredBytes || 0);
+    const entry = admitted.entry;
+
+    let cancelRead = null;
+    entry.signal.addEventListener('abort', () => { if (cancelRead) cancelRead(new HttpError(504, 'deadline exceeded')); }, { once: true });
+
+    const answer = (err) => {
       if (clientGone.signal.aborted) return;
       const status = err instanceof HttpError ? err.status : 500;
       if (!(err instanceof HttpError)) log('request_error', { id, reason: safeMessage(err) });
-      log('job', { id, bytes: reservation.bytes, pages: 0, queueMs: 0, renderMs: 0, outcome: 'error', code: status, reason: status === 400 ? 'invalid input' : err.message });
-      sendJson(res, status, err instanceof HttpError ? err.message : 'internal error', { Connection: 'close' });
-      drainAndClose(req);
+      sendJson(res, status, err instanceof HttpError ? err.message : 'internal error');
+      drain(req, drainLimit);
     };
 
-    // Whole-request deadline, from arrival, also while the body is still being read.
-    const readDeadline = setTimeout(() => {
-      if (!handedOver) {
-        timedOut = true;
-        const err = new HttpError(504, 'deadline exceeded');
-        err.reported = true;
-        failEarly(err);
-        if (reader) reader.cancel(err);
-      }
-    }, config.deadlineMs);
-
     try {
-      // Read the body, counting bytes whatever Content-Length said.
-      reader = readBody(req, config.maxBodyBytes, (total) => reservation.grow(total));
-      const body = await reader.promise;
-      if (clientGone.signal.aborted) { reservation.release(); return; }
+      await entry.started; // rejects: 503 / 504 / client gone
+      if (expectContinue) res.writeContinue();
+
+      // Read and parse in one pass, counting bytes. Nothing but the parsed parts is kept.
+      let total = 0;
+      let readError = null;
+      let controllerRef = null;
+      const counter = new TransformStream({
+        start(controller) { controllerRef = controller; },
+        transform(chunk, controller) {
+          total += chunk.length;
+          if (total > config.maxBodyBytes) {
+            readError = new HttpError(413, 'body too large');
+            controller.error(readError);
+            return;
+          }
+          controller.enqueue(chunk);
+        },
+      });
+      cancelRead = (err) => { readError = readError || err; if (controllerRef) controllerRef.error(err); };
+      if (entry.signal.aborted) throw new HttpError(504, 'deadline exceeded');
 
       let parsed;
       try {
-        const form = await new Request('http://localhost/', { method: 'POST', headers: { 'content-type': contentType }, body }).formData();
-        parsed = await parseRenderForm(form);
+        const request = new Request('http://localhost/', {
+          method: 'POST',
+          headers: { 'content-type': contentType },
+          body: Readable.toWeb(req).pipeThrough(counter),
+          duplex: 'half',
+        });
+        parsed = await parseRenderForm(await request.formData());
       } catch (err) {
+        if (readError) throw readError;
+        if (clientGone.signal.aborted) throw Object.assign(new Error('client gone'), { dropped: true });
         if (err instanceof HttpError) throw err;
         throw new HttpError(400, 'invalid multipart body');
       }
+      cancelRead = null;
 
-      if (timedOut) return;
-      clearTimeout(readDeadline);
-      handedOver = true;
-      const result = await supervisor.submit(reservation, { id, ...parsed, arrivedAt, clientSignal: clientGone.signal });
+      const resultPromise = entry.run({ id, ...parsed });
+      parsed = null;
+      const result = await resultPromise;
       res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': result.pdf.length });
       res.end(result.pdf);
     } catch (err) {
-      clearTimeout(readDeadline);
-      if (err && err.reported) return;
       if (err && err.dropped) return; // client gone; the supervisor logged it
-      if (handedOver) {
-        if (!res.headersSent && !clientGone.signal.aborted) {
-          const status = err instanceof HttpError ? err.status : 500;
-          sendJson(res, status, err instanceof HttpError ? err.message : 'internal error', status === 503 ? { Connection: 'close' } : {});
-        }
-        return;
-      }
-      failEarly(err);
-    } finally {
-      clearTimeout(readDeadline);
+      // Idempotent: the supervisor may already have answered (and logged) this entry.
+      entry.fail(err instanceof HttpError ? err : new HttpError(500, 'internal error'));
+      answer(err);
     }
   }
 
@@ -282,7 +272,12 @@ export async function main() {
     shuttingDown = true;
     log('signal', { signal });
     await supervisor.shutdown();
-    server.close();
+    // Let responses that are still being written finish (a large PDF to a slow client), closing idle keep-alive
+    // connections as they become idle; after 5 s whatever is left is cut.
+    const closed = new Promise((resolve) => server.close(resolve));
+    const poll = setInterval(() => server.closeIdleConnections(), 50);
+    await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5000))]);
+    clearInterval(poll);
     server.closeAllConnections();
     process.exit(0);
   };
