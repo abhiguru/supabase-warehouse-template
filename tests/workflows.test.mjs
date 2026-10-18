@@ -113,3 +113,16 @@ test('the validate job runs the alert rule checks, so docker/alertmanager.webhoo
   const job = ci.slice(ci.indexOf('\n  validate:'), ci.indexOf('\n  migrations:'));
   assert.match(job, /\n      - name: Alert rules and Alertmanager files \(promtool and amtool, no network\)\n        run: npm run test:alert-rules\n/);
 });
+
+// A plain (unquoted) YAML scalar ends at ": " or " #", so `run: pip install --only-binary=:all: -r ...`
+// made GitHub reject the whole workflow file (2026-10-18). Such a command must be quoted or a block scalar.
+test('a one-line run command with ": " or " #" in it is quoted', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  for (const file of readdirSync(directory)) {
+    for (const [index, line] of readFileSync(new URL(file, directory), 'utf8').split('\n').entries()) {
+      const match = /^\s*(?:- )?run:\s+(.*)$/.exec(line);
+      if (!match || /^['"|>]/.test(match[1])) continue;
+      assert.doesNotMatch(match[1], /: | #/, `${file}:${index + 1} needs quotes: ${match[1]}`);
+    }
+  }
+});

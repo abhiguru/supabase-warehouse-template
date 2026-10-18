@@ -46,7 +46,9 @@ every release tag:
       the owner review the entry in `docker/image-exceptions.json` (new
       `reviewed` date, `expires` at most 90 days later, reason updated with the
       scan's counts), in the release pull request.
-- [ ] Record the scan date and the per-image row counts in the pull request.
+- [ ] Record the scan date and the per-image row counts in the pull request. This one
+      `--no-cache` build and scan is the whole rebuild step: do not build twice. Never
+      release from images built from cache.
 
 ## Post-release local-readiness follow-up — 2026-09-22
 
