@@ -219,9 +219,18 @@ test('a waiting request is not read: its body stays on the socket until a slot i
   req.write(bodyBuf);
   req.end();
   await waitFor(() => s.supervisor.queue.length === 1, 2000, 'second queued');
-  await sleep(400);
+  // Wait for the transfer to settle instead of for a fixed time: the client's unsent byte count stops changing
+  // once the kernel buffers on both sides are full (the first job is held, so nothing will ever drain them).
+  let last = -1;
+  let steady = 0;
+  await waitFor(() => {
+    const now = req.socket.writableLength;
+    steady = now === last ? steady + 1 : 0;
+    last = now;
+    return steady >= 5;
+  }, 10000, 'the upload to stop moving');
   // Kernel buffers hold a few MB at most; the rest cannot have been accepted while nothing reads.
-  // bytesWritten counts what was handed to the socket; writableLength is what the kernel has NOT accepted yet.
+  // writableLength is what the kernel has NOT accepted yet.
   assert.ok(req.socket.writableLength > 20 * 1024 * 1024, `only ${req.socket.writableLength} bytes were still waiting to be sent: the server read the body of a request that was not granted a slot`);
   assert.equal(s.supervisor.queue.length, 1);
   release();

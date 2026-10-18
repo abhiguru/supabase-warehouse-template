@@ -9,6 +9,7 @@ async function withService(options, fn) {
   try { await fn(service); } finally { await service.stop(); }
 }
 const ok = () => ({ pdf: fakePdf(1), pages: 1 });
+let releaseFirst;
 
 test('concurrency is 2: four jobs never run more than two at once', () => withService({
   behavior: { render: () => sleep(120).then(ok) },
@@ -76,7 +77,8 @@ test('504 when the browser ignores the abort: it is killed after the grace perio
 
 test('a queued job whose client disconnected is dropped without rendering', () => withService({
   config: { concurrency: 1 },
-  behavior: { render: () => sleep(300).then(ok) },
+  // The first job is held until the test releases it: no timing decides whether the second one is still queued.
+  behavior: { render: () => new Promise((resolve) => { releaseFirst = () => resolve(ok()); }) },
 }, async (s) => {
   const first = render(s, { html: '<p>first</p>' });
   await waitFor(() => s.behavior.started.length === 1, 1000, 'first started');
@@ -86,6 +88,7 @@ test('a queued job whose client disconnected is dropped without rendering', () =
   ac.abort();
   await second;
   await waitFor(() => s.supervisor.queue.length === 0, 1000, 'dropped from the queue');
+  releaseFirst();
   assert.equal((await first).status, 200);
   assert.equal(s.behavior.started.length, 1, 'the dropped job was never rendered');
   assert.ok(s.jobLogs().some((j) => j.outcome === 'dropped'));
