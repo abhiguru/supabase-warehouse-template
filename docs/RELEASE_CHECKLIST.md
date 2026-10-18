@@ -49,9 +49,6 @@ every release tag:
 - [ ] Record the scan date and the per-image row counts in the pull request. This one
       `--no-cache` build and scan is the whole rebuild step: do not build twice. Never
       release from images built from cache.
-- [ ] In that build's log, confirm the sensor bridge installed with `--require-hashes` and
-      the storage build did not report a changed `package-lock.json` (see
-      [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#build-date-drift-and-the-release-rebuild-2026-10-18-decision-d5)).
 
 ## Post-release local-readiness follow-up — 2026-09-22
 

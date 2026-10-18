@@ -1,5 +1,5 @@
 # The bridge's Python dependencies, every one pinned with sha256 hashes of its wheels and installed with
-# --require-hashes (Dockerfile and CI). Resolved with pip 24 on Python 3.12, installed and tested on 3.14;
+# --require-hashes (Dockerfile and CI). Python 3.14 only: the hashes cover CPython 3.14 and abi3 wheels, so an install on another Python fails;
 # Dependabot's pip entry proposes updates. python-kasa is GPL-3.0, hence LICENSE here.
 # Hashes cover the CPython 3.14 and abi3 wheels of each pinned version (all platforms), as listed by PyPI.
 # To change a version: take its wheel hashes from https://pypi.org/pypi/<name>/<version>/json (urls[].digests.sha256).

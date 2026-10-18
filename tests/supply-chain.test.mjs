@@ -26,7 +26,13 @@ test('the sensor bridge Dockerfile and CI install with --require-hashes', () => 
 });
 
 test('the storage image fails the build if npm install changes package-lock.json', () => {
-  const docker = read('docker/storage/Dockerfile').replace(/\\\r?\n/g, ' ');
-  assert.match(docker, /sha256sum package-lock\.json[\s\S]*npm install[\s\S]*sha256sum package-lock\.json[\s\S]*exit 1/);
-  assert.match(docker, /npm ls --omit=dev --all/);
+  const docker = read('docker/storage/Dockerfile').replace(/\\\r?\n/g, ' ').split('\n').filter(l => !l.startsWith('#')).join('\n');
+  assert.match(docker, /before="\$\(sha256sum package-lock\.json[^)]*\)"\s+&& npm install [^&]*&& after="\$\(sha256sum package-lock\.json[^)]*\)"\s+&& if \[ "\$before" != "\$after" \]; then echo [^\n]*; exit 1; fi/);
+  const install = /npm install [^&]*/.exec(docker)[0];
+  for (const flag of ['--no-package-lock', '--package-lock=false', '--no-save', '--package-lock-only']) {
+    assert.ok(!install.includes(flag), `npm install must not use ${flag}`);
+  }
+  assert.ok(!/--no-package-lock|--package-lock=false/.test(docker), 'no flag may skip the lockfile');
+  assert.match(docker, /&& npm ls --omit=dev --all > \/dev\/null\s+&& rm -rf/, 'npm ls must be fatal (no ||)');
+  assert.match(docker, /npm@11\.12\.1/, 'the failure message names how to regenerate');
 });

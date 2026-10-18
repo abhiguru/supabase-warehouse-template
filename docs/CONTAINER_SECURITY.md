@@ -1460,8 +1460,7 @@ This is accepted and documented, not hidden:
   `tests/supply-chain.test.mjs` fails if a package line has no hash or either install
   drops the flag.
 - Storage: the Dockerfile keeps `npm install` but fails the build if `package-lock.json`
-  changes during it (sha256 before and after) and prints `npm ls --omit=dev --all`. The
-  tree listing is a warning, not a gate: on 2026-10-18 it reports `invalid: undici@8.11.2` under
-  `@kubernetes/client-node` because `package.json` overrides `undici` to 7.30.0 while the
-  lockfile keeps a nested 8.11.2. Open item: resolve the override and the lockfile, then make
-  the listing fail the build.
+  changes during it (sha256 before and after) and then runs `npm ls --omit=dev --all`, which also fails the build (an invalid, missing or
+  extraneous package). The `undici` override is scoped to `undici@^7` because
+  `@kubernetes/client-node` needs 8.x; the earlier unscoped override made that listing invalid
+  (resolved 2026-10-18).
