@@ -119,6 +119,9 @@ test('operator probes run in a container that shares a network with their target
     }
     assert.ok(checked > 0, `${path}: no probe was read`);
   }
+  // The renderer is probed from the function runtime (the path PDFs take), which must be on its network.
+  assert.ok(reaches('functions', 'pdf-renderer'), 'functions cannot resolve pdf-renderer');
+  assert.match(read('health-check.sh'), /compose exec -T functions bash -c '[^']*\/dev\/tcp\/pdf-renderer\/3000/);
   // The gateway probes read the public key under the name the storage container has for it.
   assert.doesNotMatch(read('health-check.sh'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);

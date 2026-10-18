@@ -32,7 +32,7 @@ echo "list refresh: $list_refresh"
 # Each probe runs in a container that shares a network with its target
 # (docker/docker-compose.yml, `networks:`): the storage service for the gateway
 # and its upstreams, Studio for postgres-meta, which nothing else can reach, and the
-# PDF renderer for itself.
+# function runtime for the PDF renderer.
 probe_from() {
   { cat "$ROOT/scripts/http-readiness.mjs"; cat; } | compose exec -T "$1" node --input-type=module
 }
@@ -46,13 +46,15 @@ for (const [name,url,headers] of [
   console.log(`${name}: available`);
 }
 JS
-# The renderer sits on the internal `renderer` network with the function runtime only,
-# so storage cannot reach it: the probe runs inside the renderer container (its image
-# has node and no curl).
-probe_from pdf-renderer <<'JS' || failed=1
-await waitForHttp('PDF renderer','http://pdf-renderer:3000/health',{});
-console.log('PDF renderer: available');
-JS
+# PDFs reach the renderer from the function runtime over the internal `renderer` network, which
+# storage cannot see. So the probe runs in `functions` (bash with /dev/tcp, as its own health check does):
+# it proves the path the PDF functions really use, not only that the renderer answers to itself.
+if compose exec -T functions bash -c 'exec 3<>/dev/tcp/pdf-renderer/3000 && printf "GET /health HTTP/1.1\r\nHost: pdf-renderer\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'; then
+  echo 'PDF renderer: available'
+else
+  echo 'PDF renderer: not reachable from functions (docker/docker-compose.yml, network renderer)'
+  failed=1
+fi
 probe_from studio <<'JS' || failed=1
 await waitForHttp('metadata','http://meta:8080/health',{});
 console.log('metadata: available');
