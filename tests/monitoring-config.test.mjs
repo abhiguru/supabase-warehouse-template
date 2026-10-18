@@ -310,7 +310,9 @@ test('compose replaces the monitoring containers when their rendered configurati
     const storage = mount('alertmanager', '/alertmanager');
     assert.equal(storage.source, join(f.stateDir, 'data/alertmanager'));
     assert.notEqual(storage.read_only, true);
-    assert.equal(storage.bind.create_host_path, false);
+    assert.notEqual(storage.bind?.create_host_path, true);
+    assert.match(override, /target: \/alertmanager\n\s+bind:\n\s+create_host_path: false/,
+      '/alertmanager: the override declares create_host_path: false');
   } finally { f.cleanup(); }
 });
 
