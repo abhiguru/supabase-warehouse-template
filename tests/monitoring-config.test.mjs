@@ -289,7 +289,15 @@ test('compose replaces the monitoring containers when their rendered configurati
       const volume = mount(service, target);
       assert.equal(volume.source, source, `${service} mounts ${source}`);
       assert.equal(volume.read_only, true, `${service} reads ${target} read-only`);
-      assert.equal(volume.bind.create_host_path, false, `${service}: a missing source is an error, not a directory made by Docker`);
+      // Some Compose releases leave a false create_host_path out of `config` output, so the rendered value may be
+      // absent; it must never be true. The declaration in the override file is checked below.
+      assert.notEqual(volume.bind?.create_host_path, true, `${service}: a missing source is an error, not a directory made by Docker`);
+    }
+    const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
+    for (const target of ['/etc/prometheus/prometheus.yml', '/etc/alertmanager', '/var/lib/node_exporter/textfile']) {
+      const escaped = target.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+      assert.match(override, new RegExp(`target: ${escaped}\\n\\s+read_only: true\\n\\s+bind:\\n\\s+create_host_path: false`),
+        `${target}: the override declares create_host_path: false`);
     }
     assert.deepEqual(mount('prometheus', '/etc/prometheus/alert-rules.yml').source, join(repo, 'docker/alert-rules.yml'));
     assert.ok(edited.config.services['node-exporter'].command.includes('--collector.textfile.directory=/var/lib/node_exporter/textfile'));
