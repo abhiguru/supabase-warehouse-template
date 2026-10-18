@@ -51,7 +51,6 @@ correctly failed for three unchanged upstream images:
 
 | Image | Critical | High |
 |---|---:|---:|
-| Grafana 13.2.2 | 0 | 104 |
 | Studio 2026.09.07-sha-7996410 | 3 | 90 |
 | postgres-meta 0.99.0 | 1 | 29 |
 
@@ -101,7 +100,7 @@ Locked leaf updates, Debian security updates and removal of unused npm/pnpm tool
 complete the patch. No warehouse API or public database schema changes are made.
 
 The final follow-up inventory has 17 valid passing reports out of 19 images.
-Grafana has 104 HIGH findings; PostgREST lacks scannable package results and is
+PostgREST lacks scannable package results and is
 rejected for insufficient evidence. Both new candidates scan with zero fixed
 HIGH/CRITICAL findings. The metadata source
 passed TypeScript/build and all 197 upstream tests against a disposable database
@@ -116,243 +115,6 @@ archive's `test/db` database fixture on an isolated Docker network without host
 ports, and run `PG_META_MAX_RESULT_SIZE_MB=20 PG_QUERY_TIMEOUT_SECS=5
 PG_CONN_TIMEOUT_SECS=30 npm exec -- vitest run --maxWorkers=1
 --no-file-parallelism` against it. Never target an existing warehouse database.
-
-## Grafana OS patch and remaining publisher dependency
-
-Stable Grafana 13.2.2 still has 104 HIGH findings: two Alpine OpenSSL, one main
-binary Thrift, and 101 across bundled plugin executables. The affected plugins
-have PGP-signed `MANIFEST.txt` files. Local binary replacement would invalidate
-the publisher signatures; signature enforcement must not be bypassed or required
-plugins removed to make the scan green. A patched compatible publisher release
-(or publisher-signed replacement plugins plus a tested core rebuild) is required.
-Nightly images are not treated as accepted stable replacements. No findings are
-suppressed; the all-profile gate remains blocked until Grafana passes and the
-PostgREST coverage gap is resolved.
-
-The subsequent `docker/grafana/Dockerfile` rebuild pins the same publisher image
-digest and upgrades only Alpine `libcrypto3` and `libssl3` from 3.5.7-r0 to
-3.5.8-r0. A fresh local Trivy 0.74.0 scan with the same fixed HIGH/CRITICAL
-threshold reports 102 HIGH findings: one main binary Thrift and 101 in signed
-plugin executables. Checksums of all 681 bundled plugin files match the original
-image byte for byte; no signature policy changed. The rebuilt image reports
-Grafana 13.2.2 and a healthy local database on `/api/health`. The 102 findings
-remain a hard gate. Rebuild from live Alpine repositories and rescan at deployment
-time; this local scan is dated evidence, not a future patch guarantee.
-The subsequent full 19-image inventory again had 17 valid passing reports,
-Grafana's 102 findings, and an empty PostgREST package result. The strict gate
-remained nonzero for exactly those two images.
-
-On 2026-09-24, seven newer publisher-signed, Grafana-compatible bundled plugins
-were pinned by version and publisher archive SHA-256, then installed into the
-same Grafana 13.2.2 image. A fresh candidate-image Trivy 0.74.0 scan at the
-fixed HIGH/CRITICAL threshold found **9 HIGH, 0 CRITICAL**: one in the core
-binary and eight across the remaining bundled plugin executables. The candidate
-passed an isolated startup check: all 13 bundled plugins retained valid Grafana
-signatures, and the Prometheus/PostgreSQL datasource provisioning loaded. This
-is a targeted candidate scan, not a new complete 19-image inventory or a passing
-production image gate. The remaining findings and the PostgREST evidence gap
-still require remediation and a complete strict rescan. The image and Compose
-disable automatic catalog updates of preinstalled plugins, including the seven
-pinned bundles; Grafana's separate first-install behavior remains unchanged.
-See [Grafana's signing rules](https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin).
-
-**2026-09-24 targeted amd64 recheck:** The current recipe was built on an amd64
-host with `docker build --no-cache --pull=false -t
-warehouse-grafana-review:20260924 -f docker/grafana/Dockerfile docker` from the
-repository root. The resulting image ID was
-`sha256:aa734a12badf82363db1cee53333339e5c1d6cbb52864c89c7ddba3a784c3abd`.
-Trivy 0.74.0 ran `trivy image --quiet --scanners vuln --severity HIGH,CRITICAL
---ignore-unfixed --list-all-pkgs --exit-code 0 --format json --output <report>
-warehouse-grafana-review:20260924`.
-The image-specific report was rejected by
-`node scripts/validate-image-report.mjs <report> <image>`: **9 HIGH, 0
-CRITICAL**. The disposable image was removed. These are the exact fixed findings
-in that Linux amd64 report (versions below are embedded dependency versions,
-not plugin release numbers):
-
-| Executable | Advisory | Embedded version | Fixed dependency version |
-|---|---|---|---|
-| Grafana core | [CVE-2026-43871](https://www.openwall.com/lists/oss-security/2026/07/24/33), Apache Thrift | `v0.23.1-0.20260429145742-d2acd3c49e58` | `0.24.0` |
-| [PostgreSQL](https://grafana.com/grafana/plugins/grafana-postgresql-datasource/), [InfluxDB](https://grafana.com/grafana/plugins/influxdb/), [Jaeger](https://grafana.com/grafana/plugins/jaeger/), [Prometheus](https://grafana.com/grafana/plugins/prometheus/) plugin executables | [CVE-2026-84445](https://github.com/advisories/GHSA-2v4p-qf9q-27wj), gRPC | `v1.83.1` in each | `1.83.2` on the 1.83 line |
-| [Google Cloud Monitoring](https://grafana.com/grafana/plugins/stackdriver/) plugin executable | [CVE-2026-84304](https://github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc), gRPC | `v1.83.0` | `1.83.1` |
-| Google Cloud Monitoring plugin executable | [CVE-2026-84445](https://github.com/advisories/GHSA-2v4p-qf9q-27wj), gRPC | `v1.83.0` | `1.83.2` on the 1.83 line |
-| [Tempo](https://grafana.com/grafana/plugins/tempo/) plugin executable | [CVE-2026-21728](https://grafana.com/security/security-advisories/cve-2026-21728/), Tempo | `v1.5.1-0.20250529124718-87c2dc380cec` | `2.8.4`, `2.9.2`, or `2.10.2` on the respective release lines |
-| Tempo plugin executable | [CVE-2026-28377](https://grafana.com/security/security-advisories/cve-2026-28377/), Tempo | Same `v1.5.1` pseudo-version | `2.10.3` |
-
-The [Grafana publisher release list](https://github.com/grafana/grafana/releases)
-still identified 13.2.2 as latest stable on 2026-09-24. The six affected
-plugin catalog pages linked above did not provide a verified patched,
-compatible signed release. A fixed dependency version in an advisory does not
-establish that an installable publisher plugin contains it. No safe publisher
-replacement candidate is identified yet. This was a targeted **amd64** image
-scan, not a new full 19-image inventory. The last complete inventory remains
-at 17/19 valid passing reports, with the older 102-HIGH Grafana result and the
-PostgREST package-evidence gap. The strict full gate remains open and must be
-rerun after a publisher fix.
-
-**2026-09-24 targeted arm64 recheck:** The [native arm64 workflow run
-35987888412](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35987888412)
-passed at backend `80869391f2c8dfb7e700ffa99a68382ba7e769c4`. Its
-`grafana-arm64-targeted-scan-35987888412-1` artifact records image
-`warehouse-grafana-scan:35987888412-1`, image ID
-`sha256:d7053286489f4c3d9f0f7e09c6bba3e00434c24f5984a31b05d2e2fc4e97eb24`,
-and `linux/arm64`. The Trivy 0.74.0 JSON has **9 HIGH, 0 CRITICAL** at the same
-fixed threshold. Its core Thrift finding and eight findings in the six arm64
-plugin executables have the same CVEs, embedded versions and fix thresholds as
-the amd64 table above. The workflow passes when it produces valid evidence; its
-success does not mean the nine findings pass the strict image gate. This was a
-targeted Grafana arm64 scan, not a new full 19-image inventory or a PostgREST
-native build. The Grafana findings and PostgREST dependency evidence gap remain
-open.
-
-**2026-09-25 publisher-plugin recheck:** The [Grafana download page](https://grafana.com/grafana/download?edition=oss&pg=get)
-still listed 13.2.2 as the stable application release. The publisher catalog
-offered [Tempo 13.2.2](https://grafana.com/grafana/plugins/tempo/changelog/) and
-[InfluxDB 13.1.5](https://grafana.com/grafana/plugins/influxdb/), both declaring
-Grafana `>=12.3.0-0` compatibility. Their Linux amd64, arm64 and arm archives
-were downloaded from
-`https://grafana.com/api/plugins/<plugin>/versions/<version>/download?os=linux&arch=<arch>`.
-Each archive contained a Grafana Labs PGP-signed `MANIFEST.txt`, and every
-manifest-listed file matched its SHA-256. The archive SHA-256 values were:
-
-| Plugin | amd64 | arm64 | arm |
-|---|---|---|---|
-| Tempo 13.2.2 | `36d53fdc7d0900b38f89e3e6da0babb7da99a2351caad6d19b736edda6deee8c` | `e174e7f0bb1fff4a729cec74290aaf848628ac7ac2d27c2fa5693092def69ecb` | `ad2dd2fc5c5f9ce04f81899f3083a9eb8caac9e408efe05846ae84f47fc39aa5` |
-| InfluxDB 13.1.5 | `ef2234efde30055b51a1364f182ae20089b8f5cf712d93cefc3bc214e2bda38f` | `6d323f50a6c876a578be95c6f095516628ada410723b55e421a2796090beeb1d` | `8e30c1af7026524e180855a5facf144a6d998020280c3b4f00192bee79c05d02` |
-
-All three InfluxDB executables still embed vulnerable gRPC
-`v1.83.1`. All three Tempo executables embed patched gRPC `v1.83.2`, but retain
-a `github.com/grafana/tempo` `v1.5.1-0.20260910130453-bcfe9f230c1d`
-pseudo-version that Trivy still flags for CVE-2026-21728 and CVE-2026-28377.
-An isolated Tempo-only lockfile candidate built on amd64 as image
-`sha256:254f29240623a089f6dfb82852f57814de2973b259fe44548c7f4c06e37ed98e`.
-Trivy 0.74.0 reported **9 HIGH, 0 CRITICAL**, and the strict image-report
-validator rejected the candidate: the same core Thrift and plugin findings as
-the prior candidate.
-The isolated amd64 runtime check passed Grafana health, cryptographic validation
-of all 13 publisher signatures, provisioning and live Prometheus/PostgreSQL
-queries. The arm64 and arm archives were checked for signed-manifest presence
-and manifest-listed file hashes only; they were not run. To reproduce the amd64
-candidate, temporarily replace the three Tempo rows in `plugins.lock` with the
-Tempo versions and checksums above, then run from the repository root:
-
-```sh
-docker build --no-cache --pull=false --platform linux/amd64 --build-arg TARGETARCH=amd64 -t warehouse-grafana-candidate:20260925 docker/grafana
-trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --list-all-pkgs --exit-code 0 --format json --output /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
-node scripts/validate-image-report.mjs /tmp/grafana-candidate-20260925.json warehouse-grafana-candidate:20260925
-bash scripts/grafana-check.sh
-```
-
-The validator is expected to reject the candidate's remaining findings. Because
-the update did not reduce the fixed HIGH findings, the experimental lockfile
-change was reverted.
-This was an amd64 candidate scan; neither the arm64 candidate nor the complete
-19-image inventory was rerun. The Grafana and PostgREST gates remain open.
-
-**2026-09-25 core-build research:** [PR #63](https://github.com/abhiguru/supabase-warehouse-template/pull/63)
-merged a manual Grafana 13.2.2 core-build recipe; that recipe and its
-reproduction record were removed from the public repository under the
-[won't-fix disposition](PRODUCTION_DEPENDENCIES.md#technical-follow-ups-and-dispositions). A native amd64 build from the
-pinned release source with Apache Thrift 0.24.0 yielded a candidate whose Trivy
-0.74.0 scan at the fixed HIGH/CRITICAL threshold no longer reports the single
-Apache Thrift HIGH finding in Grafana's main executable. That scan reported
-**8 HIGH, 0 CRITICAL** on the candidate image; all eight findings remain in
-publisher-signed plugin executables, so the strict validator
-rejected it. Startup, all 13 plugin signatures, provisioning, and live
-Prometheus/PostgreSQL queries passed. The candidate build was not activated in
-the ordinary Grafana recipe, and its native arm64 build has **not been run**.
-The merged research commit is `3eda9686f71b48860464d74e9b42c3e3490fb239`;
-[CI on that exact main commit](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36128411899)
-passed all seven jobs. Those CI Grafana jobs exercise the ordinary signed-plugin
-recipe on native amd64 and arm64 runners, not the manual core-build candidate.
-The active Grafana image remains at **9 HIGH, 0 CRITICAL**, and the complete
-19-image gate remains blocked by Grafana findings and PostgREST inventory.
-
-**2026-09-26 unused-plugin prune candidate:** The candidate recipe
-removes the InfluxDB, Jaeger, Google Cloud Monitoring (`stackdriver`) and Tempo
-bundled plugin directories and their lockfile entries. The repository provisions
-only Prometheus and PostgreSQL. A read-only audit of the owned local Grafana
-volume found two data source types (`postgres` and `prometheus`), zero saved
-dashboards and zero alert rules. This is local demo evidence, not an audit of
-any production Grafana database. Before deployment, inspect each production
-organization's saved data sources, dashboards and alert rules for references to
-the four removed plugin IDs, and migrate any references before replacing the
-image. Preserve a recoverable copy of that Grafana database.
-
-The pruned recipe passed isolated native amd64 Grafana startup, validation of
-the nine retained publisher signatures, provisioning and live
-Prometheus/PostgreSQL queries. The [native targeted workflow run
-36217948795](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/36217948795)
-passed on exact branch commit `d71f094`. It built image
-`sha256:a3e89ab77dcee9b7e27334660f0ae2c648b5dfb6cf01df9181a312b924166ab3`
-on amd64 and image
-`sha256:8a9c4af83e68e93ebd9724b4d5ded8ccafa2aa9d4c76390c1971897b12fc2a62`
-on arm64. Each targeted Trivy 0.74.0 report at the fixed HIGH/CRITICAL threshold
-records **3 HIGH, 0 CRITICAL**: core Thrift CVE-2026-43871 and gRPC
-CVE-2026-84445 in each of the retained Prometheus and PostgreSQL plugins.
-Workflow success means both reports passed evidence validation; the findings
-still fail the strict production image gate. The separate 2026-09-25 core-build
-result above used the earlier 13-plugin recipe. Neither the strict full
-19-image inventory nor PostgREST coverage has been rerun. These candidate
-results do not change production readiness.
-
-**2026-09-26 combined core and prune candidate, native amd64:** At repository
-commit `f8fd060`, the pinned Grafana 13.2.2 source was rebuilt with Apache
-Thrift 0.24.0 and packaged with the nine-plugin pruned recipe. The core binary
-SHA-256 is
-`232812b972f3a532faaed837a1389328785afa6ffa1a548cdf48c0d827c9dda9`;
-the image contains that binary and has ID
-`sha256:c0ab4d7141a31a2bfc277d5d476050e35739fd981c1ed6969dc6ed5173c77306`.
-Its exact-image Trivy 0.74.0 report has **2 HIGH, 0 CRITICAL**, both
-CVE-2026-84445 in gRPC v1.83.1 in the publisher-signed Prometheus and
-PostgreSQL plugin executables. Grafana core's Thrift HIGH is absent. The smoke
-check passed health, all nine publisher signatures, provisioning and live
-Prometheus/PostgreSQL queries; the strict report validator rejected the two
-remaining findings. The core candidate record, its build script and research
-workflow were removed from the public repository; the
-[won't-fix disposition](PRODUCTION_DEPENDENCIES.md#technical-follow-ups-and-dispositions) stands in for them. There is no combined
-arm64 result or full 19-image rescan, and the production gate remains open.
-The manual matrix requires explicit labels for larger, ephemeral
-GitHub-hosted native runners with a conservative 25 GiB free-disk preflight
-margin; it does not use a self-hosted Docker daemon. Standard hosted runners
-have 14 GB total storage and fail that preflight. A qualified larger native
-arm64 runner is not currently available.
-
-A follow-up isolated query check found that the provisioned datasource hostnames
-did not match the Compose service names. They now use `prometheus` and `db`.
-With disposable Prometheus and PostgreSQL fixtures on a private Docker network,
-Grafana returned the expected live metric and SQL row through `/api/ds/query`
-on amd64. The CI smoke is configured to build and run the same signed-plugin,
-provisioning, and query checks on native amd64 and arm64 runners. These checks
-cover the two provisioned datasource paths; they do not clear the remaining
-image findings or replace a full monitoring acceptance test.
-
-**2026-10-11 move to Grafana 13.2.3:** 13.2.3 is the publisher's security
-release of 2026-09-29 (CVE-2026-13719, CVE-2026-13720, CVE-2026-81841). The
-recipe's base is now `grafana/grafana:13.2.3` by digest
-(`sha256:b28bae15...`, the index for amd64, arm64 and arm/v7, read with
-`docker buildx imagetools inspect`). On this base the recipe's own patches
-change nothing: the image already carries OpenSSL 3.5.8-r0 and exactly the
-four plugin versions of `docker/grafana/plugins.lock` (pyroscope 13.0.6,
-opentsdb 13.0.3, prometheus 13.2.1, zipkin 12.4.8; 13.2.2 shipped 13.0.4,
-13.0.1, 13.1.7 and 12.4.6). They stay in the recipe as pins, so a later base
-cannot fall behind them unnoticed. The four unused plugins are still removed.
-`npm run test:grafana` passed on amd64 on the rebuilt image (health and
-version, nine publisher signatures, provisioning, live Prometheus and
-PostgreSQL queries); CI repeats it on amd64 and arm64.
-
-A Trivy 0.74.0 scan of the two recipe images built the same day, with the
-flags of `scripts/scan-images.sh`, found 43 fixed HIGH findings on the 13.2.2
-recipe and 42 on the 13.2.3 recipe, no CRITICAL in either. All of them are in
-the publisher's Go executables (the Grafana server and nine plugin backends),
-which no recipe rebuilds: three Go standard-library advisories per executable
-(CVE-2026-78667, CVE-2026-78669, CVE-2026-97031; Go 1.26.6 and 1.26.7),
-`golang.org/x/net` v0.58.0 in each (CVE-2026-78669), and gRPC v1.83.1 in the
-PostgreSQL and Prometheus plugins (CVE-2026-84445). The one finding that went
-away is Thrift in the Grafana server (CVE-2026-43871). The three advisories
-that 13.2.3 fixes are in the Grafana application and are not among Trivy's
-findings for either image. The remaining findings need a Grafana release
-built with a fixed Go; the scan gate stays failed for this image until then.
 
 ## Remaining scan-coverage dependency: PostgREST
 
@@ -393,9 +155,6 @@ inventory of statically linked components. GitHub's repository dependency-graph
 SBOM lists documentation packages and CI actions, not the runtime Haskell/native
 closure. None of these supplies the required image-bound vulnerability evidence;
 updating the image to v14.18 solely for that purpose would not close the gate.
-The [latest stable Grafana release](https://github.com/grafana/grafana/releases/tag/v13.2.2)
-was still 13.2.2 on the same date, so no publisher-signed replacement is yet
-available through a newer stable release.
 
 The 2026-09-24 platform-specific investigation (its record was removed from
 the public repository under the [won't-fix disposition](PRODUCTION_DEPENDENCIES.md#technical-follow-ups-and-dispositions))
@@ -569,8 +328,7 @@ SQL. The project now has four networks; the table is in
 - `meta` is reachable from `studio` and `db` only; `studio` from `meta` and
   `db` only.
 - `db` is reachable from the services that hold a database connection (rest,
-  realtime, storage, supavisor, the disabled auth service, postgres-exporter,
-  grafana) and from the admin pair. Kong, the function runtime, the PDF renderer,
+  realtime, storage, supavisor, the disabled auth service, postgres-exporter) and from the admin pair. Kong, the function runtime, the PDF renderer,
   imgproxy, CUPS, the sensor bridge, Prometheus, Alertmanager, node-exporter
   and cAdvisor cannot connect to it.
 - Operator probes follow the same rule: `health-check.sh` and
@@ -800,7 +558,7 @@ reference for a pulled one. The classes:
 `no-fix` and `advisory` entries may also name `targets`, prefixes of the
 result's target (a binary's path), and a `no-fix` entry may name `packages`;
 then a row elsewhere is not covered (`db-os-no-fix` covers `linux-libc-dev`
-only, the Grafana entries only the core binary or the plugin directory). The
+only). The
 scan prints a warning for an entry that covered no row, so a stale one is
 noticed, and it counts a report as passed only on the validator's
 "Image scan evidence accepted" line.
@@ -833,7 +591,6 @@ with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 | functions (`edge-runtime`) | 3 C, 4 H | 0 | 1 C, 59 H | `functions-os-no-fix` |
 | pdf-renderer (`pdf-renderer`), new on 2026-10-18 (replaces gotenberg) | n/a | 0 | 1 C, 54 H | `pdf-renderer-os-no-fix` |
 | studio | 2 C, 4 H | 2 C, 3 H | 4 C, 246 H | `studio-app-awaiting-publisher`, `studio-os-no-fix` |
-| grafana | 47 H | 41 H | 0 | `grafana-core-awaiting-publisher` (5), `grafana-plugins-awaiting-publisher` (36) |
 | sensor-bridge | 4 H | 0 | 2 C, 61 H | `sensor-bridge-os-no-fix` |
 | meta (`postgres-meta`), unchanged | 0 | 0 | 1 C, 58 H | `meta-os-no-fix` |
 | realtime, unchanged | 0 | 0 | 74 H | `realtime-os-no-fix` |
@@ -841,10 +598,9 @@ with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 | rest (`postgrest/postgrest:v16.4@sha256:d155c671...`) | no package results | no package results | no package results | `rest-no-package-inventory` |
 | kong, storage, imgproxy, cups, auth, prometheus, alertmanager, node-exporter, postgres-exporter, cadvisor, unchanged | 0 | 0 | 0 | none needed |
 
-With the ledger, both passes of all twenty images are accepted by the
+With the ledger, both passes of all nineteen images are accepted by the
 validator. The review VM's numbers (TW-BE-009) were taken with an older
-database; the rows with a fix match them except Grafana (one more kin-openapi
-advisory, CVE-2026-100349, published since).
+database; the rows with a fix match them.
 
 What changed, per image:
 
@@ -872,22 +628,6 @@ What changed, per image:
   those advisories are the `advisory` exception `studio-app-awaiting-publisher`
   until a later tag; replacing packages inside the prebuilt application is not
   safe. Studio stays on the admin network only.
-- **grafana** (`docker/grafana/Dockerfile`, `plugins.lock`): moved to 13.2.4
-  (core built with a fixed Go standard library and `golang.org/x/net` 0.60.0)
-  and the four pinned plugins to their newest catalog releases (pyroscope
-  13.0.7, opentsdb 13.0.4, prometheus 13.2.3, zipkin 12.4.9; all twelve archive
-  checksums checked against downloads). No signed catalog release of any
-  retained plugin (the four above plus elasticsearch 12.9.2,
-  grafana-postgresql-datasource 13.0.4, loki 13.2.2, mssql 13.0.7, mysql 13.1.4,
-  each scanned from its archive) is built with Go 1.26.9/1.27.2 or
-  `golang.org/x/net` 0.60.0 yet, and 13.2.4's core still has kin-openapi
-  0.144.0 (five advisories, fixed in 0.146.0 to 0.149.0). Those rows are the
-  `advisory` exceptions `grafana-plugins-awaiting-publisher` and
-  `grafana-core-awaiting-publisher`. Signed plugin binaries are not replaced
-  locally (see "Grafana OS patch and remaining publisher dependency"). Pruning
-  the seven retained plugins the template does not provision would remove 28
-  of the 41 rows; that changes what an operator can add, so it is left to the
-  owner.
 - **sensor-bridge** (`docker/sensor-bridge/Dockerfile`): not in the review's
   table (it was not installed there); this scan found msgpack 1.1.2, urllib3
   2.7.0 and setuptools 70.3.0 vendored by the base image's pip 26.2.1, each
@@ -1127,7 +867,7 @@ all; now each of them presents its own.
 | `supabase_storage_admin` | `DB_PASSWORD_STORAGE` | Storage | the same |
 | `supabase_auth_admin` | `DB_PASSWORD_AUTH` | the disabled Auth service | the same |
 | `pgbouncer` | `DB_PASSWORD_POOLER` | Supavisor's pool user (pooler profile) | the same; `docker/volumes/pooler/pooler.exs` writes it into the stored tenant at every pooler start |
-| `warehouse_monitoring` | `DB_PASSWORD_MONITORING` | the Postgres exporter and the Grafana PostgreSQL datasource (monitoring profile); they used `postgres` | migration 94 creates it `NOLOGIN`, a member of `pg_monitor` and of nothing else; `configure-db-roles.sql` gives it `LOGIN` and its password |
+| `warehouse_monitoring` | `DB_PASSWORD_MONITORING` | the Postgres exporter (monitoring profile); it used `postgres` | migration 94 creates it `NOLOGIN`, a member of `pg_monitor` and of nothing else; `configure-db-roles.sql` gives it `LOGIN` and its password |
 | `supabase_functions_admin` | none: `NOLOGIN`, no password | nothing; it owns the webhook functions, which run with its rights without a login | migration 94, `roles.sql`, `configure-db-roles.sql` |
 
 `scripts/configure.mjs` generates the five service values (64 hexadecimal
@@ -1225,11 +965,9 @@ message. Expected sequence:
 6. The operator runs `npm run test:db-roles`, then
    `npm run db:rotate-passwords -- --yes --superuser`. The upgrade keeps
    `POSTGRES_PASSWORD`, the formerly shared value, which was in the
-   environment of PostgREST, Storage, Auth, the exporter and Grafana and in
-   Grafana's datasource store (encrypted with Grafana's published default
-   key, since no `GF_SECURITY_SECRET_KEY` is set). Until it is rotated, a value
-   leaked from any of those before the upgrade is still the superuser
-   password. Then a new backup.
+   environment of PostgREST, Storage, Auth and the exporter. Until it is
+   rotated, a value leaked from any of those before the upgrade is still the
+   superuser password. Then a new backup.
 
 The window in which PostgREST or Storage cannot open a new connection is the
 time between steps 4 and 5; see the drill below for the measured setup run.
@@ -1297,8 +1035,8 @@ service login with `POSTGRES_PASSWORD` over `-h db`,
 
 | Step | Result |
 |---|---|
-| Install `main` (198bbfa) with `setup.sh --operator`; `tests/operator-api-core.mjs`, `test:pooler`, `test:monitoring`, Grafana's datasource | Pass. The finding reproduced: `authenticator`, `supabase_storage_admin`, `supabase_auth_admin`, `pgbouncer` and `supabase_functions_admin` each accepted `POSTGRES_PASSWORD` over SCRAM. `db:backup` and `db:verify-restore` of this pre-change state |
-| Upgrade: the change, then the same `setup.sh` command, with monitoring and the pooler running | Pass. `configure.mjs` added the six values; setup took 117 s; of 225 API requests sent every half second during it, 2 failed (one when the database restarted, one when PostgREST did). Every login refused `POSTGRES_PASSWORD` and accepted only its own; Realtime rewrote its tenant at start; the pooler rewrote the pool user of its existing tenant; the exporter and Grafana worked as `warehouse_monitoring`; `npm run test:grafana` passed; no login as `supabase_functions_admin` in the database log; a second setup run left `compose.env` byte for byte |
+| Install `main` (198bbfa) with `setup.sh --operator`; `tests/operator-api-core.mjs`, `test:pooler`, `test:monitoring` | Pass. The finding reproduced: `authenticator`, `supabase_storage_admin`, `supabase_auth_admin`, `pgbouncer` and `supabase_functions_admin` each accepted `POSTGRES_PASSWORD` over SCRAM. `db:backup` and `db:verify-restore` of this pre-change state |
+| Upgrade: the change, then the same `setup.sh` command, with monitoring and the pooler running | Pass. `configure.mjs` added the six values; setup took 117 s; of 225 API requests sent every half second during it, 2 failed (one when the database restarted, one when PostgREST did). Every login refused `POSTGRES_PASSWORD` and accepted only its own; Realtime rewrote its tenant at start; the pooler rewrote the pool user of its existing tenant; the exporter worked as `warehouse_monitoring`; no login as `supabase_functions_admin` in the database log; a second setup run left `compose.env` byte for byte |
 | `db:restore` of the pre-change backup, this state's configuration | Pass: the older backup was accepted, the restored data served, the pooler fixed the stale pool user of the restored `_supabase` |
 | `db:rotate-passwords -- --yes`, then `--superuser`, then `test:rotation` (signing keys) | Pass. Each rotation took about a minute with about 11 s of failed API requests; every check passed after each of the three |
 | `db:backup` after the rotations; `db:restore` of the pre-change backup | Refused without `--restore-config` (keys rotated since), as intended; with it the backup's configuration gained new values and the restore passed |
