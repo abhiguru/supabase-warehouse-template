@@ -319,36 +319,40 @@ test('the Grafana recipe is its own build directory, like every other recipe', (
   assert.match(readFileSync(join(repo, 'docker/grafana/Dockerfile'), 'utf8'), /^COPY plugins\.lock install-plugins\.sh \/tmp\/$/m);
 });
 
-test('the Gotenberg binary is built from the source of the base image tag', () => {
-  // docker/gotenberg/Dockerfile replaces the publisher's /usr/bin/gotenberg with a
-  // build of the same tag's source; a base moved alone would pair an old binary
-  // with a new image (Dependabot ignores the tag for that reason).
-  const recipe = readFileSync(join(repo, 'docker/gotenberg/Dockerfile'), 'utf8');
-  const base = /^FROM gotenberg\/gotenberg:(\d+)\.(\d+)\.(\d+)@sha256:[0-9a-f]{64}$/m.exec(recipe);
-  assert.ok(base, 'the base is a digest-pinned gotenberg/gotenberg x.y.z tag');
-  const version = base.slice(1).join('.');
-  const sources = [...recipe.matchAll(/codeload\.github\.com\/gotenberg\/gotenberg\/tar\.gz\/refs\/tags\/v([0-9.]+) /g)].map(match => match[1]);
-  assert.deepEqual(sources, [version], 'the source archive is the base tag');
-  assert.match(recipe, /echo '[0-9a-f]{64}  \/tmp\/source\.tar\.gz' \| sha256sum -c -/);
-  assert.deepEqual([...recipe.matchAll(/gotenberg\/v\d+\/cmd\.Version=([0-9.]+)'/g)].map(match => match[1]), [version], 'the version flag is the base tag');
-  const mod = readFileSync(join(repo, 'docker/gotenberg/gotenberg.go.mod'), 'utf8');
-  assert.match(mod, new RegExp(`^module github\\.com/gotenberg/gotenberg/v${base[1]}$`, 'm'), 'gotenberg.go.mod is the module of the base major');
-  assert.match(recipe, new RegExp(`cmd\\.Version=${version.replaceAll('.', '\\.')}'.* \\./cmd/gotenberg\\n`), 'the flag is set on the cmd/gotenberg build');
-  assert.match(recipe, /^COPY --from=gotenberg \/out\/gotenberg \/usr\/bin\/gotenberg$/m);
-  assert.match(recipe, /^COPY gotenberg\.go\.mod \.\/go\.mod$/m);
-  // Every operator install builds this image, so no stage runs upstream tests
-  // (some are timing-sensitive and flaked on a loaded runner); each Go stage
-  // verifies its module graph and builds read-only.
-  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.startsWith('#'));
-  assert.ok(!instructions.some(line => /\bgo\s+test\b/.test(line)), 'no build stage of the Gotenberg recipe runs go test');
-  const stages = recipe.split(/^(?=FROM )/m).filter(stage => stage.startsWith('FROM golang:'));
-  assert.deepEqual(stages.map(stage => /^FROM \S+ AS (\S+)$/m.exec(stage)?.[1]), ['build', 'gotenberg']);
-  for (const stage of stages) {
-    assert.match(stage, /go mod download && go mod verify/);
-    assert.match(stage, /go build -p=2 -mod=readonly -trimpath /);
-  }
+test('the PDF renderer image is pinned, verified and minimal', () => {
+  // docker/pdf-renderer/Dockerfile downloads chrome-headless-shell from Chrome for Testing at
+  // build time. Trivy cannot see that binary, so the version and the archive checksum are the
+  // controls: both are build args, the checksum is checked, and nothing floats.
+  const recipe = readFileSync(join(repo, 'docker/pdf-renderer/Dockerfile'), 'utf8');
+  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.trim().startsWith('#'));
+  const text = instructions.join('\n');
+  assert.match(recipe, /^FROM node:24-trixie-slim@sha256:[0-9a-f]{64} AS base$/m, 'the base is one literal FROM (Dependabot reads it): Node 24 LTS on Debian trixie, pinned by digest');
+  assert.equal([...recipe.matchAll(/^FROM node:/gm)].length, 1, 'the digest is written once');
+  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/^FROM base AS \S+$/.test(line) && !/@sha256:[0-9a-f]{64}/.test(line)), [], 'every other stage starts from the digest-pinned base');
+  const version = /^ARG CHS_VERSION=(\d+\.\d+\.\d+\.\d+)$/m.exec(recipe)?.[1];
+  const sha = /^ARG CHS_SHA256=([0-9a-f]{64})$/m.exec(recipe)?.[1];
+  assert.ok(version, 'ARG CHS_VERSION has a four-part default');
+  assert.ok(sha, 'ARG CHS_SHA256 has a SHA-256 default');
+  assert.match(text, /sha256sum -c -/, 'the downloaded archive is checked against CHS_SHA256');
+  assert.match(text, /\$\{?CHS_SHA256\}?/);
+  assert.match(text, /storage\.googleapis\.com\/chrome-for-testing-public\/\$\{?CHS_VERSION\}?\//, 'the archive URL is built from CHS_VERSION');
+  assert.doesNotMatch(text, /@stable|\blatest\b|last-known-good/, 'no floating Chrome channel or tag');
+  // Debian security revisions are removed from the archive; an exact pin would break the build. The font-file
+  // hash (FONT_FILELIST_SHA256) and the golden-PDF job are the drift guards instead.
+  for (const install of text.split('\n').filter(line => /apt-get install/.test(line))) assert.doesNotMatch(install, /\s[a-z0-9.+-]+=\d/, 'apt packages are named without versions');
+  assert.match(text, /ARG FONT_FILELIST_SHA256=[0-9a-f]{64}/);
+  assert.match(text, /npm ci --omit=dev --ignore-scripts/);
+  assert.match(text, /rm -rf [^\n]*(?:\/npm|corepack|yarn)/, 'npm, corepack and yarn are removed');
+  assert.match(text, /\btini\b/, 'tini is installed');
+  assert.match(recipe, /^ENTRYPOINT \[[^\]]*"(?:\/usr\/bin\/)?tini"/m, 'tini is PID 1');
+  const user = [...recipe.matchAll(/^USER (\S+)$/gm)].map(match => match[1]).pop();
+  assert.ok(user && !/^(?:0|root)(?::|$)/.test(user), `the image runs as a non-root user (${user})`);
+  assert.match(recipe, /TARGETARCH/, 'the build checks the architecture');
+  assert.match(text, /amd64/, 'only amd64 builds (the Chrome for Testing archive is linux64)');
+  const pkg = JSON.parse(readFileSync(join(repo, 'docker/pdf-renderer/package.json'), 'utf8'));
+  assert.match(pkg.dependencies['puppeteer-core'], /^\d+\.\d+\.\d+$/, 'puppeteer-core is pinned exactly');
   const dependabot = readFileSync(join(repo, '.github/dependabot.yml'), 'utf8');
-  assert.match(dependabot, /- dependency-name: gotenberg\/gotenberg\n\s+update-types:\n\s+- "version-update:semver-major"\n\s+- "version-update:semver-minor"\n\s+- "version-update:semver-patch"\n/);
+  assert.match(dependabot, /package-ecosystem: npm\n\s+directory: "\/docker\/pdf-renderer"/);
 });
 
 test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {

@@ -35,14 +35,18 @@ function configuredHosts(definition, names) {
 }
 
 test('postgres-meta, Studio and the database are reachable only from the services that use them', { skip }, () => {
-  const { networks, peers } = topology();
-  assert.deepEqual(Object.keys(networks).sort(), ['admin', 'database', 'default']);
+  const { networks, members, peers } = topology();
+  assert.deepEqual(Object.keys(networks).sort(), ['admin', 'database', 'default', 'renderer']);
+  // The renderer network has no route out: only the function runtime and the renderer are on it.
+  assert.equal(networks.renderer.internal, true);
+  assert.deepEqual(members.renderer.slice().sort(), ['functions', 'pdf-renderer']);
+  assert.deepEqual(peers('pdf-renderer'), ['functions']);
   assert.deepEqual(peers('meta'), ['db', 'studio']);
   assert.deepEqual(peers('studio'), ['db', 'meta']);
   assert.deepEqual(peers('db'), ['auth', 'grafana', 'meta', 'postgres-exporter', 'realtime', 'rest', 'storage', 'studio', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
   // share no network with the database, postgres-meta or Studio.
-  for (const service of ['kong', 'functions', 'gotenberg', 'imgproxy', 'cups', 'sensor-bridge', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
+  for (const service of ['kong', 'functions', 'pdf-renderer', 'imgproxy', 'cups', 'sensor-bridge', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
     const reachable = peers(service);
     for (const guarded of ['db', 'meta', 'studio']) assert.ok(!reachable.includes(guarded), `${service} can reach ${guarded}`);
   }
@@ -65,7 +69,7 @@ test('every service still shares a network with each host it is configured to ca
 
   assert.deepEqual([...wanted.kong].sort(), ['functions', 'realtime-dev', 'rest', 'storage']);
   assert.deepEqual([...wanted.storage].sort(), ['db', 'imgproxy', 'rest']);
-  assert.deepEqual([...wanted.functions].sort(), ['cups', 'gotenberg', 'kong']);
+  assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer']);
   assert.deepEqual([...wanted.studio].sort(), ['meta']);
   assert.deepEqual([...wanted.prometheus].sort(), ['alertmanager', 'cadvisor', 'kong', 'node-exporter', 'postgres-exporter']);
   assert.deepEqual([...wanted.grafana].sort(), ['db', 'prometheus']);
@@ -85,8 +89,15 @@ test('every service still shares a network with each host it is configured to ca
   }
   // Studio answers only on the address of its container name, so it must stay on one network.
   assert.deepEqual(Object.keys(services.studio.networks), ['admin']);
-  // The gateway DNS regression moves the functions container on the default network only.
-  assert.deepEqual(Object.keys(services.functions.networks), ['default']);
+  // The renderer answers inside its own healthcheck, on localhost, and has no other network.
+  assert.match(JSON.stringify(services['pdf-renderer'].healthcheck.test), /http:\/\/localhost:3000\/health/);
+  assert.deepEqual(Object.keys(services['pdf-renderer'].networks), ['renderer']);
+  // The gateway DNS regression moves the functions container on `default`; `renderer` is the internal PDF network.
+  assert.deepEqual(Object.keys(services.functions.networks).sort(), ['default', 'renderer']);
+  // The function runtime never waits for the renderer: a renderer restart must not block or restart it.
+  assert.deepEqual(Object.keys(services.functions.depends_on), ['db']);
+  assert.equal(services.functions.environment.PDF_RENDERER_URL, 'http://pdf-renderer:3000');
+  assert.equal('GOTENBERG_URL' in services.functions.environment, false);
   assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
 });
 
@@ -108,6 +119,9 @@ test('operator probes run in a container that shares a network with their target
     }
     assert.ok(checked > 0, `${path}: no probe was read`);
   }
+  // The renderer is probed from the function runtime (the path PDFs take), which must be on its network.
+  assert.ok(reaches('functions', 'pdf-renderer'), 'functions cannot resolve pdf-renderer');
+  assert.match(read('health-check.sh'), /compose exec -T functions bash -c '[^']*\/dev\/tcp\/pdf-renderer\/3000/);
   // The gateway probes read the public key under the name the storage container has for it.
   assert.doesNotMatch(read('health-check.sh'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
@@ -190,4 +204,21 @@ test('realtime resolves Compose names at the DNS root, so a host search domain c
   assert.deepEqual(services.realtime.dns_search, ['.']);
   assert.deepEqual(services.kong.dns_search, ['.']);
   assert.equal(services.realtime.environment.DB_HOST, 'db');
+});
+
+test('the renderer runs read-only with no capabilities, no ports and bounded memory', { skip }, () => {
+  const { services } = renderedCompose();
+  const renderer = services['pdf-renderer'];
+  assert.equal(renderer.read_only, true);
+  assert.deepEqual(renderer.cap_drop, ['ALL']);
+  assert.deepEqual(renderer.security_opt, ['no-new-privileges:true']);
+  assert.equal(renderer.ports, undefined);
+  assert.equal(renderer.pids_limit, 512);
+  assert.equal(renderer.mem_limit, renderer.memswap_limit, 'no swap beyond the memory limit');
+  assert.equal(String(renderer.mem_limit), String(1536 * 1024 ** 2));
+  assert.equal(renderer.stop_grace_period, '30s');
+  assert.equal(renderer.restart, 'unless-stopped');
+  assert.ok(renderer.build, 'the image is built locally, as every other service');
+  assert.equal(renderer.tmpfs.some(entry => /^\/tmp(?::|$)/.test(entry) && /size=256m/.test(entry)), true);
+  assert.equal(services.gotenberg, undefined, 'the old PDF service is gone');
 });

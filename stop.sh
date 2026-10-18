@@ -7,4 +7,6 @@ operator_lock "$state"
 # Preserve volumes/data. The wrapper verifies ownership before stopping anything.
 # Every profile (monitoring, pooler, printing) stops too: a plain `down` would
 # leave profile-gated containers running and the restore preflight would refuse.
-bash "$ROOT/scripts/compose.sh" --profile '*' down
+# --remove-orphans also removes a container of a service the Compose file no longer
+# has (the Gotenberg container of an installation upgraded to pdf-renderer).
+bash "$ROOT/scripts/compose.sh" --profile '*' down --remove-orphans

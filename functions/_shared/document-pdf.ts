@@ -2,7 +2,7 @@ import { documentRequestBody } from './request-body.ts';
 import { createClient } from '../vendor/supabase-js.mjs';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
-import { htmlToPdf } from './gotenberg-client.ts';
+import { htmlToPdf } from './pdf-renderer-client.ts';
 import { documentDate, documentHtml, kgEach } from './document-html.ts';
 import { headerColumns } from './document-columns.ts';
 import { publicBaseUrl } from './public-url.ts';

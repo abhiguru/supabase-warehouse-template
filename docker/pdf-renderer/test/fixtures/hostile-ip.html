@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>static-title</title>
+  <link rel="stylesheet" href="http://@IP@:8080/link.css">
+  <style>
+    @import url("http://@IP@:8080/import.css");
+    @font-face { font-family: Remote; src: url("http://@IP@:8080/font.woff2"); }
+    body { font-family: Remote, 'Liberation Sans', sans-serif; background-image: url("http://@IP@:8080/bg.png"); }
+  </style>
+  <meta http-equiv="refresh" content="0; url=http://@IP@:8080/refresh">
+  <script src="http://@IP@:8080/app.js"></script>
+</head>
+<body>
+  <p>Every request below must be blocked; the render still succeeds.</p>
+  <img alt="img" src="http://@IP@:8080/a.png">
+  <img alt="srcset" srcset="http://@IP@:8080/b.png 1x">
+  <video poster="http://@IP@:8080/poster.png"></video>
+  <svg width="10" height="10"><image href="http://@IP@:8080/c.svg" width="10" height="10"/></svg>
+  <object data="http://@IP@:8080/d.html"></object>
+  <embed src="http://@IP@:8080/e.html">
+  <iframe src="http://@IP@:8080/f.html"></iframe>
+  <iframe srcdoc="<img src='http://@IP@:8080/g.png'>"></iframe>
+  <iframe src="file:///etc/hostname"></iframe>
+  <p style="list-style-image:url(http://@IP@:8080/h.png)">end</p>
+</body>
+</html>

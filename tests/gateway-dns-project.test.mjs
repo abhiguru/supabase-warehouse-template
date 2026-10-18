@@ -20,7 +20,10 @@ case "$1" in
   inspect)
     case "$3" in
       *com.docker.compose.project*) printf '${project}\\n' ;;
-      *NetworkSettings.Networks*) printf '${project}_default 172.18.0.2\\n' ;;
+      # Functions is on two networks: the address must be read from \`<project>_default\` by name. A range over
+      # all networks would join both addresses, which the fake answers with.
+      *'index .NetworkSettings.Networks \\"${project}_default\\"'*) printf '172.18.0.2\\n' ;;
+      *NetworkSettings.Networks*) printf '172.18.0.2172.19.0.2\\n' ;;
       *) exit 0 ;;
     esac ;;
 esac

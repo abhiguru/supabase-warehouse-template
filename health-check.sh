@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 failed=0
-for service in db kong rest realtime storage imgproxy meta studio functions gotenberg; do
+for service in db kong rest realtime storage imgproxy meta studio functions pdf-renderer; do
   id=$(compose ps -q "$service")
   if [[ -z "$id" ]]; then
     echo "$service: missing"; failed=1; continue
@@ -31,7 +31,8 @@ echo "list refresh: $list_refresh"
 # Probe the intended project internally, never an unrelated server on a fixed host port.
 # Each probe runs in a container that shares a network with its target
 # (docker/docker-compose.yml, `networks:`): the storage service for the gateway
-# and its upstreams, Studio for postgres-meta, which nothing else can reach.
+# and its upstreams, Studio for postgres-meta, which nothing else can reach, and the
+# function runtime for the PDF renderer.
 probe_from() {
   { cat "$ROOT/scripts/http-readiness.mjs"; cat; } | compose exec -T "$1" node --input-type=module
 }
@@ -39,13 +40,21 @@ probe_from storage <<'JS' || failed=1
 for (const [name,url,headers] of [
   ['REST','http://kong:8000/rest/v1/',{apikey:process.env.ANON_KEY}],
   ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
-  ['PDF renderer','http://gotenberg:3000/health',{}],
   ['Realtime','http://realtime-dev:4000/api/tenants/realtime-dev/health',{Authorization:`Bearer ${process.env.ANON_KEY}`}],
 ]) {
   await waitForHttp(name,url,headers);
   console.log(`${name}: available`);
 }
 JS
+# PDFs reach the renderer from the function runtime over the internal `renderer` network, which
+# storage cannot see. So the probe runs in `functions` (bash with /dev/tcp, as its own health check does):
+# it proves the path the PDF functions really use, not only that the renderer answers to itself.
+if compose exec -T functions bash -c 'exec 3<>/dev/tcp/pdf-renderer/3000 && printf "GET /health HTTP/1.1\r\nHost: pdf-renderer\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'; then
+  echo 'PDF renderer: available'
+else
+  echo 'PDF renderer: not reachable from functions (docker/docker-compose.yml, network renderer)'
+  failed=1
+fi
 probe_from studio <<'JS' || failed=1
 await waitForHttp('metadata','http://meta:8080/health',{});
 console.log('metadata: available');

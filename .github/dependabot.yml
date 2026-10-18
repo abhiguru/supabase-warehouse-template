@@ -83,17 +83,11 @@ updates:
       - dependency-name: imgproxy/imgproxy-base
         update-types:
           - "version-update:semver-major"
-      # The recipe rebuilds /usr/bin/gotenberg from the source of the same tag
-      # (docker/gotenberg/Dockerfile, gotenberg.go.mod). A new image tag alone
-      # would ship the old binary inside the new Chromium/LibreOffice image while
-      # the notices named the new version. Move the source tag, its checksum,
-      # gotenberg.go.mod, the version flag and this image together. Digest
-      # updates of the same tag still come.
-      - dependency-name: gotenberg/gotenberg
+      # The PDF renderer's base (docker/pdf-renderer/Dockerfile) is Node 24 LTS by digest.
+      # Digest and patch updates come; a new major is a planned change of the runtime.
+      - dependency-name: node
         update-types:
           - "version-update:semver-major"
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
       # A new PostgreSQL major needs a planned upgrade of every installation's
       # data directory, not a changed line in a recipe. So does the publisher's
       # 15.19 line (looked at on 2026-10-12, tag 15.19.0.004): it is a different
@@ -115,6 +109,20 @@ updates:
       # application the image ships. A new tag brings its own dependency set, so
       # the manifest is rebuilt from it in the same change (docker/storage/README.md).
       - dependency-name: supabase/storage-api
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+  # The PDF renderer (docker/pdf-renderer): puppeteer-core is pinned exactly and goes with
+  # the pinned chrome-headless-shell (CHS_VERSION in its Dockerfile, which Dependabot
+  # cannot see; the weekly cft-freshness workflow watches it). Take a puppeteer-core
+  # minor or major only together with the matching CHS bump. Its Docker base is covered
+  # by "/docker/*" above.
+  - package-ecosystem: npm
+    directory: "/docker/pdf-renderer"
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: puppeteer-core
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"

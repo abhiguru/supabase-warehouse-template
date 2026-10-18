@@ -20,6 +20,51 @@ partial stock. Both functions keep their old behaviour unless the new key is sen
 - Test: `tests/grn_receipt_pages_98.sql`. The customer function's document-number key (checked by
   `tests/document_number_sort.sql`) is not duplicated.
 
+## Unreleased: pdf-renderer replaces Gotenberg
+
+Gotenberg (rebuilt from source for CVEs, 2.2-2.6 GB with LibreOffice and pdftk we never used) is replaced by
+`pdf-renderer`, a small service in `docker/pdf-renderer` that drives chrome-headless-shell through puppeteer-core with
+Gotenberg's launch flags, print parameters and fontconfig. No migration, and no change to what the five PDF
+functions send or return.
+
+- **`functions/_shared/gotenberg-client.ts` is now `pdf-renderer-client.ts`** (same `htmlToPdf` and `createFooterHtml`).
+  It posts to `${PDF_RENDERER_URL}/render` (default `http://pdf-renderer:3000`), keeps the 30 s timeout and
+  `redirect: 'error'`, and logs at most 2 KB of the renderer's JSON error body. `GOTENBERG_URL` is `PDF_RENDERER_URL` in
+  the Compose file and the function environment allowlist. The sample PDF's visible text no longer says Gotenberg.
+- **Compose:** a `pdf-renderer` service on a new `internal: true` network `renderer`, shared with `functions` only
+  (`functions` now has `default` and `renderer`, and does not `depends_on` the renderer). Read-only root, tmpfs `/tmp`
+  256 MB, all capabilities dropped, `no-new-privileges`, 512 pids, 1.5 GiB memory with no extra swap, 30 s stop grace,
+  no host port. The renderer cannot reach the internet, the database, Kong or Studio.
+- **Scripts:** `health-check.sh` probes the renderer from inside its own container (storage cannot reach the internal
+  network). `scripts/gateway-dns-check.sh` reads the functions address on `<project>_default` by name (functions has two
+  networks now). `scripts/backup.sh` no longer stops a `gotenberg` service (under `set -e` the lookup would fail once the
+  service is gone). `setup.sh` and `start.sh` remove an old gotenberg container of the project by Compose labels and,
+  after the start, the old image; `stop.sh` runs `down --remove-orphans` (`scripts/retire-gotenberg.sh`).
+- **Supply chain:** `docker/gotenberg/`, `LICENSES/gotenberg/` and the `gotenberg-os-no-fix` ledger entry (126 HIGH,
+  1 CRITICAL, expiring 2027-01-15) are removed, and with them the Go-toolchain rebuild and its flaky upstream
+  `go test` workaround. Dependabot tracks `docker/pdf-renderer` (npm; puppeteer-core is held back to patches because it
+  moves with the pinned Chrome). `check:container-dependencies` runs `npm audit` on it. CI builds the renderer image and
+  runs its unit tests and `test/integration.sh` with the hardening flags; a golden-PDF job renders 11 fictional template
+  documents (`tests/golden-pdf/`), rasterises them at 150 dpi in a poppler container built from a fixed Debian snapshot and compares every page
+  with the committed goldens at fuzz 0. `release.yml` fails when the pinned `CHS_VERSION` is more than
+  14 days behind Chrome for Testing's current Stable, and `.github/workflows/cft-freshness.yml` checks the same weekly
+  and opens or updates an issue.
+- **Review fixes.** Debian packages in the renderer image are installed by name (security revisions vanish from the
+  archive); the font-file hash and the golden job guard against drift. One literal `FROM` carries the Node digest so
+  Dependabot reads it. `setup.sh` and `start.sh` check that Docker can allocate the renderer network
+  (`scripts/network-preflight.sh`) before anything is changed, and remove the old container only after the build and
+  migrations, right before the full start. The golden job compares decoded pixels in a container built from a fixed
+  Debian snapshot, posts the same fields as the function client and uploads diff images on failure. The CfT freshness
+  check answers "unknown" (exit 2) when release dates cannot be read and retries its fetches. `health-check.sh` probes
+  the renderer from `functions`. The renderer audit runs at HIGH, a fresh browser starts with a zero memory figure,
+  two flaky tests are deterministic, and `integration.sh` fails a skipped check in CI and has no host-specific lock.
+- **Docs and notices:** ARCHITECTURE, CONTAINER_SECURITY (renderer posture, the `--no-sandbox` reasoning, update
+  cadence, why Trivy cannot see the Chrome for Testing binary), PDF_GENERATION, TROUBLESHOOTING (the image has no
+  curl; use `node -e`), OPERATOR_INSTALL (upgrade note), ATTRIBUTION_REVIEW and THIRD_PARTY_NOTICES (Chrome for Testing
+  BSD-3 with its bundled notices, puppeteer-core Apache-2.0). `config/seed-config.sql` describes the capability as
+  "PDF generation via the built-in renderer"; installations already seeded keep their old description text
+  (the seed is `ON CONFLICT DO NOTHING`).
+
 ## Unreleased: ops review wave 4 — hashed Python requirements, storage lockfile guard, build-date drift
 
 The rest of TW-BE-005 from the 2026-10-17 operational review (owner decision D5). No migration.

@@ -6,8 +6,7 @@ Existing release tags are unchanged. No image binaries are published.
 Each source recipe pins the upstream source archive checksum, builder image
 digest, and runtime base digest. Copied dependency manifests record the modified
 resolution. Go module verification and selected upstream tests run during the
-build, except in the Gotenberg recipe, which since 2026-10-18 runs no upstream
-tests (see "Exception ledger and the two-pass scan"). Shared BuildKit caches avoid duplicating module/build data in image layers.
+build. Shared BuildKit caches avoid duplicating module/build data in image layers.
 OS package repositories remain live: rebuild without stale layers and rescan
 before deployment. A previous passing scan is not a current security guarantee.
 
@@ -20,7 +19,7 @@ before deployment. A previous passing scan is not a current security guarantee.
 | Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
 | Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
 | Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest (2026-10-13: `@fastify/busboy` 3.2.3 for [GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9), `fast-copy` 4.1.2 for [GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j), both moderate); Alpine package upgrade; remove unused npm CLI |
-| Gotenberg | 8.37.0 / pdfcpu 0.15.0 | Debian security updates; rebuild the Gotenberg 8.37.0 binary (since 2026-10-17) and bundled pdfcpu with patched Go/net/crypto/image; retain the rest of the Gotenberg image |
+| PDF renderer | Node 24 LTS (digest), chrome-headless-shell 155.0.8059.84 from Chrome for Testing (SHA-256 pinned), puppeteer-core | Our own code (`docker/pdf-renderer`), no upstream patch; Debian font and library packages only; see "PDF renderer" |
 | imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
 | PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade the Ubuntu packages with a fixed advisory (linux-libc-dev; since 2026-10-17 also OpenSSL, GnuPG, PackageKit, sudo) with glibc and locale data unchanged; rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
@@ -450,7 +449,7 @@ behavior change. Storage's manifest now contains only the runtime dependencies
 used by its precompiled Node entrypoint, with current Fastify/protobuf fixes.
 
 `npm run check:container-dependencies` audits both complete tracked npm graphs in
-CI at HIGH/CRITICAL severity. At the earlier source follow-up, metadata passed
+CI at HIGH/CRITICAL severity (and, since 2026-10-18, the PDF renderer's production graph, `--omit=dev`, at the same HIGH/CRITICAL threshold). At the earlier source follow-up, metadata passed
 that threshold with 20 moderate findings remaining, while Storage reported zero
 findings. At that earlier revision, the metadata source passed all 197 upstream
 tests on a fresh isolated fixture database, and the deployed Studio/API/image/PDF
@@ -564,14 +563,14 @@ Until this change every service shared one Compose network. postgres-meta
 answers on `meta:8080` without a credential and runs any SQL as
 `supabase_admin`, and Studio (no login) forwards SQL to it, so a foothold in
 any container, for example in the Chromium that renders PDFs, was superuser
-SQL. The project now has three networks; the table is in
+SQL. The project now has four networks; the table is in
 [ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks).
 
 - `meta` is reachable from `studio` and `db` only; `studio` from `meta` and
   `db` only.
 - `db` is reachable from the services that hold a database connection (rest,
   realtime, storage, supavisor, the disabled auth service, postgres-exporter,
-  grafana) and from the admin pair. Kong, the function runtime, Gotenberg,
+  grafana) and from the admin pair. Kong, the function runtime, the PDF renderer,
   imgproxy, CUPS, the sensor bridge, Prometheus, Alertmanager, node-exporter
   and cAdvisor cannot connect to it.
 - Operator probes follow the same rule: `health-check.sh` and
@@ -599,6 +598,68 @@ What this does not do:
 Each install now creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
+
+## PDF renderer
+
+`docker/pdf-renderer` replaced Gotenberg on 2026-10-18. It is a small Node 24 service (`src/server.mjs`) that drives
+chrome-headless-shell (CHS) through puppeteer-core and answers `POST /render` and `GET /health`; the API, limits and
+environment are in `docker/pdf-renderer/README.md`. There is no LibreOffice, no pdftk and no Go toolchain in the
+image. The Gotenberg source rebuild, its flaky upstream tests and its ledger entry are retired.
+
+**Posture.** The service sits alone with `functions` on the `internal: true` network `renderer` (Docker adds no route
+out of it: no internet, no host, no Kong, no database, no Studio) and publishes no port. The root filesystem is
+read-only with a 256 MB tmpfs at `/tmp`; all capabilities are dropped; `no-new-privileges`; 512 pids; 1.5 GiB memory
+with no extra swap (the renderer's thresholds are sized for exactly that limit; a smaller one lets a large image
+render hit the kernel's OOM kill); tini is PID 1; the process runs as uid 10001. The service refuses a request body over 48 MB
+before reading it, queues at most 10 jobs and 100 MB of input, and gives each job 25 s. Every job gets a fresh
+browser context that is closed afterwards; the browser restarts after 100 jobs or at 650 MB of Chrome memory, and is killed
+at 1100 MB; the container's working set only holds back the next body at 1200 MiB. In the page, JavaScript is off (before navigation) and every request except the document itself and
+`data:` images and fonts is refused (in the normal in-memory mode the document is also sent with a
+Content-Security-Policy that blocks `data:` frames and objects; bodies of 8 MiB or more are rendered from a file in a
+per-job directory, which cannot carry that header, so a `data:` frame renders there, still without any network access),
+with `--host-resolver-rules="MAP * ~NOTFOUND"` as a second layer.
+
+**Why `--no-sandbox` is acceptable here.** Chromium's own sandbox needs user namespaces or a setuid helper, which
+the capability-free, read-only container deliberately lacks, and Gotenberg ran with the same flag. The compensating
+controls are layered: the HTML is built on the server from escaped values (no user-supplied document or URL is
+rendered), JavaScript is disabled, the page cannot load anything from the network, the container is on an internal
+network with no route to the database or the internet, the filesystem is read-only, there are no capabilities, and
+the input and the run time are bounded. A renderer exploit would therefore land in an unprivileged process that can
+reach nothing except the function runtime that called it. Do not weaken any of these without a new review: in
+particular, never feed the renderer a URL or an HTML page that a user wrote.
+
+**Update cadence.** CHS is a Chrome for Testing build, pinned by `ARG CHS_VERSION` and `ARG CHS_SHA256` in the
+Dockerfile (never `@stable`), puppeteer-core by an exact version in `package.json`, Node by digest, and the fonts and libraries
+by Debian package name only (security revisions replace and remove exact versions; see "Fonts"). Chrome has security releases about every week. `release.yml` fails a release when the pinned
+`CHS_VERSION` is more than 14 days behind the current Stable in Chrome for Testing's
+`last-known-good-versions.json`, and `.github/workflows/cft-freshness.yml` runs the same check weekly and opens or
+updates an issue. If the release dates cannot be read the result is "unknown" (exit 2): the run fails, and no
+issue is opened or closed for it. Each network fetch is tried three times. To bump: change both args and puppeteer-core together (take the puppeteer-core release that pins
+that Chrome major), run the renderer's unit tests and `test/integration.sh`, check the golden-PDF job, then rebuild
+with `bash scripts/build-images.sh --no-cache` and scan. The golden job renders a fictional corpus, rasterises it in
+a poppler container built from a fixed Debian snapshot and compares decoded pixels with the committed goldens at fuzz 0, so a font, Chrome or puppeteer change
+that moves a pixel is seen and judged (Gujarati shaping by eye, the rest as a failure).
+
+**Why Trivy cannot see the CfT binary.** CHS arrives as a zip from `storage.googleapis.com/chrome-for-testing-public`,
+not as a Debian package, so the image has no package-manager record of it and Trivy's OS and language scanners find
+nothing to match; a scan of the image covers only Node, the Debian libraries and fonts, and the npm tree (puppeteer-core
+and its dependencies, also audited by `npm audit --prefix docker/pdf-renderer --omit=dev` in
+`check:container-dependencies`). The Chrome release notes and the freshness check above are therefore the control
+for Chrome itself, together with the pinned SHA-256 (a changed archive fails the build). The absence of Chrome
+findings in a scan is not a clean bill: Debian's `chromium` package, which Gotenberg shipped, showed 116 findings in
+the 2026-10-17 scan, and the CfT binary shows none only because Trivy does not look at it.
+
+**Fonts.** The image installs the font packages of the Gotenberg 8.37.0 image, by package name, without
+versions
+(`fonts-liberation`, `fonts-liberation2`, `fonts-dejavu`, `fonts-noto-core` for Gujarati, `fonts-noto-cjk`,
+`fonts-noto-color-emoji`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea` and `fonts-opensymbol`) and Gotenberg's
+`100-gotenberg.conf`, so documents paginate and look as before. The build fails unless the sorted `fc-list` file list
+hashes to the value in `ARG FONT_FILELIST_SHA256`, which proves the font set did not change; a font package that
+Debian drops or updates therefore stops the build instead of changing the output silently. Exact version pins are
+deliberately not used: the `+debNuM` security revisions vanish from the archive within weeks and would break every
+build. Drift is caught by the file-list hash at build time and by the golden-PDF job on every change, which is
+consistent with the no-snapshot-mirror rule for production images (owner decision D5: a fresh build and scan before
+each release instead).
 
 ## Sensor bridge (2026-10-13)
 
@@ -762,7 +823,7 @@ with only a report and an image keeps the old strict behaviour.
 
 **Scan of 2026-10-18.** Trivy 0.74.0 (the release binary, checksum checked),
 one vulnerability database for every report (updated 2026-10-17 18:34 UTC),
-the flags of `scripts/scan-images.sh`, linux/amd64. Every built image was built
+the flags of `scripts/scan-images.sh`, linux/amd64 (the pdf-renderer row was scanned later, on 2026-10-18 with Trivy 0.76.0, the version installed on the build host; the ledger entry says so). Every built image was built
 with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 198bbfa, built the same evening as "after". Counts are HIGH/CRITICAL rows.
 
@@ -770,7 +831,7 @@ with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 |---|---:|---:|---:|---|
 | db (`postgres`) | 20 H | 0 | 3 C, 128 H | `db-os-no-fix` |
 | functions (`edge-runtime`) | 3 C, 4 H | 0 | 1 C, 59 H | `functions-os-no-fix` |
-| gotenberg | 4 H | 0 | 1 C, 126 H | `gotenberg-os-no-fix` |
+| pdf-renderer (`pdf-renderer`), new on 2026-10-18 (replaces gotenberg) | n/a | 0 | 1 C, 54 H | `pdf-renderer-os-no-fix` |
 | studio | 2 C, 4 H | 2 C, 3 H | 4 C, 246 H | `studio-app-awaiting-publisher`, `studio-os-no-fix` |
 | grafana | 47 H | 41 H | 0 | `grafana-core-awaiting-publisher` (5), `grafana-plugins-awaiting-publisher` (36) |
 | sensor-bridge | 4 H | 0 | 2 C, 61 H | `sensor-bridge-os-no-fix` |
@@ -803,25 +864,8 @@ What changed, per image:
 - **functions** (`docker/edge-runtime/Dockerfile`): a full `apt-get upgrade`
   replaces the PCRE2-only upgrade (the PCRE2 version check stays); `perl-base`
   moves to `5.36.0-7+deb12u4`. edge-runtime v1.77.4 is still the newest tag.
-- **gotenberg** (`docker/gotenberg/Dockerfile`): 8.38.1, the newest tag, still
-  ships a `/usr/bin/gotenberg` built with Go 1.27.1 and `golang.org/x/net`
-  0.59.0. The recipe now builds the same 8.37.0 source (archive SHA-256
-  `b6395f7c...`) with the pinned Go 1.27.2 builder and
-  `docker/gotenberg/gotenberg.go.{mod,sum}`, which differ from upstream only in
-  `golang.org/x/{net,crypto,sys,term,text}` (net 0.60.0), verifies the module
-  graph (`go mod verify`), builds read-only, and replaces the publisher binary;
-  the version stays `8.37.0`. No stage of this recipe runs upstream tests
-  any more, neither Gotenberg's nor the pdfcpu stage's (`go test
-  ./pkg/pdfcpu/model`, removed on 2026-10-18): every operator install builds
-  this image, so an upstream test that fails on some host would fail a real
-  install. Gotenberg's suite has timing-sensitive tests
-  (`TestProcessSupervisor_ReqQueueSize` failed on a loaded hosted CI runner on
-  2026-10-17, "expected queue size to be 10 but got 8"). The checks that stay
-  are the pinned source archives, `go mod verify` and the read-only builds.
-  The `pkg/gotenberg`, `pkg/modules/api` and `pkg/pdfcpu/model` tests passed
-  on these sources and module sets when the recipe was written; the document
-  tests of CI's operator-install job exercise the binaries. The MIT licence is in
-  `LICENSES/gotenberg/` and in the image.
+- **gotenberg**: removed on 2026-10-18 with its source rebuild, its `gotenberg-os-no-fix` ledger entry (1 C, 126 H
+  with no fix) and the timing-sensitive upstream tests it had to skip. `pdf-renderer` replaces it ("PDF renderer").
 - **studio** (`docker/studio/Dockerfile`): moved to `2026.10.12-sha-3699278`,
   the newest tag, which fixes `@modelcontextprotocol/sdk` (1.32.0). It still
   ships simple-git 3.36.0, `@simple-git/argv-parser` 1.1.1 and next 16.3.6, so
@@ -1269,8 +1313,8 @@ load during the upgrade, and an upgrade from a release older than 198bbfa.
 Each of these was left unchanged because the change cannot be checked without
 building an image or starting the stack.
 
-- **Go builders: done on 2026-10-11.** All ten `FROM golang:` lines (line 1 of
-  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter,auth,gotenberg,imgproxy,prometheus,postgres}/Dockerfile`
+- **Go builders: done on 2026-10-11.** All nine `FROM golang:` lines (a tenth, the Gotenberg recipe's, was removed on 2026-10-18) (line 1 of
+  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter,auth,imgproxy,prometheus,postgres}/Dockerfile`
   and line 12 of `docker/postgres/Dockerfile`) now use
   `golang:1.27.2-bookworm@sha256:5cf287a7...`, the multi-platform index the
   registry serves for that tag, read with `docker buildx imagetools inspect`.
@@ -1285,10 +1329,7 @@ building an image or starting the stack.
   commit `bc2b110`; not the full `npm run scan:images` gate): no
   standard-library finding is left in the binaries the recipes build
   (alertmanager, amtool, auth, cadvisor, gosu, wal-g, imgproxy,
-  node_exporter, postgres_exporter, prometheus, promtool). The three
-  advisories remain in `/usr/bin/gotenberg`, which is the publisher's binary
-  built with Go 1.27.1 and is not rebuilt by any recipe; they go away with a
-  Gotenberg tag built on a fixed Go.
+  node_exporter, postgres_exporter, prometheus, promtool).
 - **`golang.org/x/net` 0.60.0: done on 2026-10-11.** The scan above found
   CVE-2026-78669 (HTTP/2, HIGH; fixed in `golang.org/x/net` 0.60.0) in every
   Go binary: the module was at v0.58.0 in alertmanager, amtool, auth,
@@ -1303,16 +1344,14 @@ building an image or starting the stack.
   1.25.8 and the build refuses the mismatch. All eight images were built and
   scanned again the same day: each binary reports Go 1.27.2 and
   `golang.org/x/net` v0.60.0, and no fixed HIGH or CRITICAL finding is left
-  in any of the eight images. The publisher's Gotenberg binary still carries
-  this finding and the three standard-library ones.
+  in any of the eight images.
 - **A cached build hides or shows operating-system findings.** In the same scan
-  the imgproxy and Gotenberg images first showed fixed HIGH findings in
-  Ubuntu's and Debian's OpenSSL packages (CVE-2026-84782) and 116 in Debian's
-  `chromium` packages. Both recipes already run `apt-get upgrade`; the layer
-  had been reused from an earlier build. Rebuilt with `--no-cache`, both
-  images have no operating-system finding left: imgproxy keeps the one
-  `golang.org/x/net` finding, Gotenberg that and the three standard-library
-  findings of its publisher binary. Build with `--no-cache` (or `--pull` and
+  the imgproxy and (since removed) Gotenberg images first showed fixed HIGH
+  findings in Ubuntu's and Debian's OpenSSL packages (CVE-2026-84782) and 116 in
+  Debian's `chromium` packages. Both recipes already ran `apt-get upgrade`; the
+  layer had been reused from an earlier build. Rebuilt with `--no-cache`, the
+  images had no operating-system finding left (imgproxy kept the one
+  `golang.org/x/net` finding). Build with `--no-cache` (or `--pull` and
   a pruned cache) before reading scan numbers or deploying.
 - **Studio application advisories.** The recipe applies Debian updates, which
   addresses the operating-system findings at build time. On 2026-10-12 the
@@ -1340,11 +1379,9 @@ building an image or starting the stack.
   `node_modules` first, and the recipe keeps the publisher's prebuilt native
   modules and runs no install scripts, so they would not be rebuilt. Moving
   to `npm ci` needs a build that proves Storage still starts.
-- **Gotenberg Chromium switches.** `CHROMIUM_DISABLE_JAVASCRIPT=true` and
-  removing `CHROMIUM_ALLOW_FILE_ACCESS_FROM_FILES` look safe, since the
-  templates carry no scripts or file links, but need a rendered PDF compared
-  with the current output. Gotenberg can no longer reach the database,
-  postgres-meta or Studio.
+- **Chromium switches of the PDF service: done on 2026-10-18.** The renderer runs with JavaScript off and every
+  network request refused, which was this item's plan for Gotenberg; the output was compared pixel for pixel with
+  Gotenberg's before the switch ("PDF renderer"). The renderer cannot reach the database, postgres-meta or Studio.
 - **Gateway configuration through shell `eval`.** Replacing the entrypoint's
   `eval` with Kong's own environment references needs Kong to load the result.
   The new test catches a character the `eval` would alter.
@@ -1439,7 +1476,7 @@ step that fails points at the change.
 ## Build-date drift and the release rebuild (2026-10-18, decision D5)
 
 Not every input of an image build is immutable. Each recipe that runs `apt-get upgrade`,
-`apt-get install` or `apk upgrade` (for example gotenberg, realtime, storage and the sensor
+`apt-get install` or `apk upgrade` (for example pdf-renderer, realtime, storage and the sensor
 bridge) reads the distribution's live repositories, so two builds of the same recipe on
 different days can contain different operating-system packages. The base-image digests,
 npm lockfiles and the hashed Python requirements are fixed; the operating-system layer is not.

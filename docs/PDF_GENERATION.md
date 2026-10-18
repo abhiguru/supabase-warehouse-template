@@ -36,7 +36,16 @@ report's existing RPC with the caller JWT, so the RPC guard decides access
 note when cut, and returns the same `{ success, pdf_url, expires_in, document }`
 answer with `document.type = "report"`. Code: `functions/_shared/report-*.ts`.
 
-Gotenberg renders escaped HTML with a restrictive content policy. The generic
+The `pdf-renderer` service (`docker/pdf-renderer`: chrome-headless-shell driven by
+puppeteer-core; it replaced Gotenberg) renders escaped HTML with a restrictive
+content policy: JavaScript is off, and every network request the page makes is
+refused. The functions call `POST /render` with the same form fields as before
+(`functions/_shared/pdf-renderer-client.ts`, URL from `PDF_RENDERER_URL`, default
+`http://pdf-renderer:3000`). A render has a 30 s client timeout and a 25 s
+renderer deadline; a refusal (queue full, browser restarting) is HTTP 503 and
+a document too large for the 48 MB request limit is 413. The renderer logs one
+JSON line per job (size, pages, time, outcome) and never the document. Posture
+and update rules: [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#pdf-renderer). The generic
 layout uses the warehouse name installed in `system_settings.app_name`. It
 omits private addresses, organization-specific terms and preprinted-paper
 positioning. Review the document terms/layout for your organization.

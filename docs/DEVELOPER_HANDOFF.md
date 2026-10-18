@@ -115,9 +115,11 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 | `bridge` | The sensor bridge (`docker/sensor-bridge/`) on Python 3.14 with its pinned requirements: `compileall` and the unit tests, without Docker or hubs. |
 | `secrets` | Redacted source and history scan (`scripts/scan-secrets.sh`). |
 | `operator-install` | A complete isolated `setup.sh --operator` with fictional inputs: local doctor, key rotation and session revocation, API/document/Realtime/account lifecycle, Studio, gateway (CORS, payload, TLS, upstream IP change), retention preview, load smoke, monitoring, backup with isolated and in-place restore drills, pooler, CUPS, the sensor bridge image check (`npm run test:sensors`), owned-service recovery, a configuration-preserving rerun, the lost-host restore drill, and last `retention:apply` on a document aged in SQL (its catalog row and its file must be gone; this is the only place the expired-PDF removal calls the real Storage API, and it must stay the last step that uses the stack). |
+| `pdf-renderer` | The PDF renderer (`docker/pdf-renderer/`): its unit tests on a fake browser, then `test/integration.sh`, which builds the image, runs it with the compose hardening flags and checks health, a real render, blocked network access and the 400/413 cases. |
+| `pdf-golden` | Renders each case through the built image, rasterises it in a poppler container built from a fixed Debian snapshot and compares every page with the committed goldens at fuzz 0. |
 | `grafana` (amd64, arm64) | The local Grafana recipe builds, its plugin signatures verify and live Prometheus/PostgreSQL queries answer. |
 
-`release.yml` runs on any `v*` tag: the release readiness gate (`scripts/check-release.sh`), tests, `npm audit` and Compose validation against generated operator state. Publishing a release stays manual.
+`release.yml` runs on any `v*` tag: the release readiness gate (`scripts/check-release.sh`), tests, `npm audit`, the Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs`; `cft-freshness.yml` runs it weekly and opens an issue) and Compose validation against generated operator state. Publishing a release stays manual.
 
 ### A self-hosted runner for `operator-install`
 
