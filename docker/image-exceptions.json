@@ -41,25 +41,6 @@
       "expires": "2027-01-15"
     },
     {
-      "id": "gotenberg-os-no-fix",
-      "recipe": "docker/gotenberg/Dockerfile",
-      "class": "no-fix",
-      "statuses": [
-        "affected",
-        "fix_deferred",
-        "will_not_fix"
-      ],
-      "severities": [
-        "HIGH",
-        "CRITICAL"
-      ],
-      "pkgClass": "os-pkgs",
-      "owner": "abhiguru",
-      "reason": "Debian 13 packages of the gotenberg/gotenberg 8.37.0 base with no fixed version (2026-10-18 scan: 126 HIGH, 1 CRITICAL in libxml2). The recipe applies every Debian update. Gotenberg has no host port and is on the default network only (no database, postgres-meta or Studio access).",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
       "id": "studio-os-no-fix",
       "recipe": "docker/studio/Dockerfile",
       "class": "no-fix",

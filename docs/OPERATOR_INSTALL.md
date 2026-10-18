@@ -1658,6 +1658,28 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 The last line keeps the USB choices of your earlier setup (`--encrypt`,
 `--daily`, `--no-fresh-backup`); it prints them, so check that line.
 
+### Upgrading from Gotenberg to the PDF renderer
+
+The PDF service is now `pdf-renderer` (chrome-headless-shell driven by puppeteer-core; no LibreOffice, much
+smaller image) on a new internal Compose network `renderer`. Gotenberg is gone from the Compose file. The
+ordinary upgrade above does everything; what to know:
+
+- `setup.sh` and `start.sh` remove this project's old `gotenberg` container by its Compose labels and, after the
+  start, the old `<project>-gotenberg` image, and print a line for each. `stop.sh` runs `down --remove-orphans`.
+  If you start the new checkout with `docker compose` by hand instead, run
+  `docker rm -f $(docker ps -aq --filter label=com.docker.compose.project=<project> --filter label=com.docker.compose.service=gotenberg)`
+  first, or the old container keeps running unmanaged.
+- The first `setup.sh` after the pull builds the `pdf-renderer` image: it downloads chrome-headless-shell from
+  Chrome for Testing (the version and SHA-256 are pinned in `docker/pdf-renderer/Dockerfile`), so the host needs
+  outbound HTTPS to `storage.googleapis.com` during that one build. Nothing is downloaded at run time.
+- `GOTENBERG_URL` is now `PDF_RENDERER_URL` (set by the Compose file; there is nothing to change in `compose.env`).
+- PDFs look the same: the renderer uses Gotenberg's Chromium launch flags, print settings and fonts. Document
+  and report functions only need `bash scripts/compose.sh up -d --force-recreate functions`, which the upgrade
+  step above already does.
+- Backups no longer stop a Gotenberg container (`scripts/backup.sh`); the renderer is stateless.
+- Rollback: check out the previous release and run `setup.sh` again; that recreates Gotenberg and removes the
+  renderer as an orphan on the next `stop.sh`.
+
 **The upgrade that splits the database password** (the first release with
 `npm run db:rotate-passwords`) adds a password of its own for every database
 login of the services to `compose.env` and sets them in the database. Run
@@ -1816,7 +1838,7 @@ successful guest reboot does not prove host autostart or USB reattachment.
 
 ## Troubleshooting
 
-Service-level diagnostics (containers, logs, Kong, PostgREST, Gotenberg and
+Service-level diagnostics (containers, logs, Kong, PostgREST, the PDF renderer and
 CUPS checks) are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Installation
 problems seen so far and their causes:
 

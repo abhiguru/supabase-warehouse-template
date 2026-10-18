@@ -329,6 +329,8 @@ services:
     build:
       context: ./edge-runtime
     restart: unless-stopped
+    # `default` for the gateway and `renderer` (internal) for the PDF renderer.
+    networks: [default, renderer]
     # The edge runtime has no health endpoint and ships neither wget nor curl.
     # Probe the public `hello` function (functions/main/index.ts) on the main
     # service port 9000 over bash /dev/tcp and require an HTTP 200 status line,
@@ -361,7 +363,7 @@ services:
       SUPABASE_URL: http://kong:8000
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      GOTENBERG_URL: http://gotenberg:3000
+      PDF_RENDERER_URL: http://pdf-renderer:3000
       VERIFY_JWT: "true"
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
       APP_ENV: ${APP_ENV:?Operator environment required}
@@ -552,24 +554,26 @@ services:
       retries: 3
       start_period: 60s
 
-  # Gotenberg - HTML to PDF conversion (Chromium-based)
-  gotenberg:
-    build:
-      context: ./gotenberg
+  # pdf-renderer - HTML to PDF conversion (chrome-headless-shell driven by puppeteer-core;
+  # docker/pdf-renderer, API in its README). It sits on the internal `renderer` network
+  # with `functions` and nothing else: no ports, no route to the internet, the database,
+  # Kong or Studio. `functions` does not depend_on it, so a renderer restart never
+  # restarts or blocks the function runtime.
+  pdf-renderer:
+    build: ./pdf-renderer
     restart: unless-stopped
-    environment:
-      - CHROMIUM_DISABLE_JAVASCRIPT=false
-      - CHROMIUM_ALLOW_FILE_ACCESS_FROM_FILES=true
-      - API_TIMEOUT=60s
-      - LOG_LEVEL=info
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M
+    networks: [renderer]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 1g
+    memswap_limit: 1g
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       timeout: 10s
       interval: 30s
       retries: 3
@@ -580,13 +584,16 @@ volumes:
   cups-spool:
   sensor-bridge-data:
 
-# Three project-scoped networks; services resolve each other by DNS name only
+# Four project-scoped networks; services resolve each other by DNS name only
 # on a network they share (tests/compose-networks.test.mjs holds the table).
 #   default   the gateway, its upstreams, the PDF and image helpers, monitoring
 #   database  the database and the services that open a connection to it
 #   admin     Studio, postgres-meta and the database
+#   renderer  internal (no outside route): the function runtime and the PDF renderer only
 # A service that is not listed under `database` or `admin` cannot open a
 # connection to PostgreSQL, postgres-meta or Studio at all.
 networks:
   database:
   admin:
+  renderer:
+    internal: true

@@ -17,7 +17,7 @@ ON CONFLICT DO NOTHING;
 INSERT INTO public.feature_flags (name, description, enabled, user_roles)
 VALUES
   ('otp_auth', 'Phone OTP authentication', true, NULL),
-  ('pdf_generation', 'PDF generation via Gotenberg', true, NULL),
+  ('pdf_generation', 'PDF generation via the built-in renderer', true, NULL),
   ('printing', 'CUPS printing integration', true, '{"admin","supervisor"}'),
   ('stock_management', 'Stock tracking and movements', true, NULL),
   ('customer_portal', 'Customer self-service portal', false, '{"customer"}')

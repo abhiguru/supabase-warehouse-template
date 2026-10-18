@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 failed=0
-for service in db kong rest realtime storage imgproxy meta studio functions gotenberg; do
+for service in db kong rest realtime storage imgproxy meta studio functions pdf-renderer; do
   id=$(compose ps -q "$service")
   if [[ -z "$id" ]]; then
     echo "$service: missing"; failed=1; continue
@@ -31,7 +31,8 @@ echo "list refresh: $list_refresh"
 # Probe the intended project internally, never an unrelated server on a fixed host port.
 # Each probe runs in a container that shares a network with its target
 # (docker/docker-compose.yml, `networks:`): the storage service for the gateway
-# and its upstreams, Studio for postgres-meta, which nothing else can reach.
+# and its upstreams, Studio for postgres-meta, which nothing else can reach, and the
+# PDF renderer for itself.
 probe_from() {
   { cat "$ROOT/scripts/http-readiness.mjs"; cat; } | compose exec -T "$1" node --input-type=module
 }
@@ -39,12 +40,18 @@ probe_from storage <<'JS' || failed=1
 for (const [name,url,headers] of [
   ['REST','http://kong:8000/rest/v1/',{apikey:process.env.ANON_KEY}],
   ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
-  ['PDF renderer','http://gotenberg:3000/health',{}],
   ['Realtime','http://realtime-dev:4000/api/tenants/realtime-dev/health',{Authorization:`Bearer ${process.env.ANON_KEY}`}],
 ]) {
   await waitForHttp(name,url,headers);
   console.log(`${name}: available`);
 }
+JS
+# The renderer sits on the internal `renderer` network with the function runtime only,
+# so storage cannot reach it: the probe runs inside the renderer container (its image
+# has node and no curl).
+probe_from pdf-renderer <<'JS' || failed=1
+await waitForHttp('PDF renderer','http://pdf-renderer:3000/health',{});
+console.log('PDF renderer: available');
 JS
 probe_from studio <<'JS' || failed=1
 await waitForHttp('metadata','http://meta:8080/health',{});

@@ -1,9 +1,9 @@
 // Edge Function: generate-sample-pdf
-// Demonstrates Gotenberg HTML-to-PDF conversion
+// Demonstrates HTML-to-PDF conversion with the pdf-renderer service
 // POST with optional { title, items: [{ name, quantity, rate }] }
 
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
-import { htmlToPdf, createFooterHtml } from '../_shared/gotenberg-client.ts'
+import { htmlToPdf, createFooterHtml } from '../_shared/pdf-renderer-client.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 
 const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
   </table>
 
   <div class="meta">
-    <p>This is a sample PDF generated via Gotenberg HTML-to-PDF conversion.</p>
+    <p>This is a sample PDF generated via the PDF renderer (HTML-to-PDF conversion).</p>
     <p>Document ID: ${crypto.randomUUID()}</p>
   </div>
 </body>

@@ -97,13 +97,16 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  gotenberg:
+  pdf-renderer:
     logging: *default-logging
+    # docker-compose.yml sets mem_limit, memswap_limit and pids_limit; Compose rejects a
+    # deploy limit that differs from them, so memory and pids repeat the same values here.
     deploy:
       resources:
         limits:
           cpus: '1.0'
           memory: 1G
+          pids: 512
 
   functions:
     logging: *default-logging

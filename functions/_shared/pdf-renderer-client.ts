@@ -1,15 +1,14 @@
 /**
- * Gotenberg Client - HTML to PDF Conversion
+ * PDF renderer client - HTML to PDF conversion
  *
- * Professional PDF generation using Gotenberg's Chromium engine.
- * Supports full CSS (Flexbox, Grid, @page), headers/footers with page numbers.
- *
- * @see https://gotenberg.dev/docs/routes
+ * Calls the `pdf-renderer` service (docker/pdf-renderer: chrome-headless-shell driven by
+ * puppeteer-core). Supports full CSS (Flexbox, Grid, @page), headers/footers with page numbers.
+ * API: POST /render (multipart) and GET /health; see docker/pdf-renderer/README.md.
  */
 
 import { escapeHtml } from './document-html.ts';
 
-const GOTENBERG_URL = Deno.env.get('GOTENBERG_URL') || 'http://gotenberg:3000';
+const PDF_RENDERER_URL = Deno.env.get('PDF_RENDERER_URL') || 'http://pdf-renderer:3000';
 
 const A4_WIDTH = 8.27;
 const A4_HEIGHT = 11.69;
@@ -21,7 +20,7 @@ const CORPORATE_MARGINS = {
   left: 0.55,
 };
 
-export interface GotenbergOptions {
+export interface PdfRendererOptions {
   paperWidth?: number;
   paperHeight?: number;
   marginTop?: number;
@@ -43,7 +42,7 @@ export interface GotenbergOptions {
  */
 export async function htmlToPdf(
   html: string,
-  options: GotenbergOptions = {}
+  options: PdfRendererOptions = {}
 ): Promise<Uint8Array> {
   const formData = new FormData();
 
@@ -86,7 +85,7 @@ export async function htmlToPdf(
   formData.append('emulatedMediaType', options.emulatedMediaType ?? 'print');
   formData.append('preferCssPageSize', options.preferCssPageSize !== false ? 'true' : 'false');
 
-  const response = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
+  const response = await fetch(`${PDF_RENDERER_URL}/render`, {
     method: 'POST',
     body: formData,
     signal: AbortSignal.timeout(30000),
@@ -94,7 +93,32 @@ export async function htmlToPdf(
   });
 
   if (!response.ok) {
-    console.error(`PDF renderer returned HTTP ${response.status}`);
+    let detail = '';
+    try {
+      // The renderer answers errors as JSON {error, code}; log at most 2 KB of it.
+      const reader = response.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (reader && total < 2048) {
+        const { done, value } = await reader.read();
+        if (done || !value) break;
+        chunks.push(value);
+        total += value.length;
+      }
+      await reader?.cancel().catch(() => {});
+      const bytes = new Uint8Array(Math.min(total, 2048));
+      let offset = 0;
+      for (const chunk of chunks) {
+        const part = chunk.subarray(0, bytes.length - offset);
+        bytes.set(part, offset);
+        offset += part.length;
+        if (offset >= bytes.length) break;
+      }
+      detail = ` ${new TextDecoder().decode(bytes)}`;
+    } catch {
+      // the status alone is enough
+    }
+    console.error(`PDF renderer returned HTTP ${response.status}${detail}`);
     throw new Error(`PDF generation failed: ${response.status}`);
   }
 
@@ -103,7 +127,7 @@ export async function htmlToPdf(
 
 /**
  * Create a professional page footer HTML
- * Uses Gotenberg's special CSS classes for page numbers.
+ * Uses the renderer's special CSS classes (pageNumber, totalPages) for page numbers.
  * An empty docNumber prints the document type alone (a report has no number);
  * `note` adds a second line on the left of every page, e.g. that rows were left out.
  */
@@ -144,17 +168,17 @@ export function createFooterHtml(companyName: string, docType: string, docNumber
 }
 
 /**
- * Check Gotenberg health
+ * Check renderer health
  */
-export async function isGotenbergHealthy(): Promise<boolean> {
+export async function isPdfRendererHealthy(): Promise<boolean> {
   try {
-    const response = await fetch(`${GOTENBERG_URL}/health`);
+    const response = await fetch(`${PDF_RENDERER_URL}/health`);
     return response.ok;
   } catch {
     return false;
   }
 }
 
-export function getGotenbergUrl(): string {
-  return GOTENBERG_URL;
+export function getPdfRendererUrl(): string {
+  return PDF_RENDERER_URL;
 }

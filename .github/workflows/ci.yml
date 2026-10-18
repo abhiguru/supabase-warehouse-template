@@ -88,6 +88,54 @@ jobs:
       - run: 'pip install --require-hashes --only-binary=:all: -r docker/sensor-bridge/requirements.txt'
       - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
       - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge
+  pdf-renderer:
+    name: PDF renderer image, unit tests and integration
+    # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); test/integration.sh
+    # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
+    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1 GB memory without swap), then checks
+    # health, a real render, blocked network access and the 400/413 cases.
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: npm ci --omit=dev --ignore-scripts
+        working-directory: docker/pdf-renderer
+      - run: node --test test/*.test.mjs
+        working-directory: docker/pdf-renderer
+      - run: bash docker/pdf-renderer/test/integration.sh
+  pdf-golden:
+    name: Golden PDFs (rasterised, fuzz 0)
+    # TODO: skipped until the fictional corpus is committed under tests/golden-pdf/corpus/ together
+    # with its goldens (tests/golden-pdf/README.md). Once it exists the job is required on every change
+    # to the Chrome for Testing pin, puppeteer-core or the fonts: it renders each case through the
+    # built image and compares every page, rasterised in a pinned poppler container, byte for byte.
+    if: ${{ hashFiles('tests/golden-pdf/corpus/**') != '' }}
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the renderer image and start it with the hardening flags
+        run: |
+          docker build -t pdf-renderer:golden docker/pdf-renderer
+          docker run -d --name pdf-renderer-golden -p 127.0.0.1:3000:3000 --read-only --tmpfs /tmp:size=256m \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1g --memory-swap 1g \
+            pdf-renderer:golden
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && exit 0; sleep 2; done
+          docker logs pdf-renderer-golden >&2; exit 1
+      - name: Render the corpus, rasterise in the pinned poppler container and compare
+        run: RENDERER_URL=http://127.0.0.1:3000 bash tests/golden-pdf/run.sh
+      - name: Stop only this job's renderer
+        if: always()
+        run: docker rm -f pdf-renderer-golden
   contract:
     runs-on: ubuntu-latest
     steps:

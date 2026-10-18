@@ -285,7 +285,9 @@ test('publisher images are pinned by digest and the notices name the versions in
     Supavisor: base('supavisor', 'supabase/supavisor'),
     'edge-runtime': base('edge-runtime', 'supabase/edge-runtime'),
     Studio: base('studio', 'supabase/studio'),
-    Gotenberg: base('gotenberg', 'gotenberg/gotenberg'),
+    // The PDF renderer's pins: the chrome-headless-shell build and puppeteer-core (docker/pdf-renderer).
+    'Chrome for Testing': /^ARG CHS_VERSION=(\S+)$/m.exec(readFileSync(new URL('../docker/pdf-renderer/Dockerfile', import.meta.url), 'utf8'))?.[1],
+    'puppeteer-core': JSON.parse(readFileSync(new URL('../docker/pdf-renderer/package.json', import.meta.url), 'utf8')).dependencies?.['puppeteer-core'],
     Grafana: base('grafana', 'grafana/grafana'),
     // The sensor bridge (GPL-3.0-or-later): its base image and the GPL library it installs.
     Python: base('sensor-bridge', 'python'),

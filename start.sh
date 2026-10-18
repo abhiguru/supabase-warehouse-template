@@ -9,7 +9,10 @@ node "$ROOT/scripts/doctor.mjs" --preflight
 STATE="$(realpath -m "$WAREHOUSE_STATE_DIR")"
 exec 9>"$STATE/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
+# Upgrade from Gotenberg: remove its old container (no longer in the Compose file) before the start.
+bash "$ROOT/scripts/retire-gotenberg.sh" container
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
+bash "$ROOT/scripts/retire-gotenberg.sh" image
 # Optional services (monitoring, printing, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
