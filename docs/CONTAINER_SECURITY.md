@@ -626,8 +626,8 @@ reach nothing except the function runtime that called it. Do not weaken any of t
 particular, never feed the renderer a URL or an HTML page that a user wrote.
 
 **Update cadence.** CHS is a Chrome for Testing build, pinned by `ARG CHS_VERSION` and `ARG CHS_SHA256` in the
-Dockerfile (never `@stable`), puppeteer-core by an exact version in `package.json`, Node and the fonts by digest and
-Debian package. Chrome has security releases about every week. `release.yml` fails a release when the pinned
+Dockerfile (never `@stable`), puppeteer-core by an exact version in `package.json`, Node by digest, and the fonts and libraries
+by Debian package name only (security revisions replace and remove exact versions; see "Fonts"). Chrome has security releases about every week. `release.yml` fails a release when the pinned
 `CHS_VERSION` is more than 14 days behind the current Stable in Chrome for Testing's
 `last-known-good-versions.json`, and `.github/workflows/cft-freshness.yml` runs the same check weekly and opens or
 updates an issue. To bump: change both args and puppeteer-core together (take the puppeteer-core release that pins
@@ -645,12 +645,17 @@ for Chrome itself, together with the pinned SHA-256 (a changed archive fails the
 findings in a scan is not a clean bill: Debian's `chromium` package, which Gotenberg shipped, showed 116 findings in
 the 2026-10-17 scan, and the CfT binary shows none only because Trivy does not look at it.
 
-**Fonts.** The image installs the font packages of the Gotenberg 8.37.0 image, each at an exact version
+**Fonts.** The image installs the font packages of the Gotenberg 8.37.0 image, by package name, without
+versions
 (`fonts-liberation`, `fonts-liberation2`, `fonts-dejavu`, `fonts-noto-core` for Gujarati, `fonts-noto-cjk`,
 `fonts-noto-color-emoji`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea` and `fonts-opensymbol`) and Gotenberg's
 `100-gotenberg.conf`, so documents paginate and look as before. The build fails unless the sorted `fc-list` file list
 hashes to the value in `ARG FONT_FILELIST_SHA256`, which proves the font set did not change; a font package that
-Debian drops or updates therefore stops the build instead of changing the output silently.
+Debian drops or updates therefore stops the build instead of changing the output silently. Exact version pins are
+deliberately not used: the `+debNuM` security revisions vanish from the archive within weeks and would break every
+build. Drift is caught by the file-list hash at build time and by the golden-PDF job on every change, which is
+consistent with the no-snapshot-mirror rule for production images (owner decision D5: a fresh build and scan before
+each release instead).
 
 ## Sensor bridge (2026-10-13)
 

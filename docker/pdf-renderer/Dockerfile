@@ -44,19 +44,22 @@ LABEL org.opencontainers.image.title="pdf-renderer" \
       pdf-renderer.git-sha="${GIT_SHA}"
 
 # Shared libraries chrome-headless-shell needs (the minimum `ldd` reports), tini, fontconfig and the font set
-# of the Gotenberg 8.x image this service replaces.
+# of the Gotenberg 8.x image this service replaces. Packages are named without versions: Debian's security
+# revisions are replaced and removed from the archive, so an exact pin would stop building within weeks. The
+# font-file hash below is the guard against a font change slipping in, and the golden-PDF job (tests/golden-pdf)
+# catches any change in the rendered pages.
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       tini \
       libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 \
       libglib2.0-0t64 libnspr4 libnss3 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
       libxkbcommon0 libxrandr2 \
-      fontconfig=2.15.0-2.3 \
-      fonts-liberation=1:2.1.5-3 fonts-liberation2=1:2.1.5-3 \
-      fonts-dejavu=2.37-8 fonts-dejavu-core=2.37-8 fonts-dejavu-extra=2.37-8 fonts-dejavu-mono=2.37-8 \
-      fonts-noto-core=20201225-2 fonts-noto-mono=20201225-2 fonts-noto-cjk=1:20240730+repack1-1 \
-      fonts-noto-color-emoji=2.051-0+deb13u1 \
-      fonts-crosextra-carlito=20230309-2 fonts-crosextra-caladea=20200211-2 \
-      fonts-opensymbol=4:102.12+LibO25.2.3-2+deb13u8 \
+      fontconfig \
+      fonts-liberation fonts-liberation2 \
+      fonts-dejavu fonts-dejavu-core fonts-dejavu-extra fonts-dejavu-mono \
+      fonts-noto-core fonts-noto-mono fonts-noto-cjk \
+      fonts-noto-color-emoji \
+      fonts-crosextra-carlito fonts-crosextra-caladea \
+      fonts-opensymbol \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian's default fontconfig conf.d plus Gotenberg's rendering settings (identical in 8.25, 8.32, 8.37).
@@ -65,8 +68,8 @@ COPY fontconfig/100-gotenberg.conf /etc/fonts/conf.d/100-gotenberg.conf
 RUN fc-cache -sf
 
 # The font tree must equal the Gotenberg targets' (GCS live 8.32 and template 8.37 give the same value): the sorted
-# list of font files fontconfig knows, hashed the way targets/probe.sh does. A new Debian package version that adds
-# or drops a font file fails the build instead of silently changing the PDFs.
+# list of font files fontconfig knows, hashed the way targets/probe.sh does. A Debian update that adds or drops a
+# font file fails the build instead of silently changing the PDFs (the file list, not the package versions).
 ARG FONT_FILELIST_SHA256=bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d
 RUN actual="$(fc-list --format '%{file}\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" \
     && if [ "$actual" != "${FONT_FILELIST_SHA256}" ]; then \

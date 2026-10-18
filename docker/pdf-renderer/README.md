@@ -154,14 +154,14 @@ docker run --read-only --tmpfs /tmp:size=256m --cap-drop ALL --security-opt no-n
 - `HOME=/tmp/home`, `TZ=UTC`, `LANG=LC_ALL=C.UTF-8`, XDG directories under `/tmp`; the service creates them at boot.
 - Base `node:24-trixie-slim` pinned by digest; amd64 only (the build fails fast otherwise).
 - Fonts: `fonts-liberation fonts-liberation2 fonts-dejavu fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
-  fonts-crosextra-carlito fonts-crosextra-caladea fonts-opensymbol`, every package pinned to an exact version (the
-  Gotenberg targets carry `fonts-opensymbol` 4:102.12+LibO26.2.2.2-3~bpo13+1 from trixie-backports, which is no longer in
-  the archive; the pin is the trixie-security build 4:102.12+LibO25.2.3-2+deb13u8, the same `opens___.ttf` path). Debian's
+  fonts-crosextra-carlito fonts-crosextra-caladea fonts-opensymbol`, named without versions because Debian's security
+  revisions replace and remove older ones (the Gotenberg targets carry `fonts-opensymbol` 4:102.12+LibO26.2.2.2-3~bpo13+1
+  from trixie-backports; trixie's own build has the same `opens___.ttf` path). Debian's
   default fontconfig `conf.d` plus `fontconfig/100-gotenberg.conf` (byte-identical in Gotenberg 8.25, 8.32 and 8.37), then
   `fc-cache -sf` as the last font step. The build fails unless the sorted `fc-list` file list hashes to
   `bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d` (`ARG FONT_FILELIST_SHA256`), the value of both
-  targets, computed as `targets/probe.sh` does. When a pinned version leaves the Debian archive, bump the pin and rely on
-  that hash to prove the font set did not change.
+  targets, computed as `targets/probe.sh` does. A Debian update that changes the font file list
+  fails the build; the golden-PDF job (`tests/golden-pdf`) catches any change in the rendered pages.
 - `MALLOC_ARENA_MAX=2` limits glibc arena growth in the Node process.
 - npm, corepack and yarn are removed from the final image (the files stay in the base layer).
 - Labels: `pdf-renderer.chs-version`, `pdf-renderer.puppeteer-core-version`, `pdf-renderer.git-sha`
