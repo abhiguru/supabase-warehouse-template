@@ -26,7 +26,7 @@ function fixture(prefix, { integrity = ledger(), env } = {}) {
   writeFileSync(join(root, 'scripts/doctor.mjs'), "console.log('Host prerequisites and state filesystem preflight passed.');\n");
   // restore-host renders the monitoring files with the renderer setup uses, from the templates next to it.
   for (const file of ['monitoring-config.mjs', 'is-main.mjs']) copyFileSync(join(repo, 'scripts', file), join(root, 'scripts', file));
-  for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.webhook.yml']) copyFileSync(join(repo, 'docker', file), join(root, 'docker', file));
+  for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.slack.yml']) copyFileSync(join(repo, 'docker', file), join(root, 'docker', file));
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.
   writeFileSync(join(root, 'scripts/restore.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$*" >> "$RESTORE_LOG"
@@ -261,7 +261,7 @@ test('restore-host opens an encrypted archive with the backup key and refuses it
 });
 
 // What a host that ran the monitoring and printing profiles keeps after `compose down`.
-const OTHER_VOLUMES = ['prometheus_data', 'grafana_data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
+const OTHER_VOLUMES = ['prometheus_data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
 
 test('restore-host refuses a host that still has the database configuration volume, and names only that volume', () => {
   const f = fixture('warehouse-restore-host-volume-');

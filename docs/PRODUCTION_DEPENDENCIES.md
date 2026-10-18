@@ -48,16 +48,13 @@ dispositions and the owner inputs.
   The disposition below is the earlier record; it granted no risk acceptance and
   is superseded by the ledger.
 - **Item 1, earlier disposition: Won’t fix in current scope — user disposition.**
-  The active Grafana recipe's recorded scan has **3 HIGH** findings: core Thrift and
-  gRPC in the required Prometheus and PostgreSQL plugins. The separate combined
-  core rebuild/prune **amd64** candidate removes Thrift but retains the two
-  plugin gRPC HIGH findings. PostgREST's platform binaries contain affected
+  PostgREST's platform binaries contain affected
   `aeson` versions under HIGH advisory HSEC-2026-0007, and a complete image-bound
   Haskell/native inventory is unavailable. These remaining findings are unresolved;
   this disposition grants no production risk acceptance, and the strict
   19-image gate still fails. Stop scheduling research, rebuilds and scans for
   this item unless the user reopens it. See the [security evidence](CONTAINER_SECURITY.md).
-  The Grafana candidate and PostgREST investigation records, their research
+  The PostgREST investigation records, their research
   workflows, helper scripts and the candidate Dockerfile were removed from the
   public repository under this disposition.
 - **Disabled Auth source advisory:** A reviewed candidate locally replaces

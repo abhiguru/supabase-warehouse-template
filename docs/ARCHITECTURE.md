@@ -15,9 +15,9 @@ table from the rendered configuration).
               │            └──▶ Functions :9000                             │
               │  imgproxy :5001 (from Storage)      CUPS :631 (profile)     │
               │  sensor-bridge ──▶ Kong (profile; polls hubs on the LAN)    │
-              │  Prometheus, Alertmanager, exporters, Grafana (profile)     │
+              │  Prometheus, Alertmanager, exporters (profile)              │
               └────────────────────┬────────────────────────────────────────┘
-                 REST, Realtime, Storage, Postgres exporter, Grafana
+                 REST, Realtime, Storage, Postgres exporter
               ┌────────────────────▼────── database ────────────────────────┐
               │  PostgreSQL :5432            Supavisor (profile)            │
               └────────────────────┬────────────────────────────────────────┘
@@ -31,8 +31,8 @@ table from the rendered configuration).
 
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | kong, rest, realtime, storage, imgproxy, functions, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor, grafana | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
-| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter, grafana | Connections to PostgreSQL |
+| `default` | kong, rest, realtime, storage, imgproxy, functions, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
+| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter | Connections to PostgreSQL |
 | `admin` | db, meta, studio | postgres-meta and Studio, which run SQL without a login |
 | `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database, Kong or Studio, and only the function runtime can reach it |
 

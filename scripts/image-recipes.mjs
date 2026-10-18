@@ -13,8 +13,7 @@
 // current when its recipe has the recorded fingerprint and its tag still names
 // the recorded image; a tag moved by anything else (a manual build, a build
 // that failed half way) is built again. No built service names its image, so
-// Compose tags each `<project>-<service>` and installations never share a tag
-// (Grafana shared `warehouse-grafana:local` until 2026-10-13).
+// Compose tags each `<project>-<service>` and installations never share a tag.
 // scripts/build-images.sh is the only caller: `plan` before a build, and again
 // in --replace-optional to leave alone a running optional service whose image
 // does not match this checkout.

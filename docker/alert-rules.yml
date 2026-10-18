@@ -1,4 +1,17 @@
 groups:
+  - name: heartbeat
+    rules:
+      # Always firing (vector(1)), routed to Slack once a day (docker/alertmanager.slack.yml,
+      # repeat_interval 24h). The facility sees "Monitoring is alive" daily; a day without that message
+      # means Prometheus, Alertmanager or the Slack webhook is broken (docs/MONITORING.md, "Watchdog").
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: heartbeat
+        annotations:
+          summary: "Monitoring is alive"
+          description: "This message arrives once a day while Prometheus, Alertmanager and the Slack webhook all work. If a day passes without it, alerting is broken."
+
   - name: supabase_alerts
     rules:
       - alert: HighCPU

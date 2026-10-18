@@ -43,7 +43,7 @@ test('postgres-meta, Studio and the database are reachable only from the service
   assert.deepEqual(peers('pdf-renderer'), ['functions']);
   assert.deepEqual(peers('meta'), ['db', 'studio']);
   assert.deepEqual(peers('studio'), ['db', 'meta']);
-  assert.deepEqual(peers('db'), ['auth', 'grafana', 'meta', 'postgres-exporter', 'realtime', 'rest', 'storage', 'studio', 'supavisor']);
+  assert.deepEqual(peers('db'), ['auth', 'meta', 'postgres-exporter', 'realtime', 'rest', 'storage', 'studio', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
   // share no network with the database, postgres-meta or Studio.
   for (const service of ['kong', 'functions', 'pdf-renderer', 'imgproxy', 'cups', 'sensor-bridge', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
@@ -58,7 +58,6 @@ test('every service still shares a network with each host it is configured to ca
   // Hosts that are named in mounted configuration or in code rather than in the environment.
   for (const match of read('docker/kong.yml').matchAll(/^\s+url: http:\/\/([a-z0-9-]+):\d+/gm)) wanted.kong.add(match[1]);
   for (const match of read('docker/prometheus.yml').matchAll(/'([a-z][a-z0-9-]*):\d+'/g)) if (match[1] !== 'localhost') wanted.prometheus.add(match[1]);
-  for (const match of read('docker/volumes/grafana/provisioning/datasources/datasources.yml').matchAll(/url: (?:http:\/\/)?([a-z][a-z0-9-]*):\d+/g)) wanted.grafana.add(match[1]);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_host" => "db"/);
   wanted.supavisor.add('db');
   wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
@@ -72,7 +71,6 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer']);
   assert.deepEqual([...wanted.studio].sort(), ['meta']);
   assert.deepEqual([...wanted.prometheus].sort(), ['alertmanager', 'cadvisor', 'kong', 'node-exporter', 'postgres-exporter']);
-  assert.deepEqual([...wanted.grafana].sort(), ['db', 'prometheus']);
   // The sensor bridge posts to the ingest function through the gateway and calls nothing else here.
   assert.deepEqual([...wanted['sensor-bridge']].sort(), ['kong']);
   for (const service of ['rest', 'realtime', 'meta', 'auth', 'supavisor', 'postgres-exporter']) assert.ok(wanted[service].has('db'), `${service} names the database`);
@@ -181,11 +179,10 @@ test('the superuser password reaches only db, meta, realtime, supavisor and stud
   assert.deepEqual(holders(env.DB_PASSWORD_STORAGE), ['db', 'storage']);
   assert.deepEqual(holders(env.DB_PASSWORD_AUTH), ['auth', 'db']);
   assert.deepEqual(holders(env.DB_PASSWORD_POOLER), ['db', 'supavisor']);
-  assert.deepEqual(holders(env.DB_PASSWORD_MONITORING), ['grafana', 'postgres-exporter']);
+  assert.deepEqual(holders(env.DB_PASSWORD_MONITORING), ['postgres-exporter']);
   assert.deepEqual(holders(env.REALTIME_DB_ENC_KEY), ['realtime']);
   assert.equal(services.realtime.environment.DB_ENC_KEY, env.REALTIME_DB_ENC_KEY);
   assert.match(services['postgres-exporter'].environment.DATA_SOURCE_NAME, /^postgresql:\/\/warehouse_monitoring:/);
-  assert.equal('POSTGRES_PASSWORD' in services.grafana.environment, false);
   assert.equal('POSTGRES_PASSWORD' in services.supavisor.environment, false);
 });
 

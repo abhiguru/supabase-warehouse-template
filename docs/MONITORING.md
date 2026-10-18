@@ -1,7 +1,10 @@
-# Local monitoring profile
+# Monitoring and Slack alerts
 
-The monitoring profile is loopback-only and optional. It validates local metric
-collection and Alertmanager ingestion without contacting an external provider.
+The monitoring profile is loopback-only and optional. Prometheus collects the
+metrics, evaluates the alert rules, and Alertmanager sends the alerts to the
+facility's own Slack channel. There are no dashboards: Slack is the only way
+alerts leave the host (see [Alert delivery](#alert-delivery)). The check below
+validates collection and Alertmanager ingestion without contacting Slack.
 
 ```bash
 export WAREHOUSE_PROJECT_NAME=warehouse-local-readiness
@@ -9,12 +12,12 @@ npm run test:monitoring
 ```
 
 The check validates Prometheus and Alertmanager configuration (including the
-19 alert rules and their unit tests), starts the owned profile, waits for all
+20 alert rules and their unit tests), starts the owned profile, waits for all
 five scrape targets (Prometheus, PostgreSQL exporter, node exporter, cAdvisor
 and Kong), requires that Prometheus holds gateway request metrics
 (`kong_http_requests_total`), carries this installation's `installation` label,
 holds the containers of this installation and of no other, reads a probe file
-from the backup metrics directory, submits a synthetic alert, and proves that
+from the backup metrics directory, submits a synthetic alert (kept by Alertmanager, never posted to Slack), and proves that
 Alertmanager retained it. It needs a state that `setup.sh --operator` has
 configured since 2026-10-17 (see [Several installations on one host](#several-installations-on-one-host)).
 
@@ -26,14 +29,12 @@ on both Alertmanager files setup can render. It needs Docker and no state.
 
 ## Endpoints
 
-No monitoring service publishes a host port: Grafana (`grafana:3000`),
-Prometheus (`prometheus:9090`), Alertmanager (`alertmanager:9093`), cAdvisor
+No monitoring service publishes a host port: Prometheus (`prometheus:9090`), Alertmanager (`alertmanager:9093`), cAdvisor
 (`cadvisor:8080`) and the two exporters answer only inside the Compose project.
 Reach one from the host with `bash scripts/compose.sh --profile monitoring exec
 <service> wget -qO- http://localhost:<port>/...`. An earlier version of this
 page listed loopback ports (13001, 19095, 19093, 19998); nothing in the Compose
-files ever published them. Grafana credentials come from the private generated
-environment; do not place them in documentation or source.
+files ever published them.
 
 Prometheus is started without `--web.enable-lifecycle`, so no container on its
 network can stop or reload it over HTTP. The Prometheus and Alertmanager
@@ -58,8 +59,8 @@ templates in `docker/`:
 | File in the state directory | Rendered from | Mounted by |
 | --- | --- | --- |
 | `config/monitoring/prometheus.yml` (0644) | `docker/prometheus.yml` | `prometheus` |
-| `config/monitoring/alertmanager/alertmanager.yml` (0644) | `docker/alertmanager.yml`, or `docker/alertmanager.webhook.yml` with `--alert-webhook-file` | `alertmanager` (the directory, read-only) |
-| `config/monitoring/alertmanager/webhook-url` (0600) | the file given to `--alert-webhook-file` | `alertmanager` (same directory) |
+| `config/monitoring/alertmanager/alertmanager.yml` (0644) | `docker/alertmanager.slack.yml` when the installation has a Slack webhook, else `docker/alertmanager.yml` | `alertmanager` (the directory, read-only) |
+| `config/monitoring/alertmanager/webhook-url` (0600) | the Slack webhook URL typed at the setup prompt or read from `--alert-webhook-file` | `alertmanager` (same directory) |
 | `metrics/` (0755) | created empty | `node-exporter` (read-only) |
 | `data/alertmanager/` (0700) | created empty | `alertmanager` (read-write, at `/alertmanager`): silences and the notification log |
 
@@ -92,9 +93,9 @@ not exist" for the file, instead of creating an empty directory.
 `db:restore-host` never runs setup, but it renders these files for the
 restored project itself (`node scripts/monitoring-config.mjs STATE PROJECT`,
 the renderer setup uses), so the monitoring profile starts after a lost-host
-restore. The webhook address is a secret and is not in a backup: alerts are
-local only until you run `setup.sh --operator` again with
-`--alert-webhook-file`, and restore-host's "Next" list says so.
+restore. The Slack webhook URL is a secret and is not in a backup: alerts are
+local only until you run `setup.sh --operator` again (it asks for the URL on a
+terminal, or takes `--alert-webhook-file`), and restore-host's "Next" list says so.
 
 Alertmanager keeps its silences and notification log in `data/alertmanager`,
 so a replacement of the container (every setup that changes its files, every
@@ -105,41 +106,94 @@ installation on a host. Each installation scrapes its own node exporter.
 
 ## Alert delivery
 
-By default Alertmanager holds alerts on this host and sends them nowhere
-(receiver `local-only`). `npm run doctor` warns while it is running like that.
-To send them to a webhook:
+Alerts go to Slack and nowhere else. Each facility owner creates their own
+Slack incoming webhook (in Slack: Apps, Incoming Webhooks, Add to Slack, pick
+the channel) and gives the URL to whoever installs the facility.
+`setup.sh --operator` needs it:
 
-1. Put one `https://` address in a private file (mode 0600, owned by the
-   installing user, outside the checkout). Do not put it in the repository.
-2. Rerun setup with your usual inputs and `--alert-webhook-file /absolute/path/webhook.txt`.
-   Setup validates the file, copies the address to
-   `config/monitoring/alertmanager/webhook-url` (mode 0600) and renders
-   `alertmanager.yml` from `docker/alertmanager.webhook.yml`. A rerun without
-   the option keeps the address; `--alert-webhook-file off` removes it and
-   returns to the local-only receiver.
-3. Alertmanager is replaced by `setup.sh`. It reads the address from the file
-   for every notification (`url_file`), so the address is in no environment
-   variable, label or configuration text, and runs as the installing user so
-   that it can read a 0600 file.
+- **On a terminal**, without `--alert-webhook-file`, setup asks
+  `Slack incoming-webhook URL for <company> alerts (create one in Slack: Apps →
+  Incoming Webhooks):`. What you type is not shown (text typed before the
+  prompt appeared is echoed by the terminal: wait for the prompt). A URL that is
+  not `https://hooks.slack.com/services/...` is refused and asked for again, up to
+  three times. Then setup asks `Send a test message to Slack now? [Y/n]` and
+  posts one short message naming the facility **before anything is stored**.
+  If Slack does not accept it (revoked or mistyped URL, wrong workspace) or cannot
+  be reached, setup says so with the HTTP status (never the URL) and asks
+  `Store this URL anyway? [y/N]`; no means it asks for another URL, within the three
+  tries. Nothing is stored after three failures. End of input at a question counts
+  as no. A rerun that already has a stored URL asks nothing.
+- **`--alert-webhook-file ask`** forces the prompt on a rerun and replaces the
+  stored URL (a terminal is required). Use it when the webhook was revoked or the
+  channel changed.
+- **With `--alert-webhook-file PATH`**, setup reads the URL from that file (mode
+  0600, owned by the installing user, outside the checkout, one line). Use this
+  for scripted installs. Create the file without the URL entering the shell
+  history: `install -m 600 /dev/null /secure/slack-webhook.txt` and then paste
+  the URL into it with an editor, or `read -rs URL && printf '%s\n' "$URL" >
+  /secure/slack-webhook.txt && unset URL` (the `read` prompt is silent).
+- **Without a terminal and without the option**, setup refuses: `--alert-webhook-file
+  PATH is required (a file holding the facility's Slack webhook URL), or
+  --alert-webhook-file off for a non-production install`.
+- **`--alert-webhook-file off`** is for a non-production install. Setup prints a
+  warning that alerts stay on this host only, removes any stored URL and renders
+  `docker/alertmanager.yml` (a receiver on this host). Monitoring stays optional
+  (`bash scripts/compose.sh --profile monitoring up -d`).
 
-Alertmanager posts its standard JSON for a webhook to the address
-([format](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config)):
-the alert's labels (including `installation`), annotations, status and
-`startsAt`, grouped by alert name. Point it at something that accepts that body:
-an automation service, a paging gateway or a chat bridge. A Slack incoming
-webhook takes a different body; for that use the structure in
-`docker/alertmanager.slack.example.yml` in your private deployment configuration.
-Email and paging need the same provider-specific acceptance.
+**With a webhook stored, setup.sh and start.sh start the monitoring services**
+(Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters;
+`scripts/start-monitoring.sh`), because a Prometheus that never runs sends
+nothing. `start.sh` never builds: it starts the images setup built. `stop.sh`
+stops them with everything else. A start that fails is a warning, and `npm run
+doctor` then reports `Slack webhook stored but monitoring is not running`.
 
-A webhook that is configured is not a webhook that works: send a synthetic alert
-and watch it arrive, and keep that evidence, before relying on it.
+Setup stores the URL at `config/monitoring/alertmanager/webhook-url` (mode 0600,
+in the state, never in git, a log, an environment variable or a command line)
+and renders `alertmanager.yml` from `docker/alertmanager.slack.yml`:
+`slack_configs` with `api_url_file` pointing at that file, `send_resolved: true`,
+`group_wait: 30s`, `group_interval: 5m`, `repeat_interval: 4h`. Each message
+title names the alert, the company and the installation (`WAREHOUSE_PROJECT_NAME`);
+the text lists the firing alerts (summary and description), then a `Resolved:`
+section with the alerts of the same group that resolved meanwhile. The preview
+text is the title. Alertmanager runs as the installing user so that it can read the
+0600 file, and `setup.sh` replaces it when its configuration changes.
+
+To change the webhook later, rerun setup with `--alert-webhook-file ask` or with a
+file holding the new URL. The webhook is a secret that `rotate-keys.sh` does not
+change; see "Secrets that rotate-keys does not change" in
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md).
+
+### Watchdog: the daily "monitoring is alive" message
+
+`docker/alert-rules.yml` has an always-firing rule, `Watchdog` (`vector(1)`,
+`severity: heartbeat`). Alertmanager routes it to its own Slack receiver,
+`slack-heartbeat`, with `repeat_interval: 24h` and `send_resolved: false`, so the
+facility's channel gets one message a day titled "Monitoring is alive". The
+heartbeat never sends "resolved": when Prometheus dies the Watchdog resolves, and
+a resolved message titled "Monitoring is alive" would say the opposite of the
+truth. **A day without that message means monitoring is down**: Prometheus,
+Alertmanager, the host or the Slack webhook (revoked, channel deleted) has
+stopped, and nobody will be told about a failed backup either. Check `bash
+scripts/compose.sh --profile monitoring ps`, the Alertmanager log and the webhook
+in Slack, then `bash start.sh`. The first message arrives within a minute or so
+of the monitoring services starting (30 s of grouping).
+
+A webhook that is configured is not a webhook that works: answer the test
+message prompt at setup, and keep the evidence that a real alert arrived before
+relying on it. To send a synthetic alert through a running Alertmanager
+(this one does reach Slack, after the 30 s group wait):
 
 ```bash
 bash scripts/compose.sh --profile monitoring exec -T alertmanager wget -qO- \
   --header='Content-Type: application/json' \
-  --post-data='[{"labels":{"alertname":"WebhookTest","severity":"warning"},"annotations":{"summary":"delivery test"}}]' \
+  --post-data='[{"labels":{"alertname":"SlackTest","severity":"warning"},"annotations":{"summary":"delivery test"}}]' \
   http://localhost:9093/api/v2/alerts
 ```
+
+`npm run test:monitoring` sends its own synthetic alert (`WarehouseSynthetic`);
+Alertmanager routes that name to a receiver with no integration, so it is kept
+(the check reads it back) but never posted to Slack. Email and paging are not
+supported by this repository.
 
 ## Collected signals
 
@@ -170,8 +224,9 @@ connections (`pg_stat_activity_count{backend_type="client backend"}`).
 filesystem, and any other ext4/xfs/btrfs filesystem below 10% free), database
 availability, connections and long transactions, container memory, restarts
 and OOM events, gateway latency, error rate and availability, backup age and
-backup failure ([Backup alerts](#backup-alerts)), and any other scrape target
-being down (`ScrapeTargetDown`).
+backup failure ([Backup alerts](#backup-alerts)), any other scrape target
+being down (`ScrapeTargetDown`), and the `Watchdog` heartbeat
+([Alert delivery](#watchdog-the-daily-monitoring-is-alive-message)).
 
 `DatabaseConnectionsHigh` fires when the **client** connections of one
 PostgreSQL server (all databases, users, states and applications added up,
@@ -185,7 +240,7 @@ series (for example 45 active and 45 idle) never fired it. The unit tests in
 
 Every rule has a unit test that fires and one that stays quiet
 (`docker/alert-rules.test.yml`; `tests/alert-rules.test.mjs` fails when a rule
-has neither).
+has neither). `Watchdog` has only the firing case: it never stops.
 
 ## Backup alerts
 
@@ -243,39 +298,12 @@ This keeps the local check responsive and avoids scanning unrelated container
 filesystems. It still requires privileged host mounts, so a target operator must
 review or replace that collector before production use.
 
-## Grafana
-
-The monitoring profile's Grafana (`grafana:3000`, loopback only) provisions one
-dashboard, **Warehouse overview**, in the folder "Warehouse Monitoring", from
-`docker/volumes/grafana/dashboards/warehouse-overview.json` (mounted read-only at
-`/etc/grafana/dashboards`; `allowUiUpdates: false`, so it cannot be saved over
-from the screen: edit the file and let Grafana reload it, which takes up to 30
-seconds). It is built from the series above and shows PostgreSQL up, client
-connections, the longest transaction, gateway requests by status, 5xx ratio and
-p95 latency per service, free filesystem space, container memory per Compose
-service, backup age by kind, scrape targets and the number of firing alerts.
-It names no installation: each installation has its own Grafana and Prometheus.
-The datasource it uses is the provisioned Prometheus datasource with the fixed
-uid `PBFA97CFB590B2093` (`provisioning/datasources/datasources.yml`).
-
-`npm run test:grafana` (CI job "Grafana plugins and live queries") starts
-Grafana with the provisioning and the dashboard mounted, requires the dashboard
-to be provisioned and read-only, and runs every panel query through
-`/api/ds/query` against a live Prometheus; a rejected query fails the check.
-
-**Grafana alerting is out of scope** (owner decision D11 of 2026-10-17). Alerts
-come from Prometheus' rules and leave through Alertmanager; there is no
-`provisioning/alerting` directory and none is planned. Do not create alert rules
-in the Grafana screen: a rule stored only in Grafana's database is not in the
-repository and is lost with the volume.
-
 ## Alert delivery boundary
 
-The default `docker/alertmanager.yml` has a local receiver only. Fake webhooks are
-not supplied, and a green local test does not prove on-call delivery: see
-[Alert delivery](#alert-delivery) for the webhook option and for the evidence to
+`docker/alertmanager.yml`, used only with `--alert-webhook-file off`, has a local
+receiver only. A green local test does not prove on-call delivery: see
+[Alert delivery](#alert-delivery) for the Slack webhook and the evidence to
 keep.
 
-The profile does not establish public TLS, authentication for dashboards,
-off-host retention, incident ownership, or production SLOs. Keep all host ports
+The profile does not establish public TLS, off-host retention, incident ownership, or production SLOs. Keep all host ports
 on loopback until those controls are implemented and reviewed.

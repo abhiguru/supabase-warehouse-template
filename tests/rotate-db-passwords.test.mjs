@@ -42,7 +42,7 @@ case "$1" in
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       'compose up --help') printf '      --wait-timeout int   Maximum duration in seconds to wait\\n' ;;
-      *' ps -q supavisor'|*' ps -q grafana'|*' ps -q postgres-exporter'|*' ps -q auth') : ;;
+      *' ps -q supavisor'|*' ps -q postgres-exporter'|*' ps -q auth') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *' exec -T db sh -c IFS= read -r pw;'*)
         cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"

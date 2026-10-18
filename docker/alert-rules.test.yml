@@ -18,6 +18,32 @@ rule_files:
   - /etc/prometheus/alert-rules.yml
 evaluation_interval: 1m
 tests:
+  # ---- heartbeat ----------------------------------------------------------------------------------
+
+  # Watchdog never stops firing, so it has no case that stays quiet (tests/alert-rules.test.mjs exempts it).
+  - name: Watchdog fires from the first evaluation
+    interval: 1m
+    input_series:
+      - series: 'up{job="prometheus",instance="prometheus:9090"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "Monitoring is alive"
+              description: "This message arrives once a day while Prometheus, Alertmanager and the Slack webhook all work. If a day passes without it, alerting is broken."
+      - eval_time: 9m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "Monitoring is alive"
+              description: "This message arrives once a day while Prometheus, Alertmanager and the Slack webhook all work. If a day passes without it, alerting is broken."
+
   # ---- supabase_alerts ----------------------------------------------------------------------------
 
   - name: HighCPU fires at 90% busy
@@ -445,9 +471,9 @@ tests:
         values: '500x20'
       - series: 'container_spec_memory_limit_bytes{instance="cadvisor:8080",job="cadvisor",name="warehouse-demo-db-1",container_label_com_docker_compose_project="warehouse-demo",container_label_com_docker_compose_service="db"}'
         values: '1000x20'
-      - series: 'container_memory_usage_bytes{instance="cadvisor:8080",job="cadvisor",name="warehouse-grafana-smoke-1",container_label_com_docker_compose_project="",container_label_com_docker_compose_service=""}'
+      - series: 'container_memory_usage_bytes{instance="cadvisor:8080",job="cadvisor",name="warehouse-helper-smoke-1",container_label_com_docker_compose_project="",container_label_com_docker_compose_service=""}'
         values: '990x20'
-      - series: 'container_spec_memory_limit_bytes{instance="cadvisor:8080",job="cadvisor",name="warehouse-grafana-smoke-1",container_label_com_docker_compose_project="",container_label_com_docker_compose_service=""}'
+      - series: 'container_spec_memory_limit_bytes{instance="cadvisor:8080",job="cadvisor",name="warehouse-helper-smoke-1",container_label_com_docker_compose_project="",container_label_com_docker_compose_service=""}'
         values: '1000x20'
       - series: 'container_memory_usage_bytes{instance="cadvisor:8080",job="cadvisor",name="other-db-1",container_label_com_docker_compose_project="other",container_label_com_docker_compose_service="db"}'
         values: '990x20'

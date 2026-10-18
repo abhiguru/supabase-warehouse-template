@@ -22,7 +22,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: npm run db:rotate-passwords -- --yes [--superuser]
 Generates a new password for every database login of the services (PostgREST,
-Storage, Auth, the pooler, the Postgres exporter and Grafana), sets them in the
+Storage, Auth, the pooler and the Postgres exporter), sets them in the
 database, and restarts the database and the services that sign in to it
 (about a minute; the API is unavailable for some seconds of it). With
 --superuser, POSTGRES_PASSWORD (the
@@ -134,7 +134,7 @@ mv -f "$staged" "$live"
 #    script) and every running service that signs in to it. A service that was
 #    stopped on purpose stays stopped; it reads the new value when it starts.
 recreate=()
-for service in db rest storage auth realtime meta studio supavisor postgres-exporter grafana; do
+for service in db rest storage auth realtime meta studio supavisor postgres-exporter; do
   id=$(compose --profile '*' ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then recreate+=("$service"); fi
 done

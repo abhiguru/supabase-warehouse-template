@@ -85,55 +85,6 @@
       "expires": "2027-01-15"
     },
     {
-      "id": "grafana-plugins-awaiting-publisher",
-      "recipe": "docker/grafana/Dockerfile",
-      "class": "advisory",
-      "advisories": [
-        "CVE-2026-78667",
-        "CVE-2026-78669",
-        "CVE-2026-97031"
-      ],
-      "packages": [
-        "stdlib",
-        "golang.org/x/net"
-      ],
-      "targets": [
-        "usr/share/grafana/data/plugins-bundled/"
-      ],
-      "severities": [
-        "HIGH"
-      ],
-      "owner": "abhiguru",
-      "reason": "The publisher-signed backends of the nine retained data source plugins (elasticsearch, grafana-postgresql-datasource, grafana-pyroscope-datasource, loki, mssql, mysql, opentsdb, prometheus, zipkin) are built with Go 1.26.6, 1.26.7 or 1.27.1 and golang.org/x/net 0.58.0 or 0.59.0 (fixed in Go 1.26.9/1.27.2 and x/net 0.60.0). On 2026-10-17 neither Grafana 13.2.4 nor the newest catalog release of any of them carries the fix (2026-10-18 scan: 36 HIGH). Signed plugin binaries cannot be rebuilt locally. Grafana is in the optional monitoring profile, with no host port.",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
-      "id": "grafana-core-awaiting-publisher",
-      "recipe": "docker/grafana/Dockerfile",
-      "class": "advisory",
-      "advisories": [
-        "CVE-2026-100349",
-        "CVE-2026-100351",
-        "CVE-2026-100352",
-        "CVE-2026-100353",
-        "CVE-2026-100354"
-      ],
-      "packages": [
-        "github.com/getkin/kin-openapi"
-      ],
-      "targets": [
-        "usr/share/grafana/bin/grafana"
-      ],
-      "severities": [
-        "HIGH"
-      ],
-      "owner": "abhiguru",
-      "reason": "The Grafana 13.2.4 server binary still embeds kin-openapi 0.144.0 (fixed in 0.146.0 to 0.149.0); 13.2.4 is the newest stable release on 2026-10-17 and its go.mod still requires 0.144.0 (2026-10-18 scan: 5 HIGH). Grafana is in the optional monitoring profile, with no host port. Move to the first release with the fix.",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
       "id": "pdf-renderer-os-no-fix",
       "recipe": "docker/pdf-renderer/Dockerfile",
       "class": "no-fix",
