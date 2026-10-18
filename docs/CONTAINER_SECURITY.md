@@ -449,7 +449,7 @@ behavior change. Storage's manifest now contains only the runtime dependencies
 used by its precompiled Node entrypoint, with current Fastify/protobuf fixes.
 
 `npm run check:container-dependencies` audits both complete tracked npm graphs in
-CI at HIGH/CRITICAL severity (and, since 2026-10-18, the PDF renderer's production graph at every severity). At the earlier source follow-up, metadata passed
+CI at HIGH/CRITICAL severity (and, since 2026-10-18, the PDF renderer's production graph, `--omit=dev`, at the same HIGH/CRITICAL threshold). At the earlier source follow-up, metadata passed
 that threshold with 20 moderate findings remaining, while Storage reported zero
 findings. At that earlier revision, the metadata source passed all 197 upstream
 tests on a fresh isolated fixture database, and the deployed Studio/API/image/PDF
@@ -614,7 +614,10 @@ render hit the kernel's OOM kill); tini is PID 1; the process runs as uid 10001.
 before reading it, queues at most 10 jobs and 100 MB of input, and gives each job 25 s. Every job gets a fresh
 browser context that is closed afterwards; the browser restarts after 100 jobs or at 650 MB of Chrome memory, and is killed
 at 1100 MB; the container's working set only holds back the next body at 1200 MiB. In the page, JavaScript is off (before navigation) and every request except the document itself and
-`data:` images and fonts is refused, with `--host-resolver-rules="MAP * ~NOTFOUND"` as a second layer.
+`data:` images and fonts is refused (in the normal in-memory mode the document is also sent with a
+Content-Security-Policy that blocks `data:` frames and objects; bodies of 8 MiB or more are rendered from a file in a
+per-job directory, which cannot carry that header, so a `data:` frame renders there, still without any network access),
+with `--host-resolver-rules="MAP * ~NOTFOUND"` as a second layer.
 
 **Why `--no-sandbox` is acceptable here.** Chromium's own sandbox needs user namespaces or a setuid helper, which
 the capability-free, read-only container deliberately lacks, and Gotenberg ran with the same flag. The compensating
@@ -630,7 +633,8 @@ Dockerfile (never `@stable`), puppeteer-core by an exact version in `package.jso
 by Debian package name only (security revisions replace and remove exact versions; see "Fonts"). Chrome has security releases about every week. `release.yml` fails a release when the pinned
 `CHS_VERSION` is more than 14 days behind the current Stable in Chrome for Testing's
 `last-known-good-versions.json`, and `.github/workflows/cft-freshness.yml` runs the same check weekly and opens or
-updates an issue. To bump: change both args and puppeteer-core together (take the puppeteer-core release that pins
+updates an issue. If the release dates cannot be read the result is "unknown" (exit 2): the run fails, and no
+issue is opened or closed for it. Each network fetch is tried three times. To bump: change both args and puppeteer-core together (take the puppeteer-core release that pins
 that Chrome major), run the renderer's unit tests and `test/integration.sh`, check the golden-PDF job, then rebuild
 with `bash scripts/build-images.sh --no-cache` and scan. The golden job renders a fictional corpus, rasterises it in
 a pinned poppler container and compares with the committed goldens at fuzz 0, so a font, Chrome or puppeteer change
@@ -819,7 +823,7 @@ with only a report and an image keeps the old strict behaviour.
 
 **Scan of 2026-10-18.** Trivy 0.74.0 (the release binary, checksum checked),
 one vulnerability database for every report (updated 2026-10-17 18:34 UTC),
-the flags of `scripts/scan-images.sh`, linux/amd64. Every built image was built
+the flags of `scripts/scan-images.sh`, linux/amd64 (the pdf-renderer row was scanned later, on 2026-10-18 with Trivy 0.76.0, the version installed on the build host; the ledger entry says so). Every built image was built
 with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 198bbfa, built the same evening as "after". Counts are HIGH/CRITICAL rows.
 

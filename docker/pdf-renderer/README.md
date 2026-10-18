@@ -67,9 +67,9 @@ intended parity, not a bug.
 
 Answers immediately from a background probe (`Browser.getVersion` every 2 s, 5 s timeout), never from a live check.
 
-- 200 `{"status":"up"|"restarting","chromium":{"version","jobs","restarts","queue","inflightBytes","memoryMB"}}`.
+- 200 `{"status":"up"|"restarting","chromium":{"version","jobs","restarts","queue","inflightBytes","memoryMB","containerMB"}}`.
   `restarting` covers boot, planned restarts and the first relaunch after a crash. Jobs queue while it lasts.
-- 503 `{"status":"down", ...}` after two failed probes in a row (the browser is then killed and relaunched), while launches
+- 503 `{"status":"down", ...}` after two failed probes in a row (the browser is killed and relaunched at the fifth failed probe), while launches
   keep failing or the browser is crash-looping, and while the process is shutting down.
 
 ## Limits and queueing

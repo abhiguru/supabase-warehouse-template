@@ -34,7 +34,7 @@
     "doctor": "node scripts/doctor.mjs",
     "test:pooler": "bash scripts/pooler-check.sh",
     "test:studio": "bash scripts/studio-check.sh",
-    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high && npm audit --prefix docker/pdf-renderer --omit=dev"
+    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high && npm audit --prefix docker/pdf-renderer --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "jose": "5.10.0",
