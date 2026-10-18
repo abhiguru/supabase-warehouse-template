@@ -326,8 +326,8 @@ test('the PDF renderer image is pinned, verified and minimal', () => {
   const recipe = readFileSync(join(repo, 'docker/pdf-renderer/Dockerfile'), 'utf8');
   const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.trim().startsWith('#'));
   const text = instructions.join('\n');
-  assert.match(recipe, /^FROM node:24-trixie-slim@sha256:[0-9a-f]{64}\b/m, 'the base is Node 24 LTS on Debian trixie, pinned by digest');
-  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/@sha256:[0-9a-f]{64}/.test(line) && !/^FROM scratch\b/.test(line)), [], 'every base is digest-pinned');
+  assert.match(recipe, /^ARG NODE_IMAGE=node:24-trixie-slim@sha256:[0-9a-f]{64}$/m, 'the base is Node 24 LTS on Debian trixie, pinned by digest');
+  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/^FROM \$\{NODE_IMAGE\}( AS \S+)?$/.test(line) && !/@sha256:[0-9a-f]{64}/.test(line)), [], 'every base is the digest-pinned NODE_IMAGE');
   const version = /^ARG CHS_VERSION=(\d+\.\d+\.\d+\.\d+)$/m.exec(recipe)?.[1];
   const sha = /^ARG CHS_SHA256=([0-9a-f]{64})$/m.exec(recipe)?.[1];
   assert.ok(version, 'ARG CHS_VERSION has a four-part default');

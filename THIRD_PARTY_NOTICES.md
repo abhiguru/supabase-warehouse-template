@@ -93,7 +93,7 @@ redistributing them. Versions are the ones pinned in
 | Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Supabase Studio | 2026.10.12-sha-3699278 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
 | Chrome for Testing (chrome-headless-shell) | 155.0.8059.84 (`ARG CHS_VERSION` in `docker/pdf-renderer/Dockerfile`, downloaded at build time and checked against `ARG CHS_SHA256`) | BSD-3-Clause (Chromium), plus the bundled third-party notices of the archive | https://googlechromelabs.github.io/chrome-for-testing/ and https://www.chromium.org/ |
-| puppeteer-core | PUPPETEER_VERSION (`docker/pdf-renderer/package.json`, pinned exactly) | Apache-2.0 | https://github.com/puppeteer/puppeteer |
+| puppeteer-core | 25.14.0 (`docker/pdf-renderer/package.json`, pinned exactly) | Apache-2.0 | https://github.com/puppeteer/puppeteer |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
 | Grafana | 13.2.4 (`grafana/grafana:13.2.4`) | AGPL-3.0 | https://github.com/grafana/grafana |
 | Sensor bridge base image: Python | 3.14-slim-bookworm (`python:3.14-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |

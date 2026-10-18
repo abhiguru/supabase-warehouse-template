@@ -819,6 +819,7 @@ with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 |---|---:|---:|---:|---|
 | db (`postgres`) | 20 H | 0 | 3 C, 128 H | `db-os-no-fix` |
 | functions (`edge-runtime`) | 3 C, 4 H | 0 | 1 C, 59 H | `functions-os-no-fix` |
+| pdf-renderer (`pdf-renderer`), new on 2026-10-18 (replaces gotenberg) | n/a | 0 | 1 C, 54 H | `pdf-renderer-os-no-fix` |
 | studio | 2 C, 4 H | 2 C, 3 H | 4 C, 246 H | `studio-app-awaiting-publisher`, `studio-os-no-fix` |
 | grafana | 47 H | 41 H | 0 | `grafana-core-awaiting-publisher` (5), `grafana-plugins-awaiting-publisher` (36) |
 | sensor-bridge | 4 H | 0 | 2 C, 61 H | `sensor-bridge-os-no-fix` |
