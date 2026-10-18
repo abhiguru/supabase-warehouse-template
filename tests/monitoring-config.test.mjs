@@ -9,11 +9,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeAvailable } from './compose-render.mjs';
 import { configure, parseConfigureArgs } from '../scripts/configure.mjs';
-import { alertDeliveryWarning, alertWebhookAddress, readAlertWebhook, renderPrometheusConfig } from '../scripts/monitoring-config.mjs';
+import { alertDeliveryWarning, alertWebhookAddress, readAlertWebhook, renderPrometheusConfig, renderSlackConfig } from '../scripts/monitoring-config.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const template = read('docker/prometheus.yml');
 const PROJECT = 'warehouse-0f1e2d3c4b5a';
+const GOOD = 'https://hooks.slack.com/services/T0000000/B0000000/fictionalfictionalfictional';
+const SECOND = 'https://hooks.slack.com/services/T0000000/B0000000/secondsecondsecond';
 
 // Applies the rendered cAdvisor metric_relabel_configs (one `keep` rule) to a series' labels.
 function keptByCadvisorJob(config, labels) {
@@ -50,7 +52,7 @@ test('the cAdvisor job keeps its own installation and the series of no container
   assert.equal(keptByCadvisorJob(config, {}), true, 'machine_* and cadvisor_version_info have no project label and no container name');
   assert.equal(keptByCadvisorJob(config, project('', '')), true, 'a series with neither a project nor a name');
   assert.equal(keptByCadvisorJob(config, project('', 'wh-ops-b8-devdb')), false, 'a `docker run` container is not an installation\'s (ContainerOOM has no Compose filter)');
-  assert.equal(keptByCadvisorJob(config, project('', 'warehouse-grafana-smoke-1')), false, 'a helper container named like an installation');
+  assert.equal(keptByCadvisorJob(config, project('', 'warehouse-helper-smoke-1')), false, 'a helper container named like an installation');
   assert.equal(keptByCadvisorJob(config, project(PROJECT, '')), true, 'its own project, whatever the name');
   assert.equal(keptByCadvisorJob(config, project('warehouse-ffffffffffff')), false, 'another installation on the host');
   assert.equal(keptByCadvisorJob(config, project('central-identity-dev')), false, 'the identity stack');
@@ -65,14 +67,36 @@ test('the other scrape jobs are not filtered', () => {
   assert.deepEqual([...config.matchAll(/job_name: '([a-z-]+)'/g)].map(match => match[1]), ['prometheus', 'postgres', 'node', 'cadvisor', 'kong']);
 });
 
-test('an alert webhook address is one https:// URL, and the error never quotes it', () => {
-  assert.equal(alertWebhookAddress('https://alerts.example.test/hook/abc123\n'), 'https://alerts.example.test/hook/abc123');
-  assert.equal(alertWebhookAddress('﻿  https://alerts.example.test/h?token=t  \r\n'), 'https://alerts.example.test/h?token=t');
-  for (const bad of ['', 'http://alerts.example.test/h', 'ftp://alerts.example.test/h', 'https://user:pw@alerts.example.test/h', 'https://alerts.example.test/h#x',
-    'https://alerts.example.test/a b', 'https://alerts.example.test/\'x', 'https://alerts.example.test/\\x', 'two\nhttps://alerts.example.test/h', 'not a url']) {
-    assert.throws(() => alertWebhookAddress(bad), error => /^--alert-webhook-file must hold one https:\/\/ address/.test(error.message) && !error.message.includes('alerts.example.test'), JSON.stringify(bad));
+test('an alert webhook address is one Slack incoming-webhook URL, and the error never quotes it', () => {
+  assert.equal(alertWebhookAddress(`${GOOD}\n`), GOOD);
+  assert.equal(alertWebhookAddress(`\uFEFF  ${GOOD}  \r\n`), GOOD);
+  for (const bad of ['', 'http://hooks.slack.com/services/T0000000/B0000000/abcdef', 'https://alerts.example.test/hook/abc123', 'https://hooks.slack.com.evil.test/services/T0000000/B0000000/abcdef',
+    'https://user:pw@hooks.slack.com/services/T0000000/B0000000/abcdef', 'https://hooks.slack.com/services/T0000000/B0000000/abcdef#x', 'https://hooks.slack.com/services/T0000000/B0000000/abcdef?x=1',
+    'https://hooks.slack.com/services/T0000000/B0000000', 'https://hooks.slack.com/services/T0000000/B0000000/abc def', 'https://hooks.slack.com/services/T0000000/B0000000/abc\'def',
+    `two\n${GOOD}`, 'not a url']) {
+    assert.throws(() => alertWebhookAddress(bad), error => /^--alert-webhook-file must hold one Slack incoming-webhook URL/.test(error.message) && !/abcdef|alerts\.example|T0000000/.test(error.message), JSON.stringify(bad));
   }
 });
+
+test('the Slack Alertmanager file is rendered for the facility: its name, a daily heartbeat route, resolved messages', () => {
+  const slack = read('docker/alertmanager.slack.yml');
+  const rendered = renderSlackConfig(slack, PROJECT, 'Fictional Cold Storage');
+  assert.doesNotMatch(rendered, /\$\{/);
+  assert.match(rendered, /api_url_file: \/etc\/alertmanager\/webhook-url\n\s+send_resolved: true\n/);
+  assert.ok(rendered.includes(`- Fictional Cold Storage (${PROJECT})'`), 'the title names the company and the project');
+  assert.match(rendered, /group_wait: 30s\n  group_interval: 5m\n  repeat_interval: 4h\n/);
+  assert.match(rendered, /matchers: \['severity="heartbeat"'\]\n(?:\s+.*\n)*?\s+repeat_interval: 24h\n/);
+  assert.doesNotMatch(rendered, /hooks\.slack\.com/, 'no URL in the configuration');
+  // Free text in the name cannot break the YAML scalar or run as a template.
+  const odd = renderSlackConfig(slack, PROJECT, "O'Neil {{ .Foo }} & Sons");
+  assert.ok(odd.includes("O''Neil {{ \"{{\" }} .Foo }} & Sons"), odd);
+  assert.equal(renderSlackConfig(slack, PROJECT, '$1 ${X}').includes('$1 ${X}'), true, 'a name is data, not a placeholder');
+  assert.throws(() => renderSlackConfig(slack, 'identity-dev', 'x'), /WAREHOUSE_PROJECT_NAME must be warehouse-/);
+  assert.throws(() => renderSlackConfig('route: {}\n', PROJECT, 'x'), /no longer carries the facility placeholders/);
+  assert.throws(() => renderSlackConfig(`${slack}\n# \${HOME}\n`, PROJECT, 'x'), /variable other than the facility placeholders/);
+});
+
+const slackFor = f => renderSlackConfig(read('docker/alertmanager.slack.yml'), f.project(), 'Monitoring Config');
 
 function fixture() {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-monitoring-config-'));
@@ -83,7 +107,7 @@ function fixture() {
   writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=isolated-no-delivery-key\nMSG91_TEMPLATE_ID=000000000000000000000001\nMSG91_PE_ID=0000000000000000001\nMSG91_SENDER_ID=CITEST\n', { mode: 0o600 });
   const stateDir = join(scratch, 'state');
   const webhookFile = join(scratch, 'webhook.txt');
-  writeFileSync(webhookFile, 'https://alerts.example.test/hook/not-a-real-token\n', { mode: 0o600 });
+  writeFileSync(webhookFile, `${GOOD}\n`, { mode: 0o600 });
   const options = { stateDir, apiUrl: 'https://monitoring.example.test', company: 'Monitoring Config', providerEnv };
   const monitoring = join(stateDir, 'config/monitoring');
   const files = () => ({
@@ -142,7 +166,7 @@ test('an installation from before these files gets them on the next setup run, a
   } finally { f.cleanup(); other.cleanup(); }
 });
 
-test('--alert-webhook-file stores the address privately and renders a webhook receiver that reads it from the file', () => {
+test('--alert-webhook-file stores the address privately and renders a Slack receiver that reads it from the file', () => {
   const f = fixture();
   try {
     configure(f.root, f.options);
@@ -150,22 +174,22 @@ test('--alert-webhook-file stores the address privately and renders a webhook re
     const result = configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile });
     assert.equal(result.monitoringUpdated, true);
     assert.equal(result.webhook, true);
-    assert.doesNotMatch(JSON.stringify(result), /not-a-real-token|alerts\.example\.test/, 'the result never carries the address');
-    assert.equal(readFileSync(f.files.webhook, 'utf8'), 'https://alerts.example.test/hook/not-a-real-token\n');
+    assert.doesNotMatch(JSON.stringify(result), /fictionalfictional|hooks\.slack\.com/, 'the result never carries the address');
+    assert.equal(readFileSync(f.files.webhook, 'utf8'), `${GOOD}\n`);
     assert.equal(statSync(f.files.webhook).mode & 0o777, 0o600, 'the address is a secret');
     const rendered = readFileSync(f.files.alertmanager, 'utf8');
-    assert.equal(rendered, read('docker/alertmanager.webhook.yml'));
-    assert.match(rendered, /webhook_configs:\n      - url_file: \/etc\/alertmanager\/webhook-url\n/);
-    assert.doesNotMatch(rendered, /alerts\.example\.test/, 'the address is in the 0600 file, not in the configuration');
-    assert.doesNotMatch(readFileSync(f.files.prometheus, 'utf8'), /alerts\.example\.test/);
+    assert.equal(rendered, slackFor(f));
+    assert.match(rendered, /slack_configs:\n      - api_url_file: \/etc\/alertmanager\/webhook-url\n/);
+    assert.doesNotMatch(rendered, /fictionalfictional|hooks\.slack\.com/, 'the address is in the 0600 file, not in the configuration');
+    assert.doesNotMatch(readFileSync(f.files.prometheus, 'utf8'), /fictionalfictional/);
     // A rerun without the option keeps it; a rerun with the same file changes nothing.
     assert.equal(configure(f.root, f.options).monitoringUpdated, false);
-    assert.equal(readFileSync(f.files.webhook, 'utf8'), 'https://alerts.example.test/hook/not-a-real-token\n');
+    assert.equal(readFileSync(f.files.webhook, 'utf8'), `${GOOD}\n`);
     assert.equal(configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile }).monitoringUpdated, false);
     // A new address replaces it.
-    writeFileSync(f.webhookFile, 'https://alerts.example.test/hook/second\n', { mode: 0o600 });
+    writeFileSync(f.webhookFile, `${SECOND}\n`, { mode: 0o600 });
     assert.equal(configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile }).monitoringUpdated, true);
-    assert.equal(readFileSync(f.files.webhook, 'utf8'), 'https://alerts.example.test/hook/second\n');
+    assert.equal(readFileSync(f.files.webhook, 'utf8'), `${SECOND}\n`);
     // `off` goes back to the local-only receiver and forgets the address.
     const off = configure(f.root, { ...f.options, alertWebhookFile: 'off' });
     assert.equal(off.monitoringUpdated, true);
@@ -180,30 +204,30 @@ test('a fresh setup can take the webhook, and a refused file changes nothing', (
   try {
     configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile });
     assert.equal(statSync(f.files.webhook).mode & 0o777, 0o600);
-    assert.equal(readFileSync(f.files.alertmanager, 'utf8'), read('docker/alertmanager.webhook.yml'));
+    assert.equal(readFileSync(f.files.alertmanager, 'utf8'), slackFor(f));
   } finally { f.cleanup(); }
   const g = fixture();
   try {
     const refuse = (alertWebhookFile, pattern) => {
-      assert.throws(() => configure(g.root, { ...g.options, alertWebhookFile }), error => pattern.test(error.message) && !error.message.includes('alerts.example.test'), String(alertWebhookFile));
+      assert.throws(() => configure(g.root, { ...g.options, alertWebhookFile }), error => pattern.test(error.message) && !/fictionalfictional|alerts\.example/.test(error.message), String(alertWebhookFile));
       assert.equal(existsSync(g.stateDir), false, 'a refused option creates no state');
     };
     refuse('relative/webhook.txt', /absolute path/);
     refuse(join(g.scratch, 'missing.txt'), /regular file/);
     const open = join(g.scratch, 'open.txt');
-    writeFileSync(open, 'https://alerts.example.test/h\n', { mode: 0o644 });
+    writeFileSync(open, `${GOOD}\n`, { mode: 0o644 });
     refuse(open, /mode 0600/);
     const plain = join(g.scratch, 'plain.txt');
-    writeFileSync(plain, 'http://alerts.example.test/h\n', { mode: 0o600 });
-    refuse(plain, /https:\/\/ address/);
+    writeFileSync(plain, 'https://alerts.example.test/h\n', { mode: 0o600 });
+    refuse(plain, /Slack incoming-webhook URL/);
     const big = join(g.scratch, 'big.txt');
-    writeFileSync(big, `https://alerts.example.test/${'a'.repeat(3000)}\n`, { mode: 0o600 });
+    writeFileSync(big, `${GOOD}${'a'.repeat(3000)}\n`, { mode: 0o600 });
     refuse(big, /larger than 2 KB/);
     const link = join(g.scratch, 'link.txt');
     symlinkSync(g.webhookFile, link);
     refuse(link, /regular file/);
     const inside = join(g.root, 'webhook.txt');
-    writeFileSync(inside, 'https://alerts.example.test/h\n', { mode: 0o600 });
+    writeFileSync(inside, `${GOOD}\n`, { mode: 0o600 });
     refuse(inside, /outside the checkout/);
     // An installed state keeps what it had when the new file is refused.
     configure(g.root, { ...g.options, alertWebhookFile: g.webhookFile });
@@ -228,13 +252,13 @@ test('doctor warns while Alertmanager has no receiver outside this host, and not
   try {
     configure(f.root, f.options);
     const warning = alertDeliveryWarning(f.stateDir);
-    assert.match(warning, /^Alerts are local only: Alertmanager is running with no receiver/);
+    assert.match(warning, /^No Slack webhook: alerts are not delivered\./);
     assert.match(warning, /--alert-webhook-file/);
     assert.match(warning, /docs\/MONITORING\.md/);
     configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile });
     assert.equal(alertDeliveryWarning(f.stateDir), null);
     configure(f.root, { ...f.options, alertWebhookFile: 'off' });
-    assert.match(alertDeliveryWarning(f.stateDir), /local only/);
+    assert.match(alertDeliveryWarning(f.stateDir), /No Slack webhook/);
     // doctor.mjs asks only while the alertmanager container is running.
     const doctor = read('scripts/doctor.mjs');
     assert.match(doctor, /'--profile', '\*', 'ps', '-q', 'alertmanager'\]\)\.output\.trim\(\) \? alertDeliveryWarning\(state\) : null/);
@@ -261,7 +285,7 @@ test('compose replaces the monitoring containers when their rendered configurati
       });
       assert.equal(run.status, 0, run.stderr);
       const config = JSON.parse(run.stdout);
-      assert.doesNotMatch(run.stdout, /not-a-real-token|alerts\.example\.test/, 'the webhook address is in no compose value');
+      assert.doesNotMatch(run.stdout, /fictionalfictional|hooks\.slack\.com/, 'the webhook address is in no compose value');
       return { prometheus: config.services.prometheus.labels['com.warehouse.config-sha256'], alertmanager: config.services.alertmanager.labels['com.warehouse.config-sha256'], config };
     };
     const first = labels();
@@ -301,8 +325,6 @@ test('compose replaces the monitoring containers when their rendered configurati
     }
     assert.deepEqual(mount('prometheus', '/etc/prometheus/alert-rules.yml').source, join(repo, 'docker/alert-rules.yml'));
     assert.ok(edited.config.services['node-exporter'].command.includes('--collector.textfile.directory=/var/lib/node_exporter/textfile'));
-    assert.equal(mount('grafana', '/etc/grafana/dashboards').source, join(repo, 'docker/volumes/grafana/dashboards'));
-    assert.equal(mount('grafana', '/etc/grafana/dashboards').read_only, true);
     // Alertmanager reads the 0600 address as the installing user, with its own writable storage.
     assert.equal(edited.config.services.alertmanager.user, `${process.getuid()}:${process.getgid()}`);
     // Silences and the notification log live in a state directory, so they survive the replacement `compose up` does.
@@ -316,48 +338,7 @@ test('compose replaces the monitoring containers when their rendered configurati
   } finally { f.cleanup(); }
 });
 
-// The shipped Grafana dashboard (TW-BE-021). scripts/grafana-check.sh runs its queries against a live Grafana
-// and Prometheus in CI; these checks need neither.
-test('the overview dashboard is built from the series the rules and exporters provide, on the provisioned datasource', () => {
-  const dashboard = JSON.parse(read('docker/volumes/grafana/dashboards/warehouse-overview.json'));
-  assert.equal(dashboard.uid, 'warehouse-overview');
-  assert.equal(dashboard.title, 'Warehouse overview');
-  assert.equal(dashboard.editable, false);
-  const uid = /name: Prometheus\n(?:\s+#.*\n)*\s+uid: (\S+)\n/.exec(read('docker/volumes/grafana/provisioning/datasources/datasources.yml'))?.[1];
-  assert.equal(uid, 'PBFA97CFB590B2093', 'the datasource uid is pinned');
-  const allowed = new Set(['pg_up', 'pg_stat_activity_count', 'pg_stat_activity_max_tx_duration', 'kong_http_requests_total', 'kong_request_latency_ms_bucket',
-    'node_filesystem_avail_bytes', 'node_filesystem_size_bytes', 'container_memory_usage_bytes', 'warehouse_backup_last_success_timestamp_seconds', 'up', 'ALERTS',
-    'container_label_com_docker_compose_service']);
-  const names = new Set();
-  const ids = new Set();
-  const rectangles = [];
-  for (const panel of dashboard.panels) {
-    assert.ok(!ids.has(panel.id), `panel id ${panel.id} is used twice`);
-    ids.add(panel.id);
-    const { x, y, w, h } = panel.gridPos;
-    assert.ok(x >= 0 && w > 0 && x + w <= 24, `${panel.title} fits the 24 columns`);
-    for (const other of rectangles) assert.ok(x + w <= other.x || other.x + other.w <= x || y + h <= other.y || other.y + other.h <= y, `${panel.title} overlaps ${other.title}`);
-    rectangles.push({ x, y, w, h, title: panel.title });
-    assert.deepEqual(panel.datasource, { type: 'prometheus', uid });
-    assert.ok(panel.targets.length > 0, `${panel.title} has a query`);
-    for (const target of panel.targets) {
-      assert.deepEqual(target.datasource, { type: 'prometheus', uid });
-      for (const word of target.expr.matchAll(/\b(?:pg_|kong_|node_|container_|warehouse_)[A-Za-z0-9_:]*|\b(?:up|ALERTS)\b(?=\{|$)/g)) names.add(word[0]);
-    }
-  }
-  assert.deepEqual([...names].filter(name => !allowed.has(name)), [], 'a query names a series nothing exports');
-  // What the review asked for: database, gateway, disk, container memory and backups.
-  for (const series of ['pg_up', 'pg_stat_activity_count', 'pg_stat_activity_max_tx_duration', 'kong_http_requests_total', 'kong_request_latency_ms_bucket',
-    'node_filesystem_avail_bytes', 'container_memory_usage_bytes', 'warehouse_backup_last_success_timestamp_seconds']) assert.ok(names.has(series), `${series} is on the dashboard`);
-  // No installation is hard-coded: one dashboard serves every installation's own Grafana.
-  assert.doesNotMatch(dashboard.panels.flatMap(panel => panel.targets.map(target => target.expr)).join('\n'), /warehouse-[0-9a-f-]{12}|installation|instance=|project=/);
-  const provider = read('docker/volumes/grafana/provisioning/dashboards/dashboards.yml');
-  assert.match(provider, /allowUiUpdates: false/);
-  assert.match(provider, /path: \/etc\/grafana\/dashboards\n/);
-  assert.match(read('docker/docker-compose.override.yml'), /- \.\/volumes\/grafana\/dashboards:\/etc\/grafana\/dashboards:ro\n/);
-});
-
-test('the monitoring and Grafana checks assert what this change added', () => {
+test('the monitoring check asserts what this change added', () => {
   const monitoring = read('scripts/monitoring-check.sh');
   assert.match(monitoring, /status\/config/);
   assert.match(monitoring, /'installation: '\+process\.argv\[2\]/);
@@ -365,12 +346,6 @@ test('the monitoring and Grafana checks assert what this change added', () => {
   assert.match(monitoring, /warehouse_monitoring_check\.prom/, 'a probe file in the backup metrics directory');
   assert.doesNotMatch(monitoring, /warehouse_backup\.prom/, 'the check never writes a backup metric of its own');
   assert.match(monitoring, /grep -c '\^ \*- alert: ' "\$ROOT\/docker\/alert-rules\.yml"/);
-  const grafana = read('scripts/grafana-check.sh');
-  assert.match(grafana, /dst=\/etc\/grafana\/dashboards,readonly/);
-  assert.match(grafana, /api\/search\?type=dash-db/);
-  assert.match(grafana, /api\/ds\/query/);
-  assert.match(grafana, /Cannot read directory/);
-  assert.match(grafana, /meta\.provisioned !== true/);
 });
 
 test('the CLI renders the files of a state that restore-host built, keeping no webhook', () => {

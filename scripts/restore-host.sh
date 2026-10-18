@@ -280,8 +280,8 @@ step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rota
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
      change" in docs/OPERATOR_INSTALL.md, then take a new backup.'
 step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
-alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (the webhook
-     address is not in a backup; skip this if the installation never had one)."
+alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (or answer its Slack
+     webhook prompt on a terminal; the URL is not in a backup, skip this if the installation never had one)."
 if [[ "$central_missing" == true ]]; then
   alert_step+="
      The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file

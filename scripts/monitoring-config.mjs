@@ -5,7 +5,7 @@
 // containers of the other installations. setup.sh therefore renders, from the checkout's templates,
 //   <state>/config/monitoring/prometheus.yml                  (mode 0644; read by the prometheus container)
 //   <state>/config/monitoring/alertmanager/alertmanager.yml   (mode 0644)
-//   <state>/config/monitoring/alertmanager/webhook-url        (mode 0600; only with --alert-webhook-file)
+//   <state>/config/monitoring/alertmanager/webhook-url        (mode 0600; the facility's Slack webhook URL, when it has one)
 //   <state>/data/alertmanager/                                (mode 0700; Alertmanager's silences and notification log)
 // and creates <state>/metrics (mode 0755), the textfile directory node exporter reads read-only and
 // the backup scripts write (scripts/backup-metrics.sh). docker/docker-compose.override.yml mounts them.
@@ -22,6 +22,9 @@ import { isMain } from './is-main.mjs';
 export const PROJECT_PATTERN = /^warehouse-[a-z0-9-]+$/;
 export const PLACEHOLDER = '${WAREHOUSE_PROJECT_NAME}';
 export const WEBHOOK_MAX_BYTES = 2048;
+export const COMPANY_PLACEHOLDER = '${WAREHOUSE_COMPANY}';
+// A Slack incoming-webhook URL, and nothing else: the only receiver this repository supports.
+export const SLACK_WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/[A-Z0-9]+\/[A-Z0-9]+\/[A-Za-z0-9]+$/;
 // The templates are the ones next to this script, whichever checkout directory a caller names.
 export const TEMPLATE_DIR = fileURLToPath(new URL('../docker/', import.meta.url));
 
@@ -35,16 +38,27 @@ export function renderPrometheusConfig(template, project) {
   return rendered;
 }
 
-// The address in an --alert-webhook-file: one https:// URL. The file is the operator's secret (the
-// address usually carries a token), so no message here quotes its contents.
+// The address in an --alert-webhook-file: one Slack incoming-webhook URL. The file is the operator's
+// secret (the address carries a token), so no message here quotes its contents.
 export function alertWebhookAddress(text) {
-  const value = text.replace(/^﻿/, '').trim();
-  let url;
-  try { url = new URL(value); } catch { throw new Error('--alert-webhook-file must hold one https:// address.'); }
-  if (!/^[^\s'"`\\]+$/.test(value) || url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.hash) {
-    throw new Error('--alert-webhook-file must hold one https:// address without credentials, fragment, spaces, quotes or backslash.');
-  }
+  const value = text.replace(/^\uFEFF/, '').trim();
+  if (!SLACK_WEBHOOK_PATTERN.test(value)) throw new Error('--alert-webhook-file must hold one Slack incoming-webhook URL (https://hooks.slack.com/services/...).');
   return value;
+}
+
+// Renders docker/alertmanager.slack.yml for one installation. The company name is free text, so it goes
+// in as part of a single-quoted YAML scalar, and a "{{" in it is written so that Alertmanager's template engine
+// prints it instead of running it.
+export function renderSlackConfig(template, project, company) {
+  if (!PROJECT_PATTERN.test(project ?? '')) throw new Error('WAREHOUSE_PROJECT_NAME must be warehouse- followed by lower-case letters, digits and hyphens.');
+  if (!template.includes(COMPANY_PLACEHOLDER) || !template.includes(PLACEHOLDER)) throw new Error('docker/alertmanager.slack.yml no longer carries the facility placeholders.');
+  const name = String(company ?? '').trim() || project;
+  // The title is a single-quoted YAML scalar: only ' needs doubling there.
+  const quoted = name.replaceAll('{{', '{{ "{{" }}').replaceAll("'", "''");
+  const withProject = template.replaceAll(PLACEHOLDER, project);
+  const rendered = withProject.replaceAll(COMPANY_PLACEHOLDER, () => quoted);
+  if (withProject.replaceAll(COMPANY_PLACEHOLDER, '').includes('${')) throw new Error('docker/alertmanager.slack.yml holds a variable other than the facility placeholders.');
+  return rendered;
 }
 
 // --alert-webhook-file PATH | off. Returns undefined (leave the state alone), null (remove the stored
@@ -80,6 +94,11 @@ function place(path, bytes, mode) {
   return true;
 }
 
+// The company name in the state's manifest (public/instance.json), or '' when there is none.
+export function facilityName(state) {
+  try { return String(JSON.parse(readFileSync(join(state, 'public/instance.json'), 'utf8')).companyName ?? ''); } catch { return ''; }
+}
+
 // Writes the monitoring files into `state` (an installed state, or the staging directory of a fresh
 // one). `webhook` is what readAlertWebhook returned: undefined keeps the stored address, null removes
 // it, a string stores it. Returns whether any file changed.
@@ -89,7 +108,9 @@ export function placeMonitoringConfig(state, { project, webhook, templates = TEM
   const stored = join(state, 'config/monitoring/alertmanager/webhook-url');
   const storedAddress = lstatSync(stored, { throwIfNoEntry: false });
   const wanted = webhook === undefined ? Boolean(storedAddress) : webhook !== null;
-  const alertmanager = readFileSync(join(templates, wanted ? 'alertmanager.webhook.yml' : 'alertmanager.yml'));
+  const alertmanager = wanted
+    ? Buffer.from(renderSlackConfig(readFileSync(join(templates, 'alertmanager.slack.yml'), 'utf8'), project, facilityName(state)))
+    : readFileSync(join(templates, 'alertmanager.yml'));
 
   privateDirectory(join(state, 'config/monitoring'), 0o700);
   privateDirectory(join(state, 'config/monitoring/alertmanager'), 0o700);
@@ -104,14 +125,14 @@ export function placeMonitoringConfig(state, { project, webhook, templates = TEM
   return changed;
 }
 
-// Whether Alertmanager has a receiver outside this host (doctor: "alerts are local only").
+// Whether Alertmanager has a receiver outside this host (doctor: "no Slack webhook").
 export function alertWebhookConfigured(state) {
   return Boolean(lstatSync(join(state, 'config/monitoring/alertmanager/webhook-url'), { throwIfNoEntry: false })?.isFile());
 }
 
 export function alertDeliveryWarning(state) {
   if (alertWebhookConfigured(state)) return null;
-  return 'Alerts are local only: Alertmanager is running with no receiver, so no alert leaves this host and nobody is told when a backup fails or the database stops. Give it a webhook: rerun setup.sh --operator with your usual inputs plus --alert-webhook-file <a private file holding one https:// address> (docs/MONITORING.md, "Alert delivery").';
+  return 'No Slack webhook: alerts are not delivered. Alertmanager is running with no receiver, so no alert leaves this host and nobody is told when a backup fails or the database stops. Give it the facility\'s Slack incoming-webhook URL: rerun setup.sh --operator with your usual inputs (it asks for the URL on a terminal) or add --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
 }
 
 // node scripts/monitoring-config.mjs STATE PROJECT: renders the files into an installed state without

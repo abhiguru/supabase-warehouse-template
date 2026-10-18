@@ -6,8 +6,8 @@
 #   promtool test rules     docker/alert-rules.test.yml (every rule has a firing and a quiet case:
 #                           tests/alert-rules.test.mjs)
 #   amtool check-config     the two Alertmanager files setup can render: docker/alertmanager.yml (local
-#                           receiver) and docker/alertmanager.webhook.yml (--alert-webhook-file), with the
-#                           address file beside it
+#                           receiver) and docker/alertmanager.slack.yml rendered for a fictional
+#                           facility, with a fictional Slack webhook file beside it
 # The images are the ones docker/prometheus/Dockerfile and docker/alertmanager/Dockerfile build on, by digest;
 # the containers run with --network none. `docker run` pulls an image once if it is not on the host.
 set -euo pipefail
@@ -36,11 +36,20 @@ promtool() {
 promtool check config /etc/prometheus/prometheus.yml
 promtool check rules /etc/prometheus/alert-rules.yml
 promtool test rules /etc/prometheus/alert-rules.test.yml
-for template in alertmanager.yml alertmanager.webhook.yml; do
-  mkdir "$work/${template%.yml}"
-  cp "$root/docker/$template" "$work/${template%.yml}/alertmanager.yml"
-  printf 'https://alerts.example.test/hook/not-a-real-token\n' > "$work/${template%.yml}/webhook-url"
+# The two files setup can render: the local-only one as it is, and the Slack one rendered for a fictional facility.
+mkdir "$work/local" "$work/slack"
+cp "$root/docker/alertmanager.yml" "$work/local/alertmanager.yml"
+node --input-type=module - "$root" "$work/slack/alertmanager.yml" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [root, out] = process.argv.slice(2);
+const { renderSlackConfig } = await import(pathToFileURL(join(root, 'scripts/monitoring-config.mjs')).href);
+writeFileSync(out, renderSlackConfig(readFileSync(join(root, 'docker/alertmanager.slack.yml'), 'utf8'), 'warehouse-rules-check', "Fictional Cold Storage's {{ Test }}"));
+NODE
+printf 'https://hooks.slack.com/services/T0000000/B0000000/fictionalfictionalfictional\n' > "$work/slack/webhook-url"
+for dir in local slack; do
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" --entrypoint amtool \
-    -v "$work/${template%.yml}:/etc/alertmanager:ro" "$alertmanager" check-config /etc/alertmanager/alertmanager.yml
+    -v "$work/$dir:/etc/alertmanager:ro" "$alertmanager" check-config /etc/alertmanager/alertmanager.yml
 done
 echo 'Alert rules, the rendered Prometheus configuration and both Alertmanager files passed promtool and amtool.'

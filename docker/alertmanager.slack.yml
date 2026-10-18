@@ -1,0 +1,41 @@
+# Alertmanager configuration that setup.sh renders when the installation has a Slack incoming-webhook
+# URL (scripts/monitoring-config.mjs; docs/MONITORING.md, "Alert delivery"). The URL is the facility's
+# secret: setup.sh stores it at <state>/config/monitoring/alertmanager/webhook-url (mode 0600, never in
+# this repository) and Alertmanager reads it from that file. Without a URL, docker/alertmanager.yml (a
+# receiver on this host only) is used instead.
+#
+# setup.sh replaces ${WAREHOUSE_PROJECT_NAME} and ${WAREHOUSE_COMPANY} with the installation's own
+# values, so every message names the facility. Alerts carry no other secret.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: slack
+  group_by: ['alertname', 'installation']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # The always-firing Watchdog rule (docker/alert-rules.yml): one "monitoring is alive" message a
+    # day. A day without it means Prometheus, Alertmanager or the Slack webhook is broken.
+    - receiver: slack
+      matchers: ['severity="heartbeat"']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 24h
+
+receivers:
+  - name: slack
+    slack_configs:
+      - api_url_file: /etc/alertmanager/webhook-url
+        send_resolved: true
+        title: '{{ if eq .CommonLabels.severity "heartbeat" }}Monitoring is alive{{ else }}[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ end }} - ${WAREHOUSE_COMPANY} (${WAREHOUSE_PROJECT_NAME})'
+        # The alert's own link points at the Alertmanager inside the Compose network, which nobody can open.
+        title_link: ''
+        color: '{{ if eq .Status "resolved" }}good{{ else if eq .CommonLabels.severity "heartbeat" }}good{{ else if eq .CommonLabels.severity "warning" }}warning{{ else }}danger{{ end }}'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ if .Annotations.description }}: {{ .Annotations.description }}{{ end }}{{ "\n" }}{{ end }}'
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']
