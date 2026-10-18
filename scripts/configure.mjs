@@ -222,8 +222,9 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (apiUrl && canonicalOrigin(apiUrl, '--api-url') !== manifest.canonicalOrigin) throw new Error('Existing canonical origin differs; refusing to replace instance identity.');
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
-      // A rerun may replace only the SMS provider lines and the central
-      // sign-in lines (with the key file); identity, paths and signing keys are preserved.
+      // A rerun may replace only the SMS provider lines, the central sign-in lines (with the key file) and
+      // KONG_HTTP_PORT, add generated values that are missing (database passwords, backup key) and render the
+      // monitoring files and the alert webhook; identity, paths and signing keys are preserved.
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;
@@ -259,10 +260,6 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
       }
-      if (newPortText !== null) {
-        replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
-        gatewayPortChanged = true;
-      }
       // An installation made before per-role database passwords gets them here
       // (docs/CONTAINER_SECURITY.md, "Database passwords"); a value that exists
       // is never replaced. setup.sh then sets them in the database with
@@ -277,6 +274,12 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before they existed gets them here; unchanged files are left alone.
       const project = readFileSync(envPath, 'utf8').match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1];
       const monitoringUpdated = placeMonitoringConfig(state, { project, webhook });
+      // The gateway port is written last: a refusal above (state faults, the monitoring render) leaves it unchanged,
+      // so the rerun after the fix still reports the change and prints the tunnel reminder.
+      if (newPortText !== null) {
+        replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
+        gatewayPortChanged = true;
+      }
       return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');

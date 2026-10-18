@@ -135,3 +135,18 @@ test('the guide has a section for several facilities on one host that names --ga
   assert.match(guide, /USB backup serves one installation per host/);
   assert.ok(guide.includes('(#several-facilities-on-one-host)'));
 });
+
+test('no heading occurs twice in the operator runbook, the container security record or the monitoring guide', () => {
+  // A merge of a branch that carries commits main took as a squash can add a whole section a second time without a conflict.
+  for (const file of ['docs/OPERATOR_INSTALL.md', 'docs/CONTAINER_SECURITY.md', 'docs/MONITORING.md']) {
+    let fenced = false;
+    const seen = new Map();
+    for (const line of read(file).split('\n')) {
+      if (/^```/.test(line)) { fenced = !fenced; continue; }
+      if (fenced || !/^#{1,6} /.test(line)) continue;
+      seen.set(line, (seen.get(line) ?? 0) + 1);
+    }
+    const repeated = [...seen].filter(([, count]) => count > 1).map(([heading]) => heading);
+    assert.deepEqual(repeated, [], `${file} repeats a heading`);
+  }
+});

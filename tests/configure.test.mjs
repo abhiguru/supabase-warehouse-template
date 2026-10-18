@@ -738,6 +738,35 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('a rerun whose monitoring render refuses leaves the gateway port unchanged, and the rerun after the fix reports the change', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-last-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const state = join(scratch, 'state');
+    configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, ...hooks });
+    const envPath = join(state, 'config/compose.env');
+    const prometheus = join(state, 'config/monitoring/prometheus.yml');
+    const original = readFileSync(prometheus);
+    rmSync(prometheus);
+    mkdirSync(prometheus);
+    const before = readFileSync(envPath, 'utf8');
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18000');
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', ...hooks }), /must be a regular file/);
+    assert.equal(readFileSync(envPath, 'utf8'), before, 'the port line is the last write, so the refusal changed nothing');
+    rmSync(prometheus, { recursive: true });
+    writeFileSync(prometheus, original, { mode: 0o644 });
+    const result = configure(root, { stateDir: state, gatewayPort: '18003', ...hooks });
+    // The CLI prints the tunnel reminder from exactly this flag.
+    assert.equal(result.gatewayPortChanged, true);
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18003');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('the real port test refuses a loopback port that is in use and accepts a free one', async () => {
   const { createServer } = await import('node:net');
   const server = createServer();

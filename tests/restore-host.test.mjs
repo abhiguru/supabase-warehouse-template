@@ -552,6 +552,7 @@ test('restore-host puts the central key file back byte for byte with mode 0644, 
     assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^CENTRAL_JWKS_FILE=(.*)$/m)[1], 'central-jwks.json');
     assert.match(result.stdout, /Restored the central sign-in key file public\/central-jwks\.json/);
     assert.doesNotMatch(withoutAlertStep(result.stdout), /setup\.sh/, 'nothing to rerun');
+    assert.doesNotMatch(result.stdout, /one rerun and not two/, 'no key file step, so nothing to combine with');
     assert.equal(result.keyPending, '', 'doctor --local is not told to expect a missing key file');
   } finally { clean(f); }
 });
@@ -586,6 +587,7 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     assert.ok(result.stdout.includes(`bash setup.sh --operator --state-dir ${f.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`), 'setup rerun with the state');
     assert.ok(result.stdout.includes(`--central-issuer ${ISSUER} --central-jwks-file /absolute/path/to/association-jwks.json`), 'with the issuer the backup names');
     assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
+    assert.match(result.stdout, /add --alert-webhook-file \/absolute\/path\/to\/webhook-url-file\s+to that same command, so it is one rerun and not two/);
     // The numbered steps stay in order whether or not this step is there.
     assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
   } finally { clean(f); }
