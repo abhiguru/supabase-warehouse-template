@@ -95,7 +95,10 @@ export async function launchChrome({ launchId, profileDir, config }) {
       else await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
     },
   };
-  engine.probe = () => browser.version(); // sends Browser.getVersion
+  // browser.version() is cached by puppeteer-core, so it would never notice a hung Chrome. Ask through a CDP
+  // session on the browser target instead: every probe is a real round trip to the browser process.
+  const probeSession = await browser.target().createCDPSession();
+  engine.probe = async () => (await probeSession.send('Browser.getVersion')).product;
   if (child) {
     child.once('exit', () => { exitedResolve(); if (engine.onDown) engine.onDown('process exit'); });
   } else {

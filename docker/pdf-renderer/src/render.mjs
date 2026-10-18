@@ -47,23 +47,48 @@ export function isValidPdf(buffer) {
   return end >= 5 && buffer.subarray(end - 5, end).toString('latin1') === '%%EOF';
 }
 
+export const CSP = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'";
+
+/** Which load mode a job uses: 'auto' sends large documents through a file so no base64 copy goes down the pipe. */
+export function loadModeFor(config, htmlBytes) {
+  if (config.load === 'auto') return htmlBytes >= config.soloBodyBytes ? 'file' : 'intercept';
+  return config.load;
+}
+
 /**
+ * Renders one document. Resolves with { pdf, pages, cleanup } as soon as the PDF is read: the caller answers the
+ * client first and then awaits cleanup() (closes page and context, removes the job directory) before it frees the slot.
+ * On any failure the cleanup has already run when the promise rejects.
+ *
  * @param {object} args
  * @param {import('puppeteer-core').Browser} args.browser
- * @param {object} args.job   { id, html, header, footer, params }
+ * @param {object} args.job   { id, html: Buffer, header?: string, footer?: string, params }
  * @param {object} args.config
  * @param {AbortSignal} args.signal
  * @param {number} args.deadlineAt  epoch ms
  */
 export async function renderJob({ browser, job, config, signal, deadlineAt }) {
-  const { html, header, footer, params } = job;
+  const { header, footer, params } = job;
+  let html = job.html; // dropped (set to null) once handed to the browser
+  const mode = loadModeFor(config, html.length);
   let context = null;
   let page = null;
   let cdp = null;
   let jobDir = null;
   let onAbort = null;
+  let cleaned = false;
 
   const remaining = () => Math.max(1000, deadlineAt - Date.now());
+
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+    if (cdp) await withTimeout(cdp.detach().catch(() => {}), 2000);
+    if (page) await withTimeout(page.close().catch(() => {}), 3000);
+    if (context) await withTimeout(context.close().catch(() => {}), 3000);
+    if (jobDir) await fs.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+  };
 
   try {
     if (signal.aborted) throw new AbortedError(String(signal.reason));
@@ -87,29 +112,36 @@ export async function renderJob({ browser, job, config, signal, deadlineAt }) {
 
       let navigateTo = MAIN_URL;
       let mainUrl = MAIN_URL;
-      if (config.load === 'file') {
+      let htmlBase64 = null;
+      if (mode === 'file') {
         jobDir = path.join(config.jobsDir, job.id);
         await fs.mkdir(jobDir, { recursive: true });
         await fs.writeFile(path.join(jobDir, 'index.html'), html);
         navigateTo = `file://${jobDir}/index.html`;
         mainUrl = navigateTo;
+      } else {
+        htmlBase64 = html.toString('base64');
       }
-      const htmlBase64 = Buffer.from(html, 'utf8').toString('base64');
+      html = null;
+      job.html = null;
 
       cdp.on('Fetch.requestPaused', (event) => {
         const url = event.request.url;
         let action;
-        if (config.load === 'intercept' && url === mainUrl && !event.responseStatusCode) {
-          action = cdp.send('Fetch.fulfillRequest', {
-            requestId: event.requestId,
-            responseCode: 200,
-            responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }],
-            body: htmlBase64,
-          });
-        } else if (config.load === 'file' && url === mainUrl) {
+        if (mode === 'intercept' && url === mainUrl && !event.responseStatusCode) {
+          const responseHeaders = [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }];
+          if (config.csp === 'on' && config.js === 'off') responseHeaders.push({ name: 'Content-Security-Policy', value: CSP });
+          action = cdp.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200, responseHeaders, body: htmlBase64 });
+        } else if (mode === 'file' && url === mainUrl) {
           action = cdp.send('Fetch.continueRequest', { requestId: event.requestId });
         } else if (url.startsWith('data:')) {
+          // Chrome does not normally pause data: URLs (they never reach the network stack); kept in case it does.
           action = cdp.send('Fetch.continueRequest', { requestId: event.requestId });
+        } else if (event.resourceType === 'Document') {
+          // Any other navigation (meta refresh, link, frame, popup): answer 204 No Content, so the navigation is
+          // cancelled and the current document stays. A failed request would commit an error page and could pull the
+          // page out from under the print.
+          action = cdp.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 204, responseHeaders: [] });
         } else {
           action = cdp.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'BlockedByClient' });
         }
@@ -118,6 +150,7 @@ export async function renderJob({ browser, job, config, signal, deadlineAt }) {
       await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
 
       await page.goto(navigateTo, { waitUntil: 'load', timeout: remaining() });
+      htmlBase64 = null;
 
       // Gotenberg's print-colour style, through raw CDP so it works with scripts disabled.
       const css = params.printBackground ? PRINT_COLOR_CSS : `${PRINT_COLOR_CSS}${NO_BACKGROUND_CSS}`;
@@ -127,6 +160,11 @@ export async function renderJob({ browser, job, config, signal, deadlineAt }) {
       });
       if (injected.exceptionDetails) throw new Error('print style injection failed');
 
+      if (params.emulatedMediaType) {
+        await cdp.send('Emulation.setEmulatedMedia', { media: params.emulatedMediaType });
+      }
+
+      // After the media emulation, so fonts used only by print styles are loaded too.
       if (config.fontsReady === 'on') {
         try {
           await withTimeout(
@@ -137,10 +175,6 @@ export async function renderJob({ browser, job, config, signal, deadlineAt }) {
           if (signal.aborted || (err && err.crash)) throw err;
           // never fatal
         }
-      }
-
-      if (params.emulatedMediaType) {
-        await cdp.send('Emulation.setEmulatedMedia', { media: params.emulatedMediaType });
       }
 
       const hasHeaderFooter = header !== undefined || footer !== undefined;
@@ -186,12 +220,9 @@ export async function renderJob({ browser, job, config, signal, deadlineAt }) {
       if (signal.aborted && !(err && err.crash)) throw new AbortedError(String(signal.reason));
       throw err;
     }
-    return { pdf, pages: countPages(pdf) };
-  } finally {
-    if (onAbort) signal.removeEventListener('abort', onAbort);
-    if (cdp) await withTimeout(cdp.detach().catch(() => {}), 2000);
-    if (page) await withTimeout(page.close().catch(() => {}), 3000);
-    if (context) await withTimeout(context.close().catch(() => {}), 3000);
-    if (jobDir) await fs.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+    return { pdf, pages: countPages(pdf), cleanup };
+  } catch (err) {
+    await cleanup();
+    throw err;
   }
 }
