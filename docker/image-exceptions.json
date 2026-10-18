@@ -41,25 +41,6 @@
       "expires": "2027-01-15"
     },
     {
-      "id": "gotenberg-os-no-fix",
-      "recipe": "docker/gotenberg/Dockerfile",
-      "class": "no-fix",
-      "statuses": [
-        "affected",
-        "fix_deferred",
-        "will_not_fix"
-      ],
-      "severities": [
-        "HIGH",
-        "CRITICAL"
-      ],
-      "pkgClass": "os-pkgs",
-      "owner": "abhiguru",
-      "reason": "Debian 13 packages of the gotenberg/gotenberg 8.37.0 base with no fixed version (2026-10-18 scan: 126 HIGH, 1 CRITICAL in libxml2). The recipe applies every Debian update. Gotenberg has no host port and is on the default network only (no database, postgres-meta or Studio access).",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
       "id": "studio-os-no-fix",
       "recipe": "docker/studio/Dockerfile",
       "class": "no-fix",
@@ -150,6 +131,24 @@
       "owner": "abhiguru",
       "reason": "The Grafana 13.2.4 server binary still embeds kin-openapi 0.144.0 (fixed in 0.146.0 to 0.149.0); 13.2.4 is the newest stable release on 2026-10-17 and its go.mod still requires 0.144.0 (2026-10-18 scan: 5 HIGH). Grafana is in the optional monitoring profile, with no host port. Move to the first release with the fix.",
       "reviewed": "2026-10-17",
+      "expires": "2027-01-15"
+    },
+    {
+      "id": "pdf-renderer-os-no-fix",
+      "recipe": "docker/pdf-renderer/Dockerfile",
+      "class": "no-fix",
+      "statuses": [
+        "affected",
+        "fix_deferred"
+      ],
+      "severities": [
+        "HIGH",
+        "CRITICAL"
+      ],
+      "pkgClass": "os-pkgs",
+      "owner": "abhiguru",
+      "reason": "Debian 13.7 packages of the node:24-trixie-slim base and the font/library set with no fixed version (2026-10-18 scan, Trivy 0.76.0: 54 HIGH, 1 CRITICAL; the fixed-only pass is clean). Advisories: util-linux family (bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux) CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410; libxml2 CVE-2026-6653, CVE-2026-74860, CVE-2026-86138, CVE-2026-86139, CVE-2026-86140, CVE-2026-86142, CVE-2026-86143, CVE-2026-86144; libx11-6/libx11-data/libx11-xcb1 CVE-2026-88806; libxrender1 CVE-2026-88807; libsystemd0/libudev1 CVE-2026-16742; ncurses-base/ncurses-bin/libtinfo6 CVE-2025-69720; libacl1 CVE-2026-54369; perl-base CVE-2026-9538. The container has no host port, a read-only root, no capabilities and sits on the internal renderer network with the function runtime only. The Chrome for Testing binary is not seen by Trivy (docs/CONTAINER_SECURITY.md, PDF renderer).",
+      "reviewed": "2026-10-18",
       "expires": "2027-01-15"
     },
     {

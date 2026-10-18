@@ -10,8 +10,11 @@ id=$(compose ps -q functions) # validates checkout ownership first
 [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || { echo 'Owned functions container unavailable.' >&2; exit 1; }
 project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$id")
 [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || { echo 'Unexpected Compose project label.' >&2; exit 1; }
-read -r network old_ip <<< "$(docker inspect --format '{{range $name, $value := .NetworkSettings.Networks}}{{$name}} {{$value.IPAddress}}{{println}}{{end}}' "$id")"
-[[ "$network" == "${project}_default" && "$old_ip" =~ ^[0-9.]+$ ]] || { echo 'Unexpected service network.' >&2; exit 1; }
+# The functions service is on two networks (default and the internal renderer one), so
+# read the address on `default` by name; a range over all networks would join both IPs.
+network="${project}_default"
+old_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$id" 2>/dev/null || true)
+[[ "$old_ip" =~ ^[0-9.]+$ ]] || { echo 'Unexpected service network.' >&2; exit 1; }
 holder_name="${project}-dns-test-holder"
 if docker inspect "$holder_name" >/dev/null 2>&1; then
   echo 'DNS test holder already exists; refusing to overwrite it.' >&2; exit 1
@@ -45,7 +48,7 @@ holder_id=$(docker create --name "$holder_name" --label "warehouse.test.owner=$p
 docker start "$holder_id" >/dev/null
 docker network connect --alias functions "$network" "$id"
 disconnected=false
-new_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$id")
+new_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$id")
 [[ "$new_ip" != "$old_ip" ]] || { echo 'Test did not change the upstream address.' >&2; exit 1; }
 probe
 echo 'Gateway recovered after an owned upstream IP change without restarting Kong.'
