@@ -1680,8 +1680,17 @@ ordinary upgrade above does everything; what to know:
   1 GB; its thresholds are sized for that value, so do not lower it. Its `/health` reports `memoryMB` (Chrome) and
   `containerMB` (the container).
 - Backups no longer stop a Gotenberg container (`scripts/backup.sh`); the renderer is stateless.
-- Rollback: check out the previous release and run `setup.sh` again; that recreates Gotenberg and removes the
-  renderer as an orphan on the next `stop.sh`.
+- Before anything is changed, `setup.sh` and `start.sh` create and remove a throwaway internal network
+  `<project>_netcheck`. If Docker has no free address pool for it they stop with a message and leave the installation
+  as it was. The old Gotenberg container is removed only after the images are built and the migrations ran, right
+  before the full start.
+- Rollback to the previous release: the old release's `stop.sh` is a plain `down`, so it would leave the renderer
+  running as an orphan, and the old `restore.sh` refuses while any container of the project exists. So, from the
+  **new** checkout first:
+  `bash scripts/compose.sh --profile '*' down --remove-orphans` (this removes the renderer and its network), then
+  check out the old release and run its `setup.sh --operator ...`. The upgrade removed the old
+  `<project>-gotenberg` image, so the old release rebuilds Gotenberg from its recipe (an image build with internet
+  access, several minutes).
 
 **The upgrade that splits the database password** (the first release with
 `npm run db:rotate-passwords`) adds a password of its own for every database
