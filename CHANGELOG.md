@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — GRN list pages by receipt and low stock (2026-10-18)
+## Unreleased: GRN lists page by receipt, and a low-stock filter (migration 98)
 
 Migration 98. The receipt lists of the app page item lines, so a receipt could be split across two pages and show
 partial stock. Both functions keep their old behaviour unless the new key is sent.
