@@ -17,10 +17,12 @@ old tag's dependency set under the new application.
 2. Start from those two files. Drop `scripts` and `devDependencies`, then
    carry over the raised versions and the `overrides` block from the current
    `package.json`, leaving out any the new tag already meets.
-3. `npm install --package-lock-only --ignore-scripts` in this directory.
+3. `npx -y npm@11.12.1 install --package-lock-only --ignore-scripts` in this directory.
 4. Set the tag and digest in `Dockerfile`, build with `--no-cache`, and scan
    the result (`trivy image --severity HIGH,CRITICAL`). Raise or override what
-   the scan still names and repeat from step 3.
+   the scan still names and repeat from step 3. The build fails if the image's npm
+   rewrites `package-lock.json` (sha256 compared before and after `npm install`) or if
+   `npm ls --omit=dev --all` finds an invalid package; regenerate the lockfile as in step 3.
 5. Update the version in `docs/CONTAINER_SECURITY.md`, then run the operator
    API tests, which upload and read photos and documents.
 
@@ -45,3 +47,7 @@ v1.80.2. The lock was regenerated with npm 11.12.1
 --omit=dev` reports 0 vulnerabilities. The image build and the upload tests
 run in CI's install job; the `--no-cache` build and Trivy scan (step 4) are
 for the release checklist.
+
+2026-10-18: the `undici` override is scoped to `undici@^7` (every 7.x copy is raised to
+the root's 7.30.0). `@kubernetes/client-node` declares `undici ^8.7.0` and keeps its nested
+8.11.2; an unscoped override made `npm ls` report it invalid.

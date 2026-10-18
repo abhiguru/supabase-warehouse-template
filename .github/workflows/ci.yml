@@ -85,7 +85,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
-      - run: pip install -r docker/sensor-bridge/requirements.txt
+      - run: pip install --require-hashes --only-binary=:all: -r docker/sensor-bridge/requirements.txt
       - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
       - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge
   contract:

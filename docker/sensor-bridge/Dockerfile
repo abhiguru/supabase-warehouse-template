@@ -19,7 +19,7 @@ RUN apt-get update \
 # base image's pip 26.2.1 vendors msgpack 1.1.2, urllib3 2.7.0 and setuptools
 # 70.3.0, each behind a fixed HIGH advisory (scan of 2026-10-18).
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --only-binary=:all: --requirement /app/requirements.txt \
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement /app/requirements.txt \
     && python -m pip uninstall --yes --no-cache-dir pip \
     && ! python -c 'import pip' 2>/dev/null \
     && groupadd --system --gid 10001 bridge \

@@ -87,6 +87,6 @@
     "minimatch@^10": "10.2.6",
     "protobufjs@^7": "7.6.5",
     "socks@^2": "2.8.10",
-    "undici": "$undici"
+    "undici@^7": "$undici"
   }
 }
