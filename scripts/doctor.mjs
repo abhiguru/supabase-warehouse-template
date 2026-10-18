@@ -5,8 +5,12 @@ import { createConnection } from 'node:net';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
+import { validateDbValues } from './db-roles.mjs';
+import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
+import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
+import { alertDeliveryWarning } from './monitoring-config.mjs';
 
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -19,13 +23,18 @@ export const listening = port => new Promise(resolve => {
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
   if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.BIND_ADDRESS !== '127.0.0.1' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode, MSG91 and loopback gateway.');
-  for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (!env[key] || /^(your-|changeme|fake_)/i.test(env[key])) throw new Error(`Missing production MSG91 setting: ${key}.`);
+  // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
+  // the fixture sentinel `isolated-` only for a reserved .test address (CI and fixtures).
+  const fixture = isFixtureAddress(env.SUPABASE_PUBLIC_URL);
+  for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (isProviderPlaceholder(env[key], { allowFixtureSentinel: fixture })) throw new Error(`Missing production MSG91 setting: ${key}.`);
   const origin = canonicalOrigin(env.SUPABASE_PUBLIC_URL, 'SUPABASE_PUBLIC_URL');
   if (canonicalOrigin(env.API_EXTERNAL_URL, 'API_EXTERNAL_URL') !== origin) throw new Error('Public API origins differ.');
   if (canonicalOrigin(env.CORS_ALLOWED_ORIGIN, 'CORS_ALLOWED_ORIGIN') !== canonicalOrigin(env.SITE_URL, 'SITE_URL')) throw new Error('Trusted browser origins differ.');
   const port = Number(env.KONG_HTTP_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid KONG_HTTP_PORT.');
   if (!/^[0-9a-f]{96}$/.test(env.JWT_SECRET || '')) throw new Error('Invalid JWT_SECRET.');
+  // One password per database login (docs/CONTAINER_SECURITY.md, "Database passwords").
+  validateDbValues(env);
   for (const [key, role] of [['ANON_KEY', 'anon'], ['SERVICE_ROLE_KEY', 'service_role']]) {
     const parts = (env[key] || '').split('.');
     if (parts.length !== 3) throw new Error(`Invalid ${key}.`);
@@ -82,8 +91,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
   for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']], ['docker', ['info', '--format', '{{.ServerVersion}}']]]) {
-    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose v2' : ''}.`);
+    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose' : ''}.`);
   }
+  // The requirement is a capability, not a version: the scripts wait with `up --wait --wait-timeout`.
+  if (!/--wait-timeout/.test(probe('docker', ['compose', 'up', '--help']).output)) throw new Error('This Docker Compose plugin does not accept `up --wait-timeout`; install a Compose plugin that does (see the host prerequisites).');
   const state = process.env.WAREHOUSE_STATE_DIR;
   const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);
@@ -100,17 +111,51 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
     if (!owned.output.trim() && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
     return 'Operator configuration, private paths and gateway port preflight passed.';
   }
+  // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
+  const keyFileWarning = checkCentralKeyFile(env, state);
+  if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
   // The script probes ten containers plus five HTTP endpoints. Its own
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   const usb = usbBackupWarning(state);
-  const note = usb ? `\nWarning: ${usb}` : '';
+  // Alertmanager only exists when the monitoring profile was started; then "local only" is worth a warning.
+  const alerts = probe('bash', [resolve(root, 'scripts/compose.sh'), '--profile', '*', 'ps', '-q', 'alertmanager']).output.trim() ? alertDeliveryWarning(state) : null;
+  const note = [usb, alerts].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);
   const json = await response.json();
   if (json.success !== true || json.data?.anonKey !== env.ANON_KEY || json.data?.instanceId !== manifest.instanceId || json.data?.canonicalOrigin !== origin) throw new Error('External public configuration does not match this instance.');
   return `Local services and external HTTPS discovery are healthy.${note}`;
+}
+
+// Central sign-in with keys from a file (CENTRAL_JWKS_FILE, set by setup.sh --central-jwks-file): the
+// functions container reads <state>/public/<file>. compose.env comes back with a backup but the file
+// does not unless the backup carries it, and an unreadable file only produces a log line in the router
+// while get-public-config keeps offering central sign-in. Nothing to check when the keys are fetched
+// from an address or central sign-in is off. Returns '' when the file is fine or none is configured;
+// throws when it is missing or not a usable key set. Only while db:restore-host is waiting for the
+// operator to put a missing file back (WAREHOUSE_CENTRAL_KEY_PENDING=yes, set by restore-host for
+// restore.sh and so for this doctor) is a missing file a returned warning instead of a failure.
+export function checkCentralKeyFile(env, stateDir, { pending = process.env.WAREHOUSE_CENTRAL_KEY_PENDING === 'yes' } = {}) {
+  const name = env.CENTRAL_JWKS_FILE;
+  if (!name) return '';
+  // The router reads only a plain file name from public/; so does this check.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) throw new Error(`CENTRAL_JWKS_FILE must be a plain file name (such as central-jwks.json), not ${name}.`);
+  const path = resolve(stateDir, 'public', name);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) {
+    const message = `Central sign-in reads its keys from ${path}, but that file is missing: every central sign-in fails while the app still offers it. `
+      + `Put it back by rerunning setup.sh --operator with your usual inputs plus --central-issuer ${env.CENTRAL_ISSUER || '<issuer>'} --central-jwks-file <the key set the association sent you> (docs/OPERATOR_INSTALL.md, "Central sign-in").`;
+    if (pending) return message;
+    throw new Error(message);
+  }
+  if (!stat.isFile()) throw new Error(`${path} must be a regular file.`);
+  if (stat.size > KEY_SET_MAX_BYTES) throw new Error(`${path} is larger than 64 KB; central sign-in refuses it. Replace it with setup.sh --central-jwks-file.`);
+  let document;
+  try { document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path))); } catch { throw new Error(`${path} is not a JSON key set; central sign-in cannot verify a token. Replace it with setup.sh --central-jwks-file.`); }
+  try { usableKeys(document); } catch (error) { throw new Error(`${path} is not usable: ${error.message}. Replace it with setup.sh --central-jwks-file.`); }
+  return '';
 }
 
 if (isMain(import.meta.url)) {

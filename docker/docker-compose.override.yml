@@ -20,6 +20,7 @@ services:
       -c shared_preload_libraries=pg_stat_statements,pg_cron,pg_net
       -c pg_stat_statements.track=all
       -c cron.database_name=postgres
+      -c cron.log_statement=off
       -c random_page_cost=1.1
       -c effective_io_concurrency=200
       -c log_min_messages=warning
@@ -188,8 +189,19 @@ services:
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
+    # Changes with the rendered configuration and the alert rules, so that `compose up` replaces a
+    # running Prometheus that would otherwise keep the old files (scripts/compose.sh).
+    labels:
+      com.warehouse.config-sha256: ${WAREHOUSE_PROMETHEUS_CONFIG_SHA256:-}
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Rendered for this installation by setup.sh (docker/prometheus.yml is its template). A missing file
+      # stops the start instead of Docker creating a directory there: run setup.sh again.
+      - type: bind
+        source: ${WAREHOUSE_MONITORING_PATH:?Run through scripts/compose.sh}/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus_data:/prometheus
     command:
@@ -216,8 +228,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
     profiles: ["monitoring"]
+    labels:
+      com.warehouse.config-sha256: ${WAREHOUSE_ALERTMANAGER_CONFIG_SHA256:-}
+    # The optional webhook address (setup.sh --alert-webhook-file) is a secret kept at mode 0600 in the
+    # state, so Alertmanager runs as the installing user, as imgproxy does for the storage directory. Its
+    # notification log and silences go to <state>/data/alertmanager (0700, that user's), which survives a
+    # replacement of the container; the image's own /alertmanager volume belongs to another user.
+    user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
     volumes:
-      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # alertmanager.yml, and webhook-url when an address was given: rendered by setup.sh.
+      - type: bind
+        source: ${WAREHOUSE_MONITORING_PATH:?Run through scripts/compose.sh}/alertmanager
+        target: /etc/alertmanager
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WAREHOUSE_ALERTMANAGER_PATH:?Run through scripts/compose.sh}
+        target: /alertmanager
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/ready"]
       interval: 30s
@@ -238,7 +271,8 @@ services:
     profiles: ["monitoring"]
     networks: [default, database]
     environment:
-      DATA_SOURCE_NAME: "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres?sslmode=disable"
+      # warehouse_monitoring: pg_monitor and nothing else (migration 94).
+      DATA_SOURCE_NAME: "postgresql://warehouse_monitoring:${DB_PASSWORD_MONITORING:?Run setup.sh to generate the per-role database passwords}@db:5432/postgres?sslmode=disable"
     depends_on:
       db:
         condition: service_healthy
@@ -264,11 +298,19 @@ services:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
+      # The backup scripts write warehouse_backup.prom here (scripts/backup-metrics.sh); setup.sh creates it.
+      - type: bind
+        source: ${WAREHOUSE_METRICS_PATH:?Run through scripts/compose.sh}
+        target: /var/lib/node_exporter/textfile
+        read_only: true
+        bind:
+          create_host_path: false
     command:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
       - '--path.rootfs=/rootfs'
       - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.textfile.directory=/var/lib/node_exporter/textfile'
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
       interval: 30s
@@ -297,10 +339,13 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       GF_SERVER_ROOT_URL: http://localhost:13001
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The PostgreSQL datasource signs in as warehouse_monitoring
+      # (volumes/grafana/provisioning/datasources/datasources.yml).
+      DB_PASSWORD_MONITORING: ${DB_PASSWORD_MONITORING:?Run setup.sh to generate the per-role database passwords}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./volumes/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./volumes/grafana/dashboards:/etc/grafana/dashboards:ro
     depends_on:
       - prometheus
     healthcheck:

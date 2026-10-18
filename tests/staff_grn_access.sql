@@ -76,6 +76,11 @@ SELECT pg_temp.grn_assert(public.get_grn_details(:'grn_a'::uuid)->>'success'='tr
 SELECT pg_temp.grn_assert(public.get_grn_details(:'grn_b'::uuid)#>>'{data,grn,dispatches_summary,total_dispatches}'='0','authorized edit dispatch summary');
 SELECT pg_temp.grn_assert(public.get_grn_list()->>'success'='true','GRN list');
 SELECT pg_temp.grn_assert(jsonb_array_length(public.get_all_grn_items(p_filters=>'{}'::jsonb)->'data')=2,'mobile GRN list includes both customers');
+-- The legacy list reads mv_grn_list, which the worker refreshes after the commit (migration 91);
+-- in this one transaction its refresh runs here.
+RESET ROLE;
+SELECT warehouse_security.refresh_dirty_lists();
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.grn_assert((public.get_all_grn_items(p_catalog_id=>:'item_id'::uuid)#>>'{data,total_count}')::integer=2,'legacy GRN list includes both customers');
 SELECT pg_temp.grn_assert(public.get_all_grn_activity(current_date,current_date)->>'success'='true','GRN activity');
 SELECT public.update_grn(p_grn_id=>:'grn_b'::uuid,p_note=>'Staff edited receipt',
@@ -84,6 +89,12 @@ SELECT public.update_grn(p_grn_id=>:'grn_b'::uuid,p_note=>'Staff edited receipt'
 SELECT pg_temp.grn_assert(:'edited'::jsonb->>'success'='true','staff edits receipt');
 SELECT pg_temp.grn_assert((SELECT note='Staff edited receipt' FROM public.goodsreceived WHERE id=:'grn_b'::uuid),'edited header persisted');
 SELECT pg_temp.grn_assert((SELECT qty=12 AND stock=12 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid),'edited quantity and stock reconcile');
+SELECT pg_temp.grn_assert(
+ (public.get_all_grn_items(p_grn_id=>:'grn_b'::uuid)#>>'{data,items,0,stock}')::integer=10,
+ 'the edit itself refreshes no list (migration 91)');
+RESET ROLE;
+SELECT warehouse_security.refresh_dirty_lists();
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.grn_assert(
  (public.get_all_grn_items(p_grn_id=>:'grn_b'::uuid)#>>'{data,items,0,stock}')::integer=12,
  'legacy GRN stock refreshes after the staff edit');
@@ -111,7 +122,7 @@ SELECT pg_temp.grn_assert((SELECT current_stock=12 AND grn_qty=12 FROM public.mv
 SELECT pg_temp.grn_assert((SELECT total_qty=12 FROM public.mv_grn_daily_summary WHERE customer_id=:'customer_b'::uuid),'daily receipt aggregate refreshed');
 SELECT pg_temp.grn_assert((SELECT current_stock=10 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_a'::uuid AND item_id=:'item_id'::uuid),'unrelated customer cache unchanged');
 SELECT pg_temp.grn_assert((SELECT tgenabled='O' FROM pg_trigger WHERE tgrelid='public.goodsreceived_trl'::regclass AND tgname='trg_mark_stock_mvs_dirty_grn'),'dirty trigger restored after failed edit');
-SELECT pg_temp.grn_assert(NOT EXISTS(SELECT 1 FROM public.mv_refresh_queue WHERE needs_refresh),'successful edit consumes refresh queue');
+SELECT pg_temp.grn_assert(NOT EXISTS(SELECT 1 FROM public.mv_refresh_queue WHERE needs_refresh),'the refresh after the edit consumes the refresh queue');
 SET LOCAL ROLE authenticated;
 SELECT public.register_grn_image_upload(:'grn_b'::uuid,'header','fictional.webp',32,'image/webp') AS upload \gset
 SELECT pg_temp.grn_assert(:'upload'::jsonb->>'success'='true','staff registers attachment');

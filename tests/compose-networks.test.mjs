@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { composeAvailable, renderedCompose } from './compose-render.mjs';
+import { composeAvailable, renderCompose, renderedCompose, renderedComposeEnv } from './compose-render.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 // CI always has Docker Compose; a contributor machine without it skips, visibly.
@@ -148,5 +148,46 @@ test('the sensor bridge needs no variable to render, so installations that never
 test('the pooler registers only a database role that exists', () => {
   const pooler = read('docker/volumes/pooler/pooler.exs');
   assert.deepEqual([...pooler.matchAll(/"db_user" => "([a-z_]+)"/g)].map(match => match[1]), ['pgbouncer']);
-  assert.match(read('docker/volumes/db/roles.sql'), /ALTER USER pgbouncer WITH PASSWORD/);
+  assert.match(read('docker/volumes/db/roles.sql'), /ALTER USER pgbouncer WITH PASSWORD :'pooler_password'/);
+});
+
+// TW-BE-002 (docs/CONTAINER_SECURITY.md, "Database passwords"): every value is
+// searched for in the whole rendered definition of each service, environment,
+// commands and health checks alike.
+test('the superuser password reaches only db, meta, realtime, supavisor and studio; each login password only its service', { skip }, () => {
+  const { services } = renderedCompose();
+  const env = renderedComposeEnv();
+  const holders = value => {
+    assert.ok(value && value.length >= 16, 'the value was generated');
+    return Object.entries(services).filter(([, definition]) => JSON.stringify(definition).includes(value)).map(([service]) => service).sort();
+  };
+  assert.deepEqual(holders(env.POSTGRES_PASSWORD), ['db', 'meta', 'realtime', 'studio', 'supavisor']);
+  // db carries the four that exist before the migrations, for its first-start init script.
+  assert.deepEqual(holders(env.DB_PASSWORD_AUTHENTICATOR), ['db', 'rest']);
+  assert.deepEqual(holders(env.DB_PASSWORD_STORAGE), ['db', 'storage']);
+  assert.deepEqual(holders(env.DB_PASSWORD_AUTH), ['auth', 'db']);
+  assert.deepEqual(holders(env.DB_PASSWORD_POOLER), ['db', 'supavisor']);
+  assert.deepEqual(holders(env.DB_PASSWORD_MONITORING), ['grafana', 'postgres-exporter']);
+  assert.deepEqual(holders(env.REALTIME_DB_ENC_KEY), ['realtime']);
+  assert.equal(services.realtime.environment.DB_ENC_KEY, env.REALTIME_DB_ENC_KEY);
+  assert.match(services['postgres-exporter'].environment.DATA_SOURCE_NAME, /^postgresql:\/\/warehouse_monitoring:/);
+  assert.equal('POSTGRES_PASSWORD' in services.grafana.environment, false);
+  assert.equal('POSTGRES_PASSWORD' in services.supavisor.environment, false);
+});
+
+test('a state without a per-role value fails at compose config with a message, not at the first login', { skip }, () => {
+  for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_MONITORING', 'REALTIME_DB_ENC_KEY']) {
+    const result = renderCompose(text => text.replace(new RegExp(`^${name}=.*\n`, 'm'), ''));
+    assert.notEqual(result.status, 0, `${name} missing still renders`);
+    assert.match(result.stderr, /Run setup\.sh to generate the (?:per-role database passwords|Realtime encryption key)/);
+  }
+});
+
+test('realtime resolves Compose names at the DNS root, so a host search domain cannot delay the tenant connection', { skip }, () => {
+  // TW-BE-015: the IPv6 lookup of `db` took about 8 s through the host's search domain, past the 15 s window.
+  // Kong has the same setting for the same class of delay.
+  const { services } = topology();
+  assert.deepEqual(services.realtime.dns_search, ['.']);
+  assert.deepEqual(services.kong.dns_search, ['.']);
+  assert.equal(services.realtime.environment.DB_HOST, 'db');
 });

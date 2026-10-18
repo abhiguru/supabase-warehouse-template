@@ -7,6 +7,16 @@ compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 . "$ROOT/scripts/operator-lock.sh"
 state="$(operator_state)"
 operator_lock "$state"
+state_dir="$state"   # the loop below reuses `state` for container health
+
+# setup.sh renders the per-installation files the monitoring services mount (docs/MONITORING.md); an
+# installation set up before that has none until setup runs again.
+for path in config/monitoring/prometheus.yml config/monitoring/alertmanager/alertmanager.yml metrics data/alertmanager; do
+  [[ -e "$state_dir/$path" ]] || { echo "$state_dir/$path is missing: run setup.sh --operator again (docs/MONITORING.md, Several installations on one host)." >&2; exit 1; }
+done
+project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$state_dir/config/compose.env")"
+textfile_probe="$state_dir/metrics/warehouse_monitoring_check.prom"
+trap 'rm -f -- "$textfile_probe"' EXIT
 
 compose --profile monitoring build prometheus alertmanager
 compose --profile monitoring run --rm --no-deps --entrypoint promtool prometheus \
@@ -68,10 +78,52 @@ for ((i=0; i<30; i++)); do
 done
 [[ "$client_connections" == true ]] || { echo 'Prometheus has no client connection series (pg_stat_activity_count{backend_type="client backend"}).' >&2; exit 1; }
 
+# The installation label is part of the running configuration, not only of the file setup rendered.
+config=$(compose --profile monitoring exec -T prometheus wget -qO- http://localhost:9090/api/v1/status/config)
+node -e "const yaml=JSON.parse(process.argv[1]).data.yaml;if(!yaml.includes('installation: '+process.argv[2]+'\n'))process.exit(1)" "$config" "$project" ||
+  { echo "Prometheus does not carry the external label installation: $project." >&2; exit 1; }
+
+# Every shipped rule is loaded and healthy, the backup rules among them.
+expected_rules=$(grep -c '^ *- alert: ' "$ROOT/docker/alert-rules.yml")
+rules_loaded=false
+for ((i=0; i<30; i++)); do
+  rules=$(compose --profile monitoring exec -T prometheus wget -qO- http://localhost:9090/api/v1/rules || true)
+  # A rule is "unknown" until its group has been evaluated once.
+  if node -e "const rules=JSON.parse(process.argv[1]).data.groups.flatMap(group=>group.rules);const names=rules.map(rule=>rule.name);if(rules.length!==Number(process.argv[2])||!['BackupMissing','BackupFailed'].every(name=>names.includes(name))||rules.some(rule=>rule.health!=='ok'))process.exit(1)" "$rules" "$expected_rules" 2>/dev/null; then rules_loaded=true; break; fi
+  sleep 2
+done
+[[ "$rules_loaded" == true ]] || { echo "Prometheus did not load all $expected_rules alert rules, or a rule is unhealthy." >&2; exit 1; }
+
+# Prometheus holds this installation's containers and none of another installation's. cAdvisor reports
+# every container on the host; the scrape job keeps one Compose project (docker/prometheus.yml).
+query() { node -e 'console.log("http://localhost:9090/api/v1/query?query="+encodeURIComponent(process.argv[1]))' "$1"; }
+own_containers=false
+for ((i=0; i<30; i++)); do
+  series=$(compose --profile monitoring exec -T prometheus wget -qO- "$(query "count(container_memory_usage_bytes{container_label_com_docker_compose_project=\"$project\"})")" || true)
+  if node -e "const r=JSON.parse(process.argv[1]).data.result;if(!(r.length===1&&Number(r[0].value[1])>0))process.exit(1)" "$series" 2>/dev/null; then own_containers=true; break; fi
+  sleep 2
+done
+[[ "$own_containers" == true ]] || { echo "Prometheus has no container series of the project $project." >&2; exit 1; }
+series=$(compose --profile monitoring exec -T prometheus wget -qO- "$(query "count(container_memory_usage_bytes{name!=\"\",container_label_com_docker_compose_project!=\"$project\"})")")
+node -e "if(JSON.parse(process.argv[1]).data.result.length!==0)process.exit(1)" "$series" ||
+  { echo "Prometheus holds container series of another Compose project, or of a container Compose did not start, than $project." >&2; exit 1; }
+
+# The textfile directory the backup scripts write (scripts/backup-metrics.sh) reaches Prometheus through node
+# exporter. A probe file of its own, so a real backup metric is never faked; removed on exit.
+printf '# TYPE warehouse_monitoring_check_textfile gauge\nwarehouse_monitoring_check_textfile 1\n' > "$textfile_probe"
+chmod 644 -- "$textfile_probe"
+textfile=false
+for ((i=0; i<30; i++)); do
+  series=$(compose --profile monitoring exec -T prometheus wget -qO- "$(query 'warehouse_monitoring_check_textfile and on() (node_textfile_scrape_error == 0)')" || true)
+  if node -e "const r=JSON.parse(process.argv[1]).data.result;if(!(r.length===1&&Number(r[0].value[1])===1))process.exit(1)" "$series" 2>/dev/null; then textfile=true; break; fi
+  sleep 2
+done
+[[ "$textfile" == true ]] || { echo 'Prometheus did not read the textfile metrics directory through node exporter.' >&2; exit 1; }
+
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 compose --profile monitoring exec -T alertmanager wget -qO- --header='Content-Type: application/json' \
   --post-data="[{\"labels\":{\"alertname\":\"WarehouseSynthetic\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"local delivery test\"},\"startsAt\":\"$now\"}]" \
   http://localhost:9093/api/v2/alerts >/dev/null
 alerts=$(compose --profile monitoring exec -T alertmanager wget -qO- http://localhost:9093/api/v2/alerts)
 node -e "if(!JSON.parse(process.argv[1]).some(a=>a.labels.alertname==='WarehouseSynthetic'))process.exit(1)" "$alerts"
-echo 'Monitoring configs, alert rule tests, scrape targets, and local Alertmanager delivery passed.'
+echo 'Monitoring configs, alert rule tests, the installation label, per-installation container series, the backup textfile directory, scrape targets, and local Alertmanager delivery passed.'

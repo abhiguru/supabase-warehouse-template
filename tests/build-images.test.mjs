@@ -319,6 +319,38 @@ test('the Grafana recipe is its own build directory, like every other recipe', (
   assert.match(readFileSync(join(repo, 'docker/grafana/Dockerfile'), 'utf8'), /^COPY plugins\.lock install-plugins\.sh \/tmp\/$/m);
 });
 
+test('the Gotenberg binary is built from the source of the base image tag', () => {
+  // docker/gotenberg/Dockerfile replaces the publisher's /usr/bin/gotenberg with a
+  // build of the same tag's source; a base moved alone would pair an old binary
+  // with a new image (Dependabot ignores the tag for that reason).
+  const recipe = readFileSync(join(repo, 'docker/gotenberg/Dockerfile'), 'utf8');
+  const base = /^FROM gotenberg\/gotenberg:(\d+)\.(\d+)\.(\d+)@sha256:[0-9a-f]{64}$/m.exec(recipe);
+  assert.ok(base, 'the base is a digest-pinned gotenberg/gotenberg x.y.z tag');
+  const version = base.slice(1).join('.');
+  const sources = [...recipe.matchAll(/codeload\.github\.com\/gotenberg\/gotenberg\/tar\.gz\/refs\/tags\/v([0-9.]+) /g)].map(match => match[1]);
+  assert.deepEqual(sources, [version], 'the source archive is the base tag');
+  assert.match(recipe, /echo '[0-9a-f]{64}  \/tmp\/source\.tar\.gz' \| sha256sum -c -/);
+  assert.deepEqual([...recipe.matchAll(/gotenberg\/v\d+\/cmd\.Version=([0-9.]+)'/g)].map(match => match[1]), [version], 'the version flag is the base tag');
+  const mod = readFileSync(join(repo, 'docker/gotenberg/gotenberg.go.mod'), 'utf8');
+  assert.match(mod, new RegExp(`^module github\\.com/gotenberg/gotenberg/v${base[1]}$`, 'm'), 'gotenberg.go.mod is the module of the base major');
+  assert.match(recipe, new RegExp(`cmd\\.Version=${version.replaceAll('.', '\\.')}'.* \\./cmd/gotenberg\\n`), 'the flag is set on the cmd/gotenberg build');
+  assert.match(recipe, /^COPY --from=gotenberg \/out\/gotenberg \/usr\/bin\/gotenberg$/m);
+  assert.match(recipe, /^COPY gotenberg\.go\.mod \.\/go\.mod$/m);
+  // Every operator install builds this image, so no stage runs upstream tests
+  // (some are timing-sensitive and flaked on a loaded runner); each Go stage
+  // verifies its module graph and builds read-only.
+  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.startsWith('#'));
+  assert.ok(!instructions.some(line => /\bgo\s+test\b/.test(line)), 'no build stage of the Gotenberg recipe runs go test');
+  const stages = recipe.split(/^(?=FROM )/m).filter(stage => stage.startsWith('FROM golang:'));
+  assert.deepEqual(stages.map(stage => /^FROM \S+ AS (\S+)$/m.exec(stage)?.[1]), ['build', 'gotenberg']);
+  for (const stage of stages) {
+    assert.match(stage, /go mod download && go mod verify/);
+    assert.match(stage, /go build -p=2 -mod=readonly -trimpath /);
+  }
+  const dependabot = readFileSync(join(repo, '.github/dependabot.yml'), 'utf8');
+  assert.match(dependabot, /- dependency-name: gotenberg\/gotenberg\n\s+update-types:\n\s+- "version-update:semver-major"\n\s+- "version-update:semver-minor"\n\s+- "version-update:semver-patch"\n/);
+});
+
 test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {
   // A fixed tag (Grafana's was `warehouse-grafana:local` until 2026-10-13) is shared by every
   // installation on the host: one checkout's build replaced another's running image.

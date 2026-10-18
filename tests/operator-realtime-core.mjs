@@ -54,8 +54,11 @@ function join(token, ref) {
           postgres_changes: [{ event: '*', schema: 'public', table: 'orders' }] } } })));
   });
 }
+// Every join records its attempt number and how long the subscription took (TW-BE-015). Retries stay.
+const joins = [];
 async function joinReady(token, ref) {
   let last;
+  const started = Date.now();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     let channel;
     try {
@@ -63,6 +66,7 @@ async function joinReady(token, ref) {
       assert.equal(channel.status, 'ok', 'authenticated Realtime join');
       await waitFor(() => channel.messages.some(m => m.event === 'system' && m.payload?.status === 'ok'),
         'database subscription ready');
+      joins.push({ ref, attempt: attempt + 1, ms: Date.now() - started });
       return channel;
     }
     catch (error) {
@@ -93,6 +97,14 @@ const sockets = [];
 try {
   console.log('Realtime: joining A');
   const chanA = await joinReady(customerA, 'A'); sockets.push(chanA.socket);
+  // The first subscription after the key-rotation run (`npm run test:rotation` recreates realtime and
+  // re-seeds its tenant, and does not run the warm-up) is recorded, not required to be a first-attempt
+  // success: a hosted runner cannot show the slow search-domain lookup, and a retry here is tolerated since
+  // the initial release. It fails only above a generous bound (three attempts' worth). The real guard for
+  // the DNS setting is tests/compose-networks.test.mjs (TW-BE-015); the cold-start probe on the review VM
+  // is the formal check.
+  assert.ok(joins[0].ms < 45000, `first subscription took ${joins[0].ms} ms in ${joins[0].attempt} attempt(s)`);
+  console.log(`Realtime: first subscription ready on attempt ${joins[0].attempt} in ${joins[0].ms} ms`);
   console.log('Realtime: joining B');
   const chanB = await joinReady(customerB, 'B'); sockets.push(chanB.socket);
   console.log('Realtime: joining admin');

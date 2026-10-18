@@ -113,7 +113,7 @@ test('rerun with a changed provider file replaces only the provider lines atomic
     assert.equal(updated.created, false);
     assert.equal(updated.providerUpdated, true);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
     const after = readFileSync(envPath, 'utf8');
     const afterEnv = readEnv(envPath);
     assert.equal(afterEnv.MSG91_AUTH_KEY, 'second-provider-key');
@@ -175,7 +175,7 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(readEnv(envPath).CENTRAL_ISSUER, issuer);
     assert.equal(readEnv(envPath).CENTRAL_JWKS_URL, jwks);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
     assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, base.apiUrl);
 
     // The same values again, or no central option at all: byte-stable.
@@ -376,7 +376,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--gateway-port\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));
@@ -434,6 +434,72 @@ test('compose strips inherited values before loading private config', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'unset');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('per-role database passwords: a fresh state has them, a rerun keeps them, a state of the previous release gains them', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-db-roles-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING'];
+  const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const stateDir = join(scratch, 'state');
+    const envPath = join(stateDir, 'config/compose.env');
+    const options = { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+
+    // Fresh: every login has its own 64-hex value, none equals the superuser password, and the
+    // Realtime key replaces the fixed text of earlier releases.
+    const fresh = configure(root, options);
+    assert.deepEqual(fresh.dbValuesAdded, []);
+    const env = readEnv(envPath);
+    for (const name of names) assert.match(env[name], /^[0-9a-f]{64}$/, name);
+    assert.equal(new Set([env.POSTGRES_PASSWORD, ...names.map(name => env[name])]).size, names.length + 1);
+    assert.match(env.REALTIME_DB_ENC_KEY, /^[A-Za-z0-9_-]{16}$/);
+    assert.notEqual(env.REALTIME_DB_ENC_KEY, 'supabaserealtime');
+    assert.doesNotMatch(readFileSync(envPath, 'utf8'), /generated-by-setup/);
+    assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+
+    // Rerun: byte for byte the same file.
+    const current = readFileSync(envPath, 'utf8');
+    assert.deepEqual(configure(root, options).dbValuesAdded, []);
+    assert.deepEqual(configure(root, { stateDir }).dbValuesAdded, []);
+    assert.equal(readFileSync(envPath, 'utf8'), current);
+
+    // A state written by the previous release has none of the six lines. The next run appends
+    // them, changes no other line, keeps the file private and leaves no temporary file.
+    const previous = current.replace(/^(?:DB_PASSWORD_[A-Z]+|REALTIME_DB_ENC_KEY)=.*\n/gm, '');
+    assert.doesNotMatch(previous, /^(?:DB_PASSWORD_|REALTIME_DB_ENC_KEY)/m);
+    writeFileSync(envPath, previous, { mode: 0o600 });
+    assert.throws(() => validateOperatorEnv(readEnv(envPath), stateDir), /Invalid DB_PASSWORD_AUTHENTICATOR: run setup\.sh/);
+    const upgraded = configure(root, { stateDir });
+    assert.deepEqual(upgraded.dbValuesAdded, [...names, 'REALTIME_DB_ENC_KEY']);
+    const after = readFileSync(envPath, 'utf8');
+    assert.ok(after.startsWith(previous), 'every earlier line is kept in place');
+    assert.deepEqual(after.slice(previous.length).trimEnd().split('\n').map(line => line.split('=')[0]), [...names, 'REALTIME_DB_ENC_KEY']);
+    const upgradedEnv = readEnv(envPath);
+    for (const name of names) assert.notEqual(upgradedEnv[name], env[name], `${name} is a new value, not the fresh state's`);
+    assert.equal(upgradedEnv.POSTGRES_PASSWORD, env.POSTGRES_PASSWORD);
+    assert.equal(statSync(envPath).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
+    assert.equal(validateOperatorEnv(upgradedEnv, stateDir).origin, options.apiUrl);
+    // ...and then it is stable, also through the CLI, which says what it added only once.
+    assert.match(cli('--state-dir', stateDir).stdout, /^Preserved existing operator state unchanged\.\n$/);
+    assert.equal(readFileSync(envPath, 'utf8'), after);
+
+    // A value that exists is never replaced, even a shorter one an operator chose; an empty
+    // line counts as missing and is filled where it is.
+    const chosen = 'operator-chosen-value-0123456789abcdef';
+    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_AUTH=.*$/m, 'DB_PASSWORD_AUTH='), { mode: 0o600 });
+    const filled = cli('--state-dir', stateDir);
+    assert.equal(filled.status, 0, filled.stderr);
+    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_AUTH to the existing operator state/);
+    assert.equal(readEnv(envPath).DB_PASSWORD_STORAGE, chosen);
+    assert.match(readEnv(envPath).DB_PASSWORD_AUTH, /^[0-9a-f]{64}$/);
+    assert.equal(readFileSync(envPath, 'utf8').split('\n').length, after.split('\n').length);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -601,4 +667,125 @@ test('central local code (--central-local-code): off by default, kept on a rerun
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, /Configure: --central-local-code on needs central sign-in/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, replaced alone while stopped, bad values refused', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const envText = dir => readFileSync(join(dir, 'config/compose.env'), 'utf8');
+    const port = dir => readEnv(join(dir, 'config/compose.env')).KONG_HTTP_PORT;
+
+    // Without the option the template's port stays.
+    const plain = join(scratch, 'plain');
+    configure(root, { ...base, stateDir: plain, ...hooks });
+    assert.equal(port(plain), '18000');
+
+    const state = join(scratch, 'state');
+    assert.equal(configure(root, { ...base, stateDir: state, gatewayPort: '18001', ...hooks }).created, true);
+    assert.equal(port(state), '18001');
+    assert.equal(validateOperatorEnv(readEnv(join(state, 'config/compose.env')), state).origin, base.apiUrl);
+
+    // A rerun without the option preserves it, byte for byte.
+    const before = envText(state);
+    assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortChanged, false);
+    assert.equal(envText(state), before);
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'the same port changes nothing');
+    assert.equal(envText(state), before);
+
+    // A rerun with another port replaces that one line and nothing else.
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18002', ...hooks }).gatewayPortChanged, true);
+    assert.equal(envText(state), before.replace('KONG_HTTP_PORT=18001', 'KONG_HTTP_PORT=18002'));
+    assert.equal(statSync(join(state, 'config/compose.env')).mode & 0o777, 0o600);
+
+    // Refused while the project's containers run, and when the port is taken; nothing changes.
+    const frozen = envText(state);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', portFree: () => true, containersRunning: () => true }), /containers are running/);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', portFree: () => false, containersRunning: () => false }), /already in use/);
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'taken'), gatewayPort: '18003', portFree: () => false }), /already in use/);
+    assert.equal(existsSync(join(scratch, 'taken')), false, 'a refused port creates no state');
+    assert.equal(envText(state), frozen);
+    // A refused central flag in the same call leaves the port as it was (an outage otherwise: the tunnel still
+    // points at the old port and no reminder is printed).
+    const beforeRefused = envText(state);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', centralLocalCode: 'on', ...hooks }), /needs central sign-in/);
+    assert.equal(envText(state), beforeRefused);
+    assert.equal(port(state), '18002');
+    // The project name handed to the running check is this state's.
+    let asked;
+    configure(root, { stateDir: state, gatewayPort: '18004', portFree: () => true, containersRunning: project => { asked = project; return false; } });
+    assert.equal(asked, readEnv(join(state, 'config/compose.env')).WAREHOUSE_PROJECT_NAME);
+
+    // Out-of-range and non-numeric values are refused before anything is written.
+    for (const bad of ['80', '1023', '65536', '70000', 'abc', '18001abc', '1e4', '-18001', '0x4650', '']) {
+      assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'bad'), gatewayPort: bad, ...hooks }), /--gateway-port must be a whole number from 1024 to 65535/, bad);
+    }
+    assert.equal(existsSync(join(scratch, 'bad')), false);
+    assert.deepEqual(parseConfigureArgs(['--state-dir', state, '--gateway-port', '18001']), { stateDir: state, gatewayPort: '18001' });
+
+    // The command line reports the change and reminds the operator of the tunnel ingress; a real bind test runs.
+    const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args],
+      { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+    const refused = cli('--state-dir', join(scratch, 'cli'), '--gateway-port', '80');
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /--gateway-port must be a whole number/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a rerun whose monitoring render refuses leaves the gateway port unchanged, and the rerun after the fix reports the change', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-last-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const state = join(scratch, 'state');
+    configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, ...hooks });
+    const envPath = join(state, 'config/compose.env');
+    const prometheus = join(state, 'config/monitoring/prometheus.yml');
+    const original = readFileSync(prometheus);
+    rmSync(prometheus);
+    mkdirSync(prometheus);
+    const before = readFileSync(envPath, 'utf8');
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18000');
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', ...hooks }), /must be a regular file/);
+    assert.equal(readFileSync(envPath, 'utf8'), before, 'the port line is the last write, so the refusal changed nothing');
+    rmSync(prometheus, { recursive: true });
+    writeFileSync(prometheus, original, { mode: 0o644 });
+    const result = configure(root, { stateDir: state, gatewayPort: '18003', ...hooks });
+    // The CLI prints the tunnel reminder from exactly this flag.
+    assert.equal(result.gatewayPortChanged, true);
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18003');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the real port test refuses a loopback port that is in use and accepts a free one', async () => {
+  const { createServer } = await import('node:net');
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const busy = server.address().port;
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-bind-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const base = { apiUrl: 'https://a.example.test', company: 'Acme Stores', providerEnv };
+    if (busy < 1024) return; // not an unprivileged port; cannot be a valid --gateway-port anyway
+    assert.throws(() => configure(root, { ...base, stateDir: join(scratch, 'busy'), gatewayPort: String(busy) }), /already in use/);
+    assert.equal(existsSync(join(scratch, 'busy')), false);
+    server.close();
+    await new Promise(resolve => server.once('close', resolve));
+    assert.equal(configure(root, { ...base, stateDir: join(scratch, 'free'), gatewayPort: String(busy) }).created, true);
+    assert.equal(readEnv(join(scratch, 'free/config/compose.env')).KONG_HTTP_PORT, String(busy));
+  } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -49,6 +49,7 @@ const live = await api(before.base, before.anon, '/rest/v1/customers?select=id',
 assert.ok(live.ok, `pre-rotation admin read: HTTP ${live.status}`);
 assert.notEqual(sqlBefore('SELECT count(*) FROM warehouse_security.refresh_sessions'), '0', 'session recorded');
 assert.equal(sqlBefore(`SELECT (value = ${quote(before.env.JWT_SECRET)})::text FROM warehouse_security.auth_config WHERE key='jwt_secret'`), 'true');
+assert.equal(sqlBefore(`SET ROLE anon; SELECT (coalesce(current_setting('app.settings.jwt_secret', true), '') = '')::text`), 'true', 'anon cannot read a signing secret setting before rotation');
 
 const rotation = spawnSync('bash', [resolve(root, 'rotate-keys.sh'), '--yes'], { encoding: 'utf8', timeout: 900000 });
 assert.equal(rotation.status, 0, `rotate-keys.sh failed:\n${rotation.stdout.slice(-1500)}\n${rotation.stderr.slice(-1500)}`);
@@ -66,7 +67,10 @@ assert.equal(after.base, before.base);
 
 // Database side: secret stored, sessions and pending challenges gone, tenant re-seeded.
 assert.equal(sql(`SELECT (value = ${quote(after.env.JWT_SECRET)})::text FROM warehouse_security.auth_config WHERE key='jwt_secret'`), 'true', 'auth_config holds the new secret');
-assert.equal(sql(`SELECT (current_setting('app.settings.jwt_secret') = ${quote(after.env.JWT_SECRET)})::text`), 'true', 'database setting holds the new secret');
+// The signing secret is no longer a database setting (migration 92, TW-BE-003): setting it again on
+// rotation would make it readable by every role through current_setting().
+assert.equal(sql(`SET ROLE anon; SELECT (coalesce(current_setting('app.settings.jwt_secret', true), '') = '')::text`), 'true', 'anon cannot read a signing secret setting after rotation');
+assert.equal(sql(`SELECT count(*) FROM pg_db_role_setting s, unnest(s.setconfig) AS item WHERE starts_with(lower(item), 'app.settings.jwt_secret')`), '0', 'rotation left no database or role setting for the secret');
 assert.equal(sql('SELECT count(*) FROM warehouse_security.refresh_sessions'), '0', 'every session revoked');
 assert.equal(sql('SELECT count(*) FROM public.otp_verifications WHERE NOT verified'), '0', 'pending challenges voided');
 assert.equal(sql("SELECT count(*) FROM _realtime.tenants WHERE external_id='realtime-dev'"), '1', 'realtime tenant re-seeded');
@@ -101,4 +105,4 @@ assert.ok(!anonymous.ok, `anonymous table read must be denied: HTTP ${anonymous.
 // Leave the admin phone outside its resend cooldown for the suites that follow.
 const remaining = 61000 - (Date.now() - challengedAt);
 if (remaining > 0) await sleep(remaining);
-console.log('PASS signing-key rotation: new secret in auth_config and database setting, sessions and pending OTPs revoked, Realtime tenant re-seeded, old apikey 401, old token 401, replay denied, public config shows the new anon key, health passes');
+console.log('PASS signing-key rotation: new secret in auth_config and in no database setting, sessions and pending OTPs revoked, Realtime tenant re-seeded, old apikey 401, old token 401, replay denied, public config shows the new anon key, health passes');

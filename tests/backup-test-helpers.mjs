@@ -8,9 +8,19 @@ import { fileURLToPath } from 'node:url';
 
 export const repo = fileURLToPath(new URL('..', import.meta.url));
 export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n';
-export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n') =>
+// A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
+export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
+  x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] }, null, 2) + '\n';
+// Fixed fictional database passwords as a state of this release holds them
+// (scripts/db-roles.mjs): the superuser's and one per service login.
+export const dbRoleLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\nDB_PASSWORD_AUTHENTICATOR=${'1'.repeat(64)}\n` +
+  `DB_PASSWORD_STORAGE=${'2'.repeat(64)}\nDB_PASSWORD_AUTH=${'3'.repeat(64)}\nDB_PASSWORD_POOLER=${'4'.repeat(64)}\n` +
+  `DB_PASSWORD_MONITORING=${'6'.repeat(64)}\nREALTIME_DB_ENC_KEY=${'7'.repeat(16)}\n`;
+// A state of the previous release has the superuser password only.
+export const previousReleaseDbLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\n`;
+export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n', db = dbRoleLines) =>
   `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\n` +
-  `WAREHOUSE_STORAGE_PATH=${state}/data/storage\nWAREHOUSE_MANIFEST_PATH=${state}/public/instance.json\n${extra}`;
+  `WAREHOUSE_STORAGE_PATH=${state}/data/storage\nWAREHOUSE_MANIFEST_PATH=${state}/public/instance.json\n${extra}${db}`;
 
 // A fixed fictional backup key; the state fixture holds it as config/backup.key.
 export const backupKey = '5a'.repeat(16) + '0f'.repeat(16);
@@ -38,7 +48,8 @@ export function makeState(scratch, { env } = {}) {
 // entries (<bucket>/<name>/<version>); `files` are archive paths relative to
 // the storage root, defaulting to the tenant-prefixed layout of every object.
 // v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
-export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n',
+// `centralKey` adds the optional central-jwks.json (text), checksummed like the rest.
+export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null,
   objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
@@ -59,6 +70,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKe
     content['_supabase.dump'] = 'fake supabase dump\n';
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
   }
+  if (centralKey !== null) content['central-jwks.json'] = centralKey;
   for (const [name, body] of Object.entries(content)) writeFileSync(join(dir, name), body, { mode: 0o600 });
   const listed = ['storage.tar.gz', ...Object.keys(content)];
   const sums = spawnSync('sha256sum', listed, { cwd: dir, encoding: 'utf8' });
@@ -74,6 +86,8 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKe
 // the fixed integrity text, and the final full `up` fails when FAKE_FAIL_START=yes;
 // `compose ps --all` then lists one unhealthy service, whose log has one line.
 // FAKE_FAIL_CREATEDB=yes makes the disposable createdb fail the way a busy template does.
+// What scripts/db-roles.sh sends to the database container on standard input is
+// appended to FAKE_STDIN_LOG when that is set.
 export function fakeDocker(bin) {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   writeFileSync(join(bin, 'docker'), `#!/bin/sh
@@ -98,6 +112,7 @@ case "$1" in
     esac ;;
   compose)
     case "$*" in
+      *' exec -T db sh -c IFS= read -r pw;'*) cat >> "\${FAKE_STDIN_LOG:-/dev/null}" ;;
       *' ps -q') if [ "$FAKE_RUNNING" = yes ]; then printf 'abcdef123456\\n'; fi ;;
       *' ps --all --format '*) printf 'db running healthy\\nrest running \\nmeta running unhealthy\\nstudio exited \\n' ;;
       *' logs --no-color --tail 30 '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | sed 's/.* //')" ;;
@@ -117,7 +132,7 @@ export function scriptRoot(scratch) {
   mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, 'docker/volumes/db'), { recursive: true, mode: 0o700 });
   for (const name of readdirSync(join(repo, 'scripts'))) {
-    if (/\.(sh|sql)$/.test(name)) copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
+    if (/\.(sh|sql|mjs)$/.test(name)) copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
   }
   copyFileSync(join(repo, 'docker/volumes/db/jwt.sql'), join(root, 'docker/volumes/db/jwt.sql'));
   if (!existsSync(join(root, 'scripts/operator-lock.sh'))) {

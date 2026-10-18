@@ -1,5 +1,125 @@
 # Changelog
 
+## Unreleased: ops review — image advisories, exception ledger, PostgREST pinned
+
+Fixes from the 2026-10-17 operational review (TW-BE-009, TW-BE-010, TW-BE-005 part 1; owner decisions D3, D5). No
+migration, no new environment value.
+
+- **Images.** The database recipe upgrades OpenSSL, GnuPG, PackageKit and sudo (glibc, locales and the locale archive
+  are checked unchanged in the build, so collations stay valid); edge-runtime takes all Debian updates; Gotenberg's
+  8.37.0 binary is rebuilt from source with Go 1.27.2 and x/net 0.60.0; Studio 2026.10.12-sha-3699278; Grafana
+  13.2.4 with the newest signed plugins; the sensor bridge image no longer ships pip. Rows with a listed fix:
+  db 20→0, functions 7→0, gotenberg 4→0, sensor bridge 4→0, Studio 6→5 and Grafana 47→41 (no fixed publisher
+  release yet; covered by the ledger).
+- **Exception ledger and two-pass scan.** `npm run scan:images` builds with `--no-cache` on a throwaway state (it
+  refuses while the project has containers) and scans every image with and without `--ignore-unfixed`; every
+  HIGH/CRITICAL row must be fixed or covered by an entry of `docker/image-exceptions.json` (owner, reason, review
+  date, expiry within 90 days; an entry names its advisories, packages and targets; expired, ownerless or unused
+  entries fail or warn). The ledger expires on 2027-01-15.
+- **PostgREST** v16.4 is pinned by its index digest; its missing package inventory is a time-boxed exception bound to
+  that digest, with compensating controls.
+- **The Gotenberg build runs no upstream test suite.** Upstream's timing-sensitive tests failed on a loaded CI
+  runner ("expected queue size to be 10 but got 8"), and every operator install builds this image; `go mod verify`
+  and the pinned read-only build stay.
+- **Release checklist:** image scan before every release (D5). Dependabot no longer proposes Gotenberg tag bumps (the
+  source build must move with the base tag).
+- Upgrade: `setup.sh --operator` rebuilds the changed recipes; the db container restarts once.
+
+## Unreleased: ops review wave 2, part 2 — one database password per login (migration 94)
+
+Review finding TW-BE-002, owner decision D4. `POSTGRES_PASSWORD` was the password of every database login; it is now
+the superuser's only (`postgres`, `supabase_admin`).
+
+- `setup.sh` (through `scripts/configure.mjs`) generates `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`,
+  `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING` and `REALTIME_DB_ENC_KEY`. An existing state
+  gains the missing ones on the next setup run; a value that exists is never replaced.
+- `scripts/configure-db-roles.sql` sets each login's password on every setup run and after both restores. Values
+  travel as SCRAM-SHA-256 verifiers on standard input (`scripts/db-roles.sh`): no password reaches the server, a
+  log, `pg_stat_statements` or a command line.
+- Migration `00000000000094_monitoring_role.sql`: `warehouse_monitoring` (member of `pg_monitor`, nothing else) for
+  the Postgres exporter and the Grafana datasource, which signed in as `postgres`; `supabase_functions_admin` can no
+  longer sign in.
+- Compose: PostgREST, Storage, Auth, the pooler's pool user, the exporter and Grafana use their own value
+  (`${NAME:?...}`: a state without it stops at `compose config`). Realtime's `DB_ENC_KEY` is the generated
+  `REALTIME_DB_ENC_KEY` instead of the fixed `supabaserealtime`. The pooler rewrites its pool user's password at every
+  start. The Grafana datasource is no longer editable.
+- New commands: `npm run db:rotate-passwords -- --yes [--superuser]` (rotation with automatic rollback; an
+  interrupted rotation is recovered by asking the database which file it matches) and `npm run test:db-roles` (it
+  first proves the superuser password, then that each login refuses `POSTGRES_PASSWORD` and accepts only its own,
+  over SCRAM and the network).
+- Restores: a backup taken before this release restores in place with the installation's values;
+  `--restore-config` and `db:restore-host` give its configuration new values before the database starts.
+- **Upgrade:** run `setup.sh` right after `git pull`, before any other command; it restarts the database and every
+  service once. Then `npm run test:db-roles`, `npm run db:rotate-passwords -- --yes --superuser` (the old shared
+  value sat in five service environments and in Grafana's datasource store) and a new backup.
+- Docs: `docs/CONTAINER_SECURITY.md` ("Database passwords: one per login"), `docs/OPERATOR_INSTALL.md` ("Rotating
+  the database passwords", the upgrade note).
+
+## Unreleased: ops review wave 2, part 1 — signing secret, pg_net, key cache, gateway log, unsigned backups (migrations 92, 93)
+
+Fixes from the 2026-10-17 operational review (TW-BE-001, TW-BE-003, TW-BE-004, TW-BE-019, TW-BE-022). Ships with
+central identity 0.8.1 (key-set caching, TW-ID-001).
+
+- **The JWT signing secret is no longer a database setting (migration 92, TW-BE-003).** The template stored it as
+  `app.settings.jwt_secret` (and PostgREST set it again per request), readable by every role with `current_setting()`.
+  The migration resets it at database level and for any role that holds it; `scripts/configure-auth.sql` repeats the
+  reset on every setup run; `jwt.sql`, `rotate-auth.sql` and the `rest` service no longer set it. Nothing read it.
+- **pg_net is for the service roles only (migration 93, TW-BE-004).** anon, authenticated and PUBLIC lose USAGE on
+  schema `net`, EXECUTE on `net.http_get`/`net.http_post` and EXECUTE on `supabase_functions.http_request()` (which a
+  role with TEMP could otherwise drive from its own trigger); `supabase_functions_admin`, postgres and service_role
+  keep them, so database webhooks still fire. The event-trigger function no longer re-grants on `CREATE EXTENSION`;
+  `webhooks.sql` is corrected for new installs.
+- **The facility's key cache honours the 5-minute withdrawal (TW-BE-001, cross-repo X-1).** A fetched key set is used
+  for at most 4 minutes (was 10), or for the answer's `max-age` less `Age` if shorter, and is fetched with
+  `cache: 'no-store'` and `Cache-Control: no-cache`. The unknown-key-id limit and the back-off are unchanged.
+  Facilities that use a key file rerun `setup.sh --central-jwks-file` with the new file in an emergency.
+- **The gateway access log keeps no query strings (TW-BE-019).** Format `warehouse_redacted`: client address, method,
+  path, status, size, time; signed-URL `?token=` and Realtime `?apikey=` are no longer kept, nor referer or user
+  agent. Storage no longer receives `CF-Connecting-IP` (Kong itself sets `X-Real-IP` and `X-Forwarded-For`, which
+  storage still logs; accepted under owner decision D10). New "Logs" contract in `docs/CONTAINER_SECURITY.md`.
+- **A stripped v5 backup is refused (TW-BE-022).** `db:verify-restore`, `db:restore` and `db:restore-host` refuse a v5
+  backup whose `SHA256SUMS.hmac` is missing while the backup key is available, even with `--allow-unsigned`, which is
+  now only for backups written before v5 or a lost key.
+- Upgrade: `setup.sh --operator` recreates `rest` and Kong (the recreate drops the old gateway logs; links already
+  logged stay valid until they expire).
+
+## Unreleased: ops review wave 1 — lists refresh after the commit (migration 91), the key file in backups
+
+Fixes from the 2026-10-17 operational review, wave 1 (the acceptance gate TW-BE-016, plus TW-BE-023 and TW-BE-020).
+
+Migration `00000000000091_list_refresh_off_write_path.sql` (TW-BE-016, TW-BE-023; owner decision D2):
+- **Writes no longer refresh materialized views.** They mark the lists they change and return. The pg_cron job
+  `warehouse-list-refresh` refreshes the marked lists every 5 seconds as the password-less LOGIN role
+  `warehouse_list_refresher` (`CALL warehouse_security.refresh_dirty_lists_worker()`): CONCURRENTLY, one commit per
+  list, lock 71046, never the document lock 71040. Measured at 4,000 and 12,000 GRNs: a one-line dispatch takes
+  13–17 ms (was 0.9–5.6 s) and 10 concurrent dispatches all commit with no statement timeout (before: 1 to 8 of 10).
+- `get_invoices_list`, `get_dispatch_list` and the legacy `get_all_grn_items(p_catalog_id, ...)` overload are
+  eventually consistent within 15 s (typically 3–4 s); write answers are authoritative. New `get_list_freshness()`
+  (staff, supervisors, administrators).
+- Every table marks every list that reads it: line changes reach both daily summaries (TW-BE-023), and receipt and
+  customer header changes reach the stock, dispatch and invoice lists. Marks always count (`mark_seq`), so a write
+  committed during a refresh is not lost. `update_grn` marks the seven lists and no longer refreshes them.
+- The migration run holds lock 71046 (waits up to 120 s and names the holder), so no list refresh runs during a
+  migration. The db runs with `cron.log_statement=off`.
+- Setup and restore run `scripts/configure-list-refresh.sql`; `db:verify-restore` leaves pg_cron's own objects out;
+  the doctor (`health-check.sh`) checks the job, the runner, the 15 s bound and names a foreign holder of 71046. For a
+  manual run use the one-shot command in `docs/OPERATOR_INSTALL.md`, never an open psql session.
+- Upgrade: run `setup.sh --operator` (it recreates the db with the new command line and creates the job).
+- Tests: new `tests/list_refresh_worker.sql` and `tests/list_refresh_worker.sh` (lost-refresh race, five parallel
+  dispatches under an 8 s statement timeout, migration/worker overlap); five SQL tests run the refresh before reading.
+
+Backups carry the central sign-in key file (TW-BE-020):
+- `db:backup` copies `public/central-jwks.json` (when the keys come from a file) as `central-jwks.json`, listed in
+  `SHA256SUMS` and so signed; `db:verify-restore` accepts it only as a regular, checksummed file; `db:restore-host`
+  installs it as `public/central-jwks.json` (0644). Format stays `warehouse-backup-v5`: the file is optional.
+- A restore from a backup that names a key file it does not carry (an older backup), by `db:restore-host` or
+  `db:restore --restore-config`, finishes and prints the exact `setup.sh --operator ... --central-jwks-file` rerun;
+  its final `doctor --local` only warns about the missing file.
+- `doctor` fails when `CENTRAL_JWKS_FILE` is set and the file is missing, not a regular file, over 64 KB, not JSON or
+  without a usable P-256 key.
+- Docs: `docs/OPERATOR_INSTALL.md` (restore paragraph reconciled with the lost-host section; new lost-host step 7),
+  `docs/CENTRAL_LOGIN.md` (the key file is part of a backup).
+
 ## Unreleased: staff lose item pricing (migration 90)
 
 Migration `00000000000090_staff_no_pricing.sql`, owner decision of 2026-10-16: item pricing is for administrators

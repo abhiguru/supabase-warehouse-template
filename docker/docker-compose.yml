@@ -106,6 +106,15 @@ services:
       KONG_REAL_IP_HEADER: CF-Connecting-IP
       KONG_REAL_IP_RECURSIVE: "off"
       KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      # Access log without the query string (docs/CONTAINER_SECURITY.md, "Logs"):
+      # Kong's default format writes the whole request line, so a storage
+      # signed-URL `?token=` and a Realtime `?apikey=` stayed in the log for
+      # its 3 x 10 MB of life. `$$uri` is the path alone. The client address
+      # stays (owner decision of 2026-10-17); Referer, User-Agent and the
+      # credential fields of the default format are left out. `$$` is Compose's
+      # escape for `$`. Do not move this into kong.yml, which is `eval`ed below.
+      KONG_NGINX_HTTP_LOG_FORMAT: "warehouse_redacted '$$remote_addr [$$time_local] \"$$request_method $$uri $$server_protocol\" $$status $$body_bytes_sent $$request_time'"
+      KONG_PROXY_ACCESS_LOG: "/dev/stdout warehouse_redacted"
     entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   # GoTrue auth service DISABLED - using custom phone OTP authentication instead
@@ -129,7 +138,7 @@ services:
       GOTRUE_API_PORT: 9999
       API_EXTERNAL_URL: ${API_EXTERNAL_URL}
       GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${DB_PASSWORD_AUTH:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       GOTRUE_SITE_URL: ${SITE_URL}
       GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
       GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
@@ -155,21 +164,20 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
-    # No digest yet: see docs/CONTAINER_SECURITY.md, "Image pins".
-    image: postgrest/postgrest:v16.4
+    # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".
+    image: postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df
     restart: unless-stopped
     networks: [default, database]
     depends_on:
       db:
         condition: service_healthy
     environment:
-      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      PGRST_DB_URI: postgres://authenticator:${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
       PGRST_JWT_SECRET: ${JWT_SECRET}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_DB_PRE_REQUEST: public.check_session
-      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
     command: ["postgrest"]
 
@@ -177,6 +185,11 @@ services:
     build:
       context: ./realtime
     restart: unless-stopped
+    # Realtime looks up the database host for IPv6 first. Without this, the host's
+    # LAN search suffix is tried for the AAAA question, and on a LAN whose resolver
+    # is slow to refuse it (about 8 s) the first tenant connection exceeds the 15 s
+    # window. Resolve Compose names at the DNS root, as for Kong (TW-BE-015).
+    dns_search: "."
     networks:
       default:
         aliases:
@@ -200,11 +213,16 @@ services:
       PORT: 4000
       DB_HOST: ${POSTGRES_HOST}
       DB_PORT: ${POSTGRES_PORT}
+      # Realtime still connects as the superuser: it creates its own schema and
+      # replication slot (docs/CONTAINER_SECURITY.md, "Database passwords").
       DB_USER: supabase_admin
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      DB_ENC_KEY: supabaserealtime
+      # Encrypts the credentials Realtime stores for its tenant. SEED_SELF_HOST
+      # deletes and rewrites that tenant at every start of the pinned release, so
+      # a recreated container always stores them under the current key.
+      DB_ENC_KEY: ${REALTIME_DB_ENC_KEY:?Run setup.sh to generate the Realtime encryption key}
       API_JWT_SECRET: ${JWT_SECRET}
       METRICS_JWT_SECRET: ${JWT_SECRET}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
@@ -239,7 +257,7 @@ services:
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       POSTGREST_URL: http://rest:3000
       PGRST_JWT_SECRET: ${JWT_SECRET}
-      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      DATABASE_URL: postgres://supabase_storage_admin:${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       FILE_SIZE_LIMIT: 52428800
       STORAGE_BACKEND: file
       FILE_STORAGE_BACKEND_PATH: /var/lib/storage
@@ -388,6 +406,12 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # For volumes/db/roles.sql, the first-start init script (an empty data
+      # directory); scripts/configure-db-roles.sql sets them on every setup run.
+      DB_PASSWORD_AUTHENTICATOR: ${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}
+      DB_PASSWORD_STORAGE: ${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}
+      DB_PASSWORD_AUTH: ${DB_PASSWORD_AUTH:?Run setup.sh to generate the per-role database passwords}
+      DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:?Run setup.sh to generate the per-role database passwords}
       PGDATABASE: ${POSTGRES_DB}
       POSTGRES_DB: ${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
@@ -440,7 +464,9 @@ services:
       LOCAL_PROXY_MULTIPLIER: "1"
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The pool user's own password (volumes/pooler/pooler.exs); the superuser
+      # password only for Supavisor's metadata database.
+      DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:?Run setup.sh to generate the per-role database passwords}
       DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
       CLUSTER_POSTGRES: true
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}

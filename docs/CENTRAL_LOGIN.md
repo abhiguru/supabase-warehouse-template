@@ -88,11 +88,25 @@ The operator chooses one of two sources.
 **An address** (`CENTRAL_JWKS_URL`). The facility fetches the key set: `https`
 only, no redirects, a 5 second timeout, at most 64 KB.
 
-- A fetched set is used for at most 10 minutes. It is held in the memory of
+- A fetched set is used for at most **4 minutes**, counted from the start of
+  the fetch. If the answer carries `Cache-Control: max-age=N` the facility
+  uses it for at most `min(240 s, N - Age)` (`Age` is the header a cache on the
+  way would add; no `max-age` means the 4 minutes). The fetch asks for a fresh
+  answer (`cache: 'no-store'` and `Cache-Control: no-cache`), so no cache the
+  facility controls holds the set. It is held in the memory of
   the function's worker and is gone when that worker ends. The router creates
   workers with a 60 second timeout, so in practice the keys may be fetched
   about once a minute while sign-ins arrive. **How long a worker really lives
-  has not been measured on the edge runtime.**
+  has not been measured on the edge runtime**; it can only shorten the window.
+- **The withdrawal promise.** A key the association removes from its key set
+  stops being accepted by every facility that uses an address no later than
+  **300 seconds** after the association starts serving the reduced set: up to
+  4 minutes of use of the old set, plus the fetch. The association's side of the
+  promise is that its key-set response is not held by any shared or edge cache
+  (`s-maxage=0`, and a CDN or tunnel bypass for `/.well-known/jwks.json`;
+  see the central service's operator guide). The window is a limit on keys only:
+  a token that was already exchanged keeps the session it created, which
+  revocation (`update_user_status(false)`) ends.
 - A token that names a `kid` the facility does not hold causes a new fetch, at
   most once a minute, so a rotated key is picked up without anyone acting.
 - After a fetch that failed, none is started for 30 seconds; central sign-in
@@ -107,7 +121,7 @@ anything: a token that names a `kid` the file does not hold is simply invalid.
 |---|---|---|
 | Outbound connection from the facility | needed at sign-in time | none |
 | The association rotates its keys | picked up automatically | the association must send every facility the new file **before** it signs with the new key; each operator reruns `setup.sh` with it. Until then central sign-in fails with "could not be verified"; SMS sign-in is unaffected. |
-| The association withdraws a key | gone within 10 minutes | stays trusted until the operator installs a file without it |
+| The association withdraws a key | refused within 300 seconds (4 minutes of use plus the fetch) | stays trusted until the operator installs a file without it: see [the emergency step](OPERATOR_INSTALL.md#central-sign-in) |
 | The issuer's site is down | central sign-in unavailable when the keys are next needed | no effect |
 
 Choose the address unless the facility's server may not make outbound
@@ -190,9 +204,13 @@ order, after the issuer, argument and single-use checks:
 3. A service account (`is_service_account`): `account_unavailable`; not linked.
 4. No profile: a pending profile and an enrollment token, no code.
 5. Rejected, disabled or deactivated: `account_unavailable`. A refusal writes
-   nothing: such a profile is not linked and not marked verified.
+   nothing on the profile (migrations 81 and 96): it is not linked, not marked
+   verified, and its row, `updated_at` and audit rows stay as they were. Only the
+   single-use token row is written, as replay protection.
 6. Found by phone and not linked, and not refused above: it is linked to the
-   identity and its mobile is marked verified.
+   identity and its mobile is marked verified. A profile found by `(iss, sub)`
+   whose mobile equals the token's phone is marked verified here too (after the
+   refusals; before migration 96 this happened before step 5).
 7. Pending: an enrollment token; the pending answer names the link
    (`central_issuer`, `central_subject`) in its short `data.user`.
 8. Approved: with `central_local_code` off (the default) the session is issued;
@@ -263,7 +281,7 @@ together with the phone number and can ask for access again.
 | `warehouse_security.auth_config`, key `central_issuer` | The trusted issuer. `public.operator_central_exchange` refuses every other issuer, also from a caller that holds the service key. Written by `setup.sh`. |
 | `warehouse_security.auth_config`, key `central_local_code` | `on` when this facility asks for its own code at every central sign-in; absent = off. Written by `setup.sh`. |
 | `config/compose.env`: `CENTRAL_ISSUER`, `CENTRAL_JWKS_URL`, `CENTRAL_JWKS_FILE`, `CENTRAL_LOCAL_CODE` | The operator's settings. |
-| `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. **It is not part of a backup.** |
+| `public/central-jwks.json` in the state directory | The key file, when keys come from a file. Public keys only. `db:backup` copies it into the backup as `central-jwks.json` (checksummed and signed with the rest), `db:verify-restore` checks it and `db:restore-host` puts it back. A backup written before that holds no copy: `db:restore-host` then prints the `setup.sh` rerun that restores it. `doctor` fails while the file named by `CENTRAL_JWKS_FILE` is missing or not a usable key set. |
 
 The token itself is never stored or logged. The table `public.central_user_links`
 of an earlier design (migration 0) was never written and is dropped by
@@ -283,8 +301,13 @@ source are set.
 
 Set, replace or remove them with `setup.sh`; see
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#central-sign-in). The trusted issuer
-in the database is written by `setup.sh`, so after restoring a database run
-`setup.sh` again before relying on central login.
+in the database is written by `setup.sh`, so after restoring a database that
+disagrees with `config/compose.env` (it was backed up before central login was
+turned on, off or changed) run `setup.sh` again before relying on central login.
+A lost-host restore (`db:restore-host`) brings back the configuration, the
+database and, for a backup that carries it, the key file from the same moment,
+so nothing needs to be redone; for an older backup `db:restore-host` prints the
+one rerun that puts the key file back.
 
 ## Built (2026-10-12)
 

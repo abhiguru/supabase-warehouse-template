@@ -12,7 +12,7 @@ ADMIN_NAME=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
-    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code)
+    --state-dir|--api-url|--app-url|--company|--provider-env|--admin-phone|--admin-name|--central-issuer|--central-jwks-url|--central-jwks-file|--central-local-code|--alert-webhook-file|--gateway-port)
       if (($# < 2)); then echo "Missing value for $1" >&2; exit 1; fi
       case "$1" in
         --state-dir) STATE="$2"; CONFIG_ARGS+=("$1" "$2") ;;
@@ -56,6 +56,13 @@ bash "$ROOT/scripts/compose.sh" config --quiet
 bash "$ROOT/scripts/build-images.sh"
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
+# Every service login has its own password (docs/CONTAINER_SECURITY.md, "Database
+# passwords"). docker/volumes/db/roles.sql sets them only on an empty data directory;
+# this sets them on every run, so an upgraded installation gets them here. Running
+# services keep their open connections until the start below recreates them.
+bash "$ROOT/scripts/db-roles.sh" apply
+# The list refresher (migration 91): pg_cron jobs and their LOGIN role, put back on every run.
+bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-list-refresh.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
 # Central sign-in: the trusted issuer from compose.env (--central-issuer), or off, and whether this
 # facility also asks for its own SMS code at every sign-in (--central-local-code on; default off).
@@ -81,5 +88,7 @@ bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
 # Optional services (monitoring, printing, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# Realtime opens its database connection on the first join; do that now (best effort, never fails the start).
+node "$ROOT/scripts/realtime-warmup.mjs"
 node "$ROOT/scripts/doctor.mjs" --local
 echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml, deploy/warehouse-tunnel.service.example), then run node scripts/doctor.mjs for external verification.'

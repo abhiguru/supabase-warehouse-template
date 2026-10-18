@@ -14,9 +14,14 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Wheels only: nothing is compiled, so the image needs no compiler.
+# Wheels only: nothing is compiled, so the image needs no compiler. pip is only
+# a build tool here and is removed once the requirements are installed: the
+# base image's pip 26.2.1 vendors msgpack 1.1.2, urllib3 2.7.0 and setuptools
+# 70.3.0, each behind a fixed HIGH advisory (scan of 2026-10-18).
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement /app/requirements.txt \
+    && python -m pip uninstall --yes --no-cache-dir pip \
+    && ! python -c 'import pip' 2>/dev/null \
     && groupadd --system --gid 10001 bridge \
     && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --no-create-home \
        --shell /usr/sbin/nologin bridge \

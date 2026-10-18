@@ -238,7 +238,7 @@ test('an unknown key id triggers one refetch, succeeds when the new key set has 
   assert.equal((await h.exchange(await sign(claims(START)))).status, 200);
   assert.equal(h.jwksFetches.length, 1);
   // Keys are kept: a second token of the same key causes no fetch.
-  h.now = START + 5 * 60_000;
+  h.now = START + 3 * 60_000;
   assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200);
   assert.equal(h.jwksFetches.length, 1);
   // The issuer rotates; a token names the new key id.
@@ -257,15 +257,82 @@ test('an unknown key id triggers one refetch, succeeds when the new key set has 
   assert.equal(h.jwksFetches.length, 3);
   assert.deepEqual(await h.exchange(await sign(claims(h.now), unpublished)), invalid);
   assert.equal(h.jwksFetches.length, 3);
-  // Ten minutes after the last fetch the keys are fetched again even for a known key id.
-  h.now += 10 * 60_000;
+  // Four minutes after the last fetch the keys are fetched again even for a known key id.
+  h.now += 4 * 60_000;
   assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000004' })))).status, 200);
   assert.equal(h.jwksFetches.length, 4);
   // A key the issuer withdrew is no longer accepted after that refetch.
   h.keySet = { keys: [second.jwk] };
-  h.now += 10 * 60_000;
+  h.now += 4 * 60_000;
   assert.deepEqual(await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000005' }))), invalid);
   assert.equal(h.rpcCalls.length, 4);
+});
+
+const FOUR_MINUTES = 4 * 60_000;
+
+test('a key the issuer withdrew is refused four minutes after the fetch that held it: one ms earlier it still verifies, with no fetch', async () => {
+  const h = harness();
+  assert.equal((await h.exchange(await sign(claims(START)))).status, 200);
+  assert.equal(h.jwksFetches.length, 1);
+  // The issuer now serves a set without the first key; this facility has not asked yet.
+  h.keySet = { keys: [second.jwk] };
+  h.now = START + FOUR_MINUTES - 1;
+  assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200);
+  assert.equal(h.jwksFetches.length, 1, 'one ms before the bound the cached keys are used and nothing is fetched');
+  h.now = START + FOUR_MINUTES;
+  assert.deepEqual(await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000003' }))), invalid);
+  assert.equal(h.jwksFetches.length, 2, 'at the bound exactly one refetch');
+  assert.equal(h.rpcCalls.length, 2);
+  // The next refusal comes from the new set; no further fetch for the same known-key-id miss within the minute.
+  assert.deepEqual(await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000004' }))), invalid);
+  assert.equal(h.jwksFetches.length, 2);
+});
+
+test('the key set is fetched without any cache on the way: no-store, and a no-cache request header', async () => {
+  const h = harness();
+  assert.equal((await h.exchange(await sign(claims(START)))).status, 200);
+  const [init] = h.jwksFetches;
+  assert.equal(init.cache, 'no-store');
+  assert.equal(init.headers['Cache-Control'], 'no-cache');
+  assert.equal(init.headers.Accept, 'application/json');
+  assert.equal(init.redirect, 'error');
+  // The refetch after the bound asks the same way.
+  h.now = START + FOUR_MINUTES;
+  assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200);
+  assert.equal(h.jwksFetches.length, 2);
+  assert.equal(h.jwksFetches[1].cache, 'no-store');
+  assert.equal(h.jwksFetches[1].headers['Cache-Control'], 'no-cache');
+});
+
+test('the issuer\'s max-age less the Age of the answer shortens the window and never lengthens it', async () => {
+  const set = headers => () => new Response(JSON.stringify({ keys: [first.jwk] }), { headers: { 'Content-Type': 'application/json', ...headers } });
+  const cases = [
+    { label: 'max-age 300 alone: the 4 minute limit', headers: { 'Cache-Control': 'public, max-age=300, s-maxage=0' }, window: FOUR_MINUTES },
+    { label: 'max-age 300, Age 100: 200 s left', headers: { 'Cache-Control': 'public, max-age=300', Age: '100' }, window: 200_000 },
+    { label: 'max-age 120, Age 30: 90 s left', headers: { 'Cache-Control': 'max-age=120', Age: '30' }, window: 90_000 },
+    { label: 'max-age 120 without Age', headers: { 'Cache-Control': 'max-age=120' }, window: 120_000 },
+    { label: 'max-age 3600: still the 4 minute limit', headers: { 'Cache-Control': 'max-age=3600' }, window: FOUR_MINUTES },
+    { label: 'Age without max-age is ignored', headers: { Age: '100' }, window: FOUR_MINUTES },
+    { label: 'no Cache-Control at all', headers: {}, window: FOUR_MINUTES },
+    { label: 'a max-age that is not a number is ignored', headers: { 'Cache-Control': 'max-age=abc' }, window: FOUR_MINUTES },
+    { label: 'an Age that is not a number is ignored', headers: { 'Cache-Control': 'max-age=100', Age: 'x' }, window: 100_000 },
+    { label: 'Age as long as max-age: no reuse', headers: { 'Cache-Control': 'max-age=60', Age: '60' }, window: 0 },
+    { label: 'Age longer than max-age: no reuse', headers: { 'Cache-Control': 'max-age=60', Age: '500' }, window: 0 },
+    { label: 'max-age 0: no reuse', headers: { 'Cache-Control': 'max-age=0' }, window: 0 },
+  ];
+  for (const { label, headers, window } of cases) {
+    const h = harness({ keySet: set(headers) });
+    assert.equal((await h.exchange(await sign(claims(START)))).status, 200, label);
+    assert.equal(h.jwksFetches.length, 1, label);
+    if (window > 0) {
+      h.now = START + window - 1;
+      assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000002' })))).status, 200, label);
+      assert.equal(h.jwksFetches.length, 1, `${label}: one ms before the bound, no fetch`);
+    }
+    h.now = START + window;
+    assert.equal((await h.exchange(await sign(claims(h.now, { jti: 'token-id-0000000000000003' })))).status, 200, label);
+    assert.equal(h.jwksFetches.length, 2, `${label}: at the bound, one refetch`);
+  }
 });
 
 test('requests that arrive together share one key fetch', async () => {

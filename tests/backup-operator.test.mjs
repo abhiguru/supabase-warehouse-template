@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex } from './backup-test-helpers.mjs';
+import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +124,35 @@ esac
     assert.equal(statSync(join(withTunnel, 'tunnel/config.yml')).mode & 0o777, 0o600);
     assert.match(readFileSync(join(withTunnel, 'SHA256SUMS'), 'utf8'), /^[0-9a-f]{64} {2}tunnel\/credentials\.json$/m);
     assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: withTunnel }).status, 0);
+
+    // TW-BE-020: the central key file (public keys only) travels with the backup, because compose.env
+    // keeps naming it. Neither earlier backup had one to carry, and says nothing about it.
+    for (const earlier of [destination, withTunnel]) {
+      assert.equal(existsSync(join(earlier, 'central-jwks.json')), false, 'no key file in a backup of a state without one');
+      assert.doesNotMatch(readFileSync(join(earlier, 'SHA256SUMS'), 'utf8'), /central-jwks/);
+    }
+    writeFileSync(join(state, 'public/central-jwks.json'), centralKeySet, { mode: 0o644 });
+    const withKeys = join(scratch, 'backup-keys');
+    const keysRun = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, withKeys], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.equal(keysRun.status, 0, keysRun.stderr);
+    assert.equal(readFileSync(join(withKeys, 'central-jwks.json'), 'utf8'), centralKeySet, 'the key file is copied byte for byte');
+    assert.equal(statSync(join(withKeys, 'central-jwks.json')).mode & 0o777, 0o600, 'private like every file of the backup');
+    const keySums = readFileSync(join(withKeys, 'SHA256SUMS'), 'utf8');
+    assert.match(keySums, /^[0-9a-f]{64} {2}central-jwks\.json$/m, 'listed in SHA256SUMS, which the signature covers');
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: withKeys }).status, 0);
+    assert.equal(readFileSync(join(withKeys, 'SHA256SUMS.hmac'), 'utf8'),
+      `warehouse-backup-hmac-v1 ${hmacHex(key, 'warehouse-backup-manifest-v1', readFileSync(join(withKeys, 'SHA256SUMS')))}\n`);
+    // Something that is not a plain file in its place is refused, and no backup is left behind.
+    rmSync(join(state, 'public/central-jwks.json'));
+    symlinkSync(join(state, 'public/instance.json'), join(state, 'public/central-jwks.json'));
+    const linked = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'backup-linked')], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.notEqual(linked.status, 0);
+    assert.match(linked.stderr, /central-jwks\.json is not a regular file/);
+    assert.equal(existsSync(join(scratch, 'backup-linked')), false);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -229,6 +258,46 @@ test('restore verifier accepts a checksummed tunnel credential and refuses anyth
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('restore verifier accepts a checksummed central key file and refuses it unlisted, altered or not a plain file', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-central-key-'));
+  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
+  try {
+    const good = makeBackup(join(scratch, 'good'), { centralKey: centralKeySet });
+    const passed = verify(good, scratch, { FAKE_CATALOG_FILE: join(good, 'storage_objects.txt') });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.match(passed.stdout, /signature, checksums/);
+
+    // Present but not named in the signed list: refused before any container.
+    const unlisted = makeBackup(join(scratch, 'unlisted'));
+    writeFileSync(join(unlisted, 'central-jwks.json'), centralKeySet);
+    const missingSum = verify(unlisted, scratch);
+    assert.notEqual(missingSum.status, 0);
+    assert.match(missingSum.stderr, /not exactly the files its signed SHA256SUMS lists/);
+    // An unsigned v4 backup has no signed list; the verifier itself insists on a checksum for the file.
+    const unlistedV4 = makeBackup(join(scratch, 'unlisted-v4'), { format: 'warehouse-backup-v4' });
+    writeFileSync(join(unlistedV4, 'central-jwks.json'), centralKeySet);
+    const missingSumV4 = verify(unlistedV4, scratch, {}, ['--allow-unsigned']);
+    assert.notEqual(missingSumV4.status, 0);
+    assert.match(missingSumV4.stderr, /Backup checksum missing for central-jwks\.json/);
+
+    // Changed after the backup was written: the checksum, which the signature covers, no longer matches.
+    const altered = makeBackup(join(scratch, 'altered'), { centralKey: centralKeySet });
+    writeFileSync(join(altered, 'central-jwks.json'), centralKeySet.replace('central-2026-10', 'planted-key'));
+    const changed = verify(altered, scratch);
+    assert.notEqual(changed.status, 0);
+    assert.match(changed.stderr, /does not match its SHA256SUMS/);
+
+    // A directory of that name (nothing for the signed list to name) is not a key file.
+    const directory = makeBackup(join(scratch, 'directory'));
+    mkdirSync(join(directory, 'central-jwks.json'));
+    resum(directory);
+    const notPlain = verify(directory, scratch);
+    assert.notEqual(notPlain.status, 0);
+    assert.match(notPlain.stderr, /Backup entry central-jwks\.json is not a regular file/);
+    assert.equal(notPlain.calls, '', 'no container is started');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('restore verifier creates both disposable databases from template0, never template1', () => {
   // CI run fe19442: createdb -T template1 failed with "source database template1 is being accessed by other users".
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-template-'));
@@ -300,6 +369,47 @@ test('restore verifier refuses a backup whose signature is missing, wrong or unv
     result = verify(good, scratch, { WAREHOUSE_BACKUP_KEY_FILE: '', WAREHOUSE_STATE_DIR: join(scratch, 'state') });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Backup signature, checksums/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// TW-BE-022: the verifier gives the same answers as restore and restore-host.
+test('restore verifier refuses a v5 backup whose signature file was removed, even with --allow-unsigned, while the key is available', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-stripped-v5-'));
+  try {
+    const stripped = makeBackup(join(scratch, 'stripped'), { key: null });
+    assert.equal(existsSync(join(stripped, 'SHA256SUMS.hmac')), false);
+    // verify() points WAREHOUSE_BACKUP_KEY_FILE at a key file by default.
+    let result = verify(stripped, scratch, {}, ['--allow-unsigned']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
+    assert.equal(result.calls, '', 'docker is never invoked');
+    // Without the flag too, and before the checksums are run.
+    writeFileSync(join(stripped, 'database.dump'), 'damaged after the signature was removed\n');
+    result = verify(stripped, scratch);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /carries no signature[\s\S]*a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
+    assert.equal(result.calls, '');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier takes the same v5 backup with --allow-unsigned once the key is lost, and an unsigned v4 with the key present', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-stripped-v5-lost-key-'));
+  try {
+    const stripped = makeBackup(join(scratch, 'stripped'), { key: null });
+    let result = verify(stripped, scratch, { WAREHOUSE_BACKUP_KEY_FILE: join(scratch, 'absent.key') }, ['--allow-unsigned']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
+    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.stdout, /UNSIGNED/);
+    // Owner decision of 2026-10-17: a v5 backup relabelled v4 is the accepted residual, so an unsigned v4 passes with the key present.
+    const old = makeBackup(join(scratch, 'old'), { format: 'warehouse-backup-v4' });
+    result = verify(old, scratch, {}, ['--allow-unsigned']);
+    assert.equal(existsSync(join(scratch, 'backup.key')), true, 'a key was available');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -482,4 +592,142 @@ test('restore verifier lists the storage archive and never unpacks it', () => {
     assert.doesNotMatch(files, /a\.pdf|photo\.jpg/, 'no stored object was written to the temporary directory');
     assert.deepEqual(readdirSync(temp), [], 'the temporary directory is removed');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// TW-BE-018: every backup attempt leaves warehouse_backup.prom in <state>/metrics for node exporter's
+// textfile collector, on success and on failure (docs/MONITORING.md, "Backup alerts").
+function metricsFixture() {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-metrics-'));
+  const state = join(scratch, 'state');
+  const bin = join(scratch, 'bin');
+  const log = join(scratch, 'docker.log');
+  for (const path of [state, join(state, 'config'), join(state, 'public'), join(state, 'data'), join(state, 'data/db'), join(state, 'data/storage'), bin]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\nWAREHOUSE_STORAGE_PATH=${state}/data/storage\n`, { mode: 0o600 });
+  writeFileSync(join(state, 'public/instance.json'), '{"schemaVersion":1}\n');
+  writeFileSync(join(state, 'data/storage/object'), 'object data');
+  writeFileSync(log, '');
+  writeFileSync(join(bin, 'docker'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  ps) exit 0 ;;
+  inspect)
+    case "$3" in
+      *State.Health.Status*) printf 'healthy\\n' ;;
+      *State.Running*) printf 'true\\n' ;;
+    esac ;;
+  compose)
+    case "$*" in
+      *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
+      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
+      *' ps -q '*) : ;;
+      *'exec -T db pg_dump'*' -d _supabase '*) printf 'fake supabase dump\\n' ;;
+      *'exec -T db pg_dump'*) if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
+      *'exec -T db psql'*' -c SELECT rolname'*) printf 'postgres\\n' ;;
+      *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
+      *'exec -T db psql'*) printf 'fake integrity\\n' ;;
+    esac ;;
+esac
+`, { mode: 0o700 });
+  const script = new URL('../scripts/backup.sh', import.meta.url).pathname;
+  const backup = (name, extra = {}) => spawnSync('bash', [script, join(scratch, name)], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, ...extra },
+  });
+  const file = join(state, 'metrics/warehouse_backup.prom');
+  const values = () => Object.fromEntries(readFileSync(file, 'utf8').split('\n').filter(line => line && !line.startsWith('#'))
+    .map(line => { const [series, value] = line.split(' '); return [series, Number(value)]; }));
+  return { scratch, state, backup, file, values, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+}
+
+test('a backup writes warehouse_backup.prom with its time and result, and a failure keeps the last success', () => {
+  const f = metricsFixture();
+  try {
+    const before = Math.floor(Date.now() / 1000);
+    const ok = f.backup('first');
+    assert.equal(ok.status, 0, ok.stderr);
+    const after = Math.floor(Date.now() / 1000);
+    const first = f.values();
+    assert.deepEqual(Object.keys(first).sort(), ['warehouse_backup_last_attempt_success{kind="disk"}', 'warehouse_backup_last_success_timestamp_seconds{kind="disk"}']);
+    assert.equal(first['warehouse_backup_last_attempt_success{kind="disk"}'], 1);
+    const success = first['warehouse_backup_last_success_timestamp_seconds{kind="disk"}'];
+    assert.ok(success >= before && success <= after, `the success time ${success} is when the backup finished`);
+    const text = readFileSync(f.file, 'utf8');
+    assert.match(text, /^# HELP warehouse_backup_last_success_timestamp_seconds .*\n# TYPE warehouse_backup_last_success_timestamp_seconds gauge\n/m);
+    assert.match(text, /^# TYPE warehouse_backup_last_attempt_success gauge$/m);
+    // Node exporter runs as another user: the directory and the file are readable, only the owner writes.
+    assert.equal(statSync(join(f.state, 'metrics')).mode & 0o777, 0o755);
+    assert.equal(statSync(f.file).mode & 0o777, 0o644);
+    assert.deepEqual(readdirSync(join(f.state, 'metrics')).filter(name => name !== '.warehouse_backup.lock' && name !== 'warehouse_backup.prom'), [], 'no temporary file is left for the collector to find');
+    assert.doesNotMatch(text, new RegExp(f.scratch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'no path in the metrics');
+
+    // The dump fails: the attempt is 0, the earlier success time stays.
+    const failed = f.backup('second', { FAKE_DOCKER_FAIL: 'yes' });
+    assert.notEqual(failed.status, 0);
+    const second = f.values();
+    assert.equal(second['warehouse_backup_last_attempt_success{kind="disk"}'], 0);
+    assert.equal(second['warehouse_backup_last_success_timestamp_seconds{kind="disk"}'], success);
+
+    // The next good backup sets both again.
+    assert.equal(f.backup('third').status, 0);
+    const third = f.values();
+    assert.equal(third['warehouse_backup_last_attempt_success{kind="disk"}'], 1);
+    assert.ok(third['warehouse_backup_last_success_timestamp_seconds{kind="disk"}'] >= success);
+  } finally { f.cleanup(); }
+});
+
+test('a backup that fails before it has ever succeeded exports a failure and no success time', () => {
+  const f = metricsFixture();
+  try {
+    const failed = f.backup('only', { FAKE_DOCKER_FAIL: 'yes' });
+    assert.notEqual(failed.status, 0);
+    assert.deepEqual(f.values(), { 'warehouse_backup_last_attempt_success{kind="disk"}': 0 }, 'BackupMissing then fires through absent()');
+  } finally { f.cleanup(); }
+});
+
+test('a refusal after the lock is a failed attempt, a busy lock is not, and the USB lines are carried over', () => {
+  const f = metricsFixture();
+  try {
+    mkdirSync(join(f.state, 'metrics'), { mode: 0o755 });
+    writeFileSync(join(f.state, 'metrics/warehouse_backup.prom'),
+      '# HELP warehouse_backup_last_success_timestamp_seconds old\n# TYPE warehouse_backup_last_success_timestamp_seconds gauge\n'
+      + 'warehouse_backup_last_success_timestamp_seconds{kind="usb"} 1700000000\n'
+      + '# HELP warehouse_backup_last_attempt_success old\n# TYPE warehouse_backup_last_attempt_success gauge\n'
+      + 'warehouse_backup_last_attempt_success{kind="usb"} 1\n', { mode: 0o644 });
+    // The destination exists: refused before any dump, and still an attempt that failed.
+    mkdirSync(join(f.scratch, 'taken'));
+    const refused = f.backup('taken');
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /Refusing to overwrite existing backup path/);
+    assert.deepEqual(f.values(), {
+      'warehouse_backup_last_success_timestamp_seconds{kind="usb"}': 1700000000,
+      'warehouse_backup_last_attempt_success{kind="disk"}': 0,
+      'warehouse_backup_last_attempt_success{kind="usb"}': 1,
+    });
+    // Another operator command holds the lock: this run did not start, so it records nothing.
+    const before = readFileSync(f.file, 'utf8');
+    const busy = spawnSync('bash', ['-c', 'exec 8>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 8; exec bash "$0" "$1"',
+      new URL('../scripts/backup.sh', import.meta.url).pathname, join(f.scratch, 'busy')], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${join(f.scratch, 'bin')}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: f.state, FAKE_DOCKER_LOG: join(f.scratch, 'docker.log') },
+    });
+    assert.notEqual(busy.status, 0);
+    assert.match(busy.stderr, /Another operator setup, start, or backup is running/);
+    assert.equal(readFileSync(f.file, 'utf8'), before);
+    // A good backup keeps the USB lines and adds its own.
+    assert.equal(f.backup('good').status, 0);
+    const values = f.values();
+    assert.equal(values['warehouse_backup_last_success_timestamp_seconds{kind="usb"}'], 1700000000);
+    assert.equal(values['warehouse_backup_last_attempt_success{kind="usb"}'], 1);
+    assert.equal(values['warehouse_backup_last_attempt_success{kind="disk"}'], 1);
+  } finally { f.cleanup(); }
+});
+
+test('a metrics directory that cannot be written is a warning, never a failed backup', () => {
+  const f = metricsFixture();
+  try {
+    symlinkSync(join(f.scratch, 'nowhere'), join(f.state, 'metrics'));
+    const result = f.backup('unwritable');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: could not write .*\/metrics\/warehouse_backup\.prom; the backup alerts may be wrong/);
+    assert.ok(existsSync(join(f.scratch, 'unwritable', 'database.dump')), 'the backup itself was made');
+    assert.equal(existsSync(join(f.scratch, 'nowhere')), false, 'a link is not followed');
+  } finally { f.cleanup(); }
 });

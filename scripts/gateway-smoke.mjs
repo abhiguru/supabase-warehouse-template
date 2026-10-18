@@ -1,3 +1,6 @@
+import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { readEnv, operatorEnvPath } from './doctor-common.mjs';
 
 const env = readEnv(operatorEnvPath());
@@ -48,4 +51,29 @@ for (let attempt = 0; attempt < 2 && counts[1] !== counts[0] - 1; attempt += 1) 
 const [first, second, third] = counts;
 if (second !== first - 1 || third !== first) throw new Error(`Rate limit is not keyed by client IP (remaining-minute ${first}, ${second}, ${third}).`);
 
-console.log('Exact-origin CORS, request-size limit and per-client rate limit passed on the loopback gateway.');
+// The access log keeps the path, not the query string (docs/CONTAINER_SECURITY.md, "Logs"): a signed
+// storage link carries ?token= and the Realtime socket address carries ?apikey=. Send both with
+// fictional values the log can be searched for, then read the gateway container's log. The path line
+// must be found, or an empty read would pass.
+const marker = randomBytes(6).toString('hex');
+const startedAt = new Date(Date.now() - 2000).toISOString();
+for (const path of [`/storage/v1/object/sign/documents/smoke-${marker}.pdf?token=smoke-token-${marker}`, `/realtime/v1/websocket?apikey=smoke-apikey-${marker}&vsn=1.0.0`]) {
+  const response = await fetch(`${httpBase}${path}`, { headers: { 'CF-Connecting-IP': '198.51.100.12' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+  await response.body?.cancel();
+}
+const gatewayLog = () => {
+  const result = spawnSync('bash', [fileURLToPath(new URL('./compose.sh', import.meta.url)), 'logs', '--no-color', '--no-log-prefix', '--since', startedAt, 'kong'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(`Could not read the gateway log: ${result.stderr.trim().split('\n').pop()}`);
+  return `${result.stdout}\n${result.stderr}`;
+};
+let log = gatewayLog();
+for (let attempt = 0; attempt < 10 && !log.includes(`smoke-${marker}.pdf`); attempt += 1) {
+  await new Promise(done => setTimeout(done, 500));
+  log = gatewayLog();
+}
+if (/token=|apikey=|smoke-token-|smoke-apikey-/.test(log)) throw new Error('The gateway log keeps a query-string credential (token= or apikey=).');
+if (!log.includes(`"GET /storage/v1/object/sign/documents/smoke-${marker}.pdf HTTP/`) || !log.includes('"GET /realtime/v1/websocket HTTP/')) {
+  throw new Error('The gateway access log has no line for the smoke requests (or it is not in the redacted format).');
+}
+
+console.log('Exact-origin CORS, request-size limit, per-client rate limit and a query-free gateway log passed on the loopback gateway.');

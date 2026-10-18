@@ -48,8 +48,9 @@ docker run --rm -d --name "$container" --network "$network" --read-only \
   --tmpfs /var/lib/grafana:rw,uid=472,gid=0,mode=0700 \
   --tmpfs /tmp:rw,uid=472,gid=0,mode=1777 \
   --mount "type=bind,src=$root/docker/volumes/grafana/provisioning,dst=/etc/grafana/provisioning,readonly" \
+  --mount "type=bind,src=$root/docker/volumes/grafana/dashboards,dst=/etc/grafana/dashboards,readonly" \
   -e GF_SECURITY_ADMIN_PASSWORD=ephemeral-test-only \
-  -e POSTGRES_PASSWORD=ephemeral-test-only \
+  -e DB_PASSWORD_MONITORING=ephemeral-monitoring-only \
   "$image" >/dev/null
 
 if [[ $(docker exec "$container" printenv GF_PLUGINS_PREINSTALL_AUTO_UPDATE) != false ]]; then
@@ -95,8 +96,11 @@ if [[ "$ready" != true ]]; then
   echo 'Grafana datasource fixtures did not become ready.' >&2
   exit 1
 fi
+# The datasource signs in as warehouse_monitoring, which has pg_monitor and nothing
+# else (migration 94), so the fixture role has exactly that and the query reads a
+# statistics view: 4242 comes back only over that login.
 docker exec "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
-  -c 'CREATE TABLE grafana_smoke_reading (observed_at timestamptz NOT NULL, reading integer NOT NULL); INSERT INTO grafana_smoke_reading VALUES (now(), 4242)' >/dev/null
+  -c "CREATE ROLE warehouse_monitoring LOGIN PASSWORD 'ephemeral-monitoring-only'; GRANT pg_monitor TO warehouse_monitoring" >/dev/null
 
 scraped=false
 for ((attempt=0; attempt<30; attempt++)); do
@@ -124,7 +128,7 @@ cat > "$report_dir/prometheus-query.json" <<'JSON'
 {"queries":[{"refId":"A","datasource":{"uid":"PBFA97CFB590B2093"},"expr":"up{job=\"prometheus-fixture\"}","instant":true,"range":false}],"from":"now-5m","to":"now"}
 JSON
 cat > "$report_dir/postgres-query.json" <<'JSON'
-{"queries":[{"refId":"A","datasource":{"uid":"PG_SEC_001"},"rawQuery":true,"editorMode":"code","rawSql":"SELECT observed_at AS time, reading AS value FROM grafana_smoke_reading","format":"time_series"}],"from":"now-5m","to":"now"}
+{"queries":[{"refId":"A","datasource":{"uid":"PG_SEC_001"},"rawQuery":true,"editorMode":"code","rawSql":"SELECT now() AS time, 4242 AS value FROM pg_stat_activity WHERE pid = pg_backend_pid() AND usename = 'warehouse_monitoring' AND pg_has_role('pg_monitor', 'USAGE') AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)","format":"time_series"}],"from":"now-5m","to":"now"}
 JSON
 for source in prometheus postgres; do
   expected=1
@@ -150,6 +154,64 @@ for source in prometheus postgres; do
   fi
 done
 
+# The shipped dashboards (docker/volumes/grafana/dashboards) are provisioned from the read-only mount,
+# and every query of every panel runs against the live datasources without an error. The fixture
+# Prometheus only knows `up`, so most panels come back empty: an empty answer is fine, a query that
+# Prometheus or Grafana rejects is not.
+provisioned=false
+for ((attempt=0; attempt<45; attempt++)); do
+  if docker exec "$container" wget -qO- --header "$auth_header" 'http://127.0.0.1:3000/api/search?type=dash-db' > "$report_dir/dashboards.json" 2>/dev/null &&
+    node -e 'const found=JSON.parse(require("node:fs").readFileSync(process.argv[1]));process.exit(found.some(item=>item.uid==="warehouse-overview")?0:1)' "$report_dir/dashboards.json"; then
+    provisioned=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$provisioned" != true ]]; then
+  docker logs --tail 100 "$container" >&2
+  echo 'Grafana did not provision the warehouse-overview dashboard.' >&2
+  exit 1
+fi
+if docker logs "$container" 2>&1 | grep -q 'Cannot read directory'; then
+  docker logs "$container" 2>&1 | grep 'Cannot read directory' >&2
+  echo 'Grafana could not read the dashboards directory.' >&2
+  exit 1
+fi
+docker exec "$container" wget -qO- --header "$auth_header" \
+  'http://127.0.0.1:3000/api/dashboards/uid/warehouse-overview' > "$report_dir/dashboard.json"
+GRAFANA_CONTAINER="$container" GRAFANA_AUTH="$auth_header" node --input-type=module - "$report_dir" <<'NODE'
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const directory = process.argv[2];
+const { container, auth } = { container: process.env.GRAFANA_CONTAINER, auth: process.env.GRAFANA_AUTH };
+const found = JSON.parse(readFileSync(join(directory, 'dashboards.json'), 'utf8')).find(item => item.uid === 'warehouse-overview');
+if (found.title !== 'Warehouse overview' || found.folderTitle !== 'Warehouse Monitoring') throw new Error(`Unexpected dashboard placement: ${JSON.stringify(found)}`);
+const { dashboard, meta } = JSON.parse(readFileSync(join(directory, 'dashboard.json'), 'utf8'));
+// Provisioned from a file (allowUiUpdates: false in the provider; Grafana reports canSave true to an administrator
+// regardless, so the provider setting itself is asserted by tests/monitoring-config.test.mjs).
+if (meta.provisioned !== true) throw new Error('The dashboard is not provisioned from a file (meta.provisioned is not true).');
+const prometheus = 'PBFA97CFB590B2093';
+const targets = dashboard.panels.flatMap(panel => (panel.targets ?? []).map(target => ({ panel: panel.title, target, panelSource: panel.datasource })));
+if (targets.length < 10) throw new Error(`Expected the overview dashboard to hold at least 10 queries, found ${targets.length}`);
+for (const { panel, target, panelSource } of targets) {
+  const source = target.datasource ?? panelSource;
+  if (source?.uid !== prometheus) throw new Error(`Panel "${panel}" does not use the provisioned Prometheus datasource (uid ${source?.uid})`);
+  const body = JSON.stringify({ queries: [{ ...target, datasource: source, intervalMs: 15000, maxDataPoints: 500 }], from: 'now-6h', to: 'now' });
+  let response;
+  try {
+    response = JSON.parse(execFileSync('docker', ['exec', container, 'wget', '-qO-', '--header', auth, '--header', 'Content-Type: application/json',
+      '--post-data', body, 'http://127.0.0.1:3000/api/ds/query'], { encoding: 'utf8' }));
+  } catch (error) {
+    throw new Error(`Panel "${panel}": Grafana refused the query ${target.expr}: ${String(error.stderr ?? error.message).trim()}`);
+  }
+  const result = response.results?.[target.refId];
+  if (!result || result.error) throw new Error(`Panel "${panel}": query ${target.expr} returned ${result?.error ?? 'no result'}`);
+}
+console.log(`${targets.length} dashboard queries answered without an error.`);
+NODE
+
 node --input-type=module - "$report_dir" "$root/docker/grafana/plugins.lock" "$arch" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -157,7 +219,7 @@ import { join } from 'node:path';
 const [directory, lockfile, arch] = process.argv.slice(2);
 const read = name => JSON.parse(readFileSync(join(directory, name), 'utf8'));
 const health = read('health.json');
-if (health.database !== 'ok' || health.version !== '13.2.3') {
+if (health.database !== 'ok' || health.version !== '13.2.4') {
   throw new Error('Grafana health or version mismatch');
 }
 
@@ -201,5 +263,5 @@ for (const [source, expected] of [['prometheus', 1], ['postgres', 4242]]) {
     throw new Error(`${source} query returned no fixture value ${expected}: ${JSON.stringify(response)}`);
   }
 }
-console.log(`Grafana 13.2.3 healthy; ${bundled.length} signed plugins, provisioning, and live Prometheus/PostgreSQL queries passed.`);
+console.log(`Grafana 13.2.4 healthy; ${bundled.length} signed plugins, provisioning, live Prometheus/PostgreSQL queries and the shipped dashboard passed.`);
 NODE

@@ -30,6 +30,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Alert rules and Alertmanager files (promtool and amtool, no network)
+        run: npm run test:alert-rules
       - name: Container source dependency audit
         run: npm run check:container-dependencies
       - name: Shell syntax
@@ -162,6 +164,9 @@ jobs:
         working-directory: backend
       - name: Fresh private operator configuration and local services
         run: |
+          # The fixture sentinel (docs/OPERATOR_INSTALL.md, "Test installations"): the installer accepts
+          # it only for this .example.test address, and the OTP function never sends with it. The
+          # template text your-... is refused by the installer, so it cannot stand in here.
           install -m 600 /dev/null "$RUNNER_TEMP/msg91-ci.env"
           cat > "$RUNNER_TEMP/msg91-ci.env" <<'ENV'
           SMS_PROVIDER=msg91
@@ -177,8 +182,20 @@ jobs:
         working-directory: backend
       - run: node scripts/doctor.mjs --local
         working-directory: backend
+      - name: Per-role database logins after a fresh install
+        # Each service login refuses POSTGRES_PASSWORD and accepts its own value over
+        # a SCRAM-authenticated network connection (docs/CONTAINER_SECURITY.md).
+        run: npm run test:db-roles
+        working-directory: backend
       - name: Signing-key rotation, session revocation and rotated-instance health
         run: npm run test:rotation
+        working-directory: backend
+      - name: Database password rotation, service logins and then the superuser
+        run: |
+          npm run db:rotate-passwords -- --yes
+          npm run test:db-roles
+          npm run db:rotate-passwords -- --yes --superuser
+          npm run test:db-roles
         working-directory: backend
       - name: Operator backend HTTP, documents, Realtime and account lifecycle
         run: |
@@ -219,6 +236,7 @@ jobs:
             < scripts/backup-integrity.sql > /tmp/warehouse-ci-restored-integrity.txt
           diff -u /tmp/warehouse-ci-backup/integrity.txt /tmp/warehouse-ci-restored-integrity.txt
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-backup
+          npm run test:db-roles
         working-directory: backend
       - name: Pooler session and transaction authentication
         run: npm run test:pooler
@@ -286,6 +304,9 @@ jobs:
           bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
             -c "DELETE FROM public.otp_rate_limits WHERE phone_number = '919888888872'"
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
+          npm run test:db-roles
+          # The restored _supabase database carries the pooler tenant: its pool user is rewritten at start.
+          npm run test:pooler
         working-directory: backend
       - name: Retention removes an expired document through the Storage API
         run: |

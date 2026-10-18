@@ -3,8 +3,11 @@
 # backups: the same instance identity, origin, keys, users and data, as at the
 # moment of the backup. It never runs setup (which would mint a new identity):
 # it creates a new state directory from the backup's own compose.env and
-# instance.json, rewriting only the three state-path lines, and then hands over
-# to scripts/restore.sh --relocated for the database and storage replay.
+# instance.json, rewriting only the three state-path lines (and adding the
+# per-role database passwords a backup made before them lacks), and then hands
+# over to scripts/restore.sh --relocated for the database and storage replay. A
+# central sign-in key file (public/central-jwks.json) and a tunnel credential
+# in the backup are put back as well.
 #
 #   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes BACKUP
 #
@@ -13,13 +16,15 @@
 # an archive without a `.hmac` is unpacked only with --allow-unsigned).
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
-# encrypted archive cannot be opened without it. An unsigned backup written
-# before format v5 is accepted only with --allow-unsigned. Nothing outside the
-# new state is changed; the source backup is only read.
+# encrypted archive cannot be opened without it. --allow-unsigned is only for a
+# backup written before format v5, or when the backup key is lost (then
+# --backup-key is left out and nothing proves the backup genuine); a v5 backup
+# whose signature file is missing is refused while --backup-key is given. Nothing
+# outside the new state is changed; the source backup is only read.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key only for a backup written before format v5)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
 state='' confirm=false source='' keyfile='' allow_unsigned=false
@@ -44,7 +49,7 @@ if [[ -n "$keyfile" ]]; then
   backup_key_load "$keyfile" || exit 1
   export WAREHOUSE_BACKUP_KEY_FILE="$(realpath -e -- "$keyfile")"
 elif [[ "$allow_unsigned" != true ]]; then
-  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. Only a backup written before format v5 can be restored without it, with --allow-unsigned.'
+  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. --allow-unsigned is only for a backup written before format v5, or when the backup key is lost: the backup is then used WITHOUT proof that it is genuine.'
 fi
 
 # 1. The new state: an absolute, symlink-free path outside the checkout that is
@@ -119,7 +124,6 @@ done
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null)"
 [[ "$format" == warehouse-backup-v5 || ( "$format" == warehouse-backup-v4 && "$allow_unsigned" == true ) ]] || die "Refusing: restore-host requires a warehouse-backup-v5 backup (or an unsigned warehouse-backup-v4 with --allow-unsigned); this one is '${format:-unknown}'."
-[[ "$BACKUP_SIGNED" == true || "$allow_unsigned" == true ]] || die 'Refusing: the backup signature was not verified.'
 env_get() { sed -n "s/^$1=//p" "$backup/compose.env" | head -n 1; }
 project="$(env_get WAREHOUSE_PROJECT_NAME)"
 [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || die 'The backup configuration has no valid WAREHOUSE_PROJECT_NAME.'
@@ -176,6 +180,20 @@ chmod 0600 "$stage/config/compose.env"
 # The rebuilt installation keeps signing with the same backup key.
 if [[ -n "$BACKUP_KEY" ]]; then (umask 077; printf '%s\n' "$BACKUP_KEY" > "$stage/config/backup.key"); chmod 0600 "$stage/config/backup.key"; fi
 install -m 0644 -- "$stage/backups/$name/instance.json" "$stage/public/instance.json"
+# The central sign-in key set (public keys only), when the backup carries one. compose.env names it
+# (CENTRAL_JWKS_FILE), so a restore that left it out would offer central sign-in that cannot work.
+# A backup written before backups carried the file has none: the next steps then say how to put it back.
+central_key=false central_missing=false central_issuer=''
+central_src="$stage/backups/$name/central-jwks.json"
+staged_env="$stage/backups/$name/compose.env"
+if [[ -e "$central_src" || -L "$central_src" ]]; then
+  [[ -f "$central_src" && ! -L "$central_src" ]] || die 'The backup entry central-jwks.json is not a regular file.'
+  install -m 0644 -- "$central_src" "$stage/public/central-jwks.json"
+  central_key=true
+elif [[ -n "$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$staged_env" | head -n 1)" ]]; then
+  central_missing=true
+  central_issuer="$(sed -n 's/^CENTRAL_ISSUER=//p' "$staged_env" | head -n 1)"
+fi
 # The tunnel credential, when the backup carries one (scripts/tunnel.sh adopt).
 tunnel=false
 if [[ -d "$stage/backups/$name/tunnel" ]]; then
@@ -192,15 +210,27 @@ if [[ -d "$stage/backups/$name/tunnel" ]]; then
     tunnel=true
   done
 fi
+# What configure.mjs's existing-state branch does: a backup taken before every
+# database login had its own password gets them now, before the database starts.
+node "$ROOT/scripts/db-roles.mjs" add-missing "$stage/config/compose.env"
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
+# The monitoring files (config/monitoring, metrics, data/alertmanager) are not in a backup: render them for the
+# restored project with the renderer setup uses, so the monitoring profile can start. The alert webhook address
+# is a secret that is deliberately not in a backup; see the last "Next" line.
+node "$ROOT/scripts/monitoring-config.mjs" "$state" "$project" || die "Could not render the monitoring files of $state."
 
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
+if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
 # 6. The database and storage replay is the in-place restore, unchanged.
 restore_args=(--yes --relocated)
 if [[ "$allow_unsigned" == true ]]; then restore_args+=(--allow-unsigned); fi
-if ! WAREHOUSE_STATE_DIR="$state" WAREHOUSE_BACKUP_KEY_FILE="${WAREHOUSE_BACKUP_KEY_FILE:-}" bash "$ROOT/scripts/restore.sh" "${restore_args[@]}" "$state/backups/$name"; then
+# restore.sh ends with doctor --local, which fails on a missing central key file. While the file is still
+# to be put back (older backup, see the next steps) that is a warning, so the restore itself can finish.
+pending=''
+if [[ "$central_missing" == true ]]; then pending=yes; fi
+if ! WAREHOUSE_CENTRAL_KEY_PENDING="$pending" WAREHOUSE_STATE_DIR="$state" WAREHOUSE_BACKUP_KEY_FILE="${WAREHOUSE_BACKUP_KEY_FILE:-}" bash "$ROOT/scripts/restore.sh" "${restore_args[@]}" "$state/backups/$name"; then
   cat >&2 <<MSG
 restore-host failed after creating $state. Nothing else on this host was changed.
 Inspect the message above, then to start over:
@@ -223,18 +253,40 @@ else
      connector with your private copy (docs/OPERATOR_INSTALL.md, Cloudflare Tunnel ingress), then:
      node scripts/doctor.mjs"
 fi
-cat <<MSG
-
-This host now serves the warehouse from backup $name.
-Next:
-  1. Keep the original host off for good: both must never run at once.
-  2. $address
-  3. Compare with the fingerprint taken at backup time, if you have one:
-       WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -
-  4. Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1
-  5. If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
+# The numbered steps; the central key file step appears only when the backup could not carry the file.
+n=0
+step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$1"; }
+printf '\nThis host now serves the warehouse from backup %s.\nNext:\n' "$name"
+step 'Keep the original host off for good: both must never run at once.'
+step "$address"
+if [[ "$central_missing" == true ]]; then
+  # Printed from the backup's own configuration, so only a plain https address is shown.
+  issuer="$central_issuer"
+  [[ "$issuer" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || issuer='https://ISSUER'
+  step "Put the central sign-in key file back. This backup carries no central sign-in key file (it was
+     written before backups held it), but the configuration still names one, so the app offers association
+     sign-in that fails until you do, and node scripts/doctor.mjs fails on the missing file until then.
+     Rerun setup with your usual administrator inputs and the key set the association sent you; it keeps
+     this identity and its data, and rebuilds the images once:
+       bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
+         --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json"
+fi
+step "Compare with the fingerprint taken at backup time, if you have one:
+     (A fingerprint recorded before the release that added orders, order lines, order revisions and
+     payments lacks those four lines: the diff will show them added and not be empty; compare the rest.)
+       WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -"
+step "Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1"
+step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
-     change" in docs/OPERATOR_INSTALL.md, then take a new backup.
-  6. Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key).
-Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host.
-MSG
+     change" in docs/OPERATOR_INSTALL.md, then take a new backup.'
+step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
+alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (the webhook
+     address is not in a backup; skip this if the installation never had one)."
+if [[ "$central_missing" == true ]]; then
+  alert_step+="
+     The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file
+     to that same command, so it is one rerun and not two."
+fi
+step "$alert_step The monitoring profile
+     starts without it: bash scripts/compose.sh --profile monitoring up -d"
+echo "Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host."

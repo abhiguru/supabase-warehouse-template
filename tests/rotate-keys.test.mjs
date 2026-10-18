@@ -14,7 +14,8 @@ const root = new URL('..', import.meta.url).pathname;
 const script = join(root, 'rotate-keys.sh');
 
 // Fake Docker: records every invocation, answers the health and ownership
-// probes, captures the psql standard input and can fail the SQL step.
+// probes (the list refresh status of migration 91 included), captures the psql
+// standard input and can fail the SQL step.
 const fakeDocker = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
@@ -29,8 +30,10 @@ case "$1" in
   compose)
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
+      'compose up --help') printf '      --wait-timeout int   Maximum duration to wait\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
+      *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
       *'exec -T db psql'*) cat >> "$FAKE_PSQL_INPUT"; if [ "$FAKE_DOCKER_FAIL" = psql ]; then exit 3; fi ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;
@@ -87,7 +90,7 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.match(result.stdout, /sign in again/);
     const after = readEnv(f.envPath);
     assert.equal(statSync(f.envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
     assert.match(after.JWT_SECRET, /^[0-9a-f]{96}$/);
     assert.notEqual(after.JWT_SECRET, before.JWT_SECRET);
     assert.notEqual(after.ANON_KEY, before.ANON_KEY);
@@ -120,7 +123,7 @@ test('a failing SQL step leaves the configuration untouched and recreates nothin
     const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...f.env, FAKE_DOCKER_FAIL: 'psql' }, timeout: 120000 });
     assert.notEqual(result.status, 0);
     assert.deepEqual(readFileSync(f.envPath), before);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
     const calls = readFileSync(f.log, 'utf8');
     assert.match(calls, /exec -T db psql/);
     assert.equal(calls.includes('--force-recreate'), false);

@@ -4,12 +4,14 @@
 # Destructive by design: requires --yes, stopped services and a backup that passes
 # scripts/verify-restore.sh, signature included. The replaced data directories are
 # kept for rollback. An unsigned warehouse-backup-v4 directory is accepted only
-# with --allow-unsigned.
+# with --allow-unsigned, which is only for a backup written before format v5, or
+# for a lost backup key; a v5 backup whose signature file is missing is refused
+# while this installation's key is available.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
 
 confirm=false
 restore_config=false
@@ -67,10 +69,6 @@ if [[ "$format" != warehouse-backup-v5 && "$format" != warehouse-backup-v4 ]]; t
   echo "Refusing: in-place restore requires format=warehouse-backup-v5 (or an unsigned warehouse-backup-v4 with --allow-unsigned); this backup is '${format:-unknown}'. Older backups remain checkable with db:verify-restore." >&2
   exit 1
 fi
-if [[ "$BACKUP_SIGNED" != true && "$allow_unsigned" != true ]]; then
-  echo 'Refusing: the backup signature was not verified.' >&2
-  exit 1
-fi
 for file in database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
@@ -78,6 +76,17 @@ if ! cmp -s "$backup/instance.json" "$state/public/instance.json"; then
   echo 'Refusing: the backup instance.json differs from this state; in-place restore only replaces the instance that produced the backup.' >&2
   exit 1
 fi
+# A backup taken before every database login had its own password lacks those
+# lines (scripts/db-roles.mjs). This state's values are then the ones the restored
+# database gets, so they are left out of the comparisons below; a value the backup
+# does carry must match, as every other line must.
+added_since=()
+while IFS= read -r name; do
+  grep -q "^$name=" "$backup/compose.env" || added_since+=("$name")
+done < <(node "$ROOT/scripts/db-roles.mjs" names)
+without_added() {
+  if ((${#added_since[@]})); then grep -v -E "^($(IFS='|'; printf '%s' "${added_since[*]}"))=" || true; else cat; fi
+}
 if [[ "$restore_config" == true ]]; then
   for key in WAREHOUSE_PROJECT_NAME WAREHOUSE_DB_PATH WAREHOUSE_STORAGE_PATH WAREHOUSE_MANIFEST_PATH; do
     if [[ "$(sed -n "s/^$key=//p" "$backup/compose.env")" != "$(sed -n "s/^$key=//p" "$state/config/compose.env")" ]]; then
@@ -86,12 +95,12 @@ if [[ "$restore_config" == true ]]; then
     fi
   done
 elif [[ "$relocated" == true ]]; then
-  without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' "$1" || true; }
-  if ! cmp -s <(without_paths "$backup/compose.env") <(without_paths "$state/config/compose.env"); then
+  without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' || true; }
+  if ! cmp -s <(without_paths < "$backup/compose.env") <(without_added < "$state/config/compose.env" | without_paths); then
     echo 'Refusing: config/compose.env differs from the backup copy in more than the state paths.' >&2
     exit 1
   fi
-elif ! cmp -s "$backup/compose.env" "$state/config/compose.env"; then
+elif ! cmp -s "$backup/compose.env" <(without_added < "$state/config/compose.env"); then
   echo 'Refusing: config/compose.env differs from the backup copy (keys rotated or configuration changed after it was taken). Pass --restore-config to restore the backup configuration together with its data, or use a backup taken after the change.' >&2
   exit 1
 fi
@@ -154,12 +163,16 @@ if [[ "$restore_config" == true ]]; then
   cp "$backup/compose.env" "$state/config/compose.env.restoring"
   chmod 600 "$state/config/compose.env.restoring"
   mv "$state/config/compose.env.restoring" "$state/config/compose.env"
+  # What configure.mjs's existing-state branch does: a backup taken before every
+  # database login had its own password gets them now, before the database starts.
+  node "$ROOT/scripts/db-roles.mjs" add-missing "$state/config/compose.env"
   compose config --quiet
 fi
 
 # 4. Fresh cluster initialization from the pinned image, then logical replay with
 #    the original owners. Role passwords come from compose.env through the init
-#    scripts; the backup never contains them.
+#    scripts (and scripts/configure-db-roles.sql after the migrations); the backup
+#    never contains them.
 phase='initialize database'
 compose up -d --wait --wait-timeout 180 db
 db_psql() { compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin "$@"; }
@@ -245,10 +258,29 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
+# Every service login gets its password from compose.env again, and the monitoring
+# login, which the replay recreated as a bare name, its pg_monitor membership. The
+# pooler rewrites its pool user and Realtime its tenant when they start.
+phase='database logins'
+bash "$ROOT/scripts/db-roles.sh" apply
+# Roles came back without LOGIN and without their settings (step 4); the list refresher of
+# migration 91 needs both before the lists refresh again.
+phase='list refresher'
+db_psql -d postgres < "$ROOT/scripts/configure-list-refresh.sql"
 phase='start services'
 compose up -d --wait --wait-timeout 180
 phase='doctor'
-node "$ROOT/scripts/doctor.mjs" --local
+# --restore-config can bring back a compose.env that names a central key file (CENTRAL_JWKS_FILE) which this
+# state no longer has: setup deletes public/central-jwks.json when central sign-in moves to an address or off,
+# and this restore does not touch public/. Doctor then only warns, and the rerun that puts the file back is
+# printed below. (restore-host sets the same variable itself for a backup that lacks the file.)
+pending="${WAREHOUSE_CENTRAL_KEY_PENDING:-}"
+key_rerun=false
+if [[ "$restore_config" == true ]]; then
+  key_name="$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$state/config/compose.env" | head -n 1)"
+  if [[ -n "$key_name" && ! -e "$state/public/$key_name" && ! -L "$state/public/$key_name" ]]; then pending=yes; key_rerun=true; fi
+fi
+WAREHOUSE_CENTRAL_KEY_PENDING="$pending" node "$ROOT/scripts/doctor.mjs" --local
 phase=done
 cat <<MSG
 In-place restore completed from $backup.
@@ -257,6 +289,17 @@ The replaced data was kept; remove it once the restored instance is accepted:
   $old_storage
 MSG
 if [[ "$restore_config" == true ]]; then echo "  $old_config"; fi
+if [[ "$key_rerun" == true ]]; then
+  issuer="$(sed -n 's/^CENTRAL_ISSUER=//p' "$state/config/compose.env" | head -n 1)"
+  [[ "$issuer" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || issuer='https://ISSUER'
+  cat <<MSG
+Central sign-in: the restored configuration reads its keys from public/$key_name, which this state does not have,
+so central sign-in fails until you put the file back (doctor reports it as missing until then). Rerun setup with
+your usual administrator inputs and the key set the association sent you; it keeps this identity and its data:
+  bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
+    --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json
+MSG
+fi
 cat <<MSG
 Rollback if needed: bash stop.sh, remove data/db and data/storage (sudo may be
 required because PostgreSQL files belong to the container's postgres user), move
