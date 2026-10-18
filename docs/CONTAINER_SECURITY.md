@@ -637,7 +637,7 @@ updates an issue. If the release dates cannot be read the result is "unknown" (e
 issue is opened or closed for it. Each network fetch is tried three times. To bump: change both args and puppeteer-core together (take the puppeteer-core release that pins
 that Chrome major), run the renderer's unit tests and `test/integration.sh`, check the golden-PDF job, then rebuild
 with `bash scripts/build-images.sh --no-cache` and scan. The golden job renders a fictional corpus, rasterises it in
-a pinned poppler container and compares with the committed goldens at fuzz 0, so a font, Chrome or puppeteer change
+a poppler container built from a fixed Debian snapshot and compares decoded pixels with the committed goldens at fuzz 0, so a font, Chrome or puppeteer change
 that moves a pixel is seen and judged (Gujarati shaping by eye, the rest as a failure).
 
 **Why Trivy cannot see the CfT binary.** CHS arrives as a zip from `storage.googleapis.com/chrome-for-testing-public`,
