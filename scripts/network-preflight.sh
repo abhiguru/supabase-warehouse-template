@@ -2,7 +2,7 @@
 # Address-pool preflight for the internal `renderer` network (docker/docker-compose.yml): before
 # setup.sh or start.sh retires or starts anything, create and remove a throwaway internal network
 # `<project>_netcheck`. Docker has a limited pool of private subnets; when it is used up, `compose up`
-# fails on the new network only after the old Gotenberg container is already gone. Failing here
+# fails on the new network only after the old PDF container is already gone. Failing here
 # leaves the installation exactly as it was. The network carries the label warehouse.preflight=<project>
 # and is removed on every exit; a leftover one of this project (a killed earlier run) is removed first.
 set -euo pipefail
