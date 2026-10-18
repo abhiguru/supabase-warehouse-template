@@ -49,6 +49,15 @@ functions send or return.
   with the committed goldens at fuzz 0. `release.yml` fails when the pinned `CHS_VERSION` is more than
   14 days behind Chrome for Testing's current Stable, and `.github/workflows/cft-freshness.yml` checks the same weekly
   and opens or updates an issue.
+- **Review fixes.** Debian packages in the renderer image are installed by name (security revisions vanish from the
+  archive); the font-file hash and the golden job guard against drift. One literal `FROM` carries the Node digest so
+  Dependabot reads it. `setup.sh` and `start.sh` check that Docker can allocate the renderer network
+  (`scripts/network-preflight.sh`) before anything is changed, and remove the old container only after the build and
+  migrations, right before the full start. The golden job compares decoded pixels in a container built from a fixed
+  Debian snapshot, posts the same fields as the function client and uploads diff images on failure. The CfT freshness
+  check answers "unknown" (exit 2) when release dates cannot be read and retries its fetches. `health-check.sh` probes
+  the renderer from `functions`. The renderer audit runs at HIGH, a fresh browser starts with a zero memory figure,
+  two flaky tests are deterministic, and `integration.sh` fails a skipped check in CI and has no host-specific lock.
 - **Docs and notices:** ARCHITECTURE, CONTAINER_SECURITY (renderer posture, the `--no-sandbox` reasoning, update
   cadence, why Trivy cannot see the Chrome for Testing binary), PDF_GENERATION, TROUBLESHOOTING (the image has no
   curl; use `node -e`), OPERATOR_INSTALL (upgrade note), ATTRIBUTION_REVIEW and THIRD_PARTY_NOTICES (Chrome for Testing
