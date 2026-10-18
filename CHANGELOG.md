@@ -33,7 +33,7 @@ functions send or return.
   the Compose file and the function environment allowlist. The sample PDF's visible text no longer says Gotenberg.
 - **Compose:** a `pdf-renderer` service on a new `internal: true` network `renderer`, shared with `functions` only
   (`functions` now has `default` and `renderer`, and does not `depends_on` the renderer). Read-only root, tmpfs `/tmp`
-  256 MB, all capabilities dropped, `no-new-privileges`, 512 pids, 1 GB memory with no extra swap, 30 s stop grace,
+  256 MB, all capabilities dropped, `no-new-privileges`, 512 pids, 1.5 GiB memory with no extra swap, 30 s stop grace,
   no host port. The renderer cannot reach the internet, the database, Kong or Studio.
 - **Scripts:** `health-check.sh` probes the renderer from inside its own container (storage cannot reach the internal
   network). `scripts/gateway-dns-check.sh` reads the functions address on `<project>_default` by name (functions has two
@@ -44,8 +44,9 @@ functions send or return.
   1 CRITICAL, expiring 2027-01-15) are removed, and with them the Go-toolchain rebuild and its flaky upstream
   `go test` workaround. Dependabot tracks `docker/pdf-renderer` (npm; puppeteer-core is held back to patches because it
   moves with the pinned Chrome). `check:container-dependencies` runs `npm audit` on it. CI builds the renderer image and
-  runs its unit tests and `test/integration.sh` with the hardening flags; a golden-PDF job (TODO until the fictional
-  corpus lands) compares rasterised pages with fuzz 0. `release.yml` fails when the pinned `CHS_VERSION` is more than
+  runs its unit tests and `test/integration.sh` with the hardening flags; a golden-PDF job renders 11 fictional template
+  documents (`tests/golden-pdf/`), rasterises them at 150 dpi in a pinned poppler container and compares every page
+  with the committed goldens at fuzz 0. `release.yml` fails when the pinned `CHS_VERSION` is more than
   14 days behind Chrome for Testing's current Stable, and `.github/workflows/cft-freshness.yml` checks the same weekly
   and opens or updates an issue.
 - **Docs and notices:** ARCHITECTURE, CONTAINER_SECURITY (renderer posture, the `--no-sandbox` reasoning, update

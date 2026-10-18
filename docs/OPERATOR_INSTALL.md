@@ -1676,6 +1676,9 @@ ordinary upgrade above does everything; what to know:
 - PDFs look the same: the renderer uses Gotenberg's Chromium launch flags, print settings and fonts. Document
   and report functions only need `bash scripts/compose.sh up -d --force-recreate functions`, which the upgrade
   step above already does.
+- The renderer container is limited to 1.5 GiB of memory (`mem_limit: 1536m`, no swap), 512 MiB more than Gotenberg's
+  1 GB; its thresholds are sized for that value, so do not lower it. Its `/health` reports `memoryMB` (Chrome) and
+  `containerMB` (the container).
 - Backups no longer stop a Gotenberg container (`scripts/backup.sh`); the renderer is stateless.
 - Rollback: check out the previous release and run `setup.sh` again; that recreates Gotenberg and removes the
   renderer as an orphan on the next `stop.sh`.

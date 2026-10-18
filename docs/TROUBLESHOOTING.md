@@ -185,7 +185,7 @@ bash scripts/compose.sh restart pdf-renderer   # also clears Chromium's memory
 ```
 
 The image has no `curl` or `wget`; use `node -e` inside the renderer as above.
-The health answer is `{"status":"up",...}` (or `"restarting"` for a few seconds
+The health answer is `{"status":"up","chromium":{...}}` with `memoryMB` (Chrome's resident memory) and `containerMB` (the container's working set against its 1.5 GiB limit) (or `"restarting"` for a few seconds
 during a planned browser restart); `503 {"status":"down"}` means the browser
 did not answer twice in a row, and the container restarts itself. The log has
 one JSON line per render with `outcome` and `code` (400 invalid input, 413 body

@@ -105,7 +105,7 @@ services:
       resources:
         limits:
           cpus: '1.0'
-          memory: 1G
+          memory: 1536M
           pids: 512
 
   functions:

@@ -212,7 +212,7 @@ test('the renderer runs read-only with no capabilities, no ports and bounded mem
   assert.equal(renderer.ports, undefined);
   assert.equal(renderer.pids_limit, 512);
   assert.equal(renderer.mem_limit, renderer.memswap_limit, 'no swap beyond the memory limit');
-  assert.equal(String(renderer.mem_limit), String(1024 ** 3));
+  assert.equal(String(renderer.mem_limit), String(1536 * 1024 ** 2));
   assert.equal(renderer.stop_grace_period, '30s');
   assert.equal(renderer.restart, 'unless-stopped');
   assert.ok(renderer.build, 'the image is built locally, as every other service');

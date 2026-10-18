@@ -569,8 +569,9 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 512
-    mem_limit: 1g
-    memswap_limit: 1g
+    # 1.5 GiB is required, not a preference: the renderer's memory thresholds are sized for it (its README).
+    mem_limit: 1536m
+    memswap_limit: 1536m
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]

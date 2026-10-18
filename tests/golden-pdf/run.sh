@@ -6,9 +6,10 @@
 #   RENDERER_URL=http://127.0.0.1:3000 bash tests/golden-pdf/run.sh            compare
 #   RENDERER_URL=http://127.0.0.1:3000 bash tests/golden-pdf/run.sh --update   rewrite the goldens
 #
-# Corpus: tests/golden-pdf/corpus/<case>/index.html, optionally footer.html, header.html and
-# fields.txt (one `name=value` per line: paperWidth, landscape, ...). Fictional data only.
-# Goldens: tests/golden-pdf/golden/<case>/page-<n>.png (100 dpi). Required on every change to
+# Corpus: tests/golden-pdf/corpus/<case>/index.html, options.json (the options the function passed to
+# htmlToPdf; posted as form fields exactly as listed, nothing added, so the renderer's own defaults
+# apply to the rest) and footer.html / header.html where the case has one. Fictional data only.
+# Goldens: tests/golden-pdf/golden/<case>/page-<n>.png (150 dpi). Required on every change to
 # the Chrome for Testing pin, puppeteer-core or the fonts (docs/CONTAINER_SECURITY.md).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,15 +32,15 @@ for dir in "${cases[@]}"; do
   args=(-sS --max-time 40 -o "$work/$name.pdf" -w '%{http_code}' -F "files=@$dir/index.html;filename=index.html")
   [[ ! -f "$dir/header.html" ]] || args+=(-F "files=@$dir/header.html;filename=header.html")
   [[ ! -f "$dir/footer.html" ]] || args+=(-F "files=@$dir/footer.html;filename=footer.html")
-  if [[ -f "$dir/fields.txt" ]]; then
-    while IFS='=' read -r key value; do [[ -z "$key" ]] || args+=(-F "$key=$value"); done < "$dir/fields.txt"
-  else
-    args+=(-F paperWidth=8.27 -F paperHeight=11.69 -F printBackground=true -F emulatedMediaType=print -F preferCssPageSize=true)
-  fi
+  # options.json holds the htmlToPdf options; the header and footer HTML travel as files above.
+  while IFS= read -r field; do [[ -z "$field" ]] || args+=(-F "$field"); done < <(node -e '
+    const options = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    for (const [key, value] of Object.entries(options)) if (key !== "headerHtml" && key !== "footerHtml") console.log(`${key}=${value}`);
+  ' "$dir/options.json")
   status="$(curl "${args[@]}" "$URL/render")"
   [[ "$status" == 200 ]] || { echo "FAIL $name: renderer answered HTTP $status" >&2; failed=1; continue; }
   mkdir -p "$work/png/$name"
-  docker run --rm --network none --read-only -v "$work:/w" "$image" -r 100 -png "/w/$name.pdf" "/w/png/$name/page" >/dev/null
+  docker run --rm --network none --read-only -v "$work:/w" "$image" -r 150 -png "/w/$name.pdf" "/w/png/$name/page" >/dev/null
   # pdftoppm numbers pages page-1.png or page-01.png by the page count; normalise to page-<n>.png.
   for file in "$work/png/$name"/page-*.png; do
     number="$(basename "$file" .png)"; number="page-$((10#${number#page-}))"

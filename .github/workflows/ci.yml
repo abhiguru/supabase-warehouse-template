@@ -111,11 +111,10 @@ jobs:
       - run: bash docker/pdf-renderer/test/integration.sh
   pdf-golden:
     name: Golden PDFs (rasterised, fuzz 0)
-    # TODO: skipped until the fictional corpus is committed under tests/golden-pdf/corpus/ together
-    # with its goldens (tests/golden-pdf/README.md). Once it exists the job is required on every change
-    # to the Chrome for Testing pin, puppeteer-core or the fonts: it renders each case through the
-    # built image and compares every page, rasterised in a pinned poppler container, byte for byte.
-    if: ${{ hashFiles('tests/golden-pdf/corpus/**') != '' }}
+    # Renders each case of tests/golden-pdf/corpus through the built image, rasterises every PDF at
+    # 150 dpi in a pinned poppler container (tests/golden-pdf/Dockerfile) and compares each page byte
+    # for byte (fuzz 0) with tests/golden-pdf/golden. Required on every change to the Chrome for Testing
+    # pin, puppeteer-core or the fonts; regenerate with `run.sh --update` and review what moved.
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 30
@@ -127,7 +126,7 @@ jobs:
         run: |
           docker build -t pdf-renderer:golden docker/pdf-renderer
           docker run -d --name pdf-renderer-golden -p 127.0.0.1:3000:3000 --read-only --tmpfs /tmp:size=256m \
-            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1g --memory-swap 1g \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1536m --memory-swap 1536m \
             pdf-renderer:golden
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && exit 0; sleep 2; done
           docker logs pdf-renderer-golden >&2; exit 1

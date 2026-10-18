@@ -608,11 +608,12 @@ image. The Gotenberg source rebuild, its flaky upstream tests and its ledger ent
 
 **Posture.** The service sits alone with `functions` on the `internal: true` network `renderer` (Docker adds no route
 out of it: no internet, no host, no Kong, no database, no Studio) and publishes no port. The root filesystem is
-read-only with a 256 MB tmpfs at `/tmp`; all capabilities are dropped; `no-new-privileges`; 512 pids; 1 GB memory
-with no extra swap; tini is PID 1; the process runs as uid 10001. The service refuses a request body over 48 MB
+read-only with a 256 MB tmpfs at `/tmp`; all capabilities are dropped; `no-new-privileges`; 512 pids; 1.5 GiB memory
+with no extra swap (the renderer's thresholds are sized for exactly that limit; a smaller one lets a large image
+render hit the kernel's OOM kill); tini is PID 1; the process runs as uid 10001. The service refuses a request body over 48 MB
 before reading it, queues at most 10 jobs and 100 MB of input, and gives each job 25 s. Every job gets a fresh
-browser context that is closed afterwards; the browser restarts after 100 jobs or at 650 MB of memory, and is killed
-at 900 MB. In the page, JavaScript is off (before navigation) and every request except the document itself and
+browser context that is closed afterwards; the browser restarts after 100 jobs or at 650 MB of Chrome memory, and is killed
+at 1100 MB; the container's working set only holds back the next body at 1200 MiB. In the page, JavaScript is off (before navigation) and every request except the document itself and
 `data:` images and fonts is refused, with `--host-resolver-rules="MAP * ~NOTFOUND"` as a second layer.
 
 **Why `--no-sandbox` is acceptable here.** Chromium's own sandbox needs user namespaces or a setuid helper, which
@@ -644,10 +645,12 @@ for Chrome itself, together with the pinned SHA-256 (a changed archive fails the
 findings in a scan is not a clean bill: Debian's `chromium` package, which Gotenberg shipped, showed 116 findings in
 the 2026-10-17 scan, and the CfT binary shows none only because Trivy does not look at it.
 
-**Fonts.** The image installs the same eight Debian trixie font packages as the Gotenberg 8.37.0 image
+**Fonts.** The image installs the font packages of the Gotenberg 8.37.0 image, each at an exact version
 (`fonts-liberation`, `fonts-liberation2`, `fonts-dejavu`, `fonts-noto-core` for Gujarati, `fonts-noto-cjk`,
-`fonts-noto-color-emoji`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea`) and Gotenberg's `100-gotenberg.conf`,
-so documents paginate and look as before.
+`fonts-noto-color-emoji`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea` and `fonts-opensymbol`) and Gotenberg's
+`100-gotenberg.conf`, so documents paginate and look as before. The build fails unless the sorted `fc-list` file list
+hashes to the value in `ARG FONT_FILELIST_SHA256`, which proves the font set did not change; a font package that
+Debian drops or updates therefore stops the build instead of changing the output silently.
 
 ## Sensor bridge (2026-10-13)
 
