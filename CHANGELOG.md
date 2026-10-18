@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased: ops review — image advisories, exception ledger, PostgREST pinned
+
+Fixes from the 2026-10-17 operational review (TW-BE-009, TW-BE-010, TW-BE-005 part 1; owner decisions D3, D5). No
+migration, no new environment value.
+
+- **Images.** The database recipe upgrades OpenSSL, GnuPG, PackageKit and sudo (glibc, locales and the locale archive
+  are checked unchanged in the build, so collations stay valid); edge-runtime takes all Debian updates; Gotenberg's
+  8.37.0 binary is rebuilt from source with Go 1.27.2 and x/net 0.60.0; Studio 2026.10.12-sha-3699278; Grafana
+  13.2.4 with the newest signed plugins; the sensor bridge image no longer ships pip. Rows with a listed fix:
+  db 20→0, functions 7→0, gotenberg 4→0, sensor bridge 4→0, Studio 6→5 and Grafana 47→41 (no fixed publisher
+  release yet; covered by the ledger).
+- **Exception ledger and two-pass scan.** `npm run scan:images` builds with `--no-cache` on a throwaway state (it
+  refuses while the project has containers) and scans every image with and without `--ignore-unfixed`; every
+  HIGH/CRITICAL row must be fixed or covered by an entry of `docker/image-exceptions.json` (owner, reason, review
+  date, expiry within 90 days; an entry names its advisories, packages and targets; expired, ownerless or unused
+  entries fail or warn). The ledger expires on 2027-01-15.
+- **PostgREST** v16.4 is pinned by its index digest; its missing package inventory is a time-boxed exception bound to
+  that digest, with compensating controls.
+- **The Gotenberg build runs no upstream test suite.** Upstream's timing-sensitive tests failed on a loaded CI
+  runner ("expected queue size to be 10 but got 8"), and every operator install builds this image; `go mod verify`
+  and the pinned read-only build stay.
+- **Release checklist:** image scan before every release (D5). Dependabot no longer proposes Gotenberg tag bumps (the
+  source build must move with the base tag).
+- Upgrade: `setup.sh --operator` rebuilds the changed recipes; the db container restarts once.
+
 ## Unreleased: ops review wave 2, part 2 — one database password per login (migration 94)
 
 Review finding TW-BE-002, owner decision D4. `POSTGRES_PASSWORD` was the password of every database login; it is now

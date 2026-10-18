@@ -219,7 +219,7 @@ import { join } from 'node:path';
 const [directory, lockfile, arch] = process.argv.slice(2);
 const read = name => JSON.parse(readFileSync(join(directory, name), 'utf8'));
 const health = read('health.json');
-if (health.database !== 'ok' || health.version !== '13.2.3') {
+if (health.database !== 'ok' || health.version !== '13.2.4') {
   throw new Error('Grafana health or version mismatch');
 }
 
@@ -263,5 +263,5 @@ for (const [source, expected] of [['prometheus', 1], ['postgres', 4242]]) {
     throw new Error(`${source} query returned no fixture value ${expected}: ${JSON.stringify(response)}`);
   }
 }
-console.log(`Grafana 13.2.3 healthy; ${bundled.length} signed plugins, provisioning, live Prometheus/PostgreSQL queries and the shipped dashboard passed.`);
+console.log(`Grafana 13.2.4 healthy; ${bundled.length} signed plugins, provisioning, live Prometheus/PostgreSQL queries and the shipped dashboard passed.`);
 NODE

@@ -26,6 +26,28 @@ to `d8af378`, the app `main` with the price history screen; for backend `f30833e
 and that app commit the static check passes and the live comparison reports 94
 RPC names, none missing, and no mismatches.
 
+## Image scan before a release
+
+Operating-system packages come from live repositories, so an image built from
+an unchanged recipe on another day has other packages, and a cached layer keeps
+the packages of the day it was cached (owner decision D5, 2026-10-17: no
+snapshot mirrors; a fresh build and scan before each release instead). Before
+every release tag:
+
+- [ ] On the release commit, with a **throwaway** operator state of this
+      checkout (its own project name; never an installation's state, whose
+      running containers would be left on images no recorded build made; the
+      scan refuses a project that has containers), run `npm run scan:images`
+      (Trivy 0.74.0). It builds every Compose image with `--no-cache` and scans
+      each twice; it must end with "Container image scan passed". Read its
+      warnings for exceptions that covered nothing, then remove the throwaway
+      project's `<project>-*` images.
+- [ ] If it fails on an expired exception or a new row, fix the recipe, or have
+      the owner review the entry in `docker/image-exceptions.json` (new
+      `reviewed` date, `expires` at most 90 days later, reason updated with the
+      scan's counts), in the release pull request.
+- [ ] Record the scan date and the per-image row counts in the pull request.
+
 ## Post-release local-readiness follow-up — 2026-09-22
 
 - [x] Complete provider-independent backup/restore, owned-service recovery,

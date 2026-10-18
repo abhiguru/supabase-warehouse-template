@@ -57,3 +57,38 @@ test('CLI entry points run through a symlinked checkout without import side effe
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test('the image scan and its validator run through a symlinked checkout and still refuse a fixable CRITICAL row', () => {
+  // The validator's main guard must not depend on argv naming the physical
+  // path: through a symlink it would otherwise exit zero without checking
+  // anything, and scan-images.sh, which reads only exit codes, would pass.
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-scan-symlink-'));
+  const root = join(scratch, 'checkout');
+  const alias = join(scratch, 'alias');
+  try {
+    mkdirSync(join(root, 'docker'), { recursive: true });
+    mkdirSync(join(root, 'bin'));
+    cpSync(new URL('../scripts', import.meta.url), join(root, 'scripts'), { recursive: true });
+    writeFileSync(join(root, 'docker/image-exceptions.json'), JSON.stringify({ schemaVersion: 1, exceptions: [] }));
+    const image = 'example.test/app:1@sha256:' + 'c'.repeat(64);
+    const report = { SchemaVersion: 2, ArtifactName: image, ArtifactType: 'container_image', Results: [{ Target: 'test OS', Class: 'os-pkgs', Packages: [{ Name: 'libexample', Version: '1.0' }],
+      Vulnerabilities: [{ VulnerabilityID: 'CVE-2026-0009', PkgName: 'libexample', InstalledVersion: '1.0', FixedVersion: '1.1', Status: 'fixed', Severity: 'CRITICAL' }] }] };
+    writeFileSync(join(root, 'report.json'), JSON.stringify(report));
+    writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\ncase "$*" in\n  *" ps "*) exit 0;;\n  *build*) exit 0;;\n  *) echo '${JSON.stringify({ name: 'warehouse-symlink-test', services: { app: { image } } })}';;\nesac\n`);
+    writeFileSync(join(root, 'bin/trivy'), `#!/bin/sh\nwhile [ "$1" != "--output" ]; do shift; done\ncp '${join(root, 'report.json')}' "$2"\n`, { mode: 0o700 });
+    symlinkSync(root, alias, 'dir');
+    const env = { ...process.env, PATH: `${join(alias, 'bin')}:${process.env.PATH}`, WAREHOUSE_SCAN_REPORT_DIR: join(scratch, 'reports') };
+    delete env.NODE_TEST_CONTEXT;
+
+    const validator = spawnSync(process.execPath, [join(alias, 'scripts/validate-image-report.mjs'), join(alias, 'report.json'), image,
+      '--exceptions', join(alias, 'docker/image-exceptions.json'), '--recipe', image], { encoding: 'utf8', env });
+    assert.equal(validator.status, 1, `validator through the symlink: ${validator.stdout}${validator.stderr}`);
+    assert.match(validator.stderr, /HIGH\/CRITICAL vulnerabilities remain: 1 row/);
+
+    const scan = spawnSync('bash', [join(alias, 'scripts/scan-images.sh')], { encoding: 'utf8', env });
+    assert.equal(scan.status, 1, `scan through the symlink: ${scan.stdout}${scan.stderr}`);
+    assert.doesNotMatch(scan.stdout, /Container image scan passed/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

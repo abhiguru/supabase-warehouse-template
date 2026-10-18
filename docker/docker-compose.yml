@@ -164,8 +164,8 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
-    # No digest yet: see docs/CONTAINER_SECURITY.md, "Image pins".
-    image: postgrest/postgrest:v16.4
+    # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".
+    image: postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df
     restart: unless-stopped
     networks: [default, database]
     depends_on:
