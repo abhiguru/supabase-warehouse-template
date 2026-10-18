@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>js-title</title>
+  <script>
+    var t = 'http://@IP@:8080/js';
+    try { fetch(t + '/fetch'); } catch (e) {}
+    try { var x = new XMLHttpRequest(); x.open('GET', t + '/xhr'); x.send(); } catch (e) {}
+    try { new WebSocket('ws://@IP@:8080/ws'); } catch (e) {}
+    try { navigator.sendBeacon(t + '/beacon', 'x'); } catch (e) {}
+    try { new Image().src = t + '/image.png'; } catch (e) {}
+    try { window.open(t + '/open'); } catch (e) {}
+    try { var s = document.createElement('script'); s.src = t + '/dyn.js'; document.head.appendChild(s); } catch (e) {}
+    try { new EventSource(t + '/sse'); } catch (e) {}
+    document.title = 'SCRIPT-HAS-RUN';
+  </script>
+</head>
+<body><p>Scripts run in this container and still cannot reach the network.</p></body>
+</html>
