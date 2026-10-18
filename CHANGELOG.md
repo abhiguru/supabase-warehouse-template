@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased: ops review wave 4 — hashed Python requirements, storage lockfile guard, build-date drift
+
+The rest of TW-BE-005 from the 2026-10-17 operational review (owner decision D5). No migration.
+
+- **The sensor bridge installs only hashed packages.** `docker/sensor-bridge/requirements.txt` pins every package of
+  the closure with its sha256 hashes (CPython 3.14, Linux amd64 and arm64); the image and CI install with
+  `pip install --require-hashes`, and pip is removed from the image afterwards.
+- **The storage build fails if `npm install` changes `package-lock.json`, or if the production tree is invalid**
+  (`npm ls --omit=dev --all`). The `undici` override is now `undici@^7`, so `@kubernetes/client-node` keeps the undici
+  8 it declares (the old override forced every copy to 7.30.0). Regenerate the lockfile with npm 11.12.1 (see
+  `docker/storage/README.md`).
+- **Build-date drift (D5).** OS packages in the image recipes come from live mirrors, so a rebuild on another day can
+  differ; `docs/CONTAINER_SECURITY.md` says so, and the release checklist's one image step (`npm run scan:images`
+  on a throwaway state, which builds with `--no-cache`) is mandatory before every release.
+
 ## Unreleased: ops review wave 3 — receipts, sign-in refusals, OTP provider answers, monitoring, realtime, operations (migrations 95–97)
 
 Fixes from the 2026-10-17 operational review: TW-BE-012/013, TW-BE-017, TW-CFG-001…006, TW-BE-014, TW-BE-008,
