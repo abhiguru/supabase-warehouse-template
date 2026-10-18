@@ -4,10 +4,11 @@
 #   docker build -t pdf-renderer --build-arg GIT_SHA="$(git rev-parse HEAD)" docker/pdf-renderer
 # To use another Chrome for Testing build, pass both CHS_VERSION and CHS_SHA256 (see README.md).
 
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
+# One literal FROM, so Dependabot sees the digest; the other stages start from it.
+FROM node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315 AS base
 
 # ---- chrome-headless-shell, downloaded and checked against a pinned SHA-256 -------------------------------
-FROM ${NODE_IMAGE} AS chs
+FROM base AS chs
 ARG TARGETARCH
 ARG CHS_VERSION=155.0.8059.84
 ARG CHS_SHA256=a5d71b91aa996fef00517cd212b2dfb816b43055edefbe727e6fd562d4ae1f9c
@@ -22,7 +23,7 @@ RUN curl -fsSL --retry 3 --connect-timeout 20 -o /tmp/chs.zip \
     && chmod 0755 /opt/chs/chrome-headless-shell
 
 # ---- production node_modules (no scripts run) ------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS deps
+FROM base AS deps
 ARG PUPPETEER_CORE_VERSION=25.14.0
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -30,7 +31,7 @@ RUN npm ci --omit=dev --ignore-scripts \
     && test "$(node -p "require('./node_modules/puppeteer-core/package.json').version")" = "${PUPPETEER_CORE_VERSION}"
 
 # ---- runtime -----------------------------------------------------------------------------------------------------------
-FROM ${NODE_IMAGE} AS runtime
+FROM base AS runtime
 ARG TARGETARCH
 ARG CHS_VERSION=155.0.8059.84
 ARG PUPPETEER_CORE_VERSION=25.14.0

@@ -326,8 +326,9 @@ test('the PDF renderer image is pinned, verified and minimal', () => {
   const recipe = readFileSync(join(repo, 'docker/pdf-renderer/Dockerfile'), 'utf8');
   const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.trim().startsWith('#'));
   const text = instructions.join('\n');
-  assert.match(recipe, /^ARG NODE_IMAGE=node:24-trixie-slim@sha256:[0-9a-f]{64}$/m, 'the base is Node 24 LTS on Debian trixie, pinned by digest');
-  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/^FROM \$\{NODE_IMAGE\}( AS \S+)?$/.test(line) && !/@sha256:[0-9a-f]{64}/.test(line)), [], 'every base is the digest-pinned NODE_IMAGE');
+  assert.match(recipe, /^FROM node:24-trixie-slim@sha256:[0-9a-f]{64} AS base$/m, 'the base is one literal FROM (Dependabot reads it): Node 24 LTS on Debian trixie, pinned by digest');
+  assert.equal([...recipe.matchAll(/^FROM node:/gm)].length, 1, 'the digest is written once');
+  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/^FROM base AS \S+$/.test(line) && !/@sha256:[0-9a-f]{64}/.test(line)), [], 'every other stage starts from the digest-pinned base');
   const version = /^ARG CHS_VERSION=(\d+\.\d+\.\d+\.\d+)$/m.exec(recipe)?.[1];
   const sha = /^ARG CHS_SHA256=([0-9a-f]{64})$/m.exec(recipe)?.[1];
   assert.ok(version, 'ARG CHS_VERSION has a four-part default');
@@ -336,6 +337,10 @@ test('the PDF renderer image is pinned, verified and minimal', () => {
   assert.match(text, /\$\{?CHS_SHA256\}?/);
   assert.match(text, /storage\.googleapis\.com\/chrome-for-testing-public\/\$\{?CHS_VERSION\}?\//, 'the archive URL is built from CHS_VERSION');
   assert.doesNotMatch(text, /@stable|\blatest\b|last-known-good/, 'no floating Chrome channel or tag');
+  // Debian security revisions are removed from the archive; an exact pin would break the build. The font-file
+  // hash (FONT_FILELIST_SHA256) and the golden-PDF job are the drift guards instead.
+  for (const install of text.split('\n').filter(line => /apt-get install/.test(line))) assert.doesNotMatch(install, /\s[a-z0-9.+-]+=\d/, 'apt packages are named without versions');
+  assert.match(text, /ARG FONT_FILELIST_SHA256=[0-9a-f]{64}/);
   assert.match(text, /npm ci --omit=dev --ignore-scripts/);
   assert.match(text, /rm -rf [^\n]*(?:\/npm|corepack|yarn)/, 'npm, corepack and yarn are removed');
   assert.match(text, /\btini\b/, 'tini is installed');
