@@ -112,7 +112,7 @@ export function makeLauncher(behavior) {
   };
 }
 
-export async function startService({ config: configOverrides = {}, behavior: behaviorOverrides = {}, memoryReader } = {}) {
+export async function startService({ config: configOverrides = {}, behavior: behaviorOverrides = {}, memoryReader, containerMemory } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pdfr-test-'));
   const config = loadConfig({}, {
     port: 0,
@@ -137,7 +137,8 @@ export async function startService({ config: configOverrides = {}, behavior: beh
   const supervisor = new Supervisor({
     config,
     launch: makeLauncher(behavior),
-    memoryReader: memoryReader || (async () => 100 * 1024 * 1024),
+    chromeMemory: memoryReader || (async () => 100 * 1024 * 1024),
+    containerMemory: containerMemory || (async () => 100 * 1024 * 1024),
     log,
     exit: (code) => exits.push(code),
   });
