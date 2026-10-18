@@ -538,3 +538,29 @@ view shows since its last refresh (a mark is invisible until its writer commits)
 write committed before this time. `refresh_failing`: the last refresh of the view failed (the view
 stays marked; the doctor names it). A list screen that wants to say "updating" asks this RPC after a
 list read; one that does not simply reads the list again after the bound.
+
+## GRN lists by receipt, and low stock (migration 98, 2026-10-18)
+
+`get_all_grn_items(p_date_from, p_date_to, p_filters, p_sort_by, p_sort_order, p_limit, p_offset)` (staff;
+reads the tables) and `get_customer_grn_items(p_customer_id, p_date_from, p_date_to, p_filters, p_sort_by,
+p_sort_order, p_limit, p_offset)` (a customer's own receipts) page item lines by default, so one receipt can
+be split across two pages. Both accept one more, opt-in key in `p_filters`:
+
+- **`page_by: 'receipt'`.** `p_limit` and `p_offset` then count receipts, and every line of each receipt on the
+  page that passes the filters is returned (a receipt page is not bounded in lines). `pagination.total_count`
+  (the customer function also `pagination.total` and `aggregations.total_count`) counts the receipts with at
+  least one matching line; the sums (`aggregates` / `aggregations`: qty, stock, weight) stay over all filtered
+  lines. The customer `has_more` follows the receipt count, and the `p_limit` 1 to 100 check counts receipts.
+  Receipts are ordered by the sort, then by receipt number (raw text) for equal values; lines of one receipt are
+  never interleaved with another's.
+- **Sorts in receipt mode** are `date`, `gr_no` and `customer_name` only (a NULL sort means `date`). Any other
+  sort answers `{success: false, message: 'Invalid list parameters', data: null}`.
+- **`pagination.unit`** is `'receipt'` or `'line'` in both functions (new field; `'line'` without the key).
+  Without `page_by` (or with any other value) nothing else changes, so older app builds keep working.
+- **Staff list data order** is now explicit: `row_num`, then `grn_item_id` (line mode returned this order
+  incidentally).
+- **`stock_status: 'low_stock'`** selects lines with `0 < stock < 0.2 * qty` (exactly 20% is not low). The
+  staff list ignored the value before; the customer list matched nothing. `in_stock`, `out_of_stock` and `all`
+  are unchanged, and other unknown values still match nothing in the customer list.
+
+`tests/grn_receipt_pages_98.sql` covers both functions.
