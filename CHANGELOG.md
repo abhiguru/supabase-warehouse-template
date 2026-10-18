@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased: ops review wave 3 — receipts, sign-in refusals, OTP provider answers, monitoring, realtime, operations (migrations 95–97)
+
+Fixes from the 2026-10-17 operational review: TW-BE-012/013, TW-BE-017, TW-CFG-001…006, TW-BE-014, TW-BE-008,
+TW-BE-018, TW-BE-021, TW-BE-015, TW-BE-011, X-6 and X-7.
+
+- **A receipt takes the catalog's widths (migration 95, TW-BE-012/013, owner decision D7).** `goodsreceived_trl`
+  holds item names of 80 and packaging of 40 characters (was 30/20), so an accepted catalog item no longer fails
+  `save_grn` with `string_column_length`. The four dependent views are recreated with identical definitions, indexes,
+  owners and grants; `save_grn`/`update_grn` answer `item_name_too_long` / `packaging_too_long` with the limit before
+  writing anything. The migration takes the document lock 71040 first, so GRN, dispatch and invoice saves wait for
+  the rebuild (seconds) instead of failing.
+- **A refused central sign-in writes nothing (migration 96, TW-BE-017).** A rejected, disabled or service-account
+  profile found by (issuer, subject) is no longer marked verified before the refusal; `operator_verify_otp` follows
+  the same order. Migration 81's rules are unchanged.
+- **OTP provider answers (migration 97, TW-CFG-001…005, X-7; decisions D13–D15).** A success without a usable request
+  ID counts as sent and is stored as `success_no_id` (the code stays valid; no second SMS); a contradictory answer is
+  `provider_invalid_response`, never retried; a timeout or abort is `provider_ambiguous` and is not refunded; a
+  never-refunded provider-attempt counter with an optional `otp_daily_provider_attempt_cap` (off until set; text `0`
+  stays the no-send switch). The OTP hash is documented as HMAC-SHA256; the docs no longer claim pg_cron cleanup
+  (TW-BE-014). One placeholder rule for the provider, `doctor` and `configure`: an empty, `your-`, `changeme`,
+  `fake_` or `isolated-` value never sends.
+- **Monitoring (TW-BE-008, TW-BE-018, TW-BE-021; decisions D6, D9, D11).** Each installation renders its own
+  Prometheus configuration with an `installation` label, and cAdvisor keeps only its own project's containers; an
+  optional `setup.sh --alert-webhook-file` sends alerts to an https webhook (unset by default; `doctor` warns while
+  alerts are local only). Backups write `warehouse_backup.prom`; new `BackupMissing` (26 h) and `BackupFailed` rules;
+  promtool tests for all 19 rules, run in CI. Grafana ships the "Warehouse overview" dashboard (read-only); Grafana
+  alerting is out of scope. Alertmanager keeps its state across recreates. `restore-host` renders the monitoring files.
+- **Realtime joins on the first try (TW-BE-015).** `dns_search: "."` on realtime (the IPv6 lookup of `db` took about
+  8 s); setup and start run a best-effort warm-up join.
+- **Operations.** Backup fingerprints cover payments, orders, order items and order revisions (TW-BE-011; a fingerprint
+  recorded before this release is not line-comparable). `setup.sh --gateway-port` chooses the loopback port of a
+  second facility on one host (TW-CFG-006). The Compose requirement is a plugin whose `up` accepts `--wait-timeout`,
+  tested with v2.40.3 and v5.6.0 on Engine 29.9.1, the same list as the central identity service (X-6); `doctor`
+  checks it.
+- Upgrade: `setup.sh --operator` (renders the monitoring files and applies 95–97); schedule `db:backup`, or
+  `BackupMissing` fires.
+
 ## Unreleased: ops review — image advisories, exception ledger, PostgREST pinned
 
 Fixes from the 2026-10-17 operational review (TW-BE-009, TW-BE-010, TW-BE-005 part 1; owner decisions D3, D5). No

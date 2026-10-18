@@ -81,6 +81,7 @@ test_files=(
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
   "$ROOT/tests/list_refresh_worker.sql"
   "$ROOT/tests/pg_net_grants.sql"
+  "$ROOT/tests/catalog_receipt_width.sql" "$ROOT/tests/central_refusal_no_write.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
 )

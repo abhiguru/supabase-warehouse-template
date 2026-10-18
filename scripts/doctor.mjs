@@ -6,9 +6,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
+import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
+import { alertDeliveryWarning } from './monitoring-config.mjs';
 
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -21,7 +23,10 @@ export const listening = port => new Promise(resolve => {
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
   if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.BIND_ADDRESS !== '127.0.0.1' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode, MSG91 and loopback gateway.');
-  for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (!env[key] || /^(your-|changeme|fake_)/i.test(env[key])) throw new Error(`Missing production MSG91 setting: ${key}.`);
+  // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
+  // the fixture sentinel `isolated-` only for a reserved .test address (CI and fixtures).
+  const fixture = isFixtureAddress(env.SUPABASE_PUBLIC_URL);
+  for (const key of ['MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_PE_ID', 'MSG91_SENDER_ID']) if (isProviderPlaceholder(env[key], { allowFixtureSentinel: fixture })) throw new Error(`Missing production MSG91 setting: ${key}.`);
   const origin = canonicalOrigin(env.SUPABASE_PUBLIC_URL, 'SUPABASE_PUBLIC_URL');
   if (canonicalOrigin(env.API_EXTERNAL_URL, 'API_EXTERNAL_URL') !== origin) throw new Error('Public API origins differ.');
   if (canonicalOrigin(env.CORS_ALLOWED_ORIGIN, 'CORS_ALLOWED_ORIGIN') !== canonicalOrigin(env.SITE_URL, 'SITE_URL')) throw new Error('Trusted browser origins differ.');
@@ -86,8 +91,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
   for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']], ['docker', ['info', '--format', '{{.ServerVersion}}']]]) {
-    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose v2' : ''}.`);
+    if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose' : ''}.`);
   }
+  // The requirement is a capability, not a version: the scripts wait with `up --wait --wait-timeout`.
+  if (!/--wait-timeout/.test(probe('docker', ['compose', 'up', '--help']).output)) throw new Error('This Docker Compose plugin does not accept `up --wait-timeout`; install a Compose plugin that does (see the host prerequisites).');
   const state = process.env.WAREHOUSE_STATE_DIR;
   const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);
@@ -111,7 +118,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   const usb = usbBackupWarning(state);
-  const note = usb ? `\nWarning: ${usb}` : '';
+  // Alertmanager only exists when the monitoring profile was started; then "local only" is worth a warning.
+  const alerts = probe('bash', [resolve(root, 'scripts/compose.sh'), '--profile', '*', 'ps', '-q', 'alertmanager']).output.trim() ? alertDeliveryWarning(state) : null;
+  const note = [usb, alerts].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);

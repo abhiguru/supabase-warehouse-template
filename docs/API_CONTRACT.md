@@ -342,6 +342,11 @@ Errors are `{ success: false, error, error_code, data }`; those of `save_grn` an
 `message` (the same text), which is what the app reads there. Dates are India days. A band is whole
 kilograms, inclusive at both ends.
 
+Line lengths (migration 95): a GRN line's `item_name` can have 80 characters and its `packaging` 40, as the
+catalog (`items.name`, `items.packaging`). `save_grn` and `update_grn` check every line first and write nothing
+when one is longer: `{ success: false, error_code: 'item_name_too_long' | 'packaging_too_long', error, message,
+data: { limit: 80 | 40, index } }`, `index` being the line's position in `p_items`, counted from 0.
+
 ### `save_grn(..., p_rates jsonb DEFAULT NULL)` and `update_grn(..., p_rates jsonb DEFAULT NULL)`
 
 `p_rates` is the last parameter of each (one overload each; every call that does not name it, the

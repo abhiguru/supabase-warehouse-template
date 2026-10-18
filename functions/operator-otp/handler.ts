@@ -1,6 +1,6 @@
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { readBoundedJson } from './body.ts';
-import { deliverOtp, Msg91DeliveryError } from './provider.ts';
+import { deliverOtp, type Delivery, Msg91DeliveryError } from './provider.ts';
 
 type RpcResult = { success: boolean; code?: string; retry_at?: string; data?: Record<string, unknown> };
 // Everything the handler reaches outside itself, so tests can stand in for it.
@@ -83,22 +83,27 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
       const prepared = await rpc(deps, 'operator_prepare_otp', { p_phone_number: phone, p_ip_address: clientAddress(req) });
       if (!prepared.success) return failure(prepared);
       const data = prepared.data!;
-      let providerId: string | null;
+      let delivery: Delivery;
       try {
         const config = await rpc(deps, 'operator_sms_config', {});
         if (!config.success || !config.data) throw new Msg91DeliveryError('provider_configuration');
-        providerId = await deliverOtp(String(data.phone_number), String(data.otp_code),
+        delivery = await deliverOtp(String(data.phone_number), String(data.otp_code),
           String(config.data.auth_key || ''), String(config.data.flow_id || ''), deps.fetch);
       } catch (error) {
         await rpc(deps, 'operator_finish_otp', {
           p_request_id: data.request_id,
           p_delivered: false,
           p_provider_id: error instanceof Msg91DeliveryError ? error.code : 'provider_unavailable',
+          // The provider requests made, which the database counts and never gives back.
+          p_attempts: error instanceof Msg91DeliveryError ? error.attempts : 0,
         });
         return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
       }
+      // MSG91 accepted the request without giving its ID: the code is treated as sent (a second SMS
+      // would be billed) and the database records `success_no_id`. A fixed text: no number, code or answer.
+      if (delivery.providerId === null) console.warn('operator-otp: MSG91 accepted a send without a request ID');
       const finalized = await rpc(deps, 'operator_finish_otp', {
-        p_request_id: data.request_id, p_delivered: true, p_provider_id: providerId,
+        p_request_id: data.request_id, p_delivered: true, p_provider_id: delivery.providerId, p_attempts: delivery.attempts,
       });
       if (!finalized.success) return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
       return respond({ success: true, data: { request_id: `OTP_${data.request_id}`, expires_at: data.expires_at },

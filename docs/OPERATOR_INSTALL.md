@@ -10,6 +10,7 @@ validates a new installation.
 
 Sections: [host prerequisites](#host-prerequisites),
 [private inputs](#private-inputs), [setup](#setup),
+[several facilities on one host](#several-facilities-on-one-host),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
@@ -22,8 +23,19 @@ Sections: [host prerequisites](#host-prerequisites),
 
 ## Host prerequisites
 
-- Linux x86-64; Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
-- Docker Engine with the Compose v2 plugin, enabled at boot.
+- Linux x86-64 with Docker Engine and the Compose plugin, enabled at boot;
+  Ubuntu 24.04 is the tested baseline. ARM64 is not supported.
+  The requirement is a Compose plugin whose `docker compose up` accepts
+  `--wait-timeout`. Setup, start and the backup scripts wait for services with
+  `docker compose up --wait --wait-timeout`; `doctor` checks at the start that
+  the plugin knows the flag and stops with a message if not. It checks nothing
+  else about the version, and no version number is required. The central
+  identity service states the same requirement and the same list below, so one
+  host can run both services. Tested with:
+  - Docker Compose v2.40.3 with Docker Engine 29.9.1 (the review host; verified for
+    this service and for the facility backend);
+  - Docker Compose v5.6.0 with Docker Engine 29.9.1 (the development host; verified
+    for this service and for the facility backend).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`).
 - A non-root user in the `docker` group. Do not run setup as root and do not
   make the Docker socket world-writable.
@@ -64,8 +76,9 @@ and add it to `~/.profile` so new logins see it. The checksum file comes from
 Node's HTTPS site; this is not a release-signature verification.
 
 Install Docker from [Docker's Ubuntu repository](https://docs.docker.com/engine/install/ubuntu/).
-Select an available Compose **v2** plugin build explicitly; the unversioned
-package can install a newer major that these scripts have not been tested with.
+Any Compose plugin whose `up` accepts `--wait-timeout` works (see the host
+prerequisites for the tested builds). The commands below install the build the
+review verified.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -73,7 +86,7 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyring
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo tee /etc/apt/sources.list.d/docker.sources
 sudo apt-get update
-apt-cache madison docker-compose-plugin        # pick a 2.x build for the next line
+apt-cache madison docker-compose-plugin        # lists the available builds
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin=2.40.3-1~ubuntu.24.04~noble
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$(id -un)"
@@ -139,6 +152,22 @@ are mandatory: there is no fixed-OTP or local delivery mode. Keep the file out
 of shell history and version control, and include it in your encrypted
 off-host backups.
 
+**Test installations (CI, review fixtures).** An installation that is not a real
+facility never gets a real MSG91 key, because every accepted code request is a
+real SMS. It uses the sentinel `MSG91_AUTH_KEY=isolated-no-delivery-key` (any
+value that starts with `isolated-`) and an address under the reserved `.test`
+domain, for example `https://backend-core.example.test`. The installer and the
+doctor accept the sentinel only for such an address, and they never accept the
+template text of this file's example (`your-…`, `changeme…`, `fake_…`). The OTP
+function sends nothing to MSG91 when the key or the Flow ID is empty, template
+text or the sentinel (the same rule, `scripts/provider-placeholder.mjs`), so no
+SMS leaves even if the container has internet access. Do not rely on that alone:
+start a fixture's `functions` container without a route to the internet (for
+example on an `internal: true` Compose network, or with a firewall rule for its
+address) and prove it with a request from inside that must fail. Tests that
+need the provider's answer inject their own `fetch` and never call the real
+service.
+
 **First administrator.** The 12-digit phone number with the `91` prefix
 (prepend `91` to ten Indian digits) and a display name. The administrator is
 created locally and must complete a real SMS login before receiving a session.
@@ -173,12 +202,63 @@ up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation),
 then `node scripts/set-capability.mjs sensors on` and a new `db:backup`). A new
 state's `compose.env` carries the `SENSOR_*` and `TAPO_*` lines empty.
 
+Setup also renders the monitoring files of this installation into the state
+(`config/monitoring/`, and the empty `metrics/` directory the backup scripts
+write), whether or not the `monitoring` profile is ever started. The optional
+`--alert-webhook-file /absolute/path` gives Alertmanager one `https://` webhook
+address to send alerts to (`off` removes it); without it alerts stay on this
+host and `npm run doctor` warns while the monitoring profile is running. What
+each file is, the alert rules, the backup alerts and the Grafana dashboard are
+in [MONITORING.md](MONITORING.md); several installations on one host each get
+their own, distinguished by an `installation` label.
+
 Running the same command again is safe: a rerun preserves identity, keys,
 database and stored files (see [rerun and upgrade](#rerun-and-upgrade)). Setup
 refuses an active administrator with a different phone, a state path through
 a symlink or inside the checkout, a running project owned by another checkout,
 and another operator command holding the lock. Private configuration belongs
 outside the checkout; no source edit is needed for the documented installation.
+
+## Several facilities on one host
+
+One installation serves one facility: its own state directory, its own Compose
+project (`warehouse-<instance id>`) and its own Cloudflare Tunnel. To run a
+second facility on the same host, give it a separate state directory and its
+own loopback gateway port with `--gateway-port` (1024 to 65535; the default is
+18000):
+
+```bash
+bash setup.sh --operator --state-dir /srv/warehouse/second \
+  --api-url https://backend-two.example.test --company 'Second Facility' \
+  --provider-env /srv/warehouse/second-provider.env \
+  --admin-phone 91XXXXXXXXXX --admin-name 'Second Administrator' \
+  --gateway-port 18001
+```
+
+- Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use.
+  The port is saved as `KONG_HTTP_PORT` in the state's `config/compose.env`;
+  no manual edit is needed, and `doctor` and the smoke scripts read it from there.
+- A rerun without `--gateway-port` keeps the saved port. A rerun with another
+  port replaces only the `KONG_HTTP_PORT` line, and only while that
+  installation's containers are stopped (`bash stop.sh`, then setup again).
+- Each tunnel's ingress must point at its own port: change the `service:` line
+  of that facility's `cloudflared` configuration to `http://127.0.0.1:<port>`
+  and restart that tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
+  Setup prints this reminder when it sets a port.
+- **Give every facility a state directory with a different last part** (here
+  `second`, not `state`). `scripts/tunnel.sh install-service` names the
+  tunnel's systemd unit `warehouse-<last part of the state path>-tunnel.service`,
+  so two facilities whose state paths end the same would share a unit name, and
+  installing the second would replace the first one's unit and restart it with
+  the second facility's credential.
+- **The automatic USB backup serves one installation per host:**
+  `/etc/warehouse-usb-backup.conf` holds one state path, and
+  `backup-usb.sh setup` for a second state refuses with "already set up". Back
+  the second facility up with `npm run db:backup -- /absolute/destination` (run
+  with that facility's `WAREHOUSE_STATE_DIR`) to a drive or directory of its
+  own, or with the backup disk, and keep each facility's backup key separate.
+- The host's Docker daemon and its resources are shared. Never point two
+  installations at the same state directory or port.
 
 ## Authentication and OTP limits
 
@@ -192,10 +272,20 @@ for it: a full acceptance run with three roles, a restore and a key rotation
 used about 24 codes. Limits enforced by the database:
 
 - OTPs expire after 5 minutes.
+- A code is stored only as a keyed hash, HMAC-SHA256 over `phone:code:request id`
+  keyed with the instance's JWT secret (the `jwt_secret` entry of
+  `warehouse_security.auth_config`), never as the code itself and never as a bare
+  SHA-256 of it. A signing-key rotation changes that secret
+  ([Rotate signing keys](#rotate-signing-keys)), so codes issued before it stop
+  verifying and the user asks for a new one.
 - A resend does not void the earlier code: every delivered code stays valid
   until its own expiry, and a successful verification consumes all of them.
-- Expired OTPs are cleaned up by `pg_cron`; sessions are HS256 JWTs signed with
-  the instance's `JWT_SECRET`.
+- Expired OTP rows are not removed on a timer. Every 100th new code removes the rows that expired more than an
+  hour ago or were verified more than a day ago, and `npm run retention:apply`
+  removes expired OTP rows older than 7 days (the `ephemeral_auth` retention
+  policy; see [Retention](#retention)). On a site with few sign-ins the rows stay
+  until then, so run the retention command from the same scheduler as your
+  backups. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
 
 Anyone can ask for a code for any number. The limits therefore have a fixed
 order of priority: first, a code cannot be guessed more than five times;
@@ -214,7 +304,8 @@ last five such sources are kept).
 | Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
 | Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
-| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour | every request | same 429 |
+| Warehouse cap | `otp_global_hourly_cap`, default 300 per hour; text `0` is the no-send switch (below) | every request | same 429 |
+| Provider requests | `otp_daily_provider_attempt_cap`, **off until you set it**: the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
 | Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
 | Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
@@ -272,10 +363,56 @@ sources. If the requests continue, the limits fill again within the hour: put
 the WAF rule in place first, then clear. Each clearing allows up to 30 further
 SMS to that number.
 
-- A send that MSG91 did not accept (outage, rejection, timeout) is not counted
-  against the phone or the warehouse cap, so a provider outage does not lock
-  users out; a number MSG91 calls invalid stays counted. The per-source count
-  is kept either way.
+- A send that MSG91 did not accept (outage, rejection) is not counted against
+  the phone or the warehouse cap, so a provider outage does not lock users out.
+  Two outcomes stay counted: a number MSG91 calls invalid, and a **timeout**
+  (`provider_ambiguous`), because MSG91 may have accepted and billed the request
+  before the answer was lost. The per-source count is kept either way.
+- **Spend ceiling.** Those allowances count codes, not what MSG91 bills: a
+  refunded send may still have cost a request, and one code can cost two
+  requests (the function repeats a request once when MSG91 answers 429, 502, 503
+  or 504 with an explicit error; it never repeats after a timeout). The database
+  therefore also counts every request made to MSG91 for every code, whatever the
+  outcome, in `warehouse_security.otp_provider_attempts` (kept two days, never
+  refunded). To cap them, set `otp_daily_provider_attempt_cap` to the number of
+  requests you are willing to pay for in 24 hours; when it is reached the
+  request answers 429 and nothing is sent until older requests leave the 24-hour
+  window or you raise it. It does not exist until you create it, and a value that
+  is not a whole number means no ceiling:
+
+  ```sql
+  -- as supabase_admin: set, or change, the ceiling
+  INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_daily_provider_attempt_cap','2000')
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+  -- requests made in the last 24 hours
+  SELECT COALESCE(sum(attempts),0) FROM warehouse_security.otp_provider_attempts WHERE created_at>now()-interval '24 hours';
+  -- remove the ceiling
+  DELETE FROM warehouse_security.auth_config WHERE key='otp_daily_provider_attempt_cap';
+  ```
+- **No-send switch.** A cap of text `0` is accepted and blocks every send: set
+  `otp_global_hourly_cap` to `0` to stop all SMS at once (every request answers
+  429 and no code is created), then back to its value (default `300`) to resume.
+  `otp_daily_provider_attempt_cap` set to `0` does the same.
+- **What the facility keeps of MSG91's answer** (the contract the central
+  identity service mirrors). A success answer carries MSG91's request ID in its
+  `message`. The facility trims it, accepts 1 to 255 characters of
+  `A-Z a-z 0-9 . _ : -`, and stores it in `otp_verifications.msg91_request_id`
+  with `msg91_status` `success`. It lives in that sign-in row and goes with it
+  (the cleanup bullet above; `retention:apply` removes it 7 days after the code
+  expired). It is never returned to a client or written to a log, and nothing
+  else of MSG91's answer is stored or logged. A success **without** such an ID (no message, a blank or non-text one, one over
+  255 characters, other text) is still a success: the code is
+  treated as sent and stays valid, no second SMS is sent, the status is
+  `success_no_id` and the function logs the fixed line
+  `operator-otp: MSG91 accepted a send without a request ID`. An answer whose
+  `type` and `status` disagree (one says success, the other error) is not an
+  acceptance: with HTTP 200 it is refused as `provider_invalid_response`, with a
+  failing status as `provider_unavailable`, and it is not repeated.
+  To count the sends without an ID in the last two days:
+
+  ```sql
+  SELECT count(*) FROM warehouse_security.otp_provider_attempts WHERE status='success_no_id';
+  ```
 - While the unknown-number share of the warehouse cap is used up, a known and
   an unknown number get different answers, so a caller can tell during that
   time whether a number is registered. A used-up open lane answers the same
@@ -506,7 +643,8 @@ Copy the example config to a private path (mode 0600) and replace the tunnel
 UUID, credentials path and hostname. It routes the hostname to
 `http://127.0.0.1:18000` with `httpHostHeader` set to the hostname and ends
 with an `http_status:404` catch-all; change the port only if the private
-`compose.env` sets a different `KONG_HTTP_PORT`. `http2-origin` stays off
+`compose.env` sets a different `KONG_HTTP_PORT` (chosen with
+`--gateway-port`, see [several facilities on one host](#several-facilities-on-one-host)). `http2-origin` stays off
 because [HTTP/2 to an origin requires HTTPS](https://developers.cloudflare.com/tunnel/reference/origin-parameters/)
 and this origin is private HTTP. Validate with
 `cloudflared --config /private/path/config.yml tunnel ingress validate` and
@@ -729,7 +867,7 @@ only the services that were running. The directory contains:
 | `_supabase.dump` | `pg_dump --format=custom` of the `_supabase` database (pooler and analytics schemas). |
 | `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
-| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; a backup taken earlier has no such lines and is still compared line for line. |
+| `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
@@ -977,11 +1115,15 @@ bash scripts/data-fingerprint.sh > ~/fingerprint-<backup name>.txt
 ```
 
 It prints a row count and a SHA-256 for every business table (customers, items,
-prices, GRNs, dispatches, invoices, stock movements, users), for the three
+prices, GRNs, dispatches, invoices, stock movements, users, orders with their
+lines and revisions, and payments), for the three
 append-only histories (invoice discounts, zero charges, item prices), the
 storage catalog and the stored files. A fingerprint taken before the upgrade to
 migration 48 has no lines for the histories and cannot be compared with one
-taken after it; take a new one after upgrading. It holds no secrets; keep a copy off the host (for
+taken after it, and a fingerprint recorded before the release that added orders,
+order lines, order revisions and payments lacks those four tables' lines, so a
+restore will not print `IDENTICAL` against it; take a new one after upgrading.
+It holds no secrets; keep a copy off the host (for
 example next to the archive on the drive). After a restore the same command
 must print identical lines.
 
@@ -1161,7 +1303,7 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 (step 9).
 
 Before you start you need: the new host prepared as in
-[host prerequisites](#host-prerequisites) (Node 22, Docker with Compose v2,
+[host prerequisites](#host-prerequisites) (Node 22, Docker with a Compose plugin that accepts `up --wait-timeout`,
 `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
@@ -1172,8 +1314,9 @@ keys from a file, backups taken with this release carry that file too
 (`central-jwks.json`); for older backups keep the key set the association sent
 you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
 would create a new, different warehouse. After `db:restore-host` has finished,
-`setup.sh` on the restored state keeps the identity; step 7 is the one case
-that needs it.
+`setup.sh` on the restored state keeps the identity. Step 7 needs it, and so
+does step 8 when the installation sent alerts to a webhook; when both apply,
+one rerun with both sets of options does.
 
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
@@ -1247,6 +1390,11 @@ that needs it.
    bash scripts/data-fingerprint.sh | diff ~/fingerprint-warehouse-<utc>.txt - && echo IDENTICAL
    ```
 
+   A fingerprint recorded before this release lacks the lines for orders, order
+   lines, order revisions and payments, so the `diff` shows those four lines
+   added and never prints `IDENTICAL`: compare the other lines, and record a new
+   fingerprint after upgrading.
+
    Otherwise sign in to the app and check the latest GRNs, dispatches and
    invoices you remember. Record the result.
 6. **Bring the public address back.** If the backup carried the tunnel
@@ -1285,6 +1433,12 @@ that needs it.
 8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
    check that a new backup appears next to the old ones.
+
+   `db:restore-host` also rendered the monitoring files for the restored
+   project, so the `monitoring` profile starts. The alert webhook address is a
+   secret and is not in a backup: if this installation sent alerts to a webhook,
+   alerts are local only until you run `setup.sh --operator` again with your
+   usual inputs and `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
 9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
@@ -1478,7 +1632,12 @@ against the same state directory. It regenerates nothing that already exists:
 identity, signing keys, database, stored files, the administrator and the
 provider lines are preserved (a different `--provider-env` file replaces only
 the MSG91 lines; the `--central-…` options set or replace only the
-[central sign-in](#central-sign-in) lines and its key file). Run it a second time right after installation and compare
+[central sign-in](#central-sign-in) lines and its key file; `--gateway-port`
+replaces only `KONG_HTTP_PORT`, and only while the containers are stopped).
+A rerun also adds what an older state lacks and never replaces what exists:
+the per-role database passwords, the backup key, and the monitoring files and
+alert webhook address under `config/monitoring` ([MONITORING.md](MONITORING.md)).
+Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
 To upgrade to a newer `main`:
@@ -1564,6 +1723,13 @@ start then replaces only the containers whose image changed. What to expect:
   checkout did not build) is left running unchanged with the warning "the
   <service> image does not match this checkout"; `bash scripts/build-images.sh`
   or the next setup rerun builds it, and the following start replaces it.
+- The monitoring files (`config/monitoring/`, `metrics/`) are written by every setup run; the
+  first run after the release that added them creates them, and the next
+  replacement of Prometheus and Alertmanager (the same step) loads them. A
+  Prometheus or Alertmanager that is running is replaced when those files or
+  `docker/alert-rules.yml` changed. Run `npm run db:backup` once afterwards: the
+  backup alerts (`BackupMissing` after 26 hours) read the time of the last backup
+  that was written down after this release.
 - `start.sh` never builds: a host that restarts offline starts what it has.
 - Every built image is tagged for its installation (`<project>-<service>`).
   Grafana's was the shared `warehouse-grafana:local` until 2026-10-13, so the
@@ -1670,7 +1836,7 @@ problems seen so far and their causes:
 - **`Operator installation requires Linux x86-64` or `Missing prerequisite`** —
   `scripts/check-readiness.sh` refuses other architectures and missing
   `docker`, `node`, `npm`, `openssl` or `flock`; `doctor` additionally requires
-  Node 22.18+, Compose v2 and a reachable Docker daemon.
+  Node 22.18+, a Compose plugin that accepts `up --wait-timeout` and a reachable Docker daemon.
 - **`node: command not found` in a new terminal or a service** — the user-owned
   Node is only on `PATH` where it was exported; repeat the export and keep it
   in `~/.profile`.
@@ -1780,5 +1946,7 @@ problems seen so far and their causes:
   DLT template ID), the `OTP` variable name and the sender/entity approval in
   the MSG91 console. The per-phone, per-IP and warehouse-wide caps above return
   an explicit refusal, not silence.
-- **Compose reports a 5.x version** — the unversioned plugin package installed
-  a newer major; install an available 2.x build as shown in the host sequence.
+- **`This Docker Compose plugin does not accept up --wait-timeout`** — the
+  Compose plugin is too old for the flag the scripts use. Install a current
+  plugin from Docker's repository (any build listed under the host
+  prerequisites works); a newer major version is not a problem by itself.

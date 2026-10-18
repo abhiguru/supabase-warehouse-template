@@ -165,3 +165,30 @@ groups:
         annotations:
           summary: "Monitoring target {{ $labels.job }} is down"
           description: "Prometheus cannot scrape {{ $labels.instance }} (job {{ $labels.job }})"
+
+  - name: backup_alerts
+    # warehouse_backup_* comes from the backup scripts (scripts/backup-metrics.sh) through node
+    # exporter's textfile collector: kind="disk" is scripts/backup.sh (npm run db:backup, also run by
+    # the USB backup), kind="usb" is scripts/backup-usb.sh. docs/MONITORING.md, "Backup alerts".
+    rules:
+      - alert: BackupMissing
+        # 26 hours is a daily backup plus two hours of slack. absent() covers an installation that
+        # has never made a backup, a missing or unreadable metrics directory and a node exporter
+        # without the textfile collector, none of which has a timestamp to compare.
+        expr: (time() - warehouse_backup_last_success_timestamp_seconds{kind="disk"} > 26 * 3600) or absent(warehouse_backup_last_success_timestamp_seconds{kind="disk"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No backup in the last 26 hours"
+          description: "No successful backup (npm run db:backup) in the last 26 hours, or no backup metric is exported. Check the backup schedule and docs/MONITORING.md, Backup alerts."
+
+      - alert: BackupFailed
+        # The last attempt of this kind failed; the value stays 0 until an attempt succeeds.
+        expr: warehouse_backup_last_attempt_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last {{ $labels.kind }} backup failed"
+          description: "The last {{ $labels.kind }} backup attempt failed. Run npm run doctor, and bash scripts/backup-usb.sh status for a USB backup."
