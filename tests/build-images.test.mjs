@@ -33,8 +33,8 @@ function fixture() {
   recipe('imgproxy');
   recipe('prometheus', { profiles: ['monitoring'] });
   recipe('cups', { profiles: ['printing'] });
-  // No `image:`: Compose tags every built image `<project>-<service>`, Grafana included.
-  recipe('grafana', { profiles: ['monitoring'] });
+  // No `image:`: Compose tags every built image `<project>-<service>`, Alertmanager included.
+  recipe('alertmanager', { profiles: ['monitoring'] });
   services.kong = { image: 'kong:3.9.3-ubuntu' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
@@ -111,8 +111,8 @@ test('an installation from before the record rebuilds once what it uses; an imag
   const f = fixture();
   try {
     // The image scan and the checks build optional images that are never started:
-    // Grafana and CUPS have an image here, but only Prometheus has a container.
-    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-grafana`);
+    // Alertmanager and CUPS have an image here, but only Prometheus has a container.
+    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-alertmanager`);
     const containers = 'db imgproxy prometheus kong';
     const first = run(f, { containers });
     assert.equal(first.status, 0, first.stderr);
@@ -219,7 +219,7 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
 
 // What setup.sh leaves behind: every image built from this checkout and recorded.
 const builtAll = f => {
-  const containers = 'db imgproxy prometheus grafana kong';
+  const containers = 'db imgproxy prometheus alertmanager kong';
   assert.equal(run(f, { containers }).status, 0);
   return containers;
 };
@@ -231,17 +231,17 @@ test('--replace-optional starts only the optional services that are running, and
     const none = run(f, { args: ['--replace-optional'], containers, running: 'db imgproxy kong' });
     assert.equal(none.status, 0, none.stderr);
     assert.equal(none.ups, '');
-    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
+    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
     assert.equal(some.status, 0, some.stderr);
-    assert.equal(some.ups, '--wait --wait-timeout 180 grafana prometheus');
+    assert.equal(some.ups, '--wait --wait-timeout 180 alertmanager prometheus');
     assert.equal(some.builds, '');
-    assert.match(some.stdout, /Optional services that are running: grafana prometheus\./);
+    assert.match(some.stdout, /Optional services that are running: alertmanager prometheus\./);
     // An image of this project that has no build record yet (`compose build` by the monitoring
     // check, an installation from before the record) is still replaced.
     rmSync(f.record);
-    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'grafana prometheus' });
+    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager prometheus' });
     assert.equal(unrecorded.status, 0, unrecorded.stderr);
-    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 grafana prometheus');
+    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 alertmanager prometheus');
     const failed = run(f, { args: ['--replace-optional'], containers, running: 'prometheus', fail: 'up' });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /An optional service did not start \(prometheus\)\. The core services are not affected/);
@@ -252,13 +252,13 @@ test('--replace-optional leaves a running optional service alone when its image 
   const f = fixture();
   try {
     const containers = builtAll(f);
-    // An upgrade renamed the image (Grafana's shared tag became `<project>-grafana`), or it was removed.
-    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)));
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
+    // An upgrade renamed the image (a shared tag became `<project>-alertmanager`), or it was removed.
+    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)));
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
     assert.equal(result.status, 1, 'start.sh turns this into a warning');
     assert.equal(result.builds, '');
     assert.equal(result.ups, '--wait --wait-timeout 180 prometheus', 'the others are still replaced');
-    assert.match(result.stderr, /the grafana image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
+    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
   } finally { cleanup(f); }
 });
 
@@ -267,17 +267,17 @@ test('--replace-optional leaves a running optional service alone when its image 
   try {
     const containers = builtAll(f);
     // Another checkout, a manual build: the tag names an image this checkout did not record.
-    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)), `sha256:${'9'.repeat(64)}\n`);
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)), `sha256:${'9'.repeat(64)}\n`);
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
     assert.equal(result.status, 1);
     assert.equal(result.builds, '');
     assert.equal(result.ups, '', 'nothing else is running, so nothing is started');
-    assert.match(result.stderr, /the grafana image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
+    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
     // The image setup.sh builds next puts it right.
-    assert.equal(run(f, { containers }).builds, 'grafana');
-    const after = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    assert.equal(run(f, { containers }).builds, 'alertmanager');
+    const after = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
     assert.equal(after.status, 0, after.stderr);
-    assert.equal(after.ups, '--wait --wait-timeout 180 grafana');
+    assert.equal(after.ups, '--wait --wait-timeout 180 alertmanager');
   } finally { cleanup(f); }
 });
 
@@ -311,12 +311,11 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
   assert.ok(!lines('start.sh').includes('bash "$ROOT/scripts/build-images.sh"'), 'start.sh never builds');
 });
 
-test('the Grafana recipe is its own build directory, like every other recipe', () => {
+test('the Alertmanager recipe is its own build directory, like every other recipe', () => {
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  // A context of `.` would put every file under docker/ into the Grafana fingerprint.
+  // A context of `.` would put every file under docker/ into the Alertmanager fingerprint.
   assert.doesNotMatch(`${readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8')}\n${override}`, /^\s+context: \.$/m);
-  assert.match(override, /grafana:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/grafana\n/);
-  assert.match(readFileSync(join(repo, 'docker/grafana/Dockerfile'), 'utf8'), /^COPY plugins\.lock install-plugins\.sh \/tmp\/$/m);
+  assert.match(override, /alertmanager:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/alertmanager\n/);
 });
 
 test('the PDF renderer image is pinned, verified and minimal', () => {
@@ -356,7 +355,7 @@ test('the PDF renderer image is pinned, verified and minimal', () => {
 });
 
 test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {
-  // A fixed tag (Grafana's was `warehouse-grafana:local` until 2026-10-13) is shared by every
+  // A fixed tag (one was `warehouse-<service>:local`) is shared by every
   // installation on the host: one checkout's build replaced another's running image.
   for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
     const text = readFileSync(join(repo, file), 'utf8');
@@ -366,5 +365,5 @@ test('no built service names its own image: Compose tags each `<project>-<servic
     }
   }
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  assert.match(override, /\n  grafana:\n    build:\n/, 'the Grafana service is still built here');
+  assert.match(override, /\n  alertmanager:\n    build:\n/, 'the Alertmanager service is still built here');
 });

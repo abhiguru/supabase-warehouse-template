@@ -22,7 +22,7 @@ export const DB_ROLE_LOGINS = [
   { env: 'DB_PASSWORD_STORAGE', role: 'supabase_storage_admin', variable: 'storage_verifier', usedBy: 'Storage' },
   { env: 'DB_PASSWORD_AUTH', role: 'supabase_auth_admin', variable: 'auth_verifier', usedBy: 'the disabled Auth service' },
   { env: 'DB_PASSWORD_POOLER', role: 'pgbouncer', variable: 'pooler_verifier', usedBy: "Supavisor's pool user" },
-  { env: 'DB_PASSWORD_MONITORING', role: 'warehouse_monitoring', variable: 'monitoring_verifier', usedBy: 'the Postgres exporter and Grafana' },
+  { env: 'DB_PASSWORD_MONITORING', role: 'warehouse_monitoring', variable: 'monitoring_verifier', usedBy: 'the Postgres exporter' },
 ];
 // Realtime encrypts the database credentials it stores for its tenant with this
 // key (AES-128, so exactly 16 characters). It replaces the fixed text

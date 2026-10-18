@@ -195,8 +195,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   // Checked before anything is written: a refused file changes nothing.
   const webhook = readAlertWebhook(alertWebhookFile, checkout);
   // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
-  const webhookReport = typeof webhook === 'string' ? true : webhook;
   const state = resolve(stateDir);
+  // `off` reports a removal only when a stored URL was there to remove.
+  const hadWebhook = Boolean(lstatSync(join(state, 'config/monitoring/alertmanager/webhook-url'), { throwIfNoEntry: false }));
+  const webhookReport = typeof webhook === 'string' ? true : webhook === null && hadWebhook ? null : undefined;
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));
   if (parent === checkout || parent.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
@@ -287,7 +289,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
   const canonical = canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
-  if (company.length > 120 || !/^[^\x00-\x1f]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
+  if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
   const provider = providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
@@ -301,7 +303,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { KONG_HTTP_PORT: port }),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
-  for (const key of ['DASHBOARD_PASSWORD', 'GRAFANA_ADMIN_PASS', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
+  for (const key of ['DASHBOARD_PASSWORD', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
   mkdirSync(stage, { mode: 0o700 });
@@ -343,8 +345,8 @@ if (isMain(import.meta.url)) {
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
     if (result.dbValuesAdded?.length) console.log(`Added ${result.dbValuesAdded.join(', ')} to the existing operator state: every database login now gets its own password (setup applies them to the database).`);
     if (result.monitoringUpdated && !result.created) console.log('Updated the monitoring files in the state (docs/MONITORING.md).');
-    if (result.webhook) console.log('Stored the alert webhook address for Alertmanager (mode 0600, in the state).');
-    else if (result.webhook === null) console.log('Removed the alert webhook address: Alertmanager keeps alerts on this host only.');
+    if (result.webhook) console.log('Stored the Slack webhook for Alertmanager (mode 0600, in the state).');
+    else if (result.webhook === null) console.log('Removed the Slack webhook: Alertmanager keeps alerts on this host only.');
     if (result.gatewayPortChanged) {
       const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^KONG_HTTP_PORT=(.*)$/m)?.[1];
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);

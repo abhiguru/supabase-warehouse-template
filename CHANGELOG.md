@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased: Grafana removed; alerts go to the facility's Slack
+
+No dashboards any more, and no upgrade or retire path for them: no facility ran this code yet. Alerts reach people
+through Slack only.
+
+- **Grafana is gone.** The `grafana` service and its volume, `docker/grafana/` (recipe, plugin lock), the provisioning and
+  the dashboard, `scripts/grafana-check.sh` with `npm run test:grafana` and its CI job, `GRAFANA_ADMIN_USER` and
+  `GRAFANA_ADMIN_PASS` (no longer generated), the two ledger exceptions in `docker/image-exceptions.json`, the vendored
+  AGPL-3.0 licence text and the notices. One image fewer. The `warehouse_monitoring` login stays: the Postgres exporter
+  uses it (its description and the password rotation text no longer mention Grafana; migration 94 is unchanged).
+- **Slack is the alert receiver.** Alertmanager renders `docker/alertmanager.slack.yml` (`slack_configs`,
+  `api_url_file`, `send_resolved: true`; group wait 30 s, interval 5 m, repeat 4 h) with the facility's company name and
+  `WAREHOUSE_PROJECT_NAME` in every title. It replaces the generic `docker/alertmanager.webhook.yml` and
+  `docker/alertmanager.slack.example.yml`. The stored value must be `https://hooks.slack.com/services/...`; it stays in
+  the state at mode 0600 and no message prints it.
+- **`Watchdog` alert.** An always-firing rule (`vector(1)`, `severity: heartbeat`) routed to Slack with
+  `repeat_interval: 24h`: a daily "Monitoring is alive" message. A day without it means alerting is broken. 20 rules now.
+- **Monitoring starts when a webhook is stored.** `setup.sh` and `start.sh` start Prometheus, Alertmanager and the exporters (`scripts/start-monitoring.sh`); `doctor` warns when a stored webhook has no running monitoring. The heartbeat has its own receiver with `send_resolved: false`; mixed groups list resolved alerts apart; `npm run test:monitoring`'s synthetic alert never reaches Slack.
+- **`setup.sh --operator` asks for the webhook.** The test message is posted before the URL is stored (refused: ask again or store anyway); `--alert-webhook-file ask` replaces a stored URL. On a terminal, without `--alert-webhook-file`, it prompts (no echo,
+  three tries) and offers a Slack test message. With no terminal and no option it refuses. `--alert-webhook-file off`
+  stays for non-production installs (warning; `doctor` reports "no Slack webhook: alerts are not delivered"). CI's
+  operator-install job passes `off`.
+
 ## Unreleased: GRN lists page by receipt, and a low-stock filter (migration 98)
 
 Migration 98. The receipt lists of the app page item lines, so a receipt could be split across two pages and show

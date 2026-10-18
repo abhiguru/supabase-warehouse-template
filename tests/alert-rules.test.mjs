@@ -27,10 +27,10 @@ function cases() {
   return found;
 }
 
-test('there are 19 alert rules with distinct names, two of them the backup rules', () => {
+test('there are 20 alert rules with distinct names, two of them the backup rules', () => {
   const names = alerts();
-  assert.equal(names.length, 19);
-  assert.equal(new Set(names).size, 19);
+  assert.equal(names.length, 20);
+  assert.equal(new Set(names).size, 20);
   assert.ok(names.includes('BackupMissing') && names.includes('BackupFailed'));
 });
 
@@ -39,6 +39,8 @@ test('every alert rule has a promtool case that fires and one that stays quiet',
   const missing = [];
   for (const alert of alerts()) {
     for (const fires of [true, false]) {
+      // Watchdog (vector(1)) fires by design and cannot stay quiet.
+      if (alert === 'Watchdog' && !fires) continue;
       if (!found.some(item => item.alert === alert && item.fires === fires)) missing.push(`${alert} (${fires ? 'fires' : 'stays quiet'})`);
     }
   }
@@ -58,9 +60,8 @@ test('the backup rules read the series that the backup scripts write', () => {
     assert.ok(rules.includes(metric), `${metric} is not in an alert rule`);
     assert.ok(writer.includes(`${metric}{kind=`), `${metric} is not written by backup-metrics.sh`);
   }
-  // 26 hours: a daily backup and two hours of slack (owner decision D9); the dashboard's red line agrees.
+  // 26 hours: a daily backup and two hours of slack (owner decision D9).
   assert.match(rules, /alert: BackupMissing\n(?:\s+#.*\n)*\s+expr: \(time\(\) - warehouse_backup_last_success_timestamp_seconds\{kind="disk"\} > 26 \* 3600\) or absent\(warehouse_backup_last_success_timestamp_seconds\{kind="disk"\}\)\n/);
-  assert.match(read('docker/volumes/grafana/dashboards/warehouse-overview.json'), /"value": 93600/);
 });
 
 test('the rule checks run promtool from the pinned image with no network', () => {

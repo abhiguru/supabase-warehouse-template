@@ -168,6 +168,9 @@ address) and prove it with a request from inside that must fail. Tests that
 need the provider's answer inject their own `fetch` and never call the real
 service.
 
+A test installation also passes `--alert-webhook-file off` (no Slack channel exists for it; alerts stay on the host).
+A real facility gives its own Slack webhook, see [Setup](#setup).
+
 **First administrator.** The 12-digit phone number with the `91` prefix
 (prepend `91` to ten Indian digits) and a display name. The administrator is
 created locally and must complete a real SMS login before receiving a session.
@@ -183,7 +186,8 @@ bash setup.sh --operator \
   --company 'Example Cold Storage' \
   --provider-env /secure/warehouse-msg91.env \
   --admin-phone 91XXXXXXXXXX \
-  --admin-name 'Warehouse Administrator'
+  --admin-name 'Warehouse Administrator' \
+  --alert-webhook-file /secure/warehouse-slack-webhook.txt
 node scripts/doctor.mjs --local
 ```
 
@@ -204,11 +208,23 @@ state's `compose.env` carries the `SENSOR_*` and `TAPO_*` lines empty.
 
 Setup also renders the monitoring files of this installation into the state
 (`config/monitoring/`, and the empty `metrics/` directory the backup scripts
-write), whether or not the `monitoring` profile is ever started. The optional
-`--alert-webhook-file /absolute/path` gives Alertmanager one `https://` webhook
-address to send alerts to (`off` removes it); without it alerts stay on this
-host and `npm run doctor` warns while the monitoring profile is running. What
-each file is, the alert rules, the backup alerts and the Grafana dashboard are
+write), whether or not the `monitoring` profile is ever started. Alerts go
+to the facility's own Slack channel, so the installer needs its Slack
+incoming-webhook URL (the owner creates it in Slack: Apps → Incoming Webhooks).
+`--alert-webhook-file /absolute/path` names a private file (mode 0600, one line)
+holding the URL. Without the option, setup asks for the URL on a terminal (what
+you type is not shown) and posts a test message before the URL is stored (a
+refused one is asked again, or stored only if you say so), and without a terminal
+it refuses. `--alert-webhook-file ask` asks again on a rerun and replaces the
+stored URL. With a webhook stored, setup and `start.sh` start the monitoring
+services; without one they stay optional. `--alert-webhook-file off` is for a non-production install: alerts
+then stay on this host, setup warns, and `npm run doctor` warns `No Slack
+webhook: alerts are not delivered` while the monitoring profile is running.
+A rerun that already has a stored URL asks nothing. To create the file without the URL
+entering the shell history: `install -m 600 /dev/null FILE`, then paste the URL with an
+editor. What each file is, the alert
+rules, the daily "Monitoring is alive" message (a day without it means alerting
+is broken) and the backup alerts are
 in [MONITORING.md](MONITORING.md); several installations on one host each get
 their own, distinguished by an `installation` label.
 
@@ -1315,7 +1331,7 @@ keys from a file, backups taken with this release carry that file too
 you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
 would create a new, different warehouse. After `db:restore-host` has finished,
 `setup.sh` on the restored state keeps the identity. Step 7 needs it, and so
-does step 8 when the installation sent alerts to a webhook; when both apply,
+does step 8 when the installation sent alerts to Slack; when both apply,
 one rerun with both sets of options does.
 
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
@@ -1435,10 +1451,10 @@ one rerun with both sets of options does.
    check that a new backup appears next to the old ones.
 
    `db:restore-host` also rendered the monitoring files for the restored
-   project, so the `monitoring` profile starts. The alert webhook address is a
-   secret and is not in a backup: if this installation sent alerts to a webhook,
+   project, so the `monitoring` profile starts. The Slack webhook URL is a
+   secret and is not in a backup: if this installation sent alerts to Slack,
    alerts are local only until you run `setup.sh --operator` again with your
-   usual inputs and `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
+   usual inputs (it asks for the URL on a terminal) or `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
 9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
@@ -1461,11 +1477,11 @@ tunnel: they matter to someone who also reaches the host or its network.
 | --- | --- | --- |
 | `DASHBOARD_PASSWORD` | Nothing in this release: it is passed to the gateway container, but the gateway configuration (`docker/kong.yml`) has no route that asks for it. | Manual, below, so that a later route never trusts a disclosed value. |
 | `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
-| `GRAFANA_ADMIN_PASS` | Grafana (monitoring profile). | Manual, below; Grafana keeps its own copy. |
+| The Slack webhook URL (`config/monitoring/alertmanager/webhook-url`) | Posting messages to the facility's Slack channel, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--alert-webhook-file ask` (or a file holding the new URL; create it with `install -m 600 /dev/null FILE` and an editor, so the URL stays out of the shell history). |
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser logins (`postgres`, `supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
-| `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`, `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING` | Each one database login of one service (PostgREST, Storage, the disabled Auth service, the pooler's pool user, the Postgres exporter and Grafana), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`, `DB_PASSWORD_AUTH`, `DB_PASSWORD_POOLER`, `DB_PASSWORD_MONITORING` | Each one database login of one service (PostgREST, Storage, the disabled Auth service, the pooler's pool user, the Postgres exporter), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
 | `REALTIME_DB_ENC_KEY` | Decrypts the database credentials Realtime stores for its tenant. | Rotated with the superuser password (`--superuser`). |
 | `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Realtime and pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
@@ -1485,11 +1501,6 @@ bash scripts/compose.sh --profile printing up -d --force-recreate cups   # CUPS_
 node scripts/doctor.mjs --local
 ```
 
-Grafana stores the administrator password in its own database on first start,
-so changing `compose.env` alone does nothing. Change it in Grafana (profile menu,
-Change password, signed in as the administrator), then set
-`GRAFANA_ADMIN_PASS` in `compose.env` to the same value so the two do not drift.
-
 `SECRET_KEY_BASE` signs Realtime's and the pooler's sessions and
 `VAULT_ENC_KEY` encrypts the pooler's stored tenant (which holds the pool
 user's password). Changing them is not scripted and has not been rehearsed,
@@ -1506,8 +1517,8 @@ real host.
 Every database login has its own password in `compose.env`
 ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)):
 `POSTGRES_PASSWORD` is the superuser's (`postgres`, `supabase_admin`), and
-PostgREST, Storage, the disabled Auth service, the pooler's pool user, the
-Postgres exporter and Grafana each sign in with their own. One command
+PostgREST, Storage, the disabled Auth service, the pooler's pool user and the
+Postgres exporter each sign in with their own. One command
 replaces them:
 
 ```bash
@@ -1534,7 +1545,7 @@ What it does, in this order:
 3. Keeps the previous file as `config/compose.env.before-db-rotation`, puts
    the new one in place, and recreates the database and every running service
    that signs in to it (PostgREST, Storage, Realtime, postgres-meta, Studio,
-   and the pooler, exporter and Grafana when they run). The command takes
+   and the pooler and exporter when they run). The command takes
    about a minute; in the rehearsal the app could not load data for about 11
    seconds of it (both with and without `--superuser`). A service you stopped on purpose stays
    stopped and reads its new value when it next starts. No session ends and
@@ -1636,7 +1647,7 @@ the MSG91 lines; the `--central-…` options set or replace only the
 replaces only `KONG_HTTP_PORT`, and only while the containers are stopped).
 A rerun also adds what an older state lacks and never replaces what exists:
 the per-role database passwords, the backup key, and the monitoring files and
-alert webhook address under `config/monitoring` ([MONITORING.md](MONITORING.md)).
+Slack webhook URL under `config/monitoring` ([MONITORING.md](MONITORING.md)).
 Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
@@ -1712,9 +1723,8 @@ npm run db:backup
 
 The upgrade gives every service login a new password but keeps
 `POSTGRES_PASSWORD`, the value that until now every login shared. That value
-sat in the environment of PostgREST, Storage, the Auth service, the Postgres
-exporter and Grafana, and in Grafana's datasource store (encrypted with
-Grafana's published default key, on its data volume). Whoever read it from
+sat in the environment of PostgREST, Storage, the Auth service and the Postgres
+exporter. Whoever read it from
 one of those places still holds the superuser password until it is rotated.
 The new backup is taken after the rotation; backups taken before it remain
 restorable (see
@@ -1766,12 +1776,6 @@ start then replaces only the containers whose image changed. What to expect:
   that was written down after this release.
 - `start.sh` never builds: a host that restarts offline starts what it has.
 - Every built image is tagged for its installation (`<project>-<service>`).
-  Grafana's was the shared `warehouse-grafana:local` until 2026-10-13, so the
-  first setup rerun after that builds `<project>-grafana` and replaces Grafana
-  (its data volume is kept). Once every installation on the host has been
-  upgraded, remove the old tag with `docker image rm warehouse-grafana:local`
-  (Docker refuses while a container still uses it); nothing removes it
-  automatically.
 - A setup from a release before this one did not rebuild anything: it kept
   every image of the first installation, and recipe changes never reached
   the running services. If you stay on such a release, run

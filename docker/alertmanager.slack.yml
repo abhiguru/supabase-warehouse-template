@@ -1,0 +1,59 @@
+# Alertmanager configuration that setup.sh renders when the installation has a Slack incoming-webhook
+# URL (scripts/monitoring-config.mjs; docs/MONITORING.md, "Alert delivery"). The URL is the facility's
+# secret: setup.sh stores it at <state>/config/monitoring/alertmanager/webhook-url (mode 0600, never in
+# this repository) and Alertmanager reads it from that file. Without a URL, docker/alertmanager.yml (a
+# receiver on this host only) is used instead.
+#
+# setup.sh replaces ${WAREHOUSE_PROJECT_NAME} and ${WAREHOUSE_COMPANY} with the installation's own
+# values, so every message names the facility. Alerts carry no other secret.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: slack
+  group_by: ['alertname', 'installation']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # `npm run test:monitoring` sends a synthetic alert straight to Alertmanager: it must not reach the facility's Slack.
+    - receiver: 'null'
+      matchers: ['alertname="WarehouseSynthetic"']
+    # The always-firing Watchdog rule (docker/alert-rules.yml): one "monitoring is alive" message a day, to a
+    # receiver that never sends "resolved". When Prometheus dies the Watchdog resolves; a resolved message
+    # titled "Monitoring is alive" would say the opposite of the truth. A day without the message means
+    # Prometheus, Alertmanager, the host or the Slack webhook has stopped.
+    - receiver: slack-heartbeat
+      matchers: ['severity="heartbeat"']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 24h
+
+receivers:
+  - name: 'null'
+  - name: slack-heartbeat
+    slack_configs:
+      - api_url_file: /etc/alertmanager/webhook-url
+        send_resolved: false
+        title: &heartbeat_title 'Monitoring is alive - ${WAREHOUSE_COMPANY} (${WAREHOUSE_PROJECT_NAME})'
+        fallback: *heartbeat_title
+        title_link: ''
+        color: good
+        text: '{{ range .Alerts.Firing }}{{ .Annotations.summary }}{{ if .Annotations.description }}: {{ .Annotations.description }}{{ end }}{{ "\n" }}{{ end }}'
+  - name: slack
+    slack_configs:
+      - api_url_file: /etc/alertmanager/webhook-url
+        send_resolved: true
+        title: &title '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} - ${WAREHOUSE_COMPANY} (${WAREHOUSE_PROJECT_NAME})'
+        # The default fallback (notification previews) carries the internal Alertmanager link and no facility name.
+        fallback: *title
+        # The alert's own link points at the Alertmanager inside the Compose network, which nobody can open.
+        title_link: ''
+        color: '{{ if eq .Status "resolved" }}good{{ else if eq .CommonLabels.severity "warning" }}warning{{ else }}danger{{ end }}'
+        # Firing alerts first; alerts of the same group that resolved meanwhile are listed apart under "Resolved:".
+        text: '{{ range .Alerts.Firing }}{{ .Annotations.summary }}{{ if .Annotations.description }}: {{ .Annotations.description }}{{ end }}{{ "\n" }}{{ end }}{{ if .Alerts.Resolved }}Resolved:{{ "\n" }}{{ range .Alerts.Resolved }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}{{ end }}'
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']
