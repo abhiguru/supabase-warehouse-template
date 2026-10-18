@@ -9,7 +9,9 @@ node "$ROOT/scripts/doctor.mjs" --preflight
 STATE="$(realpath -m "$WAREHOUSE_STATE_DIR")"
 exec 9>"$STATE/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
-# Upgrade from Gotenberg: remove its old container (no longer in the Compose file) before the start.
+# Before anything is changed: Docker must be able to allocate the subnet of the internal renderer network.
+bash "$ROOT/scripts/network-preflight.sh"
+# Upgrade from Gotenberg: remove its old container (no longer in the Compose file) right before the start.
 bash "$ROOT/scripts/retire-gotenberg.sh" container
 bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
 bash "$ROOT/scripts/retire-gotenberg.sh" image
