@@ -1,0 +1,15 @@
+{
+  "name": "pdf-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HTML to PDF service: chrome-headless-shell driven through puppeteer-core",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "25.14.0"
+  }
+}
