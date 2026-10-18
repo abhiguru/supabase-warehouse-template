@@ -50,15 +50,29 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 \
       libglib2.0-0t64 libnspr4 libnss3 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
       libxkbcommon0 libxrandr2 \
-      fontconfig \
-      fonts-liberation fonts-liberation2 fonts-dejavu fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
-      fonts-crosextra-carlito fonts-crosextra-caladea \
+      fontconfig=2.15.0-2.3 \
+      fonts-liberation=1:2.1.5-3 fonts-liberation2=1:2.1.5-3 \
+      fonts-dejavu=2.37-8 fonts-dejavu-core=2.37-8 fonts-dejavu-extra=2.37-8 fonts-dejavu-mono=2.37-8 \
+      fonts-noto-core=20201225-2 fonts-noto-mono=20201225-2 fonts-noto-cjk=1:20240730+repack1-1 \
+      fonts-noto-color-emoji=2.051-0+deb13u1 \
+      fonts-crosextra-carlito=20230309-2 fonts-crosextra-caladea=20200211-2 \
+      fonts-opensymbol=4:102.12+LibO25.2.3-2+deb13u8 \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian's default fontconfig conf.d plus Gotenberg's rendering settings (identical in 8.25, 8.32, 8.37).
 COPY fontconfig/100-gotenberg.conf /etc/fonts/conf.d/100-gotenberg.conf
 # Last font step: build the cache now, because the root file system is read-only at run time.
 RUN fc-cache -sf
+
+# The font tree must equal the Gotenberg targets' (GCS live 8.32 and template 8.37 give the same value): the sorted
+# list of font files fontconfig knows, hashed the way targets/probe.sh does. A new Debian package version that adds
+# or drops a font file fails the build instead of silently changing the PDFs.
+ARG FONT_FILELIST_SHA256=bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d
+RUN actual="$(fc-list --format '%{file}\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" \
+    && if [ "$actual" != "${FONT_FILELIST_SHA256}" ]; then \
+         echo "font file list hash ${actual} differs from the pinned ${FONT_FILELIST_SHA256}" >&2; \
+         fc-list --format '%{file}\n' | LC_ALL=C sort | uniq -c >&2; exit 1; \
+       fi
 
 COPY --from=chs /opt/chs /opt/chs
 # Fail the build if the browser lacks a shared library.
@@ -85,12 +99,13 @@ ENV NODE_ENV=production \
     TZ=UTC \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
+    MALLOC_ARENA_MAX=2 \
     CHS_PATH=/opt/chs/chrome-headless-shell \
     PORT=3000
 
 USER 10001:10001
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/server.mjs"]
