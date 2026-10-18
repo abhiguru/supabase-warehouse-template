@@ -13,7 +13,8 @@ SUF="$$"
 NET="pdfr-it-net-$SUF"
 FAILS=0
 TMP="$(mktemp -d)"
-CONTAINERS=()
+# start() runs in a command substitution, so the names are registered here, up front
+CONTAINERS=("pdfr-it-main-$SUF" "pdfr-it-js-$SUF" "pdfr-it-file-$SUF" "pdfr-it-refuse-$SUF" "pdfr-it-term-$SUF" "pdfr-it-listener-$SUF")
 HARDEN=(--read-only --tmpfs /tmp:size=256m --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1536m --memory-swap 1536m)
 
 pass() { echo "PASS  $1"; }
@@ -40,7 +41,6 @@ docker network create "$NET" >/dev/null || { echo "FAIL  network"; exit 1; }
 # start <name> [extra docker args...]: a renderer with the hardening flags on the test network
 start() {
   local name="pdfr-it-$1-$SUF"; shift
-  CONTAINERS+=("$name")
   docker run -d --name "$name" --network "$NET" -p 127.0.0.1::3000 "${HARDEN[@]}" "$@" "$IMAGE" >/dev/null || return 1
   echo "$name"
 }
@@ -65,7 +65,7 @@ ptext() { pdftotext "$1" - 2>/dev/null; }
 skip() { echo "SKIP  $1 (pdftotext not installed)"; }
 
 # ---- the listener the renderer must never reach (an IP literal bypasses the host-resolver rule, so it tests interception)
-LISTENER="pdfr-it-listener-$SUF"; CONTAINERS+=("$LISTENER")
+LISTENER="pdfr-it-listener-$SUF"
 docker run -d --name "$LISTENER" --network "$NET" -v "$HERE/fixtures:/f:ro" --entrypoint node "$IMAGE" /f/listener.mjs >/dev/null
 for _ in $(seq 1 30); do docker logs "$LISTENER" 2>&1 | grep -q LISTENING && break; sleep 0.3; done
 LIP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$LISTENER")"
