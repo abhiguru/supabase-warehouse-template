@@ -22,6 +22,7 @@ import { isMain } from './is-main.mjs';
 export const PROJECT_PATTERN = /^warehouse-[a-z0-9-]+$/;
 export const PLACEHOLDER = '${WAREHOUSE_PROJECT_NAME}';
 export const WEBHOOK_MAX_BYTES = 2048;
+export const UNSAFE_NAME_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
 export const COMPANY_PLACEHOLDER = '${WAREHOUSE_COMPANY}';
 // A Slack incoming-webhook URL, and nothing else: the only receiver this repository supports.
 export const SLACK_WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/[A-Z0-9]+\/[A-Z0-9]+\/[A-Za-z0-9]+$/;
@@ -52,7 +53,9 @@ export function alertWebhookAddress(text) {
 export function renderSlackConfig(template, project, company) {
   if (!PROJECT_PATTERN.test(project ?? '')) throw new Error('WAREHOUSE_PROJECT_NAME must be warehouse- followed by lower-case letters, digits and hyphens.');
   if (!template.includes(COMPANY_PLACEHOLDER) || !template.includes(PLACEHOLDER)) throw new Error('docker/alertmanager.slack.yml no longer carries the facility placeholders.');
-  const name = String(company ?? '').trim() || project;
+  // Controls, DEL, the C1 range (NEL included) and the line and paragraph separators end a YAML line in a quoted
+  // scalar or are not printable: --company refuses them, and a manifest from elsewhere gets spaces.
+  const name = String(company ?? '').replace(UNSAFE_NAME_CHARACTERS, ' ').trim() || project;
   // The title is a single-quoted YAML scalar: only ' needs doubling there.
   const quoted = name.replaceAll('{{', '{{ "{{" }}').replaceAll("'", "''");
   const withProject = template.replaceAll(PLACEHOLDER, project);
@@ -130,8 +133,12 @@ export function alertWebhookConfigured(state) {
   return Boolean(lstatSync(join(state, 'config/monitoring/alertmanager/webhook-url'), { throwIfNoEntry: false })?.isFile());
 }
 
-export function alertDeliveryWarning(state) {
-  if (alertWebhookConfigured(state)) return null;
+// `running`: whether the alertmanager container exists (doctor asks Compose).
+export function alertDeliveryWarning(state, running = true) {
+  if (alertWebhookConfigured(state)) {
+    return running ? null : 'Slack webhook stored but monitoring is not running: no alert will reach Slack and the daily "Monitoring is alive" message has stopped. Start it with `bash start.sh` (or `bash scripts/start-monitoring.sh` while the core services are up); see docs/MONITORING.md.';
+  }
+  if (!running) return null;
   return 'No Slack webhook: alerts are not delivered. Alertmanager is running with no receiver, so no alert leaves this host and nobody is told when a backup fails or the database stops. Give it the facility\'s Slack incoming-webhook URL: rerun setup.sh --operator with your usual inputs (it asks for the URL on a terminal) or add --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
 }
 

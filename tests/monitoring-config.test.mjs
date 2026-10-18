@@ -84,9 +84,21 @@ test('the Slack Alertmanager file is rendered for the facility: its name, a dail
   assert.doesNotMatch(rendered, /\$\{/);
   assert.match(rendered, /api_url_file: \/etc\/alertmanager\/webhook-url\n\s+send_resolved: true\n/);
   assert.ok(rendered.includes(`- Fictional Cold Storage (${PROJECT})'`), 'the title names the company and the project');
+  assert.ok(rendered.includes(`'Monitoring is alive - Fictional Cold Storage (${PROJECT})'`), 'and so does the heartbeat');
   assert.match(rendered, /group_wait: 30s\n  group_interval: 5m\n  repeat_interval: 4h\n/);
-  assert.match(rendered, /matchers: \['severity="heartbeat"'\]\n(?:\s+.*\n)*?\s+repeat_interval: 24h\n/);
+  assert.match(rendered, /- name: slack-heartbeat\n    slack_configs:\n      - api_url_file: \/etc\/alertmanager\/webhook-url\n        send_resolved: false\n/, 'the heartbeat never says resolved');
+  assert.match(rendered, /receiver: 'null'\n\s+matchers: \['alertname="WarehouseSynthetic"'\]/, 'the monitoring check\'s synthetic alert goes nowhere');
+  assert.match(rendered, /fallback: \*title/, 'the preview text is the title, not the default with the internal link');
+  assert.match(rendered, /receiver: slack-heartbeat\n\s+matchers: \['severity="heartbeat"'\]\n(?:\s+.*\n)*?\s+repeat_interval: 24h\n/);
+  assert.match(rendered, /\{\{ range \.Alerts\.Firing \}\}[^\n]*\{\{ if \.Alerts\.Resolved \}\}Resolved:/, 'resolved alerts of a mixed group are listed apart');
   assert.doesNotMatch(rendered, /hooks\.slack\.com/, 'no URL in the configuration');
+  // The control and separator characters that end a YAML line or are not printable become spaces, and the
+  // rendered file stays a single-line title (--company refuses them; a manifest from elsewhere is still safe).
+  for (const bad of ['\u0000', '\u0007', '\n', '\r', '\u007f', '\u0080', '\u0085', '\u009f', '\u2028', '\u2029']) {
+    const out = renderSlackConfig(slack, PROJECT, `A${bad}B`);
+    assert.ok(out.includes(`- A B (${PROJECT})'`), JSON.stringify(bad));
+    assert.doesNotMatch(out, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/, JSON.stringify(bad));
+  }
   // Free text in the name cannot break the YAML scalar or run as a template.
   const odd = renderSlackConfig(slack, PROJECT, "O'Neil {{ .Foo }} & Sons");
   assert.ok(odd.includes("O''Neil {{ \"{{\" }} .Foo }} & Sons"), odd);
@@ -194,6 +206,8 @@ test('--alert-webhook-file stores the address privately and renders a Slack rece
     const off = configure(f.root, { ...f.options, alertWebhookFile: 'off' });
     assert.equal(off.monitoringUpdated, true);
     assert.equal(off.webhook, null);
+    // `off` again with nothing stored removes nothing and says nothing about removal.
+    assert.equal(configure(f.root, { ...f.options, alertWebhookFile: 'off' }).webhook, undefined);
     assert.equal(existsSync(f.files.webhook), false);
     assert.equal(readFileSync(f.files.alertmanager, 'utf8'), read('docker/alertmanager.yml'));
   } finally { f.cleanup(); }
@@ -259,9 +273,16 @@ test('doctor warns while Alertmanager has no receiver outside this host, and not
     assert.equal(alertDeliveryWarning(f.stateDir), null);
     configure(f.root, { ...f.options, alertWebhookFile: 'off' });
     assert.match(alertDeliveryWarning(f.stateDir), /No Slack webhook/);
-    // doctor.mjs asks only while the alertmanager container is running.
+    // A stored webhook with the monitoring services down is the opposite case: nothing would ever reach Slack.
+    configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile });
+    assert.match(alertDeliveryWarning(f.stateDir, false), /^Slack webhook stored but monitoring is not running/);
+    assert.match(alertDeliveryWarning(f.stateDir, false), /bash start\.sh/);
+    assert.equal(alertDeliveryWarning(f.stateDir, true), null);
+    configure(f.root, { ...f.options, alertWebhookFile: 'off' });
+    assert.equal(alertDeliveryWarning(f.stateDir, false), null, 'off: monitoring stays optional');
+    // doctor.mjs asks Compose whether the alertmanager container exists and passes the answer on.
     const doctor = read('scripts/doctor.mjs');
-    assert.match(doctor, /'--profile', '\*', 'ps', '-q', 'alertmanager'\]\)\.output\.trim\(\) \? alertDeliveryWarning\(state\) : null/);
+    assert.match(doctor, /alertDeliveryWarning\(state, Boolean\(probe\('bash', \[resolve\(root, 'scripts\/compose\.sh'\), '--profile', '\*', 'ps', '-q', 'alertmanager'\]\)\.output\.trim\(\)\)\)/);
   } finally { f.cleanup(); }
 });
 

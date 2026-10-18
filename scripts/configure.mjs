@@ -195,8 +195,10 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   // Checked before anything is written: a refused file changes nothing.
   const webhook = readAlertWebhook(alertWebhookFile, checkout);
   // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
-  const webhookReport = typeof webhook === 'string' ? true : webhook;
   const state = resolve(stateDir);
+  // `off` reports a removal only when a stored URL was there to remove.
+  const hadWebhook = Boolean(lstatSync(join(state, 'config/monitoring/alertmanager/webhook-url'), { throwIfNoEntry: false }));
+  const webhookReport = typeof webhook === 'string' ? true : webhook === null && hadWebhook ? null : undefined;
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));
   if (parent === checkout || parent.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
@@ -287,7 +289,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   if (!apiUrl || !company || !providerEnv) throw new Error('Fresh setup requires --api-url, --company and --provider-env.');
   const canonical = canonicalOrigin(apiUrl, '--api-url');
   const application = appUrl ? canonicalOrigin(appUrl, '--app-url') : canonical;
-  if (company.length > 120 || !/^[^\x00-\x1f]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
+  if (company.length > 120 || !/^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(company)) throw new Error('--company must be a printable name of at most 120 characters.');
   const provider = providerValues(providerEnv, checkout, canonical);
   if (port !== null && !portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,

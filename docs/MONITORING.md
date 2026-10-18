@@ -17,7 +17,7 @@ five scrape targets (Prometheus, PostgreSQL exporter, node exporter, cAdvisor
 and Kong), requires that Prometheus holds gateway request metrics
 (`kong_http_requests_total`), carries this installation's `installation` label,
 holds the containers of this installation and of no other, reads a probe file
-from the backup metrics directory, submits a synthetic alert, and proves that
+from the backup metrics directory, submits a synthetic alert (kept by Alertmanager, never posted to Slack), and proves that
 Alertmanager retained it. It needs a state that `setup.sh --operator` has
 configured since 2026-10-17 (see [Several installations on one host](#several-installations-on-one-host)).
 
@@ -113,21 +113,39 @@ the channel) and gives the URL to whoever installs the facility.
 
 - **On a terminal**, without `--alert-webhook-file`, setup asks
   `Slack incoming-webhook URL for <company> alerts (create one in Slack: Apps →
-  Incoming Webhooks):`. What you type is not shown. A URL that is not
-  `https://hooks.slack.com/services/...` is refused and asked for again, up to
-  three times. Setup then asks `Send a test message to Slack now? [Y/n]`, posts one
-  short message naming the facility and prints the HTTP status Slack answered
-  (the URL is never printed). A rerun that already has a stored URL asks nothing.
+  Incoming Webhooks):`. What you type is not shown (text typed before the
+  prompt appeared is echoed by the terminal: wait for the prompt). A URL that is
+  not `https://hooks.slack.com/services/...` is refused and asked for again, up to
+  three times. Then setup asks `Send a test message to Slack now? [Y/n]` and
+  posts one short message naming the facility **before anything is stored**.
+  If Slack does not accept it (revoked or mistyped URL, wrong workspace) or cannot
+  be reached, setup says so with the HTTP status (never the URL) and asks
+  `Store this URL anyway? [y/N]`; no means it asks for another URL, within the three
+  tries. Nothing is stored after three failures. End of input at a question counts
+  as no. A rerun that already has a stored URL asks nothing.
+- **`--alert-webhook-file ask`** forces the prompt on a rerun and replaces the
+  stored URL (a terminal is required). Use it when the webhook was revoked or the
+  channel changed.
 - **With `--alert-webhook-file PATH`**, setup reads the URL from that file (mode
   0600, owned by the installing user, outside the checkout, one line). Use this
-  for scripted installs.
+  for scripted installs. Create the file without the URL entering the shell
+  history: `install -m 600 /dev/null /secure/slack-webhook.txt` and then paste
+  the URL into it with an editor, or `read -rs URL && printf '%s\n' "$URL" >
+  /secure/slack-webhook.txt && unset URL` (the `read` prompt is silent).
 - **Without a terminal and without the option**, setup refuses: `--alert-webhook-file
   PATH is required (a file holding the facility's Slack webhook URL), or
   --alert-webhook-file off for a non-production install`.
 - **`--alert-webhook-file off`** is for a non-production install. Setup prints a
   warning that alerts stay on this host only, removes any stored URL and renders
-  `docker/alertmanager.yml` (a receiver on this host). `npm run doctor` then
-  warns `No Slack webhook: alerts are not delivered` while Alertmanager runs.
+  `docker/alertmanager.yml` (a receiver on this host). Monitoring stays optional
+  (`bash scripts/compose.sh --profile monitoring up -d`).
+
+**With a webhook stored, setup.sh and start.sh start the monitoring services**
+(Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters;
+`scripts/start-monitoring.sh`), because a Prometheus that never runs sends
+nothing. `start.sh` never builds: it starts the images setup built. `stop.sh`
+stops them with everything else. A start that fails is a warning, and `npm run
+doctor` then reports `Slack webhook stored but monitoring is not running`.
 
 Setup stores the URL at `config/monitoring/alertmanager/webhook-url` (mode 0600,
 in the state, never in git, a log, an environment variable or a command line)
@@ -135,28 +153,35 @@ and renders `alertmanager.yml` from `docker/alertmanager.slack.yml`:
 `slack_configs` with `api_url_file` pointing at that file, `send_resolved: true`,
 `group_wait: 30s`, `group_interval: 5m`, `repeat_interval: 4h`. Each message
 title names the alert, the company and the installation (`WAREHOUSE_PROJECT_NAME`);
-the text is the alert's summary and description. Alertmanager runs as the
-installing user so that it can read the 0600 file, and `setup.sh` replaces it
-when its configuration changes.
+the text lists the firing alerts (summary and description), then a `Resolved:`
+section with the alerts of the same group that resolved meanwhile. The preview
+text is the title. Alertmanager runs as the installing user so that it can read the
+0600 file, and `setup.sh` replaces it when its configuration changes.
 
-To change the webhook later, rerun setup with `--alert-webhook-file` pointing at
-a file with the new URL.
+To change the webhook later, rerun setup with `--alert-webhook-file ask` or with a
+file holding the new URL. The webhook is a secret that `rotate-keys.sh` does not
+change; see "Secrets that rotate-keys does not change" in
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md).
 
 ### Watchdog: the daily "monitoring is alive" message
 
 `docker/alert-rules.yml` has an always-firing rule, `Watchdog` (`vector(1)`,
-`severity: heartbeat`). Alertmanager routes it to the same Slack receiver with
-`repeat_interval: 24h`, so the facility's channel gets one message a day titled
-"Monitoring is alive". **A day without that message means alerting is broken**:
-Prometheus, Alertmanager, the host or the Slack webhook (revoked, channel
-deleted) has stopped, and nobody will be told about a failed backup either.
-Check `bash scripts/compose.sh --profile monitoring ps`, the Alertmanager log and
-the webhook in Slack. The first message arrives within a minute or so of the
-monitoring profile starting (30 s of grouping).
+`severity: heartbeat`). Alertmanager routes it to its own Slack receiver,
+`slack-heartbeat`, with `repeat_interval: 24h` and `send_resolved: false`, so the
+facility's channel gets one message a day titled "Monitoring is alive". The
+heartbeat never sends "resolved": when Prometheus dies the Watchdog resolves, and
+a resolved message titled "Monitoring is alive" would say the opposite of the
+truth. **A day without that message means monitoring is down**: Prometheus,
+Alertmanager, the host or the Slack webhook (revoked, channel deleted) has
+stopped, and nobody will be told about a failed backup either. Check `bash
+scripts/compose.sh --profile monitoring ps`, the Alertmanager log and the webhook
+in Slack, then `bash start.sh`. The first message arrives within a minute or so
+of the monitoring services starting (30 s of grouping).
 
 A webhook that is configured is not a webhook that works: answer the test
 message prompt at setup, and keep the evidence that a real alert arrived before
-relying on it. To send a synthetic alert through a running Alertmanager:
+relying on it. To send a synthetic alert through a running Alertmanager
+(this one does reach Slack, after the 30 s group wait):
 
 ```bash
 bash scripts/compose.sh --profile monitoring exec -T alertmanager wget -qO- \
@@ -165,8 +190,10 @@ bash scripts/compose.sh --profile monitoring exec -T alertmanager wget -qO- \
   http://localhost:9093/api/v2/alerts
 ```
 
-It reaches Slack after the 30 s group wait. Email and paging are not supported
-by this repository.
+`npm run test:monitoring` sends its own synthetic alert (`WarehouseSynthetic`);
+Alertmanager routes that name to a receiver with no integration, so it is kept
+(the check reads it back) but never posted to Slack. Email and paging are not
+supported by this repository.
 
 ## Collected signals
 

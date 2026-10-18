@@ -21,7 +21,7 @@ while (($#)); do
         --admin-phone) ADMIN_PHONE="$2" ;;
         --admin-name) ADMIN_NAME="$2" ;;
         --company) COMPANY_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
-        --alert-webhook-file) ALERT_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
+        --alert-webhook-file) ALERT_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
         *) CONFIG_ARGS+=("$1" "$2") ;;
       esac
       shift 2 ;;
@@ -38,23 +38,6 @@ if [[ "$(realpath -m "$STATE")" != "$(realpath -ms "$STATE")" ]]; then
 fi
 STATE="$(realpath -ms "$STATE")"
 export WAREHOUSE_STATE_DIR="$STATE"
-# Alerts go to the facility's own Slack channel (docs/MONITORING.md, "Alert delivery"). Without
-# --alert-webhook-file, a terminal is asked for the webhook URL (typed without echo, passed to
-# configure.mjs through a private temporary file that is deleted when setup ends); with no terminal setup
-# refuses. A rerun that already has a stored URL asks nothing. `off` is for a non-production install.
-# scripts/alert-webhook.mjs decides (and prints the refusal or the warning).
-PROMPTED_WEBHOOK=''
-WEBHOOK_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/warehouse-slack-webhook.XXXXXX")"
-trap 'rm -f "$WEBHOOK_TMP"' EXIT
-PROMPT_COMPANY="$COMPANY_ARG"
-if [[ -z "$PROMPT_COMPANY" && -f "$STATE/public/instance.json" ]]; then
-  PROMPT_COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
-fi
-node "$ROOT/scripts/alert-webhook.mjs" gate --state-dir "$STATE" --company "${PROMPT_COMPANY:-this facility}" --given "$ALERT_ARG" --out "$WEBHOOK_TMP" || exit 1
-if [[ -s "$WEBHOOK_TMP" ]]; then
-  CONFIG_ARGS+=(--alert-webhook-file "$WEBHOOK_TMP")
-  PROMPTED_WEBHOOK=1
-fi
 node "$ROOT/scripts/doctor.mjs" --host-preflight
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
@@ -65,12 +48,25 @@ if [[ -d "$STATE/config" ]]; then
   if ! flock -n 9; then echo 'Another operator setup, start, stop, backup, restore or key rotation is running for this state.' >&2; exit 1; fi
   LOCKED=1
 fi
-node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
-if [[ -n "$PROMPTED_WEBHOOK" ]]; then
-  rm -f "$WEBHOOK_TMP"
-  COMPANY_NAME="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
-  node "$ROOT/scripts/alert-webhook.mjs" test --state-dir "$STATE" --company "$COMPANY_NAME" || true
+# Alerts go to the facility's own Slack channel (docs/MONITORING.md, "Alert delivery"). Without
+# --alert-webhook-file, a terminal is asked for the webhook URL (typed without echo, passed to
+# configure.mjs through a private temporary file that is deleted when setup ends); with no terminal setup
+# refuses. A rerun that already has a stored URL asks nothing (`--alert-webhook-file ask` asks anyway and
+# replaces it). `off` is for a non-production install. It runs after the host checks and after the lock is held,
+# so nothing is asked of an operator whose install would be refused anyway.
+# scripts/alert-webhook.mjs decides (and prints the refusal or the warning).
+WEBHOOK_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/warehouse-slack-webhook.XXXXXX")"
+trap 'rm -f "$WEBHOOK_TMP"' EXIT
+PROMPT_COMPANY="$COMPANY_ARG"
+if [[ -z "$PROMPT_COMPANY" && -f "$STATE/public/instance.json" ]]; then
+  PROMPT_COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
 fi
+node "$ROOT/scripts/alert-webhook.mjs" gate --state-dir "$STATE" --company "${PROMPT_COMPANY:-this facility}" --given "$ALERT_ARG" --out "$WEBHOOK_TMP" || exit 1
+if [[ -s "$WEBHOOK_TMP" ]]; then
+  CONFIG_ARGS+=(--alert-webhook-file "$WEBHOOK_TMP")
+fi
+node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
+rm -f "$WEBHOOK_TMP"
 if [[ -z "$LOCKED" ]]; then
   exec 9>"$STATE/config/operator.lock"
   if ! flock -n 9; then echo 'Another operator setup, start, stop, backup, restore or key rotation is running for this state.' >&2; exit 1; fi
@@ -120,6 +116,8 @@ bash "$ROOT/scripts/retire-gotenberg.sh" image
 # Optional services (monitoring, printing, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# With a Slack webhook stored the monitoring services must run, or no alert is ever sent (builds what is missing).
+bash "$ROOT/scripts/start-monitoring.sh" --build
 # Realtime opens its database connection on the first join; do that now (best effort, never fails the start).
 node "$ROOT/scripts/realtime-warmup.mjs"
 node "$ROOT/scripts/doctor.mjs" --local

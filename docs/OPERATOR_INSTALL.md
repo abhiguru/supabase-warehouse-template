@@ -168,6 +168,9 @@ address) and prove it with a request from inside that must fail. Tests that
 need the provider's answer inject their own `fetch` and never call the real
 service.
 
+A test installation also passes `--alert-webhook-file off` (no Slack channel exists for it; alerts stay on the host).
+A real facility gives its own Slack webhook, see [Setup](#setup).
+
 **First administrator.** The 12-digit phone number with the `91` prefix
 (prepend `91` to ten Indian digits) and a display name. The administrator is
 created locally and must complete a real SMS login before receiving a session.
@@ -210,11 +213,16 @@ to the facility's own Slack channel, so the installer needs its Slack
 incoming-webhook URL (the owner creates it in Slack: Apps → Incoming Webhooks).
 `--alert-webhook-file /absolute/path` names a private file (mode 0600, one line)
 holding the URL. Without the option, setup asks for the URL on a terminal (what
-you type is not shown) and offers to post a test message, and without a terminal
-it refuses. `--alert-webhook-file off` is for a non-production install: alerts
+you type is not shown) and posts a test message before the URL is stored (a
+refused one is asked again, or stored only if you say so), and without a terminal
+it refuses. `--alert-webhook-file ask` asks again on a rerun and replaces the
+stored URL. With a webhook stored, setup and `start.sh` start the monitoring
+services; without one they stay optional. `--alert-webhook-file off` is for a non-production install: alerts
 then stay on this host, setup warns, and `npm run doctor` warns `No Slack
 webhook: alerts are not delivered` while the monitoring profile is running.
-A rerun that already has a stored URL asks nothing. What each file is, the alert
+A rerun that already has a stored URL asks nothing. To create the file without the URL
+entering the shell history: `install -m 600 /dev/null FILE`, then paste the URL with an
+editor. What each file is, the alert
 rules, the daily "Monitoring is alive" message (a day without it means alerting
 is broken) and the backup alerts are
 in [MONITORING.md](MONITORING.md); several installations on one host each get
@@ -1469,6 +1477,7 @@ tunnel: they matter to someone who also reaches the host or its network.
 | --- | --- | --- |
 | `DASHBOARD_PASSWORD` | Nothing in this release: it is passed to the gateway container, but the gateway configuration (`docker/kong.yml`) has no route that asks for it. | Manual, below, so that a later route never trusts a disclosed value. |
 | `CUPS_ADMIN_PASSWORD` | The CUPS administration page (printing profile). | Manual, below. |
+| The Slack webhook URL (`config/monitoring/alertmanager/webhook-url`) | Posting messages to the facility's Slack channel, by anyone who holds the URL. | Revoke it in Slack (Apps → Incoming Webhooks) and create a new one, then rerun `setup.sh --operator` with your usual inputs and `--alert-webhook-file ask` (or a file holding the new URL; create it with `install -m 600 /dev/null FILE` and an editor, so the URL stays out of the shell history). |
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser logins (`postgres`, `supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
@@ -1508,8 +1517,8 @@ real host.
 Every database login has its own password in `compose.env`
 ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)):
 `POSTGRES_PASSWORD` is the superuser's (`postgres`, `supabase_admin`), and
-PostgREST, Storage, the disabled Auth service, the pooler's pool user, the
-and the Postgres exporter each sign in with their own. One command
+PostgREST, Storage, the disabled Auth service, the pooler's pool user and the
+Postgres exporter each sign in with their own. One command
 replaces them:
 
 ```bash

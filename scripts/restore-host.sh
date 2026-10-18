@@ -148,7 +148,7 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 # those services mount, <project>_db-config, holds the previous cluster's custom
 # configuration and pgsodium root key, is not part of a backup, and would
 # otherwise be reused silently by the restored database. Other volumes of the
-# project (metric history and dashboards of the monitoring profile, the print
+# project (metric history of the monitoring profile, the print
 # spool) hold nothing a restore replaces, so they do not stop it.
 # tests/restore-host.test.mjs compares this list with the Compose files.
 STATE_VOLUMES=(db-config)
@@ -162,7 +162,7 @@ done <<<"$present"
   docker volume rm ${blocking[*]}"
 if ((${#kept[@]})); then
   list="$(printf '%s, ' "${kept[@]}")"
-  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, dashboards, print spool) and are reused as they are."
+  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, print spool) and are reused as they are."
 fi
 
 # 5. Build the state beside its final path and rename it into place, as setup does.

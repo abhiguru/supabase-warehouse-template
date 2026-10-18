@@ -17,7 +17,8 @@ through Slack only.
   the state at mode 0600 and no message prints it.
 - **`Watchdog` alert.** An always-firing rule (`vector(1)`, `severity: heartbeat`) routed to Slack with
   `repeat_interval: 24h`: a daily "Monitoring is alive" message. A day without it means alerting is broken. 20 rules now.
-- **`setup.sh --operator` asks for the webhook.** On a terminal, without `--alert-webhook-file`, it prompts (no echo,
+- **Monitoring starts when a webhook is stored.** `setup.sh` and `start.sh` start Prometheus, Alertmanager and the exporters (`scripts/start-monitoring.sh`); `doctor` warns when a stored webhook has no running monitoring. The heartbeat has its own receiver with `send_resolved: false`; mixed groups list resolved alerts apart; `npm run test:monitoring`'s synthetic alert never reaches Slack.
+- **`setup.sh --operator` asks for the webhook.** The test message is posted before the URL is stored (refused: ask again or store anyway); `--alert-webhook-file ask` replaces a stored URL. On a terminal, without `--alert-webhook-file`, it prompts (no echo,
   three tries) and offers a Slack test message. With no terminal and no option it refuses. `--alert-webhook-file off`
   stays for non-production installs (warning; `doctor` reports "no Slack webhook: alerts are not delivered"). CI's
   operator-install job passes `off`.
