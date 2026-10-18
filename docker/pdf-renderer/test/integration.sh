@@ -8,7 +8,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-LOCK="${DOCKER_HEAVY_LOCK:-$HOME/ws/wt-pdf-1018/.docker-heavy.lock}"
+# Optional: a lock file path (DOCKER_HEAVY_LOCK) that serialises image builds on a shared host; no lock when unset.
+LOCK="${DOCKER_HEAVY_LOCK:-}"
 SUF="$$"
 NET="pdfr-it-net-$SUF"
 FAILS=0
@@ -30,7 +31,8 @@ trap cleanup EXIT
 
 if [ -z "${IMAGE:-}" ]; then
   IMAGE="pdf-renderer:it-$SUF"
-  ( cd "$ROOT" && mkdir -p "$(dirname "$LOCK")" && flock "$LOCK" docker build -t "$IMAGE" \
+  LOCKCMD=(); if [ -n "$LOCK" ]; then mkdir -p "$(dirname "$LOCK")"; LOCKCMD=(flock "$LOCK"); fi
+  ( cd "$ROOT" && "${LOCKCMD[@]}" docker build -t "$IMAGE" \
       --build-arg GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" \
       ${CHS_VERSION:+--build-arg CHS_VERSION="$CHS_VERSION"} ${CHS_SHA256:+--build-arg CHS_SHA256="$CHS_SHA256"} . ) \
     || { echo "FAIL  image build"; exit 1; }
@@ -62,7 +64,10 @@ is_pdf() { [ "$(head -c 5 "$1")" = "%PDF-" ] && tail -c 64 "$1" | grep -aq '%%EO
 pages() { node -e 'const s=require("fs").readFileSync(process.argv[1]).toString("latin1");console.log((s.match(/\/Type\s*\/Page(?![A-Za-z])/g)||[]).length)' "$1"; }
 HAVE_PDFTOTEXT=0; command -v pdftotext >/dev/null 2>&1 && HAVE_PDFTOTEXT=1
 ptext() { pdftotext "$1" - 2>/dev/null; }
-skip() { echo "SKIP  $1 (pdftotext not installed)"; }
+# A skipped check proves nothing: in CI (CI=true) it is a failure, so a runner without poppler-utils cannot pass silently.
+skip() {
+  if [ "${CI:-}" = true ]; then fail "$1 (pdftotext not installed; CI must install poppler-utils)"; else echo "SKIP  $1 (pdftotext not installed)"; fi
+}
 
 # ---- the listener the renderer must never reach (an IP literal bypasses the host-resolver rule, so it tests interception)
 LISTENER="pdfr-it-listener-$SUF"

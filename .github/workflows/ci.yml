@@ -92,7 +92,7 @@ jobs:
     name: PDF renderer image, unit tests and integration
     # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); test/integration.sh
     # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
-    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1 GB memory without swap), then checks
+    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap), then checks
     # health, a real render, blocked network access and the 400/413 cases.
     runs-on: ubuntu-latest
     needs: validate
@@ -104,6 +104,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
+      - name: Install poppler-utils (integration.sh reads the PDF text; a skipped check fails in CI)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
       - run: npm ci --omit=dev --ignore-scripts
         working-directory: docker/pdf-renderer
       - run: node --test test/*.test.mjs
