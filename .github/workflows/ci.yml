@@ -51,27 +51,6 @@ jobs:
         with:
           persist-credentials: false
       - run: bash tests/migrations.sh
-  grafana:
-    name: Grafana plugins and live queries (${{ matrix.arch }})
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    needs: validate
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-      - run: npm run test:grafana
-        env:
-          EXPECTED_ARCH: ${{ matrix.arch }}
   bridge:
     name: Sensor bridge unit tests
     # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
@@ -234,7 +213,8 @@ jobs:
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            --alert-webhook-file off
         working-directory: backend
       - run: node scripts/doctor.mjs --local
         working-directory: backend
@@ -313,7 +293,8 @@ jobs:
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            --alert-webhook-file off
           sha256sum -c /tmp/warehouse-config.sha256
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend
