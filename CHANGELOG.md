@@ -45,7 +45,7 @@ functions send or return.
   `go test` workaround. Dependabot tracks `docker/pdf-renderer` (npm; puppeteer-core is held back to patches because it
   moves with the pinned Chrome). `check:container-dependencies` runs `npm audit` on it. CI builds the renderer image and
   runs its unit tests and `test/integration.sh` with the hardening flags; a golden-PDF job renders 11 fictional template
-  documents (`tests/golden-pdf/`), rasterises them at 150 dpi in a pinned poppler container and compares every page
+  documents (`tests/golden-pdf/`), rasterises them at 150 dpi in a poppler container built from a fixed Debian snapshot and compares every page
   with the committed goldens at fuzz 0. `release.yml` fails when the pinned `CHS_VERSION` is more than
   14 days behind Chrome for Testing's current Stable, and `.github/workflows/cft-freshness.yml` checks the same weekly
   and opens or updates an issue.
