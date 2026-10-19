@@ -23,6 +23,15 @@ through Slack only.
   stays for non-production installs (warning; `doctor` reports "No Slack webhook: alerts are not delivered" on every run while none is stored, whether or not monitoring runs; to add a webhook later, rerun without `--alert-webhook-file off`, which then asks on a terminal, or pass a file). CI's
   operator-install job passes `off`.
 
+## Unreleased: Realtime v2.144.0 (2026-10-19)
+
+No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
+
+- **Realtime v2.144.0** (was v2.143.3; Dependabot #123), a minor release: a decimal dependency upgrade, and extra
+  region mappings for read replicas (new optional `DB_HOST_REPLICA_*` variables, unused here), which include the
+  2.143.4 region-mapping fix. No setting changes. `THIRD_PARTY_NOTICES.md`, `docs/ATTRIBUTION_REVIEW.md`,
+  `docs/CONTAINER_SECURITY.md` and `scripts/rotate-auth.sql` name the new version.
+
 ## Unreleased: GRN lists page by receipt, and a low-stock filter (migration 98)
 
 Migration 98. The receipt lists of the app page item lines, so a receipt could be split across two pages and show
@@ -594,14 +603,6 @@ No migration. `docker/sensor-bridge/requirements.txt`: the setup rerun rebuilds 
   (see the test line below). `THIRD_PARTY_NOTICES.md`, `docs/ATTRIBUTION_REVIEW.md` and the bridge
   README name the new version.
 - Tested against the built image: 82 unit tests pass on Python 3.12.15 with python-kasa 0.11.0.1; the `kasa` names the bridge imports and the hub connection settings still exist. Not verified: a real Tapo hub.
-
-## Unreleased: Realtime v2.144.0 (2026-10-19)
-
-No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
-
-- **Realtime v2.144.0** (was v2.143.3; Dependabot #123), a minor release: a decimal dependency upgrade, extra
-  region mappings for read replicas (new optional `DB_HOST_REPLICA_*` variables, unused here) and the 2.143.4
-  region-mapping fix. No setting changes. `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` name the new version.
 
 ## Unreleased — Realtime v2.143.3 (2026-10-14)
 
