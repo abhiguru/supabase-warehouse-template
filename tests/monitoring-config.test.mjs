@@ -278,7 +278,7 @@ test('doctor warns while Alertmanager has no receiver outside this host, and not
     assert.match(alertDeliveryWarning(f.stateDir, false), /^Slack webhook stored but monitoring is not running/);
     assert.match(alertDeliveryWarning(f.stateDir, false), /bash start\.sh/);
     // The stored URL must never be printed by the warning (its path part is the secret).
-    assert.doesNotMatch(alertDeliveryWarning(f.stateDir, false), new RegExp(GOOD.replace(/^https:\/\/[^/]+\//,'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+    for (const part of new URL(GOOD).pathname.split('/').filter(Boolean).slice(1)) assert.ok(!alertDeliveryWarning(f.stateDir, false).includes(part), `warning leaks ${part.slice(0, 4)}...`);
     assert.doesNotMatch(alertDeliveryWarning(f.stateDir, false), /hooks\.slack\.com/);
     assert.equal(alertDeliveryWarning(f.stateDir, true), null);
     configure(f.root, { ...f.options, alertWebhookFile: 'off' });

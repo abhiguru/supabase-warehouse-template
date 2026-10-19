@@ -137,6 +137,7 @@ test('gate with `off` passes and warns that alerts stay on this host; with a sto
     assert.equal(off.status, 0, off.stderr);
     assert.match(off.stderr, /alerts stay on this host only/);
     assert.equal(off.stderr.trim(), OFF_WARNING);
+    assert.match(OFF_WARNING, /leaving out --alert-webhook-file off/);
     assert.equal(readFileSync(out, 'utf8'), '');
     const kept = spawnSync(process.execPath, [script, 'gate', '--state-dir', stateWith(mkdtempSync(join(s.dir, 'k-')), URL_A), '--company', 'Acme', '--given', '', '--out', out], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     assert.equal(kept.status, 0, kept.stderr);
