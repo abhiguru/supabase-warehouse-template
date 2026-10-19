@@ -7,8 +7,11 @@
 -- (191 ms). Here:
 --   * pairs, rates, days and dur are AS MATERIALIZED, so they run once per distinct (item, weight) / business date;
 --   * the joins use plain equality on COALESCEd keys, which PostgreSQL can hash: goodsreceived_trl.item_id is NOT
---     NULL; weight is integer, so a NULL weight is matched through -2147483648 (the lowest integer; a weight of
---     exactly that value is not a real quantity); a NULL business date through '-infinity' (never a real date).
+--     NULL; weight is integer, so a NULL weight is matched through -2147483648 and a NULL business date through
+--     '-infinity'. Both COALESCE values can also be stored (direct SQL can store weight -2147483648; '-infinity' can
+--     be a dispatch date, though such a GRN already fails in 102 and 110 because calculate_invoice_duration raises
+--     "cannot subtract infinite dates"), so each join also has an (x IS NULL) = (y IS NULL) guard, which makes both
+--     joins exact; a boolean = is hashable, so the hash joins stay.
 -- Measured on Dev, HVD4: find_storage_price 3,055 -> 10 runs, calculate_invoice_duration 3,055 -> 401 runs, 191 -> ~19 ms.
 -- The answer is the same: same lines, same order, same figures and number formats. Signature, return type, SECURITY
 -- DEFINER, search_path and the body are otherwise those of migration 102. Migrations do not record themselves
@@ -98,7 +101,9 @@ BEGIN
         FROM raw r
         JOIN rates rt ON rt.item_id = r.item_id
                      AND COALESCE(rt.weight, -2147483648) = COALESCE(r.weight, -2147483648)
+                     AND (rt.weight IS NULL) = (r.weight IS NULL)
         JOIN dur ON COALESCE(dur.disp_bd, '-infinity'::date) = COALESCE(r.disp_bd, '-infinity'::date)
+                AND (dur.disp_bd IS NULL) = (r.disp_bd IS NULL)
         CROSS JOIN LATERAL (
             SELECT rt.src_unit::numeric(12,2) AS unit_price,
                    COALESCE(rt.src_labour, 0)::numeric(12,2) AS labour_rate,

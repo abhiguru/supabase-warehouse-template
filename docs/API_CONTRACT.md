@@ -412,7 +412,7 @@ reads `invoice_trl`: it prices the GRN's dispatched lines afresh, with the durat
 called only by `recalculate_invoice_items` (service_role only, not used by the app); `get_grn_item_rates` only follows
 its rule. Once an invoice is saved its figures win and the GRN-only rate is "archived"; delete the invoice and it applies again.
 
-### `generate_invoice_data_for_grn_with_pricing(p_gr_id uuid)`: the invoice form's preview
+### `generate_invoice_data_for_grn_with_pricing(p_gr_id uuid, p_duration_mode text DEFAULT 'legacy')`: the invoice form's preview
 
 A successful answer is `{success, header, items, totals, message}`. `rows`, `data` and the 49 per-line second names
 and unused figures were removed in migrations 100 and 101. Each of the `items` has 21 keys: `grn_items_id`,
@@ -425,7 +425,7 @@ and unused figures were removed in migrations 100 and 101. Each of the `items` h
 
 `invoice.grn_pricing_mode` is returned (the value `get_invoice_data` returns as `header.grn.pricing_mode`). Each line
 also carries `item_id` (the catalog item, `goodsreceived_trl.item_id`), `dispatch_id` and `rack`, and the lines come in
-the order item name, dispatch date, line id. Naming trap: in `get_invoice_data` a line's `item_id` is `invoice_trl.id`;
+the order item name, dispatch date, dispatch line id (`disp_trl_id`). Naming trap: in `get_invoice_data` a line's `item_id` is `invoice_trl.id`;
 in `get_invoice_detail` it is the catalog item.
 
 ### `get_grn_details(p_grn_id)`: `data.grn.rates`
