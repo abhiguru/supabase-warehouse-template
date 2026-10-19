@@ -287,7 +287,7 @@ jobs:
             const state = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
             const alerts = state.alerts || {};
             const bad = Object.entries(alerts).filter(([id, a]) => a.failingRuns > 0 && (id.startsWith("check_error:") || id.startsWith("service_down:") || id === "postgres_down" || id === "api_down"));
-            if (bad.length) { console.error("Failing checks: " + bad.map(([id]) => id).join(", ") + ". Alert ids in the state: " + (Object.keys(alerts).join(", ") || "none")); process.exit(1); }
+            if (bad.length) { console.error("Failing checks: " + bad.map(([id, a]) => id + " (" + a.summary + ": " + a.detail + ")").join("; ") + ". Alert ids in the state: " + (Object.keys(alerts).join(", ") || "none")); process.exit(1); }
           ' "$WAREHOUSE_STATE_DIR/config/watch-state.json"
           node scripts/watch.mjs status
         working-directory: backend
