@@ -118,8 +118,8 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   const usb = usbBackupWarning(state);
-  // A stored Slack webhook needs the monitoring services running (setup.sh and start.sh start them); without a
-  // webhook Alertmanager is optional and only a running one is worth a warning.
+  // A stored Slack webhook needs the monitoring services running (setup.sh and start.sh start them). Without a
+  // webhook doctor warns on every run, whether or not Alertmanager runs: nothing reaches anyone either way.
   const alerts = alertDeliveryWarning(state, Boolean(probe('bash', [resolve(root, 'scripts/compose.sh'), '--profile', '*', 'ps', '-q', 'alertmanager']).output.trim()));
   const note = [usb, alerts].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;

@@ -138,7 +138,9 @@ the channel) and gives the URL to whoever installs the facility.
 - **`--alert-webhook-file off`** is for a non-production install. Setup prints a
   warning that alerts stay on this host only, removes any stored URL and renders
   `docker/alertmanager.yml` (a receiver on this host). Monitoring stays optional
-  (`bash scripts/compose.sh --profile monitoring up -d`).
+  (`bash scripts/compose.sh --profile monitoring up -d`), but `npm run doctor`
+  warns `No Slack webhook: alerts are not delivered` on every run while no
+  webhook is stored, whether or not monitoring runs.
 
 **With a webhook stored, setup.sh and start.sh start the monitoring services**
 (Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters;
