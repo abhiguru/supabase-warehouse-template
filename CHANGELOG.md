@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased: invoice edit keeps two items with the same mark apart (migration 109)
+
+- **Migration 109.** `get_invoice_detail` returns `item_id` (the catalog item), `dispatch_id` and `rack` on every line,
+  and orders the lines as the invoice form's GRN preview does (item name, dispatch date, dispatch line id). Before,
+  Invoices > an invoice > Edit > Next ("Step 2 of 3 · Items") merged two different items with the same package mark
+  (or none) into one card, because the edit load found no `item_id` on the lines (`dispatch_id` only groups lines
+  inside a card). The Review step's list was merged the same way. No existing key, the header or the access rules change.
+  Checked on Dev in a rolled-back transaction: 33 invoices, 225 lines, none differing apart from the three new keys.
+
 ## Unreleased: faster invoice form preview (migration 102)
 
 - **Migration 102.** The invoice form's GRN preview (`generate_invoice_data_for_grn`, behind
