@@ -1465,3 +1465,15 @@ test('watch-timer.sh uninstall accepts the state path by its shape, even when th
     assert.doesNotMatch(f.calls(), /systemctl stop/, 'not active: not stopped');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
+
+test('containers: an id gone between ps and inspect is skipped; any other inspect error names its cause', () => {
+  const h = harness();
+  const [first, second] = h.services.map(idOf);
+  h.runs['docker inspect'] = () => ({ status: 1, stdout: `${first}|${h.services[0]}|running||0|false|2026-10-18T00:00:00Z|False\n`,
+    stderr: `Error: No such object: ${second}\n` });
+  const list = h.ctx().containers();
+  assert.deepEqual(list.map(c => c.id), [first]);
+  const h2 = harness();
+  h2.runs['docker inspect'] = () => bad('permission denied while trying to connect to the docker API');
+  assert.throws(() => h2.ctx().containers(), /docker inspect failed: permission denied/);
+});

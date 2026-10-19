@@ -238,12 +238,18 @@ export function makeContext(deps, data) {
   ctx.containers = () => {
     if (ctx.memo.containers) return ctx.memo.containers;
     const ps = ctx.compose(['--profile', '*', 'ps', '-a', '-q']);
-    if (ps.status !== 0) throw new Error('compose ps failed');
+    if (ps.status !== 0) throw new Error(`compose ps failed: ${clip(String(ps.stderr ?? '').trim(), 200)}`);
     const ids = ps.stdout.split('\n').map(s => s.trim()).filter(s => /^[a-f0-9]{12,64}$/.test(s));
     const list = [];
     if (ids.length) {
       const inspected = deps.run('docker', ['inspect', '--format', INSPECT_FORMAT, ...ids]);
-      if (inspected.status !== 0) throw new Error('docker inspect failed');
+      // A container removed between `ps` and `inspect` (a finished `compose run --rm`) only makes inspect
+      // report "No such object" for that id; any other error fails the check.
+      const stderr = String(inspected.stderr ?? '').trim();
+      const otherErrors = stderr.split('\n').filter(l => l.trim() && !/No such (object|container)/i.test(l));
+      if (inspected.status !== 0 && (otherErrors.length || !stderr)) {
+        throw new Error(`docker inspect failed: ${clip(stderr, 200)}`);
+      }
       for (const line of inspected.stdout.split('\n')) {
         const [id, service, status, health, restarts, oom, startedAt, oneoff] = line.trim().split('|');
         if (!id || !service || oneoff === 'True') continue;
