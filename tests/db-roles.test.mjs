@@ -116,9 +116,6 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   assert.ok(override.includes('DATA_SOURCE_NAME: "postgresql://warehouse_monitoring:${DB_PASSWORD_MONITORING:?'));
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_password" => System\.fetch_env!\("DB_PASSWORD_POOLER"\)/);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /update_manager_user_credentials\(tenant, Map\.take\(pool_user, \["db_user", "db_password"\]\)\)/);
-  const datasource = read('docker/volumes/grafana/provisioning/datasources/datasources.yml');
-  assert.match(datasource, /user: warehouse_monitoring\n    secureJsonData:\n      password: \$\{DB_PASSWORD_MONITORING\}\n/);
-  assert.doesNotMatch(datasource, /POSTGRES_PASSWORD|editable: true/);
 });
 
 test('staging a rotation replaces only the role lines (and the superuser pair on request) in a private sibling file', () => {

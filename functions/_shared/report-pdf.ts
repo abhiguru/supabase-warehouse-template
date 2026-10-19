@@ -9,7 +9,7 @@
 import { createClient } from '../vendor/supabase-js.mjs';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
-import { htmlToPdf, createFooterHtml } from './gotenberg-client.ts';
+import { htmlToPdf, createFooterHtml } from './pdf-renderer-client.ts';
 import { reportHtml } from './document-html.ts';
 import { documentRequestBody } from './request-body.ts';
 import { publicBaseUrl } from './public-url.ts';

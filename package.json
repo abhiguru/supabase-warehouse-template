@@ -23,7 +23,6 @@
     "test:gateway-dns": "bash scripts/gateway-dns-check.sh",
     "test:monitoring": "bash scripts/monitoring-check.sh",
     "test:alert-rules": "bash scripts/alert-rules-check.sh",
-    "test:grafana": "bash scripts/grafana-check.sh",
     "test:load": "bash scripts/load-smoke.sh",
     "test:cups": "bash scripts/cups-check.sh",
     "test:sensors": "bash scripts/sensor-bridge-check.sh",
@@ -34,7 +33,7 @@
     "doctor": "node scripts/doctor.mjs",
     "test:pooler": "bash scripts/pooler-check.sh",
     "test:studio": "bash scripts/studio-check.sh",
-    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high"
+    "check:container-dependencies": "npm audit --prefix docker/postgres-meta --audit-level=high && npm audit --prefix docker/storage --omit=dev --audit-level=high && npm audit --prefix docker/pdf-renderer --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "jose": "5.10.0",

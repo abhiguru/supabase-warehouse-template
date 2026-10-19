@@ -183,7 +183,7 @@ END
 $$;
 
 -- The monitoring login (migration 94; docs/CONTAINER_SECURITY.md, "Database
--- passwords"): the Postgres exporter and Grafana sign in as warehouse_monitoring.
+-- passwords"): the Postgres exporter signs in as warehouse_monitoring.
 -- It is a member of pg_monitor and of nothing else, has no role attribute beyond
 -- inheriting that membership, holds no grant on any object, owns nothing, and no
 -- role can take its identity. Its LOGIN and password come from

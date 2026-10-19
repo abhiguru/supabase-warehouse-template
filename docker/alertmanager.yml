@@ -1,8 +1,9 @@
 global:
   resolve_timeout: 5m
 
-# Provider-independent default: alerts remain queryable in local Alertmanager.
-# Configure a reviewed external receiver only for a production deployment.
+# Used only with `setup.sh --operator --alert-webhook-file off` (a non-production install): alerts stay
+# queryable in this Alertmanager and nothing leaves the host. A facility with a Slack webhook gets
+# docker/alertmanager.slack.yml instead.
 route:
   receiver: local-only
   group_wait: 1s

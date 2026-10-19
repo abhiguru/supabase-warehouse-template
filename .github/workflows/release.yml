@@ -26,6 +26,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm audit --audit-level=high
+      - name: Chrome for Testing freshness of the PDF renderer
+        # Trivy cannot see the chrome-headless-shell binary of docker/pdf-renderer, so a Chrome that has
+        # fallen more than 14 days behind Stable blocks the release (docs/CONTAINER_SECURITY.md,
+        # "PDF renderer"). The same script runs weekly in cft-freshness.yml.
+        run: node scripts/check-cft-freshness.mjs
 
       - name: Validate Compose configuration against generated operator state
         # Render the stack exactly as an operator install would: a private state

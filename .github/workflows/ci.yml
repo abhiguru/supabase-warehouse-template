@@ -51,27 +51,6 @@ jobs:
         with:
           persist-credentials: false
       - run: bash tests/migrations.sh
-  grafana:
-    name: Grafana plugins and live queries (${{ matrix.arch }})
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    needs: validate
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-      - run: npm run test:grafana
-        env:
-          EXPECTED_ARCH: ${{ matrix.arch }}
   bridge:
     name: Sensor bridge unit tests
     # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
@@ -88,6 +67,62 @@ jobs:
       - run: 'pip install --require-hashes --only-binary=:all: -r docker/sensor-bridge/requirements.txt'
       - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
       - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge
+  pdf-renderer:
+    name: PDF renderer image, unit tests and integration
+    # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); test/integration.sh
+    # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
+    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap), then checks
+    # health, a real render, blocked network access and the 400/413 cases.
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install poppler-utils (integration.sh reads the PDF text; a skipped check fails in CI)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+      - run: npm ci --omit=dev --ignore-scripts
+        working-directory: docker/pdf-renderer
+      - run: node --test test/*.test.mjs
+        working-directory: docker/pdf-renderer
+      - run: bash docker/pdf-renderer/test/integration.sh
+  pdf-golden:
+    name: Golden PDFs (rasterised, fuzz 0)
+    # Renders each case of tests/golden-pdf/corpus through the built image, rasterises every PDF at
+    # 150 dpi in a poppler container built from a fixed Debian snapshot (tests/golden-pdf/Dockerfile) and compares
+    # each page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact. Required on every change to the Chrome for Testing
+    # pin, puppeteer-core or the fonts; regenerate with `run.sh --update` and review what moved.
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the renderer image and start it with the hardening flags
+        run: |
+          docker build -t pdf-renderer:golden docker/pdf-renderer
+          docker run -d --name pdf-renderer-golden -p 127.0.0.1:3000:3000 --read-only --tmpfs /tmp:size=256m \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1536m --memory-swap 1536m \
+            pdf-renderer:golden
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && exit 0; sleep 2; done
+          docker logs pdf-renderer-golden >&2; exit 1
+      - name: Render the corpus, rasterise in the pinned poppler container and compare
+        run: RENDERER_URL=http://127.0.0.1:3000 bash tests/golden-pdf/run.sh
+      - name: Pages that moved (new, golden, diff)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-pdf-failures
+          path: tests/golden-pdf/failures
+          if-no-files-found: ignore
+      - name: Stop only this job's renderer
+        if: always()
+        run: docker rm -f pdf-renderer-golden
   contract:
     runs-on: ubuntu-latest
     steps:
@@ -178,7 +213,8 @@ jobs:
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            --alert-webhook-file off
         working-directory: backend
       - run: node scripts/doctor.mjs --local
         working-directory: backend
@@ -257,7 +293,8 @@ jobs:
           bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" \
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
-            --admin-phone 919888888871 --admin-name 'Core Demo Administrator'
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            --alert-webhook-file off
           sha256sum -c /tmp/warehouse-config.sha256
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend

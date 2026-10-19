@@ -5,7 +5,7 @@
 // Deno.env.get() calls the function and its _shared imports actually make;
 // add a name here when a function starts reading one.
 const signedIn = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
-const documentPdf = [...signedIn, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'GOTENBERG_URL'];
+const documentPdf = [...signedIn, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'PDF_RENDERER_URL'];
 
 export const workerEnvNames: Record<string, readonly string[]> = {
   'hello': [],
@@ -24,7 +24,7 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // ingest key is checked by the database, not here.
   'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
   'get-config': [...signedIn, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
-  'generate-sample-pdf': [...signedIn, 'GOTENBERG_URL'],
+  'generate-sample-pdf': [...signedIn, 'PDF_RENDERER_URL'],
   'generate-grn-pdf': documentPdf,
   'generate-dispatch-pdf': documentPdf,
   'generate-invoice-pdf': documentPdf,

@@ -12,7 +12,7 @@ bash scripts/compose.sh ps
 `scripts/compose.sh` selects this installation's Compose project
 (`warehouse-<instance>`, containers `warehouse-<instance>-<service>-1`) from
 `WAREHOUSE_STATE_DIR` and refuses a running project that another checkout owns.
-Name services (`db`, `kong`, `rest`, `functions`, `gotenberg`, `cups`), never
+Name services (`db`, `kong`, `rest`, `functions`, `pdf-renderer`, `cups`), never
 containers: do not run `docker logs`, `docker exec` or `docker restart` with a
 fixed container name such as `supabase-kong`. On a host that also runs a
 separate Supabase deployment or a second installation, such a name belongs to
@@ -179,10 +179,20 @@ capability is off or the `functions` service was not restarted after
 ## PDF generation fails
 
 ```bash
-bash scripts/compose.sh exec -T gotenberg curl -fsS http://localhost:3000/health
-bash scripts/compose.sh logs --tail 50 gotenberg
-bash scripts/compose.sh restart gotenberg   # also clears Chromium's memory
+bash scripts/compose.sh exec -T pdf-renderer node -e "fetch('http://localhost:3000/health').then(async r=>{console.log(r.status,await r.text());process.exit(r.ok?0:1)})"
+bash scripts/compose.sh logs --tail 50 pdf-renderer
+bash scripts/compose.sh restart pdf-renderer   # also clears Chromium's memory
 ```
+
+The image has no `curl` or `wget`; use `node -e` inside the renderer as above.
+The health answer is `{"status":"up","chromium":{...}}` with `memoryMB` (Chrome's resident memory) and `containerMB` (the container's working set against its 1.5 GiB limit) (or `"restarting"` for a few seconds
+during a planned browser restart); `503 {"status":"down"}` means the browser
+did not answer twice in a row; it is killed and relaunched after five failed probes, and the process exits (so Docker
+restarts the container) only after five failed launches in a row. The log has
+one JSON line per render with `outcome` and `code` (400 invalid input, 413 body
+too large, 503 queue full or browser restarting, 504 deadline). The renderer
+sits on the internal `renderer` network, so `storage` and `kong` cannot reach
+it; only `functions` can.
 
 ## Restore or recover (there is no reset)
 

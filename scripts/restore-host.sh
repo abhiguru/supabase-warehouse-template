@@ -148,7 +148,7 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 # those services mount, <project>_db-config, holds the previous cluster's custom
 # configuration and pgsodium root key, is not part of a backup, and would
 # otherwise be reused silently by the restored database. Other volumes of the
-# project (metric history and dashboards of the monitoring profile, the print
+# project (metric history of the monitoring profile, the print
 # spool) hold nothing a restore replaces, so they do not stop it.
 # tests/restore-host.test.mjs compares this list with the Compose files.
 STATE_VOLUMES=(db-config)
@@ -162,7 +162,7 @@ done <<<"$present"
   docker volume rm ${blocking[*]}"
 if ((${#kept[@]})); then
   list="$(printf '%s, ' "${kept[@]}")"
-  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, dashboards, print spool) and are reused as they are."
+  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, print spool) and are reused as they are."
 fi
 
 # 5. Build the state beside its final path and rename it into place, as setup does.
@@ -280,8 +280,8 @@ step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rota
      tunnel credential, replace the other secrets as described under "Secrets that rotate-keys does not
      change" in docs/OPERATOR_INSTALL.md, then take a new backup.'
 step "Keep your copy of the backup key: this installation signs with the same key ($state/config/backup.key)."
-alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (the webhook
-     address is not in a backup; skip this if the installation never had one)."
+alert_step="Alerts are local only until you run setup.sh --operator again with --alert-webhook-file (or answer its Slack
+     webhook prompt on a terminal; the URL is not in a backup, skip this if the installation never had one)."
 if [[ "$central_missing" == true ]]; then
   alert_step+="
      The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file

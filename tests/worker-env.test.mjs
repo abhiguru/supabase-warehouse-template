@@ -28,7 +28,7 @@ function namesRead(entry) {
 
 const container = {
   JWT_SECRET: 'unit-test-signing-secret-0123456789abcdef', SUPABASE_URL: 'http://kong:8000', SUPABASE_ANON_KEY: 'unit-anon',
-  SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_PUBLIC_URL: 'https://api.example.test', GOTENBERG_URL: 'http://gotenberg:3000',
+  SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_PUBLIC_URL: 'https://api.example.test', PDF_RENDERER_URL: 'http://pdf-renderer:3000',
   APP_ENV: 'production', AUTH_MODE: 'operator', VERIFY_JWT: 'true', INSTANCE_MANIFEST_PATH: '/etc/warehouse/instance.json',
   CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
   SUPABASE_DB_URL: 'postgresql://postgres:unit-db-password@db:5432/postgres', PATH: '/usr/bin', HOME: '/root', HOSTNAME: 'abc',

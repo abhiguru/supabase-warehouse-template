@@ -85,7 +85,7 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
     assert.match(body.join('\n'), /^\s+update-types:\n(?:\s+- "version-update:semver-(?:major|minor|patch)"\n?)+/, `dependabot.yml:${index + 1} ${line.trim()}`);
     entries += 1;
   });
-  assert.equal(entries, 12, 'every ignore entry was read');
+  assert.equal(entries, 13, 'every ignore entry was read');
 });
 
 test('the operator-install job proves the per-role database logins after install, rotation and both restores', () => {
@@ -108,7 +108,7 @@ test('the operator-install job proves the per-role database logins after install
   assert.equal(pkg.scripts['db:rotate-passwords'], 'bash scripts/rotate-db-passwords.sh');
 });
 
-test('the validate job runs the alert rule checks, so docker/alertmanager.webhook.yml is validated in CI', () => {
+test('the validate job runs the alert rule checks, so docker/alertmanager.slack.yml is validated in CI', () => {
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const job = ci.slice(ci.indexOf('\n  validate:'), ci.indexOf('\n  migrations:'));
   assert.match(job, /\n      - name: Alert rules and Alertmanager files \(promtool and amtool, no network\)\n        run: npm run test:alert-rules\n/);

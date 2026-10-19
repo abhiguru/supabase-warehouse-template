@@ -2,7 +2,7 @@
 
 ## Containers and networks
 
-The Compose project has three networks. A container resolves and reaches
+The Compose project has four networks. A container resolves and reaches
 another only on a network both are attached to
 (`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts this
 table from the rendered configuration).
@@ -12,29 +12,34 @@ table from the rendered configuration).
                       │
               ┌───────▼────────────────── default ──────────────────────────┐
               │  Kong :8000 ──▶ REST :3000   Realtime :4000   Storage :5000 │
-              │            └──▶ Functions :9000 ──▶ Gotenberg :3000         │
+              │            └──▶ Functions :9000                             │
               │  imgproxy :5001 (from Storage)      CUPS :631 (profile)     │
               │  sensor-bridge ──▶ Kong (profile; polls hubs on the LAN)    │
-              │  Prometheus, Alertmanager, exporters, Grafana (profile)     │
+              │  Prometheus, Alertmanager, exporters (profile)              │
               └────────────────────┬────────────────────────────────────────┘
-                 REST, Realtime, Storage, Postgres exporter, Grafana
+                 REST, Realtime, Storage, Postgres exporter
               ┌────────────────────▼────── database ────────────────────────┐
               │  PostgreSQL :5432            Supavisor (profile)            │
               └────────────────────┬────────────────────────────────────────┘
               ┌────────────────────▼────── admin ───────────────────────────┐
               │  PostgreSQL        postgres-meta :8080        Studio :3000  │
               └─────────────────────────────────────────────────────────────┘
+              ┌─────────────────────────── renderer (internal) ─────────────┐
+              │  Functions ──▶ pdf-renderer :3000   (no route out)          │
+              └─────────────────────────────────────────────────────────────┘
 ```
 
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | kong, rest, realtime, storage, imgproxy, functions, gotenberg, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor, grafana | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
-| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter, grafana | Connections to PostgreSQL |
+| `default` | kong, rest, realtime, storage, imgproxy, functions, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
+| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter | Connections to PostgreSQL |
 | `admin` | db, meta, studio | postgres-meta and Studio, which run SQL without a login |
+| `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database, Kong or Studio, and only the function runtime can reach it |
 
-Kong, the function runtime, Gotenberg, imgproxy, CUPS, the sensor bridge and
-Prometheus are on `default` only: they cannot open a connection to PostgreSQL, postgres-meta or
-Studio. Studio is on `admin` only, so its panels that call the API gateway do
+Kong, imgproxy, CUPS, the sensor bridge and Prometheus are on `default` only;
+the function runtime is on `default` and `renderer`; the PDF renderer is on
+`renderer` only. None of them can open a connection to PostgreSQL,
+postgres-meta or Studio: Studio is on `admin` only, so its panels that call the API gateway do
 not work; it is kept for the metadata acceptance check. Only Kong publishes a
 host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed
 container address.
@@ -51,7 +56,7 @@ Client → Kong :8000 → PostgREST :3000 → PostgreSQL :5432
 ```
 Client → Kong :8000 → Edge Runtime :9000 → Worker (Deno V8 isolate)
          (CORS)       (JWT verify)          → PostgreSQL (direct)
-                                            → Gotenberg (PDF)
+                                            → pdf-renderer (PDF)
                                             → CUPS (print)
 ```
 

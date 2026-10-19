@@ -7,8 +7,8 @@ from the Supabase project:
 - Source: https://github.com/supabase/supabase
 - License: Apache License 2.0
 
-The affected material includes files under `docker/volumes/db/`, Grafana
-provisioning, and Supavisor configuration. Those files remain subject to their
+The affected material includes files under `docker/volumes/db/` and Supavisor
+configuration. Those files remain subject to their
 upstream Apache-2.0 terms and notices. The repository's MIT license applies to
 the original warehouse-template code and does not replace third-party licenses.
 
@@ -29,28 +29,6 @@ The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
 image's upstream terms. See `docs/ATTRIBUTION_REVIEW.md` for the reviewed
 inventory, provenance boundary, and maintainer attestation.
-
-## Grafana (AGPL-3.0)
-
-Grafana is licensed under the GNU Affero General Public License v3.0
-(upstream: https://github.com/grafana/grafana; the complete licence text is
-vendored at `LICENSES/grafana/LICENSE`, see `LICENSES/grafana/README.md`).
-`docker/grafana/Dockerfile` builds the installation's local Grafana image
-(`<project>-grafana`) from the publisher's digest-pinned `grafana/grafana:13.2.4`
-image: it upgrades two Alpine libraries and replaces the bundled plugins with
-publisher-signed, checksum-pinned releases (`plugins.lock`, `install-plugins.sh`). No Grafana
-source is modified or vendored here; the earlier core-rebuild research and its
-Thrift patch were retired under the won't-fix disposition in
-`docs/PRODUCTION_DEPENDENCIES.md`.
-
-This repository redistributes neither the publisher image nor any rebuilt
-image: operators build the installation's local Grafana image
-(`<project>-grafana`) on their own host at setup time. An operator who
-distributes a rebuilt or modified Grafana image must offer its corresponding
-source under AGPL-3.0, and one who modifies Grafana (for
-example by applying the Thrift patch) and lets users interact with it over a
-network must offer the modified source as well (AGPL-3.0 section 13). The
-Grafana provisioning files adapted from `supabase/supabase` remain Apache-2.0.
 
 ## Sensor bridge (GPL-3.0-or-later)
 
@@ -92,25 +70,22 @@ redistributing them. Versions are the ones pinned in
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Supabase Studio | 2026.10.12-sha-3699278 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
-| Gotenberg | 8.37.0 (base of `docker/gotenberg/Dockerfile`; its `/usr/bin/gotenberg` is rebuilt from the same source tag) | MIT | https://github.com/gotenberg/gotenberg |
+| Chrome for Testing (chrome-headless-shell) | 155.0.8059.84 (`ARG CHS_VERSION` in `docker/pdf-renderer/Dockerfile`, downloaded at build time and checked against `ARG CHS_SHA256`) | BSD-3-Clause (Chromium), plus the bundled third-party notices of the archive | https://googlechromelabs.github.io/chrome-for-testing/ and https://www.chromium.org/ |
+| puppeteer-core | 25.14.0 (`docker/pdf-renderer/package.json`, pinned exactly) | Apache-2.0 | https://github.com/puppeteer/puppeteer |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
-| Grafana | 13.2.4 (`grafana/grafana:13.2.4`) | AGPL-3.0 | https://github.com/grafana/grafana |
 | Sensor bridge base image: Python | 3.14-slim-bookworm (`python:3.14-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
 
 ## Maintained container source recipes (2026-09-22)
 
 The dependency manifests under `docker/alertmanager`, `docker/node-exporter`,
 `docker/postgres-exporter`, `docker/cadvisor`, `docker/prometheus`,
-`docker/gotenberg`, `docker/auth`, `docker/storage`, `docker/imgproxy`, and `docker/postgres`
+`docker/auth`, `docker/storage`, `docker/imgproxy`, and `docker/postgres`
 are copied from the upstream versions listed in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) and modified to resolve
 security updates. Recipe URLs and SHA-256 checksums identify the source archives.
 No third-party executable or source archive is committed or published here.
 
-The Grafana recipe uses the publisher's digest-pinned 13.2.4 image and
-copies no application or plugin files into the source repository; the plugins it
-installs are the publisher-signed releases listed in `docker/grafana/plugins.lock`
-with their own manifests and notices (see the Grafana section above). The PostgREST image is the publisher's static v16.4 image. The release-binary
+The PostgREST image is the publisher's static v16.4 image. The release-binary
 identity check and the unresolved component inventory recorded in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) were made for the earlier
 v14.17 image and have not been repeated for v16.4.
@@ -118,9 +93,9 @@ v14.17 image and have not been repeated for v16.4.
 Upstream license files were read from those source archives (Storage's license
 from its matching release tag). Their complete texts and available NOTICE files
 are retained under `LICENSES/{alertmanager,node-exporter,postgres-exporter,
-cadvisor,prometheus,pdfcpu,gotenberg,auth,storage,imgproxy,gosu,wal-g}/`. GoTrue/Auth is MIT
+cadvisor,prometheus,auth,storage,imgproxy,gosu,wal-g}/` (and `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/` for the PDF renderer's downloaded and installed components). GoTrue/Auth is MIT
 (Copyright 2021–2025 Supabase); imgproxy is MIT (Copyright 2017 Sergey
-Alexandrovich); Gotenberg is MIT (Copyright Julien Neuhart); the other listed
+Alexandrovich); the other listed
 projects use Apache-2.0.
 Each source-built runtime image also retains the corresponding upstream license
 and available NOTICE. Dependencies keep their own upstream terms; this inventory

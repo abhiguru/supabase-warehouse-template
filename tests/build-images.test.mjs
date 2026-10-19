@@ -33,8 +33,8 @@ function fixture() {
   recipe('imgproxy');
   recipe('prometheus', { profiles: ['monitoring'] });
   recipe('cups', { profiles: ['printing'] });
-  // No `image:`: Compose tags every built image `<project>-<service>`, Grafana included.
-  recipe('grafana', { profiles: ['monitoring'] });
+  // No `image:`: Compose tags every built image `<project>-<service>`, Alertmanager included.
+  recipe('alertmanager', { profiles: ['monitoring'] });
   services.kong = { image: 'kong:3.9.3-ubuntu' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
@@ -111,8 +111,8 @@ test('an installation from before the record rebuilds once what it uses; an imag
   const f = fixture();
   try {
     // The image scan and the checks build optional images that are never started:
-    // Grafana and CUPS have an image here, but only Prometheus has a container.
-    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-grafana`);
+    // Alertmanager and CUPS have an image here, but only Prometheus has a container.
+    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-alertmanager`);
     const containers = 'db imgproxy prometheus kong';
     const first = run(f, { containers });
     assert.equal(first.status, 0, first.stderr);
@@ -219,7 +219,7 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
 
 // What setup.sh leaves behind: every image built from this checkout and recorded.
 const builtAll = f => {
-  const containers = 'db imgproxy prometheus grafana kong';
+  const containers = 'db imgproxy prometheus alertmanager kong';
   assert.equal(run(f, { containers }).status, 0);
   return containers;
 };
@@ -231,17 +231,17 @@ test('--replace-optional starts only the optional services that are running, and
     const none = run(f, { args: ['--replace-optional'], containers, running: 'db imgproxy kong' });
     assert.equal(none.status, 0, none.stderr);
     assert.equal(none.ups, '');
-    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
+    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
     assert.equal(some.status, 0, some.stderr);
-    assert.equal(some.ups, '--wait --wait-timeout 180 grafana prometheus');
+    assert.equal(some.ups, '--wait --wait-timeout 180 alertmanager prometheus');
     assert.equal(some.builds, '');
-    assert.match(some.stdout, /Optional services that are running: grafana prometheus\./);
+    assert.match(some.stdout, /Optional services that are running: alertmanager prometheus\./);
     // An image of this project that has no build record yet (`compose build` by the monitoring
     // check, an installation from before the record) is still replaced.
     rmSync(f.record);
-    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'grafana prometheus' });
+    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager prometheus' });
     assert.equal(unrecorded.status, 0, unrecorded.stderr);
-    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 grafana prometheus');
+    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 alertmanager prometheus');
     const failed = run(f, { args: ['--replace-optional'], containers, running: 'prometheus', fail: 'up' });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /An optional service did not start \(prometheus\)\. The core services are not affected/);
@@ -252,13 +252,13 @@ test('--replace-optional leaves a running optional service alone when its image 
   const f = fixture();
   try {
     const containers = builtAll(f);
-    // An upgrade renamed the image (Grafana's shared tag became `<project>-grafana`), or it was removed.
-    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)));
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus grafana kong' });
+    // An upgrade renamed the image (a shared tag became `<project>-alertmanager`), or it was removed.
+    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)));
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
     assert.equal(result.status, 1, 'start.sh turns this into a warning');
     assert.equal(result.builds, '');
     assert.equal(result.ups, '--wait --wait-timeout 180 prometheus', 'the others are still replaced');
-    assert.match(result.stderr, /the grafana image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
+    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
   } finally { cleanup(f); }
 });
 
@@ -267,17 +267,17 @@ test('--replace-optional leaves a running optional service alone when its image 
   try {
     const containers = builtAll(f);
     // Another checkout, a manual build: the tag names an image this checkout did not record.
-    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-grafana`)), `sha256:${'9'.repeat(64)}\n`);
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)), `sha256:${'9'.repeat(64)}\n`);
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
     assert.equal(result.status, 1);
     assert.equal(result.builds, '');
     assert.equal(result.ups, '', 'nothing else is running, so nothing is started');
-    assert.match(result.stderr, /the grafana image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
+    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
     // The image setup.sh builds next puts it right.
-    assert.equal(run(f, { containers }).builds, 'grafana');
-    const after = run(f, { args: ['--replace-optional'], containers, running: 'grafana' });
+    assert.equal(run(f, { containers }).builds, 'alertmanager');
+    const after = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
     assert.equal(after.status, 0, after.stderr);
-    assert.equal(after.ups, '--wait --wait-timeout 180 grafana');
+    assert.equal(after.ups, '--wait --wait-timeout 180 alertmanager');
   } finally { cleanup(f); }
 });
 
@@ -311,48 +311,51 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
   assert.ok(!lines('start.sh').includes('bash "$ROOT/scripts/build-images.sh"'), 'start.sh never builds');
 });
 
-test('the Grafana recipe is its own build directory, like every other recipe', () => {
+test('the Alertmanager recipe is its own build directory, like every other recipe', () => {
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  // A context of `.` would put every file under docker/ into the Grafana fingerprint.
+  // A context of `.` would put every file under docker/ into the Alertmanager fingerprint.
   assert.doesNotMatch(`${readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8')}\n${override}`, /^\s+context: \.$/m);
-  assert.match(override, /grafana:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/grafana\n/);
-  assert.match(readFileSync(join(repo, 'docker/grafana/Dockerfile'), 'utf8'), /^COPY plugins\.lock install-plugins\.sh \/tmp\/$/m);
+  assert.match(override, /alertmanager:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/alertmanager\n/);
 });
 
-test('the Gotenberg binary is built from the source of the base image tag', () => {
-  // docker/gotenberg/Dockerfile replaces the publisher's /usr/bin/gotenberg with a
-  // build of the same tag's source; a base moved alone would pair an old binary
-  // with a new image (Dependabot ignores the tag for that reason).
-  const recipe = readFileSync(join(repo, 'docker/gotenberg/Dockerfile'), 'utf8');
-  const base = /^FROM gotenberg\/gotenberg:(\d+)\.(\d+)\.(\d+)@sha256:[0-9a-f]{64}$/m.exec(recipe);
-  assert.ok(base, 'the base is a digest-pinned gotenberg/gotenberg x.y.z tag');
-  const version = base.slice(1).join('.');
-  const sources = [...recipe.matchAll(/codeload\.github\.com\/gotenberg\/gotenberg\/tar\.gz\/refs\/tags\/v([0-9.]+) /g)].map(match => match[1]);
-  assert.deepEqual(sources, [version], 'the source archive is the base tag');
-  assert.match(recipe, /echo '[0-9a-f]{64}  \/tmp\/source\.tar\.gz' \| sha256sum -c -/);
-  assert.deepEqual([...recipe.matchAll(/gotenberg\/v\d+\/cmd\.Version=([0-9.]+)'/g)].map(match => match[1]), [version], 'the version flag is the base tag');
-  const mod = readFileSync(join(repo, 'docker/gotenberg/gotenberg.go.mod'), 'utf8');
-  assert.match(mod, new RegExp(`^module github\\.com/gotenberg/gotenberg/v${base[1]}$`, 'm'), 'gotenberg.go.mod is the module of the base major');
-  assert.match(recipe, new RegExp(`cmd\\.Version=${version.replaceAll('.', '\\.')}'.* \\./cmd/gotenberg\\n`), 'the flag is set on the cmd/gotenberg build');
-  assert.match(recipe, /^COPY --from=gotenberg \/out\/gotenberg \/usr\/bin\/gotenberg$/m);
-  assert.match(recipe, /^COPY gotenberg\.go\.mod \.\/go\.mod$/m);
-  // Every operator install builds this image, so no stage runs upstream tests
-  // (some are timing-sensitive and flaked on a loaded runner); each Go stage
-  // verifies its module graph and builds read-only.
-  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.startsWith('#'));
-  assert.ok(!instructions.some(line => /\bgo\s+test\b/.test(line)), 'no build stage of the Gotenberg recipe runs go test');
-  const stages = recipe.split(/^(?=FROM )/m).filter(stage => stage.startsWith('FROM golang:'));
-  assert.deepEqual(stages.map(stage => /^FROM \S+ AS (\S+)$/m.exec(stage)?.[1]), ['build', 'gotenberg']);
-  for (const stage of stages) {
-    assert.match(stage, /go mod download && go mod verify/);
-    assert.match(stage, /go build -p=2 -mod=readonly -trimpath /);
-  }
+test('the PDF renderer image is pinned, verified and minimal', () => {
+  // docker/pdf-renderer/Dockerfile downloads chrome-headless-shell from Chrome for Testing at
+  // build time. Trivy cannot see that binary, so the version and the archive checksum are the
+  // controls: both are build args, the checksum is checked, and nothing floats.
+  const recipe = readFileSync(join(repo, 'docker/pdf-renderer/Dockerfile'), 'utf8');
+  const instructions = recipe.replace(/\\\n/g, ' ').split('\n').filter(line => !line.trim().startsWith('#'));
+  const text = instructions.join('\n');
+  assert.match(recipe, /^FROM node:24-trixie-slim@sha256:[0-9a-f]{64} AS base$/m, 'the base is one literal FROM (Dependabot reads it): Node 24 LTS on Debian trixie, pinned by digest');
+  assert.equal([...recipe.matchAll(/^FROM node:/gm)].length, 1, 'the digest is written once');
+  assert.deepEqual(instructions.filter(line => /^FROM /.test(line) && !/^FROM base AS \S+$/.test(line) && !/@sha256:[0-9a-f]{64}/.test(line)), [], 'every other stage starts from the digest-pinned base');
+  const version = /^ARG CHS_VERSION=(\d+\.\d+\.\d+\.\d+)$/m.exec(recipe)?.[1];
+  const sha = /^ARG CHS_SHA256=([0-9a-f]{64})$/m.exec(recipe)?.[1];
+  assert.ok(version, 'ARG CHS_VERSION has a four-part default');
+  assert.ok(sha, 'ARG CHS_SHA256 has a SHA-256 default');
+  assert.match(text, /sha256sum -c -/, 'the downloaded archive is checked against CHS_SHA256');
+  assert.match(text, /\$\{?CHS_SHA256\}?/);
+  assert.match(text, /storage\.googleapis\.com\/chrome-for-testing-public\/\$\{?CHS_VERSION\}?\//, 'the archive URL is built from CHS_VERSION');
+  assert.doesNotMatch(text, /@stable|\blatest\b|last-known-good/, 'no floating Chrome channel or tag');
+  // Debian security revisions are removed from the archive; an exact pin would break the build. The font-file
+  // hash (FONT_FILELIST_SHA256) and the golden-PDF job are the drift guards instead.
+  for (const install of text.split('\n').filter(line => /apt-get install/.test(line))) assert.doesNotMatch(install, /\s[a-z0-9.+-]+=\d/, 'apt packages are named without versions');
+  assert.match(text, /ARG FONT_FILELIST_SHA256=[0-9a-f]{64}/);
+  assert.match(text, /npm ci --omit=dev --ignore-scripts/);
+  assert.match(text, /rm -rf [^\n]*(?:\/npm|corepack|yarn)/, 'npm, corepack and yarn are removed');
+  assert.match(text, /\btini\b/, 'tini is installed');
+  assert.match(recipe, /^ENTRYPOINT \[[^\]]*"(?:\/usr\/bin\/)?tini"/m, 'tini is PID 1');
+  const user = [...recipe.matchAll(/^USER (\S+)$/gm)].map(match => match[1]).pop();
+  assert.ok(user && !/^(?:0|root)(?::|$)/.test(user), `the image runs as a non-root user (${user})`);
+  assert.match(recipe, /TARGETARCH/, 'the build checks the architecture');
+  assert.match(text, /amd64/, 'only amd64 builds (the Chrome for Testing archive is linux64)');
+  const pkg = JSON.parse(readFileSync(join(repo, 'docker/pdf-renderer/package.json'), 'utf8'));
+  assert.match(pkg.dependencies['puppeteer-core'], /^\d+\.\d+\.\d+$/, 'puppeteer-core is pinned exactly');
   const dependabot = readFileSync(join(repo, '.github/dependabot.yml'), 'utf8');
-  assert.match(dependabot, /- dependency-name: gotenberg\/gotenberg\n\s+update-types:\n\s+- "version-update:semver-major"\n\s+- "version-update:semver-minor"\n\s+- "version-update:semver-patch"\n/);
+  assert.match(dependabot, /package-ecosystem: npm\n\s+directory: "\/docker\/pdf-renderer"/);
 });
 
 test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {
-  // A fixed tag (Grafana's was `warehouse-grafana:local` until 2026-10-13) is shared by every
+  // A fixed tag (one was `warehouse-<service>:local`) is shared by every
   // installation on the host: one checkout's build replaced another's running image.
   for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
     const text = readFileSync(join(repo, file), 'utf8');
@@ -362,5 +365,5 @@ test('no built service names its own image: Compose tags each `<project>-<servic
     }
   }
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  assert.match(override, /\n  grafana:\n    build:\n/, 'the Grafana service is still built here');
+  assert.match(override, /\n  alertmanager:\n    build:\n/, 'the Alertmanager service is still built here');
 });
