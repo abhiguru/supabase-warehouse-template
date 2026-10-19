@@ -20,7 +20,7 @@ import { SLACK_WEBHOOK_PATTERN } from './monitoring-config.mjs';
 export const MAX_ATTEMPTS = 3;
 export const PROMPT = company => `Slack incoming-webhook URL for ${company} alerts (create one in Slack: Apps → Incoming Webhooks):`;
 export const REFUSAL = '--alert-webhook-file PATH is required (a file holding the facility\'s Slack webhook URL), or --alert-webhook-file off for a non-production install';
-export const OFF_WARNING = 'Warning: --alert-webhook-file off: no Slack webhook, so alerts stay on this host only and nobody is told when a backup fails or the database stops. Not for a production install; add the webhook later by rerunning setup.sh --operator.';
+export const OFF_WARNING = 'Warning: --alert-webhook-file off: no Slack webhook, so alerts stay on this host only and nobody is told when a backup fails or the database stops. Not for a production install; add the webhook later by rerunning setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or passing --alert-webhook-file <a private file holding the URL>.';
 
 const NOT_SLACK = 'That is not a Slack incoming-webhook URL.';
 const isNo = answer => answer === null || /^n(o)?$/i.test(String(answer).trim());
