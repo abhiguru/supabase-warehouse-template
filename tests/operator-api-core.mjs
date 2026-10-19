@@ -125,7 +125,7 @@ assert.equal((await api(attachmentPath, adminToken)).status, 200, 'failed retry 
 // Image transformation is off (ENABLE_IMAGE_TRANSFORMATION=false). Upload a real 2x2 PNG, which a working
 // transformer would resize, and ask for it resized: the request must be refused.
 // Storage v1.80.2 does not register the render routes unless the flag is 'true', so the expected status is 404.
-// That comes from the upstream source and has not been run; the first CI run confirms the status.
+// CI confirmed the 404 on 2026-10-20 (PR 129).
 const pngName = `${a}/backend-core.png`;
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
 const pngUpload = await fetch(`${base}/storage/v1/object/grn-images/${pngName}`, { method: 'POST', headers: {
