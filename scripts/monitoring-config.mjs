@@ -138,7 +138,7 @@ export function alertDeliveryWarning(state, running = true) {
   if (alertWebhookConfigured(state)) {
     return running ? null : 'Slack webhook stored but monitoring is not running: no alert will reach Slack and the daily "Monitoring is alive" message has stopped. Start it with `bash start.sh` (or `bash scripts/start-monitoring.sh` while the core services are up); see docs/MONITORING.md.';
   }
-  if (!running) return null;
+  if (!running) return 'No Slack webhook: alerts are not delivered. Monitoring is not running, so this facility raises and sends no alerts at all: nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs (it asks for the URL on a terminal) or add --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
   return 'No Slack webhook: alerts are not delivered. Alertmanager is running with no receiver, so no alert leaves this host and nobody is told when a backup fails or the database stops. Give it the facility\'s Slack incoming-webhook URL: rerun setup.sh --operator with your usual inputs (it asks for the URL on a terminal) or add --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
 }
 

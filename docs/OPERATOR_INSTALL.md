@@ -219,7 +219,8 @@ it refuses. `--alert-webhook-file ask` asks again on a rerun and replaces the
 stored URL. With a webhook stored, setup and `start.sh` start the monitoring
 services; without one they stay optional. `--alert-webhook-file off` is for a non-production install: alerts
 then stay on this host, setup warns, and `npm run doctor` warns `No Slack
-webhook: alerts are not delivered` while the monitoring profile is running.
+webhook: alerts are not delivered` on every run while no webhook is stored,
+whether or not the monitoring profile is running.
 A rerun that already has a stored URL asks nothing. To create the file without the URL
 entering the shell history: `install -m 600 /dev/null FILE`, then paste the URL with an
 editor. What each file is, the alert

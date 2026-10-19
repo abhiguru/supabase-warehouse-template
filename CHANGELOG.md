@@ -20,7 +20,7 @@ through Slack only.
 - **Monitoring starts when a webhook is stored.** `setup.sh` and `start.sh` start Prometheus, Alertmanager and the exporters (`scripts/start-monitoring.sh`); `doctor` warns when a stored webhook has no running monitoring. The heartbeat has its own receiver with `send_resolved: false`; mixed groups list resolved alerts apart; `npm run test:monitoring`'s synthetic alert never reaches Slack.
 - **`setup.sh --operator` asks for the webhook.** The test message is posted before the URL is stored (refused: ask again or store anyway); `--alert-webhook-file ask` replaces a stored URL. On a terminal, without `--alert-webhook-file`, it prompts (no echo,
   three tries) and offers a Slack test message. With no terminal and no option it refuses. `--alert-webhook-file off`
-  stays for non-production installs (warning; `doctor` reports "no Slack webhook: alerts are not delivered"). CI's
+  stays for non-production installs (warning; `doctor` reports "No Slack webhook: alerts are not delivered" on every run while none is stored, whether or not monitoring runs). CI's
   operator-install job passes `off`.
 
 ## Unreleased: GRN lists page by receipt, and a low-stock filter (migration 98)
