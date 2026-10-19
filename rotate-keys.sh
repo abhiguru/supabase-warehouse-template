@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rotate this instance's JWT secret and the anon/service keys derived from it.
-# Database signing configuration, every session and pending challenge, the
-# Realtime tenant and each key consumer are updated together; devices sign in again.
+# Database signing configuration, every session and pending challenge and each
+# key consumer are updated together; devices sign in again.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +52,7 @@ mv -f "$staged" "$live"
 # Recreate only the running key consumers so an intentionally stopped optional
 # service is not started. db is included so its environment matches on reruns.
 recreate=()
-for service in db kong rest realtime storage functions studio supavisor; do
+for service in db kong rest storage functions supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then recreate+=("$service"); fi
 done

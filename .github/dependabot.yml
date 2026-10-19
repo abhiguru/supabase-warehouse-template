@@ -16,61 +16,27 @@ updates:
           - "version-update:semver-minor"
           - "version-update:semver-patch"
   - package-ecosystem: npm
-    directories:
-      - "/docker/postgres-meta"
-      - "/docker/storage"
+    directory: "/docker/storage"
     schedule:
       interval: weekly
-    # No version updates for these two manifests, security updates only (a
-    # limit of 0 does exactly that). Each is the dependency set of an upstream
-    # application at a pinned tag. Tried on 2026-10-12: grouped, the pending
-    # minor and patch updates were 44 and the metadata image did not build; one by one
-    # they are 44 runs of the install job, and two of the first six broke the
-    # postgres-meta type check. The manifests move when the upstream tag moves.
+    # No version updates for this manifest, security updates only (a limit of 0
+    # does exactly that). It is the dependency set of an upstream application at
+    # a pinned tag; it moves when the upstream tag moves.
     open-pull-requests-limit: 0
     ignore:
-      # These two manifests are the dependency sets of upstream applications
-      # that the recipes build from a pinned source tag. A new major of one of
-      # their dependencies needs changes to that source, which this repository
-      # would have to carry as a patch (fastify5.patch and vitest4.patch are two
-      # such patches, both taken for a security fix). Majors are therefore taken
-      # with a security reason or when the upstream tag moves, by hand. Security
-      # updates are still proposed.
+      # A new major of one of its dependencies needs changes to the upstream
+      # source, which this repository would have to carry as a patch. Majors are
+      # therefore taken with a security reason or when the upstream tag moves,
+      # by hand. Security updates are still proposed.
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
-      # A 0.x package: its minors break too. 0.3.0 made the formatter an
-      # optional peer dependency, which postgres-meta v0.99.0 does not install,
-      # and no CI check calls the type generator.
-      - dependency-name: "@supabase/postgrest-typegen"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-      # Both fail the type check of postgres-meta v0.99.0, which the recipe runs
-      # (found on 2026-10-12 with @types/pg 8.23.1 and @sentry/node 10.76.2):
-      # the newer types no longer accept that source. They move with the
-      # upstream tag. Patch updates are still proposed.
-      - dependency-name: "@types/pg"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-      - dependency-name: "@sentry/node"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
   - package-ecosystem: docker
     directories:
       - "/docker/*"
     schedule:
       interval: weekly
     ignore:
-      # The recipe compiles imgproxy from a source tag and puts that binary into
-      # this runtime image (docker/imgproxy/Dockerfile). A new major of the image
-      # alone would pair a v3 binary with v4 libraries, and still start. Move the
-      # source tag, its checksum, the build base, go.mod and this image together.
-      - dependency-name: darthsim/imgproxy
-        update-types:
-          - "version-update:semver-major"
       # The print service's base (docker/cups/Dockerfile). A new Ubuntu release
       # (22.10 counts as a minor of 22.04, and is not a long-term release)
       # changes CUPS and its printer drivers, and CI can only check that CUPS
@@ -79,10 +45,6 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
-      # The build base of the same recipe: it goes with the imgproxy source tag.
-      - dependency-name: imgproxy/imgproxy-base
-        update-types:
-          - "version-update:semver-major"
       # The PDF renderer's base (docker/pdf-renderer/Dockerfile) is Node 24 LTS by digest.
       # Digest and patch updates come; a new major is a planned change of the runtime.
       - dependency-name: node
@@ -92,16 +54,9 @@ updates:
       # data directory, not a changed line in a recipe. So does the publisher's
       # 15.19 line (looked at on 2026-10-12, tag 15.19.0.004): it is a different
       # image, on Alpine and not Ubuntu (the recipe's apt-get step cannot run),
-      # with another user id for postgres (100, was 105), without wal-g, and
+      # with another user id for postgres (100, was 105), and
       # tests/migrations.sh stops on it: the Storage schema is missing.
       - dependency-name: supabase/postgres
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-      # The recipe builds postgres-meta from the source of the same tag, with
-      # this repository's manifest and two patches (docker/postgres-meta). A new
-      # tag moves the source checksum, the manifest and the patches together.
-      - dependency-name: supabase/postgres-meta
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"

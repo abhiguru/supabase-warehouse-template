@@ -261,8 +261,8 @@ SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_b'::uuid AND note='Same
 SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_a'::uuid AND note IS DISTINCT FROM 'Must roll back' FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'invoiced receipt keeps A');
 SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_b'::uuid AND note IS DISTINCT FROM 'Must roll back' FROM public.goodsreceived WHERE id=:'grn_b2'::uuid),'receipt in a cart keeps B');
 SELECT pg_temp.lot_assert((SELECT customer_id=:'customer_a'::uuid AND customer_name='Lot Rule Customer A' FROM public.goodsreceived WHERE id=:'grn_b3'::uuid),'free receipt moved to A');
-SELECT pg_temp.lot_assert((SELECT bool_and(tgenabled='O') FROM pg_trigger WHERE tgrelid='public.goodsreceived_trl'::regclass AND tgname='trg_mark_stock_mvs_dirty_grn'),
- 'refused receipt edits leave the item triggers enabled');
+SELECT pg_temp.lot_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgenabled<>'O'),
+ 'refused receipt edits leave no trigger of the receipt, its lines or the items disabled');
 
 -- Migration 87 (BR-06): a dispatch made from a cart belongs to the cart's customer. B's cart (cart_b)
 -- holds 2 bags of LOTB2.

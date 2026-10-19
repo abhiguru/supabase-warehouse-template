@@ -37,7 +37,8 @@ eval "want=\\\${FAKE_DB_$user:-}"
 if [ -z "$want" ] || [ "$PGPASSWORD" != "$want" ]; then echo "psql: error: FATAL:  password authentication failed for user \\"$user\\"" >&2; exit 2; fi
 case "$query" in
   *inet_client_addr*) echo "$user remote" ;;
-  *pg_monitor*) echo "\${FAKE_MONITORING_RIGHTS:-true falsefalsefalsefalsefalse}" ;;
+  *warehouse_monitoring*) echo "\${FAKE_MONITORING_ADMIN:-absent}" ;;
+  *supabase_auth_admin*) echo "\${FAKE_AUTH_ADMIN:-false true}" ;;
   *pg_authid*) echo "\${FAKE_FUNCTIONS_ADMIN:-false true}" ;;
   *) echo 1 ;;
 esac
@@ -59,8 +60,8 @@ function fixture(prefix) {
   // The database as setup leaves it: every login has its own value, the superuser POSTGRES_PASSWORD.
   const database = {
     FAKE_DB_supabase_admin: values.POSTGRES_PASSWORD, FAKE_DB_authenticator: values.DB_PASSWORD_AUTHENTICATOR,
-    FAKE_DB_supabase_storage_admin: values.DB_PASSWORD_STORAGE, FAKE_DB_supabase_auth_admin: values.DB_PASSWORD_AUTH,
-    FAKE_DB_pgbouncer: values.DB_PASSWORD_POOLER, FAKE_DB_warehouse_monitoring: values.DB_PASSWORD_MONITORING,
+    FAKE_DB_supabase_storage_admin: values.DB_PASSWORD_STORAGE,
+    FAKE_DB_pgbouncer: values.DB_PASSWORD_POOLER,
   };
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: join(scratch, 'docker.log'), ...database };
   const run = (args, extra = {}) => spawnSync('bash', [join(root, 'scripts/db-roles.sh'), ...args], { encoding: 'utf8', env: { ...env, ...extra }, timeout: 60000 });
@@ -74,7 +75,7 @@ test('check passes when every login behaves and POSTGRES_PASSWORD is the live su
     const result = f.run(['check']);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /^ok   supabase_admin accepts POSTGRES_PASSWORD \(SCRAM, network connection\)/m);
-    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 13);
+    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 10);
     assert.doesNotMatch(result.stdout, /^FAIL/m);
     assert.match(result.stdout, /Every database login refuses the superuser password and accepts only its own\.\n$/);
     const calls = readFileSync(join(f.scratch, 'docker.log'), 'utf8');
@@ -106,6 +107,18 @@ test('a failed read of supabase_functions_admin fails the check instead of repor
     const login = f.run(['check'], { FAKE_FUNCTIONS_ADMIN: 'true false' });
     assert.notEqual(login.status, 0);
     assert.match(login.stdout, /^FAIL supabase_functions_admin login state: true false$/m);
+    const auth = f.run(['check'], { FAKE_AUTH_ADMIN: 'true false' });
+    assert.notEqual(auth.status, 0);
+    assert.match(auth.stdout, /^FAIL supabase_auth_admin login state: true false$/m);
+    assert.match(f.run(['check']).stdout, /^ok   supabase_auth_admin cannot log in and has no password$/m);
+    // warehouse_monitoring is dropped (migration 107): while it exists, even without a login, the check fails.
+    const monitoring = f.run(['check'], { FAKE_MONITORING_ADMIN: 'false true' });
+    assert.notEqual(monitoring.status, 0);
+    assert.match(monitoring.stdout, /^FAIL warehouse_monitoring exists \(migration 107 drops it\): false true$/m);
+    const monitoringLogin = f.run(['check'], { FAKE_MONITORING_ADMIN: 'true false' });
+    assert.notEqual(monitoringLogin.status, 0);
+    assert.match(monitoringLogin.stdout, /^FAIL warehouse_monitoring exists \(migration 107 drops it\): true false$/m);
+    assert.match(f.run(['check']).stdout, /^ok   warehouse_monitoring does not exist$/m);
   } finally { clean(f); }
 });
 

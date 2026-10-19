@@ -137,7 +137,7 @@ SET LOCAL ROLE authenticated;
 
 SELECT pg_temp.core_assert(public.get_invoice_data((:'saved'::jsonb->>'invoice_id')::uuid)->>'success'='true','staff reads invoice RPC');
 SELECT pg_temp.core_assert(public.get_invoices_list()->>'success'='true','staff lists invoices');
-SELECT public.get_dispatch_list() AS staff_dispatch_list \gset
+SELECT public.get_dispatch_list_with_items() AS staff_dispatch_list \gset
 SELECT pg_temp.core_assert(:'staff_dispatch_list'::jsonb->>'success'='true',
  'staff lists dispatches: ' || COALESCE(:'staff_dispatch_list'::jsonb->>'message','no message'));
 -- Migration 23: the dispatch GRN picker and recent-dispatch feed work for an

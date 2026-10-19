@@ -12,23 +12,19 @@ before deployment. A previous passing scan is not a current security guarantee.
 
 | Service | Upstream application/source | Patch boundary |
 |---|---|---|
-| Alertmanager | 0.34.1 | Patched gRPC and Go; retain matching official web UI |
-| Node exporter | 1.12.1 | Patched Go/crypto dependency; upstream collector tests with unpacked fixtures |
-| Postgres exporter | 0.20.1 | Patched Go/crypto and required net/text versions; collector/config/exporter tests |
-| cAdvisor | 0.60.6 | Upgrade from 0.55.1, patch command module Go/crypto/gRPC; preserve matching native runtime |
-| Prometheus | 3.15.0 | Patched Go/crypto/gRPC; matching official UI embedded in both executables |
-| Auth (disabled profile) | 2.196.0 | Patched Go/crypto/mod/gRPC and Alpine OpenSSL; local `pgproto3/v2` v2.3.3 DataRow length guard; unchanged auth application and migrations |
 | Storage | 1.80.2 | Upgrade from 1.79.14; same-major runtime leaf fixes in locked npm manifest (2026-10-13: `@fastify/busboy` 3.2.3 for [GHSA-gxm5-99cw-xjw9](https://github.com/advisories/GHSA-gxm5-99cw-xjw9), `fast-copy` 4.1.2 for [GHSA-jggr-w7fw-pc2j](https://github.com/advisories/GHSA-jggr-w7fw-pc2j), both moderate); Alpine package upgrade; remove unused npm CLI |
 | PDF renderer | Node 24 LTS (digest), chrome-headless-shell 155.0.8059.84 from Chrome for Testing (SHA-256 pinned), puppeteer-core | Our own code (`docker/pdf-renderer`), no upstream patch; Debian font and library packages only; see "PDF renderer" |
-| imgproxy | 3.31.4 | Patched Go/crypto/image/mod/gRPC; matching vips builder; retain native libraries and apply Debian updates |
 | Supavisor (pooler profile) | 2.9.13 | Patch release from 2.9.12 plus Debian updates |
-| PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade the Ubuntu packages with a fixed advisory (linux-libc-dev; since 2026-10-17 also OpenSSL, GnuPG, PackageKit, sudo) with glibc and locale data unchanged; rebuild gosu 1.19 and WAL-G 3.0.9 with patched Go/gRPC |
+| PostgreSQL | 15.8.1.135 | Same database server/extensions; upgrade the Ubuntu packages with a fixed advisory (linux-libc-dev; since 2026-10-17 also OpenSSL, GnuPG, PackageKit, sudo) with glibc and locale data unchanged; rebuild gosu 1.19 with patched Go; since 2026-10-19 the base image's WAL-G binary is deleted (not used) |
 
-Go rebuilds use the versions locked in their Dockerfiles. Nothing is
+The monitoring stack (Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters, all rebuilt from Go source) was
+removed on 2026-10-19: one small checker program on the host (`scripts/watch.mjs`, [MONITORING.md](MONITORING.md))
+replaced it, so five images, one privileged container and most of the Go rebuilds are gone. The one Go builder left is
+the gosu stage of the database recipe. Go rebuilds use the versions locked in their Dockerfiles. Nothing is
 suppressed in the scanner. Since 2026-10-17 the rows that cannot be fixed yet
 are listed in `docker/image-exceptions.json`, a time-boxed ignore list: each
 entry is bound to one recipe, has a named owner and expires at most 90 days
-after its review (see "Exception ledger and the two-pass scan"). Required
+after its review (see "Exception ledger and the image scan"). Required
 applications are retained. The source and license
 inventory is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
@@ -36,14 +32,14 @@ inventory is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 The supported backup path remains `db:backup` / `db:verify-restore` (logical
 Postgres dump plus private storage files). WAL archiving stays disabled. The
-updated WAL-G executable is not acceptance of PITR, external object storage,
-legacy WAL-G backup compatibility, or operator RTO/RPO. Those require a separate
-recovery drill with approved storage and policies. GoTrue remains disabled and
-is not production SMS authentication acceptance.
+WAL-G executable is deleted from the database image (since 2026-10-19; it was
+unused and the base image's copy carried known CVEs), so WAL-G is not an
+accepted recovery path: PITR, external object storage and operator RTO/RPO
+require a separate recovery drill with approved storage and policies.
 
 The PR #22 19-image Compose inventory on 2026-09-22 passed 15 images at the fixed
 HIGH/CRITICAL threshold (Trivy 0.74.0, `--ignore-unfixed`). All eleven new recipes
-above passed, as did Kong, CUPS, Edge Runtime and Realtime. PostgREST returned
+above passed, as did Kong, CUPS, Edge Runtime and Realtime (removed on 2026-10-19). PostgREST returned
 no package results and was rejected by the evidence validator; it is not a
 passing vulnerability scan. Its static binary needs trusted package/SBOM
 evidence tied to the image before this coverage gap can close. The gate
@@ -56,24 +52,23 @@ correctly failed for three unchanged upstream images:
 
 Each scan report was validated for presence, format, nonempty results, image
 identity and findings. Private machine-readable inventory stays outside Git.
-The commands to reproduce are `npm run scan:images`, `npm run test:monitoring`,
+The commands to reproduce are `npm run scan:images`,
 `npm run test:pooler`, `npm run test:recovery`, `npm run db:backup` and
 `npm run db:verify-restore`, with a unique owned loopback demo project. The API
 contract is checked with `npm run check:contract -- <app path>` (CI's contract
-job runs it against the pinned app commit); the API and Realtime drivers
-(`tests/operator-api-core.mjs`, `tests/operator-realtime-core.mjs` and the
+job runs it against the pinned app commit); the API drivers
+(`tests/operator-api-core.mjs` and the
 others listed in `docs/DEVELOPER_HANDOFF.md`) run in CI's operator-install job.
 
 Acceptance passed: 19 backend unit tests; source/history secret scans; generated
 setup/rerun; full demo API (roles, sessions, images, all four PDFs and business
-regressions); authenticated 2x2-to-1x1 PNG resize through Storage/imgproxy;
-monitoring configuration, five targets and local alert ingestion; both pooler
-ports with valid/invalid credentials; Realtime delivery/isolation/reconnect;
+regressions); authenticated 2x2-to-1x1 PNG resize through Storage/imgproxy (imgproxy was removed on 2026-10-19);
+the monitoring checker's one pass and status (the five-target Prometheus check was replaced on 2026-10-19); both pooler
+ports with valid/invalid credentials; Realtime delivery/isolation/reconnect (Realtime was removed on 2026-10-19);
 logical backup/storage integrity and isolated restore; owned-service recovery.
 The live contract against mobile `989ade8e86f313ae4b173ad1bb5b56607ecbe353`
-had no missing RPCs or signature mismatches. Realtime now has a 90-second
-initialization grace period because the first database-recreate rehearsal
-briefly marked it unhealthy before it recovered; corrected setup passed.
+had no missing RPCs or signature mismatches. (Realtime had a 90-second
+initialization grace period then; the service was removed on 2026-10-19.)
 
 The earlier report counted PostgREST as clean based only on an empty findings
 list; the strict validator correctly rejected that report. This correction
@@ -85,36 +80,20 @@ That PR #22 evidence did not close the three vulnerable images, the PostgREST
 coverage gap, or the external
 production/iPhone requirements.
 
-## Studio / metadata follow-up
+## Studio and postgres-meta removed (2026-10-19)
 
-The publisher released Studio `2026.09.21-sha-512201d`; its application fixes the
-previous Next/sharp findings. Its 13 remaining fixed findings were exclusively
-in global npm/pnpm tools. The maintained recipe pins that image by digest and
-removes those tools; its entrypoint continues to run Node directly.
-
-Postgres-meta remains based on source v0.99.0, rebuilt coherently against Fastify
-5.12.5 and compatible CORS/Swagger/type-provider/metrics plugins. The reviewed
-`fastify5.patch` passes the logger as `loggerInstance`, handles unknown thrown
-errors, and declares the existing error responses for the stricter type provider.
-Locked leaf updates, Debian security updates and removal of unused npm/pnpm tools
-complete the patch. No warehouse API or public database schema changes are made.
-
-The final follow-up inventory has 17 valid passing reports out of 19 images.
-PostgREST lacks scannable package results and is
-rejected for insufficient evidence. Both new candidates scan with zero fixed
-HIGH/CRITICAL findings. The metadata source
-passed TypeScript/build and all 197 upstream tests against a disposable database
-using upstream fixtures, with no host ports. Each image build repeats the three
-upstream app/admin/helper test files; CI runs `npm run test:studio`, which checks
-Studio's project HTML, JavaScript asset, profile/project inventory, metadata table
-inventory and a read-only SQL query. The full warehouse API/PDF/image regression
-passed against the updated pair. Physical-iPhone and production gates remain open.
-
-For the full upstream suite, build the recipe's `build` target, run the source
-archive's `test/db` database fixture on an isolated Docker network without host
-ports, and run `PG_META_MAX_RESULT_SIZE_MB=20 PG_QUERY_TIMEOUT_SECS=5
-PG_CONN_TIMEOUT_SECS=30 npm exec -- vitest run --maxWorkers=1
---no-file-parallelism` against it. Never target an existing warehouse database.
+Supabase Studio and postgres-meta are no longer part of the template. Neither had
+a login and both ran SQL as the database superuser; Studio sat on a private
+network with no published port, its gateway panels did not work, and no operator
+procedure used it. They are gone from Compose with the `admin` network that joined
+them to the database, along with their recipes (`docker/studio`,
+`docker/postgres-meta` and its patches), the Studio check script, the metadata
+dependency audit, and the exception-ledger entries `studio-os-no-fix`,
+`studio-app-awaiting-publisher` and `meta-os-no-fix`. To look at data, use
+`bash scripts/compose.sh exec db psql -U supabase_admin -d postgres`
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md)). Earlier sections that mention
+Studio or postgres-meta are the dated record of what was done while they
+shipped.
 
 ## Remaining scan-coverage dependency: PostgREST
 
@@ -199,94 +178,21 @@ fabricated packages to the report instead.
 
 The image gate scans runtime packages at the fixed HIGH/CRITICAL threshold; it
 is not a complete audit of source/build dependencies or unfixed advisories.
-GitHub's manifest analysis exposed vulnerable metadata build/test tooling after
-the manifests were published. The follow-up updates compatible Vitest/Vite,
-Rollup, shell-quote, PostCSS, nanoid and glob dependencies. The previously tested
-PostgreSQL type definitions and type generator are pinned to preserve compilation
-and the original generated-type snapshots. No snapshot is rewritten to hide a
-behavior change. Storage's manifest now contains only the runtime dependencies
-used by its precompiled Node entrypoint, with current Fastify/protobuf fixes.
+GitHub's manifest analysis exposed vulnerable build/test tooling in the
+source-built manifests after they were published (the postgres-meta manifest,
+since removed, was one of them). Storage's manifest now contains only the runtime
+dependencies used by its precompiled Node entrypoint, with current
+Fastify/protobuf fixes.
 
-`npm run check:container-dependencies` audits both complete tracked npm graphs in
-CI at HIGH/CRITICAL severity (and, since 2026-10-18, the PDF renderer's production graph, `--omit=dev`, at the same HIGH/CRITICAL threshold). At the earlier source follow-up, metadata passed
-that threshold with 20 moderate findings remaining, while Storage reported zero
-findings. At that earlier revision, the metadata source passed all 197 upstream
-tests on a fresh isolated fixture database, and the deployed Studio/API/image/PDF
-checks passed. Test databases must be recreated between full upstream runs:
-upstream fixtures retain a helper function after completion.
+`npm run check:container-dependencies` audits the tracked npm graphs of Storage and the
+PDF renderer in CI at HIGH/CRITICAL severity (the renderer's production graph only, `--omit=dev`,
+since 2026-10-18). The postgres-meta graph was audited as well until that recipe was removed.
 
-On 2026-10-07 the metadata audit failed on advisories published after the last
-green run: tinypool <=2.1.1 (GHSA-5gmw-xhrv-c9v3, GHSA-85c8-ppgw-ccpr, both
-critical), shipped as a production dependency of the pinned type generator via
-oxfmt; and the build-only shell-quote (GHSA-pqg4-j6r4-53mv) and source-map-js
-(GHSA-68fv-2mgg-jv7q). Exact overrides select the first patched releases:
-tinypool 2.1.2, shell-quote 1.11.0 and source-map-js 1.2.2. The type generator
-and oxfmt stay pinned; oxfmt formatting of generated output was re-run against
-tinypool 2.1.2. `npm ls --omit=dev` and the metadata audit pass. The VM's
-currently running metadata image was built before this change and still
-contained tinypool 2.1.0 until the final soak ended; it was then rebuilt
-from `3d70f6a` (image `sha256:6042abe0…`, tinypool 2.1.2 only, no
-shell-quote) and the metadata service recreated healthy with business and
-authentication digests unchanged (pilot evidence, archived; see [HISTORY.md](HISTORY.md)).
-
-**2026-09-24 metadata dependency candidate:** The tracked postgres-meta manifest
-now pins `vitest` and `@vitest/coverage-v8` to 4.1.11, which resolves
-`@vitest/mocker` 4.1.11. That is the patched 4.x version for
-[GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9).
-It also pins `@sentry/node` and `@sentry/profiling-node` together at 10.75.2;
-the locked runtime graph resolves `@opentelemetry/core` 2.11.0, above the 2.8.0
-fix for [GHSA-8988-4f7v-96qf](https://github.com/advisories/GHSA-8988-4f7v-96qf).
-The combined postgres-meta image build passed TypeScript checking, compilation,
-all 12 tests in the three selected upstream app/admin/helper files, production
-pruning and `npm ls --omit=dev`. `npm ci` and the full npm audit reported zero
-vulnerabilities for its locked graph. A targeted Trivy 0.74.0 fixed
-HIGH/CRITICAL scan of that combined image passed the strict image-report
-validator. The earlier Sentry-only candidate also passed a network-disabled
-container probe with a dummy DSN: initialization, `pg` and
-`x-connection-encrypted` span redaction, and `/health` HTTP 200. A separate
-in-memory Sentry transport probe captured a synthetic event and completed
-`flush`; it did not test delivery to an external Sentry endpoint or production
-DSN.
-
-The first full upstream run with Vitest 4 failed during test collection because
-one existing test passed its timeout options after the callback. The
-test-only [`vitest4.patch`](../docker/postgres-meta/vitest4.patch) moves the
-timeout options before the callback for Vitest 4; production source is
-unchanged. With that patch and a fresh disposable database, the combined
-candidate passed **13/13 test files and 197/197 tests**. These local checks do
-not establish GitHub alert state or production acceptance; CI and the full
-19-image/runtime gates still apply.
-
-The earlier manifest inventory also reported a HIGH advisory
-`GHSA-jqcq-xjh3-6g23` for `github.com/jackc/pgproto3/v2` in the optional disabled
-Auth service, plus lower-severity upstream findings. These are not erased by
-`--ignore-unfixed`. The local source candidate below addresses the reported
-decoder behavior while upstream v2 has no patched release. GoTrue is still
-disabled and production authentication is not accepted.
-
-**2026-09-24 Auth source candidate:** The [advisory](https://github.com/advisories/GHSA-jqcq-xjh3-6g23)
-and [Go vulnerability record](https://pkg.go.dev/vuln/GO-2026-4518) list no
-patched publisher version of `pgproto3/v2`. Auth still requires v2.3.3 through
-`pgconn v1.14.3`, so its build now uses a local v2.3.3 source replacement.
-[PATCH.md](../docker/auth/internal/forks/pgproto3/PATCH.md) records the upstream
-tag commit `945c2126f6db8f3bea7eeebe307c01fe92bca007`, archive SHA-256,
-license and one production change: `DataRow.Decode` rejects negative field
-lengths other than the valid `-1` null sentinel before slicing. The local
-regression tests exercise `-2`, minimum int32 and `-1`; the Auth Docker build
-runs those tests, selected upstream Auth crypto tests, `go mod verify` for
-downloaded modules and compilation. The final image copies the fork's MIT
-license notice to `/usr/share/doc/warehouse-auth/pgproto3-LICENSE`. A targeted Trivy 0.74.0
-fixed HIGH/CRITICAL scan of the Auth candidate passed the strict image-report
-validator. The local `replace` makes the compiled source differ from the
-published v2.3.3 module even though the requirement retains that version.
-Scanners that identify dependencies only by published module versions cannot
-attribute the patch to this unversioned local replacement; a remaining version
-finding or a missing finding alone does not establish its source status. The
-targeted scan's PASS therefore does not prove the patched decoder behavior;
-that conclusion rests on source, regression and build review. GoTrue remains
-disabled. The full 19-image gate, Auth runtime/database acceptance and GitHub
-alert verification remain open. A maintained upstream driver remains the
-long-term replacement.
+The earlier manifest inventory also reported a HIGH advisory `GHSA-jqcq-xjh3-6g23` for
+`github.com/jackc/pgproto3/v2` in the optional disabled Auth (GoTrue) service. That service, its Go source recipe
+(with the patched `pgproto3` copy) and its image scan were removed on 2026-10-19; sessions come from SQL, not from
+GoTrue, and the role `supabase_auth_admin` is kept without a login (migration 104). The advisory no longer applies
+to anything this repository builds.
 
 The first GitHub integration runs failed during pooler startup although a fresh
 local database/pooler passed. Redacted diagnostics identified the cause: the
@@ -316,44 +222,34 @@ the pilot setup notes (archived with the private pilot evidence, see
 findings above are not cleared by npm audit; the deferred image/security and
 production gates remain separate. Fresh CI/container integration is pending.
 
-## Network boundaries (2026-10-11)
+## Network boundaries (2026-10-11, updated 2026-10-19)
 
-Until this change every service shared one Compose network. postgres-meta
-answers on `meta:8080` without a credential and runs any SQL as
-`supabase_admin`, and Studio (no login) forwards SQL to it, so a foothold in
-any container, for example in the Chromium that renders PDFs, was superuser
-SQL. The project now has four networks; the table is in
-[ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks).
+On 2026-10-11 the project moved from one Compose network to separate ones. At the
+time postgres-meta answered on `meta:8080` without a credential and ran any SQL as
+`supabase_admin`, and Studio (no login) forwarded SQL to it, so a foothold in any
+container, for example in the Chromium that renders PDFs, was superuser SQL. Both
+were removed on 2026-10-19 (see "Studio and postgres-meta removed"), and so was the
+`admin` network they shared with the database. The project has three networks; the
+table is in [ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks).
 
-- `meta` is reachable from `studio` and `db` only; `studio` from `meta` and
-  `db` only.
 - `db` is reachable from the services that hold a database connection (rest,
-  realtime, storage, supavisor, the disabled auth service, postgres-exporter) and from the admin pair. Kong, the function runtime, the PDF renderer,
-  imgproxy, CUPS, the sensor bridge, Prometheus, Alertmanager, node-exporter
-  and cAdvisor cannot connect to it.
+  storage, supavisor).
+  Kong, the function runtime, the PDF renderer, CUPS and the sensor bridge cannot connect to it.
 - Operator probes follow the same rule: `health-check.sh` and
-  `scripts/gateway-dns-check.sh` call the gateway from the `storage` container
-  (they used Studio), and postgres-meta from Studio.
+  `scripts/gateway-dns-check.sh` call the gateway from the `storage` container.
 
 What this does not do:
 
 - Services on `default` still reach each other without Kong's limits
-  (`functions:9000`, `imgproxy:5001`, `storage:5000`, `rest:3000`,
-  `prometheus:9090`). PostgREST, Storage and the functions check tokens
-  themselves; imgproxy and Prometheus do not.
+  (`functions:9000`, `storage:5000`, `rest:3000`). PostgREST, Storage and the
+  functions check tokens themselves.
 - A service on `database` can open a connection to PostgreSQL; what it can do
   there is decided by the login it holds, and each has its own password
   ("Database passwords: one per login" below).
-- The networks are ordinary bridges, not `internal: true`: the database needs
-  outbound HTTPS for the SMS provider, and Studio and postgres-meta were left
-  with the outbound access they had. Making `admin` internal is a possible
-  later step and needs a run on real containers.
-- Studio's Storage, Auth and API panels call `http://kong:8000`, which Studio
-  can no longer reach. No operator procedure uses Studio's interface and no
-  host port is published for it. Attaching Studio to `default` to use those
-  panels reopens the path this change closes.
+- The `database` and `default` networks are ordinary bridges, not `internal: true`:
+  the database needs outbound HTTPS for the SMS provider.
 
-Each install now creates three Docker networks instead of one. A host that
+Each install creates three Docker networks instead of one. A host that
 runs many Compose projects can exhaust Docker's default address pools
 (about 30 networks); `docker network prune` removes unused ones.
 
@@ -365,7 +261,7 @@ environment are in `docker/pdf-renderer/README.md`. There is no LibreOffice, no 
 image. The Gotenberg source rebuild, its flaky upstream tests and its ledger entry are retired.
 
 **Posture.** The service sits alone with `functions` on the `internal: true` network `renderer` (Docker adds no route
-out of it: no internet, no host, no Kong, no database, no Studio) and publishes no port. The root filesystem is
+out of it: no internet, no host, no Kong, no database) and publishes no port. The root filesystem is
 read-only with a 256 MB tmpfs at `/tmp`; all capabilities are dropped; `no-new-privileges`; 512 pids; 1.5 GiB memory
 with no extra swap (the renderer's thresholds are sized for exactly that limit; a smaller one lets a large image
 render hit the kernel's OOM kill); tini is PID 1; the process runs as uid 10001. The service refuses a request body over 48 MB
@@ -425,7 +321,7 @@ The optional `sensor-bridge` service (profile `sensors`, [SENSORS.md](SENSORS.md
 is the one container that talks to devices on the facility LAN. What limits it:
 
 - **Network:** `default` only, so it reaches Kong and cannot open a connection
-  to PostgreSQL, postgres-meta or Studio (`tests/compose-networks.test.mjs`).
+  to PostgreSQL (`tests/compose-networks.test.mjs`).
   It publishes no port. Its only call into the project is
   `http://kong:8000/functions/v1/ingest-sensor-readings`, fixed in Compose
   rather than taken from a variable. Outbound it needs the hubs' LAN addresses.
@@ -468,11 +364,17 @@ recreation of the container; a URL pinned only the top-level version, esm.sh
 resolved supabase-js's own dependencies by range when it served the module,
 and nothing checked content.
 
-- **Two vendored files.** `functions/vendor/jose.mjs` (jose 5.10.0) and
-  `functions/vendor/supabase-js.mjs` (supabase-js 2.39.0 with its
-  dependencies) are each one self-contained module. The functions import them
-  by relative path. `functions/vendor/LICENSES.txt` holds the licence of every
-  package they may contain.
+- **One vendored file.** `functions/vendor/jose.mjs` (jose 5.10.0) is one
+  self-contained module; the functions import it by relative path.
+  `functions/vendor/LICENSES.txt` holds the licence of every package it may
+  contain. supabase-js, the second vendored file until 2026-10-19 (17,943
+  lines), is gone: `functions/_shared/supabase-rest.ts` makes the few REST,
+  RPC and Storage calls the functions need with plain `fetch`, as
+  `operator-otp` and `central-exchange` already did. It makes the same requests and gets the
+  same answers for the calls the functions make, and adds a 60 s timeout to each
+  call; supabase-js had none. That equals the worker's own 60 s wall-clock limit
+  (`functions/main/index.ts`), so it never cuts off a call that could otherwise
+  finish.
 - **How they are built.** `scripts/vendor-edge-modules.sh` installs the exact
   packages of `scripts/edge-vendor/package-lock.json` (integrity-hashed,
   without install scripts) into a temporary directory and bundles them with
@@ -496,13 +398,25 @@ and nothing checked content.
   session, and `generate-customer-stock-pdf`, which stored a PDF and returned
   its signed link. The container log names no download.
 
+## Functions image (2026-10-19)
+
+`docker/edge-runtime/Dockerfile` is multi-stage. The upstream edge-runtime
+v1.77.4 image (730 MB; 761 MB with the package upgrade) holds a 277 MB
+`edge-runtime.debug` symbols file and a 50 MB `libonnxruntime.so` (AI
+inference). `ldd` shows the binary links only `libgcc_s`, `libm` and `libc`, so
+it starts without either. The final stage copies only `/usr/local/bin/edge-runtime`
+onto `debian:bookworm-slim` (the same release, bookworm, as upstream; pinned by
+digest), adds `ca-certificates` and `tzdata`, keeps the full `apt-get upgrade`
+and the PCRE2 minimum-version check, and keeps the upstream entrypoint
+`edge-runtime`. The image is 258 MB. The healthcheck still works: bash and grep
+are in the base. The Deno runtime is unchanged.
+
 Still open:
 
 - **Printing.** The printing functions, which the router refuses with 503,
   import `npm:ipp@2.0.1` on demand. Vendor it the same way before printing is
   enabled.
-- jose 5 to 6 and supabase-js 2.39 to a current 2.x release are version
-  moves; the pinned supabase-js resolves its Supabase dependencies at 2.117.3.
+- jose 5 to 6 is a version move.
 
 ## Image pins (2026-10-11)
 
@@ -512,12 +426,12 @@ a digest, or referenced with a digest in Compose (PostgREST since 2026-10-17):
 | Image | State |
 |---|---|
 | `kong:3.9.3-ubuntu` | Pinned to `sha256:92035d16d7ff86b7bc12fb1d0090d29357d924238b1880f78735f3f2fea6b631`, the multi-platform index (linux/amd64 and linux/arm64) the registry serves for that tag on 2026-10-11, read with `docker buildx imagetools inspect`. The tag was rebuilt after the first pin (`sha256:12972ce1...`, the index of 2026-09-16). Dependabot's `docker-compose` updates propose a new digest when the tag is rebuilt. |
-| `postgrest/postgrest:v16.4` | Pinned to `sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df` on 2026-10-17: the manifest list the registry serves for that tag (linux/amd64 `sha256:bee9e1ef...`, linux/arm64 `sha256:c3638ac2...`), read with `docker buildx imagetools inspect`, and the repository digest of the v16.4 image the dev hosts had pulled. `tests/gateway-config.test.mjs` no longer allows a tag-only image. The image has no package inventory; its time-boxed exception is bound to this digest (see "Exception ledger and the two-pass scan"). |
+| `postgrest/postgrest:v16.4` | Pinned to `sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df` on 2026-10-17: the manifest list the registry serves for that tag (linux/amd64 `sha256:bee9e1ef...`, linux/arm64 `sha256:c3638ac2...`), read with `docker buildx imagetools inspect`, and the repository digest of the v16.4 image the dev hosts had pulled. `tests/gateway-config.test.mjs` no longer allows a tag-only image. The image has no package inventory; its time-boxed exception is bound to this digest (see "Exception ledger and the image scan"). |
 
 Kong still has no recipe of its own, so its Ubuntu packages are as old as the
 pinned build; the pin makes that explicit instead of leaving it to whichever
 build a host pulled first. A `docker/kong/Dockerfile` with an
-`apt-get upgrade` step, as Realtime and Supavisor have, would need a build and
+`apt-get upgrade` step, as Supavisor has, would need a build and
 a gateway run and is not part of this change.
 
 `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` named PostgREST
@@ -526,7 +440,7 @@ v16.4 and v1.77.4. They are corrected, and `tests/gateway-config.test.mjs` now
 reads the versions from Compose and the Dockerfiles and fails when either
 document names a different one.
 
-## Exception ledger and the two-pass scan (2026-10-17)
+## Exception ledger and the image scan (2026-10-17)
 
 Operational review findings TW-BE-009 (HIGH/CRITICAL rows in the installed
 images), TW-BE-010 (no PostgREST inventory) and TW-BE-005 part 1 (PostgREST
@@ -536,13 +450,14 @@ a `--no-cache` rebuild and rescan before each release instead
 ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md#image-scan-before-a-release)).
 
 **The gate.** `npm run scan:images` (`scripts/scan-images.sh`) now builds every
-Compose image with `--no-cache`, then scans each image twice with Trivy
-(`--scanners vuln --severity HIGH,CRITICAL --list-all-pkgs`):
+Compose image with `--no-cache`, then scans each image once with Trivy
+(`--scanners vuln --severity HIGH,CRITICAL --list-all-pkgs`, no `--ignore-unfixed`):
+the report holds every HIGH/CRITICAL row, the ones with no fix included. Since
+2026-10-19 it scans each image once; until then it also ran an `--ignore-unfixed` pass; that report is a subset of
+this one, and the validator already refuses a `no-fix` entry for a row with a
+listed fix, so the one report enforces both rules.
 
-1. with `--ignore-unfixed`: the rows that have a listed fix;
-2. without it: every HIGH/CRITICAL row, the ones with no fix included.
-
-`scripts/validate-image-report.mjs` checks both reports as before (image
+`scripts/validate-image-report.mjs` checks the report (image
 identity, a versioned package inventory in every result) and then requires every
 HIGH/CRITICAL row to match a valid entry of
 [`docker/image-exceptions.json`](../docker/image-exceptions.json) for the
@@ -577,11 +492,11 @@ expiry at most 90 days after that review. An entry that has expired, has no
 owner, was reviewed in the future or has an unknown field rejects the whole
 ledger, so the scan fails until the entry is renewed or removed. The validator
 with only a report and an image keeps the old strict behaviour.
-`tests/image-scan.test.mjs` covers the passes and each rule.
+`tests/image-scan.test.mjs` covers the scan and each rule.
 
 **Scan of 2026-10-18.** Trivy 0.74.0 (the release binary, checksum checked),
 one vulnerability database for every report (updated 2026-10-17 18:34 UTC),
-the flags of `scripts/scan-images.sh`, linux/amd64 (the pdf-renderer row was scanned later, on 2026-10-18 with Trivy 0.76.0, the version installed on the build host; the ledger entry says so). Every built image was built
+the flags of `scripts/scan-images.sh` at the time (both passes), linux/amd64 (the pdf-renderer row was scanned later, on 2026-10-18 with Trivy 0.76.0, the version installed on the build host; the ledger entry says so). Every built image was built
 with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 198bbfa, built the same evening as "after". Counts are HIGH/CRITICAL rows.
 
@@ -590,15 +505,13 @@ with `--no-cache` on 2026-10-17 or 2026-10-18; "before" is the recipe of `main`
 | db (`postgres`) | 20 H | 0 | 3 C, 128 H | `db-os-no-fix` |
 | functions (`edge-runtime`) | 3 C, 4 H | 0 | 1 C, 59 H | `functions-os-no-fix` |
 | pdf-renderer (`pdf-renderer`), new on 2026-10-18 (replaces gotenberg) | n/a | 0 | 1 C, 54 H | `pdf-renderer-os-no-fix` |
-| studio | 2 C, 4 H | 2 C, 3 H | 4 C, 246 H | `studio-app-awaiting-publisher`, `studio-os-no-fix` |
 | sensor-bridge | 4 H | 0 | 2 C, 61 H | `sensor-bridge-os-no-fix` |
-| meta (`postgres-meta`), unchanged | 0 | 0 | 1 C, 58 H | `meta-os-no-fix` |
-| realtime, unchanged | 0 | 0 | 74 H | `realtime-os-no-fix` |
+| realtime (removed 2026-10-19; its row was 74 H, `realtime-os-no-fix`) | n/a | n/a | n/a | none |
 | supavisor, unchanged | 0 | 0 | 10 C, 379 H | `supavisor-os-no-fix` |
 | rest (`postgrest/postgrest:v16.4@sha256:d155c671...`) | no package results | no package results | no package results | `rest-no-package-inventory` |
-| kong, storage, imgproxy, cups, auth, prometheus, alertmanager, node-exporter, postgres-exporter, cadvisor, unchanged | 0 | 0 | 0 | none needed |
+| kong, storage, imgproxy, cups, auth, unchanged (prometheus, alertmanager, node-exporter, postgres-exporter and cadvisor were removed on 2026-10-19) | 0 | 0 | 0 | none needed |
 
-With the ledger, both passes of all nineteen images are accepted by the
+With the ledger, both passes of all seventeen images are accepted by the
 validator. The review VM's numbers (TW-BE-009) were taken with an older
 database; the rows with a fix match them.
 
@@ -622,12 +535,7 @@ What changed, per image:
   moves to `5.36.0-7+deb12u4`. edge-runtime v1.77.4 is still the newest tag.
 - **gotenberg**: removed on 2026-10-18 with its source rebuild, its `gotenberg-os-no-fix` ledger entry (1 C, 126 H
   with no fix) and the timing-sensitive upstream tests it had to skip. `pdf-renderer` replaces it ("PDF renderer").
-- **studio** (`docker/studio/Dockerfile`): moved to `2026.10.12-sha-3699278`,
-  the newest tag, which fixes `@modelcontextprotocol/sdk` (1.32.0). It still
-  ships simple-git 3.36.0, `@simple-git/argv-parser` 1.1.1 and next 16.3.6, so
-  those advisories are the `advisory` exception `studio-app-awaiting-publisher`
-  until a later tag; replacing packages inside the prebuilt application is not
-  safe. Studio stays on the admin network only.
+- **studio** and **meta**: removed on 2026-10-19 with their recipes and their three ledger entries.
 - **sensor-bridge** (`docker/sensor-bridge/Dockerfile`): not in the review's
   table (it was not installed there); this scan found msgpack 1.1.2, urllib3
   2.7.0 and setuptools 70.3.0 vendored by the base image's pip 26.2.1, each
@@ -642,20 +550,21 @@ What changed, per image:
 
 ## Gateway limits and metrics (2026-10-11)
 
-- The GraphQL route and both Realtime routes had the public-key check but no
-  rate limit. GraphQL and the Realtime HTTP route now have 300 requests a
-  minute and 6000 an hour per client address, which was the REST route's limit
-  at the time (the REST route itself was raised later the same day, see "REST
-  request limit" below). The Realtime socket route has its own limit, 1800
-  connection attempts a minute and no hourly window (next section). The
-  Realtime HTTP route also has a 2 MB body limit.
+- The Realtime socket route had the public-key check but no rate limit; it was given its own limit, 1800 connection
+  attempts a minute and no hourly window (removed with the service on 2026-10-19). The GraphQL route (`/graphql/v1`, 300 requests a minute
+  and 6000 an hour from 2026-10-11) was removed together with pg_graphql in migration 103 (2026-10-19): the app
+  never called it, and `anon` could run `graphql_public.graphql` through it. The gateway now has two routes with
+  rate limits (REST, functions) and a storage route without one (the Realtime socket route and its limit were removed on 2026-10-19).
+- The Realtime HTTP route `/realtime/v1/api` (which had the same 300 and 6000
+  limits and a 2 MB body limit) was removed on 2026-10-19 because nothing used
+  it. The socket route followed the same day, with the Realtime service.
 - The storage route still has no rate limit. A list screen loads one image per
   row and every phone at a facility shares one public address, so a limit low
   enough to matter could refuse ordinary use; it needs request counts from a
   running facility before a number is chosen.
-- The Prometheus plugin is enabled for all routes (see
-  [MONITORING.md](MONITORING.md)). Its series are served on the status
-  listener (port 8100, inside the Compose project only), not on the proxy port.
+- Kong's Prometheus plugin and its status listener (port 8100) were removed on
+  2026-10-19 with the Prometheus stack: the gateway serves only the proxy port,
+  and the monitoring checker reads its access log instead ([MONITORING.md](MONITORING.md)).
 - `docker/kong.yml` is filled in by a shell `eval` in the gateway entrypoint,
   so a double quote, backtick or backslash anywhere in the file, comments
   included, is silently altered. `tests/gateway-config.test.mjs` now runs the
@@ -664,7 +573,9 @@ What changed, per image:
   reading the plugin schemas in the pinned Kong image. Kong itself has not
   loaded the file.
 
-### Realtime socket limit
+### Realtime socket limit (removed 2026-10-19)
+
+The Realtime service and its route were removed on 2026-10-19 (the app re-reads every 15 seconds); this section is kept for the reasoning. The limit no longer exists.
 
 The first version of the socket limit was the REST numbers, 300 a minute and
 6000 an hour per client address. That could lock a whole facility out of
@@ -700,7 +611,7 @@ Realtime after an outage, so it was replaced. The reasoning:
   the foreground at once would see some attempts refused in the first minute
   of an outage and reconnect a little later; raise `minute` in
   `docker/kong.yml` and the numbers in `tests/gateway-config.test.mjs`
-  together. The REST and GraphQL limits were not changed here; they have the
+  together. The REST limit was not changed here; it has the
   same one-address-per-facility property (see the storage note above). The
   REST limit was changed afterwards by an owner decision (next section). As
   with the other gateway changes, Kong has not loaded this file on a running
@@ -747,21 +658,32 @@ hourly window**, like the socket route. It was 300 a minute and 6000 an hour.
   The OTP limits are not affected: they are counted in the database and on the
   functions route (`docs/OPERATOR_INSTALL.md`, "Authentication and OTP
   limits").
-- **Where the number comes from.** It is the owner's decision. It was not
-  derived from request counts of a running facility; how many requests one app
-  screen makes has not been measured. A facility with many more than 100
-  phones working at once can raise `minute` in `docker/kong.yml` and the
-  numbers in `tests/gateway-config.test.mjs` together.
+- **Where the number comes from.** It is the owner's decision, made before the
+  app re-read screens on a timer. It was not derived from request counts of a
+  running facility. A facility with many more than 100 phones working at once
+  can raise `minute` in `docker/kong.yml` and the numbers in
+  `tests/gateway-config.test.mjs` together.
+- **Timed re-reads (release with migration 105).** The app no longer holds a
+  socket; a screen that is shown, with the app in the foreground and online,
+  asks again on a timer, one REST call each time (counted from
+  `useOrderLiveUpdates.ts` and `useSensorLiveUpdates.ts` in the app): an open
+  order list, order queue or order detail calls `get_orders_list` or
+  `get_order_with_items` every 15 s, which is 4 requests a minute; the sensor
+  list calls `get_sensor_polling_data` and a sensor detail calls
+  `get_sensor_device` every 60 s, which is 1 a minute (the history is not
+  re-read). Only the screen on top re-reads. With every phone sitting on an
+  order screen, 100 phones send 400 requests a minute (22% of 1800, leaving 14
+  a minute for each phone's own taps) and 300 phones send 1200 (67%, leaving 600,
+  which is 2 for each phone). The limit is therefore kept at 1800 for a facility
+  of about 100 phones; a facility of 300 raises it to 3600 in the two places
+  above. Phones on the same Wi-Fi share one address (`CF-Connecting-IP`).
 - **The other routes** keep their limits; all of them count per client
   address, so each is likewise one budget for a whole facility:
 
   | Route | Limit per address | Used by the app | Note |
   |---|---|---|---|
   | `/rest/v1/` | 1800 a minute | every RPC and table read | this section |
-  | `/realtime/v1/` (socket) | 1800 attempts a minute | live order screens | previous section |
   | `/functions/v1/` | 100 a minute, 6000 an hour | OTP sign-in, the four PDF functions, the two configuration reads, printer status | Owner decision of 2026-10-11: the hourly cap was 2000 and is now what the minute limit adds up to in an hour. See the next point. |
-  | `/graphql/v1` | 300 a minute, 6000 an hour | not used | no change needed |
-  | `/realtime/v1/api` | 300 a minute, 6000 an hour | not used | no change needed |
   | `/storage/v1/` | none | photos | see the storage note above |
 
 - **The functions route: 100 a minute, 6000 an hour (owner decision of
@@ -793,14 +715,8 @@ dropped when the third fills, and a recreated container starts with an empty
 log).
 
 - **The rule.** No log line holds a token, a key, an OTP, a password or a query
-  string. A signed storage link (`?token=`) and the anon key in a Realtime
-  socket address (`?apikey=`) are credentials in a query string: a retained log
-  that holds one can replay a still-valid document link or call the API as the
-  public client.
-- **Realtime still logs the anon key.** Realtime writes the socket address
-  (`?apikey=`) to its own container log, independently of the gateway, so the
-  redaction above does not cover it. The value is the public anon key, not a
-  session token or a signed link; the Realtime log was not changed.
+  string. A signed storage link (`?token=`) is a credential in a query string: a retained log
+  that holds one can replay a still-valid document link.
 - **Client addresses are allowed in the gateway log, for its rotation life.**
   Owner decision of 2026-10-17. The address is useful to the operator (who is
   hammering the gateway) and leaves with the rotation. Nothing else identifies a
@@ -855,30 +771,30 @@ Changed on 2026-10-18 (review finding TW-BE-002, owner decision D4). Until
 then `POSTGRES_PASSWORD` was the password of every database login, superusers
 and service roles alike, so the credential of any one service opened all of
 them on a reachable database. Since the network change above only services on
-the `database` and `admin` networks can present a password to PostgreSQL at
+the `database` network can present a password to PostgreSQL at
 all; now each of them presents its own.
 
 ### Who signs in as whom
 
 | Login | Password (`config/compose.env`) | Used by | Set by |
 |---|---|---|---|
-| `postgres`, `supabase_admin` (superusers) | `POSTGRES_PASSWORD` | operator scripts (`compose exec db psql -U supabase_admin`), postgres-meta, Studio (it is given the value), Realtime (`DB_USER`), Supavisor's metadata database (`_supabase`) | the image's entrypoint at the first start; `npm run db:rotate-passwords -- --yes --superuser` |
+| `postgres`, `supabase_admin` (superusers) | `POSTGRES_PASSWORD` | operator scripts (`compose exec db psql -U supabase_admin`), Supavisor's metadata database (`_supabase`) | the image's entrypoint at the first start; `npm run db:rotate-passwords -- --yes --superuser` |
 | `authenticator` | `DB_PASSWORD_AUTHENTICATOR` | PostgREST | `docker/volumes/db/roles.sql` at the first start; `scripts/configure-db-roles.sql` on every setup run, after both restores and on rotation |
 | `supabase_storage_admin` | `DB_PASSWORD_STORAGE` | Storage | the same |
-| `supabase_auth_admin` | `DB_PASSWORD_AUTH` | the disabled Auth service | the same |
+| `supabase_auth_admin` | none | nothing: it owns the image's `auth` schema objects and has no login (the Auth service was removed) | migration 104 makes it `NOLOGIN` with no password; `configure-db-roles.sql` repeats it on every setup run and after both restores |
 | `pgbouncer` | `DB_PASSWORD_POOLER` | Supavisor's pool user (pooler profile) | the same; `docker/volumes/pooler/pooler.exs` writes it into the stored tenant at every pooler start |
-| `warehouse_monitoring` | `DB_PASSWORD_MONITORING` | the Postgres exporter (monitoring profile); it used `postgres` | migration 94 creates it `NOLOGIN`, a member of `pg_monitor` and of nothing else; `configure-db-roles.sql` gives it `LOGIN` and its password |
-| `supabase_functions_admin` | none: `NOLOGIN`, no password | nothing; it owns the webhook functions, which run with its rights without a login | migration 94, `roles.sql`, `configure-db-roles.sql` |
+| `warehouse_monitoring` | none | nothing: the Postgres exporter it served was removed on 2026-10-19. The role no longer exists | migration 94 created it; migration 107 drops it; `configure-db-roles.sql` repeats the drop on every setup run and after both restores (an older backup may bring it back) |
+| `supabase_functions_admin` | none: `NOLOGIN`, no password | nothing; it owned the webhook functions of pg_net. Migration 103 drops it where it owns nothing; `configure-db-roles.sql` still makes it `NOLOGIN` wherever it is kept | migration 94, `configure-db-roles.sql`, migration 103 |
 
-`scripts/configure.mjs` generates the five service values (64 hexadecimal
-characters each) and `REALTIME_DB_ENC_KEY` (16 characters) with every fresh
+`scripts/configure.mjs` generates the three service values (64 hexadecimal
+characters each) with every fresh
 state, and its existing-state branch appends any that a state lacks; it never
 replaces a value that exists. The doctor refuses a state where one is
 missing, malformed, or repeats `POSTGRES_PASSWORD` or another one. The
 Compose files name each value with `${NAME:?…}`, so a state without it fails
 at `compose config` with "Run setup.sh to generate the per-role database
 passwords", not at the first login. In the rendered configuration
-`POSTGRES_PASSWORD` appears only in db, meta, realtime, supavisor and studio;
+`POSTGRES_PASSWORD` appears only in db and supavisor;
 each service value only in its own service and in db, whose first-start init
 script reads them (`tests/compose-networks.test.mjs`).
 
@@ -889,21 +805,11 @@ sends the verifiers, with the superuser password to sign in, on standard input
 of `compose exec`. `ALTER ROLE … PASSWORD` stores a verifier as it is, so the
 server never sees a password: none can appear in a log, in `pg_stat_activity`
 or in `pg_stat_statements` (tracking is off for that transaction all the
-same, because `warehouse_monitoring` may read it). No value is a command-line
+same). No value is a command-line
 argument or an environment variable of a docker command.
 
 Stored copies:
 
-- **Realtime** stores its tenant's database credentials (the superuser
-  password) in `_realtime`, encrypted with `DB_ENC_KEY`, which was the fixed
-  text `supabaserealtime` and is now `REALTIME_DB_ENC_KEY`. The pinned
-  release (v2.144.0) deletes and rewrites the `realtime-dev` tenant at every
-  start while `SEED_SELF_HOST` is on (`priv/repo/seeds.exs`), so a recreated
-  container stores them under the current key and nothing has to clear the
-  rows. Compose recreates Realtime whenever its key or password changes. A
-  later Realtime that seeds only an absent tenant would need the rows removed
-  in the same step (as `scripts/rotate-auth.sql` does for the signing key):
-  check `seeds.exs` when the pin moves.
 - **Supavisor** stores its tenant, with the pool user's password, in
   `_supabase`, encrypted with `VAULT_ENC_KEY`. `pooler.exs` used to write it
   only when the tenant was absent; it now also rewrites the pool user's
@@ -913,9 +819,6 @@ Stored copies:
 
 Still the same:
 
-- Realtime connects as `supabase_admin`. Giving it a non-superuser role is a
-  later, separate step: it creates its own schema and replication slot, and
-  its needs must be measured on a running stack.
 - `SECRET_KEY_BASE` and `VAULT_ENC_KEY` have no rotation procedure
   (`docs/OPERATOR_INSTALL.md`, "Secrets that rotate-keys does not change").
 - The image's other login roles (`supabase_replication_admin`,
@@ -931,10 +834,8 @@ Still the same:
 `POSTGRES_PASSWORD` is the superuser password the database has
 (`supabase_admin` signs in with it; otherwise no refusal proves anything and
 the check fails), then for each service login that `POSTGRES_PASSWORD` is
-refused and its own value accepted; that `warehouse_monitoring` has
-`pg_monitor` and no superuser, role, database, replication or RLS-bypass
-right; and that `supabase_functions_admin` cannot sign in and has no password
-(a failed read of that state fails the check). It connects
+refused and its own value accepted; and that `supabase_functions_admin` and `supabase_auth_admin` cannot sign in and have no password, or do
+not exist, and that `warehouse_monitoring` does not exist (a failed read of that state fails the check). It connects
 from inside the database container to the name `db`, which is a network
 address that `pg_hba.conf` authenticates with SCRAM; it also checks that the
 server saw a non-loopback client. A check through `-h 127.0.0.1`, which the
@@ -942,8 +843,7 @@ design of this change proposed, would pass with any password, because the
 image trusts loopback connections. CI's operator-install job runs it after the
 fresh install, after both rotations and after the in-place and lost-host
 restores. `tests/security_baseline.sql` asserts in the migration test database
-that `warehouse_monitoring` is a member of `pg_monitor` only, holds no grant,
-owns nothing and can read no application, Storage or private table.
+that `warehouse_monitoring` does not exist.
 
 ### Upgrade of an existing install
 
@@ -952,20 +852,20 @@ any other operator command: until it has added the new values, every Compose
 command (`stop.sh` and `start.sh` included) stops with the `${NAME:?…}`
 message. Expected sequence:
 
-1. `configure.mjs` appends the six values and says so.
+1. `configure.mjs` appends the three values and says so.
 2. The database container is recreated, because its environment changed (a
    restart of PostgreSQL).
-3. The migrations run (94 creates `warehouse_monitoring`).
+3. The migrations run (94 created `warehouse_monitoring`, 107 drops it).
 4. `configure-db-roles.sql` sets every service login's password. Running
    containers keep their open connections (those stay valid); a new
    connection from a container that still has the old value fails.
 5. Setup starts Storage (recreated with its value), then everything else, and
-   replaces the running optional services (pooler, monitoring) whose
+   replaces the running optional services (the pooler) whose
    configuration changed.
 6. The operator runs `npm run test:db-roles`, then
    `npm run db:rotate-passwords -- --yes --superuser`. The upgrade keeps
    `POSTGRES_PASSWORD`, the formerly shared value, which was in the
-   environment of PostgREST, Storage, Auth and the exporter. Until it is
+   environment of PostgREST, Storage and the former Auth service. Until it is
    rotated, a value leaked from any of those before the upgrade is still the
    superuser password. Then a new backup.
 
@@ -988,19 +888,18 @@ dump; its `compose.env` copy carries the values of the moment.
   `compose.env` in place and then add the values it lacks
   (`node scripts/db-roles.mjs add-missing`, the step of `configure.mjs`'s
   existing-state branch) before the database starts.
-- Both then start from an empty data directory: `roles.sql` sets the four
+- Both then start from an empty data directory: `roles.sql` sets the three
   logins that exist before the migrations, and after the replay and the
-  migrations `configure-db-roles.sql` sets all of them and gives
-  `warehouse_monitoring` back its `pg_monitor` membership (the replay
-  recreates a backup's roles as bare `NOLOGIN` names and does not rerun an
-  applied migration). The pooler and Realtime rewrite their stored copies
-  when they start.
+  migrations `configure-db-roles.sql` sets all of them, keeps
+  `supabase_auth_admin` without a login and drops `warehouse_monitoring` (the replay
+  recreates a backup's roles as bare names and does not rerun an
+  applied migration). The pooler rewrites its stored copy
+  when it starts.
 
 ### Rotation
 
 `npm run db:rotate-passwords -- --yes` replaces every service login's
-password; `--superuser` also replaces `POSTGRES_PASSWORD` and the Realtime
-key. It stages the new values, sets them in the database in one transaction,
+password; `--superuser` also replaces `POSTGRES_PASSWORD`. It stages the new values, sets them in the database in one transaction,
 swaps `compose.env`, recreates the database and every running service that
 signs in to it, runs `npm run test:db-roles` and the local doctor, and if a
 service does not come back or a login misbehaves it puts the previous values
@@ -1013,7 +912,7 @@ others. The procedure is in
 
 ### Adding a login
 
-A new service login (for example the runner of the list refresh) is one entry
+A new service login is one entry
 in `DB_ROLE_LOGINS` in `scripts/db-roles.mjs` (its `compose.env` name, role
 and psql variable), one `ALTER ROLE … WITH LOGIN PASSWORD :'…'` line in
 `scripts/configure-db-roles.sql`, a migration that creates the role `NOLOGIN`
@@ -1030,7 +929,7 @@ override that gave its functions container no route to the SMS provider),
 never on a facility. Each step ran the same checks afterwards:
 `node scripts/doctor.mjs --local`, `npm run test:db-roles`, a probe of every
 service login with `POSTGRES_PASSWORD` over `-h db`,
-`tests/operator-realtime-core.mjs`, `npm run test:pooler`, and after a restore
+`npm run test:pooler`, and after a restore
 `tests/operator-api-restore.mjs` with the restored backup.
 
 | Step | Result |
@@ -1051,9 +950,9 @@ load during the upgrade, and an upgrade from a release older than 198bbfa.
 Each of these was left unchanged because the change cannot be checked without
 building an image or starting the stack.
 
-- **Go builders: done on 2026-10-11.** All nine `FROM golang:` lines (a tenth, the Gotenberg recipe's, was removed on 2026-10-18) (line 1 of
-  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter,auth,imgproxy,prometheus,postgres}/Dockerfile`
-  and line 12 of `docker/postgres/Dockerfile`) now use
+- **Go builders: done on 2026-10-11.** (Of the recipes named in this entry and the next, Auth, imgproxy, Prometheus, Alertmanager, the two exporters and cAdvisor were removed by 2026-10-19; only the gosu stage of the database recipe still uses Go.) All six remaining `FROM golang:` lines (the Gotenberg recipe's was removed on 2026-10-18; the wal-g stage of
+  `docker/postgres/Dockerfile` on 2026-10-19) (line 1 of
+  `docker/{alertmanager,cadvisor,node-exporter,postgres-exporter,prometheus,postgres}/Dockerfile`) now use
   `golang:1.27.2-bookworm@sha256:5cf287a7...`, the multi-platform index the
   registry serves for that tag, read with `docker buildx imagetools inspect`.
   They used 1.27.0 and 1.27.1, which were behind three fixed HIGH
@@ -1066,15 +965,15 @@ building an image or starting the stack.
   `scripts/scan-images.sh`, on the nine images of these recipes built from
   commit `bc2b110`; not the full `npm run scan:images` gate): no
   standard-library finding is left in the binaries the recipes build
-  (alertmanager, amtool, auth, cadvisor, gosu, wal-g, imgproxy,
+  (alertmanager, amtool, auth, cadvisor, gosu, wal-g (since removed), imgproxy,
   node_exporter, postgres_exporter, prometheus, promtool).
 - **`golang.org/x/net` 0.60.0: done on 2026-10-11.** The scan above found
   CVE-2026-78669 (HTTP/2, HIGH; fixed in `golang.org/x/net` 0.60.0) in every
   Go binary: the module was at v0.58.0 in alertmanager, amtool, auth,
-  cadvisor, wal-g, imgproxy, prometheus and promtool, and at v0.57.0 in
+  cadvisor, wal-g (since removed), imgproxy, prometheus and promtool, and at v0.57.0 in
   node_exporter and postgres_exporter. The module files of the eight recipes
   (`docker/{alertmanager,auth,cadvisor/cmd,imgproxy,node-exporter,postgres-exporter,prometheus}/go.{mod,sum}`
-  and `docker/postgres/walg.go.{mod,sum}`) were regenerated with
+  and the since-deleted `docker/postgres/walg.go.{mod,sum}`) were regenerated with
   `go get golang.org/x/net@v0.60.0` in the upstream source at each recipe's
   tag; only `golang.org/x/*` versions and the `go` line (now 1.26.0, which
   the module requires) changed. The Prometheus recipe also runs
@@ -1091,20 +990,6 @@ building an image or starting the stack.
   images had no operating-system finding left (imgproxy kept the one
   `golang.org/x/net` finding). Build with `--no-cache` (or `--pull` and
   a pruned cache) before reading scan numbers or deploying.
-- **Studio application advisories.** The recipe applies Debian updates, which
-  addresses the operating-system findings at build time. On 2026-10-12 the
-  tag moved from `2026.09.21-sha-512201d` to `2026.10.05-sha-94b8b06`, and on
-  2026-10-17 to `2026.10.12-sha-3699278`, which fixes
-  `@modelcontextprotocol/sdk` (1.32.0). Still in the publisher's application:
-  simple-git 3.36.0 (one Critical, two High; fixed in 4.0.1),
-  `@simple-git/argv-parser` 1.1.1 (Critical; 2.0.1) and next 16.3.6 (High;
-  16.3.8). They are the exception `studio-app-awaiting-publisher` in
-  `docker/image-exceptions.json` until a later Studio tag; then change the tag
-  and digest in `docker/studio/Dockerfile` and the notices, remove the
-  exception and run `npm run test:studio`. The exposure is bounded by the
-  network change: only postgres-meta and the database can reach Studio. The
-  scan numbers in the table near the top of this page are from 2026-09-22 and
-  an older tag.
 - **Edge runtime operating-system packages: done on 2026-10-17.**
   `docker/edge-runtime/Dockerfile` now runs a full `apt-get upgrade` (keeping
   the PCRE2 version check), which clears the seven fixed `perl-base` rows. The
@@ -1119,50 +1004,55 @@ building an image or starting the stack.
   to `npm ci` needs a build that proves Storage still starts.
 - **Chromium switches of the PDF service: done on 2026-10-18.** The renderer runs with JavaScript off and every
   network request refused, which was this item's plan for Gotenberg; the output was compared pixel for pixel with
-  Gotenberg's before the switch ("PDF renderer"). The renderer cannot reach the database, postgres-meta or Studio.
+  Gotenberg's before the switch ("PDF renderer"). The renderer cannot reach the database.
 - **Gateway configuration through shell `eval`.** Replacing the entrypoint's
   `eval` with Kong's own environment references needs Kong to load the result.
   The new test catches a character the `eval` would alter.
 - **`net.http_get` and `net.http_post` executable by `anon` and
-  `authenticated`: done on 2026-10-17 (migration 93).** The grants came from
-  `docker/volumes/db/webhooks.sql` (an init script), from the event trigger
-  it installs (which re-granted on `CREATE EXTENSION`) and from the publisher
-  image's own migrations, which run after the init scripts at the first start
-  (`20220713082019`, `20250220051611`). On an installed database the two
-  functions were `SECURITY INVOKER` and executable by `PUBLIC`, `anon` and
-  `authenticated` had `USAGE` on `net`, and pg_net itself grants `USAGE` on
-  `net` and `ALL` on its request tables (`net.http_request_queue`,
-  `net._http_response`) to `PUBLIC`: a role with `USAGE` could enqueue a
-  request with the function or with a plain `INSERT`. Migration 93 revokes
-  `USAGE` on `net` from `PUBLIC`, `anon` and `authenticated` (without it no
-  object in `net` can be named) and `EXECUTE` on the two functions from the
-  same three, then grants `USAGE` and `EXECUTE` explicitly to
-  `supabase_functions_admin`, `postgres` and `service_role`, which had them
-  only through `PUBLIC`. It does nothing where `net` does not exist, and
-  replaces the event trigger function `extensions.grant_pg_net_access()` (owner
-  and grants kept) with a body that grants nothing to `anon` or `authenticated`
-  and takes `PUBLIC`'s `USAGE` back, so `DROP EXTENSION pg_net` followed by
-  `CREATE EXTENSION pg_net` leaves the same state. `webhooks.sql` carries the
-  same least-privilege lines, although the image's migrations run after it.
-  Database webhooks (`supabase_functions.http_request`, a `SECURITY DEFINER`
-  function of `supabase_functions_admin`) still send. `tests/migrations.sh`
-  applies `webhooks.sql` and the image's two pg_net migrations to its database
-  in the order a container runs them, and `tests/pg_net_grants.sql` checks the
-  grants, the calls and a webhook, including after `DROP EXTENSION` and
-  `CREATE EXTENSION`. The `net` schema is not exposed through PostgREST.
-  Migration 93 also revokes `EXECUTE` on the trigger function
-  `supabase_functions.http_request()` from `PUBLIC`, `anon` and `authenticated`
-  (`webhooks.sql` likewise): it is `SECURITY DEFINER`, may call `net.http_post`,
-  and takes the destination from the arguments of whoever creates the trigger,
-  and `PUBLIC` may create temporary tables, so those roles could author a
-  request without touching `net`. A webhook created by `postgres` (Studio) still
-  fires on an insert by `anon`; `tests/pg_net_grants.sql` checks both, and that
-  `anon` and `authenticated` cannot attach their own trigger.
-  Remaining, by design: `net.http_delete`, `net.http_collect_response` and the
-  request tables keep pg_net's `PUBLIC` privileges; they are unreachable without
-  `USAGE` on `net`, so that one revoke is what protects them (defence in depth
-  would be a further revoke on each, which pg_net undoes on every
-  `CREATE EXTENSION`).
+  `authenticated`: done on 2026-10-17 (migration 93), then removed with pg_net
+  on 2026-10-19 (migration 103).** The grants came from the template's
+  `webhooks.sql` init script, from the event trigger it installed and from the
+  publisher image's own migrations. Migration 93 took them away from `PUBLIC`,
+  `anon` and `authenticated`. Nothing in this backend ever called pg_net (no
+  database webhook was defined, the request queue was empty), so migration 103
+  removes it instead of guarding it: the extensions `http`, `pg_net`,
+  `pg_graphql` and `supabase_vault` (no secret in it, no reference to it), the
+  schemas `net`, `supabase_functions`, `graphql`, `graphql_public` and `vault`,
+  the role `supabase_functions_admin` (only where it owns nothing, in this
+  database or any other), and the image's event triggers
+  `issue_pg_net_access`, `issue_pg_graphql_access` and
+  `issue_graphql_placeholder` with their functions (the last one would put a
+  stand-in `graphql_public.graphql` back when pg_graphql is dropped).
+  PostgREST's `pgrst_ddl_watch` / `pgrst_drop_watch` stay (`issue_pg_cron_access` is removed by migration 106
+  with pg_cron). The reason for removing `http` as well: `service_role` could run
+  `public.http_post` through REST, and with `http` gone the
+  database has no way to send a web request. `docker/volumes/db/webhooks.sql` is
+  deleted, the database no longer preloads `pg_net`, the gateway no longer
+  routes `/graphql/v1`, and `PGRST_DB_SCHEMAS` is `public,storage` (a rerun of
+  setup rewrites an installation's old default). `tests/pg_net_grants.sql` is
+  replaced by `tests/unused_extensions_absent.sql`; `tests/migrations.sh`
+  rebuilds the old state and runs migrations 93 and 103 on it. A backup taken
+  before migration 103 holds these extensions: both restore scripts
+  (`restore.sh`, `verify-restore.sh`) filter the `pg_net` entries out of the
+  restore list, the way they do for `pg_cron`, because the database no longer
+  preloads it and `CREATE EXTENSION pg_net` would fail; `pg_graphql` and
+  `supabase_vault` need no preload and are created, and migration 103 then
+  removes them and the webhook schema. Migration 103 refuses if the vault holds
+  a secret or a pg_cron job calls `net.*` or `http(...)`. The restore scripts
+  also accept the old `PGRST_DB_SCHEMAS` default in the backup's `compose.env`
+  and bring the state up to date before the database starts.
+- **pgjwt removed (migration 108).** The database used the extension only to sign
+  a session's access token (HS256). `warehouse_security.jwt_sign_hs256(json, text)`
+  now does that with pgcrypto's `hmac` and returns the same bytes as pgjwt's
+  `extensions.sign`; `warehouse_security.sign_access_token` calls it and the
+  extension is dropped. The function is internal: no API role can execute it
+  (`extensions.sign` was executable by `PUBLIC`, and nothing but
+  `sign_access_token` ever called it). Sessions and tokens already issued are
+  not affected: PostgREST, Storage and Realtime verify with `JWT_SECRET`, and the
+  bytes are identical. `tests/migrations.sh` compares the two signers for
+  27 payload and secret pairs before the migration runs;
+  `tests/jwt_sign_108.sql` checks afterwards that pgjwt is gone and that a
+  session token verifies with the secret.
 - **`app.settings.jwt_secret` readable by every database role: done on
   2026-10-17 (migration 92).** The migration resets the database setting (and a
   role-level copy, if any); `scripts/configure-auth.sql` repeats the reset on
@@ -1170,19 +1060,17 @@ building an image or starting the stack.
   the PostgREST variable `PGRST_APP_SETTINGS_JWT_SECRET` no longer set it. The
   database code reads `warehouse_security.auth_config`; no function in the
   database mentions the setting (checked by `tests/migrations.sh`). PostgREST
-  (`PGRST_JWT_SECRET`), Realtime (`API_JWT_SECRET`) and Storage keep taking the
+  (`PGRST_JWT_SECRET`) and Storage keep taking the
   secret from their own environment. Not done, by owner decision D13: a
   separate key for the one-time-code HMAC, which would void pending codes.
 - **`no-new-privileges`, dropped capabilities, read-only root filesystems.**
-  Not a blanket change: Realtime's start script runs `sudo -u nobody`
-  (`/app/run.sh` in the pinned image), which `no-new-privileges` blocks, and
-  Kong's entrypoint writes `/tmp/kong.yml`. Each service needs its own trial.
-- **cAdvisor and CUPS run privileged.** Both are optional profiles. CUPS also
+  Not a blanket change: Kong's entrypoint writes `/tmp/kong.yml`. Each service needs its own trial.
+- **CUPS runs privileged** (cAdvisor, the other privileged container, was removed on 2026-10-19). It is an optional profile. CUPS also
   accepts print jobs from any container on `default` without a login; no
   function reaches it while the router refuses the printing functions.
 - **Scheduled image scan.** No workflow runs `npm run scan:images`. Since
   2026-10-17 the release checklist requires it before each release, and its
-  exceptions expire (see "Exception ledger and the two-pass scan"); a
+  exceptions expire (see "Exception ledger and the image scan"); a
   scheduled workflow would catch an expiry or a new fixed advisory between
   releases.
 
@@ -1195,18 +1083,16 @@ step that fails points at the change.
 
 | Change | What a first run proves | CI step that exercises it |
 |---|---|---|
-| Three networks; Studio and postgres-meta off `default` | every service starts healthy and resolves its peers | setup, then every later step |
-| Health probes from `storage` instead of Studio | `node --input-type=module` from stdin works in the Storage image and reaches the gateway | setup (`doctor --local`), key rotation, recovery |
+| Three networks (separate networks for the database and the PDF renderer) | every service starts healthy and resolves its peers | setup, then every later step |
+| Health probes from `storage` | `node --input-type=module` from stdin works in the Storage image and reaches the gateway | setup (`doctor --local`), key rotation, recovery |
 | `gateway-dns-check.sh` probes from `storage` | same | Gateway upstream IP replacement |
 | Per-function worker environment | each function still has every variable it reads | setup health check, operator API, documents |
-| supabase-js 2.39.0 and `npm:ipp@2.0.1` in the printing functions | nothing: the router refuses them | none |
+| `npm:ipp@2.0.1` in the printing functions | nothing: the router refuses them | none |
 | Kong image by digest | the digest pulls on the runner | setup |
-| Prometheus plugin enabled globally; new rate limits | Kong accepts the declarative file; Realtime connects through the limit | setup, Realtime test, gateway test |
-| Alert rules and `monitoring-check.sh` metric check | Prometheus scrapes `kong_http_requests_total` | Monitoring targets |
-| Prometheus without `--web.enable-lifecycle` | Prometheus starts | Monitoring targets |
-| Log cap on every service; imgproxy read-only mount | containers start; image transformation still reads files | setup, document tests |
+| New rate limits (the Prometheus plugin that was enabled here was removed on 2026-10-19) | Kong accepts the declarative file; Kong accepts the limits | setup, gateway test |
+| Log cap on every service | containers start | setup, document tests |
 | Pooler tenant with one user | tenant creation succeeds | Pooler authentication |
-| Studio and CUPS `apt-get upgrade` | both images build | setup (Studio), CUPS startup |
+| CUPS `apt-get upgrade` | the image builds | CUPS startup |
 | Actions pinned to commits | the hashes resolve | every job |
 | Sensor bridge service (profile `sensors`, `cap_drop: [ALL]`, `no-new-privileges`, read-only root, `default` network only) | the bridge starts under Compose, reaches the hubs and posts through Kong | none: `npm run test:sensors` runs the image with the same flags but without Compose or hubs; the first `up` on an installation is the first run |
 
@@ -1214,7 +1100,7 @@ step that fails points at the change.
 ## Build-date drift and the release rebuild (2026-10-18, decision D5)
 
 Not every input of an image build is immutable. Each recipe that runs `apt-get upgrade`,
-`apt-get install` or `apk upgrade` (for example pdf-renderer, realtime, storage and the sensor
+`apt-get install` or `apk upgrade` (for example pdf-renderer, storage and the sensor
 bridge) reads the distribution's live repositories, so two builds of the same recipe on
 different days can contain different operating-system packages. The base-image digests,
 npm lockfiles and the hashed Python requirements are fixed; the operating-system layer is not.

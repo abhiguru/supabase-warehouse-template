@@ -9,7 +9,7 @@
  * whole run fit the router's 60 s worker lifetime.
  */
 
-import { createClient } from '../vendor/supabase-js.mjs';
+import { restClient } from './supabase-rest.ts';
 import { getCUPSJobReply } from "./ipp-client.ts";
 import { jobObservation } from "./ipp-validate.ts";
 import type { PrintJobStatus } from "./ipp-validate.ts";
@@ -28,7 +28,7 @@ async function updateDatabaseStatus(
   supabaseUrl: string,
   supabaseKey: string,
 ): Promise<void> {
-  const supabase = createClient(supabaseUrl, supabaseKey);
+  const supabase = restClient(supabaseUrl, supabaseKey);
 
   const updateData: {
     status: PrintJobStatus;

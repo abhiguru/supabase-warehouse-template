@@ -35,16 +35,15 @@ stub to make the check pass.
 
 ## Tested runtime behaviour
 
-The runtime behaviour is tested by the five operator fixture drivers that CI's
+The runtime behaviour is tested by the four operator fixture drivers that CI's
 install job runs against a fresh installation, all through
 `tests/operator-fixture.mjs`: `operator-api-core.mjs`,
-`operator-realtime-core.mjs`, `operator-api-final.mjs`,
+`operator-api-final.mjs`,
 `operator-api-rotation.mjs` (`npm run test:rotation`) and
 `operator-api-restore.mjs` ([DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)).
 `npm run test:migrations` tests the database itself: real roles, active and
 inactive profiles, effective grants and the role policy of every granted
-function. `tests/api-demo.mjs` and `tests/review-core.mjs` are the historical
-fixed-OTP demos and are not run.
+function.
 
 The duplicate five-argument customer-item selector was removed; the remaining
 six-argument RPC returns `{ success, data: [], pagination }`. The mobile adapter
@@ -90,8 +89,8 @@ What the app reads:
 - `update_sensor_device(p_device_id, p_device_name, p_location,
   p_staleness_threshold_minutes)` (new; administrator only).
 - Table `sensor_latest` (one row per device), readable by administrator,
-  supervisor and staff, published to Realtime; the app subscribes to it and
-  refetches on a change. Customers and `anon` read no sensor table.
+  supervisor and staff, not published to anything (Realtime was removed on 2026-10-19); the app
+  re-reads it on a timer. Customers and `anon` read no sensor table.
 - `capabilities.sensors` in `get-public-config` (from the state's
   `instance.json`, set with `node scripts/set-capability.mjs`); the app shows
   the Sensors screen only when it is true.
@@ -513,51 +512,16 @@ error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing i
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
 
-## List freshness (migration 91, 2026-10-17)
+## List freshness (migration 106, 2026-10-19)
 
-Writes no longer refresh materialized views. A write marks the lists it changes and returns; the
-pg_cron job `warehouse-list-refresh` refreshes the marked lists every 5 seconds, after the commit
-(TW-BE-016; the database side is in [ARCHITECTURE.md](ARCHITECTURE.md), "List refresh").
-
-**Contract.** A committed write reaches the lists below within **15 seconds** (owner decision D2,
-2026-10-17); in practice within one interval of the job plus one refresh of the marked lists: at most about 7 s
-and typically 3 to 4 s with 12,000 GRNs and 120,000 lines (measured for the review batch of 2026-10-17;
-`tests/list_refresh_worker.sh` checks the bound). The answer of a write RPC
-(`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`, `save_invoice`,
-`update_invoice`, ...) is authoritative at once: a screen that made the change uses that answer, not a
-list.
-
-| List RPC | Materialized view | Eventually consistent |
-| --- | --- | --- |
-| `get_invoices_list` | `mv_invoice_list` | yes |
-| `get_dispatch_list` | `mv_dispatch_list` | yes |
-| `get_all_grn_items(p_catalog_id, p_grn_id, p_in_stock_only, p_search_query, p_limit, p_offset)` (legacy overload) | `mv_grn_list` | yes |
-| `get_all_grn_items(p_date_from, p_date_to, p_filters, ...)`, `get_grn_list`, `get_dispatch_list_with_items`, `get_customer_*`, `get_orders_list` and every other RPC | none | no: they read the tables |
-
-The other four views (`mv_customer_stock_summary`, `mv_grn_daily_summary`,
-`mv_dispatch_daily_summary`, `mv_orders_list`) are refreshed the same way and read by no RPC.
-
-### `get_list_freshness()`
-
-Administrators, supervisors and staff (`authorize_rpc`; a customer account is refused with
-`Staff access required`, `anon` may not call it). No arguments.
-
-```json
-{ "success": true, "data": {
-    "bound_seconds": 15, "refresh_interval_seconds": 5, "checked_at": "2026-10-17T10:00:00.123+00:00",
-    "lists": [
-      { "view": "mv_invoice_list", "rpcs": ["get_invoices_list"], "needs_refresh": true,
-        "dirty_since": "2026-10-17T09:59:58.002+00:00", "last_refresh": "2026-10-17T09:59:53.410+00:00",
-        "refresh_failing": false }
-    ] } }
-```
-
-`lists` has the seven views in name order. `needs_refresh`: a committed write has changed what the
-view shows since its last refresh (a mark is invisible until its writer commits). `dirty_since`: the start of that wait (null when current), so
-`checked_at - dirty_since` is how far behind the list may be. `last_refresh`: the view holds every
-write committed before this time. `refresh_failing`: the last refresh of the view failed (the view
-stays marked; the doctor names it). A list screen that wants to say "updating" asks this RPC after a
-list read; one that does not simply reads the list again after the bound.
+Every list RPC reads the tables, so a write that has committed is in the next list read: there is no
+refresh job and no delay. (Migration 91 had moved the Invoices list, the legacy `get_dispatch_list` and the legacy
+`get_all_grn_items(p_catalog_id, ...)` overload onto materialized views refreshed within 15 seconds; migration 106
+removed the views, those two legacy functions, `get_list_freshness()` and the refresh job.) `get_invoices_list`
+keeps its arguments, sorts, filters and answer; rows that tie on every sort key now come back in a fixed order
+(by invoice id). The answer of a write RPC (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`,
+`update_dispatch_smart`, `save_invoice`, `update_invoice`, ...) is still the authoritative result of that
+write.
 
 ## GRN lists by receipt, and low stock (migration 98, 2026-10-18)
 

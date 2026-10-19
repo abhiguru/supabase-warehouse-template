@@ -73,7 +73,6 @@ assert.equal(sql(`SET ROLE anon; SELECT (coalesce(current_setting('app.settings.
 assert.equal(sql(`SELECT count(*) FROM pg_db_role_setting s, unnest(s.setconfig) AS item WHERE starts_with(lower(item), 'app.settings.jwt_secret')`), '0', 'rotation left no database or role setting for the secret');
 assert.equal(sql('SELECT count(*) FROM warehouse_security.refresh_sessions'), '0', 'every session revoked');
 assert.equal(sql('SELECT count(*) FROM public.otp_verifications WHERE NOT verified'), '0', 'pending challenges voided');
-assert.equal(sql("SELECT count(*) FROM _realtime.tenants WHERE external_id='realtime-dev'"), '1', 'realtime tenant re-seeded');
 
 // Gateway and API side: old key and old token are rejected, replay is denied.
 const staleKey = await api(after.base, before.anon, '/rest/v1/customers?select=id', before.anon);
@@ -105,4 +104,4 @@ assert.ok(!anonymous.ok, `anonymous table read must be denied: HTTP ${anonymous.
 // Leave the admin phone outside its resend cooldown for the suites that follow.
 const remaining = 61000 - (Date.now() - challengedAt);
 if (remaining > 0) await sleep(remaining);
-console.log('PASS signing-key rotation: new secret in auth_config and in no database setting, sessions and pending OTPs revoked, Realtime tenant re-seeded, old apikey 401, old token 401, replay denied, public config shows the new anon key, health passes');
+console.log('PASS signing-key rotation: new secret in auth_config and in no database setting, sessions and pending OTPs revoked, old apikey 401, old token 401, replay denied, public config shows the new anon key, health passes');

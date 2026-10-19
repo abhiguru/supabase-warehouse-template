@@ -141,8 +141,6 @@ RESET ROLE;
 SELECT pg_temp.dirf_assert((SELECT string_agg(inv_no || ':' || total, ' ' ORDER BY inv_no) FROM public.invoice
     WHERE customer_id = :'juniper'::uuid) = '104:42.00 90101:357.00 90102:357.00 90103:357.00',
   'fixture: the stored totals are 42, 357, 357, 357');
--- The worker's refresh of the lists the writes above marked, in this transaction (migration 91).
-SELECT warehouse_security.refresh_dirty_lists();
 
 -- ---------------------------------------------------------------------------
 -- The answers
@@ -227,19 +225,16 @@ SELECT pg_temp.dirf_assert(:'juniper_items' = 'Staff access required',
   'I8: a customer is still refused by the guard: ' || :'juniper_items');
 
 -- ---------------------------------------------------------------------------
--- I9 mv_invoice_list / get_invoices_list (the triggers mark it; refreshed above as the worker does)
+-- I9 get_invoices_list (reads the tables since migration 106: the writes above are listed at once)
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.dirf_assert((pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '90101')->>'total_qty')::numeric = 20
   AND (pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '90102')->>'total_qty')::numeric = 20
   AND (pg_temp.dirf_row(:'invoice_list'::jsonb->'data', 'invoice_number', '104')->>'total_qty')::numeric = 10,
   'I9: total_qty is the billed bags (90101: 20): ' || left(:'invoice_list', 300));
-SELECT pg_temp.dirf_assert((SELECT relispopulated FROM pg_class WHERE oid = 'public.mv_invoice_list'::regclass)
-  AND (SELECT count(*) FROM pg_index WHERE indrelid = 'public.mv_invoice_list'::regclass) = 7
-  AND (SELECT indisunique FROM pg_index WHERE indexrelid = 'public.idx_mv_invoice_list_pk'::regclass)
-  AND NOT has_table_privilege('authenticated', 'public.mv_invoice_list', 'SELECT')
-  AND NOT has_table_privilege('anon', 'public.mv_invoice_list', 'SELECT')
-  AND has_table_privilege('service_role', 'public.mv_invoice_list', 'SELECT'),
-  'I9: mv_invoice_list is populated, has its seven indexes (one unique) and its grants');
+SELECT pg_temp.dirf_assert(to_regclass('public.mv_invoice_list') IS NULL
+  AND has_function_privilege('authenticated', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[])', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamptz,timestamptz,uuid[])', 'EXECUTE'),
+  'I9: the list view is gone and get_invoices_list is for signed-in callers only');
 SELECT pg_temp.dirf_assert(pg_temp.dirf_col(:'invoice_search'::jsonb->'data', 'invoice_number') = ARRAY['90101'],
   'I11: searching 2026-90101 finds 90101: ' || left(:'invoice_search', 300));
 

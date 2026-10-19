@@ -85,7 +85,7 @@ const first={p_dispatch_data:data,p_dispatch_items:[{gr_trl_id:lot,disp_qty:3}],
 assert.equal(stock(),10);good(await rpc('create_dispatch_with_stock_check',st,first),'staff partial dispatch');assert.equal(stock(),7);
 good(await rpc('create_dispatch_with_stock_check',st,first),'reconciled unchanged retry');assert.equal(stock(),7);
 good(await rpc('create_dispatch_with_stock_check',st,{...first,p_dispatch_data:{...data,disp_no:'SDD02'},p_dispatch_items:[{gr_trl_id:lot,disp_qty:7}],p_idempotency_key:'staff-doc-final-0505'}),'staff final dispatch');assert.equal(stock(),0);
-good(await rpc('get_dispatch_list',st),'staff dispatch list');
+good(await rpc('get_dispatch_list_with_items',st),'staff dispatch list');
 const lines=sql("(SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) FROM public.dispatch_trl t JOIN public.dispatch d ON d.id=t.disp_id WHERE d.disp_no IN ('SDD01','SDD02'))");assert.equal(lines.length,2);
 const preview=good(await rpc('generate_invoice_data_for_grn_with_pricing',st,{p_gr_id:grn,p_duration_mode:'legacy'}),'staff invoice preview');
 const saved=good(await rpc('save_invoice',st,{p_invoice_data:{inv_no:20261005,inv_fin_year:2026,gr_id:grn,gr_no:'SDA01',customer_id:a,customer_name:'Backend Test Customer A',inv_date:'2026-05-02T12:00:00Z',total:preview.totals.grand_total,tax_amount:preview.totals.tax,discount:0,duration_mode:'legacy',items:lines}}),'staff invoice save');

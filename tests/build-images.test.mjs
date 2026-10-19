@@ -30,11 +30,11 @@ function fixture() {
     services[service] = { build: { context: dir, dockerfile: 'Dockerfile' }, ...(profiles ? { profiles } : {}) };
   };
   recipe('db', { context: 'postgres' });
-  recipe('imgproxy');
-  recipe('prometheus', { profiles: ['monitoring'] });
+  recipe('functions');
+  recipe('supavisor', { profiles: ['pooler'] });
   recipe('cups', { profiles: ['printing'] });
-  // No `image:`: Compose tags every built image `<project>-<service>`, Alertmanager included.
-  recipe('alertmanager', { profiles: ['monitoring'] });
+  // No `image:`: Compose tags every built image `<project>-<service>`, the sensor bridge included.
+  recipe('sensor-bridge', { profiles: ['sensors'] });
   services.kong = { image: 'kong:3.9.3-ubuntu' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
@@ -87,7 +87,7 @@ function run({ scratch, state, root }, { args = [], containers = '', running = '
   const log = name => readFileSync(join(scratch, name), 'utf8').trim();
   return { ...result, builds: log('build.log'), ups: log('up.log') };
 }
-const CORE = [`${PROJECT}-db`, `${PROJECT}-imgproxy`];
+const CORE = [`${PROJECT}-db`, `${PROJECT}-functions`];
 const recorded = record => readFileSync(record, 'utf8').trim().split('\n').map(line => line.split('  '));
 const cleanup = f => rmSync(f.scratch, { recursive: true, force: true });
 
@@ -96,11 +96,11 @@ test('a first installation builds the core images, leaves optional services alon
   try {
     const result = run(f);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.builds, 'db imgproxy');
+    assert.equal(result.builds, 'db functions');
     assert.match(result.stdout, /Building the db image: image missing\./);
     assert.match(result.stdout, /Built 2 image\(s\)\./);
     const lines = recorded(f.record);
-    assert.deepEqual(lines.map(line => line[1]), ['db', 'imgproxy']);
+    assert.deepEqual(lines.map(line => line[1]), ['db', 'functions']);
     for (const [fingerprint, , id] of lines) { assert.match(fingerprint, /^[0-9a-f]{64}$/); assert.match(id, /^sha256:[0-9]{64}$/); }
     assert.equal(statSync(f.record).mode & 0o777, 0o600);
     assert.equal(result.ups, '', 'the build step starts nothing');
@@ -111,13 +111,13 @@ test('an installation from before the record rebuilds once what it uses; an imag
   const f = fixture();
   try {
     // The image scan and the checks build optional images that are never started:
-    // Alertmanager and CUPS have an image here, but only Prometheus has a container.
-    f.haveImages(...CORE, `${PROJECT}-prometheus`, `${PROJECT}-cups`, `${PROJECT}-alertmanager`);
-    const containers = 'db imgproxy prometheus kong';
+    // The sensor bridge and CUPS have an image here, but only the pooler has a container.
+    f.haveImages(...CORE, `${PROJECT}-supavisor`, `${PROJECT}-cups`, `${PROJECT}-sensor-bridge`);
+    const containers = 'db functions supavisor kong';
     const first = run(f, { containers });
     assert.equal(first.status, 0, first.stderr);
-    assert.equal(first.builds, 'db imgproxy prometheus');
-    assert.match(first.stdout, /Building the prometheus image: no build record\./);
+    assert.equal(first.builds, 'db functions supavisor');
+    assert.match(first.stdout, /Building the supavisor image: no build record\./);
     const second = run(f, { containers });
     assert.equal(second.status, 0, second.stderr);
     assert.equal(second.builds, '');
@@ -138,19 +138,19 @@ test('only the image whose recipe changed is rebuilt: a file, its executable bit
     };
     writeFileSync(join(f.root, 'docker/postgres/sub/go.mod'), 'module db\n\nrequire golang.org/x/net v0.60.0\n');
     changed('a module file below the build directory', 'db');
-    chmodSync(join(f.root, 'docker/imgproxy/Dockerfile'), 0o755);
-    changed('the executable bit', 'imgproxy');
-    symlinkSync('Dockerfile', join(f.root, 'docker/imgproxy/link'));
-    changed('a new symbolic link', 'imgproxy');
+    chmodSync(join(f.root, 'docker/functions/Dockerfile'), 0o755);
+    changed('the executable bit', 'functions');
+    symlinkSync('Dockerfile', join(f.root, 'docker/functions/link'));
+    changed('a new symbolic link', 'functions');
     f.services.db.build.dockerfile = 'Dockerfile.next';
     f.writeConfig();
     changed('the Dockerfile path', 'db');
     f.services.db.build.target = 'runtime';
     f.writeConfig();
     changed('the build target', 'db');
-    f.services.imgproxy.build.args = { TARGETARCH: 'arm64' };
+    f.services.functions.build.args = { TARGETARCH: 'arm64' };
     f.writeConfig();
-    changed('a build argument', 'imgproxy');
+    changed('a build argument', 'functions');
   } finally { cleanup(f); }
 });
 
@@ -159,11 +159,11 @@ test('an image whose tag was moved by something else is built again', () => {
   try {
     assert.equal(run(f).status, 0);
     // Another checkout sharing the tag, a manual build, or a build that failed half way.
-    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-imgproxy`)), `sha256:${'9'.repeat(64)}\n`);
+    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-functions`)), `sha256:${'9'.repeat(64)}\n`);
     const result = run(f);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.builds, 'imgproxy');
-    assert.match(result.stdout, /Building the imgproxy image: image was replaced by something else\./);
+    assert.equal(result.builds, 'functions');
+    assert.match(result.stdout, /Building the functions image: image was replaced by something else\./);
     assert.equal(run(f).builds, '');
   } finally { cleanup(f); }
 });
@@ -173,12 +173,12 @@ test('a failed build records nothing, so the next run builds again', () => {
   try {
     assert.equal(run(f).status, 0);
     const before = readFileSync(f.record, 'utf8');
-    writeFileSync(join(f.root, 'docker/imgproxy/Dockerfile'), 'FROM example.invalid/imgproxy:2\n');
+    writeFileSync(join(f.root, 'docker/functions/Dockerfile'), 'FROM example.invalid/functions:2\n');
     const failed = run(f, { fail: 'build' });
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /Image build failed\. No service was started or stopped by this step, and nothing\nof this run was recorded as built\./);
     assert.equal(readFileSync(f.record, 'utf8'), before);
-    assert.equal(run(f).builds, 'imgproxy');
+    assert.equal(run(f).builds, 'functions');
   } finally { cleanup(f); }
 });
 
@@ -206,8 +206,8 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
   const f = fixture();
   try {
     assert.equal(run(f).status, 0);
-    assert.equal(run(f, { args: ['--all'] }).builds, 'db imgproxy');
-    assert.equal(run(f, { args: ['--no-cache'] }).builds, '--no-cache db imgproxy');
+    assert.equal(run(f, { args: ['--all'] }).builds, 'db functions');
+    assert.equal(run(f, { args: ['--no-cache'] }).builds, '--no-cache db functions');
     for (const args of [['--pull'], ['--all', '--no-cache']]) {
       const refused = run(f, { args });
       assert.notEqual(refused.status, 0);
@@ -219,7 +219,7 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
 
 // What setup.sh leaves behind: every image built from this checkout and recorded.
 const builtAll = f => {
-  const containers = 'db imgproxy prometheus alertmanager kong';
+  const containers = 'db functions supavisor sensor-bridge kong';
   assert.equal(run(f, { containers }).status, 0);
   return containers;
 };
@@ -228,23 +228,23 @@ test('--replace-optional starts only the optional services that are running, and
   const f = fixture();
   try {
     const containers = builtAll(f);
-    const none = run(f, { args: ['--replace-optional'], containers, running: 'db imgproxy kong' });
+    const none = run(f, { args: ['--replace-optional'], containers, running: 'db functions kong' });
     assert.equal(none.status, 0, none.stderr);
     assert.equal(none.ups, '');
-    const some = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
+    const some = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge kong' });
     assert.equal(some.status, 0, some.stderr);
-    assert.equal(some.ups, '--wait --wait-timeout 180 alertmanager prometheus');
+    assert.equal(some.ups, '--wait --wait-timeout 180 sensor-bridge supavisor');
     assert.equal(some.builds, '');
-    assert.match(some.stdout, /Optional services that are running: alertmanager prometheus\./);
-    // An image of this project that has no build record yet (`compose build` by the monitoring
+    assert.match(some.stdout, /Optional services that are running: sensor-bridge supavisor\./);
+    // An image of this project that has no build record yet (`compose build` by the pooler
     // check, an installation from before the record) is still replaced.
     rmSync(f.record);
-    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager prometheus' });
+    const unrecorded = run(f, { args: ['--replace-optional'], containers, running: 'sensor-bridge supavisor' });
     assert.equal(unrecorded.status, 0, unrecorded.stderr);
-    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 alertmanager prometheus');
-    const failed = run(f, { args: ['--replace-optional'], containers, running: 'prometheus', fail: 'up' });
+    assert.equal(unrecorded.ups, '--wait --wait-timeout 180 sensor-bridge supavisor');
+    const failed = run(f, { args: ['--replace-optional'], containers, running: 'supavisor', fail: 'up' });
     assert.notEqual(failed.status, 0);
-    assert.match(failed.stderr, /An optional service did not start \(prometheus\)\. The core services are not affected/);
+    assert.match(failed.stderr, /An optional service did not start \(supavisor\)\. The core services are not affected/);
   } finally { cleanup(f); }
 });
 
@@ -252,13 +252,13 @@ test('--replace-optional leaves a running optional service alone when its image 
   const f = fixture();
   try {
     const containers = builtAll(f);
-    // An upgrade renamed the image (a shared tag became `<project>-alertmanager`), or it was removed.
-    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)));
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'db prometheus alertmanager kong' });
+    // An upgrade renamed the image (a shared tag became `<project>-sensor-bridge`), or it was removed.
+    rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-sensor-bridge`)));
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge kong' });
     assert.equal(result.status, 1, 'start.sh turns this into a warning');
     assert.equal(result.builds, '');
-    assert.equal(result.ups, '--wait --wait-timeout 180 prometheus', 'the others are still replaced');
-    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
+    assert.equal(result.ups, '--wait --wait-timeout 180 supavisor', 'the others are still replaced');
+    assert.match(result.stderr, /the sensor-bridge image does not match this checkout \(image missing\); run `bash scripts\/build-images\.sh`/);
   } finally { cleanup(f); }
 });
 
@@ -267,17 +267,17 @@ test('--replace-optional leaves a running optional service alone when its image 
   try {
     const containers = builtAll(f);
     // Another checkout, a manual build: the tag names an image this checkout did not record.
-    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-alertmanager`)), `sha256:${'9'.repeat(64)}\n`);
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
+    writeFileSync(join(f.scratch, 'images', imageFile(`${PROJECT}-sensor-bridge`)), `sha256:${'9'.repeat(64)}\n`);
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'sensor-bridge' });
     assert.equal(result.status, 1);
     assert.equal(result.builds, '');
     assert.equal(result.ups, '', 'nothing else is running, so nothing is started');
-    assert.match(result.stderr, /the alertmanager image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
+    assert.match(result.stderr, /the sensor-bridge image does not match this checkout \(image was replaced by something else\); run `bash scripts\/build-images\.sh`/);
     // The image setup.sh builds next puts it right.
-    assert.equal(run(f, { containers }).builds, 'alertmanager');
-    const after = run(f, { args: ['--replace-optional'], containers, running: 'alertmanager' });
+    assert.equal(run(f, { containers }).builds, 'sensor-bridge');
+    const after = run(f, { args: ['--replace-optional'], containers, running: 'sensor-bridge' });
     assert.equal(after.status, 0, after.stderr);
-    assert.equal(after.ups, '--wait --wait-timeout 180 alertmanager');
+    assert.equal(after.ups, '--wait --wait-timeout 180 sensor-bridge');
   } finally { cleanup(f); }
 });
 
@@ -287,7 +287,7 @@ test('it runs under the lock of the command that called it and refuses while ano
     // $1 is the script, $2 the lock file. Descriptor 9 is what setup.sh passes on.
     const inherited = run(f, { wrap: 'exec 9>"$2"; flock -n 9 || exit 70; bash "$1"' });
     assert.equal(inherited.status, 0, inherited.stderr);
-    assert.equal(inherited.builds, 'db imgproxy');
+    assert.equal(inherited.builds, 'db functions');
     const held = run(f, { wrap: 'exec 8>"$2"; flock -n 8 || exit 70; bash "$1"' });
     assert.notEqual(held.status, 0);
     assert.notEqual(held.status, 70);
@@ -304,18 +304,17 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
   const firstStart = setup.findIndex(line => line.includes('compose.sh" up -d'));
   assert.ok(buildStep > 0 && buildStep < firstStart, 'setup.sh builds before the first start');
   for (const [name, script] of [['setup.sh', setup], ['start.sh', lines('start.sh')]]) {
-    const fullStart = script.indexOf('bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180');
+    const fullStart = script.indexOf('bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
     const replace = script.findIndex(line => line.startsWith('bash "$ROOT/scripts/build-images.sh" --replace-optional'));
     assert.ok(fullStart > 0 && replace > fullStart, `${name} replaces optional services after the full start`);
   }
   assert.ok(!lines('start.sh').includes('bash "$ROOT/scripts/build-images.sh"'), 'start.sh never builds');
 });
 
-test('the Alertmanager recipe is its own build directory, like every other recipe', () => {
+test('every recipe is its own build directory', () => {
   const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  // A context of `.` would put every file under docker/ into the Alertmanager fingerprint.
+  // A context of `.` would put every file under docker/ into one image's fingerprint.
   assert.doesNotMatch(`${readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8')}\n${override}`, /^\s+context: \.$/m);
-  assert.match(override, /alertmanager:\n    build:\n(?:\s+#.*\n)*\s+context: \.\/alertmanager\n/);
 });
 
 test('the PDF renderer image is pinned, verified and minimal', () => {
@@ -364,6 +363,4 @@ test('no built service names its own image: Compose tags each `<project>-<servic
       assert.doesNotMatch(block, /^    image:/m, `${file}: ${block.split('\n')[0].trim()} has both build: and image:`);
     }
   }
-  const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
-  assert.match(override, /\n  alertmanager:\n    build:\n/, 'the Alertmanager service is still built here');
 });

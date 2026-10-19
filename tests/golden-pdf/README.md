@@ -1,6 +1,6 @@
 # Golden PDFs
 
-`corpus/` holds 11 fictional documents (the template's GRN, dispatch, invoice, stock and sample PDFs, and the
+`corpus/` holds 10 fictional documents (the template's GRN, dispatch, invoice and stock PDFs, and the
 English and Gujarati customer-activity, GRN-activity and item-stock reports): `index.html`, `footer.html` where the
 document has one, and `options.json`, the options the function passes to `htmlToPdf`. `golden/<case>/page-<n>.png`
 are the pages, rasterised at 150 dpi.

@@ -100,11 +100,10 @@ SELECT pg_temp.si_assert(NOT has_table_privilege('authenticated', 'public.sensor
     AND NOT has_table_privilege('anon', 'public.sensor_status', 'SELECT')
     AND (SELECT reloptions FROM pg_class WHERE oid = 'public.sensor_status'::regclass) = ARRAY['security_invoker=true'],
   'sensor_status is read by the RPCs, not by the app role, and applies the readers'' row policies');
--- Realtime publishes sensor_latest with whole rows.
-SELECT pg_temp.si_assert(EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime'
-      AND schemaname = 'public' AND tablename = 'sensor_latest')
-    AND (SELECT relreplident FROM pg_class WHERE oid = 'public.sensor_latest'::regclass) = 'f',
-  'sensor_latest is in the supabase_realtime publication with REPLICA IDENTITY FULL');
+-- Live updates are a timed re-read now (migration 105): no publication, no whole-row replica identity.
+SELECT pg_temp.si_assert(NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE tablename = 'sensor_latest')
+    AND (SELECT relreplident FROM pg_class WHERE oid = 'public.sensor_latest'::regclass) = 'd',
+  'sensor_latest is in no publication and has REPLICA IDENTITY DEFAULT');
 SELECT pg_temp.si_assert((SELECT days FROM warehouse_maintenance.retention_policy WHERE key = 'sensor_readings') = 90,
   'sensor readings are kept 90 days by default (migration 75)');
 SELECT pg_temp.si_assert(to_regprocedure('public.record_sensor_reading(character varying,numeric,numeric,character varying,character varying)') IS NULL
@@ -279,7 +278,7 @@ SELECT pg_temp.si_assert((:'answer1_again'::jsonb->'data') - 'rejected_reasons' 
 SELECT pg_temp.si_assert((SELECT count(*) FROM public.sensor_readings) = 4 AND (SELECT count(*) FROM public.sensor_devices) = 3,
   'a re-sent batch stores no reading and no device');
 SELECT pg_temp.si_assert((SELECT string_agg(device_id || '=' || ctid::text, ';' ORDER BY device_id) FROM public.sensor_latest) = :'latest_rows',
-  'a re-sent batch does not touch sensor_latest (no Realtime event)');
+  'a re-sent batch does not touch sensor_latest (no row is rewritten)');
 
 -- ---------------------------------------------------------------------------
 -- 6. Late batches: each value stays at its newest
@@ -420,7 +419,7 @@ SELECT pg_temp.si_assert((SELECT bool_and(:'staff_device'::jsonb->'data' ? k)
   'one sensor carries the polling entry keys with the same values: ' || :'staff_device');
 SELECT pg_temp.si_assert(:'staff_device_missing'::jsonb = '{"success":false,"error":"Device not found","error_code":"DEVICE_NOT_FOUND"}'::jsonb,
   'an unknown device: ' || :'staff_device_missing');
--- Staff read the latest rows and the hub directly (Realtime applies the same policy), and write nothing.
+-- Staff read the latest rows and the hub directly, and write nothing.
 SELECT pg_temp.si_assert(:'staff_latest_rows'::int = 2 AND :'staff_hub_rows'::int = 1
     AND :'staff_write'::jsonb->>'state' = '42501' AND :'staff_ingest'::jsonb->>'state' = '42501'
     AND :'staff_keys'::jsonb->>'state' = '42501' AND :'staff_update'::jsonb->>'state' = '42501',
@@ -516,7 +515,7 @@ SELECT pg_temp.si_assert(NOT online AND firmware = '1.2.3' AND last_change_at = 
   'the hub is offline and keeps the firmware it last reported') FROM public.sensor_hubs WHERE hub_id = 'HUBTEST01';
 SELECT pg_temp.si_assert((SELECT bool_and(l.ctid::text <> split_part(r, '=', 2))
     FROM public.sensor_latest l JOIN unnest(string_to_array(:'rows_before_offline', ';')) r ON split_part(r, '=', 1) = l.device_id::text),
-  'each sensor of the hub gets a Realtime event when the hub goes offline');
+  'each sensor of the hub has its row rewritten when the hub goes offline');
 SELECT set_config('request.jwt.claims', :'staff_claims', true);
 SET LOCAL ROLE authenticated;
 SELECT public.get_sensor_polling_data() AS poll_offline \gset
@@ -600,4 +599,4 @@ SELECT pg_temp.si_assert(:'answer_unreached'::jsonb#>>'{data,hub_id}' = '192.0.2
   'a hub never reached is reported under its host: ' || :'answer_unreached');
 
 ROLLBACK;
-SELECT 'sensor ingest: keys, hub and readings checked; idempotent re-send; each value newest-only with its own age; heartbeats, stale and hub-offline status; readers ignore missing values; staff read, administrators change, customers and anon refused; rename survives; Realtime publication; 90-day retention' AS result;
+SELECT 'sensor ingest: keys, hub and readings checked; idempotent re-send; each value newest-only with its own age; heartbeats, stale and hub-offline status; readers ignore missing values; staff read, administrators change, customers and anon refused; rename survives; 90-day retention' AS result;

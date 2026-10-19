@@ -12,10 +12,10 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 
 // testvm2 F1 / known issue 3: a pre-created state under a root-owned parent passed
 // the preflight and then failed with EACCES when setup staged its files next to it.
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, timerUnit } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -180,4 +180,113 @@ test('doctor refuses a Compose plugin whose `up --help` lacks --wait-timeout, an
   const run = doctorWithCompose('      --wait   Wait for services to be running|healthy');
   assert.equal(run.status, 1);
   assert.match(run.stderr, /does not accept `up --wait-timeout`/);
+});
+
+// The monitoring checker (scripts/watch.mjs, a systemd timer) replaced the Alertmanager warning.
+const HOOK = 'https://hooks.slack.com/services/' + 'T0000000/B0000000/fictionalfictionalfictional';
+function checkerState({ webhook = true, ran = null, daily = null } = {}) {
+  const base = mkdtempSync(join(tmpdir(), 'doctor-checker-'));
+  const state = join(base, 'acme');
+  mkdirSync(join(state, 'config'), { recursive: true });
+  writeFileSync(join(state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-acme\n', { mode: 0o600 });
+  if (webhook) writeFileSync(join(state, 'config/slack-webhook-url'), `${HOOK}\n`, { mode: 0o600 });
+  if (ran !== null) {
+    const file = join(state, 'config/watch-state.json');
+    writeFileSync(file, daily === null ? '{}\n' : `${JSON.stringify({ dailyRunning: { job: 'daily', startedAt: daily } })}\n`);
+    utimesSync(file, new Date(ran), new Date(ran));
+  }
+  return { base, state };
+}
+
+test('doctor is silent when the timer is active, the checker ran 4 minutes ago and a webhook is stored', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 4 * 60 * 1000 });
+  try { assert.deepEqual(checkerWarnings(f.state, { now, timerActive: () => true }), []); } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns, naming the unit and the install command, when the timer is not installed or not active', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const asked = [];
+    const out = checkerWarnings(f.state, { now, timerActive: unit => { asked.push(unit); return false; } });
+    assert.deepEqual(asked, ['warehouse-acme-watch.timer']);
+    assert.equal(timerUnit(f.state), 'warehouse-acme-watch.timer');
+    assert.equal(out.length, 1);
+    assert.match(out[0], /warehouse-acme-watch\.timer is not installed or not active/);
+    assert.ok(out[0].includes(`sudo bash scripts/watch-timer.sh install --state ${f.state}`));
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('the unit is named from the Compose project, so two states that both end in /state get different units', () => {
+  const a = checkerState(); const b = checkerState();
+  try {
+    const one = join(a.base, 'state'); const two = join(b.base, 'state');
+    mkdirSync(join(one, 'config'), { recursive: true }); mkdirSync(join(two, 'config'), { recursive: true });
+    writeFileSync(join(one, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-aaaaaaaaaaaa\n');
+    writeFileSync(join(two, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-bbbbbbbbbbbb\n');
+    assert.equal(timerUnit(one), 'warehouse-aaaaaaaaaaaa-watch.timer');
+    assert.equal(timerUnit(two), 'warehouse-bbbbbbbbbbbb-watch.timer');
+    // No readable project: a hash of the whole path (watch-timer.sh computes the same with sha256sum).
+    const gone = join(a.base, 'gone/state'); const other = join(b.base, 'gone/state');
+    assert.match(timerUnit(gone), /^warehouse-h[0-9a-f]{12}-watch\.timer$/);
+    assert.notEqual(timerUnit(gone), timerUnit(other));
+  } finally { for (const f of [a, b]) rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns when the installed service names another state, and stays silent when it names this one', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const own = checkerWarnings(f.state, { now, timerActive: () => true, serviceText: () => `[Service]\nEnvironment=WAREHOUSE_STATE_DIR=${f.state}\n` });
+    assert.deepEqual(own, []);
+    const wrong = checkerWarnings(f.state, { now, timerActive: () => true, serviceText: () => '[Service]\nEnvironment=WAREHOUSE_STATE_DIR=/elsewhere/state\n' });
+    assert.equal(wrong.length, 1);
+    assert.match(wrong[0], /service does not name this state/);
+    assert.ok(wrong[0].includes(`install --state ${f.state}`));
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor does not report a stale checker while a daily pass that started under 4 hours ago is running', () => {
+  const now = Date.now();
+  const ran = now - 3 * 60 * 60 * 1000;
+  const running = checkerState({ ran, daily: now - 3 * 60 * 60 * 1000 });
+  const stuck = checkerState({ ran: now - 5 * 60 * 60 * 1000, daily: now - 5 * 60 * 60 * 1000 });
+  try {
+    assert.deepEqual(checkerWarnings(running.state, { now, timerActive: () => true }), []);
+    const out = checkerWarnings(stuck.state, { now, timerActive: () => true });
+    assert.equal(out.length, 1);
+    assert.match(out[0], /last ran 300 minutes ago/);
+  } finally { for (const f of [running, stuck]) rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns when an active timer has not produced a run for 15 minutes, or ever', () => {
+  const now = Date.now();
+  const stale = checkerState({ ran: now - CHECKER_MAX_AGE_MS - 60 * 1000 });
+  const never = checkerState();
+  const edge = checkerState({ ran: now - CHECKER_MAX_AGE_MS + 60 * 1000 });
+  try {
+    const old = checkerWarnings(stale.state, { now, timerActive: () => true });
+    assert.equal(old.length, 1);
+    assert.match(old[0], /last ran 16 minutes ago \(it should run every 5\)/);
+    const none = checkerWarnings(never.state, { now, timerActive: () => true });
+    assert.equal(none.length, 1);
+    assert.match(none[0], /active but the monitoring checker has never run/);
+    assert.deepEqual(checkerWarnings(edge.state, { now, timerActive: () => true }), [], '14 minutes is fine');
+  } finally { for (const f of [stale, never, edge]) rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor keeps the no-webhook warning, also with --alert-webhook-file off, and a stored webhook at the old path counts', () => {
+  const now = Date.now();
+  const off = checkerState({ webhook: false, ran: now - 60 * 1000 });
+  const legacy = checkerState({ webhook: false, ran: now - 60 * 1000 });
+  try {
+    assert.deepEqual(checkerWarnings(off.state, { now, timerActive: () => true }), [NO_WEBHOOK_WARNING]);
+    assert.match(NO_WEBHOOK_WARNING, /^No Slack webhook: alerts are recorded on this host but not delivered/);
+    mkdirSync(join(legacy.state, 'config/monitoring/alertmanager'), { recursive: true });
+    writeFileSync(join(legacy.state, 'config/monitoring/alertmanager/webhook-url'), `${HOOK}\n`, { mode: 0o600 });
+    assert.deepEqual(checkerWarnings(legacy.state, { now, timerActive: () => true }), []);
+    const all = checkerState({ webhook: false });
+    try { assert.equal(checkerWarnings(all.state, { now, timerActive: () => false }).length, 2, 'timer and webhook'); } finally { rmSync(all.base, { recursive: true, force: true }); }
+  } finally { for (const f of [off, legacy]) rmSync(f.base, { recursive: true, force: true }); }
 });

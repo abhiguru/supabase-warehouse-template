@@ -1,9 +1,8 @@
 {
   "name": "warehouse-edge-vendor",
   "private": true,
-  "description": "Builds the two libraries the edge functions load, as files under functions/vendor.",
+  "description": "Builds the library the edge functions load (jose), as a file under functions/vendor.",
   "dependencies": {
-    "@supabase/supabase-js": "2.39.0",
     "jose": "5.10.0"
   },
   "devDependencies": {

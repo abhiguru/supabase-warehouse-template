@@ -33,7 +33,6 @@ case "$1" in
       'compose up --help') printf '      --wait-timeout int   Maximum duration to wait\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
-      *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
       *'exec -T db psql'*) cat >> "$FAKE_PSQL_INPUT"; if [ "$FAKE_DOCKER_FAIL" = psql ]; then exit 3; fi ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;
@@ -90,7 +89,7 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.match(result.stdout, /sign in again/);
     const after = readEnv(f.envPath);
     assert.equal(statSync(f.envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
     assert.match(after.JWT_SECRET, /^[0-9a-f]{96}$/);
     assert.notEqual(after.JWT_SECRET, before.JWT_SECRET);
     assert.notEqual(after.ANON_KEY, before.ANON_KEY);
@@ -110,7 +109,7 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.equal(calls.includes(after.JWT_SECRET), false, 'secret never appears in Docker arguments');
     assert.equal(calls.includes(before.JWT_SECRET), false);
     assert.ok(calls.indexOf('exec -T db psql') < calls.indexOf('--force-recreate'), 'SQL before recreation');
-    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db kong rest realtime storage functions studio\n/);
+    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db kong rest storage functions\n/);
     assert.equal(/--force-recreate[^\n]*supavisor/.test(calls), false, 'stopped optional consumer is not started');
     assert.ok(calls.indexOf('--force-recreate') < calls.indexOf('pg_isready'), 'doctor runs after recreation');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
@@ -123,7 +122,7 @@ test('a failing SQL step leaves the configuration untouched and recreates nothin
     const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...f.env, FAKE_DOCKER_FAIL: 'psql' }, timeout: 120000 });
     assert.notEqual(result.status, 0);
     assert.deepEqual(readFileSync(f.envPath), before);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
     const calls = readFileSync(f.log, 'utf8');
     assert.match(calls, /exec -T db psql/);
     assert.equal(calls.includes('--force-recreate'), false);

@@ -35,7 +35,7 @@ probe() {
     cat "$ROOT/scripts/http-readiness.mjs"
     printf '\nawait waitForHttp("functions", "http://functions:9000/get-public-config", {}, {timeoutMs:30000});\n'
     printf 'await waitForHttp("gateway", "http://kong:8000/functions/v1/get-public-config", {}, {timeoutMs:30000});\n'
-  } | compose exec -T storage node --input-type=module # storage shares the gateway network; Studio does not
+  } | compose exec -T storage node --input-type=module # storage shares the gateway network
 }
 probe # warms the gateway cache and checks the direct upstream
 docker network disconnect "$network" "$id"

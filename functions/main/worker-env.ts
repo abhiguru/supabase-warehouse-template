@@ -24,7 +24,6 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // ingest key is checked by the database, not here.
   'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
   'get-config': [...signedIn, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
-  'generate-sample-pdf': [...signedIn, 'PDF_RENDERER_URL'],
   'generate-grn-pdf': documentPdf,
   'generate-dispatch-pdf': documentPdf,
   'generate-invoice-pdf': documentPdf,
@@ -34,8 +33,8 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   'generate-report-pdf': documentPdf,
   // Refused with 503 by the router today; listed so that enabling printing
   // does not fall back to the whole environment.
-  'get-printer-status': [...signedIn, 'SUPABASE_ANON_KEY'],
-  'print-via-ipp': [...signedIn, 'SUPABASE_ANON_KEY'],
+  'get-printer-status': signedIn,
+  'print-via-ipp': signedIn,
 };
 
 export function workerEnv(name: string, env: Record<string, string | undefined>, extra: Record<string, string> = {}): [string, string][] {

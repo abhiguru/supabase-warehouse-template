@@ -8,42 +8,6 @@ name: warehouse-template
 
 services:
 
-  studio:
-    build:
-      context: ./studio
-    restart: unless-stopped
-    # Studio has no login and can run SQL through postgres-meta, so it sits on
-    # the admin network only: no gateway or function container can reach it.
-    # The Studio panels that call the API gateway therefore do not work; it is
-    # kept for the metadata acceptance check (npm run test:studio).
-    networks: [admin]
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://studio:3000/api/platform/profile').then((r) => {if (r.status !== 200) throw new Error(r.status)})"
-        ]
-      timeout: 10s
-      interval: 5s
-      retries: 3
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      STUDIO_PG_META_URL: http://meta:8080
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
-      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      AUTH_JWT_SECRET: ${JWT_SECRET}
-      NEXT_PUBLIC_ENABLE_LOGS: false
-
   kong:
     image: kong:3.9.3-ubuntu@sha256:92035d16d7ff86b7bc12fb1d0090d29357d924238b1880f78735f3f2fea6b631
     restart: unless-stopped
@@ -79,13 +43,17 @@ services:
       KONG_DNS_NOT_FOUND_TTL: "1"
       KONG_DNS_ERROR_TTL: "1"
       KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
+      # The container is limited to 0.5 CPU (docker-compose.override.yml), but
+      # nginx "auto" starts one worker per host core: 8 workers use about 590 MB
+      # on an 8-core host, over the 512M limit.
+      KONG_NGINX_WORKER_PROCESSES: "1"
+      KONG_PLUGINS: request-transformer,cors,key-auth,rate-limiting,request-size-limiting
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       # Compress JSON and text answers (an invoice-form preview of 3,055 lines is
       # 2.2 MB of JSON after migration 101; the tunnel uploads at about 3 MB/s). Only the types
-      # below are compressed: images, PDFs, other storage downloads and the
-      # Realtime websocket upgrade are not listed, nginx never recompresses an
+      # below are compressed: images, PDFs, other storage downloads and
+      # websocket upgrades are not listed, nginx never recompresses an
       # answer that already has Content-Encoding (get-public-config is gzip
       # from the functions container), and it skips range answers.
       KONG_NGINX_PROXY_GZIP: "on"
@@ -101,8 +69,6 @@ services:
       KONG_NGINX_HTTP_KEEPALIVE_TIMEOUT: "75s"
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
       # Cloudflare Tunnel is the only ingress. cloudflared on this host connects
       # to the loopback-published gateway, and Docker's userland proxy
@@ -120,7 +86,7 @@ services:
       KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
       # Access log without the query string (docs/CONTAINER_SECURITY.md, "Logs"):
       # Kong's default format writes the whole request line, so a storage
-      # signed-URL `?token=` and a Realtime `?apikey=` stayed in the log for
+      # signed-URL `?token=` stayed in the log for
       # its 3 x 10 MB of life. `$$uri` is the path alone. The client address
       # stays (owner decision of 2026-10-17); Referer, User-Agent and the
       # credential fields of the default format are left out. `$$` is Compose's
@@ -128,52 +94,6 @@ services:
       KONG_NGINX_HTTP_LOG_FORMAT: "warehouse_redacted '$$remote_addr [$$time_local] \"$$request_method $$uri $$server_protocol\" $$status $$body_bytes_sent $$request_time'"
       KONG_PROXY_ACCESS_LOG: "/dev/stdout warehouse_redacted"
     entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
-
-  # GoTrue auth service DISABLED - using custom phone OTP authentication instead
-  # To re-enable: remove the 'profiles' line and uncomment auth routes in kong.yml
-  auth:
-    build:
-      context: ./auth
-    profiles: ["disabled"]
-    restart: unless-stopped
-    networks: [default, database]
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      GOTRUE_API_HOST: 0.0.0.0
-      GOTRUE_API_PORT: 9999
-      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
-      GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${DB_PASSWORD_AUTH:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-      GOTRUE_SITE_URL: ${SITE_URL}
-      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
-      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
-      GOTRUE_JWT_ADMIN_ROLES: service_role
-      GOTRUE_JWT_AUD: authenticated
-      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
-      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
-      GOTRUE_JWT_SECRET: ${JWT_SECRET}
-      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP}
-      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
-      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
-      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
-      GOTRUE_SMTP_HOST: ${SMTP_HOST}
-      GOTRUE_SMTP_PORT: ${SMTP_PORT}
-      GOTRUE_SMTP_USER: ${SMTP_USER}
-      GOTRUE_SMTP_PASS: ${SMTP_PASS}
-      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME}
-      GOTRUE_MAILER_URLPATHS_INVITE: ${MAILER_URLPATHS_INVITE}
-      GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION}
-      GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
-      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
-      GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
-      GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
   rest:
     # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".
@@ -193,58 +113,6 @@ services:
       PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
     command: ["postgrest"]
 
-  realtime:
-    build:
-      context: ./realtime
-    restart: unless-stopped
-    # Realtime looks up the database host for IPv6 first. Without this, the host's
-    # LAN search suffix is tried for the AAAA question, and on a LAN whose resolver
-    # is slow to refuse it (about 8 s) the first tenant connection exceeds the 15 s
-    # window. Resolve Compose names at the DNS root, as for Kong (TW-BE-015).
-    dns_search: "."
-    networks:
-      default:
-        aliases:
-          - realtime-dev
-      database:
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD", "curl", "-sSfL", "--head", "-o", "/dev/null",
-          "-H", "Authorization: Bearer ${ANON_KEY}",
-          "http://localhost:4000/api/tenants/realtime-dev/health"
-        ]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-      start_period: 90s
-    environment:
-      PORT: 4000
-      DB_HOST: ${POSTGRES_HOST}
-      DB_PORT: ${POSTGRES_PORT}
-      # Realtime still connects as the superuser: it creates its own schema and
-      # replication slot (docs/CONTAINER_SECURITY.md, "Database passwords").
-      DB_USER: supabase_admin
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_NAME: ${POSTGRES_DB}
-      DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
-      # Encrypts the credentials Realtime stores for its tenant. SEED_SELF_HOST
-      # deletes and rewrites that tenant at every start of the pinned release, so
-      # a recreated container always stores them under the current key.
-      DB_ENC_KEY: ${REALTIME_DB_ENC_KEY:?Run setup.sh to generate the Realtime encryption key}
-      API_JWT_SECRET: ${JWT_SECRET}
-      METRICS_JWT_SECRET: ${JWT_SECRET}
-      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-      ERL_AFLAGS: -proto_dist inet_tcp
-      DNS_NODES: "''"
-      RLIMIT_NOFILE: "10000"
-      APP_NAME: realtime
-      SEED_SELF_HOST: true
-      RUN_JANITOR: true
-
   storage:
     build:
       context: ./storage
@@ -262,13 +130,17 @@ services:
         condition: service_healthy
       rest:
         condition: service_started
-      imgproxy:
-        condition: service_started
     environment:
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       POSTGREST_URL: http://rest:3000
       PGRST_JWT_SECRET: ${JWT_SECRET}
+      # Storage's migrator reads these two itself (dist/config.js). Its default superuser is "postgres";
+      # name the role that really exists so a cluster without "postgres" works.
+      DB_SUPER_USER: supabase_storage_admin
+      # The roles already exist (database bootstrap). Storage reads this as === "true", so unset is also off;
+      # it is set explicitly for clarity.
+      DB_INSTALL_ROLES: "false"
       DATABASE_URL: postgres://supabase_storage_admin:${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       FILE_SIZE_LIMIT: 52428800
       STORAGE_BACKEND: file
@@ -276,66 +148,7 @@ services:
       TENANT_ID: stub
       REGION: stub
       GLOBAL_S3_BUCKET: stub
-      ENABLE_IMAGE_TRANSFORMATION: "true"
-      IMGPROXY_URL: http://imgproxy:5001
-
-  imgproxy:
-    build:
-      context: ./imgproxy
-    restart: unless-stopped
-    # The storage directory is private to the installing user (mode 0700), so
-    # the image's own user (999) cannot enter it and every transformation
-    # failed with "permission denied". scripts/compose.sh passes the owner.
-    user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
-    volumes:
-      # imgproxy only reads stored images; the storage service writes them.
-      - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:ro,z
-    healthcheck:
-      test: ["CMD", "imgproxy", "health"]
-      timeout: 5s
-      interval: 5s
-      retries: 3
-    environment:
-      IMGPROXY_BIND: ":5001"
-      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
-      IMGPROXY_USE_ETAG: "true"
-      IMGPROXY_ENABLE_WEBP_DETECTION: ${IMGPROXY_ENABLE_WEBP_DETECTION}
-
-  meta:
-    build:
-      context: ./postgres-meta
-    restart: unless-stopped
-    # postgres-meta runs any SQL as supabase_admin for whoever can connect to
-    # port 8080. Only Studio and the database share its network.
-    networks: [admin]
-    # The runtime image keeps node but no wget or curl (docker/postgres-meta/Dockerfile).
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:8080/health').then((r) => {if (r.status !== 200) throw new Error(r.status)})"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      # The service has a quarter of a CPU. On a busy host its start, and the
-      # node process of the probe itself, can take longer than 30 seconds; with
-      # that start period it was reported unhealthy 90 seconds after a start
-      # (seen twice in CI, 2026-10-11) and the backup or restore that had
-      # restarted it failed. Failed probes do not count during the start period.
-      start_period: 120s
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      PG_META_PORT: 8080
-      PG_META_DB_HOST: ${POSTGRES_HOST}
-      PG_META_DB_PORT: ${POSTGRES_PORT}
-      PG_META_DB_NAME: ${POSTGRES_DB}
-      PG_META_DB_USER: supabase_admin
-      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      ENABLE_IMAGE_TRANSFORMATION: "false"
 
   functions:
     build:
@@ -398,15 +211,12 @@ services:
     build:
       context: ./postgres
     restart: unless-stopped
-    networks: [database, admin]
+    networks: [database]
     volumes:
-      - ./volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
-      - ./volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
       - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
       - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
       - ${WAREHOUSE_DB_PATH:?Set private database path}:/var/lib/postgresql/data:Z
       - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
-      - ./volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
       - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
       - db-config:/etc/postgresql-custom
     healthcheck:
@@ -424,7 +234,6 @@ services:
       # directory); scripts/configure-db-roles.sql sets them on every setup run.
       DB_PASSWORD_AUTHENTICATOR: ${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}
       DB_PASSWORD_STORAGE: ${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}
-      DB_PASSWORD_AUTH: ${DB_PASSWORD_AUTH:?Run setup.sh to generate the per-role database passwords}
       DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:?Run setup.sh to generate the per-role database passwords}
       PGDATABASE: ${POSTGRES_DB}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -529,7 +338,7 @@ services:
   # ingest-sensor-readings function through the gateway (docs/SENSORS.md).
   # GPL-3.0-or-later code in its own directory (docker/sensor-bridge/LICENSE).
   # On `default` only: it calls Kong and nothing else in the project, and it
-  # cannot reach the database, postgres-meta or Studio. Every variable has a
+  # cannot reach the database. Every variable has a
   # default, so `compose config` keeps working on an installation that never
   # set them; an unconfigured bridge exits 78 when started.
   sensor-bridge:
@@ -568,8 +377,8 @@ services:
 
   # pdf-renderer - HTML to PDF conversion (chrome-headless-shell driven by puppeteer-core;
   # docker/pdf-renderer, API in its README). It sits on the internal `renderer` network
-  # with `functions` and nothing else: no ports, no route to the internet, the database,
-  # Kong or Studio. `functions` does not depend_on it, so a renderer restart never
+  # with `functions` and nothing else: no ports, no route to the internet, the database
+  # or Kong. `functions` does not depend_on it, so a renderer restart never
   # restarts or blocks the function runtime.
   pdf-renderer:
     build: ./pdf-renderer
@@ -597,16 +406,14 @@ volumes:
   cups-spool:
   sensor-bridge-data:
 
-# Four project-scoped networks; services resolve each other by DNS name only
+# Three project-scoped networks; services resolve each other by DNS name only
 # on a network they share (tests/compose-networks.test.mjs holds the table).
-#   default   the gateway, its upstreams, the PDF and image helpers, monitoring
+#   default   the gateway, its upstreams, the PDF and image helpers
 #   database  the database and the services that open a connection to it
-#   admin     Studio, postgres-meta and the database
 #   renderer  internal (no outside route): the function runtime and the PDF renderer only
-# A service that is not listed under `database` or `admin` cannot open a
-# connection to PostgreSQL, postgres-meta or Studio at all.
+# A service that is not listed under `database` cannot open a connection to
+# PostgreSQL at all.
 networks:
   database:
-  admin:
   renderer:
     internal: true

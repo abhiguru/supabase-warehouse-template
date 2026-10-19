@@ -15,10 +15,11 @@ the original warehouse-template code and does not replace third-party licenses.
 The complete Apache License 2.0 text is included at
 `LICENSES/Apache-2.0.txt`.
 
-The edge functions carry two third-party libraries as built files:
-`functions/vendor/jose.mjs` (`jose` 5.10.0, MIT, Filip Skokan) and
-`functions/vendor/supabase-js.mjs` (the Supabase JS 2.39.0 package, MIT, with
-its dependencies). The licence text of every package they may contain is in
+The edge functions carry one third-party library as a built file:
+`functions/vendor/jose.mjs` (`jose` 5.10.0, MIT, Filip Skokan). supabase-js is
+no longer bundled: the functions reach PostgREST and Storage through
+`functions/_shared/supabase-rest.ts`, original project code on plain `fetch`.
+The licence text of every package `jose.mjs` may contain is in
 `functions/vendor/LICENSES.txt`; the exact versions are in
 `scripts/edge-vendor/package-lock.json`. `jose` at the same version is also
 the locked local development dependency the unit tests use. The optional `ipp`
@@ -66,10 +67,8 @@ redistributing them. Versions are the ones pinned in
 | --- | --- | --- | --- |
 | Kong Gateway (open source) | 3.9.3 (`kong:3.9.3-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
 | PostgREST | v16.4 (`postgrest/postgrest:v16.4`, pinned by index digest) | MIT | https://github.com/PostgREST/postgrest |
-| Supabase Realtime | v2.144.0 (base of `docker/realtime/Dockerfile`) | Apache-2.0 | https://github.com/supabase/realtime |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
-| Supabase edge-runtime | v1.77.4 (base of `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
-| Supabase Studio | 2026.10.12-sha-3699278 (base of `docker/studio/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supabase (`apps/studio`) |
+| Supabase edge-runtime | v1.77.4 (only its `edge-runtime` binary is copied, onto `debian:bookworm-slim`, by `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Chrome for Testing (chrome-headless-shell) | 155.0.8059.84 (`ARG CHS_VERSION` in `docker/pdf-renderer/Dockerfile`, downloaded at build time and checked against `ARG CHS_SHA256`) | BSD-3-Clause (Chromium), plus the bundled third-party notices of the archive | https://googlechromelabs.github.io/chrome-for-testing/ and https://www.chromium.org/ |
 | puppeteer-core | 25.14.0 (`docker/pdf-renderer/package.json`, pinned exactly) | Apache-2.0 | https://github.com/puppeteer/puppeteer |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
@@ -77,9 +76,8 @@ redistributing them. Versions are the ones pinned in
 
 ## Maintained container source recipes (2026-09-22)
 
-The dependency manifests under `docker/alertmanager`, `docker/node-exporter`,
-`docker/postgres-exporter`, `docker/cadvisor`, `docker/prometheus`,
-`docker/auth`, `docker/storage`, `docker/imgproxy`, and `docker/postgres`
+The dependency manifests under `docker/storage` and `docker/postgres`
+(the Alertmanager, node exporter, Postgres exporter, cAdvisor and Prometheus recipes were removed on 2026-10-19)
 are copied from the upstream versions listed in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) and modified to resolve
 security updates. Recipe URLs and SHA-256 checksums identify the source archives.
@@ -92,23 +90,7 @@ v14.17 image and have not been repeated for v16.4.
 
 Upstream license files were read from those source archives (Storage's license
 from its matching release tag). Their complete texts and available NOTICE files
-are retained under `LICENSES/{alertmanager,node-exporter,postgres-exporter,
-cadvisor,prometheus,auth,storage,imgproxy,gosu,wal-g}/` (and `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/` for the PDF renderer's downloaded and installed components). GoTrue/Auth is MIT
-(Copyright 2021–2025 Supabase); imgproxy is MIT (Copyright 2017 Sergey
-Alexandrovich); the other listed
-projects use Apache-2.0.
+are retained under `LICENSES/{storage,gosu}/` (and `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/` for the PDF renderer's downloaded and installed components). The projects in the braces use Apache-2.0.
 Each source-built runtime image also retains the corresponding upstream license
 and available NOTICE. Dependencies keep their own upstream terms; this inventory
 does not authorize redistribution of the resulting images or native binaries.
-
-
-### Postgres-meta source migration
-
-`docker/postgres-meta` contains modified v0.99.0 package manifests and an explicit
-source patch. Its source URL/checksum is in the Dockerfile. The repository's
-actual `LICENSE` is Apache-2.0 and is retained at
-`LICENSES/postgres-meta/LICENSE` and in the runtime image. The upstream
-`package.json` separately labels the package MIT; that metadata is preserved,
-not substituted for the checked repository license. The source patch retains
-upstream authorship and uses the included repository license text. Studio's
-recipe references the publisher image and vendors no additional source/assets.

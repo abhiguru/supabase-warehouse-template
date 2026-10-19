@@ -1,4 +1,4 @@
-import { createClient } from '../vendor/supabase-js.mjs';
+import { restClient } from '../_shared/supabase-rest.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { advertisedCentralLogin } from '../_shared/https-address.ts';
@@ -48,9 +48,7 @@ Deno.serve(async (req: Request) => {
     });
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     if (!anonKey) throw new Error('Missing anon key');
-    const client = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const client = restClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const { data: config, error } = await client.from('api_configurations')
       .select('app_version,maintenance_mode').eq('environment', environment).eq('is_active', true).single();
     if (error || !config) throw new Error('Configuration not seeded');

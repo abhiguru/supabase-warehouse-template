@@ -378,18 +378,6 @@ archive_ok() {
   if [[ -e "$1.hmac" || "$1" == *.enc ]]; then backup_check_archive "$1" "$BACKUP_KEY" || return 2; fi
 }
 
-# The same result for Prometheus (scripts/backup-metrics.sh, docs/MONITORING.md "Backup alerts"). It never
-# changes the outcome of a run. The library is read from the checkout like backup-key.sh, because the root
-# helper is a copy of this file.
-record_metric() {
-  local lib="$ROOT/scripts/backup-metrics.sh" status=1
-  [[ -f "$lib" ]] || lib="$(conf_get CHECKOUT)/scripts/backup-metrics.sh"
-  [[ -f "$lib" ]] || return 0
-  [[ "$1" != ok ]] || status=0
-  # shellcheck source=scripts/backup-metrics.sh
-  ( source "$lib"; backup_metrics_exit "$STATE" usb "$status" ) || true
-}
-
 record() {
   local result="$1" message="$2" now last_ok tmp report
   now="$(date +%s)"
@@ -411,7 +399,6 @@ record() {
     } > "$DEST/.LAST-RESULT.txt.partial" 2>/dev/null && mv -f -- "$DEST/.LAST-RESULT.txt.partial" "$DEST/LAST-RESULT.txt" 2>/dev/null || true
   fi
   RECORDED=1
-  record_metric "$result"
 }
 on_run_exit() {
   local status=$?

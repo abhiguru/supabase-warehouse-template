@@ -1,14 +1,14 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { replaceEnvLines } from './keys.mjs';
+import { replaceEnvLines, retireGraphqlSchema } from './keys.mjs';
 import { readEnv } from './doctor-common.mjs';
 import { isMain } from './is-main.mjs';
 
 // Per-role database passwords (docs/CONTAINER_SECURITY.md, "Database passwords").
 // Every service login has its own generated password in config/compose.env;
 // POSTGRES_PASSWORD stays the superuser password (postgres, supabase_admin),
-// used by the operator scripts, postgres-meta, Studio, Realtime and Supavisor's
+// used by the operator scripts and Supavisor's
 // metadata connection.
 //   env       the compose.env line
 //   role      the PostgreSQL login it is the password of
@@ -20,14 +20,8 @@ import { isMain } from './is-main.mjs';
 export const DB_ROLE_LOGINS = [
   { env: 'DB_PASSWORD_AUTHENTICATOR', role: 'authenticator', variable: 'authenticator_verifier', usedBy: 'PostgREST' },
   { env: 'DB_PASSWORD_STORAGE', role: 'supabase_storage_admin', variable: 'storage_verifier', usedBy: 'Storage' },
-  { env: 'DB_PASSWORD_AUTH', role: 'supabase_auth_admin', variable: 'auth_verifier', usedBy: 'the disabled Auth service' },
   { env: 'DB_PASSWORD_POOLER', role: 'pgbouncer', variable: 'pooler_verifier', usedBy: "Supavisor's pool user" },
-  { env: 'DB_PASSWORD_MONITORING', role: 'warehouse_monitoring', variable: 'monitoring_verifier', usedBy: 'the Postgres exporter' },
 ];
-// Realtime encrypts the database credentials it stores for its tenant with this
-// key (AES-128, so exactly 16 characters). It replaces the fixed text
-// `supabaserealtime` of earlier releases.
-export const REALTIME_KEY = 'REALTIME_DB_ENC_KEY';
 // The superuser logins; both have POSTGRES_PASSWORD.
 export const SUPERUSER_ROLES = [
   { role: 'postgres', variable: 'postgres_verifier' },
@@ -35,16 +29,13 @@ export const SUPERUSER_ROLES = [
 ];
 
 const PASSWORD_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
-const REALTIME_KEY_PATTERN = /^[A-Za-z0-9_-]{16}$/;
 const newPassword = () => randomBytes(32).toString('hex');
-// 12 random bytes are 16 base64url characters: 96 bits of key in the 16 bytes Realtime takes.
-const newRealtimeKey = () => randomBytes(12).toString('base64url');
 
 // The values a fresh state gets, and what an existing one lacks.
 export function generatedDbValues() {
-  return { ...Object.fromEntries(DB_ROLE_LOGINS.map(({ env }) => [env, newPassword()])), [REALTIME_KEY]: newRealtimeKey() };
+  return Object.fromEntries(DB_ROLE_LOGINS.map(({ env }) => [env, newPassword()]));
 }
-export const GENERATED_DB_NAMES = [...DB_ROLE_LOGINS.map(({ env }) => env), REALTIME_KEY];
+export const GENERATED_DB_NAMES = DB_ROLE_LOGINS.map(({ env }) => env);
 
 // compose.env text with every missing (absent or empty) generated value
 // added; a value that exists is never replaced. Returns the new text and the
@@ -73,8 +64,6 @@ export function validateDbValues(env) {
     if (seen.has(value)) throw new Error(`${name} repeats ${seen.get(value)}; every database login needs its own password.`);
     seen.set(value, name);
   }
-  const key = env[REALTIME_KEY] ?? '';
-  if (!REALTIME_KEY_PATTERN.test(key) || key === 'supabaserealtime') throw new Error(`Invalid ${REALTIME_KEY}: run setup.sh to generate it (16 letters, digits, - or _).`);
 }
 
 // A SCRAM-SHA-256 verifier in PostgreSQL's stored format (RFC 5802/7677,
@@ -115,7 +104,7 @@ function privateFile(path) {
 }
 
 // Stage a copy of compose.env with new per-role passwords (and, with
-// `superuser`, a new POSTGRES_PASSWORD and Realtime key). Only those lines
+// `superuser`, a new POSTGRES_PASSWORD). Only those lines
 // change. scripts/rotate-db-passwords.sh applies the database side first and
 // then renames the staged file over compose.env.
 export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {}) {
@@ -125,8 +114,7 @@ export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {
   const current = readFileSync(envPath, 'utf8');
   validateDbValues(readEnv(envPath));
   const values = generatedDbValues();
-  if (!superuser) delete values[REALTIME_KEY];
-  else values.POSTGRES_PASSWORD = newPassword();
+  if (superuser) values.POSTGRES_PASSWORD = newPassword();
   const updated = replaceEnvLines(current, values);
   rmSync(stagedPath, { force: true });
   writeFileSync(stagedPath, updated, { mode: 0o600, flag: 'wx' });
@@ -134,12 +122,15 @@ export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {
 }
 
 // Adds the missing values to a compose.env in place (through a same-directory
-// temporary). Returns the names added.
+// temporary). Returns the names added (the PGRST_DB_SCHEMAS rewrite is not one of them).
 export function addMissingDbValuesToFile(envPath) {
   privateFile(envPath);
   const current = readFileSync(envPath, 'utf8');
-  const { text, added } = addMissingDbValues(current);
-  if (!added.length) return added;
+  const { text: withValues, added } = addMissingDbValues(current);
+  // A backup's compose.env from before migration 103 also names the GraphQL schema, which the restore drops
+  // (the migration runs after the replay); both restore paths call this before the database starts.
+  const text = retireGraphqlSchema(withValues);
+  if (text === current) return added;
   const stage = `${envPath}.${randomBytes(8).toString('hex')}`;
   writeFileSync(stage, text, { mode: 0o600, flag: 'wx' });
   try { renameSync(stage, envPath); } catch (error) { rmSync(stage, { force: true }); throw error; }

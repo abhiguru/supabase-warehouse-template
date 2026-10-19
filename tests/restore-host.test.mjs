@@ -24,9 +24,6 @@ function fixture(prefix, { integrity = ledger(), env } = {}) {
   mkdirSync(join(root, 'migrations'));
   for (const [name, body] of Object.entries(migrations)) writeFileSync(join(root, 'migrations', name), body);
   writeFileSync(join(root, 'scripts/doctor.mjs'), "console.log('Host prerequisites and state filesystem preflight passed.');\n");
-  // restore-host renders the monitoring files with the renderer setup uses, from the templates next to it.
-  for (const file of ['monitoring-config.mjs', 'is-main.mjs']) copyFileSync(join(repo, 'scripts', file), join(root, 'scripts', file));
-  for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.slack.yml']) copyFileSync(join(repo, 'docker', file), join(root, 'docker', file));
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.
   writeFileSync(join(root, 'scripts/restore.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$*" >> "$RESTORE_LOG"
@@ -110,15 +107,14 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'backup kept unmodified');
     assert.ok(existsSync(join(f.backup, 'SHA256SUMS')), 'source backup left in place');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
-    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['alertmanager', 'db', 'storage'], 'empty pre-restore directories removed');
+    assert.deepEqual(readdirSync(join(f.state, 'data')).sort(), ['db', 'storage'], 'empty pre-restore directories removed');
     assert.deepEqual(readdirSync(f.parent), ['acme'], 'no staging directory left');
     assert.match(result.stdout, /Keep the original host off/);
-    // The monitoring profile can start: its files are rendered for the restored project, with no webhook.
-    assert.match(readFileSync(join(f.state, 'config/monitoring/prometheus.yml'), 'utf8'), /^    installation: warehouse-backup-test$/m);
-    assert.equal(statSync(join(f.state, 'metrics')).mode & 0o777, 0o755);
-    assert.equal(statSync(join(f.state, 'data/alertmanager')).mode & 0o777, 0o700);
-    assert.equal(readFileSync(join(f.state, 'config/monitoring/alertmanager/alertmanager.yml'), 'utf8'), readFileSync(join(repo, 'docker/alertmanager.yml'), 'utf8'));
-    assert.equal(existsSync(join(f.state, 'config/monitoring/alertmanager/webhook-url')), false, 'the webhook address is not in a backup');
+    // The monitoring files of the old stack are not rendered any more; the checker's timer is installed by the operator.
+    assert.equal(existsSync(join(f.state, 'config/monitoring')), false);
+    assert.equal(existsSync(join(f.state, 'config/slack-webhook-url')), false, 'the webhook address is not in a backup');
+    assert.match(result.stdout, /Install the monitoring checker[^]*sudo bash scripts\/watch-timer\.sh install --state /);
+    assert.doesNotMatch(result.stdout, /profile monitoring|prometheus/i);
     assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
@@ -159,19 +155,19 @@ test('restore-host refuses a backup it cannot prove genuine: no key, a re-checks
   } finally { clean(f); }
 });
 
-test('restore-host takes an unsigned v4 backup only with --allow-unsigned, with a warning, and passes the flag on', () => {
+test('restore-host refuses a v4 backup, with --backup-key or with --allow-unsigned and no key', () => {
   const f = fixture('warehouse-restore-host-v4-');
   try {
     f.resum({ format: 'warehouse-backup-v4', sign: false });
     let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
-    assert.equal(result.status, 1); assert.match(result.stderr, /carries no signature[\s\S]*--allow-unsigned/); nothingCreated(f, result);
+    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/); nothingCreated(f, result);
     result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
-    assert.equal(result.status, 0, result.stderr + result.stdout);
-    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
-    assert.equal(existsSync(join(f.state, 'config/backup.key')), false, 'no key is invented; the first backup creates one');
+    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/); nothingCreated(f, result);
+    assert.equal(existsSync(join(f.state, 'config/backup.key')), false);
   } finally { clean(f); }
-  // A v5 label without a signature is not an old backup.
+});
+
+test('restore-host refuses a v5 backup without a signature when --backup-key is given', () => {
   const g = fixture('warehouse-restore-host-v5-unsigned-');
   try {
     g.resum({ sign: false });
@@ -189,7 +185,7 @@ test('restore-host refuses a v5 backup whose signature file was removed, even wi
     let result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
-    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
     assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
     nothingCreated(f, result);
     assert.equal(readFileSync(join(f.scratch, 'docker.log'), 'utf8'), '', 'docker is never invoked');
@@ -201,7 +197,7 @@ test('restore-host refuses a v5 backup whose signature file was removed, even wi
   } finally { clean(f); }
 });
 
-test('restore-host takes the same v5 backup with --allow-unsigned and no --backup-key (key lost), with the warning, and an unsigned v4 even when the key is given', () => {
+test('restore-host takes the same v5 backup with --allow-unsigned and no --backup-key (key lost), with the warning', () => {
   const f = fixture('warehouse-restore-host-stripped-v5-lost-key-');
   try {
     f.resum({ sign: false });
@@ -212,27 +208,17 @@ test('restore-host takes the same v5 backup with --allow-unsigned and no --backu
     assert.match(result.stderr, /the backup key was missing/, 'the banner says why no signature was required');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
   } finally { clean(f); }
-  // Owner decision of 2026-10-17: an unsigned backup labelled v4 is taken with the flag even with the key in hand
-  // (a v5 backup relabelled v4 is the accepted residual).
-  const g = fixture('warehouse-restore-host-v4-with-key-');
-  try {
-    g.resum({ format: 'warehouse-backup-v4', sign: false });
-    const result = g.run(['--state-dir', g.state, '--yes', '--allow-unsigned', g.backup]);
-    assert.equal(result.status, 0, result.stderr + result.stdout);
-    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.equal(result.restoreCalls, `STATE=${g.state} ARGS=--yes --relocated --allow-unsigned ${join(g.state, 'backups', NAME)}\n`);
-  } finally { clean(g); }
 });
 
 test('restore-host usage and key message say what --allow-unsigned is for', () => {
   const f = fixture('warehouse-restore-host-wording-');
   try {
     const usage = f.run(['--help'], {}, { key: null });
-    assert.match(usage.stderr, /--allow-unsigned instead of --backup-key: only for a backup written before format v5, or when the backup key is lost/);
+    assert.match(usage.stderr, /--allow-unsigned instead of --backup-key: only for when the backup key is lost/);
     f.resum({ sign: false });
     const result = f.run(['--state-dir', f.state, '--yes', f.backup], {}, { key: null });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
   } finally { clean(f); }
 });
 
@@ -260,21 +246,21 @@ test('restore-host opens an encrypted archive with the backup key and refuses it
   } finally { clean(f); }
 });
 
-// What a host that ran the monitoring and printing profiles keeps after `compose down`.
-const OTHER_VOLUMES = ['prometheus_data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
+// What a host that ran the printing and sensor profiles keeps after `compose down`.
+const OTHER_VOLUMES = ['sensor-bridge-data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
 
 test('restore-host refuses a host that still has the database configuration volume, and names only that volume', () => {
   const f = fixture('warehouse-restore-host-volume-');
   try {
-    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: ['warehouse-backup-test_prometheus_data', 'warehouse-backup-test_db-config', 'warehouse-backup-test_cups-spool'].join(' ') });
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: ['warehouse-backup-test_sensor-bridge-data', 'warehouse-backup-test_db-config', 'warehouse-backup-test_cups-spool'].join(' ') });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Docker volume warehouse-backup-test_db-config of the previous database remains[\s\S]*docker volume rm warehouse-backup-test_db-config$/m);
-    assert.doesNotMatch(result.stderr, /docker volume rm.*(prometheus_data|cups-spool)/, 'the operator is not told to delete monitoring history or the print spool');
+    assert.doesNotMatch(result.stderr, /docker volume rm.*(sensor-bridge-data|cups-spool)/, 'the operator is not told to delete the sensor data or the print spool');
     nothingCreated(f, result);
   } finally { clean(f); }
 });
 
-test('restore-host is not stopped by monitoring and printing volumes, which hold no restored state', () => {
+test('restore-host is not stopped by printing and sensor volumes, which hold no restored state', () => {
   const f = fixture('warehouse-restore-host-other-volumes-');
   try {
     const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: OTHER_VOLUMES.join(' ') });
@@ -447,9 +433,9 @@ test('restore-host from a backup taken before per-role passwords adds them to th
     const env = readFileSync(join(f.state, 'config/compose.env'), 'utf8');
     assert.ok(env.startsWith(fromBackup), 'the backup configuration, with only the three paths rewritten');
     assert.deepEqual(env.slice(fromBackup.length).trimEnd().split('\n').map(line => line.split('=')[0]),
-      ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING', 'REALTIME_DB_ENC_KEY']);
+      ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']);
     assert.equal(statSync(join(f.state, 'config/compose.env')).mode & 0o777, 0o600);
-    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, .*REALTIME_DB_ENC_KEY: the backup was taken before/);
+    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE, DB_PASSWORD_POOLER: the backup was taken before/);
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
     assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'the kept backup is unmodified');
   } finally { clean(f); }
@@ -536,7 +522,7 @@ const centralEnv = (file = 'central-jwks.json') =>
   composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\nCENTRAL_ISSUER=${ISSUER}\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=${file}\n`);
 
 // The alert webhook step (B9) always names setup.sh; the central key file tests are about a rerun for the key file.
-const withoutAlertStep = out => out.replace(/ *\d+\. Alerts are local only[^]*?compose\.sh --profile monitoring up -d\n/, '');
+const withoutAlertStep = out => out.replace(/ *\d+\. Alerts are local only[^]*?watch-timer\.sh install --state [^\n]*\n/, '');
 
 test('restore-host puts the central key file back byte for byte with mode 0644, and leaves central sign-in nothing to redo', () => {
   const f = fixture('warehouse-restore-host-central-key-', { env: centralEnv() });
@@ -589,7 +575,7 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     assert.doesNotMatch(result.stdout, /Restored the central sign-in key file/);
     assert.match(result.stdout, /add --alert-webhook-file \/absolute\/path\/to\/webhook-url-file\s+to that same command, so it is one rerun and not two/);
     // The numbered steps stay in order whether or not this step is there.
-    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   } finally { clean(f); }
 });
 
@@ -603,7 +589,33 @@ test('restore-host says nothing about a key file when central sign-in uses an ad
       assert.doesNotMatch(withoutAlertStep(result.stdout), /central|setup\.sh/i, label);
       assert.equal(result.keyPending, '', label);
       assert.equal(existsSync(join(f.state, 'public/central-jwks.json')), false, label);
-      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7], label);
+      assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8], label);
     } finally { clean(f); }
   }
+});
+
+test('restore-host and restore.sh --relocated accept a backup with the old PGRST_DB_SCHEMAS default (migration 103) and leave the kept backup unmodified', () => {
+  const oldDefault = 'JWT_SECRET=kept-secret\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n';
+  const f = fixture('warehouse-restore-host-schemas-', { env: composeEnv('/srv/warehouse/lost-host', oldDefault) });
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    const env = readFileSync(join(f.state, 'config/compose.env'), 'utf8');
+    assert.match(env, /^PGRST_DB_SCHEMAS=public,storage$/m, 'the new state does not name the GraphQL schema');
+    assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'the kept backup is unmodified');
+  } finally { clean(f); }
+  // The real restore.sh --relocated compares the rewritten state with the unchanged backup and accepts it.
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-relocated-schemas-'));
+  try {
+    const state = makeState(scratch, { env: composeEnv('', 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage\n') });
+    writeFileSync(join(state, 'config/compose.env'), composeEnv(state, 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage\n'), { mode: 0o600 });
+    const log = join(scratch, 'docker.log'); writeFileSync(log, '');
+    const root = scriptRoot(scratch);
+    const backup = makeBackup(join(scratch, 'moved'), { env: composeEnv('/srv/warehouse/elsewhere', 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n') });
+    const result = spawnSync('bash', [join(root, 'scripts/restore.sh'), '--yes', '--relocated', backup], { encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeDocker(join(scratch, 'bin'))}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
+        FAKE_DOCKER_LOG: log, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') } });
+    assert.match(result.stderr + result.stdout, /Restoring .* into /, 'past the configuration check');
+    assert.doesNotMatch(result.stderr, /in more than the state paths/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

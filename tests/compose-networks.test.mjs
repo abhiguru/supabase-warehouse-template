@@ -34,21 +34,19 @@ function configuredHosts(definition, names) {
   return hosts;
 }
 
-test('postgres-meta, Studio and the database are reachable only from the services that use them', { skip }, () => {
+test('the database is reachable only from the services that use it', { skip }, () => {
   const { networks, members, peers } = topology();
-  assert.deepEqual(Object.keys(networks).sort(), ['admin', 'database', 'default', 'renderer']);
+  assert.deepEqual(Object.keys(networks).sort(), ['database', 'default', 'renderer']);
   // The renderer network has no route out: only the function runtime and the renderer are on it.
   assert.equal(networks.renderer.internal, true);
   assert.deepEqual(members.renderer.slice().sort(), ['functions', 'pdf-renderer']);
   assert.deepEqual(peers('pdf-renderer'), ['functions']);
-  assert.deepEqual(peers('meta'), ['db', 'studio']);
-  assert.deepEqual(peers('studio'), ['db', 'meta']);
-  assert.deepEqual(peers('db'), ['auth', 'meta', 'postgres-exporter', 'realtime', 'rest', 'storage', 'studio', 'supavisor']);
+  assert.deepEqual(peers('db'), ['rest', 'storage', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
-  // share no network with the database, postgres-meta or Studio.
-  for (const service of ['kong', 'functions', 'pdf-renderer', 'imgproxy', 'cups', 'sensor-bridge', 'prometheus', 'alertmanager', 'node-exporter', 'cadvisor']) {
+  // share no network with the database.
+  for (const service of ['kong', 'functions', 'pdf-renderer', 'cups', 'sensor-bridge']) {
     const reachable = peers(service);
-    for (const guarded of ['db', 'meta', 'studio']) assert.ok(!reachable.includes(guarded), `${service} can reach ${guarded}`);
+    for (const guarded of ['db']) assert.ok(!reachable.includes(guarded), `${service} can reach ${guarded}`);
   }
 });
 
@@ -57,23 +55,16 @@ test('every service still shares a network with each host it is configured to ca
   const wanted = Object.fromEntries(Object.entries(services).map(([service, definition]) => [service, configuredHosts(definition, names)]));
   // Hosts that are named in mounted configuration or in code rather than in the environment.
   for (const match of read('docker/kong.yml').matchAll(/^\s+url: http:\/\/([a-z0-9-]+):\d+/gm)) wanted.kong.add(match[1]);
-  for (const match of read('docker/prometheus.yml').matchAll(/'([a-z][a-z0-9-]*):\d+'/g)) if (match[1] !== 'localhost') wanted.prometheus.add(match[1]);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_host" => "db"/);
   wanted.supavisor.add('db');
   wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
-  // Studio is given the gateway address but is deliberately not attached to the
-  // gateway's network: a container that can reach Studio can run SQL through it.
-  assert.ok(wanted.studio.delete('kong'), 'Studio no longer names the gateway; drop this exception');
-  assert.ok(!reaches('studio', 'kong'));
 
-  assert.deepEqual([...wanted.kong].sort(), ['functions', 'realtime-dev', 'rest', 'storage']);
-  assert.deepEqual([...wanted.storage].sort(), ['db', 'imgproxy', 'rest']);
+  assert.deepEqual([...wanted.kong].sort(), ['functions', 'rest', 'storage']);
+  assert.deepEqual([...wanted.storage].sort(), ['db', 'rest']);
   assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer']);
-  assert.deepEqual([...wanted.studio].sort(), ['meta']);
-  assert.deepEqual([...wanted.prometheus].sort(), ['alertmanager', 'cadvisor', 'kong', 'node-exporter', 'postgres-exporter']);
   // The sensor bridge posts to the ingest function through the gateway and calls nothing else here.
   assert.deepEqual([...wanted['sensor-bridge']].sort(), ['kong']);
-  for (const service of ['rest', 'realtime', 'meta', 'auth', 'supavisor', 'postgres-exporter']) assert.ok(wanted[service].has('db'), `${service} names the database`);
+  for (const service of ['rest', 'supavisor']) assert.ok(wanted[service].has('db'), `${service} names the database`);
   for (const [service, hosts] of Object.entries(wanted)) {
     for (const host of hosts) assert.ok(reaches(service, host), `${service} cannot resolve ${host}`);
   }
@@ -85,8 +76,17 @@ test('every service still shares a network with each host it is configured to ca
       if (!['localhost'].includes(match[1])) assert.equal(match[1], service, `${service} healthcheck calls ${match[1]}`);
     }
   }
-  // Studio answers only on the address of its container name, so it must stay on one network.
-  assert.deepEqual(Object.keys(services.studio.networks), ['admin']);
+  // Studio and postgres-meta were removed (they ran SQL without a login), and with them the `admin` network.
+  assert.equal('studio' in services, false);
+  assert.equal('meta' in services, false);
+  assert.equal('admin' in renderedCompose().networks, false);
+  // The network table in docs/ARCHITECTURE.md names exactly the rendered networks and their members.
+  const rows = [...read('docs/ARCHITECTURE.md').matchAll(/^\| `([a-z]+)` \| ([^|]+)\|/gm)];
+  assert.deepEqual(rows.map(match => match[1]).sort(), Object.keys(renderedCompose().networks).sort());
+  for (const [, network, list] of rows) {
+    const documentedMembers = list.split(',').map(name => name.replace(/\s*\([^)]*\)/g, '').trim()).filter(Boolean).sort();
+    assert.deepEqual(documentedMembers, topology().members[network].slice().sort(), `ARCHITECTURE.md members of ${network}`);
+  }
   // The renderer answers inside its own healthcheck, on localhost, and has no other network.
   assert.match(JSON.stringify(services['pdf-renderer'].healthcheck.test), /http:\/\/localhost:3000\/health/);
   assert.deepEqual(Object.keys(services['pdf-renderer'].networks), ['renderer']);
@@ -99,9 +99,15 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
 });
 
+test('the Compose files define no studio, meta or admin', () => {
+  for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
+    assert.doesNotMatch(read(file), /^  (?:studio|meta|admin):/m, `${file} defines studio, meta or admin`);
+  }
+});
+
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
   const { reaches } = topology();
-  for (const path of ['health-check.sh', 'scripts/gateway-dns-check.sh', 'scripts/studio-check.sh', 'scripts/pooler-check.sh']) {
+  for (const path of ['health-check.sh', 'scripts/gateway-dns-check.sh', 'scripts/pooler-check.sh']) {
     const source = read(path);
     // Split the script at each probe container; every host named up to the next one belongs to it.
     const parts = source.split(/(?:probe_from |exec -T )([a-z][a-z-]*)\b/);
@@ -125,22 +131,17 @@ test('operator probes run in a container that shares a network with their target
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
 });
 
-test('every service has bounded logs, and imgproxy cannot write to stored files', { skip }, () => {
+test('storage names its database superuser and does not install roles (its migrator reads both)', { skip }, () => {
+  const { environment } = renderedCompose().services.storage;
+  assert.equal(environment.DB_SUPER_USER, 'supabase_storage_admin');
+  assert.equal(environment.DB_INSTALL_ROLES, 'false');
+});
+
+test('every service has bounded logs', { skip }, () => {
   const { services } = renderedCompose();
   for (const [service, definition] of Object.entries(services)) {
     assert.deepEqual(definition.logging, { driver: 'json-file', options: { 'max-file': '3', 'max-size': '10m' } }, `${service} logs are unbounded`);
   }
-  const mount = service => services[service].volumes.find(volume => volume.target === '/var/lib/storage');
-  assert.equal(mount('imgproxy').read_only, true);
-  assert.notEqual(mount('storage').read_only, true);
-  assert.equal(mount('imgproxy').source, mount('storage').source);
-});
-
-test('imgproxy runs as the owner of the private storage directory', () => {
-  // The directory is mode 0700 and owned by the installing user. As the image's
-  // own user (999) imgproxy could not enter it, and every transformation failed.
-  assert.match(read('docker/docker-compose.yml'), /\n  imgproxy:\n(?:    .*\n|\n)*?    user: "\$\{WAREHOUSE_HOST_UID:-999\}:\$\{WAREHOUSE_HOST_GID:-999\}"\n/);
-  assert.match(read('scripts/compose.sh'), /^exec env "\$\{unset_args\[@\]\}" WAREHOUSE_HOST_UID="\$\(id -u\)" WAREHOUSE_HOST_GID="\$\(id -g\)" WAREHOUSE_PUBLIC_PATH="\$STATE\/public" docker compose /m);
 });
 
 test('the sensor bridge needs no variable to render, so installations that never set one keep working', () => {
@@ -166,41 +167,35 @@ test('the pooler registers only a database role that exists', () => {
 // TW-BE-002 (docs/CONTAINER_SECURITY.md, "Database passwords"): every value is
 // searched for in the whole rendered definition of each service, environment,
 // commands and health checks alike.
-test('the superuser password reaches only db, meta, realtime, supavisor and studio; each login password only its service', { skip }, () => {
+test('the superuser password reaches only db and supavisor; each login password only its service', { skip }, () => {
   const { services } = renderedCompose();
   const env = renderedComposeEnv();
   const holders = value => {
     assert.ok(value && value.length >= 16, 'the value was generated');
     return Object.entries(services).filter(([, definition]) => JSON.stringify(definition).includes(value)).map(([service]) => service).sort();
   };
-  assert.deepEqual(holders(env.POSTGRES_PASSWORD), ['db', 'meta', 'realtime', 'studio', 'supavisor']);
-  // db carries the four that exist before the migrations, for its first-start init script.
+  assert.deepEqual(holders(env.POSTGRES_PASSWORD), ['db', 'supavisor']);
+  // db carries the three that exist before the migrations, for its first-start init script.
   assert.deepEqual(holders(env.DB_PASSWORD_AUTHENTICATOR), ['db', 'rest']);
   assert.deepEqual(holders(env.DB_PASSWORD_STORAGE), ['db', 'storage']);
-  assert.deepEqual(holders(env.DB_PASSWORD_AUTH), ['auth', 'db']);
   assert.deepEqual(holders(env.DB_PASSWORD_POOLER), ['db', 'supavisor']);
-  assert.deepEqual(holders(env.DB_PASSWORD_MONITORING), ['postgres-exporter']);
-  assert.deepEqual(holders(env.REALTIME_DB_ENC_KEY), ['realtime']);
-  assert.equal(services.realtime.environment.DB_ENC_KEY, env.REALTIME_DB_ENC_KEY);
-  assert.match(services['postgres-exporter'].environment.DATA_SOURCE_NAME, /^postgresql:\/\/warehouse_monitoring:/);
+  assert.equal('DB_PASSWORD_MONITORING' in env, false, 'the monitoring login has no password (migration 107)');
   assert.equal('POSTGRES_PASSWORD' in services.supavisor.environment, false);
 });
 
 test('a state without a per-role value fails at compose config with a message, not at the first login', { skip }, () => {
-  for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_MONITORING', 'REALTIME_DB_ENC_KEY']) {
+  for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']) {
     const result = renderCompose(text => text.replace(new RegExp(`^${name}=.*\n`, 'm'), ''));
     assert.notEqual(result.status, 0, `${name} missing still renders`);
-    assert.match(result.stderr, /Run setup\.sh to generate the (?:per-role database passwords|Realtime encryption key)/);
+    assert.match(result.stderr, /Run setup\.sh to generate the per-role database passwords/);
   }
 });
 
-test('realtime resolves Compose names at the DNS root, so a host search domain cannot delay the tenant connection', { skip }, () => {
-  // TW-BE-015: the IPv6 lookup of `db` took about 8 s through the host's search domain, past the 15 s window.
-  // Kong has the same setting for the same class of delay.
+test('kong resolves Compose names at the DNS root, so a host search domain cannot delay a lookup', { skip }, () => {
+  // TW-BE-015: a lookup through the host's search domain took about 8 s.
   const { services } = topology();
-  assert.deepEqual(services.realtime.dns_search, ['.']);
   assert.deepEqual(services.kong.dns_search, ['.']);
-  assert.equal(services.realtime.environment.DB_HOST, 'db');
+  assert.equal('realtime' in services, false, 'the Realtime service is removed');
 });
 
 test('the renderer runs read-only with no capabilities, no ports and bounded memory', { skip }, () => {

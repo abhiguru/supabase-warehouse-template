@@ -2,7 +2,7 @@
 
 Self-hosted backend for a cold-storage warehouse: goods receipts, dispatches,
 invoices, customer orders and phone-OTP login on PostgreSQL, PostgREST,
-Realtime, Storage, Deno edge functions and a PDF renderer, one installation
+Storage, Deno edge functions and a PDF renderer, one installation
 per warehouse. It is used from the companion
 [React Native app](https://github.com/abhiguru/rn-warehouse-template).
 
@@ -45,7 +45,7 @@ with a real SMS code.
 ## Isolation and migration safety
 
 Operator scripts use a unique Compose project and a state directory outside the
-checkout. The database, Studio and PDF service are private to the project; the
+checkout. The database and PDF service are private to the project; the
 gateway binds to loopback for the tunnel connector.
 
 Startup brings up only the database first, then applies the complete schema,
@@ -73,12 +73,12 @@ and invoice totals are computed server-side ([docs/INVOICE_RULES.md](docs/INVOIC
 Generated PDFs use a generic, escaped starter layout, private storage and
 one-hour signed links. Configure business details and document terms before use.
 
-Realtime supports order/cart live updates. Tapo temperature and humidity
+The app re-reads order and cart screens every 15 seconds (there is no live push). Tapo temperature and humidity
 sensors reach the backend through an optional bridge container (Compose profile
 `sensors`, GPL-3.0-or-later code in `docker/sensor-bridge/`; see
 [docs/SENSORS.md](docs/SENSORS.md)); the app sees them where the `sensors`
 capability is turned on. Printing and sensors still require hardware
-acceptance; monitoring is optional. The three preprinted document
+acceptance; monitoring is one small checker program with a Slack webhook ([docs/MONITORING.md](docs/MONITORING.md)). The three preprinted document
 functions (`print-dispatch-preprinted`, `print-grn-preprinted`,
 `print-invoice-preprinted`) and print status monitoring are exported for
 contract parity, but physical printing hardware remains unverified. See

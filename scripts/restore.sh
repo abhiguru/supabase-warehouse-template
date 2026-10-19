@@ -3,15 +3,14 @@
 # warehouse-backup-v5 directory created by scripts/backup.sh on the same instance.
 # Destructive by design: requires --yes, stopped services and a backup that passes
 # scripts/verify-restore.sh, signature included. The replaced data directories are
-# kept for rollback. An unsigned warehouse-backup-v4 directory is accepted only
-# with --allow-unsigned, which is only for a backup written before format v5, or
-# for a lost backup key; a v5 backup whose signature file is missing is refused
-# while this installation's key is available.
+# kept for rollback. Only format v5 is accepted; an older format is refused.
+# --allow-unsigned is only for a lost backup key; a v5 backup whose signature file
+# is missing is refused while this installation's key is available.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
-usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore -- --yes PATH_TO_BACKUP [--restore-config] [--allow-unsigned]   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 
 confirm=false
 restore_config=false
@@ -40,6 +39,14 @@ if [[ "$confirm" != true ]]; then
 fi
 [[ -d "$backup" && ! -L "$backup" ]] || { echo "Backup directory not found: $backup" >&2; exit 1; }
 backup="$(realpath -e "$backup")"
+# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
+[[ -f "$backup/metadata.txt" && ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
+format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
+if [[ "$format" != warehouse-backup-v5 ]]; then
+  format="${format//[^[:print:]]/?}"
+  echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)." >&2
+  exit 1
+fi
 
 # shellcheck source=scripts/operator-lock.sh
 source "$ROOT/scripts/operator-lock.sh"
@@ -63,12 +70,6 @@ fi
 source "$ROOT/scripts/backup-key.sh"
 [[ -n "${WAREHOUSE_BACKUP_KEY_FILE:-}" ]] || export WAREHOUSE_BACKUP_KEY_FILE="$state/config/backup.key"
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-# Only v4 and v5 backups carry owners, the _supabase database and the object catalog.
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
-if [[ "$format" != warehouse-backup-v5 && "$format" != warehouse-backup-v4 ]]; then
-  echo "Refusing: in-place restore requires format=warehouse-backup-v5 (or an unsigned warehouse-backup-v4 with --allow-unsigned); this backup is '${format:-unknown}'. Older backups remain checkable with db:verify-restore." >&2
-  exit 1
-fi
 for file in database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
@@ -87,6 +88,13 @@ done < <(node "$ROOT/scripts/db-roles.mjs" names)
 without_added() {
   if ((${#added_since[@]})); then grep -v -E "^($(IFS='|'; printf '%s' "${added_since[*]}"))=" || true; else cat; fi
 }
+# A backup made before migration 103 names the GraphQL schema in PGRST_DB_SCHEMAS, and setup and add-missing
+# rewrite that old default in the state. The backup file itself stays as it is (it is checksummed), so both
+# sides are compared in the same normalised form (a state not yet rewritten matches as well). The retired
+# DB_PASSWORD_AUTH line (GoTrue removal) and DB_PASSWORD_MONITORING line (migration 107) are dropped from both sides, so
+# each may be present on one side only.
+normalise_env() { sed -e 's/^PGRST_DB_SCHEMAS=public,storage,graphql_public$/PGRST_DB_SCHEMAS=public,storage/' -e '/^DB_PASSWORD_AUTH=/d' -e '/^DB_PASSWORD_MONITORING=/d'; }
+backup_env() { normalise_env < "$backup/compose.env"; }
 if [[ "$restore_config" == true ]]; then
   for key in WAREHOUSE_PROJECT_NAME WAREHOUSE_DB_PATH WAREHOUSE_STORAGE_PATH WAREHOUSE_MANIFEST_PATH; do
     if [[ "$(sed -n "s/^$key=//p" "$backup/compose.env")" != "$(sed -n "s/^$key=//p" "$state/config/compose.env")" ]]; then
@@ -96,11 +104,11 @@ if [[ "$restore_config" == true ]]; then
   done
 elif [[ "$relocated" == true ]]; then
   without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' || true; }
-  if ! cmp -s <(without_paths < "$backup/compose.env") <(without_added < "$state/config/compose.env" | without_paths); then
+  if ! cmp -s <(backup_env | without_paths) <(without_added < "$state/config/compose.env" | normalise_env | without_paths); then
     echo 'Refusing: config/compose.env differs from the backup copy in more than the state paths.' >&2
     exit 1
   fi
-elif ! cmp -s "$backup/compose.env" <(without_added < "$state/config/compose.env"); then
+elif ! cmp -s <(backup_env) <(without_added < "$state/config/compose.env" | normalise_env); then
   echo 'Refusing: config/compose.env differs from the backup copy (keys rotated or configuration changed after it was taken). Pass --restore-config to restore the backup configuration together with its data, or use a backup taken after the change.' >&2
   exit 1
 fi
@@ -120,13 +128,11 @@ for path in "$old_db" "$old_storage" "$old_config"; do
 done
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-inplace-restore.XXXXXX")"
 phase='prepare'
-# shellcheck source=scripts/service-diagnostics.sh
-. "$ROOT/scripts/service-diagnostics.sh"
 finish() {
   status=$?
   trap - EXIT
   rm -rf "$scratch"
-  if ((status != 0)) && [[ "$phase" == 'start services' ]]; then show_unhealthy_services || true; fi
+  if ((status != 0)) && [[ "$phase" == 'start services' ]]; then if command -v node >/dev/null 2>&1; then node "$ROOT/scripts/service-diagnostics.mjs" --unhealthy || true; else echo 'Service diagnostics skipped (node not on PATH): run node scripts/service-diagnostics.mjs --unhealthy' >&2; fi; fi
   if ((status != 0)) && [[ "$phase" != done ]]; then
     cat >&2 <<MSG
 Restore failed during: $phase
@@ -167,6 +173,11 @@ if [[ "$restore_config" == true ]]; then
   # database login had its own password gets them now, before the database starts.
   node "$ROOT/scripts/db-roles.mjs" add-missing "$state/config/compose.env"
   compose config --quiet
+else
+  # This state's own configuration stays, but an installation upgraded without a setup rerun still lists the
+  # GraphQL schema for PostgREST, which migration 103 removes: bring that old default up to date before
+  # the database and rest start (the same call changes nothing else once the values are there).
+  node "$ROOT/scripts/db-roles.mjs" add-missing "$state/config/compose.env"
 fi
 
 # 4. Fresh cluster initialization from the pinned image, then logical replay with
@@ -180,7 +191,7 @@ db_restore() { compose exec -T db pg_restore -U supabase_admin --exit-on-error "
 compose cp "$backup/database.dump" db:/tmp/database.dump
 compose cp "$backup/_supabase.dump" db:/tmp/_supabase.dump
 phase='create missing roles'
-# Roles that a service creates at runtime (for example the Realtime admin role)
+# Roles that a service creates at runtime (for example the image's own service roles)
 # must exist before ownership and ACLs replay. Names arrive as COPY data, never
 # as interpolated SQL.
 {
@@ -217,8 +228,15 @@ phase='restore database'
 # migrations require. Event triggers are the exception: PostgreSQL only lets a
 # superuser own them and the archived owner (postgres) is not one in this image,
 # so they are replayed last, owned by the restoring superuser. ACLs are replayed
-# after the pg_graphql wrapper exists, exactly as verify-restore.sh does.
-compose exec -T db sh -c "pg_restore -l /tmp/database.dump > /tmp/full.list && grep -v ' EVENT TRIGGER ' /tmp/full.list > /tmp/main.list && { grep ' EVENT TRIGGER ' /tmp/full.list > /tmp/triggers.list || :; }"
+# after the pg_graphql wrapper exists (only a backup made before migration 103 holds pg_graphql), exactly as
+# verify-restore.sh does.
+# A backup made before migration 103 holds pg_net, which the database no longer preloads: creating it
+# would fail ("pg_net is not in shared_preload_libraries"). Its entries are left out here; migration 103
+# removes the rest (the webhook schema) afterwards. A backup made before migration 106 holds pg_cron (the
+# list refresher of migration 91) and its schema cron with the two jobs; those entries are left out too
+# (migration 106 drops the extension, and the squashed baseline removes the preload), and migration 106 removes the refresher's
+# functions, tables, views and role after the restore.
+compose exec -T db sh -c "pg_restore -l /tmp/database.dump | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_net|COMMENT - EXTENSION pg_net|ACL - SCHEMA net|SCHEMA - net|[A-Z ]+ net)( |$)' | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_cron|COMMENT - EXTENSION pg_cron|ACL - SCHEMA cron|[A-Z ]+ cron)( |$)' > /tmp/full.list && grep -v ' EVENT TRIGGER ' /tmp/full.list > /tmp/main.list && { grep ' EVENT TRIGGER ' /tmp/full.list > /tmp/triggers.list || :; }"
 for section in pre-data data post-data; do
   db_restore -d postgres --no-acl --section="$section" -L /tmp/main.list /tmp/database.dump
 done
@@ -226,20 +244,28 @@ if compose exec -T db sh -c 'test -s /tmp/triggers.list'; then
   db_restore -d postgres --no-owner --no-acl -L /tmp/triggers.list /tmp/database.dump
 fi
 db_psql -d postgres <<'SQL'
-CREATE OR REPLACE FUNCTION graphql_public.graphql(
-  "operationName" text DEFAULT NULL, query text DEFAULT NULL,
-  variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL
-) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT graphql.resolve(
-    query := query, variables := coalesce(variables, '{}'::jsonb),
-    "operationName" := "operationName", extensions := extensions
-  );
-$$;
+DO $repair$
+BEGIN
+  -- Only a backup made before migration 103 holds pg_graphql. Its dump cannot recreate the wrapper in the
+  -- order it replays, and the ACL replay needs it.
+  IF to_regnamespace('graphql_public') IS NOT NULL AND to_regnamespace('graphql') IS NOT NULL THEN
+    CREATE OR REPLACE FUNCTION graphql_public.graphql(
+      "operationName" text DEFAULT NULL, query text DEFAULT NULL,
+      variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL
+    ) RETURNS jsonb LANGUAGE sql AS $fn$
+      SELECT graphql.resolve(
+        query := query, variables := coalesce(variables, '{}'::jsonb),
+        "operationName" := "operationName", extensions := extensions
+      );
+    $fn$;
+  END IF;
+END
+$repair$;
 SQL
-compose exec -T db sh -c "pg_restore -l /tmp/database.dump | awk '/^[0-9]+; .* ACL / { print }' > /tmp/acl.list"
+compose exec -T db sh -c "awk '/^[0-9]+; .* ACL / { print }' /tmp/full.list > /tmp/acl.list"
 db_restore -d postgres -L /tmp/acl.list /tmp/database.dump
 phase='restore _supabase'
-# Same approach for the analytics/pooler database: recreate, then replay.
+# Same approach for the _supabase pooler database (_supavisor; older installs also carry an empty _analytics): recreate, then replay.
 db_psql -d postgres -c 'DROP DATABASE _supabase WITH (FORCE)' \
   -c 'CREATE DATABASE _supabase OWNER postgres TEMPLATE template0'
 db_restore -d _supabase /tmp/_supabase.dump
@@ -258,15 +284,10 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
-# Every service login gets its password from compose.env again, and the monitoring
-# login, which the replay recreated as a bare name, its pg_monitor membership. The
-# pooler rewrites its pool user and Realtime its tenant when they start.
+# Every service login gets its password from compose.env again, and the logins nothing uses any more
+# (supabase_auth_admin) lose theirs, and warehouse_monitoring is dropped. The pooler rewrites its pool user when it starts.
 phase='database logins'
 bash "$ROOT/scripts/db-roles.sh" apply
-# Roles came back without LOGIN and without their settings (step 4); the list refresher of
-# migration 91 needs both before the lists refresh again.
-phase='list refresher'
-db_psql -d postgres < "$ROOT/scripts/configure-list-refresh.sql"
 phase='start services'
 compose up -d --wait --wait-timeout 180
 phase='doctor'

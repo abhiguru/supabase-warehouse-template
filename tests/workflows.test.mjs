@@ -55,7 +55,7 @@ test('the operator-install job runs retention:apply against the real Storage API
   assert.match(later[0], /^name: Stop only this checkout's operator project\n\s+if: always\(\)/);
 });
 
-test('no workflow names a self-hosted runner; operator-install takes its runner from a repository variable and falls back to a hosted one', () => {
+test('no workflow names a self-hosted runner; CI jobs take their runner from a repository variable, never for a fork', () => {
   const directory = new URL('../.github/workflows/', import.meta.url);
   for (const file of readdirSync(directory)) {
     const runsOn = readFileSync(new URL(file, directory), 'utf8').split('\n').filter(line => /^\s*runs-on:/.test(line));
@@ -65,7 +65,13 @@ test('no workflow names a self-hosted runner; operator-install takes its runner 
   }
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const job = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
-  assert.match(job, /\n    runs-on: \$\{\{ fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/);
+  assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/);
+  // Every CI job: the runner comes from a variable, and a fork's pull request always gets a hosted runner.
+  const ciRunsOn = ci.split('\n').filter(line => /^ {4}runs-on:/.test(line));
+  assert.ok(ciRunsOn.length >= 8, 'the CI jobs were read');
+  for (const line of ciRunsOn) {
+    assert.match(line, /^ {4}runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.(?:CI_RUNNER|OPERATOR_INSTALL_RUNNER) \|\| '"ubuntu-latest"'\) \}\}$/, line.trim());
+  }
 });
 
 test('every Dependabot ignore entry names the update types it ignores', () => {
@@ -85,7 +91,7 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
     assert.match(body.join('\n'), /^\s+update-types:\n(?:\s+- "version-update:semver-(?:major|minor|patch)"\n?)+/, `dependabot.yml:${index + 1} ${line.trim()}`);
     entries += 1;
   });
-  assert.equal(entries, 13, 'every ignore entry was read');
+  assert.equal(entries, 7, 'every ignore entry was read');
 });
 
 test('the operator-install job proves the per-role database logins after install, rotation and both restores', () => {
@@ -108,10 +114,18 @@ test('the operator-install job proves the per-role database logins after install
   assert.equal(pkg.scripts['db:rotate-passwords'], 'bash scripts/rotate-db-passwords.sh');
 });
 
-test('the validate job runs the alert rule checks, so docker/alertmanager.slack.yml is validated in CI', () => {
+test('the operator-install job runs the monitoring checker once and its status, without installing the systemd timer', () => {
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const job = ci.slice(ci.indexOf('\n  validate:'), ci.indexOf('\n  migrations:'));
-  assert.match(job, /\n      - name: Alert rules and Alertmanager files \(promtool and amtool, no network\)\n        run: npm run test:alert-rules\n/);
+  const job = ci.slice(ci.indexOf('\n  operator-install:'));
+  const step = job.slice(job.indexOf('      - name: Monitoring checker'), job.indexOf('      - name: Backup and isolated restore drill'));
+  assert.match(step, /node scripts\/watch\.mjs run\n/);
+  assert.match(step, /test -s "\$WAREHOUSE_STATE_DIR\/config\/watch-state\.json"/);
+  assert.match(step, /check_error:[^]*service_down:[^]*postgres_down[^]*api_down/, 'a failing check fails the step');
+  assert.doesNotMatch(step.slice(step.indexOf('node -e')), /disk_|cpu_high|memory_high/, 'host alerts do not');
+  assert.match(step, /node scripts\/watch\.mjs status\n/);
+  assert.match(step, /WAREHOUSE_WATCH_DAILY_AT=/, 'the daily backup time is moved out of the current window');
+  assert.doesNotMatch(ci, /watch-timer\.sh install|systemctl/, 'CI never installs the timer');
+  assert.doesNotMatch(ci, /test:alert-rules|test:monitoring|promtool|amtool/);
 });
 
 // A plain (unquoted) YAML scalar ends at ": " or " #", so `run: pip install --only-binary=:all: -r ...`

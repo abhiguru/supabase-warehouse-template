@@ -56,18 +56,18 @@ test('restore refuses while operator services are running', () => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('restore refuses a v3 backup', () => {
-  const { scratch, state, backup } = fixture('warehouse-restore-v3-', { format: 'warehouse-backup-v3' });
+test('restore refuses a v4 backup, with or without --allow-unsigned', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-v4-', { format: 'warehouse-backup-v4' });
   try {
-    let result = restore(scratch, ['--yes', backup]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /carries no signature/);
-    assert.doesNotMatch(result.calls, /run |up -d| cp /);
-    result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /requires format=warehouse-backup-v5.*warehouse-backup-v3/);
-    assert.doesNotMatch(result.calls, /run |up -d| cp /);
-    untouched(state);
+    for (const args of [['--yes', backup], ['--yes', '--allow-unsigned', backup]]) {
+      const result = restore(scratch, args);
+      assert.notEqual(result.status, 0, args.join(' '));
+      assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/);
+      assert.doesNotMatch(result.calls, /run |up -d| cp /);
+      assert.equal(result.calls, '', 'no container call at all');
+      assert.equal(existsSync(join(state, 'config/operator.lock')), false, 'no lock was taken');
+      untouched(state);
+    }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -162,10 +162,10 @@ test('a restore whose services do not start names the unhealthy ones and shows t
     const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' }, noMigrations);
     assert.notEqual(result.status, 0, 'the injected start failure propagates');
     assert.match(result.stderr, /Restore failed during: start services/);
-    assert.match(result.stderr, /Service meta is running \(unhealthy\)\. Its last log lines:\nfake log of meta\n/);
-    assert.match(result.stderr, /Service studio is exited\. Its last log lines:\nfake log of studio\n/);
+    assert.match(result.stderr, /Service storage is running \(unhealthy\)\. Its last log lines:\nfake log of storage\n/);
+    assert.match(result.stderr, /Service functions is exited\. Its last log lines:\nfake log of functions\n/);
     assert.doesNotMatch(result.stderr, /Service (db|rest) is/, 'healthy services and services without a health check are left out');
-    assert.ok(result.stderr.indexOf('fake log of studio') < result.stderr.indexOf('Restore failed during'), 'the logs come before the rollback text');
+    assert.ok(result.stderr.indexOf('fake log of functions') < result.stderr.indexOf('Restore failed during'), 'the logs come before the rollback text');
     assert.match(result.stderr, /Rollback: bash stop\.sh/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -196,21 +196,6 @@ test('restore refuses a backup that is not signed with the key of this installat
     assert.match(result.stderr, /no backup key is available/);
     assert.doesNotMatch(result.calls, /run |up -d| cp /);
     untouched(state);
-  } finally { rmSync(scratch, { recursive: true, force: true }); }
-});
-
-test('restore takes an unsigned v4 backup only with --allow-unsigned and tells the verifier', () => {
-  const { scratch, state, backup } = fixture('warehouse-restore-v4-', { format: 'warehouse-backup-v4' });
-  try {
-    let result = restore(scratch, ['--yes', backup]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /carries no signature[\s\S]*--allow-unsigned/);
-    assert.doesNotMatch(result.calls, /run |up -d| cp /);
-    untouched(state);
-    result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
-    assert.match(result.stderr, /WARNING: this backup carries no signature/);
-    assert.match(result.calls, /^run -d --pull missing/m, 'the verifier ran');
-    assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -248,7 +233,7 @@ test('restore --restore-config onto a state without the key file the restored co
 });
 
 // TW-BE-022. A v5 backup is always signed. With the signature file gone and the key in hand, the
-// flag must not wave it through: it is for backups written before v5 and for a lost key.
+// flag must not wave it through: it is only for a lost key.
 test('restore refuses a v5 backup whose signature file was removed, even with --allow-unsigned, while the key is available', () => {
   const { scratch, state, backup } = fixture('warehouse-restore-stripped-v5-', { key: null });
   try {
@@ -257,7 +242,7 @@ test('restore refuses a v5 backup whose signature file was removed, even with --
     let result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
-    assert.match(result.stderr, /--allow-unsigned is only for a backup written before format v5, or when the backup key is lost/);
+    assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
     assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/, 'no banner: nothing was accepted');
     // restore.sh asks Compose whether services run before it looks at the backup; no container is run, started or copied into.
     assert.doesNotMatch(result.calls, /run |up -d| cp /, 'no container is run or started');
@@ -288,17 +273,6 @@ test('restore takes the same v5 backup with --allow-unsigned and a loud warning 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('restore still takes an unsigned v4 backup with --allow-unsigned while the key is available (owner decision of 2026-10-17: a v5 backup relabelled v4 is the accepted residual)', () => {
-  const { scratch, state, backup } = fixture('warehouse-restore-v4-with-key-', { format: 'warehouse-backup-v4' });
-  try {
-    assert.equal(existsSync(join(state, 'config/backup.key')), true);
-    const result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
-    assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
-    assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/);
-  } finally { rmSync(scratch, { recursive: true, force: true }); }
-});
-
 // TW-BE-002 (docs/CONTAINER_SECURITY.md, "Database passwords"). The migration
 // step and the local doctor need a whole checkout and a stack; they are stood in for.
 const standIns = root => {
@@ -307,7 +281,7 @@ const standIns = root => {
 };
 // Each \set line of the prelude must be a verifier of the given password (its own salt reused).
 function assertVerifiers(stdin, env) {
-  const roles = { authenticator: 'DB_PASSWORD_AUTHENTICATOR', storage: 'DB_PASSWORD_STORAGE', auth: 'DB_PASSWORD_AUTH', pooler: 'DB_PASSWORD_POOLER', monitoring: 'DB_PASSWORD_MONITORING' };
+  const roles = { authenticator: 'DB_PASSWORD_AUTHENTICATOR', storage: 'DB_PASSWORD_STORAGE', pooler: 'DB_PASSWORD_POOLER' };
   const sets = Object.fromEntries([...stdin.matchAll(/^\\set ([a-z]+)_verifier '([^']+)'$/gm)].map(match => [match[1], match[2]]));
   assert.deepEqual(Object.keys(sets).sort(), Object.keys(roles).sort());
   for (const [variable, name] of Object.entries(roles)) {
@@ -335,7 +309,8 @@ test('restore of a backup taken before per-role passwords keeps this state\'s va
     const stdin = readFileSync(stdinLog, 'utf8');
     assert.equal(stdin.split('\n')[0], '5'.repeat(64));
     assertVerifiers(stdin, readEnv(join(state, 'config/compose.env')));
-    assert.match(stdin, /ALTER ROLE warehouse_monitoring WITH LOGIN PASSWORD/, 'configure-db-roles.sql follows the prelude');
+    assert.match(stdin, /DROP ROLE warehouse_monitoring;/, 'configure-db-roles.sql follows the prelude');
+    assert.doesNotMatch(stdin, /monitoring_verifier/, 'the monitoring login has no verifier any more');
     for (const secret of ['5'.repeat(64), '1'.repeat(64)]) assert.equal(result.calls.includes(secret), false, 'no password in a docker argument');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -363,16 +338,135 @@ test('restore --restore-config of a backup taken before per-role passwords gives
     const stdinLog = join(scratch, 'stdin.log');
     const result = restore(scratch, ['--yes', '--restore-config', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_STDIN_LOG: stdinLog }, standIns);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE, DB_PASSWORD_AUTH, DB_PASSWORD_POOLER, DB_PASSWORD_MONITORING, REALTIME_DB_ENC_KEY: the backup was taken before/);
+    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE, DB_PASSWORD_POOLER: the backup was taken before/);
     const restored = readFileSync(join(state, 'config/compose.env'), 'utf8');
     assert.ok(restored.startsWith(old), 'the backup configuration comes back line for line');
     const env = readEnv(join(state, 'config/compose.env'));
-    for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING']) {
+    for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']) {
       assert.match(env[name], /^[0-9a-f]{64}$/, name);
       assert.equal(dbRoleLines.includes(env[name]), false, `${name} is new, not the replaced state's`);
     }
-    assert.match(env.REALTIME_DB_ENC_KEY, /^[A-Za-z0-9_-]{16}$/);
     assert.equal(statSync(join(state, 'config/compose.env')).mode & 0o777, 0o600);
     assertVerifiers(readFileSync(stdinLog, 'utf8'), env);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// Migration 103: a backup made before it names the GraphQL schema and holds pg_net.
+const OLD_SCHEMAS = 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n';
+const NEW_SCHEMAS = 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage\n';
+
+test('restore accepts a backup whose compose.env has the old PGRST_DB_SCHEMAS default, leaves the backup file alone and brings an old state up to date before the database starts', () => {
+  for (const [label, stateExtra, expectRewrite] of [['new state', NEW_SCHEMAS, false], ['old state, no setup rerun', OLD_SCHEMAS, true]]) {
+    const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-schemas-'));
+    try {
+      const state = makeState(scratch);
+      writeFileSync(join(state, 'config/compose.env'), composeEnv(state, stateExtra), { mode: 0o600 });
+      const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state, OLD_SCHEMAS) });
+      const before = readFileSync(join(backup, 'compose.env'), 'utf8');
+      const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, standIns);
+      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /differs from the backup copy/, label);
+      assert.equal(readFileSync(join(backup, 'compose.env'), 'utf8'), before, 'the checksummed backup file is untouched');
+      assert.equal(readFileSync(join(state, 'config/compose.env'), 'utf8'), composeEnv(state, NEW_SCHEMAS), `${label}: the state names public,storage only (${expectRewrite ? 'rewritten' : 'kept'})`);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('restore accepts a legacy DB_PASSWORD_AUTH line present only in the backup or only in the state', () => {
+  for (const [label, backupExtra, stateExtra] of [['only in the backup', 'JWT_SECRET=current-secret\nDB_PASSWORD_AUTH=legacy\n', 'JWT_SECRET=current-secret\n'], ['only in the state', 'JWT_SECRET=current-secret\n', 'JWT_SECRET=current-secret\nDB_PASSWORD_AUTH=legacy\n']]) {
+    const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-legacy-auth-'));
+    try {
+      const state = makeState(scratch);
+      writeFileSync(join(state, 'config/compose.env'), composeEnv(state, stateExtra), { mode: 0o600 });
+      const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state, backupExtra) });
+      const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, standIns);
+      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /differs from the backup copy/, label);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('restore accepts a DB_PASSWORD_MONITORING line (retired by migration 107) present only in the backup or only in the state', () => {
+  for (const [label, backupExtra, stateExtra] of [['only in the backup', `JWT_SECRET=current-secret\nDB_PASSWORD_MONITORING=${'6'.repeat(64)}\n`, 'JWT_SECRET=current-secret\n'], ['only in the state', 'JWT_SECRET=current-secret\n', `JWT_SECRET=current-secret\nDB_PASSWORD_MONITORING=${'6'.repeat(64)}\n`]]) {
+    const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-legacy-monitoring-'));
+    try {
+      const state = makeState(scratch);
+      writeFileSync(join(state, 'config/compose.env'), composeEnv(state, stateExtra), { mode: 0o600 });
+      const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state, backupExtra) });
+      const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, standIns);
+      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /differs from the backup copy/, label);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('restore still refuses a real configuration difference in a backup with the old PGRST_DB_SCHEMAS default', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-schemas-refuse-'));
+  try {
+    const state = makeState(scratch);
+    const backup = makeBackup(join(scratch, 'backup'), { env: composeEnv(state, 'JWT_SECRET=other\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n') });
+    const result = restore(scratch, ['--yes', backup]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /compose\.env differs/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the restore lists leave out the pg_net entries of an older backup and keep every other entry', () => {
+  // A pg_restore -l listing in the real format: "ID; catalog-oid oid TYPE schema name owner".
+  const listing = [
+    ';', '; Selected TOC Entries:', ';',
+    '3079; 3079 16385 EXTENSION - pg_net supabase_admin', '4012; 0 0 COMMENT - EXTENSION pg_net',
+    '3080; 3079 16400 EXTENSION - pg_cron', '3081; 3079 16410 EXTENSION - pg_graphql',
+    '3082; 3079 16420 EXTENSION - supabase_vault', '3083; 3079 16430 EXTENSION - pg_stat_statements',
+    '4013; 0 0 ACL - SCHEMA net supabase_admin', '4014; 0 0 ACL net FUNCTION http_get(text) supabase_admin',
+    '4015; 2615 16500 SCHEMA - net supabase_admin', '4016; 1259 16501 TABLE net http_request_queue supabase_admin',
+    '212; 2615 16600 SCHEMA - supabase_functions supabase_admin', '213; 1259 16601 TABLE supabase_functions hooks supabase_functions_admin',
+    '214; 1255 16602 FUNCTION supabase_functions http_request() supabase_functions_admin',
+    '300; 1259 16700 TABLE public net postgres', '301; 1259 16701 TABLE public network_log postgres',
+    '302; 1255 16702 FUNCTION public pg_net_probe() postgres', '4017; 0 0 ACL - SCHEMA netting postgres',
+    '5000; 0 0 EVENT TRIGGER - issue_pg_net_access supabase_admin',
+  ];
+  const removed = ['3079;', '4012;', '4013;', '4014;', '4015;', '4016;'];
+  for (const script of ['restore.sh', 'verify-restore.sh']) {
+    const text = readFileSync(new URL(`../scripts/${script}`, import.meta.url), 'utf8');
+    const pattern = text.match(/grep -Ev '(\^\[0-9\]\+; \[0-9\]\+ \[0-9\]\+ \(EXTENSION - pg_net[^']*)'/)?.[1];
+    assert.ok(pattern, `${script} carries the pg_net filter`);
+    const result = spawnSync('grep', ['-Ev', pattern], { input: listing.join('\n') + '\n', encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const kept = result.stdout.trimEnd().split('\n');
+    assert.deepEqual(listing.filter(line => !kept.includes(line)).map(line => line.split(' ')[0]), removed, `${script}: exactly the pg_net entries go`);
+  }
+  // In restore.sh the filtered list is the one every later list is cut from, the ACL list included.
+  const restoreSh = readFileSync(new URL('../scripts/restore.sh', import.meta.url), 'utf8');
+  assert.match(restoreSh, /pg_restore -l \/tmp\/database\.dump \| grep -Ev '[^']*pg_net[^']*' \| grep -Ev '[^']*pg_cron[^']*' > \/tmp\/full\.list/);
+  assert.match(restoreSh, /awk '[^']*ACL[^']*' \/tmp\/full\.list > \/tmp\/acl\.list/);
+});
+
+test('the restore lists leave out the pg_cron entries of an older backup (migration 106) and keep every other entry', () => {
+  // A backup made before migration 106 holds pg_cron and its schema cron; pg_cron lives only in the postgres
+  // database (cron.database_name), and migration 106 drops it. Same listing format as the pg_net test above.
+  const listing = [
+    ';', '; Selected TOC Entries:', ';',
+    '3080; 3079 16400 EXTENSION - pg_cron', '4020; 0 0 COMMENT - EXTENSION pg_cron', '4021; 0 0 ACL - SCHEMA cron supabase_admin',
+    '4022; 1259 16410 TABLE cron job supabase_admin', '4023; 1259 16411 SEQUENCE cron jobid_seq supabase_admin',
+    '4024; 0 0 TABLE DATA cron job supabase_admin', '4025; 0 0 ACL cron TABLE job supabase_admin', '4026; 0 0 POLICY cron job cron_job_policy',
+    '3081; 3079 16410 EXTENSION - pg_graphql', '3083; 3079 16430 EXTENSION - pg_stat_statements',
+    '300; 1259 16700 TABLE public cron postgres', '301; 1259 16701 TABLE public cron_log postgres', '302; 1255 16702 FUNCTION public pg_cron_probe() postgres',
+    '4027; 0 0 ACL - SCHEMA crontab postgres', '4028; 1255 16800 FUNCTION warehouse_security ensure_list_refresher() supabase_admin',
+    '5000; 0 0 EVENT TRIGGER - issue_pg_cron_access supabase_admin',
+  ];
+  const removed = ['3080;', '4020;', '4021;', '4022;', '4023;', '4024;', '4025;', '4026;'];
+  for (const script of ['restore.sh', 'verify-restore.sh']) {
+    const text = readFileSync(new URL(`../scripts/${script}`, import.meta.url), 'utf8');
+    const pattern = text.match(/grep -Ev '(\^\[0-9\]\+; \[0-9\]\+ \[0-9\]\+ \(EXTENSION - pg_cron[^']*)'/)?.[1];
+    assert.ok(pattern, `${script} carries the pg_cron filter`);
+    const result = spawnSync('grep', ['-Ev', pattern], { input: listing.join('\n') + '\n', encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const kept = result.stdout.trimEnd().split('\n');
+    assert.deepEqual(listing.filter(line => !kept.includes(line)).map(line => line.split(' ')[0]), removed, `${script}: exactly the pg_cron entries go`);
+  }
+  // The configure-list-refresh step is gone from both scripts, and the script itself.
+  for (const script of ['restore.sh', 'verify-restore.sh', '../setup.sh']) {
+    assert.doesNotMatch(readFileSync(new URL(`../scripts/${script}`, import.meta.url), 'utf8'), /configure-list-refresh/, script);
+  }
 });

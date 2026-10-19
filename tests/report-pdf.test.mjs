@@ -397,7 +397,7 @@ test('a refusal in the RPC body becomes 403, an unknown customer 404, anything e
   // The handler maps the PostgREST error the guard raises (42501) the same way.
   const handler = readFileSync(new URL('../functions/_shared/report-pdf.ts', import.meta.url), 'utf8');
   assert.match(handler, /answer\.error\.code === '42501'\) throw \{ status: 403/);
-  assert.match(handler, /const reader = createClient\(internal, Deno\.env\.get\('SUPABASE_ANON_KEY'\)!/);
+  assert.match(handler, /const reader = restClient\(internal, Deno\.env\.get\('SUPABASE_ANON_KEY'\)!, \{ authorization: req\.headers\.get\('Authorization'\)! \}\)/);
   assert.match(handler, /const answer = await reader\.rpc\(call\.name, call\.args\);/);
   assert.doesNotMatch(handler, /writer\.rpc|writer\.from\('(?!system_settings)/, 'the server key reads no business data');
   assert.match(handler, /`report\/\$\{request\.report\}\/\$\{request\.customerId \?\? 'all'\}\/\$\{crypto\.randomUUID\(\)\}\.pdf`/);

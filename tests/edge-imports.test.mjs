@@ -22,8 +22,8 @@ function specifiers() {
 }
 
 test('the functions load no module from the network when a worker starts', () => {
-  // Everything is a file in this repository: relative imports, with the two
-  // libraries built into functions/vendor. The one exception is the printing
+  // Everything is a file in this repository: relative imports, with the one
+  // library (jose) built into functions/vendor. The one exception is the printing
   // code, which the router refuses with 503 and which imports ipp on demand.
   const all = specifiers();
   assert.ok(all.length > 40, 'function imports were read');
@@ -39,18 +39,18 @@ test('the functions load no module from the network when a worker starts', () =>
     const vendor = /^\.\.\/vendor\/(.+)$/.exec(specifier)?.[1];
     if (vendor) vendored.add(vendor);
   }
-  assert.deepEqual([...vendored].sort(), ['jose.mjs', 'supabase-js.mjs']);
+  assert.deepEqual([...vendored].sort(), ['jose.mjs']);
   assert.doesNotMatch(read('functions/main/index.ts'), /importMapPath/);
 });
 
 test('functions/vendor holds exactly the files its checksum list names', () => {
   const sums = read('functions/vendor/SHA256SUMS').trim().split('\n').map(line => line.split(/\s+/));
-  assert.deepEqual(sums.map(([, name]) => name), ['LICENSES.txt', 'jose.mjs', 'supabase-js.mjs']);
+  assert.deepEqual(sums.map(([, name]) => name), ['LICENSES.txt', 'jose.mjs']);
   for (const [sum, name] of sums) {
     const actual = createHash('sha256').update(readFileSync(join(functions, 'vendor', name))).digest('hex');
     assert.equal(actual, sum, `${name} was changed without scripts/vendor-edge-modules.sh`);
   }
-  assert.deepEqual(readdirSync(join(functions, 'vendor')).sort(), ['LICENSES.txt', 'SHA256SUMS', 'jose.mjs', 'supabase-js.mjs']);
+  assert.deepEqual(readdirSync(join(functions, 'vendor')).sort(), ['LICENSES.txt', 'SHA256SUMS', 'jose.mjs']);
   // A vendored file must not reach out again.
   for (const [, name] of sums.filter(([, file]) => file.endsWith('.mjs'))) {
     const source = readFileSync(join(functions, 'vendor', name), 'utf8');
@@ -59,7 +59,7 @@ test('functions/vendor holds exactly the files its checksum list names', () => {
   }
 });
 
-test('the vendored libraries are built from exact, locked versions', () => {
+test('the vendored library is built from exact, locked versions', () => {
   for (const [name, version] of Object.entries({ ...vendorManifest.dependencies, ...vendorManifest.devDependencies })) {
     assert.match(version, /^\d+\.\d+\.\d+$/, `${name} is not an exact version`);
     assert.equal(vendorLock.packages[`node_modules/${name}`]?.version, version, `${name} differs in the lock file`);
@@ -67,7 +67,7 @@ test('the vendored libraries are built from exact, locked versions', () => {
   for (const [path, entry] of Object.entries(vendorLock.packages)) {
     if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has no integrity hash`);
   }
-  assert.deepEqual(Object.keys(vendorManifest.dependencies).sort(), ['@supabase/supabase-js', 'jose']);
+  assert.deepEqual(Object.keys(vendorManifest.dependencies).sort(), ['jose']);
 });
 
 test('the unit tests sign tokens with the jose release the functions verify with', async () => {

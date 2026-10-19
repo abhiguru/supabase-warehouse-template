@@ -5,7 +5,7 @@ import { workerEnv } from './worker-env.ts';
 
 // ingest-sensor-readings is called by the sensor bridge with its own ingest key, not a user token.
 const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
-const allowed = new Set([...publicFunctions, 'get-config', 'generate-sample-pdf', 'get-printer-status', 'print-via-ipp',
+const allowed = new Set([...publicFunctions, 'get-config', 'get-printer-status', 'print-via-ipp',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
 
 Deno.serve(async (req: Request) => {

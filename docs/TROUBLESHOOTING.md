@@ -50,36 +50,6 @@ A 502 from the gateway usually means the service behind it (`rest`,
 for this operator instance" **by design** (`functions/main/index.ts`): that 503
 is not a fault ([PRINTING.md](PRINTING.md)).
 
-## Realtime is slow to connect after a start
-
-Symptom: the first live-update connection after a start or restart times out
-(the app retries and then works), while later ones answer in milliseconds.
-Cause: Realtime connects to the database for each tenant on the first join and
-asks for an IPv6 address of `db` first. If the host's DHCP gave the machine a
-search domain (`search lan` in the host's `/etc/resolv.conf`) and the router
-is slow to refuse the extra question, that one lookup took about 8 seconds and
-the connection check ran past its 15 second window.
-
-The compose file now gives Realtime `dns_search: "."`, so the host's search
-domain is not asked, which is what keeps every first join fast. `setup.sh` and
-`start.sh` also join one channel once the services are up
-(`scripts/realtime-warmup.mjs`); that proves after each start that the tenant
-connection opens and shows how long it took. It does not keep the connection
-open: Realtime closes an idle tenant connection after a few minutes, and the
-next person to open the app opens it again, in tens of milliseconds. To check by hand:
-
-```bash
-bash scripts/compose.sh exec -T realtime /app/bin/realtime eval \
-  ':timer.tc(:inet, :gethostbyname, [~c"db", :inet6]) |> IO.inspect()'
-```
-
-The first number is microseconds; it should be well under 100 000 (100 ms).
-`bash scripts/compose.sh exec -T realtime cat /etc/resolv.conf` must show no
-`search` line. If it still does, recreate the service after an update:
-`bash scripts/compose.sh up -d --force-recreate realtime`. Run
-`node scripts/realtime-warmup.mjs` to repeat the warm-up by hand; it only
-joins one channel and prints how long that took.
-
 ## Database connection issues
 
 ```bash
@@ -94,7 +64,7 @@ bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "
   LIMIT 5;"
 ```
 
-The `DatabaseConnectionsHigh` alert counts client connections (not background
+The `db_connections_high` alert counts client connections (not background
 workers) against the configured ceiling of 100 ([MONITORING.md](MONITORING.md)).
 
 ## Edge functions not working
@@ -126,22 +96,11 @@ logs.
 
 ## A new receipt, dispatch or invoice is missing from a list
 
-The invoice list, `get_dispatch_list` and the legacy GRN list are refreshed by
-a background job within 15 seconds of a write (migration 91); the document
-itself was saved when the app said so. If a list stays behind:
-
-```bash
-bash scripts/compose.sh exec -T db psql -X -A -t -U supabase_admin -d postgres \
-  -c "SELECT warehouse_security.list_refresh_status()"
-```
-
-`problems` names what is wrong. A session holding the refresh lock 71046 (pid,
-user and application are shown; for example a worker `CALL` left open in psql):
-end that session. A missing or paused job, or a role that cannot
-log in: rerun `setup.sh` (or run `scripts/configure-list-refresh.sql`, see
-[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lists-refresh-after-the-commit)). A
-failing refresh: the SQLSTATE is shown; `cron.job_run_details` and the db log
-(`List refresh of ... failed`) have the run's detail.
+The lists read the tables (migration 106), so a document that the app said was saved is in the next list read.
+If a list does not show it, check the filter and sort on the screen (a date range, a customer, a search word) and
+pull to refresh. A document missing from every list and from its own detail screen was not saved: look at the
+app's last error. Before migration 106 a background job refreshed some lists; if `setup.sh` has not been rerun
+since, run it, so that the database is on the current migrations.
 
 ## Printer not responding
 
@@ -216,3 +175,15 @@ setup never deletes them. Use the documented paths in
   [Setup](OPERATOR_INSTALL.md#setup), not a deletion of an existing one.
 
 Take `npm run db:backup` before any of these.
+
+## Monitoring and Slack alerts
+
+- **No "Monitoring is alive" message today, or `npm run doctor` warns about the checker.** The checker is a systemd timer
+  that setup cannot install for you. Check `bash scripts/watch-timer.sh status`; if it is not installed, run
+  `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`. If it is installed, read
+  `journalctl -u warehouse-<state name>-watch.service` and `node scripts/watch.mjs status` (the last Slack failure is
+  shown there); `node scripts/watch.mjs test-message` posts a test message to the stored webhook.
+- **Alerts for services you stopped on purpose.** Mute before a planned stop: `node scripts/watch.mjs mute 60`
+  ([MONITORING.md](MONITORING.md)).
+- **Nothing reaches Slack, but the checker runs.** `status` says `Slack webhook: none` when the install was made with
+  `--alert-webhook-file off`; rerun `setup.sh --operator` with your usual inputs and the webhook.

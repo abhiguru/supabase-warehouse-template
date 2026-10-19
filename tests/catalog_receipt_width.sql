@@ -82,28 +82,14 @@ SELECT pg_temp.cw_assert((SELECT count(*)=4 FROM information_schema.columns WHER
    AND table_name IN ('stock_summary','low_stock_alerts')
    AND ((column_name='item_name' AND character_maximum_length=80) OR (column_name='packaging' AND character_maximum_length=40))),
  'stock_summary and low_stock_alerts show item_name 80 and packaging 40');
-SELECT pg_temp.cw_assert((SELECT count(*)=2 FROM pg_attribute WHERE attrelid='public.mv_grn_list'::regclass AND NOT attisdropped
-   AND ((attname='item_name' AND atttypmod=84) OR (attname='packaging' AND atttypmod=44))),
- 'mv_grn_list carries item_name varchar(80) and packaging varchar(40)');
--- Owner and privileges equal those of mv_invoice_list, a sibling list that was never recreated, and are the ones before the migration.
-SELECT pg_temp.cw_assert((SELECT bool_and(c.relowner=ref.relowner AND c.relacl=ref.relacl
+-- The two views that stay keep the owner and privileges they had.
+SELECT pg_temp.cw_assert((SELECT count(*)=2 AND bool_and(pg_get_userbyid(c.relowner)='supabase_admin'
      AND c.relacl::text='{supabase_admin=arwdDxt/supabase_admin,postgres=arwdDxt/supabase_admin,service_role=arwdDxt/supabase_admin}')
-   FROM pg_class c, (SELECT relowner, relacl FROM pg_class WHERE oid='public.mv_invoice_list'::regclass) ref
-   WHERE c.oid IN ('public.mv_grn_list'::regclass,'public.mv_dispatch_list'::regclass,'public.stock_summary'::regclass,'public.low_stock_alerts'::regclass)),
- 'the four recreated views keep the owner and privileges they had');
-SELECT pg_temp.cw_assert((SELECT string_agg(indexname,',' ORDER BY indexname) FROM pg_indexes WHERE schemaname='public' AND tablename='mv_grn_list')
-   = 'idx_mv_grn_list_customer,idx_mv_grn_list_customer_date,idx_mv_grn_list_date_desc,idx_mv_grn_list_gr_no,idx_mv_grn_list_in_stock,idx_mv_grn_list_pk'
- AND (SELECT string_agg(indexname,',' ORDER BY indexname) FROM pg_indexes WHERE schemaname='public' AND tablename='mv_dispatch_list')
-   = 'idx_mv_dispatch_list_customer,idx_mv_dispatch_list_customer_date,idx_mv_dispatch_list_customer_name,idx_mv_dispatch_list_date_desc,idx_mv_dispatch_list_disp_no,idx_mv_dispatch_list_pk'
- AND (SELECT indexdef FROM pg_indexes WHERE indexname='idx_mv_grn_list_pk') LIKE 'CREATE UNIQUE INDEX%(grn_item_id)'
- AND (SELECT indexdef FROM pg_indexes WHERE indexname='idx_mv_dispatch_list_pk') LIKE 'CREATE UNIQUE INDEX%(dispatch_id)'
- AND (SELECT indexdef FROM pg_indexes WHERE indexname='idx_mv_dispatch_list_customer_name') LIKE '%USING gin (customer_name gin_trgm_ops)'
- AND (SELECT indexdef FROM pg_indexes WHERE indexname='idx_mv_grn_list_in_stock') LIKE '%WHERE (stock > 0)',
- 'both lists have all their indexes, the unique ones (REFRESH CONCURRENTLY) included');
-SELECT pg_temp.cw_assert((SELECT count(*)=7 FROM public.mv_refresh_queue)
- AND NOT EXISTS (SELECT 1 FROM unnest(warehouse_security.list_refresh_views()) n
-                  WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname=n AND c.relkind='m' AND c.relnamespace='public'::regnamespace)),
- 'each of the seven lists of migration 91 still exists as a materialized view with a queue row');
+   FROM pg_class c WHERE c.oid IN ('public.stock_summary'::regclass,'public.low_stock_alerts'::regclass)),
+ 'the two recreated views keep the owner and privileges they had');
+-- Migration 106 removed the materialized lists: the list screens read the tables, so there is nothing to refresh.
+SELECT pg_temp.cw_assert(NOT EXISTS (SELECT 1 FROM pg_matviews) AND to_regclass('public.mv_refresh_queue') IS NULL,
+ 'no materialized list and no refresh queue remain (migration 106)');
 
 -- ---------------------------------------------------------------------------
 -- 2. Fixtures: a business, a supervisor and an 80 / 40 character catalog item
@@ -120,29 +106,24 @@ SELECT pg_temp.cw_assert(:'wide_item' <> '' AND (SELECT packaging=:'pack40' FROM
 -- ---------------------------------------------------------------------------
 -- 3. Receive, list, dispatch, invoice
 -- ---------------------------------------------------------------------------
-SELECT warehouse_security.refresh_dirty_lists();
 SELECT pg_temp.cw_save(:'staff_claims'::jsonb,'CWW1',:'orchard'::uuid,
   jsonb_build_array(pg_temp.cw_line(:'wide_item'::uuid,:'name80',:'pack40',10))) AS wide_save \gset
 SELECT pg_temp.cw_assert(:'wide_save'::jsonb->>'success'='true','staff save_grn takes the 80 / 40 character line: '||:'wide_save');
 SELECT pg_temp.cw_assert((SELECT t.item_name=:'name80' AND t.packaging=:'pack40' AND char_length(t.item_name)=80 AND char_length(t.packaging)=40
      FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CWW1'),
  'the receipt line holds the full name and packaging');
--- The write only marked the lists (migration 91); the refresher's steps list the GRN with the full strings.
-SELECT pg_temp.cw_assert((SELECT needs_refresh FROM public.mv_refresh_queue WHERE mv_name='mv_grn_list'),
- 'the save marks the recreated mv_grn_list dirty, as migration 91 built it to');
-SELECT warehouse_security.refresh_dirty_lists();
-SELECT pg_temp.cw_assert((SELECT count(*)=1 AND bool_and(item_name=:'name80' AND packaging=:'pack40') FROM public.mv_grn_list WHERE gr_no='CWW1')
- AND NOT (SELECT needs_refresh FROM public.mv_refresh_queue WHERE mv_name='mv_grn_list'),
- 'the refreshed mv_grn_list shows the full name and packaging, and the queue is clean');
+-- The GRN list reads the tables, so the receipt is listed with the full strings at once.
+SELECT pg_temp.cw_assert(pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_all_grn_items(p_filters=>'{"search":"CWW1"}'::jsonb)$q$)::text LIKE '%'||:'name80'||'%'
+ AND pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_all_grn_items(p_filters=>'{"search":"CWW1"}'::jsonb)$q$)::text LIKE '%'||:'pack40'||'%',
+ 'the GRN list shows the full name and packaging');
 SELECT pg_temp.cw_assert((SELECT count(*)=1 AND bool_and(item_name=:'name80' AND packaging=:'pack40') FROM public.stock_summary WHERE gr_no='CWW1')
  AND (SELECT count(*)=0 FROM public.low_stock_alerts WHERE gr_no='CWW1'),
  'stock_summary shows the full strings (a full lot is not a low-stock alert)');
 
 SELECT pg_temp.cw_invoice(:'admin_claims'::jsonb,'CWW1','CWD1',20269601,:'orchard'::uuid,:'admin_profile'::uuid) AS wide_invoice \gset
 SELECT pg_temp.cw_assert(:'wide_invoice'::jsonb->>'success'='true','the 80 / 40 character line is dispatched and invoiced: '||:'wide_invoice');
-SELECT warehouse_security.refresh_dirty_lists();
-SELECT pg_temp.cw_assert((SELECT count(*)=1 AND bool_and(items_jsonb::text LIKE '%'||:'name80'||'%') FROM public.mv_dispatch_list WHERE disp_no='CWD1'),
- 'the refreshed mv_dispatch_list names the full item of the dispatch');
+SELECT pg_temp.cw_assert(pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_dispatch_list_with_items(p_filters=>'{"disp_no":"CWD1"}'::jsonb,p_include_items=>true)$q$)::text LIKE '%'||:'name80'||'%',
+ 'the Dispatches list names the full item of the dispatch');
 SELECT pg_temp.cw_assert((SELECT count(*)=0 FROM public.stock_summary WHERE gr_no='CWW1' AND current_stock>0),
  'the dispatched lot leaves stock_summary');
 
@@ -188,8 +169,7 @@ SELECT pg_temp.cw_upd(:'staff_claims'::jsonb,:'wide_grn'::uuid, jsonb_build_arra
   'item_name',:'name80','packaging',:'pack40','qty',2,'weight',40,'rack','R1'))) AS upd_ok \gset
 SELECT pg_temp.cw_assert(:'upd_ok'::jsonb->>'success'='true' AND (SELECT item_name=:'name80' AND packaging=:'pack40' FROM public.goodsreceived_trl WHERE id=:'short_line'::uuid),
  'update_grn stores an 80 / 40 character line: '||:'upd_ok');
-SELECT warehouse_security.refresh_dirty_lists();
-SELECT pg_temp.cw_assert((SELECT item_name=:'name80' AND packaging=:'pack40' FROM public.mv_grn_list WHERE grn_item_id=:'short_line'::uuid),
+SELECT pg_temp.cw_assert(pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_all_grn_items(p_filters=>'{"search":"CWS1"}'::jsonb)$q$)::text LIKE '%'||:'name80'||'%',
  'the list shows the edited full strings');
 
 -- The functions kept their owner and options.

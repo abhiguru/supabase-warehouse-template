@@ -14,8 +14,7 @@ export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', 
 // Fixed fictional database passwords as a state of this release holds them
 // (scripts/db-roles.mjs): the superuser's and one per service login.
 export const dbRoleLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\nDB_PASSWORD_AUTHENTICATOR=${'1'.repeat(64)}\n` +
-  `DB_PASSWORD_STORAGE=${'2'.repeat(64)}\nDB_PASSWORD_AUTH=${'3'.repeat(64)}\nDB_PASSWORD_POOLER=${'4'.repeat(64)}\n` +
-  `DB_PASSWORD_MONITORING=${'6'.repeat(64)}\nREALTIME_DB_ENC_KEY=${'7'.repeat(16)}\n`;
+  `DB_PASSWORD_STORAGE=${'2'.repeat(64)}\nDB_PASSWORD_POOLER=${'4'.repeat(64)}\n`;
 // A state of the previous release has the superuser password only.
 export const previousReleaseDbLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\n`;
 export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n', db = dbRoleLines) =>
@@ -114,7 +113,7 @@ case "$1" in
     case "$*" in
       *' exec -T db sh -c IFS= read -r pw;'*) cat >> "\${FAKE_STDIN_LOG:-/dev/null}" ;;
       *' ps -q') if [ "$FAKE_RUNNING" = yes ]; then printf 'abcdef123456\\n'; fi ;;
-      *' ps --all --format '*) printf 'db running healthy\\nrest running \\nmeta running unhealthy\\nstudio exited \\n' ;;
+      *' ps --all --format '*) printf 'db running healthy\\nrest running \\nstorage running unhealthy\\nfunctions exited \\n' ;;
       *' logs --no-color --tail 30 '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | sed 's/.* //')" ;;
       *' up -d --wait --wait-timeout 180') if [ "$FAKE_FAIL_START" = yes ]; then exit 7; fi ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;

@@ -42,7 +42,7 @@ case "$1" in
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       'compose up --help') printf '      --wait-timeout int   Maximum duration in seconds to wait\\n' ;;
-      *' ps -q supavisor'|*' ps -q postgres-exporter'|*' ps -q auth') : ;;
+      *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *' exec -T db sh -c IFS= read -r pw;'*)
         cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"
@@ -60,7 +60,6 @@ case "$1" in
         if [ "$su" = "$dsu" ] && [ "$au" = "$dau" ]; then echo match; else echo 'no match'; fi ;;
       *' exec -T db sh -c '*'superuser_password'*) cat >> "$FAKE_CHECK_INPUT"; if [ "$FAKE_FAIL" = check ]; then exit 1; fi ;;
       *' up -d --force-recreate '*) if [ "$FAKE_FAIL" = up ] && [ ! -e "$FAKE_DOCKER_LOG.failed" ]; then : > "$FAKE_DOCKER_LOG.failed"; exit 1; fi ;;
-      *'exec -T db psql'*list_refresh_status*) printf 'current\\n' ;;
       *'exec -T db pg_isready'*) if [ "$FAKE_FAIL" = doctor ]; then exit 1; fi ;;
       *'exec -T '*) cat >/dev/null ;;
     esac ;;
@@ -134,10 +133,9 @@ test('rotation sets new verifiers first, then swaps compose.env, recreates the r
     assert.deepEqual(changedLines(beforeText, afterText), [...roleNames].sort());
     for (const name of roleNames) assert.match(after[name], /^[0-9a-f]{64}$/);
     assert.equal(after.POSTGRES_PASSWORD, before.POSTGRES_PASSWORD);
-    assert.equal(after.REALTIME_DB_ENC_KEY, before.REALTIME_DB_ENC_KEY);
     assert.equal(validateOperatorEnv(after, f.state).origin, 'https://api.example.test');
     assert.equal(statSync(f.envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock'], 'no staged or previous file is left');
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock'], 'no staged or previous file is left');
     const [apply] = f.applies();
     assertApply(apply, after, before.POSTGRES_PASSWORD);
     assert.equal(readFileSync(f.env.FAKE_CHECK_INPUT, 'utf8').split('\n')[0], after.POSTGRES_PASSWORD, 'the check uses the new values');
@@ -145,12 +143,12 @@ test('rotation sets new verifiers first, then swaps compose.env, recreates the r
     for (const value of [...roleNames.flatMap(name => [before[name], after[name]]), before.POSTGRES_PASSWORD]) assert.equal(calls.includes(value), false, 'no password in a docker argument');
     const at = needle => { const index = calls.indexOf(needle); assert.ok(index >= 0, needle); return index; };
     assert.ok(at('exec -T db sh -c IFS= read -r pw;') < at('--force-recreate'), 'the database is changed before anything is recreated');
-    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db rest storage realtime meta studio\n/, 'running consumers only');
+    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db rest storage\n/, 'running consumers only');
     assert.ok(at('--force-recreate') < at('superuser_password') && at('superuser_password') < at('pg_isready'), 'then the login check, then the doctor');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
-test('--superuser also replaces POSTGRES_PASSWORD and the Realtime key, signing in with the old superuser password', () => {
+test('--superuser also replaces POSTGRES_PASSWORD, signing in with the old superuser password', () => {
   const f = fixture('warehouse-rotate-db-superuser-');
   try {
     const beforeText = readFileSync(f.envPath, 'utf8');
@@ -158,9 +156,8 @@ test('--superuser also replaces POSTGRES_PASSWORD and the Realtime key, signing 
     const result = f.run(['--yes', '--superuser']);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const after = readEnv(f.envPath);
-    assert.deepEqual(changedLines(beforeText, readFileSync(f.envPath, 'utf8')), ['POSTGRES_PASSWORD', 'REALTIME_DB_ENC_KEY', ...roleNames].sort());
+    assert.deepEqual(changedLines(beforeText, readFileSync(f.envPath, 'utf8')), ['POSTGRES_PASSWORD', ...roleNames].sort());
     assert.notEqual(after.POSTGRES_PASSWORD, before.POSTGRES_PASSWORD);
-    assert.match(after.REALTIME_DB_ENC_KEY, /^[A-Za-z0-9_-]{16}$/);
     const [apply] = f.applies();
     assertApply(apply, after, before.POSTGRES_PASSWORD, [['postgres_verifier', after.POSTGRES_PASSWORD], ['supabase_admin_verifier', after.POSTGRES_PASSWORD]]);
     assert.equal(apply.includes(after.POSTGRES_PASSWORD), false, 'the new superuser password travels only as its verifiers');
@@ -174,7 +171,7 @@ test('a failing database step changes nothing and recreates nothing', () => {
     const result = f.run(['--yes'], { FAKE_FAIL: 'apply' });
     assert.notEqual(result.status, 0);
     assert.deepEqual(readFileSync(f.envPath), before);
-    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
     assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
@@ -189,7 +186,7 @@ for (const [step, superuser] of [['up', false], ['check', false], ['up', true]])
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.match(result.stderr, /putting the previous ones back[\s\S]*The previous database passwords are back in place/);
       assert.equal(readFileSync(f.envPath, 'utf8'), beforeText, 'compose.env holds the previous values again');
-      assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+      assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
       const [forward, back] = f.applies();
       assert.ok(forward && back, 'two database steps: the rotation and its reversal');
       const rotated = Object.fromEntries([...forward.matchAll(/^\\set ([a-z_]+) /gm)].map(match => [match[1], true]));
@@ -235,7 +232,7 @@ test('a rotation that stopped after its database step leaves the staged file and
       assert.match(next.stdout, /The database has the values of compose\.env\.rotating-db: it is compose\.env now\./);
       assert.match(next.stdout, NEXT);
       assert.equal(readFileSync(f.envPath, 'utf8'), staged, 'the new superuser password is kept, in compose.env');
-      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
       assert.equal(f.applies().length, 1, 'the recovery sets no password');
     } finally { rmSync(f.scratch, { recursive: true, force: true }); }
   }
@@ -260,7 +257,7 @@ test('recovery keeps whichever file the database matches and removes only the on
       assert.match(result.stdout, message, `${names} / ${has}`);
       assert.match(result.stdout, NEXT);
       assert.equal(readFileSync(f.envPath, 'utf8'), texts[after], `${names} / ${has}: compose.env`);
-      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock'], `${names} / ${has}: leftovers`);
+      assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock'], `${names} / ${has}: leftovers`);
       assert.equal(f.applies().length, 0, 'no password is set');
       assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false, 'nothing is recreated');
     } finally { rmSync(f.scratch, { recursive: true, force: true }); }
@@ -307,7 +304,7 @@ test('a reversal that fails too leaves compose.env with the values the database 
     assert.match(next.stdout, /The database has the values of compose\.env\.\nRemoved compose\.env\.before-db-rotation: the database does not have its values\./);
     assert.match(next.stdout, NEXT);
     assert.equal(readFileSync(f.envPath, 'utf8'), after);
-    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
@@ -320,7 +317,7 @@ test('a doctor that fails after the rotation puts the previous values back', () 
     assert.match(result.stderr, /Local service health check failed[\s\S]*putting the previous ones back[\s\S]*The previous database passwords are back in place/);
     assert.equal(readFileSync(f.envPath, 'utf8'), before);
     assert.equal(readFileSync(f.database, 'utf8'), before, 'the database has the previous values again');
-    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
     const calls = readFileSync(f.log, 'utf8');
     assert.ok(calls.indexOf('superuser_password') < calls.indexOf('exec -T db pg_isready'), 'the login check passed before the doctor ran');
     assert.equal(calls.split('\n').filter(line => line.includes('--force-recreate')).length, 2);
@@ -333,7 +330,7 @@ test('a failing database step that the database confirms changed nothing removes
     const result = f.run(['--yes', '--superuser'], { FAKE_FAIL: 'apply' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /The database step failed and changed nothing \(the database still has the values of compose\.env\)\./);
-    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'monitoring', 'operator.lock']);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
     assert.match(readFileSync(f.log, 'utf8'), /verdict\(\)/, 'the database was asked');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });

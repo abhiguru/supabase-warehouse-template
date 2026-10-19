@@ -17,8 +17,6 @@ test('CLI entry points run through a symlinked checkout without import side effe
       cpSync(new URL(`../${file}`, import.meta.url), join(root, file), { recursive: true });
     }
     writeFileSync(join(root, 'migrations/0001_example.sql'), 'SELECT 1;\n');
-    // setup renders the monitoring files from the templates next to the scripts (scripts/monitoring-config.mjs).
-    for (const file of ['prometheus.yml', 'alertmanager.yml', 'alertmanager.slack.yml']) cpSync(new URL(`../docker/${file}`, import.meta.url), join(root, 'docker', file));
     symlinkSync(root, alias, 'dir');
     const childEnv = { ...process.env };
     delete childEnv.NODE_TEST_CONTEXT;

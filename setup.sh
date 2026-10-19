@@ -78,15 +78,17 @@ bash "$ROOT/scripts/network-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation.
 bash "$ROOT/scripts/build-images.sh"
-bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180 db
+# Release 105 runs the db with wal_level=replica, which refuses to start while a logical slot exists: drop idle ones
+# (and refuse if one is in use) while the db still runs with its old settings.
+bash "$ROOT/scripts/drop-logical-slots.sh"
+# --remove-orphans stops the old realtime container before migration 105 drops its schemas.
+bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 # Every service login has its own password (docs/CONTAINER_SECURITY.md, "Database
 # passwords"). docker/volumes/db/roles.sql sets them only on an empty data directory;
 # this sets them on every run, so an upgraded installation gets them here. Running
 # services keep their open connections until the start below recreates them.
 bash "$ROOT/scripts/db-roles.sh" apply
-# The list refresher (migration 91): pg_cron jobs and their LOGIN role, put back on every run.
-bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-list-refresh.sql"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
 # Central sign-in: the trusted issuer from compose.env (--central-issuer), or off, and whether this
 # facility also asks for its own SMS code at every sign-in (--central-local-code on; default off).
@@ -108,17 +110,19 @@ elif [[ "$EXISTING_ADMIN" != match ]]; then
 fi
 COMPANY="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).companyName)' "$STATE/public/instance.json")"
 bash "$ROOT/scripts/compose.sh" exec -T db psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v company="$COMPANY" < "$ROOT/scripts/configure-operator.sql"
-# Upgrade from Gotenberg: only now, after the build and the migrations succeeded, remove its old container
-# (no longer in the Compose file); the start below replaces it with pdf-renderer.
-bash "$ROOT/scripts/retire-gotenberg.sh" container
-bash "$ROOT/scripts/compose.sh" up -d --wait --wait-timeout 180
-bash "$ROOT/scripts/retire-gotenberg.sh" image
-# Optional services (monitoring, printing, pooler) are not part of that start.
+# --remove-orphans also removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
+# Services of a profile (printing, sensors, pooler) are disabled services, not
+# orphans, so they are kept.
+bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180
+# Optional services (printing, sensors, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
-# With a Slack webhook stored the monitoring services must run, or no alert is ever sent (builds what is missing).
-bash "$ROOT/scripts/start-monitoring.sh" --build
-# Realtime opens its database connection on the first join; do that now (best effort, never fails the start).
-node "$ROOT/scripts/realtime-warmup.mjs"
 node "$ROOT/scripts/doctor.mjs" --local
-echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml, deploy/warehouse-tunnel.service.example), then run node scripts/doctor.mjs for external verification.'
+# The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts, the daily backup and retention) runs
+# from a systemd timer. Installing a unit needs root, which setup never uses: like the tunnel service and the USB backup,
+# the operator runs the printed command. It also runs without a Slack webhook (--alert-webhook-file off): the checks
+# and the daily backup still run, only the Slack posts are off.
+echo
+# hint prints the install command when the timer is missing and "refresh" when it runs another checkout.
+WAREHOUSE_STATE_DIR="$STATE" bash "$ROOT/scripts/watch-timer.sh" hint || true
+echo 'Operator services are healthy on the local gateway. Configure the Cloudflare Tunnel connector and its DNS route (deploy/cloudflared-config.example.yml; scripts/tunnel.sh install-service writes the service), then run node scripts/doctor.mjs for external verification.'

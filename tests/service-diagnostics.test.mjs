@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diagnoseService, redactServiceLog } from '../scripts/service-diagnostics.mjs';
+import { diagnoseService, redactServiceLog, showUnhealthyServices } from '../scripts/service-diagnostics.mjs';
 
 test('service diagnostics redact literal, URL and JSON encoded credentials', () => {
   const secret = 'fictional p@ss"\\word';
@@ -53,4 +53,25 @@ test('owned gateway diagnostics expose only selected state and redacted bounded 
   assert.deepEqual(calls[2][1].slice(0, 3), ['logs', '--tail', '60']);
   assert.ok(output.join('\n').includes('worker unavailable [REDACTED]'));
   assert.ok(!output.join('\n').includes('private'));
+});
+
+test('the unhealthy-service listing skips healthy services and redacts the last 30 log lines of the rest', () => {
+  const calls = [];
+  const output = [];
+  showUnhealthyServices({
+    run: (command, args) => {
+      calls.push(args);
+      if (args.includes('ps')) return { status: 0, stdout: 'db running healthy\nrest running\nkong exited \nfunctions running unhealthy\n' };
+      return { status: 0, stdout: `log of ${args.at(-1)} fictional-secret` };
+    },
+    env: () => ({ JWT_SECRET: 'fictional-secret' }),
+    report: line => output.push(line),
+  });
+  assert.deepEqual(output.filter(line => line.startsWith('Service')), ['Service kong is exited. Its last log lines:', 'Service functions is running (unhealthy). Its last log lines:']);
+  assert.ok(output.every(line => !line.includes('fictional-secret')));
+  assert.ok(calls.filter(args => args.includes('logs')).every(args => args.includes('--tail') && args.includes('30')));
+  assert.equal(calls.filter(args => args.includes('logs')).length, 2);
+  const quiet = [];
+  showUnhealthyServices({ run: () => ({ status: 1 }), env: () => ({}), report: line => quiet.push(line) });
+  assert.deepEqual(quiet, []);
 });

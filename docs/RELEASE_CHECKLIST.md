@@ -38,15 +38,19 @@ every release tag:
       checkout (its own project name; never an installation's state, whose
       running containers would be left on images no recorded build made; the
       scan refuses a project that has containers), run `npm run scan:images`
-      (Trivy 0.74.0). It builds every Compose image with `--no-cache` and scans
-      each twice; it must end with "Container image scan passed". Read its
+      (Trivy 0.74.0 or later; record `trivy --version` in the pull request). It builds every Compose image with `--no-cache` and scans
+      each once, in full; it must end with "Container image scan passed". Read its
       warnings for exceptions that covered nothing, then remove the throwaway
       project's `<project>-*` images.
 - [ ] If it fails on an expired exception or a new row, fix the recipe, or have
       the owner review the entry in `docker/image-exceptions.json` (new
       `reviewed` date, `expires` at most 90 days later, reason updated with the
       scan's counts), in the release pull request.
-- [ ] Record the scan date and the per-image row counts in the pull request. This one
+- [ ] Record the scan date and the per-image row counts in the pull request, read from the single report
+      (`<report_dir>/<image>.json`): fixable rows with
+      `jq '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") != "" or .Status == "fixed")] | length' <report_dir>/<image>.json`,
+      all HIGH/CRITICAL rows with
+      `jq '[.Results[]?.Vulnerabilities[]?] | length' <report_dir>/<image>.json`. This one
       `--no-cache` build and scan is the whole rebuild step: do not build twice. Never
       release from images built from cache.
 
@@ -54,7 +58,7 @@ every release tag:
 
 - [x] Complete provider-independent backup/restore, owned-service recovery,
   auth/RLS, loopback gateway, approved database retention, business, local load,
-  monitoring, Realtime, and companion Android debug-artifact checks.
+  monitoring, Realtime (removed 2026-10-19), and companion Android debug-artifact checks.
 - [x] Add reproducible commands and extend paired CI while keeping tracked
   workflow copies byte-identical.
 - [ ] Clear the all-profile container HIGH/CRITICAL scan blocker and repeat the
@@ -258,19 +262,19 @@ and private vulnerability reporting. Workflows have been activated under `.githu
 
 - [x] GRN image upload/confirmation/deletion, anonymous/customer upload denial,
       and assigned-customer read visibility before/after confirmation/deletion.
-      Verified in `tests/api-demo.mjs`: anonymous upload to `grn-images` denied (HTTP 400/403 RLS violation),
+      Verified in `tests/operator-api-final.mjs` (image lifecycle) and `tests/grn_image_visibility.sql`: anonymous upload to `grn-images` denied (HTTP 400/403 RLS violation),
       customer role upload denied, admin registers upload via `register_grn_image_upload` and uploads binary,
       unconfirmed image hidden from customer, confirmation via `confirm_grn_image_upload` grants read access to
       assigned customer, deletion via `delete_grn_image` immediately revokes customer read access, and admin cleans up storage.
 - [x] Disabled-user login, changed customer assignments, staff/customer role boundaries,
       sequential refresh replay and logout revocation.
-      Verified in `tests/auth_and_access.sql` and `tests/api-demo.mjs`: inactive accounts cannot authenticate,
+      Verified in `tests/auth_and_access.sql` (the earlier demo test is removed): inactive accounts cannot authenticate,
       customer role is denied access to staff RPCs (`save_grn`), dynamic customer assignment removal immediately
       hides assigned customers from RLS and reassignment restores access, refresh token rotation with replay denial,
       and logout session revokes both REST and Edge Function credentials.
 - [x] Concurrent dispatch oversell denial, invoice save/malformed-input rejection,
       and selected reporting response smoke checks.
-      Verified in `tests/api-demo.mjs`: concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
+      Verified in `tests/operator-api-core.mjs` (oversell and two-dispatch race checks): concurrent dispatches (2x50 units on 70 stock) serialize so exactly one succeeds
       and the other fails with "Insufficient stock", leaving exact stock of 20; single oversell requests (999 items) rejected;
       malformed invoice data structures rejected; the dashboard returns a finite stock KPI
       and the stock-aging response reports success. Later independent-value fixtures
@@ -351,9 +355,9 @@ and private vulnerability reporting. Workflows have been activated under `.githu
       tags or claim production readiness.
       Both repositories define `main` as a verified local development and integration demo (`v0.2.0-demo checkpoint`).
       Historical `v0.1.0` tag remains untouched as an archived partial baseline.
-- [x] Keep unverified printing, sensors and Realtime disabled/unsupported.
+- [x] Keep unverified printing and sensors disabled/unsupported.
       Preprinted print endpoints are included for contract parity, but physical printer/sensor hardware
-      and WebSocket Realtime remain unverified and default-disabled.
+      remain unverified and default-disabled (WebSocket Realtime was removed on 2026-10-19).
       2026-10-13: sensors now have their own ingestion path (migration 74, `ingest-sensor-readings`,
       the `sensors` profile; [SENSORS.md](SENSORS.md)). The `sensors` capability stays `false` in a new
       manifest; turn it on per installation with `node scripts/set-capability.mjs sensors on` only after
@@ -423,7 +427,7 @@ hardware need explicit human input or access where unavailable.
   `127.0.0.1:54325`, `127.0.0.1:15433`), and preprinted printing status. Documented the verified commit pair,
   retained historical `v0.1.0` tag untouched while scoping current `main` as a tested local-demo checkpoint,
   and reinforced the separate production gating requirements.
-- 2026-09-12: Completed Item 5 (Authorization and business-flow coverage). Expanded `tests/api-demo.mjs`
+- 2026-09-12: Completed Item 5 (Authorization and business-flow coverage). Expanded the demo test (since removed)
   to verify: Storage image upload/confirmation/read/deletion lifecycle with cross-customer and anonymous
   denials on `grn-images`; role boundaries preventing customer execution of staff RPCs (`save_grn`);
   dynamic customer assignment removal and restoration with immediate RLS reflection; concurrent dispatch

@@ -38,7 +38,7 @@ test('the golden job posts exactly the fields the function client posts, default
 test('every corpus case has an options.json whose fields the client accepts, and run.sh uses fields.mjs', () => {
   const corpus = new URL('tests/golden-pdf/corpus/', root);
   const cases = readdirSync(corpus);
-  assert.ok(cases.length >= 11, 'the corpus was read');
+  assert.ok(cases.length >= 10, 'the corpus was read');
   for (const name of cases) {
     const options = JSON.parse(readFileSync(new URL(`${name}/options.json`, corpus), 'utf8'));
     assert.deepEqual(Object.keys(options).filter(key => !['footerHtml', 'headerHtml', 'marginBottom', 'marginTop', 'marginLeft', 'marginRight', 'paperWidth', 'paperHeight', 'landscape', 'scale', 'printBackground', 'emulatedMediaType', 'preferCssPageSize', 'waitDelay'].includes(key)), [], `${name}: an option the client does not know`);

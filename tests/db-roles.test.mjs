@@ -5,8 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DB_ROLE_LOGINS, GENERATED_DB_NAMES, REALTIME_KEY, SUPERUSER_ROLES, addMissingDbValues, checkInput,
-  generatedDbValues, psqlPrelude, scramVerifier, stageRotatedDbEnv, validateDbValues,
+  DB_ROLE_LOGINS, GENERATED_DB_NAMES, SUPERUSER_ROLES, addMissingDbValues, checkInput,
+  addMissingDbValuesToFile, generatedDbValues, psqlPrelude, scramVerifier, stageRotatedDbEnv, validateDbValues,
 } from '../scripts/db-roles.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -26,16 +26,15 @@ test('a SCRAM verifier is the one PostgreSQL stores for the same password and sa
   assert.doesNotMatch(a, /pencil/);
 });
 
-test('generated values: one 64-hex password per login and a 16-character Realtime key, all distinct', () => {
+test('generated values: one 64-hex password per login, all distinct', () => {
   const values = generatedDbValues();
   assert.deepEqual(Object.keys(values).sort(), [...GENERATED_DB_NAMES].sort());
   for (const { env: name } of DB_ROLE_LOGINS) assert.match(values[name], /^[0-9a-f]{64}$/, name);
-  assert.match(values[REALTIME_KEY], /^[A-Za-z0-9_-]{16}$/);
   assert.equal(new Set(Object.values(values)).size, GENERATED_DB_NAMES.length);
   assert.notDeepEqual(generatedDbValues(), values);
 });
 
-test('validation refuses a missing, malformed or shared password and the old fixed Realtime key', () => {
+test('validation refuses a missing, malformed or shared password', () => {
   const good = env();
   validateDbValues(good);
   const name = DB_ROLE_LOGINS[0].env;
@@ -44,8 +43,6 @@ test('validation refuses a missing, malformed or shared password and the old fix
   assert.throws(() => validateDbValues({ ...good, [name]: 'p@ss/word'.repeat(5) }), new RegExp(`Invalid ${name}`));
   assert.throws(() => validateDbValues({ ...good, [name]: superuser }), /repeats POSTGRES_PASSWORD/);
   assert.throws(() => validateDbValues({ ...good, [DB_ROLE_LOGINS[1].env]: good[name] }), new RegExp(`repeats ${name}`));
-  assert.throws(() => validateDbValues({ ...good, [REALTIME_KEY]: 'supabaserealtime' }), /Invalid REALTIME_DB_ENC_KEY/);
-  assert.throws(() => validateDbValues({ ...good, [REALTIME_KEY]: 'short' }), /Invalid REALTIME_DB_ENC_KEY/);
 });
 
 test('missing values are added, present ones never replaced, an empty line is filled in place', () => {
@@ -95,25 +92,30 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   assert.ok(body.indexOf("SET LOCAL pg_stat_statements.track = 'none'") < body.indexOf('ALTER ROLE'));
   assert.equal((sql.match(/ALTER ROLE [a-z_]+ WITH (?:LOGIN )?PASSWORD :'/g) ?? []).length, (body.match(/ALTER ROLE [a-z_]+ WITH (?:LOGIN )?PASSWORD :'/g) ?? []).length);
   assert.match(body, /ALTER ROLE supabase_functions_admin WITH NOLOGIN PASSWORD NULL;/);
-  assert.match(body, /GRANT pg_monitor TO warehouse_monitoring;/);
-  // roles.sql (first start) takes the four logins that exist before the migrations from the db environment.
+  assert.match(body, /DROP ROLE warehouse_monitoring;/);
+  assert.doesNotMatch(sql, /monitoring_verifier|LOGIN PASSWORD :'monitoring/, 'the monitoring login has no password any more (migration 107)');
+  // roles.sql (first start) takes the three logins that exist before the migrations from the db environment.
   const roles = read('docker/volumes/db/roles.sql');
   const compose = read('docker/docker-compose.yml');
   const db = compose.slice(compose.indexOf('\n  db:\n'), compose.indexOf('\n  # Connection pooler'));
-  for (const { env: name, role } of DB_ROLE_LOGINS.filter(({ role }) => role !== 'warehouse_monitoring')) {
+  for (const { env: name, role } of DB_ROLE_LOGINS) {
     assert.match(roles, new RegExp(`\`echo "\\$${name}"\``), `roles.sql reads ${name}`);
     assert.match(roles, new RegExp(`^ALTER USER ${role} WITH PASSWORD :'`, 'm'), `roles.sql sets ${role}`);
     assert.match(db, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `the db service passes ${name}`);
   }
   assert.doesNotMatch(roles, /WITH PASSWORD :'superuser_password'/, 'no login is given the superuser password');
-  assert.match(roles, /^ALTER USER supabase_functions_admin WITH NOLOGIN PASSWORD NULL;$/m);
+  // supabase_functions_admin came with pg_net's webhook set-up, which is gone (migration 103): a first start has no such role.
+  assert.doesNotMatch(roles, /supabase_functions_admin/);
+  // supabase_auth_admin has no password at first start: the Auth service is gone (migration 104 makes it NOLOGIN).
+  assert.doesNotMatch(roles, /supabase_auth_admin|DB_PASSWORD_AUTH(?![A-Z_])/);
+  assert.match(body, /ALTER ROLE supabase_auth_admin WITH NOLOGIN PASSWORD NULL;/);
   // Each service names its own value, with :? so a state without it fails at `compose config`.
-  const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:',
-    DB_PASSWORD_AUTH: 'GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:', REALTIME_DB_ENC_KEY: 'DB_ENC_KEY: ' };
+  const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:' };
   for (const [name, prefix] of Object.entries(uses)) assert.ok(compose.includes(`${prefix}\${${name}:?`), `${name} is required where it is used`);
-  assert.doesNotMatch(compose, /supabaserealtime/);
+  assert.doesNotMatch(compose, /supabaserealtime|REALTIME_DB_ENC_KEY/);
   const override = read('docker/docker-compose.override.yml');
-  assert.ok(override.includes('DATA_SOURCE_NAME: "postgresql://warehouse_monitoring:${DB_PASSWORD_MONITORING:?'));
+  assert.doesNotMatch(`${compose}\n${override}`, /warehouse_monitoring|DB_PASSWORD_MONITORING/, 'no service signs in as the monitoring login');
+  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role), ['authenticator', 'supabase_storage_admin', 'pgbouncer']);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_password" => System\.fetch_env!\("DB_PASSWORD_POOLER"\)/);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /update_manager_user_credentials\(tenant, Map\.take\(pool_user, \["db_user", "db_password"\]\)\)/);
 });
@@ -137,11 +139,43 @@ test('staging a rotation replaces only the role lines (and the superuser pair on
     stageRotatedDbEnv(live, staged, { superuser: true });
     assert.deepEqual(changed(staged).sort(), ['POSTGRES_PASSWORD', ...GENERATED_DB_NAMES].sort());
     assert.throws(() => stageRotatedDbEnv(live, join(tmpdir(), 'elsewhere.env')), /different file in the compose.env directory/);
-    writeFileSync(live, text.replace(/^DB_PASSWORD_AUTH=.*$/m, 'DB_PASSWORD_AUTH='), { mode: 0o600 });
-    assert.throws(() => stageRotatedDbEnv(live, staged), /Invalid DB_PASSWORD_AUTH: run setup\.sh/);
+    writeFileSync(live, text.replace(/^DB_PASSWORD_STORAGE=.*$/m, 'DB_PASSWORD_STORAGE='), { mode: 0o600 });
+    assert.throws(() => stageRotatedDbEnv(live, staged), /Invalid DB_PASSWORD_STORAGE: run setup\.sh/);
     assert.deepEqual(readdirSync(scratch).sort(), ['compose.env', 'compose.env.rotating-db']);
     const cli = spawnSync(process.execPath, [new URL('../scripts/db-roles.mjs', import.meta.url).pathname, 'names'], { encoding: 'utf8' });
     assert.equal(cli.status, 0, cli.stderr);
     assert.deepEqual(cli.stdout.trimEnd().split('\n'), GENERATED_DB_NAMES);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('add-missing retires the old PGRST_DB_SCHEMAS default, keeps a custom list and leaves an unchanged file byte for byte', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-schemas-'));
+  try {
+    const file = join(scratch, 'compose.env');
+    const complete = Object.entries(env()).map(([name, value]) => `${name}=${value}\n`).join('');
+    const write = text => writeFileSync(file, text, { mode: 0o600 });
+    // The old default loses graphql_public, nothing else changes, and the file keeps its mode.
+    write(`A=1\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n${complete}B=2\n`);
+    assert.deepEqual(addMissingDbValuesToFile(file), [], 'the schema rewrite is not a generated value');
+    assert.equal(readFileSync(file, 'utf8'), `A=1\nPGRST_DB_SCHEMAS=public,storage\n${complete}B=2\n`);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // A list an operator wrote is theirs.
+    for (const custom of ['public,storage,graphql_public,extra', 'public,graphql_public,storage', 'public,storage,extra']) {
+      const text = `PGRST_DB_SCHEMAS=${custom}\n${complete}`;
+      write(text);
+      addMissingDbValuesToFile(file);
+      assert.equal(readFileSync(file, 'utf8'), text, custom);
+    }
+    // Nothing to change: the same inode is kept, so the file was not rewritten.
+    write(`PGRST_DB_SCHEMAS=public,storage\n${complete}`);
+    const before = statSync(file).ino;
+    addMissingDbValuesToFile(file);
+    assert.equal(statSync(file).ino, before);
+    assert.equal(readFileSync(file, 'utf8'), `PGRST_DB_SCHEMAS=public,storage\n${complete}`);
+    // Missing values are still added, and the old default is retired in the same pass.
+    write('PGRST_DB_SCHEMAS=public,storage,graphql_public\nPOSTGRES_PASSWORD=' + superuser + '\n');
+    const added = addMissingDbValuesToFile(file);
+    assert.ok(added.length > 0);
+    assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public,storage$/m);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

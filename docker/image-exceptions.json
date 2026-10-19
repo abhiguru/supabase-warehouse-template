@@ -17,7 +17,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Ubuntu 24.04 lists no fixed version for these rows (2026-10-18 scan: 128 HIGH and 3 CRITICAL, all Linux kernel advisories reported against the linux-libc-dev header package; containers run on the host kernel). The recipe upgrades the Ubuntu packages that had a fixed advisory (OpenSSL, GnuPG, PackageKit, sudo, linux-libc-dev) and leaves glibc and the locale data, which the database collations depend on, as the base has them. The database has no host port and sits on the database and admin networks only.",
+      "reason": "Ubuntu 24.04 lists no fixed version for these rows (2026-10-18 scan: 128 HIGH and 3 CRITICAL, all Linux kernel advisories reported against the linux-libc-dev header package; containers run on the host kernel). The recipe upgrades the Ubuntu packages that had a fixed advisory (OpenSSL, GnuPG, PackageKit, sudo, linux-libc-dev) and leaves glibc and the locale data, which the database collations depend on, as the base has them. The database has no host port and is on the database network only.",
       "reviewed": "2026-10-17",
       "expires": "2027-01-15"
     },
@@ -36,52 +36,8 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the supabase/edge-runtime v1.77.4 base with no fixed version (2026-10-18 scan after the full apt-get upgrade: 59 HIGH, and 1 CRITICAL in zlib1g that Debian marks will_not_fix). The recipe applies every Debian update. The container has no host port; outside requests reach it only through Kong.",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
-      "id": "studio-os-no-fix",
-      "recipe": "docker/studio/Dockerfile",
-      "class": "no-fix",
-      "statuses": [
-        "affected",
-        "fix_deferred",
-        "will_not_fix"
-      ],
-      "severities": [
-        "HIGH",
-        "CRITICAL"
-      ],
-      "pkgClass": "os-pkgs",
-      "owner": "abhiguru",
-      "reason": "Debian 12 packages of the supabase/studio 2026.10.12-sha-3699278 base with no fixed version (2026-10-18 scan: 246 HIGH, 4 CRITICAL in libsqlite3-0, linux-libc-dev and zlib1g). The recipe applies every Debian update. Studio is on the admin network only, reachable from postgres-meta and the database, not from the gateway or functions.",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
-      "id": "studio-app-awaiting-publisher",
-      "recipe": "docker/studio/Dockerfile",
-      "class": "advisory",
-      "advisories": [
-        "CVE-2026-102826",
-        "CVE-2026-102827",
-        "CVE-2026-102828",
-        "CVE-2026-102829",
-        "CVE-2026-94483"
-      ],
-      "packages": [
-        "simple-git",
-        "@simple-git/argv-parser",
-        "next"
-      ],
-      "severities": [
-        "HIGH",
-        "CRITICAL"
-      ],
-      "owner": "abhiguru",
-      "reason": "Fixed upstream (simple-git 4.0.1, @simple-git/argv-parser 2.0.1, next 16.3.8) but no Studio publisher tag ships them: the newest, 2026.10.12-sha-3699278, still has simple-git 3.36.0, @simple-git/argv-parser 1.1.1 and next 16.3.6. Replacing packages inside the publisher's prebuilt application is not safe. Studio is on the admin network only (2026-10-18 scan: 2 CRITICAL, 3 HIGH). Move to the first publisher tag with the fixes.",
-      "reviewed": "2026-10-17",
+      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime v1.77.4 image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through Kong.",
+      "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },
     {
@@ -100,43 +56,6 @@
       "owner": "abhiguru",
       "reason": "Debian 13.7 packages of the node:24-trixie-slim base and the font/library set with no fixed version (2026-10-18 scan, Trivy 0.76.0: 54 HIGH, 1 CRITICAL; the fixed-only pass is clean). Advisories: util-linux family (bsdutils, libblkid1, liblastlog2-2, libmount1, libsmartcols1, libuuid1, login, mount, util-linux) CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410; libxml2 CVE-2026-6653, CVE-2026-74860, CVE-2026-86138, CVE-2026-86139, CVE-2026-86140, CVE-2026-86142, CVE-2026-86143, CVE-2026-86144; libx11-6/libx11-data/libx11-xcb1 CVE-2026-88806; libxrender1 CVE-2026-88807; libsystemd0/libudev1 CVE-2026-16742; ncurses-base/ncurses-bin/libtinfo6 CVE-2025-69720; libacl1 CVE-2026-54369; perl-base CVE-2026-9538. The container has no host port, a read-only root, no capabilities and sits on the internal renderer network with the function runtime only. The Chrome for Testing binary is not seen by Trivy (docs/CONTAINER_SECURITY.md, PDF renderer).",
       "reviewed": "2026-10-18",
-      "expires": "2027-01-15"
-    },
-    {
-      "id": "meta-os-no-fix",
-      "recipe": "docker/postgres-meta/Dockerfile",
-      "class": "no-fix",
-      "statuses": [
-        "affected",
-        "fix_deferred",
-        "will_not_fix"
-      ],
-      "severities": [
-        "HIGH",
-        "CRITICAL"
-      ],
-      "pkgClass": "os-pkgs",
-      "owner": "abhiguru",
-      "reason": "Debian 12 packages of the supabase/postgres-meta v0.99.0 base with no fixed version (2026-10-18 scan: 58 HIGH, and 1 CRITICAL in zlib1g that Debian marks will_not_fix). The recipe applies every Debian update; postgres-meta is on the admin network only, with Studio and the database.",
-      "reviewed": "2026-10-17",
-      "expires": "2027-01-15"
-    },
-    {
-      "id": "realtime-os-no-fix",
-      "recipe": "docker/realtime/Dockerfile",
-      "class": "no-fix",
-      "statuses": [
-        "affected",
-        "fix_deferred",
-        "will_not_fix"
-      ],
-      "severities": [
-        "HIGH"
-      ],
-      "pkgClass": "os-pkgs",
-      "owner": "abhiguru",
-      "reason": "Debian 13 packages of the supabase/realtime v2.144.0 base with no fixed version (2026-10-19 scan of the rebuilt image: 74 HIGH, all os-pkgs; none with a listed fix, no CRITICAL). The recipe applies every Debian update. Realtime has no host port; outside clients reach it only through Kong.",
-      "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },
     {

@@ -35,8 +35,8 @@ test('operator state is private, outside checkout, stable on rerun, and has a pu
     const env = readEnv(envPath);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
     // Only secrets a service reads are generated; the template carries no key nothing consumes.
-    for (const unused of ['LOGFLARE_API_KEY', 'LOGFLARE_PUBLIC_ACCESS_TOKEN', 'DOCKER_SOCKET_LOCATION', 'ENABLE_PROM_METRICS', 'GOTRUE_EXTERNAL_GOOGLE_ENABLED']) assert.equal(unused in env, false, unused);
-    for (const secret of ['POSTGRES_PASSWORD', 'DASHBOARD_PASSWORD', 'CUPS_ADMIN_PASSWORD']) assert.match(env[secret], /^[0-9a-f]{64}$/, secret);
+    for (const unused of ['LOGFLARE_API_KEY', 'LOGFLARE_PUBLIC_ACCESS_TOKEN', 'DOCKER_SOCKET_LOCATION', 'ENABLE_PROM_METRICS', 'GOTRUE_EXTERNAL_GOOGLE_ENABLED', 'DASHBOARD_USERNAME', 'DASHBOARD_PASSWORD']) assert.equal(unused in env, false, unused);
+    for (const secret of ['POSTGRES_PASSWORD', 'CUPS_ADMIN_PASSWORD']) assert.match(env[secret], /^[0-9a-f]{64}$/, secret);
     // The backup key is created with the state, private, and is not a compose variable.
     const keyPath = join(stateDir, 'config/backup.key');
     assert.match(readFileSync(keyPath, 'utf8'), /^[0-9a-f]{64}\n$/);
@@ -113,7 +113,7 @@ test('rerun with a changed provider file replaces only the provider lines atomic
     assert.equal(updated.created, false);
     assert.equal(updated.providerUpdated, true);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
     const after = readFileSync(envPath, 'utf8');
     const afterEnv = readEnv(envPath);
     assert.equal(afterEnv.MSG91_AUTH_KEY, 'second-provider-key');
@@ -175,7 +175,7 @@ test('central sign-in settings: off by default, set on a fresh setup or a rerun,
     assert.equal(readEnv(envPath).CENTRAL_ISSUER, issuer);
     assert.equal(readEnv(envPath).CENTRAL_JWKS_URL, jwks);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
     assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, base.apiUrl);
 
     // The same values again, or no central option at all: byte-stable.
@@ -441,7 +441,7 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-db-roles-'));
   const root = join(scratch, 'checkout');
   const providerEnv = join(scratch, 'provider.env');
-  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_AUTH', 'DB_PASSWORD_POOLER', 'DB_PASSWORD_MONITORING'];
+  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER'];
   const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
   try {
     mkdirSync(root);
@@ -451,15 +451,12 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     const envPath = join(stateDir, 'config/compose.env');
     const options = { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
 
-    // Fresh: every login has its own 64-hex value, none equals the superuser password, and the
-    // Realtime key replaces the fixed text of earlier releases.
+    // Fresh: every login has its own 64-hex value, none equals the superuser password.
     const fresh = configure(root, options);
     assert.deepEqual(fresh.dbValuesAdded, []);
     const env = readEnv(envPath);
     for (const name of names) assert.match(env[name], /^[0-9a-f]{64}$/, name);
     assert.equal(new Set([env.POSTGRES_PASSWORD, ...names.map(name => env[name])]).size, names.length + 1);
-    assert.match(env.REALTIME_DB_ENC_KEY, /^[A-Za-z0-9_-]{16}$/);
-    assert.notEqual(env.REALTIME_DB_ENC_KEY, 'supabaserealtime');
     assert.doesNotMatch(readFileSync(envPath, 'utf8'), /generated-by-setup/);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
 
@@ -469,22 +466,22 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     assert.deepEqual(configure(root, { stateDir }).dbValuesAdded, []);
     assert.equal(readFileSync(envPath, 'utf8'), current);
 
-    // A state written by the previous release has none of the six lines. The next run appends
+    // A state written by the previous release has none of the four lines. The next run appends
     // them, changes no other line, keeps the file private and leaves no temporary file.
-    const previous = current.replace(/^(?:DB_PASSWORD_[A-Z]+|REALTIME_DB_ENC_KEY)=.*\n/gm, '');
-    assert.doesNotMatch(previous, /^(?:DB_PASSWORD_|REALTIME_DB_ENC_KEY)/m);
+    const previous = current.replace(/^DB_PASSWORD_[A-Z]+=.*\n/gm, '');
+    assert.doesNotMatch(previous, /^DB_PASSWORD_/m);
     writeFileSync(envPath, previous, { mode: 0o600 });
     assert.throws(() => validateOperatorEnv(readEnv(envPath), stateDir), /Invalid DB_PASSWORD_AUTHENTICATOR: run setup\.sh/);
     const upgraded = configure(root, { stateDir });
-    assert.deepEqual(upgraded.dbValuesAdded, [...names, 'REALTIME_DB_ENC_KEY']);
+    assert.deepEqual(upgraded.dbValuesAdded, names);
     const after = readFileSync(envPath, 'utf8');
     assert.ok(after.startsWith(previous), 'every earlier line is kept in place');
-    assert.deepEqual(after.slice(previous.length).trimEnd().split('\n').map(line => line.split('=')[0]), [...names, 'REALTIME_DB_ENC_KEY']);
+    assert.deepEqual(after.slice(previous.length).trimEnd().split('\n').map(line => line.split('=')[0]), names);
     const upgradedEnv = readEnv(envPath);
     for (const name of names) assert.notEqual(upgradedEnv[name], env[name], `${name} is a new value, not the fresh state's`);
     assert.equal(upgradedEnv.POSTGRES_PASSWORD, env.POSTGRES_PASSWORD);
     assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env', 'monitoring']);
+    assert.deepEqual(readdirSync(join(stateDir, 'config')).sort(), ['backup.key', 'compose.env']);
     assert.equal(validateOperatorEnv(upgradedEnv, stateDir).origin, options.apiUrl);
     // ...and then it is stable, also through the CLI, which says what it added only once.
     assert.match(cli('--state-dir', stateDir).stdout, /^Preserved existing operator state unchanged\.\n$/);
@@ -493,13 +490,23 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     // A value that exists is never replaced, even a shorter one an operator chose; an empty
     // line counts as missing and is filled where it is.
     const chosen = 'operator-chosen-value-0123456789abcdef';
-    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_AUTH=.*$/m, 'DB_PASSWORD_AUTH='), { mode: 0o600 });
+    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_POOLER=.*$/m, 'DB_PASSWORD_POOLER='), { mode: 0o600 });
     const filled = cli('--state-dir', stateDir);
     assert.equal(filled.status, 0, filled.stderr);
-    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_AUTH to the existing operator state/);
+    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_POOLER to the existing operator state/);
     assert.equal(readEnv(envPath).DB_PASSWORD_STORAGE, chosen);
-    assert.match(readEnv(envPath).DB_PASSWORD_AUTH, /^[0-9a-f]{64}$/);
+    assert.match(readEnv(envPath).DB_PASSWORD_POOLER, /^[0-9a-f]{64}$/);
     assert.equal(readFileSync(envPath, 'utf8').split('\n').length, after.split('\n').length);
+
+    // A state written before the Auth service was removed still has a DB_PASSWORD_AUTH line. It is an extra key:
+    // nothing reads it, nothing fails on it, and setup leaves it as it is.
+    const legacy = readFileSync(envPath, 'utf8') + `DB_PASSWORD_AUTH=${'9'.repeat(64)}\n`;
+    writeFileSync(envPath, legacy, { mode: 0o600 });
+    const kept = cli('--state-dir', stateDir);
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.match(kept.stdout, /^Preserved existing operator state unchanged\.\n$/);
+    assert.equal(readFileSync(envPath, 'utf8'), legacy);
+    assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, options.apiUrl);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -738,7 +745,7 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('a rerun whose monitoring render refuses leaves the gateway port unchanged, and the rerun after the fix reports the change', () => {
+test('a rerun whose webhook placement refuses leaves the gateway port unchanged, and the rerun after the fix reports the change', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-last-'));
   const root = join(scratch, 'checkout');
   const providerEnv = join(scratch, 'provider.env');
@@ -750,17 +757,16 @@ test('a rerun whose monitoring render refuses leaves the gateway port unchanged,
     const state = join(scratch, 'state');
     configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, ...hooks });
     const envPath = join(state, 'config/compose.env');
-    const prometheus = join(state, 'config/monitoring/prometheus.yml');
-    const original = readFileSync(prometheus);
-    rmSync(prometheus);
-    mkdirSync(prometheus);
+    const hook = join(state, 'config/slack-webhook-url');
+    const webhookFile = join(scratch, 'webhook.txt');
+    writeFileSync(webhookFile, 'https://hooks.slack.com/services/' + 'T0000000/B0000000/fictionalfictionalfictional\n', { mode: 0o600 });
+    mkdirSync(hook);
     const before = readFileSync(envPath, 'utf8');
     assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18000');
-    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', ...hooks }), /must be a regular file/);
+    assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', alertWebhookFile: webhookFile, ...hooks }), /must be a regular file/);
     assert.equal(readFileSync(envPath, 'utf8'), before, 'the port line is the last write, so the refusal changed nothing');
-    rmSync(prometheus, { recursive: true });
-    writeFileSync(prometheus, original, { mode: 0o644 });
-    const result = configure(root, { stateDir: state, gatewayPort: '18003', ...hooks });
+    rmSync(hook, { recursive: true });
+    const result = configure(root, { stateDir: state, gatewayPort: '18003', alertWebhookFile: webhookFile, ...hooks });
     // The CLI prints the tunnel reminder from exactly this flag.
     assert.equal(result.gatewayPortChanged, true);
     assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18003');
@@ -788,4 +794,44 @@ test('the real port test refuses a loopback port that is in use and accepts a fr
     assert.equal(configure(root, { ...base, stateDir: join(scratch, 'free'), gatewayPort: String(busy) }).created, true);
     assert.equal(readEnv(join(scratch, 'free/config/compose.env')).KONG_HTTP_PORT, String(busy));
   } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a rerun drops the GraphQL schema from PGRST_DB_SCHEMAS (migration 103) when it still holds the old default', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-schemas-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const stateDir = join(scratch, 'state');
+    const envPath = join(stateDir, 'config/compose.env');
+    const base = { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
+    // A new setup starts from the template, which no longer names the GraphQL schema.
+    assert.equal(configure(root, base).created, true);
+    assert.equal(readEnv(envPath).PGRST_DB_SCHEMAS, 'public,storage');
+    assert.equal(configure(root, { stateDir }).restSchemasUpdated, false);
+
+    // A state made before migration 103 holds the old default: only that line changes, once.
+    const fresh = readFileSync(envPath, 'utf8');
+    const old = fresh.replace('PGRST_DB_SCHEMAS=public,storage\n', 'PGRST_DB_SCHEMAS=public,storage,graphql_public\n');
+    assert.notEqual(old, fresh);
+    writeFileSync(envPath, old, { mode: 0o600 });
+    const first = configure(root, { stateDir });
+    assert.equal(first.restSchemasUpdated, true);
+    assert.equal(readFileSync(envPath, 'utf8'), fresh);
+    assert.equal(statSync(envPath).mode & 0o777, 0o600);
+    assert.equal(configure(root, { stateDir }).restSchemasUpdated, false);
+    assert.equal(readFileSync(envPath, 'utf8'), fresh);
+
+    // A list the operator changed is theirs: it is not touched, even where it names graphql_public.
+    for (const custom of ['public,storage,graphql_public,extra', 'public,graphql_public,storage', 'public,storage,extra']) {
+      const changed = fresh.replace('PGRST_DB_SCHEMAS=public,storage\n', `PGRST_DB_SCHEMAS=${custom}\n`);
+      writeFileSync(envPath, changed, { mode: 0o600 });
+      const kept = configure(root, { stateDir });
+      assert.equal(kept.restSchemasUpdated, false, custom);
+      assert.equal(kept.graphqlSchemaKept, custom.includes('graphql_public'), `the operator is warned only while the list names graphql_public: ${custom}`);
+      assert.equal(readFileSync(envPath, 'utf8'), changed, custom);
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

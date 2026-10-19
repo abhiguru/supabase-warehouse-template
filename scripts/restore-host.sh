@@ -17,14 +17,14 @@
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. --allow-unsigned is only for a
-# backup written before format v5, or when the backup key is lost (then
-# --backup-key is left out and nothing proves the backup genuine); a v5 backup
+# lost backup key (then --backup-key is left out and nothing proves the backup
+# genuine). Only backup format v5 is accepted; an older format is refused. A v5 backup
 # whose signature file is missing is refused while --backup-key is given. Nothing
 # outside the new state is changed; the source backup is only read.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)' >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
 state='' confirm=false source='' keyfile='' allow_unsigned=false
@@ -49,7 +49,7 @@ if [[ -n "$keyfile" ]]; then
   backup_key_load "$keyfile" || exit 1
   export WAREHOUSE_BACKUP_KEY_FILE="$(realpath -e -- "$keyfile")"
 elif [[ "$allow_unsigned" != true ]]; then
-  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. --allow-unsigned is only for a backup written before format v5, or when the backup key is lost: the backup is then used WITHOUT proof that it is genuine.'
+  die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. --allow-unsigned is only for when the backup key is lost: the backup is then used WITHOUT proof that it is genuine.'
 fi
 
 # 1. The new state: an absolute, symlink-free path outside the checkout that is
@@ -97,7 +97,7 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   elif [[ -n "$BACKUP_KEY" && "$file" == *.enc ]]; then
     die "Refusing: the encrypted archive $file has no signature file ($file.hmac); it cannot be trusted."
   elif [[ "$allow_unsigned" != true ]]; then
-    die "Refusing: the archive $file has no signature file ($file.hmac), so it cannot be checked before it is unpacked. Copy the .hmac file from the drive together with the archive. An archive written before format v5, or one you packed yourself, has none: for that pass --allow-unsigned as well (a signed backup inside it is still checked against the key)."
+    die "Refusing: the archive $file has no signature file ($file.hmac), so it cannot be checked before it is unpacked. Copy the .hmac file from the drive together with the archive. An archive you packed yourself has none: for that pass --allow-unsigned as well (a signed backup inside it is still checked against the key)."
   fi
   scratch="$(mktemp -d -- "$parent/.restore-host.XXXXXX")"
   if [[ "$file" == *.enc ]]; then
@@ -120,10 +120,11 @@ fi
 for file in metadata.txt compose.env instance.json integrity.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || die "Incomplete backup: missing $file"
 done
+# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
+format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
+[[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; die "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)."; }
 # Signature and checksums first: compose.env from the backup becomes this host's configuration.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null)"
-[[ "$format" == warehouse-backup-v5 || ( "$format" == warehouse-backup-v4 && "$allow_unsigned" == true ) ]] || die "Refusing: restore-host requires a warehouse-backup-v5 backup (or an unsigned warehouse-backup-v4 with --allow-unsigned); this one is '${format:-unknown}'."
 env_get() { sed -n "s/^$1=//p" "$backup/compose.env" | head -n 1; }
 project="$(env_get WAREHOUSE_PROJECT_NAME)"
 [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || die 'The backup configuration has no valid WAREHOUSE_PROJECT_NAME.'
@@ -148,8 +149,7 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 # those services mount, <project>_db-config, holds the previous cluster's custom
 # configuration and pgsodium root key, is not part of a backup, and would
 # otherwise be reused silently by the restored database. Other volumes of the
-# project (metric history of the monitoring profile, the print
-# spool) hold nothing a restore replaces, so they do not stop it.
+# project (the print spool, the sensor data) hold nothing a restore replaces, so they do not stop it.
 # tests/restore-host.test.mjs compares this list with the Compose files.
 STATE_VOLUMES=(db-config)
 blocking=() kept=()
@@ -162,7 +162,7 @@ done <<<"$present"
   docker volume rm ${blocking[*]}"
 if ((${#kept[@]})); then
   list="$(printf '%s, ' "${kept[@]}")"
-  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (monitoring history, print spool) and are reused as they are."
+  echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (print spool, sensor data) and are reused as they are."
 fi
 
 # 5. Build the state beside its final path and rename it into place, as setup does.
@@ -216,11 +216,6 @@ node "$ROOT/scripts/db-roles.mjs" add-missing "$stage/config/compose.env"
 [[ ! -d "$state" ]] || rmdir -- "$state"
 mv -T -- "$stage" "$state"
 trap cleanup EXIT
-# The monitoring files (config/monitoring, metrics, data/alertmanager) are not in a backup: render them for the
-# restored project with the renderer setup uses, so the monitoring profile can start. The alert webhook address
-# is a secret that is deliberately not in a backup; see the last "Next" line.
-node "$ROOT/scripts/monitoring-config.mjs" "$state" "$project" || die "Could not render the monitoring files of $state."
-
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
 if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
 # 6. The database and storage replay is the in-place restore, unchanged.
@@ -274,6 +269,7 @@ fi
 step "Compare with the fingerprint taken at backup time, if you have one:
      (A fingerprint recorded before the release that added orders, order lines, order revisions and
      payments lacks those four lines: the diff will show them added and not be empty; compare the rest.)
+     (A fingerprint recorded before this release sorted with the database collation; its sha256 values can differ for identical data. Compare the rows= counts, and take a new fingerprint after upgrading.)
        WAREHOUSE_STATE_DIR=$state bash scripts/data-fingerprint.sh | diff FINGERPRINT_FILE -"
 step "Set up the USB backup drive again: sudo bash scripts/backup-usb.sh setup --state $state --enroll /dev/sdX1"
 step 'If the backup drive may have been exposed: bash rotate-keys.sh --yes, rotate the MSG91 key and the
@@ -287,6 +283,8 @@ if [[ "$central_missing" == true ]]; then
      The central sign-in step above reruns setup as well: add --alert-webhook-file /absolute/path/to/webhook-url-file
      to that same command, so it is one rerun and not two."
 fi
-step "$alert_step The monitoring profile
-     starts without it: bash scripts/compose.sh --profile monitoring up -d"
+step "$alert_step"
+step "Install the monitoring checker (checks every 5 minutes, Slack alerts, the daily backup and retention; it needs sudo,
+     which this script never uses). It also runs without a Slack webhook:
+       sudo bash scripts/watch-timer.sh install --state $state"
 echo "Use export WAREHOUSE_STATE_DIR=$state for every operator command on this host."

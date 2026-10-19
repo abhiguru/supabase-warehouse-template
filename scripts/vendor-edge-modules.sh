@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuilds functions/vendor: the two libraries the edge functions load, each as
+# Rebuilds functions/vendor: the library the edge functions load (jose), as
 # one self-contained file, from the exact npm packages that
 # scripts/edge-vendor/package-lock.json names. The functions import these files
 # by relative path, so the edge runtime downloads nothing when a worker starts.
@@ -23,12 +23,11 @@ build() { # package, output name
     --legal-comments=inline --log-level=warning --outfile="$out/$2"
 }
 build jose jose.mjs
-build @supabase/supabase-js supabase-js.mjs
-# The licence of every package the two files may contain (the production tree).
+# The licence of every package the file may contain (the production tree).
 node - <<'NODE' > "$out/LICENSES.txt"
 const { readFileSync, readdirSync } = require('node:fs');
 const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')).packages;
-const out = ['Licences of the npm packages built into jose.mjs and supabase-js.mjs.',
+const out = ['Licences of the npm packages built into jose.mjs.',
   'Built by scripts/vendor-edge-modules.sh from scripts/edge-vendor/package-lock.json.', ''];
 for (const path of Object.keys(lock).filter(key => key && !lock[key].dev).sort()) {
   const name = path.replace(/^.*node_modules\//, '');
@@ -38,5 +37,5 @@ for (const path of Object.keys(lock).filter(key => key && !lock[key].dev).sort()
 }
 process.stdout.write(out.join('\n'));
 NODE
-(cd "$out" && sha256sum LICENSES.txt jose.mjs supabase-js.mjs > SHA256SUMS)
-echo "Wrote $out/jose.mjs, supabase-js.mjs, LICENSES.txt and SHA256SUMS."
+(cd "$out" && sha256sum LICENSES.txt jose.mjs > SHA256SUMS)
+echo "Wrote $out/jose.mjs, LICENSES.txt and SHA256SUMS."

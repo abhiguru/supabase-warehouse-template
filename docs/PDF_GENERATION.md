@@ -74,7 +74,6 @@ with approved test accounts and records in the isolated pilot. Confirm the
 warehouse name and customer access restrictions. Historical demo smoke
 commands do not apply to the current checkout.
 
-The authenticated `generate-sample-pdf` endpoint remains a staff-only renderer
-example. Printer-specific/preprinted endpoints are separate incomplete optional
+Printer-specific/preprinted endpoints are separate incomplete optional
 integrations; see [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md).
 > The demo setup command below applies only to the immutable `v0.2.2-demo` tag. Current checkout accepts `setup.sh --operator` only.

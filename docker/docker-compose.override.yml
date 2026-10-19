@@ -1,4 +1,4 @@
-# Production tuning & monitoring profiles
+# Production tuning (log limits, resource limits, database settings)
 # This file is automatically loaded by Docker Compose alongside docker-compose.yml
 
 # Every service keeps at most three 10 MB log files; without this a service
@@ -13,11 +13,13 @@ services:
   db:
     logging: *default-logging
     # PostgreSQL performance tuning
+    # pg_cron stays preloaded only because locked migration 91 creates the extension on a fresh install;
+    # migration 106 drops it again. The squashed baseline removes both.
     command: >-
       postgres
       -c max_connections=100
       -c listen_addresses=*
-      -c shared_preload_libraries=pg_stat_statements,pg_cron,pg_net
+      -c shared_preload_libraries=pg_stat_statements,pg_cron
       -c pg_stat_statements.track=all
       -c cron.database_name=postgres
       -c cron.log_statement=off
@@ -30,7 +32,7 @@ services:
       -c log_min_duration_statement=-1
       -c log_lock_waits=on
       -c log_temp_files=0
-      -c wal_level=logical
+      -c wal_level=replica
       -c archive_mode=off
       -c shared_buffers=128MB
       -c effective_cache_size=512MB
@@ -51,17 +53,6 @@ services:
           cpus: '0.5'
           memory: 256M
 
-  studio:
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  auth:
-    logging: *default-logging
-
   cups:
     logging: *default-logging
 
@@ -72,30 +63,6 @@ services:
         limits:
           cpus: '0.25'
           memory: 128M
-
-  meta:
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 256M
-
-  imgproxy:
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  realtime:
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
 
   pdf-renderer:
     logging: *default-logging
@@ -134,10 +101,6 @@ services:
 
   kong:
     logging: *default-logging
-    environment:
-      # Added prometheus plugin for metrics and rate-limiting
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
-      KONG_STATUS_LISTEN: "0.0.0.0:8100"
     deploy:
       resources:
         limits:
@@ -182,174 +145,3 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-
-  # ============ MONITORING STACK ============
-  # Start with: docker compose --profile monitoring up -d
-
-  prometheus:
-    build:
-      context: ./prometheus
-    restart: unless-stopped
-    logging: *default-logging
-    profiles: ["monitoring"]
-    # Changes with the rendered configuration and the alert rules, so that `compose up` replaces a
-    # running Prometheus that would otherwise keep the old files (scripts/compose.sh).
-    labels:
-      com.warehouse.config-sha256: ${WAREHOUSE_PROMETHEUS_CONFIG_SHA256:-}
-    volumes:
-      # Rendered for this installation by setup.sh (docker/prometheus.yml is its template). A missing file
-      # stops the start instead of Docker creating a directory there: run setup.sh again.
-      - type: bind
-        source: ${WAREHOUSE_MONITORING_PATH:?Run through scripts/compose.sh}/prometheus.yml
-        target: /etc/prometheus/prometheus.yml
-        read_only: true
-        bind:
-          create_host_path: false
-      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.retention.time=15d'
-      - '--storage.tsdb.retention.size=500MB'
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  alertmanager:
-    build:
-      context: ./alertmanager
-    restart: unless-stopped
-    logging: *default-logging
-    profiles: ["monitoring"]
-    labels:
-      com.warehouse.config-sha256: ${WAREHOUSE_ALERTMANAGER_CONFIG_SHA256:-}
-    # The Slack webhook URL (setup.sh --alert-webhook-file, or typed at the setup prompt) is a secret kept at mode 0600 in the
-    # state, so Alertmanager runs as the installing user, as imgproxy does for the storage directory. Its
-    # notification log and silences go to <state>/data/alertmanager (0700, that user's), which survives a
-    # replacement of the container; the image's own /alertmanager volume belongs to another user.
-    user: "${WAREHOUSE_HOST_UID:-999}:${WAREHOUSE_HOST_GID:-999}"
-    command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
-    volumes:
-      # alertmanager.yml, and webhook-url when a Slack webhook was given: rendered by setup.sh.
-      - type: bind
-        source: ${WAREHOUSE_MONITORING_PATH:?Run through scripts/compose.sh}/alertmanager
-        target: /etc/alertmanager
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${WAREHOUSE_ALERTMANAGER_PATH:?Run through scripts/compose.sh}
-        target: /alertmanager
-        bind:
-          create_host_path: false
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
-
-  postgres-exporter:
-    build:
-      context: ./postgres-exporter
-    restart: unless-stopped
-    logging: *default-logging
-    profiles: ["monitoring"]
-    networks: [default, database]
-    environment:
-      # warehouse_monitoring: pg_monitor and nothing else (migration 94).
-      DATA_SOURCE_NAME: "postgresql://warehouse_monitoring:${DB_PASSWORD_MONITORING:?Run setup.sh to generate the per-role database passwords}@db:5432/postgres?sslmode=disable"
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9187/metrics"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
-
-  node-exporter:
-    build:
-      context: ./node-exporter
-    restart: unless-stopped
-    logging: *default-logging
-    profiles: ["monitoring"]
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-      # The backup scripts write warehouse_backup.prom here (scripts/backup-metrics.sh); setup.sh creates it.
-      - type: bind
-        source: ${WAREHOUSE_METRICS_PATH:?Run through scripts/compose.sh}
-        target: /var/lib/node_exporter/textfile
-        read_only: true
-        bind:
-          create_host_path: false
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--path.rootfs=/rootfs'
-      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
-      - '--collector.textfile.directory=/var/lib/node_exporter/textfile'
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
-
-  cadvisor:
-    build:
-      context: ./cadvisor
-    restart: unless-stopped
-    logging: *default-logging
-    profiles: ["monitoring"]
-    command:
-      - --docker_only=true
-      - --enable_metrics=cpu,memory,oom_event
-      - --housekeeping_interval=10s
-    privileged: true
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 256M
-
-volumes:
-  prometheus_data:

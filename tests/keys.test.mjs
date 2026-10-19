@@ -38,9 +38,9 @@ test('generateSigningKeys yields a fresh 96-hex secret and keys that verify agai
 });
 
 test('replaceEnvLines rewrites whole matching lines and nothing else', () => {
-  const text = '# header\nJWT_SECRET=old # comment\nGOTRUE_JWT_SECRET=keep\nANON_KEY=old-anon\n\nSITE_URL=https://app.example.com\nSERVICE_ROLE_KEY=old-service\n';
+  const text = '# header\nJWT_SECRET=old # comment\nOTHER_SETTING=keep\nANON_KEY=old-anon\n\nSITE_URL=https://app.example.com\nSERVICE_ROLE_KEY=old-service\n';
   const updated = replaceEnvLines(text, { JWT_SECRET: 'new', SERVICE_ROLE_KEY: 'new-service' });
-  assert.equal(updated, '# header\nJWT_SECRET=new\nGOTRUE_JWT_SECRET=keep\nANON_KEY=old-anon\n\nSITE_URL=https://app.example.com\nSERVICE_ROLE_KEY=new-service\n');
+  assert.equal(updated, '# header\nJWT_SECRET=new\nOTHER_SETTING=keep\nANON_KEY=old-anon\n\nSITE_URL=https://app.example.com\nSERVICE_ROLE_KEY=new-service\n');
   assert.equal(replaceEnvLines(text, {}), text);
   assert.equal(replaceEnvLines(text, { ANON_KEY: 'old-anon' }), text.replace('ANON_KEY=old-anon', 'ANON_KEY=old-anon'));
   assert.throws(() => replaceEnvLines(text, { MISSING: 'x' }), /Missing template variable: MISSING/);

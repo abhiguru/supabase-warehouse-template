@@ -13,81 +13,9 @@ consumers:
       - key: ${SUPABASE_SERVICE_KEY}
 
 ###
-### Access Control List
-###
-acls:
-  - consumer: anon
-    group: anon
-  - consumer: service_role
-    group: admin
-
-###
-### Global plugins
-###
-plugins:
-  # Request counts by status code and latency histograms per service and
-  # route, read by the monitoring profile from the status listener (:8100).
-  # Kong 3 exports neither unless the plugin is enabled and both switches are
-  # on; docker/alert-rules.yml uses kong_http_requests_total and
-  # kong_request_latency_ms_bucket. No per-consumer label: two consumers only.
-  - name: prometheus
-    config:
-      status_code_metrics: true
-      latency_metrics: true
-      per_consumer: false
-
-###
 ### API Routes
 ###
 services:
-  ## GoTrue Auth routes - DISABLED
-  ## To re-enable: uncomment these routes AND remove the disabled profile from the auth service
-  # - name: auth-v1-open
-  #   url: http://auth:9999/verify
-  #   routes:
-  #     - name: auth-v1-open
-  #       strip_path: true
-  #       paths:
-  #         - /auth/v1/verify
-  #   plugins:
-  #     - name: cors
-  # - name: auth-v1-open-callback
-  #   url: http://auth:9999/callback
-  #   routes:
-  #     - name: auth-v1-open-callback
-  #       strip_path: true
-  #       paths:
-  #         - /auth/v1/callback
-  #   plugins:
-  #     - name: cors
-  # - name: auth-v1-open-authorize
-  #   url: http://auth:9999/authorize
-  #   routes:
-  #     - name: auth-v1-open-authorize
-  #       strip_path: true
-  #       paths:
-  #         - /auth/v1/authorize
-  #   plugins:
-  #     - name: cors
-  # - name: auth-v1
-  #   url: http://auth:9999/
-  #   routes:
-  #     - name: auth-v1-all
-  #       strip_path: true
-  #       paths:
-  #         - /auth/v1/
-  #   plugins:
-  #     - name: cors
-  #     - name: key-auth
-  #       config:
-  #         hide_credentials: true
-  #     - name: acl
-  #       config:
-  #         hide_groups_header: true
-  #         allow:
-  #           - admin
-  #           - anon
-
   ## Secure REST routes
   - name: rest-v1
     _comment: 'PostgREST: /rest/v1/* -> http://rest:3000/*'
@@ -121,138 +49,19 @@ services:
           # per-second brake (one address may use the whole minute's budget
           # in a burst). There is no hourly window on purpose: a busy hour
           # would use it up and every phone would be refused until it ended.
-          # See docs/CONTAINER_SECURITY.md, REST request limit.
+          # Timed re-reads (2026-10-19) were counted against it: an open order
+          # screen asks once every 15 s (4 a minute), a sensor screen once
+          # every 60 s (1 a minute). 100 phones all on an order screen use 400
+          # of the 1800 (22%), leaving 14 a minute for each phone's own work;
+          # 300 phones would use 1200 and leave 600, so a facility of that
+          # size raises this number. See docs/CONTAINER_SECURITY.md, REST
+          # request limit.
           minute: 1800
           policy: local
           fault_tolerant: true
           # Client address from CF-Connecting-IP (KONG_REAL_IP_HEADER), so one
           # abusive client cannot exhaust the budget shared by every phone.
           limit_by: ip
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-
-  ## Secure GraphQL routes
-  - name: graphql-v1
-    _comment: 'PostgREST: /graphql/v1/* -> http://rest:3000/rpc/graphql'
-    url: http://rest:3000/rpc/graphql
-    routes:
-      - name: graphql-v1-all
-        strip_path: true
-        paths:
-          - /graphql/v1
-    plugins:
-      - name: cors
-        config:
-          origins: [${CORS_ALLOWED_ORIGIN}]
-          methods: [GET, POST, OPTIONS]
-          headers: [Authorization, Content-Type, X-Client-Info, apikey]
-          credentials: true
-          max_age: 86400
-      - name: request-size-limiting
-        config:
-          allowed_payload_size: 2
-      - name: key-auth
-        config:
-          hide_credentials: true
-      - name: rate-limiting
-        config:
-          minute: 300
-          hour: 6000
-          policy: local
-          fault_tolerant: true
-          limit_by: ip
-      - name: request-transformer
-        config:
-          add:
-            headers:
-              - Content-Profile:graphql_public
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-
-  ## Secure Realtime routes
-  - name: realtime-v1-ws
-    _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime-dev:4000/socket
-    protocol: ws
-    routes:
-      - name: realtime-v1-ws
-        strip_path: true
-        paths:
-          - /realtime/v1/
-    plugins:
-      - name: cors
-        config:
-          origins: [${CORS_ALLOWED_ORIGIN}]
-          methods: [GET, OPTIONS]
-          headers: [Authorization, Content-Type, X-Client-Info, apikey]
-          credentials: true
-          max_age: 86400
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: rate-limiting
-        config:
-          # Counts connection attempts, failed ones included: the limit applies
-          # to the upgrade request, not to messages on an open socket. All
-          # phones of a facility share one address, so the number covers a
-          # whole facility reconnecting at once (100 phones x 2 sockets x 8
-          # attempts in the first minute = 1600). There is no hourly window on
-          # purpose: the retries of an outage would use it up and lock the
-          # facility out afterwards. See docs/CONTAINER_SECURITY.md.
-          minute: 1800
-          policy: local
-          fault_tolerant: true
-          limit_by: ip
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
-  - name: realtime-v1-rest
-    _comment: 'Realtime: /realtime/v1/api/* -> http://realtime:4000/api/*'
-    url: http://realtime-dev:4000/api
-    protocol: http
-    routes:
-      - name: realtime-v1-rest
-        strip_path: true
-        paths:
-          - /realtime/v1/api
-    plugins:
-      - name: cors
-        config:
-          origins: [${CORS_ALLOWED_ORIGIN}]
-          methods: [GET, POST, OPTIONS]
-          headers: [Authorization, Content-Type, X-Client-Info, apikey]
-          credentials: true
-          max_age: 86400
-      - name: request-size-limiting
-        config:
-          allowed_payload_size: 2
-      - name: key-auth
-        config:
-          hide_credentials: false
-      - name: rate-limiting
-        config:
-          minute: 300
-          hour: 6000
-          policy: local
-          fault_tolerant: true
-          limit_by: ip
-      - name: acl
-        config:
-          hide_groups_header: true
-          allow:
-            - admin
-            - anon
 
   ## Storage routes (storage manages its own auth)
   - name: storage-v1

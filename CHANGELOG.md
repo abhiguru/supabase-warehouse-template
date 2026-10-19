@@ -1,5 +1,355 @@
 # Changelog
 
+## Unreleased: session tokens are signed without pgjwt (migration 108); fingerprint sorts with the C collation; Storage names its superuser
+
+First steps towards the Postgres 17 move; each works on the current database image.
+
+- **Migration 108.** `warehouse_security.jwt_sign_hs256(json, text)` signs HS256 tokens with pgcrypto and returns exactly the
+  bytes pgjwt's `extensions.sign` returned. `warehouse_security.sign_access_token` uses it, and the extension `pgjwt` is dropped.
+  No API role can execute the new function. Existing sessions are not affected (tokens are verified with `JWT_SECRET`, and the
+  bytes are identical). A test compares the two signers on 27 payload and secret pairs (the jwt.io example, base64 with `+`, `/`
+  and `=`, a long payload, Gujarati text, a Unicode secret) before the migration runs, and another checks afterwards that pgjwt is
+  gone and a session token verifies.
+- **`scripts/data-fingerprint.sh`** sorts every row set and name with `COLLATE "C"`, so the fingerprint no longer depends on
+  the database collation (a glibc or major-version change). The hashes can differ from fingerprints taken before this change,
+  once, when rows sort differently under the database default and under C. New option `--all` also fingerprints every other
+  table of the schemas `public`, `warehouse_security` and `warehouse_maintenance`; use it only on a quiet system.
+- **Storage** is told its database superuser (`DB_SUPER_USER: supabase_storage_admin`) and not to install roles
+  (`DB_INSTALL_ROLES: "false"`). Nothing changes on the current image; a cluster without a `postgres` role needs it.
+
+## Unreleased: one table guards every removed component
+
+`tests/removed-components.test.mjs` replaces the seven `no-<component>` tests (Gotenberg, Grafana, wal-g, GoTrue, Studio,
+imgproxy, monitoring stack) with one table of paths, name patterns and allow-lists, and checks that every allow-listed
+file still exists. The imgproxy scan now also covers the migrations, and `setup.sh` and `start.sh` are scanned (their
+`--remove-orphans` comment no longer lists the removed services). Three CHANGELOG heading pins are dropped, and the
+GoTrue scan now covers every migration except 104. Fixtures name live
+services only, and the migration-103 vault probe no longer looks like a key to gitleaks. No operator action.
+
+## Unreleased: the monitoring stack is replaced by a checker program (migration 107)
+
+Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters (five containers, all rebuilt from Go source) are
+removed. `scripts/watch.mjs`, run every 5 minutes by a systemd timer, does their job: it checks the host, the database,
+the containers, the gateway and the backups, posts to the facility's Slack channel, sends the daily "Monitoring is alive"
+message, and once a day makes and verifies a backup, prunes old ones (newest 7 kept) and applies retention
+([docs/MONITORING.md](docs/MONITORING.md)). What is lost: 15 days of metric history that nobody could view since Grafana
+went (2026-10-18). Only the 300 s long-transaction rule is kept (the 60 s rule is gone), and the cache-hit rule needs a
+minimum sample.
+
+- **Operator action:** rerun `setup.sh --operator` with your usual inputs. It moves a stored Slack webhook from
+  `config/monitoring/alertmanager/webhook-url` to `config/slack-webhook-url` and removes the old files: `config/monitoring/`,
+  `metrics/` and `data/alertmanager/` of the state (each only when it is a real directory owned by the installation
+  user; one owned by another user is left, and may be removed by hand with `rm -r`). Its `up -d --remove-orphans` also
+  removes the old Prometheus, Alertmanager and exporter containers; the whole facility is never stopped for this. Setup
+  cannot install a systemd unit (it needs root): install the timer with the command it prints,
+  `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`, also for an install made with
+  `--alert-webhook-file off` (the checks and the daily backup still run; only the Slack posts are off). The unit is named
+  from the facility's Compose project (`<WAREHOUSE_PROJECT_NAME>-watch.timer`), so two installs on one host never share
+  one. `npm run doctor` warns while the timer is missing or names another state. Mute before a planned `stop.sh`:
+  `node scripts/watch.mjs mute <minutes>`. When sure, remove the old images and the volume:
+  `docker image rm <project>-prometheus <project>-alertmanager <project>-postgres-exporter <project>-node-exporter
+  <project>-cadvisor` and `docker volume rm <project>_prometheus_data`. Old `DB_PASSWORD_MONITORING` lines in
+  `config/compose.env` are unused; they can stay or be deleted. Rerun `sudo bash scripts/backup-usb.sh setup --state
+  "$WAREHOUSE_STATE_DIR"` as well, so the installed USB backup helper matches the checkout.
+- **Migration 107** drops the database login `warehouse_monitoring` (the role is removed, not just disabled): it revokes
+  `pg_monitor`, runs `DROP OWNED BY` and `DROP ROLE`, and does nothing where the role is already gone. Migration 94 stays
+  as history. The repository never granted the role anything and it owned nothing, so the drop is not expected to fail; if an operator
+  gave it a grant of their own, the migration stops with a hint to run `DROP OWNED BY warehouse_monitoring` in that database.
+  `scripts/configure-db-roles.sql` repeats the drop on every setup run and after a restore (an older backup may bring the
+  role back), `db-roles.sh check` proves it is gone, and setup no longer generates, stores or rotates
+  `DB_PASSWORD_MONITORING`. A backup that still carries that line restores cleanly (the restore comparison ignores it).
+- Kong's Prometheus plugin, its status listener and port 8100, the `monitoring` Compose profile, the `prometheus_data`
+  volume, `scripts/backup-metrics.sh` (the backup scripts no longer write `metrics/warehouse_backup.prom`), the `test:monitoring`
+  and `test:alert-rules` npm scripts, their CI steps and the five `LICENSES/` directories are removed. CI's
+  `operator-install` job runs `node scripts/watch.mjs run` once and `status` (it does not install the timer).
+
+## Unreleased — CI jobs can run on the project's own runner
+
+- Every CI job now takes its runner from a repository variable: `CI_RUNNER` for all jobs except `operator-install`, which keeps `OPERATOR_INSTALL_RUNNER`. Without the variable a job runs on `ubuntu-latest`.
+- A pull request from a fork always runs on GitHub's hosted runners, so code from a fork never runs on the project's machine.
+- No change for an installation.
+
+## Unreleased: Supabase Realtime is removed; the app re-reads on a timer (migration 105)
+
+The owner decided to replace Realtime with re-reading: the app no longer opens a websocket and re-reads the order and cart
+screens every 15 seconds and the sensor screens every 60 seconds. The backend no longer runs the service.
+
+- **Operator action:** update the app first. An older app build that still subscribes keeps working, but gets no live
+  updates any more (the socket route is gone; `get-config` still publishes `urls.realtime` so that build starts). Before
+  rerunning setup, check `SELECT slot_name FROM pg_replication_slots WHERE slot_type='logical'` in the database. Then
+  rerun setup: it drops idle logical slots and refuses (changing nothing) if one is in use, restarts `db` for the new
+  `wal_level` (PostgreSQL refuses to start with `wal_level=replica` while a logical slot exists), and then applies
+  migration 105. `start.sh` runs the same slot step. If the db does not start (`logical replication slot ... exists, but
+  wal_level < logical`), start it once with `wal_level=logical`, drop the slot with `pg_drop_replication_slot`, then rerun
+  setup. Remove the old image with `docker image rm <project>-realtime`. A leftover `REALTIME_DB_ENC_KEY` line in
+  `config/compose.env` is unused and can be deleted.
+- **Gateway budget:** the REST limit stays 1800 requests a minute per address. Timed re-reads cost 4 requests a minute for a
+  phone on an order screen and 1 for a phone on a sensor screen: 100 phones all on order screens use 400 a minute (22%), 300
+  phones use 1200 (67%, so a facility of that size raises the limit to 3600; docs/CONTAINER_SECURITY.md, REST request limit).
+- **Migration 105** drops the publications `supabase_realtime` and `supabase_realtime_messages_publication`, sets
+  `orders` and `sensor_latest` back to `REPLICA IDENTITY DEFAULT`, drops idle Realtime replication slots (a guard; the setup step does the real work) and drops the schemas
+  `realtime` and `_realtime` (it stops, changing nothing, if an object outside them depends on one inside). The role
+  `supabase_realtime_admin` belongs to the database image and is kept. An older backup restores cleanly (the objects come
+  back and migration 105 removes them), so the restore scripts have no new filter.
+- **Removed:** the `realtime` service and `docker/realtime/`, `docker/volumes/db/realtime.sql` and its mount, the Kong route
+  `realtime-v1-ws` and its rate limit (two rate-limited routes remain), `scripts/realtime-warmup.mjs` and its calls in
+  `setup.sh` and `start.sh`, the tenant reseed in `scripts/rotate-auth.sql`, `REALTIME_DB_ENC_KEY` (generation, validation,
+  rotation), Realtime from the health check, key and password rotation, and backup, `tests/operator-realtime-core.mjs` and its
+  CI step, the ledger row `realtime-os-no-fix`, and the `ws` dev dependency. `SECRET_KEY_BASE` stays for Supavisor.
+- **Database settings:** `wal_level` is `replica` (it was `logical`). `max_replication_slots` and `max_wal_senders` are not set
+  in the compose file and stay at the PostgreSQL defaults (10 each).
+- Tests: `tests/realtime_removed_105.sql` (no publication, `REPLICA IDENTITY DEFAULT`, schemas gone) with a fixture that
+  gives migration 105 Realtime-like schemas to remove.
+
+## Unreleased: the Invoices list reads the tables; the list-refresh machinery and pg_cron are removed (migration 106)
+
+Migration 91 kept seven copies of list data (materialized views) fresh with a pg_cron job, so a new invoice could take
+up to 15 seconds to appear. Only one copy, `mv_invoice_list`, was behind an app screen (the Invoices list and the
+GRN Invoices tab); the others were read by a function no app calls, by a legacy overload only tests call, or by nothing.
+
+- **`get_invoices_list` reads `invoice`, `customers` and `goodsreceived`.** Same arguments, grants, role rules, filters, search
+  (each word must match the invoice number, the customer, the receipt number, "year-number" or the padded number), sorts with
+  their tie-breaks, `total_count`, `total_qty`, `financial_year` and answer shape. A write is in the next read. One
+  addition: rows that tie on every sort key come back in a fixed order (by invoice id). The line total is computed only for the
+  page. On a throwaway database with 20,000 invoices and 130,000 lines the slowest case (free-text search that matches nothing)
+  took 90 ms and every sort and filter was under 90 ms (bar: 300 ms); no index was needed. A test compares the answers of the old
+  and the new function on 173 cases and requires them to be identical.
+- **Removed:** the seven views (`mv_customer_stock_summary`, `mv_dispatch_daily_summary`, `mv_dispatch_list`,
+  `mv_grn_daily_summary`, `mv_grn_list`, `mv_invoice_list`, `mv_orders_list`) and `auth_geographic_anomalies`; the tables
+  `mv_refresh_queue` and `mv_refresh_status`; the nine statement triggers that marked lists and their functions; the worker,
+  claim and refresh functions, `refresh_dirty_lists`, `ensure_list_refresher`; `get_list_freshness()`,
+  `warehouse_security.list_refresh_status()`, `get_dispatch_list` (the Dispatches list uses `get_dispatch_list_with_items`), the legacy
+  `get_all_grn_items(p_catalog_id, p_grn_id, ...)` overload (the overload with `p_date_from` stays) and six older view helpers
+  nothing calls; the pg_cron jobs, the role `warehouse_list_refresher` (only if it owns nothing), the `pg_cron` extension and the
+  image's `issue_pg_cron_access` event trigger. `update_grn` loses only its two lines about the views and `authorize_rpc` only the
+  names of the two dropped functions.
+- **Database settings:** the compose file keeps `pg_cron` in `shared_preload_libraries` (with `cron.database_name`) for now,
+  because locked migration 91 creates the extension on a fresh install; the library stays loaded but idle, and the squashed
+  baseline removes both. The migration run still takes advisory lock 71046 while pg_cron is preloaded; `health-check.sh` and `scripts/doctor.mjs` no longer check the list refresh; `setup.sh`, `restore.sh`
+  no longer run `scripts/configure-list-refresh.sql` (deleted); `verify-restore.sh` no longer mentions it and its pg_cron filter
+  regex changed (it now ends in `( |$)`). Both restore scripts leave pg_cron and its
+  schema out of the restore list of an older backup, as they do for pg_net.
+- **Stops if it must:** the migration refuses, and changes nothing, if the pg_cron table holds a job that is not one of the two
+  list-refresh jobs, because dropping the extension would delete it.
+
+**Operator action:** rerun `setup.sh`; it applies migration 106. If the migration refuses and names a pg_cron job of your own
+(an unnamed one shows as `(no name)`), list and remove it, then rerun `setup.sh`:
+`docker compose exec db psql -U supabase_admin -d postgres -c "SELECT jobid, jobname, command FROM cron.job"`, then
+`... -c "SELECT cron.unschedule(<jobid>);"` for each job that is not `warehouse-list-refresh` or `warehouse-list-refresh-history`.
+
+## Unreleased: the image scan runs one Trivy pass per image
+
+`npm run scan:images` scanned each image twice, once with `--ignore-unfixed` and once in full. The first report is a subset of
+the second, and the validator already refuses a `no-fix` exception for a row with a listed fix, so the full report alone
+enforces every rule. The script now runs the full pass only and gives one report per image (`<image>.json` in the report
+directory) to the validator. The rules, the no-cache rebuild, the exception ledger and its 90-day renewal are unchanged; the
+scan runs one Trivy run per image instead of two. A test shows that a fixable HIGH row fails the single full report even when a `no-fix` entry names
+the image.
+
+No operator action: the scan is release tooling.
+
+## Unreleased: the unused wal-g binary is removed from the database image
+
+wal-g is a continuous-backup tool. This backend does not use it: backups are `pg_dump` (`scripts/backup.sh`), `archive_mode`
+is off, and `docs/CONTAINER_SECURITY.md` says WAL archiving stays off. The base image's copy had known CVEs, which is why the
+recipe rebuilt wal-g from Go source. Now the recipe deletes `/usr/local/bin/wal-g` instead, and its final check fails the
+build if `wal-g` is still on the path. The `walg` build stage, `walg.go.mod`, `walg.go.sum` and `LICENSES/wal-g` are gone; the
+gosu stage and the glibc and locale guard are unchanged. The settings file `/etc/postgresql-custom/wal-g.conf` from the base
+image (all commented out except `hot_standby = off`) stays: the image's own `postgresql.conf` includes it.
+
+**Operator action:** rerun `setup.sh`. It rebuilds the database image and restarts the database container.
+
+## Unreleased: the Gotenberg upgrade path is removed
+
+- **Removed `scripts/retire-gotenberg.sh`** (and `tests/retire-gotenberg.test.mjs`), its calls in `setup.sh` and `start.sh`, and
+  the one-time upgrade notes in `docs/OPERATOR_INSTALL.md` (Gotenberg to the PDF renderer, the database password split, the
+  signed-backup format v5 switch). No facility ran the old code in production. The ordinary "rerun setup.sh" upgrade is unchanged.
+
+**Operator action:** none.
+
+## Unreleased: backup format v5 only, and no second-disk backup helper
+
+- **Removed `scripts/backup-disk.sh`** (and `tests/backup-disk.test.mjs`, the OPERATOR_INSTALL "Backup disk" section and its
+  troubleshooting entries). New installs already use the USB backup drive (`scripts/backup-usb.sh`), which is unchanged.
+- **Only backup format v5 is accepted.** `db:verify-restore`, `db:restore` and `db:restore-host` refuse any other format with
+  "Refusing: backup format 'warehouse-backup-vN' is no longer supported; take a new backup with this version", before the signature
+  is checked, and the branches for v1 to v4 are gone. No facility holds a backup older than v5. `--allow-unsigned` is now only
+  for a lost backup key; a v5 backup whose signature file was removed is still refused while the key is available.
+
+**Operator action:** none, except that a second-disk backup set up with `backup-disk.sh` must be replaced by the USB backup
+(`sudo bash scripts/backup-usb.sh setup`, see "USB backup drive" in `docs/OPERATOR_INSTALL.md`); the disk's existing copies are
+not touched. A second facility on the same host cannot use USB (`backup-usb.sh setup` refuses a second state): use
+`npm run db:backup -- /absolute/destination` for it. When the disk is retired, remove the `/etc/fstab` line
+(`UUID=... /srv/warehouse-backups ... nofail`) that `backup-disk.sh apply` added. This release cannot verify or restore a v1 to v4
+backup; none exists.
+
+## Unreleased: dead files and duplicates are removed
+
+- **Removed.** The unused `generate-sample-pdf` demo function (and its golden PDF case), `scripts/realtime-check.sh`,
+  `config/seed-config.sql`, the fixed-OTP demo tests (`tests/api-demo.mjs`, `tests/review-core.mjs`,
+  `tests/historical/realtime-smoke.mjs`), `tests/storage-image-candidate-smoke.cjs`, `deploy/warehouse-tunnel.service.example`
+  (`scripts/tunnel.sh install-service` writes the unit) and the CI "Shell syntax" step (`tests/shell-syntax.test.mjs` runs
+  the same check through `npm test`).
+- **No Logflare schema on new installs.** `docker/volumes/db/logs.sql` and its init mount are gone; nothing read the empty
+  `_analytics` schema. Existing databases keep it, which is harmless.
+- **Redacted start diagnostics.** `scripts/service-diagnostics.sh` is merged into `scripts/service-diagnostics.mjs`. When a
+  backup or restore cannot restart the services, the log lines it prints for each unhealthy service now have secrets
+  hidden.
+
+**Operator action:** rerun `setup.sh`.
+
+## Unreleased: the functions image is a third of its size, and supabase-js is gone
+
+- **Smaller image.** The `functions` image (edge-runtime v1.77.4, Deno unchanged) is built in two stages: only the
+  `edge-runtime` binary is copied onto `debian:bookworm-slim`, with CA certificates and tzdata. The 277 MB debug-symbols
+  file and the unused 50 MB ONNX runtime are left behind. The image goes from 761 MB to 258 MB; the PCRE2 check and the
+  package upgrade stay.
+- **No bundled supabase-js.** `functions/vendor/supabase-js.mjs` (17,943 lines) is deleted. The functions use
+  `functions/_shared/supabase-rest.ts`, a small client on plain `fetch` for the REST, RPC and Storage calls they make, with
+  the same requests and answers for the calls they make, and a 60 s timeout per call (equal to the worker's own 60 s wall-clock limit in
+  `functions/main/index.ts`, so it never cuts off a call that could otherwise finish). `get-printer-status` and `print-via-ipp` (refused by the router)
+  no longer build a client or receive `SUPABASE_ANON_KEY`. `scripts/edge-vendor` and `scripts/vendor-edge-modules.sh` now
+  build `jose` only; `jose.mjs` is byte-identical.
+
+**Operator action:** rerun `setup.sh`, which rebuilds the functions image.
+
+## Unreleased: imgproxy and the empty customer-images bucket are removed
+
+Storage called imgproxy only when a client asked for a resized picture (`/storage/v1/render/image/...` or a `transform`
+option). The app never does: it reads GRN and dispatch photos through `createSignedUrl(path, 3600)` and nothing else. The
+bucket `customer-images` was never used either: GRN header and item photos go to `grn-images`, dispatch photos to
+`dispatch-images`, the customer form uploads no pictures, and the bucket held 0 objects on Dev, dev2 and dev3.
+
+- The `imgproxy` service is deleted from both Compose files, with `docker/imgproxy`, `LICENSES/imgproxy`, the
+  `IMGPROXY_ENABLE_WEBP_DETECTION` setting, its Dependabot entries and its rows in the notices and security documents.
+  Storage runs with `ENABLE_IMAGE_TRANSFORMATION: "false"`, so a `render/image` request is refused.
+  `health-check.sh`, `scripts/backup.sh` and `scripts/compose.sh` no longer name it.
+- `scripts/configure-storage.sql` no longer creates `customer-images` or names it in the public-bucket guard and the
+  administrator/supervisor policies. On an existing install it deletes the bucket while it holds 0 objects, and stops with
+  "The bucket customer-images still holds files" (deleting nothing) otherwise.
+- Tests: the imgproxy guard in `tests/removed-components.test.mjs` is new; `tests/migrations.sh` checks that configure removes an empty bucket and
+  refuses one that holds a file; the API tests that used `customer-images` as a staff-only bucket use `grn-images`, and the
+  resize check is now a check that `render/image` is refused.
+
+**Operator action:** rerun `setup.sh`. It removes the imgproxy container (it runs Compose with `--remove-orphans`) and deletes
+the empty `customer-images` bucket. If a file is in that bucket, setup stops; move or delete it and run setup again. Remove
+the old image with `docker image rm <project>-imgproxy`.
+
+## Unreleased: GoTrue (the disabled Auth service) is removed
+
+Nothing called `/auth/v1`. The app creates every client with session storage and auto-refresh off, and sessions come
+from SQL (`warehouse_security.issue_session`, `public.refresh_jwt_token`, `public.check_session`) behind the Edge Functions
+`operator-otp` and `central-exchange`. The disabled `auth` service, its Go source recipe and its database login only added
+surface: 76 files to keep patched (including a local copy of the `pgproto3` driver), a release-scan build, and a password
+that setup generated and rotation rotated.
+
+- `docker/auth` and `LICENSES/auth` are deleted, with the `auth` service in both Compose files, the commented-out GoTrue
+  routes in `docker/kong.yml`, the Auth rows of `docs/PRODUCTION_DEPENDENCIES.md` and `docs/CONTAINER_SECURITY.md`, and the
+  `pgproto3` and GoTrue notices in `THIRD_PARTY_NOTICES.md`.
+- `DB_PASSWORD_AUTH` is gone from setup, `.env.example`, the database role scripts, rotation, backup and restore. The GoTrue
+  mail, SMS and signup settings (`SMTP_*`, `MAILER_*`, `ENABLE_*_SIGNUP`, `ENABLE_*_AUTOCONFIRM`, `DISABLE_SIGNUP`,
+  `ENABLE_ANONYMOUS_USERS`, `ADDITIONAL_REDIRECT_URLS`) are removed from `.env.example`. `SITE_URL` and `API_EXTERNAL_URL` stay:
+  setup and the doctor read them.
+- Kept: the `auth` schema and `auth.uid()`, `auth.jwt()` and `auth.role()` (the row policies use them), and the role
+  `supabase_auth_admin`, which owns `auth.uid()`, `auth.role()`, `auth.email()` and 26 other auth relations and holds default
+  privileges in schema `auth` (`supabase_admin` owns the schema and `auth.jwt()`). Migration 104 makes that role `NOLOGIN` with
+  no password; `scripts/configure-db-roles.sql` repeats it on every setup run, which corrects it after every restore (a backup
+  holds only role names, so the fresh cluster has the image's login and the restored ledger skips 104).
+- The GoTrue guard in `tests/removed-components.test.mjs` asserts the recipe, the service and the setting are gone; `tests/security_baseline.sql` asserts the
+  role exists and cannot sign in.
+
+**Operator action:** rerun `setup.sh`; it applies migration 104. An existing `compose.env` keeps a `DB_PASSWORD_AUTH` line that
+nothing reads and nothing fails on; delete it by hand if you like. The orphaned `auth` image, if one was ever built, can be removed
+with `docker image rm <project>-auth`.
+
+## Unreleased: Studio and postgres-meta are removed
+
+Supabase Studio and postgres-meta are no longer part of the template. Neither had a login and both ran SQL as the database
+superuser; Studio's gateway panels did not work, only Kong publishes a host port, and no operator procedure used either. They
+cost about 316 MiB of memory and 1.9 GB of images per facility, two image recipes (postgres-meta was rebuilt from source with
+two patches), Dependabot entries, a dependency audit and three of the ten image-exception rows (`studio-os-no-fix`,
+`studio-app-awaiting-publisher`, `meta-os-no-fix`).
+
+- The `studio` and `meta` services and the `admin` network (which joined them to the database) are gone from Compose. The
+  database is on the `database` network only. `docker/studio`, `docker/postgres-meta`, `LICENSES/postgres-meta`,
+  `scripts/studio-check.sh`, `npm run test:studio` and the postgres-meta audit are removed, together with their CI step, their
+  Dependabot entries, the `STUDIO_DEFAULT_ORGANIZATION`, `STUDIO_DEFAULT_PROJECT` and `OPENAI_API_KEY` settings in
+  `.env.example`, and the health-check, backup, key-rotation and password-rotation service lists that named them.
+- To look at data, use `bash scripts/compose.sh exec db psql -U supabase_admin -d postgres`
+  (`docs/OPERATOR_INSTALL.md`, "Ordinary operation").
+- `setup.sh` and `start.sh` now start the stack with `--remove-orphans`, so an existing installation loses the two containers
+  on its next run.
+- A test asserts that no service named `studio` or `meta` and no `admin` network is in the Compose files.
+
+**Operator action:** rerun `setup.sh` (or `start.sh`); it removes the old `studio` and `meta` containers. Nothing else is
+removed for you. Find the project name with `sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"`,
+then remove the two built images and the network by hand (`docker image prune` does not remove them, because Compose
+tags them `<project>-studio` and `<project>-meta`):
+
+```bash
+docker image rm <project>-studio <project>-meta
+docker network rm <project>_admin
+```
+
+The `admin` network always remains after the upgrade: neither `up` nor `down` removes a network that is no longer in the model.
+An existing `compose.env` also keeps its `STUDIO_*` and `OPENAI_API_KEY` lines (configure keeps the file byte for byte); delete
+them by hand, especially a real OpenAI key.
+
+## Unreleased: four unused database extensions and the GraphQL route are removed (migration 103)
+
+The database carried four extensions that nothing in this backend uses, each a possible way in if something else ever went
+wrong. They are removed.
+
+- **`http`** (SQL that sends web requests) was installed by the first migration for a function that migration 15 replaced.
+  `service_role` could still run `public.http_post` through REST, and the database container can reach the Studio helper
+  (postgres-meta) that runs SQL as a superuser. With `http` gone the database cannot send a web request.
+- **`pg_net`** (the same, in the background, and database webhooks): no webhook was ever defined and its queue was empty.
+  Its schemas `net` and `supabase_functions`, the role `supabase_functions_admin` (only where it owns nothing) and
+  `docker/volumes/db/webhooks.sql` go with it, and the database no longer preloads it.
+- **`pg_graphql`**: the app never used GraphQL, yet `anon` could run `graphql_public.graphql` through the gateway route
+  `/graphql/v1`. The extension, the schemas `graphql` and `graphql_public`, the Kong route, and `graphql_public` in
+  PostgREST's `PGRST_DB_SCHEMAS` are removed. The image's event trigger that would have put a stand-in function back is
+  dropped first, as are its other pg_graphql and pg_net triggers (`issue_pg_cron_access` and PostgREST's two stay).
+- **`supabase_vault`**: no secret was stored in it. (`public.secrets_vault` is an unrelated table and is untouched.)
+
+Migration 103 drops them in that order, without `CASCADE`, skips whatever is already gone, refuses (and changes nothing) if
+a trigger still calls `supabase_functions.http_request()`, and ends by checking that none remain. A backup made before it
+still restores: the restore leaves out its `pg_net` entries (the database no longer preloads it, and creating it would
+fail), and migration 103 removes the other leftovers (the webhook schema) afterwards. It also refuses, and changes nothing,
+if the vault holds a secret or a pg_cron job calls `net.*` or `http(...)`, because dropping the extension would delete
+them without a word. A restore accepts a backup whose `compose.env` has the old `PGRST_DB_SCHEMAS` default, and
+brings the state up to date. `setup.sh` rewrites
+`PGRST_DB_SCHEMAS` in an existing `compose.env` from `public,storage,graphql_public` to `public,storage` (a list you
+changed by hand is left alone), and new installs get `public,storage`. `tests/pg_net_grants.sql` is replaced by
+`tests/unused_extensions_absent.sql`.
+
+**Operator action:** rerun `setup.sh`. It recreates `db` (it no longer preloads `pg_net`, which means a short database
+restart), applies migration 103, and recreates `rest` (the schema list changed). Setup also recreates the gateway (see
+the gateway entry below), which loads the new `docker/kong.yml` and so stops routing `/graphql/v1`. Only if this change
+were applied alone to an installation that already had that gateway change would `bash scripts/compose.sh restart kong`
+be needed (until then that route answers with an error, because the function behind it is gone). Nothing else to do; the
+app does not use any of it.
+
+## Unreleased: gateway runs one worker and drops unused settings
+
+Kong (the gateway) had no worker setting, so nginx started one worker process per core of the host: eight workers
+(about 590 MB) on an 8-core host, although the container is limited to 0.5 CPU and 512 MiB and sat at its limit.
+
+- **One worker.** `KONG_NGINX_WORKER_PROCESSES` is "1". Memory use of the gateway falls by roughly 480 MB on an 8-core host.
+- **Unused plugins removed.** `acl`, `basic-auth` and `file-log` are no longer loaded, and the access-control groups
+  are gone from `docker/kong.yml`: both consumers (the public key and the service key) were allowed on every route, so
+  the check never refused anything. The plugin list now exists once, in `docker/docker-compose.yml`, instead of a copy in
+  the override file.
+- **Unused route removed.** `/realtime/v1/api` (Realtime's REST interface, never called by the app) is no longer
+  routed. The websocket route `/realtime/v1/` is unchanged.
+- **`DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` removed.** No gateway route asked for them. New installs no longer
+  get them; a `compose.env` that still holds the lines keeps working, because nothing reads them. The rotation
+  steps in `docs/OPERATOR_INSTALL.md` now cover `CUPS_ADMIN_PASSWORD` only.
+
+**Operator action:** rerun `setup.sh` as for every upgrade. The gateway's environment changed, so the final
+`compose up -d` recreates the gateway container, which then reads the new `docker/kong.yml`. The `DASHBOARD_*` lines in
+an existing `compose.env` are no longer used and may be deleted by hand.
+
 ## Unreleased: invoice form lookups run once per distinct value (migration 110)
 
 - **Migration 110.** `build_invoice_form_lines` (migration 102) ran `find_storage_price` and `calculate_invoice_duration`
@@ -37,7 +387,7 @@
 - **Gateway gzip.** Kong now compresses JSON and text answers (`KONG_NGINX_PROXY_GZIP*` in `docker/docker-compose.yml`:
   `on`, `proxied any`, types `application/json`, `application/vnd.pgrst.object+json`, `application/vnd.pgrst.array+json`,
   `application/openapi+json`, `application/geo+json`, `text/plain`, `text/csv`, minimum 1,024 bytes, level 5, `Vary`
-  on). Images, storage downloads, PDFs, range answers, the Realtime websocket and already-encoded answers are not
+  on). Images, storage downloads, PDFs, range answers, websocket upgrades and already-encoded answers are not
   touched. Takes effect when the `kong` container is recreated. See `docs/ARCHITECTURE.md`.
 - **Migration 101.** The lines of the invoice-form answer lose 13 second names whose value is built from the same
   expression as the first name the app reads: `grn_item_id`, `item_id`, `item_name`, `qty`, `package_mark`, `rack`,

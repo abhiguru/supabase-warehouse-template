@@ -6,7 +6,7 @@
 // that, to read the warehouse name and to store the file in the private
 // documents bucket. The answer has the shape of the document PDFs
 // (document-pdf.ts): { success, pdf_url, expires_in, document }.
-import { createClient } from '../vendor/supabase-js.mjs';
+import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf, createFooterHtml } from './pdf-renderer-client.ts';
@@ -27,10 +27,7 @@ export async function reportPdf(req: Request): Promise<Response> {
     const internal = Deno.env.get('SUPABASE_URL')!;
     const publicUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     // Every business-data read uses the caller's token and row-level security.
-    const reader = createClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, {
-      global: { headers: { Authorization: req.headers.get('Authorization')! } },
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const reader = restClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, { authorization: req.headers.get('Authorization')! });
     const call = reportLevel(request).rpc(request);
     const answer = await reader.rpc(call.name, call.args);
     if (answer.error) {
@@ -60,7 +57,7 @@ export async function reportPdf(req: Request): Promise<Response> {
       : '';
 
     // Installation and supported administration use the same company setting.
-    const writer = createClient(internal, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { autoRefreshToken: false, persistSession: false } });
+    const writer = restClient(internal, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const company = await writer.from('system_settings').select('value').eq('key', 'app_name').single();
     if (company.error || typeof company.data?.value !== 'string' || !company.data.value.trim()) {
       throw { status: 503, message: 'Warehouse branding unavailable' };

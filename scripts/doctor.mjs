@@ -1,8 +1,9 @@
 import { accessSync, constants, existsSync, lstatSync, statfsSync, realpathSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { resolve, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
@@ -10,7 +11,54 @@ import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
-import { alertDeliveryWarning } from './monitoring-config.mjs';
+import { storedWebhook } from './alert-webhook.mjs';
+import { statePath } from './watch.mjs';
+
+export const CHECKER_MAX_AGE_MS = 15 * 60 * 1000;
+// The unit is named from the facility's Compose project (WAREHOUSE_PROJECT_NAME in config/compose.env), not from the
+// state directory's name: two installs on one host may both end in /state. Without a readable project it is a hash of
+// the state path. scripts/watch-timer.sh (unit_base) builds the same name.
+export function timerBase(state) {
+  let project = '';
+  try { project = readEnv(join(state, 'config/compose.env')).WAREHOUSE_PROJECT_NAME ?? ''; } catch { /* no readable configuration */ }
+  if (/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(project)) return `${project}-watch`;
+  return `warehouse-h${createHash('sha256').update(state).digest('hex').slice(0, 12)}-watch`;
+}
+export const timerUnit = state => `${timerBase(state)}.timer`;
+const unitDir = () => process.env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system';
+export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this host but not delivered, so nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or pass --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
+
+// The daily pass (backup, verification, retention) holds the checker for up to 4 hours (the unit's TimeoutStartSec),
+// and the state file is not written meanwhile: a pass that started less than 4 hours ago explains the silence.
+export const DAILY_PASS_MAX_MS = 4 * 60 * 60 * 1000;
+function dailyPassRunning(state, now) {
+  try {
+    const started = JSON.parse(readFileSync(statePath(state), 'utf8'))?.dailyRunning?.startedAt;
+    return Number.isFinite(started) && now >= started && now - started < DAILY_PASS_MAX_MS;
+  } catch { return false; }
+}
+
+// Warnings about the checker: its timer is not active, it has not run in the last 15 minutes (the mtime of its
+// state file), no Slack webhook is stored. `timerActive(unit)` and `now` are injectable for tests.
+export function checkerWarnings(state, {
+  now = Date.now(),
+  timerActive = unit => spawnSync('systemctl', ['is-active', '--quiet', unit], { timeout: 10000 }).status === 0,
+  serviceText = unit => { try { return readFileSync(join(unitDir(), unit.replace(/\.timer$/, '.service')), 'utf8'); } catch { return null; } },
+} = {}) {
+  const out = [];
+  const unit = timerUnit(state);
+  if (!timerActive(unit)) {
+    out.push(`The monitoring checker is not running: ${unit} is not installed or not active, so no check, alert, daily backup or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
+  } else if (serviceText(unit) !== null && !serviceText(unit).split('\n').includes(`Environment=WAREHOUSE_STATE_DIR=${state}`)) {
+    out.push(`${unit} is active but its service does not name this state (${state}), so this facility is not being checked. Install it for this state with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
+  } else {
+    const modified = lstatSync(statePath(state), { throwIfNoEntry: false })?.mtimeMs;
+    if (modified === undefined) out.push(`${unit} is active but the monitoring checker has never run (no ${statePath(state)}): check journalctl -u ${unit.replace(/\.timer$/, '.service')}.`);
+    else if (now - modified > CHECKER_MAX_AGE_MS && !dailyPassRunning(state, now)) out.push(`The monitoring checker last ran ${Math.round((now - modified) / 60000)} minutes ago (it should run every 5): check journalctl -u ${unit.replace(/\.timer$/, '.service')} and node scripts/watch.mjs status.`);
+  }
+  if (!storedWebhook(state)) out.push(NO_WEBHOOK_WARNING);
+  return out;
+}
 
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -118,10 +166,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // bounded readiness retries can exceed the short CLI-preflight deadline.
   if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
   const usb = usbBackupWarning(state);
-  // A stored Slack webhook needs the monitoring services running (setup.sh and start.sh start them). Without a
-  // webhook doctor warns on every run, whether or not Alertmanager runs: nothing reaches anyone either way.
-  const alerts = alertDeliveryWarning(state, Boolean(probe('bash', [resolve(root, 'scripts/compose.sh'), '--profile', '*', 'ps', '-q', 'alertmanager']).output.trim()));
-  const note = [usb, alerts].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
+  // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
+  // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
+  const checker = checkerWarnings(state);
+  const note = [usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);
