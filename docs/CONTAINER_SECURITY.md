@@ -897,7 +897,7 @@ Stored copies:
 - **Realtime** stores its tenant's database credentials (the superuser
   password) in `_realtime`, encrypted with `DB_ENC_KEY`, which was the fixed
   text `supabaserealtime` and is now `REALTIME_DB_ENC_KEY`. The pinned
-  release (v2.143.3) deletes and rewrites the `realtime-dev` tenant at every
+  release (v2.144.0) deletes and rewrites the `realtime-dev` tenant at every
   start while `SEED_SELF_HOST` is on (`priv/repo/seeds.exs`), so a recreated
   container stores them under the current key and nothing has to clear the
   rows. Compose recreates Realtime whenever its key or password changes. A

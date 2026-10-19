@@ -595,6 +595,14 @@ No migration. `docker/sensor-bridge/requirements.txt`: the setup rerun rebuilds 
   README name the new version.
 - Tested against the built image: 82 unit tests pass on Python 3.12.15 with python-kasa 0.11.0.1; the `kasa` names the bridge imports and the hub connection settings still exist. Not verified: a real Tapo hub.
 
+## Unreleased: Realtime v2.144.0 (2026-10-19)
+
+No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
+
+- **Realtime v2.144.0** (was v2.143.3; Dependabot #123), a minor release: a decimal dependency upgrade, extra
+  region mappings for read replicas (new optional `DB_HOST_REPLICA_*` variables, unused here) and the 2.143.4
+  region-mapping fix. No setting changes. `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTION_REVIEW.md` name the new version.
+
 ## Unreleased — Realtime v2.143.3 (2026-10-14)
 
 No migration. `docker/realtime/Dockerfile`: the setup rerun rebuilds the Realtime image.
