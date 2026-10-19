@@ -216,9 +216,11 @@ export function readWebhook(state) {
 }
 
 // ---------------------------------------------------------------- context
+// `index` and not `.State.Health`: some docker CLIs run the template on the decoded JSON map and stop with
+// "map has no entry for key Health" for a container without a healthcheck (seen on the CI runner).
 const INSPECT_FORMAT = [
   '{{.Id}}', '{{index .Config.Labels "com.docker.compose.service"}}', '{{.State.Status}}',
-  '{{if .State.Health}}{{.State.Health.Status}}{{end}}', '{{.RestartCount}}', '{{.State.OOMKilled}}', '{{.State.StartedAt}}',
+  '{{with index .State "Health"}}{{index . "Status"}}{{end}}', '{{.RestartCount}}', '{{.State.OOMKilled}}', '{{.State.StartedAt}}',
   '{{index .Config.Labels "com.docker.compose.oneoff"}}',
 ].join('|');
 
