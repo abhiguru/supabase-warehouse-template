@@ -409,8 +409,10 @@ narrowest wins), else the item's rate. The invoice form's preview (`build_invoic
 reads `invoice_trl`: it prices the GRN's dispatched lines afresh, with the duration from `calculate_invoice_duration`.
 `save_invoice` calls `calculate_invoice_duration` itself and takes charge, tax and labour from the lines it is sent.
 `build_invoice_recalculation_rows` (which also takes the stored invoice figure of an already invoiced line) is now
-called only by `recalculate_invoice_items` (service_role only, not used by the app); `get_grn_item_rates` only follows
-its rule. Once an invoice is saved its figures win and the GRN-only rate is "archived"; delete the invoice and it applies again.
+called only by `recalculate_invoice_items` (service_role only, not used by the app); `get_grn_item_rates` also takes
+the stored invoice figure first (`source 'invoice'`, from the lines of any live invoice of the lot, migration 88),
+then follows its rule. Once an invoice is saved its figures win and the GRN-only rate is "archived"; delete the
+invoice and it applies again.
 
 ### `generate_invoice_data_for_grn_with_pricing(p_gr_id uuid, p_duration_mode text DEFAULT 'legacy')`: the invoice form's preview
 

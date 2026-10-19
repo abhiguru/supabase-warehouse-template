@@ -5,8 +5,11 @@
 - **Migration 110.** `build_invoice_form_lines` (migration 102) ran `find_storage_price` and `calculate_invoice_duration`
   once per line again, because PostgreSQL 15 folds a CTE used once into the query. The per-distinct-value steps are now
   `AS MATERIALIZED` and joined with hashable equality on COALESCEd keys. GRN HVD4 (3,055 lines): `find_storage_price`
-  3,055 -> 10 runs, `calculate_invoice_duration` 3,055 -> 401 runs, the query about 190 ms -> about 20 ms. The answer is
-  identical: 380 GRN/mode pairs on Dev compared as text in a rolled-back transaction, 0 differences.
+  3,055 -> 10 runs, `calculate_invoice_duration` 3,055 -> 401 runs; the line query inside `build_invoice_form_lines`
+  about 190 ms -> about 20 ms; a whole call of `build_invoice_form_lines`, including turning its 2.2 MB answer into
+  text, about 220 ms -> about 85 ms. The weight and date joins use COALESCE equality plus IS NULL guards, so they
+  match exactly what `IS NOT DISTINCT FROM` matched, and stay hash joins. The answer is identical: 468 GRN/mode pairs
+  on Dev (380 of them with lines) compared as text in a rolled-back transaction, 0 differences.
 - **Compatibility (migrations 100 to 110).** Older app builds keep working: the app reads `items || rows` and the
   first-choice names (`grn_items_id || grn_item_id`), and the new `get_invoice_detail` keys (`item_id`, `dispatch_id`,
   `rack`, `invoice.grn_pricing_mode`) are additions only.
