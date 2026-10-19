@@ -404,7 +404,8 @@ before anything is written; without `p_rates` a staff call works as before.
 `grn_rates` (`gr_id`, `item_id`, `price_type`, `weight_min`, `weight_max`, `unit_price`, `labour_rate`,
 `tax_percent`, `created_by`, `created_at`, `updated_by`, `updated_at`) is written only by `save_grn` / `update_grn`; administrators,
 supervisors can read it directly (like `item_storage_prices`); customer accounts never can. Invoice rows
-(`build_invoice_recalculation_rows`, and so the invoice preview and `save_invoice`) take rent, labour
+(`build_invoice_form_lines` for the invoice form's preview, `build_invoice_recalculation_rows` for `save_invoice`;
+both follow the same rules and call `calculate_invoice_duration`) take rent, labour
 and tax of a line from one source: the stored invoice figure if the line is already invoiced, else the
 GRN-only rate whose band holds the line's weight (the narrowest wins), else the item's rate. Once an
 invoice is saved its figures win and the GRN-only rate is "archived"; delete the invoice and it applies

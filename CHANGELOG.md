@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased: faster invoice form preview (migration 102)
+
+- **Migration 102.** The invoice form's GRN preview (`generate_invoice_data_for_grn`, behind
+  `generate_invoice_data_for_grn_with_pricing`) is built by the new internal `build_invoice_form_lines(uuid, text)`:
+  set-based, only the 21 kept keys, the rate looked up once per distinct item and weight, the duration from
+  `calculate_invoice_duration` once per distinct dispatch date. A GRN of 3,055 lines: 0.56 s before, about 0.18 s after.
+  The answer is identical (checked on Dev against `build_invoice_recalculation_rows` with the strip, in a rolled-back
+  transaction, across rate, price, date, quantity and time-zone cases).
+
 ## Unreleased: gateway compresses JSON answers; invoice form lines name each value once (migration 101)
 
 - **Gateway gzip.** Kong now compresses JSON and text answers (`KONG_NGINX_PROXY_GZIP*` in `docker/docker-compose.yml`:

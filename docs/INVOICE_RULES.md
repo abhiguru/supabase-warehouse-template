@@ -1,7 +1,9 @@
 # Demo invoice rules
 
 This describes the existing database contract in `calculate_invoice_duration`,
-`build_invoice_recalculation_rows` and `save_invoice(jsonb)`. It is a compatibility
+`build_invoice_recalculation_rows` and `save_invoice(jsonb)`. The invoice form's preview
+(`generate_invoice_data_for_grn`) is built by `build_invoice_form_lines` (migration 102): it follows the same rules and
+calls `calculate_invoice_duration` for the duration. It is a compatibility
 reference for the demo, not a new pricing policy. The API fixtures in
 `tests/review-core.mjs` and boundary fixtures in `tests/invoice_duration.sql`
 assert explicit expected values.
