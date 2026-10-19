@@ -712,5 +712,50 @@ SELECT pg_temp.gr_assert(:'undo_on'::jsonb->>'success'='true' AND pg_temp.gr_row
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.undo_rate_change(%L::uuid,NULL,'monthly',%L::date)$q$,pg_temp.gr_item('GR Plum'),(:'today'::date+731)::text)) AS undo_far \gset
 SELECT pg_temp.gr_assert(:'undo_far'::jsonb->>'error_code'='INVALID_DATE','two years after today is still the upper bound');
 
+-- Drift guard (migration 102): build_invoice_form_lines is a second implementation of the lines that
+-- build_invoice_recalculation_rows builds. For every GRN of these fixtures that has dispatches, in both
+-- duration modes, its 'items' must equal the recalculation rows reduced to the 21 keys the form carries, in
+-- the form's order (item name, dispatch date, dispatch line id; the recalculation rows are taken in their own
+-- order, which must already be that one), and its 'totals' must equal the recalculation totals as text, so the
+-- decimals count. A change to the rate rule, the duration rule or an amount expression in one function and not the
+-- other fails here. The nine rate-rule fixtures above (GRN rate, item rate, ONE_TIME, a missing price) are
+-- the data; the count check below fails if the fixtures ever stop producing dispatched lines.
+SELECT pg_temp.gr_assert((SELECT count(DISTINCT dt.id)>=3 FROM public.dispatch_trl dt JOIN public.goodsreceived_trl g ON g.id=dt.gr_trl_id),
+ 'the fixtures hold dispatched lines for the parity check');
+DO $parity$
+DECLARE
+  g record; m text; form jsonb; recalc jsonb; stripped jsonb; compared integer := 0; line_count integer := 0;
+  keys text[] := ARRAY['grn_items_id','grn_items_item_id','grn_items_item_name','grn_items_original_qty',
+    'grn_items_package_mark','grn_items_rack','grn_items_weight','grn_items_pricing_mode','dispatches_items_id',
+    'dispatches_items_disp_qty','dispatches_id','dispatches_no','dispatches_date','items_catalog_name','grn_date',
+    'no_of_days','billable_days','duration','unit_price','labour_rate','tax_percent'];
+BEGIN
+  FOR g IN SELECT DISTINCT r.id, r.gr_no FROM public.goodsreceived r
+           JOIN public.goodsreceived_trl t ON t.gr_id=r.id JOIN public.dispatch_trl d ON d.gr_trl_id=t.id ORDER BY r.gr_no LOOP
+    FOREACH m IN ARRAY ARRAY['legacy','standard'] LOOP
+      form := public.build_invoice_form_lines(g.id, m);
+      recalc := public.build_invoice_recalculation_rows(g.id, m, NULL);
+      IF recalc->>'success' IS DISTINCT FROM 'true' OR form->>'success' IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'grn rates: parity % %: form % / recalculation %', g.gr_no, m, left(form::text,200), left(recalc::text,200);
+      END IF;
+      SELECT COALESCE(jsonb_agg((SELECT jsonb_object_agg(k, l.line->k) FROM unnest(keys) k WHERE l.line ? k)
+                                ORDER BY l.ord), '[]')
+        INTO stripped FROM jsonb_array_elements(recalc->'rows') WITH ORDINALITY AS l(line, ord);
+      IF stripped::text IS DISTINCT FROM (form->'items')::text THEN
+        RAISE EXCEPTION 'grn rates: parity % %: lines differ. form %, recalculation %', g.gr_no, m, left((form->'items')::text,400), left(stripped::text,400);
+      END IF;
+      IF (form->'totals')::text IS DISTINCT FROM (SELECT jsonb_build_object('subtotal',recalc#>'{totals,subtotal}','tax',recalc#>'{totals,tax}',
+           'total_tax',recalc#>'{totals,total_tax}','grand_total',recalc#>'{totals,grand_total}','total',recalc#>'{totals,total}',
+           'total_rows',recalc#>'{totals,total_rows}')::text) THEN
+        RAISE EXCEPTION 'grn rates: parity % %: totals differ. form %, recalculation %', g.gr_no, m, form->'totals', recalc->'totals';
+      END IF;
+      compared := compared + 1; line_count := line_count + jsonb_array_length(form->'items');
+    END LOOP;
+  END LOOP;
+  IF compared < 2 OR line_count < 3 THEN
+    RAISE EXCEPTION 'grn rates: parity compared % GRN/mode pairs and % lines, too few to prove anything', compared, line_count;
+  END IF;
+END $parity$;
+
 -- direct_write_guard.sql and role_allowlist.sql cover the table and the new function.
 ROLLBACK;

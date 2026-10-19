@@ -404,11 +404,31 @@ before anything is written; without `p_rates` a staff call works as before.
 `grn_rates` (`gr_id`, `item_id`, `price_type`, `weight_min`, `weight_max`, `unit_price`, `labour_rate`,
 `tax_percent`, `created_by`, `created_at`, `updated_by`, `updated_at`) is written only by `save_grn` / `update_grn`; administrators,
 supervisors can read it directly (like `item_storage_prices`); customer accounts never can. Invoice rows
-(`build_invoice_recalculation_rows`, and so the invoice preview and `save_invoice`) take rent, labour
-and tax of a line from one source: the stored invoice figure if the line is already invoiced, else the
-GRN-only rate whose band holds the line's weight (the narrowest wins), else the item's rate. Once an
-invoice is saved its figures win and the GRN-only rate is "archived"; delete the invoice and it applies
-again.
+take rent, labour and tax of a line from one source: the GRN-only rate whose band holds the line's weight (the
+narrowest wins), else the item's rate. The invoice form's preview (`build_invoice_form_lines`, migration 102) never
+reads `invoice_trl`: it prices the GRN's dispatched lines afresh, with the duration from `calculate_invoice_duration`.
+`save_invoice` calls `calculate_invoice_duration` itself and takes charge, tax and labour from the lines it is sent.
+`build_invoice_recalculation_rows` (which also takes the stored invoice figure of an already invoiced line) is now
+called only by `recalculate_invoice_items` (service_role only, not used by the app); `get_grn_item_rates` also takes
+the stored invoice figure first (`source 'invoice'`, from the lines of any live invoice of the lot, migration 88),
+then follows its rule. Once an invoice is saved its figures win and the GRN-only rate is "archived"; delete the
+invoice and it applies again.
+
+### `generate_invoice_data_for_grn_with_pricing(p_gr_id uuid, p_duration_mode text DEFAULT 'legacy')`: the invoice form's preview
+
+A successful answer is `{success, header, items, totals, message}`. `rows`, `data` and the 49 per-line second names
+and unused figures were removed in migrations 100 and 101. Each of the `items` has 21 keys: `grn_items_id`,
+`grn_items_item_id`, `grn_items_item_name`, `grn_items_original_qty`, `grn_items_package_mark`, `grn_items_rack`,
+`grn_items_weight`, `grn_items_pricing_mode`, `dispatches_items_id`, `dispatches_items_disp_qty`, `dispatches_id`,
+`dispatches_no`, `dispatches_date`, `items_catalog_name`, `grn_date`, `no_of_days`, `billable_days`, `duration`,
+`unit_price`, `labour_rate`, `tax_percent`. Lines are ordered by item name, dispatch date, dispatch line id.
+
+### `get_invoice_detail(p_invoice_id)`: lines (migrations 100 and 109)
+
+`invoice.grn_pricing_mode` is returned (the value `get_invoice_data` returns as `header.grn.pricing_mode`). Each line
+also carries `item_id` (the catalog item, `goodsreceived_trl.item_id`), `dispatch_id` and `rack`, and the lines come in
+the order item name, dispatch date, dispatch line id (`disp_trl_id`). Naming trap: in `get_invoice_data` a line's `item_id` is `invoice_trl.id`;
+in `get_invoice_detail` it is the catalog item.
 
 ### `get_grn_details(p_grn_id)`: `data.grn.rates`
 

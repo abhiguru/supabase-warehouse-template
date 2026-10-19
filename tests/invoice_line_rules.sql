@@ -210,8 +210,8 @@ SELECT pg_temp.rule_assert(warehouse_security.business_date('2026-03-31T18:30:00
 SET LOCAL TIME ZONE 'UTC';
 SET LOCAL ROLE authenticated;
 SELECT public.generate_invoice_data_for_grn_with_pricing(p_gr_id=>:'grn_c'::uuid,p_duration_mode=>'legacy') AS preview_c \gset
-SELECT pg_temp.rule_assert(:'preview_c'::jsonb->>'success'='true' AND (:'preview_c'::jsonb#>>'{rows,0,no_of_days}')::int=30
- AND (:'preview_c'::jsonb#>>'{rows,0,duration}')::numeric=1 AND (:'preview_c'::jsonb#>>'{totals,grand_total}')::numeric=74,
+SELECT pg_temp.rule_assert(:'preview_c'::jsonb->>'success'='true' AND (:'preview_c'::jsonb#>>'{items,0,no_of_days}')::int=30
+ AND (:'preview_c'::jsonb#>>'{items,0,duration}')::numeric=1 AND (:'preview_c'::jsonb#>>'{totals,grand_total}')::numeric=74,
  'preview: 30 days, one period, total 74: ' || (:'preview_c'::jsonb->'totals')::text);
 SELECT pg_temp.rule_save3(:'c_header'::jsonb || '{"inv_no":20261044}'::jsonb,:'c_items'::jsonb) AS saved_c \gset
 SELECT pg_temp.rule_assert(:'saved_c'::jsonb->>'success'='true','three-argument save of RULC: ' || :'saved_c');
@@ -374,6 +374,45 @@ SELECT pg_temp.rule_assert(:'detail_staff'::jsonb->>'success'='true' AND :'detai
  AND (:'detail_staff'::jsonb#>>'{invoice,discount_set_at}') IS NOT NULL AND (:'detail_staff'::jsonb#>>'{invoice,discount}')::numeric=10
  AND jsonb_array_length(:'detail_staff'::jsonb->'items')=2,'staff reads the discount record with the invoice: ' || (:'detail_staff'::jsonb->'invoice')::text);
 RESET ROLE;
+
+-- Migration 109: each line of get_invoice_detail carries item_id, dispatch_id and rack, ordered as the invoice
+-- form's preview orders them (item name, dispatch date, dispatch line id). The expected values come from the
+-- tables; the second run moves the dispatch that came first one day later so the order has to flip, then the change is rolled back.
+CREATE FUNCTION pg_temp.rule_expected_lines(p_invoice uuid) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_agg(jsonb_build_object('item_id',gt.item_id,'dispatch_id',d.id,'rack',gt.rack,'disp_no',d.disp_no)
+                   ORDER BY gt.item_name, d.disp_date, dt.id)
+  FROM public.invoice_trl it
+  JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id
+  JOIN public.dispatch d ON d.id = dt.disp_id
+  JOIN public.goodsreceived_trl gt ON gt.id = dt.gr_trl_id
+  WHERE it.invoice_id = p_invoice $$;
+CREATE FUNCTION pg_temp.rule_detail_lines(p_invoice uuid) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_agg(jsonb_build_object('item_id',l->'item_id','dispatch_id',l->'dispatch_id','rack',l->'rack',
+                                      'disp_no',(SELECT d.disp_no FROM public.dispatch d WHERE d.id=(l->>'dispatch_id')::uuid)) ORDER BY o)
+  FROM jsonb_array_elements(public.get_invoice_detail(p_invoice)->'items') WITH ORDINALITY AS t(l,o) $$;
+-- RULA1 and RULA2 share a dispatch date, so the first line is the one with the lower dispatch line id (ids are
+-- time-based UUIDs, so this is not fixed by the insert order): the expected first line is read from the ids and
+-- kept (first_disp) so that step 2 can move exactly that dispatch later.
+SELECT pg_temp.rule_assert((SELECT count(DISTINCT d.disp_date)=1 FROM public.dispatch d WHERE d.disp_no IN ('RULA1','RULA2'))
+ AND pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no'=(SELECT d.disp_no FROM public.dispatch d
+      JOIN public.dispatch_trl dt ON dt.disp_id=d.id WHERE d.disp_no IN ('RULA1','RULA2') ORDER BY dt.id LIMIT 1)
+ AND pg_temp.rule_detail_lines(:'invoice_a'::uuid)=pg_temp.rule_expected_lines(:'invoice_a'::uuid)
+ AND (SELECT bool_and((l->>'item_id') IS NOT NULL AND (l->>'dispatch_id') IS NOT NULL AND l ? 'rack')
+      FROM jsonb_array_elements(:'detail_staff'::jsonb->'items') l),
+ 'get_invoice_detail lines carry item_id, dispatch_id and rack in item, dispatch date, line order: '||pg_temp.rule_detail_lines(:'invoice_a'::uuid)::text);
+SELECT pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no' AS first_disp \gset
+SAVEPOINT rule_109;
+RESET ROLE;
+UPDATE public.dispatch SET disp_date=disp_date + interval '1 day' WHERE disp_no=:'first_disp';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rule_assert(pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no' IN ('RULA1','RULA2')
+ AND pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no' <> :'first_disp'
+ AND pg_temp.rule_detail_lines(:'invoice_a'::uuid)->0->>'disp_no' <> :'first_disp'
+ AND pg_temp.rule_detail_lines(:'invoice_a'::uuid)=pg_temp.rule_expected_lines(:'invoice_a'::uuid),
+ 'get_invoice_detail lines follow the dispatch date: '||pg_temp.rule_detail_lines(:'invoice_a'::uuid)::text);
+RESET ROLE;
+ROLLBACK TO SAVEPOINT rule_109;
+RELEASE SAVEPOINT rule_109;
 INSERT INTO public.users_customers_new(user_profile_id,customer_id,active)
  SELECT id,:'customer_id'::uuid,true FROM public.user_profiles WHERE mobile='919888888863';
 SELECT set_config('request.jwt.claims',:'customer_claims',true);

@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased: invoice form lookups run once per distinct value (migration 110)
+
+- **Migration 110.** `build_invoice_form_lines` (migration 102) ran `find_storage_price` and `calculate_invoice_duration`
+  once per line again, because PostgreSQL 15 folds a CTE used once into the query. The per-distinct-value steps are now
+  `AS MATERIALIZED` and joined with hashable equality on COALESCEd keys. GRN HVD4 (3,055 lines): `find_storage_price`
+  3,055 -> 10 runs, `calculate_invoice_duration` 3,055 -> 401 runs; the line query inside `build_invoice_form_lines`
+  about 190 ms -> about 20 ms; a whole call of `build_invoice_form_lines`, including turning its 2.2 MB answer into
+  text, about 220 ms -> about 85 ms. The weight and date joins use COALESCE equality plus IS NULL guards, so they
+  match exactly what `IS NOT DISTINCT FROM` matched, and stay hash joins. The answer is identical: 468 GRN/mode pairs
+  on Dev (380 of them with lines) compared as text in a rolled-back transaction, 0 differences.
+- **Compatibility (migrations 100 to 110).** Older app builds keep working: the app reads `items || rows` and the
+  first-choice names (`grn_items_id || grn_item_id`), and the new `get_invoice_detail` keys (`item_id`, `dispatch_id`,
+  `rack`, `invoice.grn_pricing_mode`) are additions only.
+
+## Unreleased: invoice edit keeps two items with the same mark apart (migration 109)
+
+- **Migration 109.** `get_invoice_detail` returns `item_id` (the catalog item), `dispatch_id` and `rack` on every line,
+  and orders the lines as the invoice form's GRN preview does (item name, dispatch date, dispatch line id). Before,
+  Invoices > an invoice > Edit > Next ("Step 2 of 3 · Items") merged two different items with the same package mark
+  (or none) into one card, because the edit load found no `item_id` on the lines (`dispatch_id` only groups lines
+  inside a card). The Review step's list was merged the same way. No existing key, the header or the access rules change.
+  Checked on Dev in a rolled-back transaction: 33 invoices, 225 lines, none differing apart from the three new keys.
+
+## Unreleased: faster invoice form preview (migration 102)
+
+- **Migration 102.** The invoice form's GRN preview (`generate_invoice_data_for_grn`, behind
+  `generate_invoice_data_for_grn_with_pricing`) is built by the new internal `build_invoice_form_lines(uuid, text)`:
+  set-based, only the 21 kept keys, the rate looked up once per distinct item and weight, the duration from
+  `calculate_invoice_duration` once per distinct dispatch date. A GRN of 3,055 lines: 0.56 s before, about 0.18 s after.
+  The answer is identical (checked on Dev against `build_invoice_recalculation_rows` with the strip, in a rolled-back
+  transaction, across rate, price, date, quantity and time-zone cases).
+
+## Unreleased: gateway compresses JSON answers; invoice form lines name each value once (migration 101)
+
+- **Gateway gzip.** Kong now compresses JSON and text answers (`KONG_NGINX_PROXY_GZIP*` in `docker/docker-compose.yml`:
+  `on`, `proxied any`, types `application/json`, `application/vnd.pgrst.object+json`, `application/vnd.pgrst.array+json`,
+  `application/openapi+json`, `application/geo+json`, `text/plain`, `text/csv`, minimum 1,024 bytes, level 5, `Vary`
+  on). Images, storage downloads, PDFs, range answers, the Realtime websocket and already-encoded answers are not
+  touched. Takes effect when the `kong` container is recreated. See `docs/ARCHITECTURE.md`.
+- **Migration 101.** The lines of the invoice-form answer lose 13 second names whose value is built from the same
+  expression as the first name the app reads: `grn_item_id`, `item_id`, `item_name`, `qty`, `package_mark`, `rack`,
+  `weight`, `dispatch_id`, `dispatch_no`, `dispatch_date`, `charge`, `tax`, `disp_trl_id`. 21 keys remain per line
+  (`items_catalog_name` and `billable_days` stay: they come from a different expression than the key read before them).
+  A GRN of 3,055 lines: 3,467,795 bytes before, 2,228,350 after. No value, order or total changes.
+
+## Unreleased: invoice form answer sends each line once (migration 100)
+
+Migration 100. The answer of `generate_invoice_data_for_grn_with_pricing` (Invoice, new invoice, step 2) carried every
+line four times (top-level `rows` and `items`, and again under `data`) with 70 keys per line; a GRN of 3,055 lines came to
+27 MB, downloaded twice per save.
+
+- **Shape.** A successful answer is `{ success, header, items, totals, message }`: the lines once, under `items`, in the
+  same order, with 34 keys each. `rows` and `data` are gone. The 36 keys removed are the second names and the
+  per-line amounts nothing reads (`amount`, `base_amount`, `item_amount`, `storage_amount`, `labour_amount`, `tax_amount`,
+  `total_amount`, `item_total`, `item_tax`, `dispatch_qty`, `row_number`, `rowNumber`, `id`, `invoice_item_id`,
+  `duration_mode`, `missing_price`, the `*_vehicle`, `*_customer_name`, `*_packaging`, `*_description` and
+  `*_total_dispatched` keys, and similar). The values of the keys that stay, the line order, `header`, `totals`, the
+  error answers, the signature, `SECURITY DEFINER`, `search_path`, the access check and the grants are unchanged.
+  In this migration the figures are still computed by `build_invoice_recalculation_rows`; migration 102 later replaces
+  that path for the form with `build_invoice_form_lines`. The edit is in
+  `generate_invoice_data_for_grn`, which the wrapper, `get_invoice_form_data` and the automatic-invoice answer of
+  `create_dispatch_with_stock_check_internal` (`invoice_data`) share.
+- **`get_invoice_detail`** also returns `invoice.grn_pricing_mode`, the value `get_invoice_data` returns as
+  `header.grn.pricing_mode`.
+
 ## Unreleased: dispatch item lists page after sorting (migration 99)
 
 Migration 99. `get_customer_dispatch_items` (a customer's dispatch lines; the app's recent-items quick-add asks for the

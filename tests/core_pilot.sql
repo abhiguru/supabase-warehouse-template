@@ -59,9 +59,13 @@ SELECT pg_temp.core_assert((SELECT stock=0 FROM public.goodsreceived_trl WHERE i
 SELECT public.generate_invoice_data_for_grn_with_pricing(p_gr_id=>:'grn_id'::uuid,p_duration_mode=>'legacy') AS preview \gset
 SELECT pg_temp.core_assert(:'preview'::jsonb->>'success'='true','invoice preview');
 SELECT pg_temp.core_assert(:'preview'::jsonb->'totals'='{"subtotal":950,"tax":48,"total_tax":48,"grand_total":998,"total":998,"total_rows":2}'::jsonb,'fictional totals reconcile');
+SELECT pg_temp.core_assert(jsonb_array_length(:'preview'::jsonb->'items')=2 AND NOT (:'preview'::jsonb ? 'rows') AND NOT (:'preview'::jsonb ? 'data'),'preview carries its two lines once, under items');
+-- build_invoice_recalculation_rows is internal (not granted to the API roles): read the line amounts as the owner.
+RESET ROLE;
 SELECT pg_temp.core_assert((SELECT jsonb_agg(jsonb_build_object('qty',r->'dispatch_qty','storage',r->'storage_amount',
  'labour',r->'labour_amount','tax',r->'tax_amount','total',r->'total_amount') ORDER BY (r->>'dispatch_qty')::numeric)
- FROM jsonb_array_elements(:'preview'::jsonb->'rows') r)='[{"qty":20,"storage":150,"labour":40,"tax":9.5,"total":199.5},{"qty":80,"storage":600,"labour":160,"tax":38,"total":798}]'::jsonb,'independent line amounts');
+ FROM jsonb_array_elements(public.build_invoice_recalculation_rows(:'grn_id'::uuid,'legacy',NULL)->'rows') r)='[{"qty":20,"storage":150,"labour":40,"tax":9.5,"total":199.5},{"qty":80,"storage":600,"labour":160,"tax":38,"total":798}]'::jsonb,'independent line amounts');
+SET LOCAL ROLE authenticated;
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) AS invoice_items
  FROM public.dispatch_trl t JOIN public.dispatch d ON d.id=t.disp_id WHERE d.disp_no IN ('COREA','COREB') \gset
 SELECT jsonb_build_object('inv_no',20260929,'inv_fin_year',2026,'gr_id',:'grn_id','gr_no','COREA',

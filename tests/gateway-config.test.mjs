@@ -301,3 +301,17 @@ test('publisher images are pinned by digest and the notices name the versions in
   }
   assert.doesNotMatch(`${notices}\n${review}`, /v1\.76\.2|postgrest:v14\.17|PostgREST v14\.17/);
 });
+
+test('the gateway compresses JSON and text answers only, so a large invoice-form preview is sent gzipped', () => {
+  const value = name => compose.match(new RegExp(`^\\s+${name}: "?([^"\\n]+)"?$`, 'm'))?.[1];
+  assert.equal(value('KONG_NGINX_PROXY_GZIP'), 'on');
+  assert.equal(value('KONG_NGINX_PROXY_GZIP_PROXIED'), 'any', 'answers that came through the tunnel proxy are compressed too');
+  assert.equal(Number(value('KONG_NGINX_PROXY_GZIP_MIN_LENGTH')), 1024);
+  assert.equal(value('KONG_NGINX_PROXY_GZIP_VARY'), 'on');
+  const types = (value('KONG_NGINX_PROXY_GZIP_TYPES') ?? '').split(/\s+/);
+  for (const type of ['application/json', 'application/vnd.pgrst.object+json', 'application/vnd.pgrst.array+json', 'text/plain', 'text/csv']) {
+    assert.ok(types.includes(type), `${type} is compressed`);
+  }
+  // Images, PDFs and other downloads stay as stored; the websocket upgrade is not an answer type.
+  assert.ok(!types.some(type => /^(image|video|audio)\//.test(type) || /pdf|octet-stream|zip/.test(type)), 'no binary type is listed');
+});

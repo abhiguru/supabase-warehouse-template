@@ -192,8 +192,17 @@ export async function reviewCore({ api, rpc, success, login, anon, adminToken, c
   }), 'remaining financial dispatch');
   const preview = await rpc('generate_invoice_data_for_grn_with_pricing', adminToken, { p_gr_id: financialGrn, p_duration_mode: 'legacy' });
   success(preview, 'priced invoice preview');
-  const pricedRows = [...preview.rows].sort((a, b) => a.dispatch_qty - b.dispatch_qty);
-  assert.deepEqual(pricedRows.map(row => ({ qty: row.dispatch_qty, days: row.no_of_days, duration: row.duration, storage: row.storage_amount, labour: row.labour_amount, tax: row.tax_amount, total: row.total_amount })), [
+  // Migration 100: the lines come once, under items, with the keys the form reads and no per-line amounts;
+  // the amounts are worked out here from quantity, duration and the three rates.
+  assert.equal(preview.rows, undefined, 'preview carries no rows copy');
+  assert.equal(preview.data, undefined, 'preview carries no data copy');
+  const pricedRows = [...preview.items].sort((a, b) => a.dispatches_items_disp_qty - b.dispatches_items_disp_qty);
+  assert.deepEqual(pricedRows.map(row => {
+    const storage = Math.round(row.unit_price * row.dispatches_items_disp_qty * row.duration * 100) / 100;
+    const labour = Math.round(row.labour_rate * row.dispatches_items_disp_qty * 100) / 100;
+    const tax = Math.round((storage + labour) * row.tax_percent) / 100;
+    return { qty: row.dispatches_items_disp_qty, days: row.no_of_days, duration: row.duration, storage, labour, tax, total: storage + labour + tax };
+  }), [
     { qty: 20, days: 31, duration: 1.5, storage: 150, labour: 40, tax: 9.5, total: 199.5 },
     { qty: 80, days: 31, duration: 1.5, storage: 600, labour: 160, tax: 38, total: 798 },
   ]);

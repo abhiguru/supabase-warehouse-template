@@ -1,7 +1,8 @@
 # Demo invoice rules
 
 This describes the existing database contract in `calculate_invoice_duration`,
-`build_invoice_recalculation_rows` and `save_invoice(jsonb)`. It is a compatibility
+`build_invoice_recalculation_rows` and `save_invoice(jsonb)`. The invoice form's preview
+(`generate_invoice_data_for_grn`) is built by `build_invoice_form_lines` (migration 102): it follows the same rules and calls `calculate_invoice_duration` for the duration, but never reads stored invoice lines (`invoice_trl`). It is a compatibility
 reference for the demo, not a new pricing policy. The API fixtures in
 `tests/review-core.mjs` and boundary fixtures in `tests/invoice_duration.sql`
 assert explicit expected values.
@@ -32,11 +33,12 @@ to two places. Line total is base plus that rounded line tax.
 
 ONE_TIME storage is quantity × unit price, rounded to two places, with zero
 labour in the current preview. Rates are selected using item, customer, weight,
-GRN date and pricing mode; existing invoice line rates take precedence when
-previewing an existing invoice. Missing prices are reported to the caller.
+GRN date and pricing mode; a stored invoice figure takes precedence
+(used by `build_invoice_recalculation_rows` / `recalculate_invoice_items`, and reported by `get_grn_item_rates`; never by the preview). Missing prices are reported to the caller.
 
 A rate typed for one GRN only (migration 86, `grn_rates`) sits between the two: a line's rent,
-labour and tax come from one source, in this order, never mixed: the stored invoice figure, then
+labour and tax come from one source, in this order, never mixed: the stored invoice figure (used by `build_invoice_recalculation_rows` /
+`recalculate_invoice_items`, and reported by `get_grn_item_rates`; never by the preview), then
 the GRN's own rate whose weight band holds the line's weight (the narrowest band wins), then the
 item's rate. Once the invoice is saved its figures win; if the invoice is deleted, the GRN's own
 rate applies again.

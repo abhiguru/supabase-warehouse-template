@@ -52,6 +52,21 @@ Client → Kong :8000 → PostgREST :3000 → PostgreSQL :5432
          (key-auth)   (JWT verify)       (RLS enforced)
 ```
 
+Kong compresses JSON and text answers with gzip (nginx `gzip`, set by the
+`KONG_NGINX_PROXY_GZIP*` variables of the `kong` service in
+`docker/docker-compose.yml`, which land in the proxy server block of Kong's
+rendered `nginx-kong.conf` next to `proxy_buffers`). Only answers of 1,024 bytes
+or more whose type is `application/json`, the PostgREST variants
+(`application/vnd.pgrst.object+json`, `application/vnd.pgrst.array+json`),
+`application/openapi+json`, `application/geo+json`, `text/plain` or `text/csv`
+are compressed, and only for a client that sends `Accept-Encoding: gzip`. Images and
+other storage downloads, PDFs, range answers, the Realtime websocket upgrade and
+answers that already carry a `Content-Encoding` (`get-public-config`) pass
+through unchanged. The reason is the tunnel's upload speed: a 3,055-line invoice
+preview is about 2.2 MB of JSON (after migration 101) and compresses to a small
+fraction of that. A change to these variables needs
+`bash scripts/compose.sh up -d --force-recreate --wait kong`.
+
 ### Edge Function Request
 ```
 Client → Kong :8000 → Edge Runtime :9000 → Worker (Deno V8 isolate)
