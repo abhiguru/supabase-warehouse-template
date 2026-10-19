@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased: dispatch item lists page after sorting (migration 99)
+
+Migration 99. `get_customer_dispatch_items` (a customer's dispatch lines; the app's recent-items quick-add asks for the
+newest 100) applied `LIMIT`/`OFFSET` to an unordered subquery. The requested sort ran only inside `jsonb_agg`, so it
+ordered the rows of a page but did not decide which rows made the page: a customer with more lines than the page size got
+an arbitrary page, and paging across calls could repeat or skip lines.
+
+- **The page is chosen after sorting.** The subquery orders by the requested key and direction (`grn_gr_no`, `grn_date`,
+  `item_name`, `disp_no`, `disp_date`, `qty`, `disp_qty`) and then by the dispatch line id, a unique tie-breaker, before
+  `LIMIT`/`OFFSET`; the aggregate ends with the same tie-breaker. Same-day dispatches share a timestamp, so a date sort
+  alone was not deterministic. An unknown sort key pages in line id order. The signature, `SECURITY DEFINER`,
+  `search_path`, the access check, the filters, the counts, the aggregations and the grants are unchanged. No app change.
+- **Cost.** The page is sorted before the limit. The app's call (`disp_date` desc, 100, 6 months) is unchanged at about
+  30 ms; the default sort is about 100 ms at 10,000 lines (measured by the review).
+- **Test.** `tests/customer_dispatch_items_order_99.sql` creates 24 lines on two receipts whose insertion order differs from their date
+  order, with date ties, and compares every sort key in both directions (first and second page, repeated calls, walks with
+  page sizes 5 and 7) with a direct query sorted by the key and the line id; it fails on the old function.
+
 ## Unreleased: Grafana removed; alerts go to the facility's Slack
 
 No dashboards any more, and no upgrade or retire path for them: no facility ran this code yet. Alerts reach people
