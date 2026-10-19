@@ -82,6 +82,18 @@ services:
       KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,file-log,rate-limiting,prometheus,request-size-limiting
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      # Compress JSON and text answers (an invoice-form preview of 3,055 lines is
+      # 3.5 MB of JSON; the tunnel uploads at about 3 MB/s). Only the types
+      # below are compressed: images, PDFs, other storage downloads and the
+      # Realtime websocket upgrade are not listed, nginx never recompresses an
+      # answer that already has Content-Encoding (get-public-config is gzip
+      # from the functions container), and it skips range answers.
+      KONG_NGINX_PROXY_GZIP: "on"
+      KONG_NGINX_PROXY_GZIP_PROXIED: any
+      KONG_NGINX_PROXY_GZIP_MIN_LENGTH: "1024"
+      KONG_NGINX_PROXY_GZIP_COMP_LEVEL: "5"
+      KONG_NGINX_PROXY_GZIP_VARY: "on"
+      KONG_NGINX_PROXY_GZIP_TYPES: application/json application/vnd.pgrst.object+json application/vnd.pgrst.array+json application/openapi+json application/geo+json text/plain text/csv
       KONG_NGINX_HTTP2: "on"
       KONG_UPSTREAM_KEEPALIVE: "320"
       KONG_NGINX_KEEPALIVE_REQUESTS: "10000"

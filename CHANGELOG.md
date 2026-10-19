@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased: gateway compresses JSON answers; invoice form lines name each value once (migration 101)
+
+- **Gateway gzip.** Kong now compresses JSON and text answers (`KONG_NGINX_PROXY_GZIP*` in `docker/docker-compose.yml`:
+  `on`, `proxied any`, types `application/json`, `application/vnd.pgrst.object+json`, `application/vnd.pgrst.array+json`,
+  `application/openapi+json`, `application/geo+json`, `text/plain`, `text/csv`, minimum 1,024 bytes, level 5, `Vary`
+  on). Images, storage downloads, PDFs, range answers, the Realtime websocket and already-encoded answers are not
+  touched. Takes effect when the `kong` container is recreated. See `docs/ARCHITECTURE.md`.
+- **Migration 101.** The lines of the invoice-form answer lose 13 second names whose value is built from the same
+  expression as the first name the app reads: `grn_item_id`, `item_id`, `item_name`, `qty`, `package_mark`, `rack`,
+  `weight`, `dispatch_id`, `dispatch_no`, `dispatch_date`, `charge`, `tax`, `disp_trl_id`. 21 keys remain per line
+  (`items_catalog_name` and `billable_days` stay: they come from a different expression than the key read before them).
+  A GRN of 3,055 lines: 3,467,795 bytes before, 2,228,350 after. No value, order or total changes.
+
 ## Unreleased: invoice form answer sends each line once (migration 100)
 
 Migration 100. The answer of `generate_invoice_data_for_grn_with_pricing` (Invoice, new invoice, step 2) carried every
