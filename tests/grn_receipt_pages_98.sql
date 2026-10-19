@@ -3,6 +3,10 @@
 -- Fixtures: RPG1 (5 lines) RPG2 (12) RPG3 (4) RPG4 (3) RPG5 (3) of customer A, RPG6 (2) of customer B.
 -- 29 lines in all. RPG4 and RPG5 carry the same date. In line mode, lines 11-20 by number are
 -- 7 lines of RPG2 and 3 of RPG3: a receipt split across a page.
+-- Second fixture set (search "rpi"): receipts whose line ids INTERLEAVE and whose receipt ids run opposite to their
+-- numbers, so the terms that keep a receipt's lines together and order equal dates by number are needed (a mutation
+-- that drops either one must fail this file). RPI1, RPI2 (customer A) and RPI3 (customer B) share one timestamp;
+-- RPI4 (customer A) has a NULL date and a NULL customer name.
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.rp_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -76,6 +80,25 @@ UPDATE public.goodsreceived_trl SET stock = CASE package_mark WHEN 'RPG3-1' THEN
 SELECT pg_temp.rp_assert((SELECT count(*) = 29 AND count(*) FILTER (WHERE stock = qty) = 25 FROM public.goodsreceived_trl WHERE package_mark LIKE 'RPG%'),
   'fixture: 29 lines, 25 of them with full stock');
 
+-- Interleaved fixtures, written directly with explicit ids (as after later GRN edits add lines to an earlier receipt).
+-- Receipt ids: RPI3 < RPI2 < RPI1 < RPI4 (opposite to the numbers). Line ids, in id order:
+-- RPI3-1, RPI2-1, RPI1-1, RPI2-2, RPI1-2, RPI4-1, RPI4-2. Without the receipt-number term, RPI2 would come before RPI1
+-- and the two would alternate line by line.
+INSERT INTO public.goodsreceived(id, gr_no, customer_id, customer_name, date) VALUES
+ ('a0000000-0000-0000-0000-0000000000a0', 'RPI3', :'beta'::uuid, 'Receipt Pages Beta', date_trunc('second', now()) - interval '5 days'),
+ ('a0000000-0000-0000-0000-0000000000a1', 'RPI2', :'alpha'::uuid, 'Receipt Pages Alpha', date_trunc('second', now()) - interval '5 days'),
+ ('a0000000-0000-0000-0000-0000000000a2', 'RPI1', :'alpha'::uuid, 'Receipt Pages Alpha', date_trunc('second', now()) - interval '5 days'),
+ ('a0000000-0000-0000-0000-0000000000a3', 'RPI4', :'alpha'::uuid, NULL, NULL);
+INSERT INTO public.goodsreceived_trl(id, gr_id, item_id, item_name, qty, stock, package_mark) VALUES
+ ('b0000000-0000-0000-0000-000000000000', 'a0000000-0000-0000-0000-0000000000a0', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI3-1'),
+ ('b0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-0000000000a1', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI2-1'),
+ ('b0000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-0000000000a2', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI1-1'),
+ ('b0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-0000000000a1', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI2-2'),
+ ('b0000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-0000000000a2', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI1-2'),
+ ('b0000000-0000-0000-0000-000000000005', 'a0000000-0000-0000-0000-0000000000a3', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI4-1'),
+ ('b0000000-0000-0000-0000-000000000006', 'a0000000-0000-0000-0000-0000000000a3', :'garlic'::uuid, 'Receipt Pages Garlic', 100, 100, 'RPI4-2');
+SELECT pg_temp.rp_assert((SELECT count(*) = 7 FROM public.goodsreceived_trl WHERE package_mark LIKE 'RPI%'), 'fixture: 7 interleaved lines');
+
 -- Staff list ------------------------------------------------------------------------------------
 SELECT set_config('request.jwt.claims', :'admin_claims', true);
 SET LOCAL ROLE authenticated;
@@ -124,6 +147,38 @@ SELECT pg_temp.rp_assert(pg_temp.rp_staff_marks(pg_temp.staff('{"stock_status": 
   AND cardinality(pg_temp.rp_staff_marks(pg_temp.staff('{"stock_status": "all"}', 'gr_no', 'asc', 100, 0))) = 29, 'staff out_of_stock, in_stock and all are unchanged');
 SELECT pg_temp.rp_assert(pg_temp.rp_staff_marks(pg_temp.staff('{"stock_status": "low_stock", "page_by": "receipt"}', 'gr_no', 'asc', 1, 0)) = ARRAY['RPG3-2', 'RPG3-3']
   AND pg_temp.staff('{"stock_status": "low_stock", "page_by": "receipt"}', 'gr_no', 'asc', 1, 0)#>>'{pagination,total_count}' = '1', 'staff receipt mode with low_stock: one receipt, only its low lines');
+-- Interleaved receipts (search "rpi"). Id order of the lines is RPI3 RPI2 RPI1 RPI2 RPI1 RPI4 RPI4, but a receipt page must
+-- hold each receipt's lines together and order equal dates by receipt number. A NULL date sorts first when descending
+-- and last when ascending (the staff list uses the database default).
+CREATE FUNCTION pg_temp.staff_i(filters jsonb, sort_by text, direction text, page_size integer, skip integer) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.get_all_grn_items(p_filters => '{"search": "rpi", "page_by": "receipt"}'::jsonb || filters, p_sort_by => sort_by, p_sort_order => direction,
+    p_limit => page_size, p_offset => skip) $$;
+SELECT pg_temp.rp_assert(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 10, 0)) = ARRAY['RPI4','RPI4','RPI1','RPI1','RPI2','RPI2','RPI3']
+  AND pg_temp.rp_contiguous(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 10, 0))),
+  'staff interleaved, date descending (NULL date first; RPI1, RPI2, RPI3 share a timestamp: by number, contiguous): ' || pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 10, 0))::text);
+SELECT pg_temp.rp_assert(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'asc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI3','RPI4','RPI4']
+  AND pg_temp.rp_contiguous(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'asc', 10, 0))),
+  'staff interleaved, date ascending (NULL date last): ' || pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'asc', 10, 0))::text);
+-- Pages of two receipts: every page holds whole receipts, in the same order as one big page.
+SELECT pg_temp.rp_assert(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 2, 0)) = ARRAY['RPI4','RPI4','RPI1','RPI1']
+  AND pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 2, 2)) = ARRAY['RPI2','RPI2','RPI3']
+  AND pg_temp.staff_i('{}', 'date', 'desc', 2, 0)#>>'{pagination,total_count}' = '4'
+  AND pg_temp.staff_i('{}', 'date', 'desc', 2, 0)#>>'{pagination,unit}' = 'receipt',
+  'staff interleaved: pages of two receipts, whole receipts: ' || pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 2, 0))::text || pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'date', 'desc', 2, 2))::text);
+-- Receipt number descending, and customer name (NULL first when descending, last when ascending; equal names by number).
+SELECT pg_temp.rp_assert(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'gr_no', 'desc', 10, 0)) = ARRAY['RPI4','RPI4','RPI3','RPI2','RPI2','RPI1','RPI1'],
+  'staff receipt mode, receipt number descending: ' || pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'gr_no', 'desc', 10, 0))::text);
+SELECT pg_temp.rp_assert(pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'customer_name', 'asc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI3','RPI4','RPI4']
+  AND pg_temp.rp_staff_lines(pg_temp.staff_i('{}', 'customer_name', 'desc', 10, 0)) = ARRAY['RPI4','RPI4','RPI3','RPI1','RPI1','RPI2','RPI2'],
+  'staff receipt mode, customer name: NULL name last ascending, first descending; equal names by number');
+-- No match, and an offset past the end: an empty page that still says receipt.
+SELECT pg_temp.rp_assert(pg_temp.staff_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)->'data' = '[]'::jsonb
+  AND pg_temp.staff_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>>'{pagination,total_count}' = '0'
+  AND pg_temp.staff_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>>'{pagination,unit}' = 'receipt', 'staff receipt mode: no match');
+SELECT pg_temp.rp_assert(pg_temp.staff_i('{}', 'date', 'desc', 2, 1000)->'data' = '[]'::jsonb
+  AND pg_temp.staff_i('{}', 'date', 'desc', 2, 1000)->>'success' = 'true'
+  AND pg_temp.staff_i('{}', 'date', 'desc', 2, 1000)#>>'{pagination,total_count}' = '4'
+  AND pg_temp.staff_i('{}', 'date', 'desc', 2, 1000)#>>'{pagination,unit}' = 'receipt', 'staff receipt mode: offset past the end');
 RESET ROLE;
 
 -- Customer list ---------------------------------------------------------------------------------
@@ -175,6 +230,43 @@ SELECT pg_temp.rp_assert(pg_temp.rp_cust_marks(pg_temp.mine('{"stock_status": "o
   AND cardinality(pg_temp.rp_cust_marks(pg_temp.mine('{"stock_status": "nonsense"}', 'gr_no', 'asc', 100, 0))) = 0, 'customer out_of_stock, in_stock, all and unknown values are unchanged');
 SELECT pg_temp.rp_assert(pg_temp.rp_cust_marks(pg_temp.mine('{"stock_status": "low_stock", "page_by": "receipt"}', 'gr_no', 'asc', 1, 0)) = ARRAY['RPG3-2', 'RPG3-3']
   AND pg_temp.mine('{"stock_status": "low_stock", "page_by": "receipt"}', 'gr_no', 'asc', 1, 0)#>>'{data,pagination,total_count}' = '1', 'customer receipt mode with low_stock');
+-- Interleaved receipts (search "rpi"), the customer's own three (RPI3 belongs to customer B). The customer list orders NULL
+-- dates last in both directions and puts equal sort values in receipt-number order.
+CREATE FUNCTION pg_temp.mine_i(filters jsonb, sort_by text, direction text, page_size integer, skip integer) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.get_customer_grn_items(p_customer_id => current_setting('test.rp_alpha')::uuid, p_filters => '{"search": "rpi", "page_by": "receipt"}'::jsonb || filters,
+    p_sort_by => sort_by, p_sort_order => direction, p_limit => page_size, p_offset => skip) $$;
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI4','RPI4']
+  AND pg_temp.rp_contiguous(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 10, 0))),
+  'customer interleaved, date descending (same date: by number, contiguous; NULL date last): ' || pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 10, 0))::text);
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'asc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI4','RPI4']
+  AND pg_temp.rp_contiguous(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'asc', 10, 0))),
+  'customer interleaved, date ascending: ' || pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'asc', 10, 0))::text);
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 1, 0)) = ARRAY['RPI1','RPI1']
+  AND pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 1, 1)) = ARRAY['RPI2','RPI2']
+  AND pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'date', 'desc', 2, 2)) = ARRAY['RPI4','RPI4']
+  AND pg_temp.mine_i('{}', 'date', 'desc', 1, 0)#>>'{data,pagination,total_count}' = '3'
+  AND pg_temp.mine_i('{}', 'date', 'desc', 1, 0)#>>'{data,pagination,has_more}' = 'true'
+  AND pg_temp.mine_i('{}', 'date', 'desc', 2, 2)#>>'{data,pagination,has_more}' = 'false',
+  'customer interleaved: pages of one receipt hold whole receipts');
+-- Receipt number descending; customer name (NULL name last ascending, first descending; equal names by number).
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'gr_no', 'desc', 10, 0)) = ARRAY['RPI4','RPI4','RPI2','RPI2','RPI1','RPI1'],
+  'customer receipt mode, receipt number descending: ' || pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'gr_no', 'desc', 10, 0))::text);
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'customer_name', 'asc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI4','RPI4']
+  AND pg_temp.rp_cust_lines(pg_temp.mine_i('{}', 'customer_name', 'desc', 10, 0)) = ARRAY['RPI4','RPI4','RPI1','RPI1','RPI2','RPI2'],
+  'customer receipt mode, customer name: NULL name last ascending, first descending; equal names by number');
+-- No receipt matches, and an offset past the end: an empty page that still says receipt.
+SELECT pg_temp.rp_assert(pg_temp.mine_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)->>'success' = 'true'
+  AND pg_temp.mine_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>'{data,items}' = '[]'::jsonb
+  AND pg_temp.mine_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>>'{data,pagination,total_count}' = '0'
+  AND pg_temp.mine_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>>'{data,pagination,has_more}' = 'false'
+  AND pg_temp.mine_i('{"search": "rpizzz"}', 'date', 'desc', 10, 0)#>>'{data,pagination,unit}' = 'receipt', 'customer receipt mode: no match');
+SELECT pg_temp.rp_assert(pg_temp.mine_i('{}', 'date', 'desc', 2, 1000)#>'{data,items}' = '[]'::jsonb
+  AND pg_temp.mine_i('{}', 'date', 'desc', 2, 1000)#>>'{data,pagination,total_count}' = '3'
+  AND pg_temp.mine_i('{}', 'date', 'desc', 2, 1000)#>>'{data,pagination,has_more}' = 'false'
+  AND pg_temp.mine_i('{}', 'date', 'desc', 2, 1000)#>>'{data,pagination,unit}' = 'receipt', 'customer receipt mode: offset past the end');
+-- A NULL sort or order passes the customer function's check; receipt mode then orders by receipt number alone.
+SELECT pg_temp.rp_assert(pg_temp.rp_cust_lines(pg_temp.mine_i('{}', NULL, 'desc', 10, 0)) = ARRAY['RPI1','RPI1','RPI2','RPI2','RPI4','RPI4'],
+  'customer receipt mode, NULL sort: receipt number ascending: ' || pg_temp.rp_cust_lines(pg_temp.mine_i('{}', NULL, 'desc', 10, 0))::text);
 -- Only own receipts, in either mode.
 SELECT pg_temp.rp_assert(NOT ('RPG6' = ANY (pg_temp.rp_cust_lines(pg_temp.mine('{"page_by": "receipt"}', 'gr_no', 'asc', 100, 0))))
   AND NOT ('RPG6' = ANY (pg_temp.rp_cust_lines(pg_temp.mine('{}', 'gr_no', 'asc', 100, 0)))), 'customer never sees the other customer''s receipt');

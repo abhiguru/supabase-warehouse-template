@@ -553,8 +553,10 @@ be split across two pages. Both accept one more, opt-in key in `p_filters`:
   lines. The customer `has_more` follows the receipt count, and the `p_limit` 1 to 100 check counts receipts.
   Receipts are ordered by the sort, then by receipt number (raw text) for equal values; lines of one receipt are
   never interleaved with another's.
-- **Sorts in receipt mode** are `date`, `gr_no` and `customer_name` only (a NULL sort means `date`). Any other
-  sort answers `{success: false, message: 'Invalid list parameters', data: null}`.
+- **Sorts in receipt mode** are `date`, `gr_no` and `customer_name` only. In the staff function a NULL sort means
+  `date`. The customer function accepts a NULL sort (and a NULL order) and does not default it: no sort term
+  applies, so receipt mode orders by raw receipt number (text, ascending) alone, and line mode by line id alone.
+  Any other sort answers `{success: false, message: 'Invalid list parameters', data: null}`.
 - **`pagination.unit`** is `'receipt'` or `'line'` in both functions (new field; `'line'` without the key).
   Without `page_by` (or with any other value) nothing else changes, so older app builds keep working.
 - **Staff list data order** is now explicit: `row_num`, then `grn_item_id` (line mode returned this order

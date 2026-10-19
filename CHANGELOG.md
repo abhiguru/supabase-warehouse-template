@@ -31,16 +31,19 @@ partial stock. Both functions keep their old behaviour unless the new key is sen
 - **Opt-in receipt paging (migration 98).** `get_all_grn_items` (staff) and `get_customer_grn_items` (customer) accept
   `p_filters.page_by = 'receipt'`: `p_limit` / `p_offset` then count receipts and all matching lines of each receipt
   on the page are returned. A receipt page is unbounded in lines (accepted). Without the key (older app builds) the
-  line paging is unchanged.
+  line paging is unchanged. In line mode the customer function's first page got slower for very large customers
+  (about 100 ms at 60,000 lines, measured by the review): accepted.
 - **Receipt counts and `pagination.unit`.** In receipt mode `pagination.total_count` counts receipts (the customer
   function's `total` and `aggregations.total_count` too, and `has_more` follows); sums stay over all filtered lines.
   Both functions add `pagination.unit` (`'receipt'` or `'line'`).
-- **Receipt-mode sort restriction.** Only `date`, `gr_no` and `customer_name` (NULL means `date`); a line sort
-  answers `Invalid list parameters`. Receipts with equal sort values order by receipt number and never interleave.
+- **Receipt-mode sort restriction.** Only `date`, `gr_no` and `customer_name`; a line sort
+  answers `Invalid list parameters`. A NULL sort means `date` in the staff function only; the customer function
+  accepts NULL and orders by raw receipt number alone (receipt mode) or by line id alone (line mode). Receipts with equal sort values order by receipt number and never interleave.
 - **`stock_status = 'low_stock'`.** Lines with `0 < stock < 20% of qty`, in both functions (the staff list ignored
   the value, the customer list matched nothing). `in_stock` and `out_of_stock` are unchanged.
 - **The staff list pins its item order** (`row_num`, then `grn_item_id`); it was only incidental before.
-- Test: `tests/grn_receipt_pages_98.sql`. The customer function's document-number key (checked by
+- Test: `tests/grn_receipt_pages_98.sql` (receipts whose line ids interleave, NULL dates and names, equal timestamps
+  across customers, no match, offset past the end; it fails if either tie-break term is dropped). The customer function's document-number key (checked by
   `tests/document_number_sort.sql`) is not duplicated.
 
 ## Unreleased: pdf-renderer replaces Gotenberg
