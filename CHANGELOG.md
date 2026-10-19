@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased: invoice form lookups run once per distinct value (migration 110)
+
+- **Migration 110.** `build_invoice_form_lines` (migration 102) ran `find_storage_price` and `calculate_invoice_duration`
+  once per line again, because PostgreSQL 15 folds a CTE used once into the query. The per-distinct-value steps are now
+  `AS MATERIALIZED` and joined with hashable equality on COALESCEd keys. GRN HVD4 (3,055 lines): `find_storage_price`
+  3,055 -> 10 runs, `calculate_invoice_duration` 3,055 -> 401 runs, the query about 190 ms -> about 20 ms. The answer is
+  identical: 380 GRN/mode pairs on Dev compared as text in a rolled-back transaction, 0 differences.
+- **Compatibility (migrations 100 to 110).** Older app builds keep working: the app reads `items || rows` and the
+  first-choice names (`grn_items_id || grn_item_id`), and the new `get_invoice_detail` keys (`item_id`, `dispatch_id`,
+  `rack`, `invoice.grn_pricing_mode`) are additions only.
+
 ## Unreleased: invoice edit keeps two items with the same mark apart (migration 109)
 
 - **Migration 109.** `get_invoice_detail` returns `item_id` (the catalog item), `dispatch_id` and `rack` on every line,
@@ -44,7 +55,8 @@ line four times (top-level `rows` and `items`, and again under `data`) with 70 k
   `duration_mode`, `missing_price`, the `*_vehicle`, `*_customer_name`, `*_packaging`, `*_description` and
   `*_total_dispatched` keys, and similar). The values of the keys that stay, the line order, `header`, `totals`, the
   error answers, the signature, `SECURITY DEFINER`, `search_path`, the access check and the grants are unchanged.
-  The figures are still computed by `build_invoice_recalculation_rows`, which is untouched. The edit is in
+  In this migration the figures are still computed by `build_invoice_recalculation_rows`; migration 102 later replaces
+  that path for the form with `build_invoice_form_lines`. The edit is in
   `generate_invoice_data_for_grn`, which the wrapper, `get_invoice_form_data` and the automatic-invoice answer of
   `create_dispatch_with_stock_check_internal` (`invoice_data`) share.
 - **`get_invoice_detail`** also returns `invoice.grn_pricing_mode`, the value `get_invoice_data` returns as

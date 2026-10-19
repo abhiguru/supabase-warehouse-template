@@ -715,8 +715,9 @@ SELECT pg_temp.gr_assert(:'undo_far'::jsonb->>'error_code'='INVALID_DATE','two y
 -- Drift guard (migration 102): build_invoice_form_lines is a second implementation of the lines that
 -- build_invoice_recalculation_rows builds. For every GRN of these fixtures that has dispatches, in both
 -- duration modes, its 'items' must equal the recalculation rows reduced to the 21 keys the form carries, in
--- the form's order (item name, dispatch date, dispatch line id), and its 'totals' must equal the recalculation
--- totals. A change to the rate rule, the duration rule or an amount expression in one function and not the
+-- the form's order (item name, dispatch date, dispatch line id; the recalculation rows are taken in their own
+-- order, which must already be that one), and its 'totals' must equal the recalculation totals as text, so the
+-- decimals count. A change to the rate rule, the duration rule or an amount expression in one function and not the
 -- other fails here. The nine rate-rule fixtures above (GRN rate, item rate, ONE_TIME, a missing price) are
 -- the data; the count check below fails if the fixtures ever stop producing dispatched lines.
 SELECT pg_temp.gr_assert((SELECT count(DISTINCT dt.id)>=3 FROM public.dispatch_trl dt JOIN public.goodsreceived_trl g ON g.id=dt.gr_trl_id),
@@ -738,14 +739,14 @@ BEGIN
         RAISE EXCEPTION 'grn rates: parity % %: form % / recalculation %', g.gr_no, m, left(form::text,200), left(recalc::text,200);
       END IF;
       SELECT COALESCE(jsonb_agg((SELECT jsonb_object_agg(k, l.line->k) FROM unnest(keys) k WHERE l.line ? k)
-                                ORDER BY l.line->>'grn_items_item_name', l.line->>'dispatches_date', (l.line->>'dispatches_items_id')::uuid), '[]')
-        INTO stripped FROM jsonb_array_elements(recalc->'rows') AS l(line);
+                                ORDER BY l.ord), '[]')
+        INTO stripped FROM jsonb_array_elements(recalc->'rows') WITH ORDINALITY AS l(line, ord);
       IF stripped::text IS DISTINCT FROM (form->'items')::text THEN
         RAISE EXCEPTION 'grn rates: parity % %: lines differ. form %, recalculation %', g.gr_no, m, left((form->'items')::text,400), left(stripped::text,400);
       END IF;
-      IF (form->'totals') IS DISTINCT FROM (SELECT jsonb_build_object('subtotal',recalc#>'{totals,subtotal}','tax',recalc#>'{totals,tax}',
+      IF (form->'totals')::text IS DISTINCT FROM (SELECT jsonb_build_object('subtotal',recalc#>'{totals,subtotal}','tax',recalc#>'{totals,tax}',
            'total_tax',recalc#>'{totals,total_tax}','grand_total',recalc#>'{totals,grand_total}','total',recalc#>'{totals,total}',
-           'total_rows',recalc#>'{totals,total_rows}')) THEN
+           'total_rows',recalc#>'{totals,total_rows}')::text) THEN
         RAISE EXCEPTION 'grn rates: parity % %: totals differ. form %, recalculation %', g.gr_no, m, form->'totals', recalc->'totals';
       END IF;
       compared := compared + 1; line_count := line_count + jsonb_array_length(form->'items');

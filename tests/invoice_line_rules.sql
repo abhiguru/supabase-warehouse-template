@@ -390,7 +390,11 @@ CREATE FUNCTION pg_temp.rule_detail_lines(p_invoice uuid) RETURNS jsonb LANGUAGE
   SELECT jsonb_agg(jsonb_build_object('item_id',l->'item_id','dispatch_id',l->'dispatch_id','rack',l->'rack',
                                       'disp_no',(SELECT d.disp_no FROM public.dispatch d WHERE d.id=(l->>'dispatch_id')::uuid)) ORDER BY o)
   FROM jsonb_array_elements(public.get_invoice_detail(p_invoice)->'items') WITH ORDINALITY AS t(l,o) $$;
-SELECT pg_temp.rule_assert(pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no'='RULA1'
+-- RULA1 and RULA2 share a dispatch date, so the first line is the one with the lower dispatch line id (ids are
+-- time-based UUIDs, so this is not fixed by the insert order): the expected first line is read from the ids.
+SELECT pg_temp.rule_assert((SELECT count(DISTINCT d.disp_date)=1 FROM public.dispatch d WHERE d.disp_no IN ('RULA1','RULA2'))
+ AND pg_temp.rule_expected_lines(:'invoice_a'::uuid)->0->>'disp_no'=(SELECT d.disp_no FROM public.dispatch d
+      JOIN public.dispatch_trl dt ON dt.disp_id=d.id WHERE d.disp_no IN ('RULA1','RULA2') ORDER BY dt.id LIMIT 1)
  AND pg_temp.rule_detail_lines(:'invoice_a'::uuid)=pg_temp.rule_expected_lines(:'invoice_a'::uuid)
  AND (SELECT bool_and((l->>'item_id') IS NOT NULL AND (l->>'dispatch_id') IS NOT NULL AND l ? 'rack')
       FROM jsonb_array_elements(:'detail_staff'::jsonb->'items') l),

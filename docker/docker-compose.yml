@@ -83,7 +83,7 @@ services:
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
       # Compress JSON and text answers (an invoice-form preview of 3,055 lines is
-      # 3.5 MB of JSON; the tunnel uploads at about 3 MB/s). Only the types
+      # 2.2 MB of JSON after migration 101; the tunnel uploads at about 3 MB/s). Only the types
       # below are compressed: images, PDFs, other storage downloads and the
       # Realtime websocket upgrade are not listed, nginx never recompresses an
       # answer that already has Content-Encoding (get-public-config is gzip
