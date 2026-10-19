@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased: invoice form answer sends each line once (migration 100)
+
+Migration 100. The answer of `generate_invoice_data_for_grn_with_pricing` (Invoice, new invoice, step 2) carried every
+line four times (top-level `rows` and `items`, and again under `data`) with 70 keys per line; a GRN of 3,055 lines came to
+27 MB, downloaded twice per save.
+
+- **Shape.** A successful answer is `{ success, header, items, totals, message }`: the lines once, under `items`, in the
+  same order, with 34 keys each. `rows` and `data` are gone. The 36 keys removed are the second names and the
+  per-line amounts nothing reads (`amount`, `base_amount`, `item_amount`, `storage_amount`, `labour_amount`, `tax_amount`,
+  `total_amount`, `item_total`, `item_tax`, `dispatch_qty`, `row_number`, `rowNumber`, `id`, `invoice_item_id`,
+  `duration_mode`, `missing_price`, the `*_vehicle`, `*_customer_name`, `*_packaging`, `*_description` and
+  `*_total_dispatched` keys, and similar). The values of the keys that stay, the line order, `header`, `totals`, the
+  error answers, the signature, `SECURITY DEFINER`, `search_path`, the access check and the grants are unchanged.
+  The figures are still computed by `build_invoice_recalculation_rows`, which is untouched. The edit is in
+  `generate_invoice_data_for_grn`, which the wrapper, `get_invoice_form_data` and the automatic-invoice answer of
+  `create_dispatch_with_stock_check_internal` (`invoice_data`) share.
+- **`get_invoice_detail`** also returns `invoice.grn_pricing_mode`, the value `get_invoice_data` returns as
+  `header.grn.pricing_mode`.
+
 ## Unreleased: dispatch item lists page after sorting (migration 99)
 
 Migration 99. `get_customer_dispatch_items` (a customer's dispatch lines; the app's recent-items quick-add asks for the
