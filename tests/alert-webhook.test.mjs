@@ -236,7 +236,7 @@ test('on a terminal: the URL is not echoed, a wrong one is refused, the test mes
     writeFileSync(out, '', { mode: 0o600 });
     const run = await drive({ state: stateWith(s.dir), out }, [
       ['alerts (create one in Slack: Apps', 'https://example.test/not-slack'],
-      ['try again', URL_A],
+      ['alerts (create one in Slack: Apps', URL_A], // the window is reset after each send: this waits for the second prompt
       ['Send a test message to Slack now? [Y/n]', ''],
     ], '', { WAREHOUSE_SLACK_POST_ORIGIN: slack.origin });
     assert.equal(run.status, 0, run.stdout + run.stderr);
@@ -250,6 +250,24 @@ test('on a terminal: the URL is not echoed, a wrong one is refused, the test mes
     assert.equal(slack.received.length, 1);
     assert.equal(slack.received[0].path, '/services/T0000000/B0000000/fictionalfictionalfictional');
     assert.match(JSON.parse(slack.received[0].body).text, /Fictional Cold Storage/);
+  } finally { await slack.close(); s.cleanup(); }
+});
+
+test('on a terminal: a URL typed ahead, right after the refusal text and before the next prompt, is not echoed', { skip: !python && 'python3 pty is not available' }, async () => {
+  const s = scratch();
+  const slack = await fakeSlack();
+  try {
+    const out = join(s.dir, 'out');
+    writeFileSync(out, '', { mode: 0o600 });
+    const run = await drive({ state: stateWith(s.dir), out }, [
+      ['alerts (create one in Slack: Apps', 'https://example.test/not-slack'],
+      ['try again', URL_A], // no wait for the second prompt: the race
+      ['Send a test message to Slack now? [Y/n]', ''],
+    ], '', { WAREHOUSE_SLACK_POST_ORIGIN: slack.origin });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.doesNotMatch(run.stdout, SECRET, 'the typed-ahead URL is not echoed');
+    assert.doesNotMatch(run.stdout, /example\.test/);
+    assert.equal(readFileSync(out, 'utf8'), `${URL_A}\n`);
   } finally { await slack.close(); s.cleanup(); }
 });
 
