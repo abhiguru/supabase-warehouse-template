@@ -20,7 +20,7 @@ import { SLACK_WEBHOOK_PATTERN } from './monitoring-config.mjs';
 export const MAX_ATTEMPTS = 3;
 export const PROMPT = company => `Slack incoming-webhook URL for ${company} alerts (create one in Slack: Apps → Incoming Webhooks):`;
 export const REFUSAL = '--alert-webhook-file PATH is required (a file holding the facility\'s Slack webhook URL), or --alert-webhook-file off for a non-production install';
-export const OFF_WARNING = 'Warning: --alert-webhook-file off: no Slack webhook, so alerts stay on this host only and nobody is told when a backup fails or the database stops. Not for a production install; add the webhook later by rerunning setup.sh --operator.';
+export const OFF_WARNING = 'Warning: --alert-webhook-file off: no Slack webhook, so alerts stay on this host only and nobody is told when a backup fails or the database stops. Not for a production install; add the webhook later by rerunning setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or passing --alert-webhook-file <a private file holding the URL>.';
 
 const NOT_SLACK = 'That is not a Slack incoming-webhook URL.';
 const isNo = answer => answer === null || /^n(o)?$/i.test(String(answer).trim());
@@ -53,7 +53,9 @@ export async function obtainWebhook({ company, read, ask, write, post = postSlac
 }
 
 // A line from the terminal without echo. Ctrl-C and Ctrl-D end the prompt with an error.
-export function readHidden(promptText, { input = process.stdin, output = process.stderr } = {}) {
+// With `keepRaw` the terminal stays in raw mode (no echo) after the line, so anything typed ahead before the next
+// prompt is not echoed either; the caller then restores the terminal (see the gate below).
+export function readHidden(promptText, { input = process.stdin, output = process.stderr, keepRaw = false } = {}) {
   return new Promise((resolve, reject) => {
     if (!input.isTTY || typeof input.setRawMode !== 'function') { reject(new Error('A terminal is required to type the Slack webhook URL.')); return; }
     // Raw mode first, then the prompt: whatever is typed once the prompt is visible is never echoed.
@@ -62,7 +64,7 @@ export function readHidden(promptText, { input = process.stdin, output = process
     let line = '';
     const finish = (error, value) => {
       input.removeListener('data', onData);
-      input.setRawMode(false);
+      if (!keepRaw) input.setRawMode(false);
       input.pause();
       output.write('\n');
       if (error) reject(error); else resolve(value);
@@ -159,7 +161,16 @@ if (isMain(import.meta.url)) {
       if (decision === 'off') write(`${OFF_WARNING}\n`);
       else if (decision === 'refuse') { write(`${option(args, '--given') === 'ask' ? '--alert-webhook-file ask needs a terminal to type the URL into' : REFUSAL}\n`); process.exitCode = 1; }
       else if (decision === 'prompt') {
-        writeWebhookFile(out, await obtainWebhook({ company, read: readHidden, ask: readLine, write }));
+        // Echo stays off for the whole entry (all tries): it is switched on only while a visible Y/n question is
+        // answered, and always restored at the end, on an error and on an exit.
+        const tty = process.stdin;
+        const cooked = () => { try { tty.setRawMode(false); } catch { /* not a terminal any more */ } };
+        process.once('exit', cooked);
+        try {
+          const read = text => readHidden(text, { keepRaw: true });
+          const ask = async text => { cooked(); try { return await readLine(text); } finally { tty.setRawMode(true); } };
+          writeWebhookFile(out, await obtainWebhook({ company, read, ask, write }));
+        } finally { cooked(); }
         write('Slack webhook accepted; setup stores it in the state (mode 0600).\n');
       }
     } else throw new Error('Usage: alert-webhook.mjs gate ...');

@@ -220,7 +220,8 @@ stored URL. With a webhook stored, setup and `start.sh` start the monitoring
 services; without one they stay optional. `--alert-webhook-file off` is for a non-production install: alerts
 then stay on this host, setup warns, and `npm run doctor` warns `No Slack
 webhook: alerts are not delivered` on every run while no webhook is stored,
-whether or not the monitoring profile is running.
+whether or not the monitoring profile is running. To switch alerts on later, see
+"Alert delivery" in [MONITORING.md](MONITORING.md).
 A rerun that already has a stored URL asks nothing. To create the file without the URL
 entering the shell history: `install -m 600 /dev/null FILE`, then paste the URL with an
 editor. What each file is, the alert
@@ -1455,7 +1456,7 @@ one rerun with both sets of options does.
    project, so the `monitoring` profile starts. The Slack webhook URL is a
    secret and is not in a backup: if this installation sent alerts to Slack,
    alerts are local only until you run `setup.sh --operator` again with your
-   usual inputs (it asks for the URL on a terminal) or `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
+   usual inputs, leaving out `--alert-webhook-file off` (it then asks for the URL on a terminal), or with `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
 9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
    key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in

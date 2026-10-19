@@ -277,6 +277,9 @@ test('doctor warns while Alertmanager has no receiver outside this host, and not
     configure(f.root, { ...f.options, alertWebhookFile: f.webhookFile });
     assert.match(alertDeliveryWarning(f.stateDir, false), /^Slack webhook stored but monitoring is not running/);
     assert.match(alertDeliveryWarning(f.stateDir, false), /bash start\.sh/);
+    // The stored URL must never be printed by the warning (its path part is the secret).
+    for (const part of new URL(GOOD).pathname.split('/').filter(Boolean).slice(1)) assert.ok(!alertDeliveryWarning(f.stateDir, false).includes(part), `warning leaks ${part.slice(0, 4)}...`);
+    assert.doesNotMatch(alertDeliveryWarning(f.stateDir, false), /hooks\.slack\.com/);
     assert.equal(alertDeliveryWarning(f.stateDir, true), null);
     configure(f.root, { ...f.options, alertWebhookFile: 'off' });
     const offWarning = alertDeliveryWarning(f.stateDir, false);
@@ -284,8 +287,8 @@ test('doctor warns while Alertmanager has no receiver outside this host, and not
     assert.doesNotMatch(offWarning, /Alertmanager is running/);
     assert.notEqual(offWarning, alertDeliveryWarning(f.stateDir, true));
     assert.match(offWarning, /--alert-webhook-file/);
-    assert.doesNotMatch(offWarning, /https?:\/\/hooks\./);
-    // doctor.mjs asks Compose whether the alertmanager container exists and passes the answer on.
+    for (const text of [offWarning, alertDeliveryWarning(f.stateDir, true)]) assert.match(text, /leaving out --alert-webhook-file off/);
+    // doctor.mjs asks Compose whether an alertmanager container is running (compose ps without -a) and passes the answer on.
     const doctor = read('scripts/doctor.mjs');
     assert.match(doctor, /alertDeliveryWarning\(state, Boolean\(probe\('bash', \[resolve\(root, 'scripts\/compose\.sh'\), '--profile', '\*', 'ps', '-q', 'alertmanager'\]\)\.output\.trim\(\)\)\)/);
   } finally { f.cleanup(); }

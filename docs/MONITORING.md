@@ -141,6 +141,9 @@ the channel) and gives the URL to whoever installs the facility.
   (`bash scripts/compose.sh --profile monitoring up -d`), but `npm run doctor`
   warns `No Slack webhook: alerts are not delivered` on every run while no
   webhook is stored, whether or not monitoring runs.
+  To add the webhook later, rerun `setup.sh --operator` with your usual inputs but
+  without `--alert-webhook-file off` (on a terminal it then asks for the URL), or
+  with `--alert-webhook-file PATH`.
 
 **With a webhook stored, setup.sh and start.sh start the monitoring services**
 (Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters;

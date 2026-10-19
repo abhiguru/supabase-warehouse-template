@@ -135,8 +135,8 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 13 packages of the supabase/realtime v2.143.3 base with no fixed version (2026-10-18 scan: 74 HIGH). The recipe applies every Debian update. Realtime has no host port; outside clients reach it only through Kong.",
-      "reviewed": "2026-10-17",
+      "reason": "Debian 13 packages of the supabase/realtime v2.144.0 base with no fixed version (2026-10-19 scan of the rebuilt image: 74 HIGH, all os-pkgs; none with a listed fix, no CRITICAL). The recipe applies every Debian update. Realtime has no host port; outside clients reach it only through Kong.",
+      "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },
     {
