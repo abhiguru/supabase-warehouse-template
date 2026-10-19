@@ -307,7 +307,7 @@ const DB_SQL = `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type
   COALESCE((SELECT blks_read FROM pg_stat_database WHERE datname='postgres'),0),
   COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0)`;
 export function checkDatabase(ctx) {
-  const ready = ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'postgres']);
+  const ready = ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'supabase_admin', '-d', 'postgres']);
   if (ready.status !== 0) return [result('database', 'postgres_down', false, 'PostgreSQL is not responding', 'pg_isready failed.')];
   const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
     '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', DB_SQL]);

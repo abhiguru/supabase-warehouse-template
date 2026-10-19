@@ -669,10 +669,18 @@ test('while another operator command holds the lock nothing is judged, until it 
   } finally { clean(h); }
 });
 
-// Holds a flock on FILE in a process group of its own, so that stop() ends the sleep that really holds it.
+// Holds a flock on FILE in a process group of its own. --close keeps the lock descriptor out of the command,
+// so only the exec'd sleep holds it. `ready` resolves when the lock is taken (the command prints "held"), and
+// stop() kills the whole group and resolves once the flock process has exited.
 function holdFlock(file) {
-  const child = spawn('flock', ['-n', file, 'sleep', '20'], { stdio: 'ignore', detached: true });
-  return { stop: () => new Promise(done => { child.on('close', done); try { process.kill(-child.pid, 'SIGKILL'); } catch { done(); } }) };
+  const child = spawn('flock', ['--nonblock', '--close', file, '-c', 'echo held; exec sleep 60'], { stdio: ['ignore', 'pipe', 'ignore'], detached: true });
+  const exited = new Promise(done => child.on('exit', done));
+  const ready = new Promise((resolve, reject) => {
+    child.stdout.once('data', resolve);
+    child.once('exit', () => reject(new Error('flock exited before it held the lock')));
+  });
+  ready.catch(() => {});
+  return { ready, stop: async () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } await exited; } };
 }
 
 test('the lock probe reads /proc/locks and never takes the lock: a real flock is seen, a released one is not', async () => {
@@ -684,11 +692,12 @@ test('the lock probe reads /proc/locks and never takes the lock: a real flock is
     assert.equal(W.lockIsHeld(ctx), false, 'nobody holds it');
     const child = holdFlock(file);
     try {
-      for (let i = 0; i < 50 && !W.lockIsHeld(ctx); i++) await new Promise(r => setTimeout(r, 40));
+      await child.ready;
       assert.equal(W.lockIsHeld(ctx), true, 'a running flock is seen');
       // The probe did not take the lock for an instant: the holder still has it, and there is no waiter entry.
       assert.equal(spawnSync('flock', ['-n', file, 'true']).status, 1);
     } finally { await child.stop(); }
+    for (let i = 0; i < 50 && W.lockIsHeld(ctx); i++) await new Promise(r => setTimeout(r, 40));
     assert.equal(W.lockIsHeld(ctx), false, 'released');
     assert.ok(!h.calls.some(c => c.startsWith('flock')), 'the probe never runs flock');
   } finally { clean(h); }
@@ -1152,7 +1161,7 @@ test('watch-daily.sh: another operator command holding the lock ends the pass wi
   try {
     const holder = holdFlock(join(f.state, 'config/operator.lock'));
     try {
-      await new Promise(r => setTimeout(r, 300));
+      await holder.ready;
       const r = f.run();
       assert.equal(r.status, 75);
       assert.deepEqual([r.fields.lock, r.fields.done], ['held', '1']);

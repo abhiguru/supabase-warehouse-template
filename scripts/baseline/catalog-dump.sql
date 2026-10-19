@@ -2,7 +2,7 @@
 -- scripts/baseline/catalog-diff.mjs runs this in two containers and compares the sorted lines.
 -- No OIDs and no passwords are printed. Schemas pg_catalog, information_schema and pg_toast*/pg_temp* are skipped,
 -- and so are the definitions of extension members (the extensions list carries their name, version, schema and owner);
--- the ACLs of extension members ARE compared (kind ext-member). Names are printed relative to search_path = pg_catalog,
+-- the ACLs of extension members ARE compared (kind ext-member, keyed `extension:object`). Names are printed relative to search_path = pg_catalog,
 -- so every object outside pg_catalog is schema-qualified on both sides whatever the role's own search_path is.
 \set ON_ERROR_STOP on
 \pset format unaligned
@@ -145,10 +145,12 @@ UNION ALL SELECT format('publication|%s|owner %s all %s ins %s upd %s del %s tru
 UNION ALL SELECT format('publication-table|%s|%s.%s', pubname, schemaname, tablename) FROM pg_publication_tables
 UNION ALL SELECT format('subscription|%s|owner %s', subname, pg_get_userbyid(subowner)) FROM pg_subscription
 UNION ALL SELECT format('extension|%s|version %s schema %s relocatable %s owner %s', e.extname, e.extversion, n.nspname, e.extrelocatable, pg_get_userbyid(e.extowner)) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
-UNION ALL SELECT pg_temp.acl('ext-member', pg_describe_object('pg_proc'::regclass, p.oid, 0), p.proacl, 'f', p.proowner)
+UNION ALL SELECT pg_temp.acl('ext-member', e.extname || ':' || pg_describe_object('pg_proc'::regclass, p.oid, 0), p.proacl, 'f', p.proowner)
   FROM pg_proc p JOIN pg_depend d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e' AND d.refclassid = 'pg_extension'::regclass
-UNION ALL SELECT pg_temp.acl('ext-member', pg_describe_object('pg_class'::regclass, c.oid, 0), c.relacl, CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END, c.relowner)
+  JOIN pg_extension e ON e.oid = d.refobjid
+UNION ALL SELECT pg_temp.acl('ext-member', e.extname || ':' || pg_describe_object('pg_class'::regclass, c.oid, 0), c.relacl, CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END, c.relowner)
   FROM pg_class c JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.objsubid = 0 AND d.deptype = 'e' AND d.refclassid = 'pg_extension'::regclass
+  JOIN pg_extension e ON e.oid = d.refobjid
  WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S')
 UNION ALL SELECT pg_temp.acl('parameter', parname, paracl, NULL, 0) FROM pg_parameter_acl
 UNION ALL SELECT format('language|%s|trusted %s owner %s', lanname, lanpltrusted, pg_get_userbyid(lanowner)) FROM pg_language WHERE lanname NOT IN ('internal', 'c', 'sql')
@@ -163,15 +165,19 @@ UNION ALL SELECT format('collation|%s.%s', n.nspname, c.collname) FROM pg_collat
   WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_collation'::regclass AND d.objid = c.oid AND d.deptype = 'e')
 UNION ALL SELECT format('foreign-server|%s|%s', s.srvname, pg_get_userbyid(s.srvowner)) FROM pg_foreign_server s
 
--- roles (attributes without the OID and the password), memberships (the INHERIT/SET options of PG16+ are not printed:
--- PG15 has none, and the role's own INHERIT attribute is in the role line), role/database settings
-UNION ALL SELECT format('role|%s|%s', r.rolname, to_jsonb(r) - 'oid' - 'rolpassword') FROM pg_roles r WHERE r.rolname !~ '^pg_'
-UNION ALL SELECT format('member|%s in %s|admin %s grantor %s', pg_get_userbyid(m.member), pg_get_userbyid(m.roleid), m.admin_option, pg_get_userbyid(m.grantor))
-  FROM pg_auth_members m
+-- roles (one fact per attribute, without the OID, the password and rolconfig, which the setting lines carry), memberships with
+-- their EFFECTIVE options (PG16+ keep INHERIT and SET per membership; PG15 has the role's own INHERIT attribute and always SET),
+-- role/database settings, and the database (one fact per attribute)
+UNION ALL SELECT format('role|%s|%s %s', r.rolname, j.key, j.value) FROM pg_roles r, LATERAL jsonb_each_text(to_jsonb(r) - 'oid' - 'rolpassword' - 'rolconfig' - 'rolname') j
+ WHERE r.rolname !~ '^pg_'
+UNION ALL SELECT format('member|%s in %s|admin %s inherit %s set %s grantor %s', pg_get_userbyid(m.member), pg_get_userbyid(m.roleid), m.admin_option,
+    COALESCE((to_jsonb(m)->>'inherit_option')::boolean, mr.rolinherit), COALESCE((to_jsonb(m)->>'set_option')::boolean, true), pg_get_userbyid(m.grantor))
+  FROM pg_auth_members m JOIN pg_roles mr ON mr.oid = m.member
 UNION ALL SELECT format('setting|role %s db %s|%s', COALESCE(pg_get_userbyid(NULLIF(s.setrole, 0)), '*'), COALESCE((SELECT datname FROM pg_database WHERE oid = s.setdatabase), '*'), x)
   FROM pg_db_role_setting s, unnest(s.setconfig) x
-UNION ALL SELECT format('database|%s|owner %s encoding %s collate %s ctype %s', datname, pg_get_userbyid(datdba), pg_encoding_to_char(encoding), datcollate, datctype)
-  FROM pg_database WHERE datname = current_database()
+UNION ALL SELECT format('database|%s|%s', datname, x.kv) FROM pg_database,
+  LATERAL (VALUES ('owner ' || pg_get_userbyid(datdba)), ('encoding ' || pg_encoding_to_char(encoding)), ('collate ' || datcollate), ('ctype ' || datctype)) x(kv)
+ WHERE datname = current_database()
 UNION ALL SELECT pg_temp.acl('database', datname, datacl, 'd', datdba) FROM pg_database WHERE datname = current_database()
 
 ) q(line) ORDER BY line;

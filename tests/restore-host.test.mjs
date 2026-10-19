@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
@@ -37,8 +37,8 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   const backup = makeBackup(join(scratch, 'drive', NAME), {
     env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity });
   // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
-  const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '' } = {}) => {
-    writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n`);
+  const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '', databaseImage = currentDatabaseImage() } = {}) => {
+    writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n${databaseImage === null ? "" : `database_image=${databaseImage}\n`}`);
     const sums = spawnSync('sh', ['-c', `sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt ${files} > SHA256SUMS`], { cwd: backup });
     assert.equal(sums.status, 0);
     if (sign) signBackup(backup); else rmSync(join(backup, 'SHA256SUMS.hmac'), { force: true });
@@ -249,17 +249,6 @@ test('restore-host opens an encrypted archive with the backup key and refuses it
 // What a host that ran the printing and sensor profiles keeps after `compose down`.
 const OTHER_VOLUMES = ['sensor-bridge-data', 'cups-spool'].map(name => `warehouse-backup-test_${name}`);
 
-test('restore-host refuses a host that still has the database configuration volume, and names only that volume', () => {
-  const f = fixture('warehouse-restore-host-volume-');
-  try {
-    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_VOLUMES: ['warehouse-backup-test_sensor-bridge-data', 'warehouse-backup-test_db-config', 'warehouse-backup-test_cups-spool'].join(' ') });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Docker volume warehouse-backup-test_db-config of the previous database remains[\s\S]*docker volume rm warehouse-backup-test_db-config$/m);
-    assert.doesNotMatch(result.stderr, /docker volume rm.*(sensor-bridge-data|cups-spool)/, 'the operator is not told to delete the sensor data or the print spool');
-    nothingCreated(f, result);
-  } finally { clean(f); }
-});
-
 test('restore-host is not stopped by printing and sensor volumes, which hold no restored state', () => {
   const f = fixture('warehouse-restore-host-other-volumes-');
   try {
@@ -270,13 +259,12 @@ test('restore-host is not stopped by printing and sensor volumes, which hold no 
   } finally { clean(f); }
 });
 
-test('the volumes restore-host refuses are exactly the named volumes of the services whose data a restore replaces', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
-  const declared = readFileSync(join(repo, 'scripts/restore-host.sh'), 'utf8').match(/^STATE_VOLUMES=\(([^)]*)\)$/m);
-  assert.ok(declared, 'restore-host.sh declares STATE_VOLUMES');
-  // restore.sh replays the database (data/db) and the stored files (data/storage).
+test('the database and storage services mount no named volume, so no Docker volume carries state a restore replaces', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  // restore.sh replays the database (data/db) and the stored files (data/storage): both are host paths.
   const { services, volumes } = renderedCompose();
   const named = ['db', 'storage'].flatMap(service => (services[service].volumes ?? []).filter(mount => mount.type === 'volume').map(mount => mount.source));
-  assert.deepEqual(declared[1].split(/\s+/).filter(Boolean).sort(), [...new Set(named)].sort());
+  assert.deepEqual(named, []);
+  assert.ok(!('db-config' in volumes), 'the db-config volume is gone');
   // The realistic left-overs used above are real volumes of this Compose project.
   for (const name of OTHER_VOLUMES) assert.ok(name.replace('warehouse-backup-test_', '') in volumes, name);
 });
@@ -594,28 +582,20 @@ test('restore-host says nothing about a key file when central sign-in uses an ad
   }
 });
 
-test('restore-host and restore.sh --relocated accept a backup with the old PGRST_DB_SCHEMAS default (migration 103) and leave the kept backup unmodified', () => {
-  const oldDefault = 'JWT_SECRET=kept-secret\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n';
-  const f = fixture('warehouse-restore-host-schemas-', { env: composeEnv('/srv/warehouse/lost-host', oldDefault) });
-  try {
-    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
-    assert.equal(result.status, 0, result.stderr + result.stdout);
-    const env = readFileSync(join(f.state, 'config/compose.env'), 'utf8');
-    assert.match(env, /^PGRST_DB_SCHEMAS=public,storage$/m, 'the new state does not name the GraphQL schema');
-    assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'the kept backup is unmodified');
-  } finally { clean(f); }
-  // The real restore.sh --relocated compares the rewritten state with the unchanged backup and accepts it.
-  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-relocated-schemas-'));
-  try {
-    const state = makeState(scratch, { env: composeEnv('', 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage\n') });
-    writeFileSync(join(state, 'config/compose.env'), composeEnv(state, 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage\n'), { mode: 0o600 });
-    const log = join(scratch, 'docker.log'); writeFileSync(log, '');
-    const root = scriptRoot(scratch);
-    const backup = makeBackup(join(scratch, 'moved'), { env: composeEnv('/srv/warehouse/elsewhere', 'JWT_SECRET=current-secret\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n') });
-    const result = spawnSync('bash', [join(root, 'scripts/restore.sh'), '--yes', '--relocated', backup], { encoding: 'utf8',
-      env: { ...process.env, PATH: `${fakeDocker(join(scratch, 'bin'))}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
-        FAKE_DOCKER_LOG: log, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') } });
-    assert.match(result.stderr + result.stdout, /Restoring .* into /, 'past the configuration check');
-    assert.doesNotMatch(result.stderr, /in more than the state paths/);
-  } finally { rmSync(scratch, { recursive: true, force: true }); }
+test('restore-host refuses a backup made on the supabase/postgres image, or with no image line, naming the tag and the reload, before creating anything', () => {
+  const oldImage = 'supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6';
+  for (const [label, databaseImage, reason] of [
+    ['the earlier image', oldImage, /made on the database image 'supabase\/postgres:15\.8\.1\.135@sha256:[0-9a-f]{64}'/],
+    ['no image line', null, /records no database_image= line/],
+  ]) {
+    const f = fixture('warehouse-restore-host-image-');
+    try {
+      f.resum({ databaseImage });
+      let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+      assert.equal(result.status, 1, label); assert.match(result.stderr, reason, label);
+      assert.match(result.stderr, /migrations-pre-baseline.*Baseline reload/s, label); nothingCreated(f, result);
+      result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
+      assert.equal(result.status, 1, label); assert.match(result.stderr, /migrations-pre-baseline/, label); nothingCreated(f, result);
+    } finally { clean(f); }
+  }
 });

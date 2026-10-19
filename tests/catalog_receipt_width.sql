@@ -84,7 +84,7 @@ SELECT pg_temp.cw_assert((SELECT count(*)=4 FROM information_schema.columns WHER
  'stock_summary and low_stock_alerts show item_name 80 and packaging 40');
 -- The two views that stay keep the owner and privileges they had.
 SELECT pg_temp.cw_assert((SELECT count(*)=2 AND bool_and(pg_get_userbyid(c.relowner)='supabase_admin'
-     AND c.relacl::text='{supabase_admin=arwdDxt/supabase_admin,postgres=arwdDxt/supabase_admin,service_role=arwdDxt/supabase_admin}')
+     AND c.relacl::text ~ '^\{supabase_admin=arwdDxtm?/supabase_admin,service_role=arwdDxtm?/supabase_admin\}$')  -- m (MAINTAIN) exists from PostgreSQL 17; the role postgres is not in this database
    FROM pg_class c WHERE c.oid IN ('public.stock_summary'::regclass,'public.low_stock_alerts'::regclass)),
  'the two recreated views keep the owner and privileges they had');
 -- Migration 106 removed the materialized lists: the list screens read the tables, so there is nothing to refresh.

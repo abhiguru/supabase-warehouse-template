@@ -1,5 +1,115 @@
 # Changelog
 
+## Operator actions for this release
+
+Every existing installation (Supabase PostgreSQL 15 image, migrations 000 to 110) moves to this release by the **Baseline
+reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In order:
+
+1. **Baseline reload, step 1: deploy the tag `migrations-pre-baseline`** (check it out, take the backup, run `setup.sh`). The
+   entries below under "Included in the tag" are applied there, not on this release. The rest of the reload (dump, new
+   PostgreSQL 17 cluster, baseline, load, checks, `setup.sh` of this release) follows in steps 2 to 8; step 9 is the way back.
+2. **Run the `sudo` commands that `setup.sh` prints**, at the end of step 1 and again at step 8: the checker timer
+   (`sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`) and the USB backup helper
+   (`sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"`).
+3. **`compose.env` lines.** `setup.sh` removes `DB_PASSWORD_AUTH` and `DB_PASSWORD_MONITORING` by itself. Delete by hand any of
+   `REALTIME_DB_ENC_KEY`, `STUDIO_*`, `OPENAI_API_KEY` and `DASHBOARD_*` that your file still has; nothing reads them.
+4. **The Slack webhook** moves from `config/monitoring/alertmanager/webhook-url` to `config/slack-webhook-url` when `setup.sh`
+   runs (the old directory is removed); keep it with the state when you copy it.
+5. **Backups.** Take a new backup after the reload. A backup made before this release restores only with the release tagged
+   `migrations-pre-baseline` (`docs/OPERATOR_INSTALL.md`, "Restoring a pre-baseline backup").
+6. **Housekeeping after the reload is accepted:** remove the network `<project>_admin` and the volumes `<project>_db-config`
+   and `<project>_prometheus_data`, and the images of the removed services (`docker image rm`).
+7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
+   "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
+
+## Unreleased: PostgreSQL 17 on the official image and one baseline migration
+
+The database runs on `postgres:17.11-trixie` (pinned by digest in `docker/postgres/Dockerfile`; `scripts/db-image.sh` is the one
+place that prints the pin) instead of the Supabase image, and the chain of migration files 000 to 110 is replaced by one:
+`migrations/00000000000000_baseline.sql`, an exact squash of migrations 0 to 110 (the old files are in the git tag
+`migrations-pre-baseline`, made at release). Numbering continues after the baseline: the next migration is
+`00000000000111_<name>.sql`. The baseline is dumped from the tagged tree (chain 000 to 110, including migrations 100 to 102, 109 and 110
+from `main`) and verified on both images (baseline sha256 `fcd627d11323af7ef35f101dd0827dff55adee3970cb420355e33a6b007b6ed8`:
+0 unexpected differences and no unused allow-list entry on the old image and on postgres:17).
+
+- **Image.** `POSTGRES_USER=supabase_admin` (there is no role `postgres`), `en_US.UTF-8`, no `config_file`, health check
+  `pg_isready -U supabase_admin -d postgres`. `docker/volumes/db/00-bootstrap.sql` makes the roles, schemas and grants the stack
+  needs (no default privileges; `supabase_storage_admin` and `authenticator` are NOINHERIT). The recipe keeps the rebuilt gosu.
+  `timezone` and `log_timezone` are set to UTC (the facilities ran `Etc/UTC`, the same offset; the tests need the name `UTC`).
+  `extra_float_digits` is left at the server default of 1, which the facilities ran.
+- **Review fixes.** `setup.sh` and `start.sh` run `scripts/db-version-preflight.sh` first: a running database below PostgreSQL 17,
+  or a non-empty data directory whose `PG_VERSION` is not 17 (read by a one-shot container of the pinned image), is refused with the
+  pointer to "Baseline reload", before any image is built or the db container recreated. `scripts/backup.sh` refuses to back up a
+  server that is not this release's (major version and no role `postgres`), `scripts/backup-image.sh` also refuses a backup whose
+  `roles.txt` lists a role of the earlier image, and `scripts/verify-restore.sh` refuses a dump written by a server below
+  PostgreSQL 17. `scripts/pooler-check.sh` signs in as `pgbouncer`. The `db-config` volume and its restore-host refusal, `jwt.sql`
+  (nothing read `app.settings.jwt_exp`) and `PGRST_APP_SETTINGS_JWT_EXP` are gone. `setup.sh` removes the unused
+  `DB_PASSWORD_AUTH` and `DB_PASSWORD_MONITORING` lines from an older `compose.env`. The Dockerfile fails the build when the base
+  image's `libc6`, `libc-bin` or `locales` version differs from the recorded one (a collation change needs a reindex). A migration
+  after the baseline may not create, alter or drop a role (`tests/migration-roles.test.mjs`).
+- **Removed with it.** The `pg_cron` preload and the `cron.*` settings, the list-refresh lock 71046 in `scripts/migration-plan.mjs`,
+  `wal_level` is set in one place only.
+- **Ledger guard.** A database that recorded a migration this release does not contain stops `scripts/migrate.sh` with a message
+  that points at `docs/OPERATOR_INSTALL.md`, "Baseline reload". Nothing is changed. `setup.sh` and `start.sh` refuse such an
+  installation earlier, before anything is rebuilt or started (`scripts/db-version-preflight.sh`).
+- **Tests.** `tests/migrations.sh` runs on the shipped image with the real Storage 1.80.2 (a changed baseline is refused, the
+  ledger's second pass skips, the unknown-migration guard); `tests/baseline_roles.sql` and `tests/baseline_owners.sql` describe the
+  roles, ACLs, extensions and owners; the per-migration transition probes of migrations 103, 105, 106, 107 and 108 are gone with
+  the old files. `scripts/baseline/` builds, dumps and verifies the baseline against the chain on both images.
+- Functions and a view that still read GoTrue tables or the removed `pgjwt` fail when called on PostgreSQL 17 (no caller):
+  `verify_otp`, `verify_otp_secure`, `phone_auth_login`, `track_user_activity`, `update_customer_contact_with_auth_phone`,
+  `get_priority_contact_for_customer`, `bulk_update_customers_priority_contact()` and the view `customers_with_priority_contact`.
+  A later item drops them.
+- **Roles and restore.** One superuser, `supabase_admin`; the agreed roles are `anon`, `authenticated`, `service_role`, `authenticator`,
+  `supabase_storage_admin` and (optional pooler) `pgbouncer`. `scripts/configure-db-roles.sql`, `scripts/db-roles.mjs`,
+  `scripts/db-roles.sh` (`npm run test:db-roles`) and `scripts/rotate-db-passwords.sh --superuser` no longer know `postgres`,
+  `supabase_auth_admin`, `supabase_functions_admin` or `warehouse_monitoring`. Backups keep format v5 and record the database image
+  (`database_image=`, from `scripts/db-image.sh`). `db:restore`, `db:restore-host` and `db:verify-restore` refuse a backup whose
+  image is `supabase/postgres...` or that has no image line, naming the tag `migrations-pre-baseline` and "Baseline reload". The
+  restore scripts lost what only an older backup needed (the `pg_net`, `pg_cron` and GraphQL list filters and wrapper repair, the
+  event-trigger replay, the `PGRST_DB_SCHEMAS` and `DB_PASSWORD_AUTH`/`DB_PASSWORD_MONITORING` compose.env normalisation);
+  both databases are recreated `OWNER supabase_admin`. The `_supabase` database stays, for the pooler's `_supavisor` schema only.
+  **Operator action:** a backup made before this release restores only with the release tagged `migrations-pre-baseline`; reload
+  its data into this version as described in `docs/OPERATOR_INSTALL.md`, "Baseline reload". Take a new backup after the reload.
+- **Operator action (every existing installation).** A database built before this release (Supabase PostgreSQL 15 image, migration
+  chain 000 to 110) cannot be upgraded in place: `setup.sh` and `start.sh` stop at the version preflight (`setup.sh` before it
+  rewrites `compose.env`) and change no database, container or image; `migrate.sh` stops at the ledger guard. Deploy the tag
+  `migrations-pre-baseline` first, then reload the data into a new cluster with the procedure in `docs/OPERATOR_INSTALL.md`,
+  "Baseline reload" (backup and fingerprints, data-only dump with the old image's `pg_dump`, old data directory moved aside, new
+  image, baseline, load, checks, `setup.sh`; rollback by moving the directory back). Backups made before this release restore
+  only with the tagged release and the old image.
+- **Docs.** `docs/OPERATOR_INSTALL.md` has the new section "Baseline reload" (and "Restoring a pre-baseline backup");
+  `docs/CONTAINER_SECURITY.md` has the database image row, the exact role table (`supabase_admin`, `authenticator`,
+  `supabase_storage_admin`, `pgbouncer`, `anon`, `authenticated`, `service_role`; no `postgres` role), the replayed `pg_trgm`
+  member ACLs, the ledger guard and the backup refusal; `docs/TROUBLESHOOTING.md` quotes both messages;
+  `docs/DEVELOPER_HANDOFF.md`, `CONTRIBUTING.md`, `CLAUDE.md` and `README.md` say that migrations 000 to 110 are the one file
+  `00000000000000_baseline.sql`, that the old files are in the tag `migrations-pre-baseline`, and that the next migration is
+  `00000000000111_<topic>.sql`. "Migration N" in the docs, for N up to 110, names a file in the tag. `THIRD_PARTY_NOTICES.md`
+  lists the official PostgreSQL image in place of the Supabase one.
+
+## Unreleased: the documentation is trimmed to what is true today
+
+About a quarter of the documentation lines are gone: all troubleshooting now lives in `docs/TROUBLESHOOTING.md`, the
+container security record, production list, release checklist and architecture page state only what is current (the
+architecture page now shows how the edge functions reach the database and the current sign-in flows). No rule, API or
+number changed. No operator action. Sections that earlier entries name and that are gone are in git at d20a903.
+
+## Included in the tag migrations-pre-baseline (applied in step 1 of the Baseline reload)
+
+The entries from here down to "gateway runs one worker" were written for the tag `migrations-pre-baseline` (migrations 103 to
+108 and the removals around them), on the old PostgreSQL 15 image. They are part of this release because the baseline contains
+their result, but their instructions are for the tagged release and some statements are **superseded by this release**:
+
+- "Operator action: rerun `setup.sh`; it applies migration 10x" is step 1 of the Baseline reload (with the tag checked out); it
+  is not something to run on this release.
+- The restore filters for `pg_net`, `pg_cron` and GraphQL, "an older backup restores cleanly", the repair of `warehouse_monitoring`
+  and `supabase_auth_admin` (NOLOGIN) by `configure-db-roles.sql`, and the role `supabase_realtime_admin` that "belongs to the
+  database image and is kept": none of these exists any more. The roles of the earlier image do not exist in the baseline
+  (`tests/baseline_roles.sql`), and a backup from before this release restores only with the tag.
+- `wal-g.conf`, the `db-config` volume, the list-refresh lock 71046 and the pg_cron preload are gone with the old image.
+- "Delete a leftover `DB_PASSWORD_*` or `REALTIME_DB_ENC_KEY` line by hand": `setup.sh` removes `DB_PASSWORD_AUTH` and
+  `DB_PASSWORD_MONITORING` itself; the other leftover lines are in the list at the top.
+
 ## Unreleased: session tokens are signed without pgjwt (migration 108); fingerprint sorts with the C collation; Storage names its superuser
 
 First steps towards the Postgres 17 move; each works on the current database image.
@@ -49,7 +159,7 @@ minimum sample.
   `node scripts/watch.mjs mute <minutes>`. When sure, remove the old images and the volume:
   `docker image rm <project>-prometheus <project>-alertmanager <project>-postgres-exporter <project>-node-exporter
   <project>-cadvisor` and `docker volume rm <project>_prometheus_data`. Old `DB_PASSWORD_MONITORING` lines in
-  `config/compose.env` are unused; they can stay or be deleted. Rerun `sudo bash scripts/backup-usb.sh setup --state
+  `config/compose.env` are unused (*setup of this release removes them*). Rerun `sudo bash scripts/backup-usb.sh setup --state
   "$WAREHOUSE_STATE_DIR"` as well, so the installed USB backup helper matches the checkout.
 - **Migration 107** drops the database login `warehouse_monitoring` (the role is removed, not just disabled): it revokes
   `pg_monitor`, runs `DROP OWNED BY` and `DROP ROLE`, and does nothing where the role is already gone. Migration 94 stays
@@ -57,7 +167,7 @@ minimum sample.
   gave it a grant of their own, the migration stops with a hint to run `DROP OWNED BY warehouse_monitoring` in that database.
   `scripts/configure-db-roles.sql` repeats the drop on every setup run and after a restore (an older backup may bring the
   role back), `db-roles.sh check` proves it is gone, and setup no longer generates, stores or rotates
-  `DB_PASSWORD_MONITORING`. A backup that still carries that line restores cleanly (the restore comparison ignores it).
+  `DB_PASSWORD_MONITORING`. A backup that still carries that line restores cleanly (the restore comparison ignores it). *Superseded: the restore scripts no longer know that role; see the top of this section.*
 - Kong's Prometheus plugin, its status listener and port 8100, the `monitoring` Compose profile, the `prometheus_data`
   volume, `scripts/backup-metrics.sh` (the backup scripts no longer write `metrics/warehouse_backup.prom`), the `test:monitoring`
   and `test:alert-rules` npm scripts, their CI steps and the five `LICENSES/` directories are removed. CI's
@@ -89,7 +199,7 @@ screens every 15 seconds and the sensor screens every 60 seconds. The backend no
 - **Migration 105** drops the publications `supabase_realtime` and `supabase_realtime_messages_publication`, sets
   `orders` and `sensor_latest` back to `REPLICA IDENTITY DEFAULT`, drops idle Realtime replication slots (a guard; the setup step does the real work) and drops the schemas
   `realtime` and `_realtime` (it stops, changing nothing, if an object outside them depends on one inside). The role
-  `supabase_realtime_admin` belongs to the database image and is kept. An older backup restores cleanly (the objects come
+  `supabase_realtime_admin` belongs to the database image and is kept (*superseded: the baseline has no such role*). An older backup restores cleanly (the objects come
   back and migration 105 removes them), so the restore scripts have no new filter.
 - **Removed:** the `realtime` service and `docker/realtime/`, `docker/volumes/db/realtime.sql` and its mount, the Kong route
   `realtime-v1-ws` and its rate limit (two rate-limited routes remain), `scripts/realtime-warmup.mjs` and its calls in
@@ -128,7 +238,7 @@ GRN Invoices tab); the others were read by a function no app calls, by a legacy 
   baseline removes both. The migration run still takes advisory lock 71046 while pg_cron is preloaded; `health-check.sh` and `scripts/doctor.mjs` no longer check the list refresh; `setup.sh`, `restore.sh`
   no longer run `scripts/configure-list-refresh.sql` (deleted); `verify-restore.sh` no longer mentions it and its pg_cron filter
   regex changed (it now ends in `( |$)`). Both restore scripts leave pg_cron and its
-  schema out of the restore list of an older backup, as they do for pg_net.
+  schema out of the restore list of an older backup, as they do for pg_net (*superseded: the filters are gone; an older backup restores only with the tag*).
 - **Stops if it must:** the migration refuses, and changes nothing, if the pg_cron table holds a job that is not one of the two
   list-refresh jobs, because dropping the extension would delete it.
 
@@ -155,7 +265,7 @@ is off, and `docs/CONTAINER_SECURITY.md` says WAL archiving stays off. The base 
 recipe rebuilt wal-g from Go source. Now the recipe deletes `/usr/local/bin/wal-g` instead, and its final check fails the
 build if `wal-g` is still on the path. The `walg` build stage, `walg.go.mod`, `walg.go.sum` and `LICENSES/wal-g` are gone; the
 gosu stage and the glibc and locale guard are unchanged. The settings file `/etc/postgresql-custom/wal-g.conf` from the base
-image (all commented out except `hot_standby = off`) stays: the image's own `postgresql.conf` includes it.
+image (all commented out except `hot_standby = off`) stays: the image's own `postgresql.conf` includes it (*superseded: the official image has no such file*).
 
 **Operator action:** rerun `setup.sh`. It rebuilds the database image and restarts the database container.
 
@@ -251,15 +361,15 @@ that setup generated and rotation rotated.
   `ENABLE_ANONYMOUS_USERS`, `ADDITIONAL_REDIRECT_URLS`) are removed from `.env.example`. `SITE_URL` and `API_EXTERNAL_URL` stay:
   setup and the doctor read them.
 - Kept: the `auth` schema and `auth.uid()`, `auth.jwt()` and `auth.role()` (the row policies use them), and the role
-  `supabase_auth_admin`, which owns `auth.uid()`, `auth.role()`, `auth.email()` and 26 other auth relations and holds default
+  `supabase_auth_admin` (*superseded: the baseline has no such role, and `tests/security_baseline.sql` asserts it does not exist*), which owns `auth.uid()`, `auth.role()`, `auth.email()` and 26 other auth relations and holds default
   privileges in schema `auth` (`supabase_admin` owns the schema and `auth.jwt()`). Migration 104 makes that role `NOLOGIN` with
   no password; `scripts/configure-db-roles.sql` repeats it on every setup run, which corrects it after every restore (a backup
   holds only role names, so the fresh cluster has the image's login and the restored ledger skips 104).
 - The GoTrue guard in `tests/removed-components.test.mjs` asserts the recipe, the service and the setting are gone; `tests/security_baseline.sql` asserts the
-  role exists and cannot sign in.
+  role is absent (superseded: it used to assert that it exists and cannot sign in).
 
 **Operator action:** rerun `setup.sh`; it applies migration 104. An existing `compose.env` keeps a `DB_PASSWORD_AUTH` line that
-nothing reads and nothing fails on; delete it by hand if you like. The orphaned `auth` image, if one was ever built, can be removed
+nothing reads and nothing fails on (*superseded: `setup.sh` of this release removes it*). The orphaned `auth` image, if one was ever built, can be removed
 with `docker image rm <project>-auth`.
 
 ## Unreleased: Studio and postgres-meta are removed
@@ -314,7 +424,7 @@ wrong. They are removed.
 
 Migration 103 drops them in that order, without `CASCADE`, skips whatever is already gone, refuses (and changes nothing) if
 a trigger still calls `supabase_functions.http_request()`, and ends by checking that none remain. A backup made before it
-still restores: the restore leaves out its `pg_net` entries (the database no longer preloads it, and creating it would
+still restores (*superseded: only with the tag*): the restore leaves out its `pg_net` entries (the database no longer preloads it, and creating it would
 fail), and migration 103 removes the other leftovers (the webhook schema) afterwards. It also refuses, and changes nothing,
 if the vault holds a secret or a pg_cron job calls `net.*` or `http(...)`, because dropping the extension would delete
 them without a word. A restore accepts a backup whose `compose.env` has the old `PGRST_DB_SCHEMAS` default, and

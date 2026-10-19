@@ -1,13 +1,13 @@
 // Compares two databases (running containers) by catalog and by seed-row hashes, and checks every difference against
 // an allow-list of expected differences.
 //
-//   node scripts/baseline/catalog-diff.mjs <containerA> <containerB> [--allow <file>] [--image supabase|pg17] [--unmasked] [--full] [--write <dir>]
+//   node scripts/baseline/catalog-diff.mjs <containerA> <containerB> --image supabase|pg17 [--allow <file>] [--unmasked] [--full] [--write <dir>]
 //
 // A is the chain-built database, B the baseline-built one. Each side is described by catalog-dump.sql and seed-dump.sql
 // (one "kind|key|detail" line per fact). Output: every line that exists on one side only, sorted. Exit 0 when each such line
 // is covered by an allow-list entry, 1 when something else differs or an entry that applies to this run matched nothing,
 // 2 on a usage or database error.
-// --image says which database image B runs on (supabase = the old Supabase image, pg17 = postgres:17 plus the bootstrap).
+// --image (required) says which database image B runs on (supabase = the old Supabase image, pg17 = postgres:17 plus the bootstrap).
 // --unmasked compares seed rows with nothing masked (both sides come from the same installation).
 //
 // Allow-list file (default scripts/baseline/allowed-differences.txt): lines starting with # are comments, blank lines are
@@ -64,11 +64,32 @@ export function parseAllowList(text) {
     if (line === '' || line.startsWith('#')) return;
     const m = line.match(/^([AB])(?:@(supabase|pg17))?\s+(\S.*)$/);
     if (!m) throw new Error(`allow-list line ${i + 1}: expected "A <regex>" or "B <regex>" (optionally A@supabase, B@pg17), got: ${raw}`);
-    let regex;
-    try { regex = new RegExp(m[3]); } catch (e) { throw new Error(`allow-list line ${i + 1}: bad regex (${e.message})`); }
-    entries.push({ side: m[1], image: m[2] ?? '', pattern: m[3], regex, line: i + 1, used: 0 });
+    try { new RegExp(m[3]); } catch (e) { throw new Error(`allow-list line ${i + 1}: bad regex (${e.message})`); }
+    for (const pattern of expandAlternatives(m[3])) entries.push({ side: m[1], image: m[2] ?? '', pattern, regex: new RegExp(pattern), line: i + 1, used: 0 });
   });
   return entries;
+}
+
+// An entry with a plain alternation, (a|b|c), is several entries: each alternative must match something on its own, so an
+// alternative that went stale is reported instead of hiding behind the ones that still match (review L-9). Only the innermost
+// groups of word characters and escaped dots are expanded; a regex with more than 64 combinations is left as it is.
+export function expandAlternatives(pattern) {
+  const group = /\((?!\?)((?:[A-Za-z0-9_ :-]|\\\.)+(?:\|(?:[A-Za-z0-9_ :-]|\\\.)+)+)\)(?![?*+{])/;
+  let done = [pattern];
+  for (let guard = 0; guard < 8; guard++) {
+    const next = [];
+    let changed = false;
+    for (const p of done) {
+      const m = p.match(group);
+      if (!m) { next.push(p); continue; }
+      changed = true;
+      for (const alternative of m[1].split('|')) next.push(p.replace(m[0], alternative));
+    }
+    if (next.length > 64) return [pattern];
+    done = next;
+    if (!changed) break;
+  }
+  return done;
 }
 
 // Splits the differences into allowed (with the entry that covers each) and unexpected. Counts uses per entry.
@@ -119,10 +140,10 @@ if (isMain(import.meta.url)) {
     else if (args[i] === '--write') writeDir = args[++i];
     else positional.push(args[i]);
   }
-  if (positional.length !== 2) { console.error('usage: catalog-diff.mjs <containerA> <containerB> [--allow file] [--image supabase|pg17] [--unmasked] [--full] [--write dir]'); process.exit(2); }
+  if (positional.length !== 2) { console.error('usage: catalog-diff.mjs <containerA> <containerB> --image supabase|pg17 [--allow file] [--unmasked] [--full] [--write dir]'); process.exit(2); }
   try {
     const entries = parseAllowList(readFileSync(allowFile, 'utf8'));
-    if (image && !['supabase', 'pg17'].includes(image)) throw new Error('--image must be supabase or pg17');
+    if (!['supabase', 'pg17'].includes(image)) throw new Error('--image supabase|pg17 is required: it says which image B runs on, and the allow-list entries depend on it');
     const a = normaliseOwnerFacts(dumpFacts(positional[0], { unmasked })), b = dumpFacts(positional[1], { unmasked });
     if (writeDir) { mkdirSync(writeDir, { recursive: true }); writeFileSync(resolve(writeDir, 'A.txt'), a.join('\n') + '\n'); writeFileSync(resolve(writeDir, 'B.txt'), b.join('\n') + '\n'); }
     const kinds = new Set(a.map(l => l.split('|')[0]));

@@ -50,16 +50,12 @@ updates:
       - dependency-name: node
         update-types:
           - "version-update:semver-major"
-      # A new PostgreSQL major needs a planned upgrade of every installation's
-      # data directory, not a changed line in a recipe. So does the publisher's
-      # 15.19 line (looked at on 2026-10-12, tag 15.19.0.004): it is a different
-      # image, on Alpine and not Ubuntu (the recipe's apt-get step cannot run),
-      # with another user id for postgres (100, was 105), and
-      # tests/migrations.sh stops on it: the Storage schema is missing.
-      - dependency-name: supabase/postgres
+      # A new PostgreSQL major needs a planned dump and reload of every
+      # installation's data directory, not a changed line in a recipe. Minor and
+      # patch releases of the pinned 17 line (tag and digest) are taken.
+      - dependency-name: postgres
         update-types:
           - "version-update:semver-major"
-          - "version-update:semver-minor"
       # The recipe installs this repository's manifest (docker/storage) over the
       # application the image ships. A new tag brings its own dependency set, so
       # the manifest is rebuilt from it in the same change (docker/storage/README.md).

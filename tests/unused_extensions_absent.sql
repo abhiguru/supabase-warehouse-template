@@ -34,7 +34,7 @@ SELECT pg_temp.ue_assert(NOT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtnam
   'an event trigger of pg_graphql or pg_net is left');
 SELECT pg_temp.ue_assert(NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('set_graphql_placeholder', 'grant_pg_graphql_access', 'grant_pg_net_access')),
   'a function of those event triggers is left');
-SELECT pg_temp.ue_assert((SELECT count(*) FROM pg_event_trigger WHERE evtname IN ('pgrst_ddl_watch', 'pgrst_drop_watch')) = 2, 'a PostgREST event trigger is missing');
+SELECT pg_temp.ue_assert((SELECT count(*) FROM pg_event_trigger WHERE evtname IN ('pgrst_ddl_watch', 'pgrst_drop_watch')) = 0, 'a PostgREST event trigger is present: the baseline strips them and the bootstrap makes none');
 
 -- anon cannot see a graphql function, and calling one fails because the function or schema is not there (42883 or 3F000).
 SELECT pg_temp.ue_assert(NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.proname = 'graphql' OR n.nspname LIKE 'graphql%'),

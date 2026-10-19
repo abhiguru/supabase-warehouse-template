@@ -110,7 +110,6 @@ services:
       PGRST_JWT_SECRET: ${JWT_SECRET}
       PGRST_DB_USE_LEGACY_GUCS: "false"
       PGRST_DB_PRE_REQUEST: public.check_session
-      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
     command: ["postgrest"]
 
   storage:
@@ -213,18 +212,22 @@ services:
     restart: unless-stopped
     networks: [database]
     volumes:
-      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
-      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      # The official image runs only the top level of /docker-entrypoint-initdb.d, in name order,
+      # once, on an empty data directory.
+      - ./volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro,Z
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro,Z
+      - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/30-_supabase.sql:ro,Z
+      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/32-pooler.sql:ro,Z
       - ${WAREHOUSE_DB_PATH:?Set private database path}:/var/lib/postgresql/data:Z
-      - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
-      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
-      - db-config:/etc/postgresql-custom
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "postgres", "-h", "localhost"]
       interval: 5s
       timeout: 5s
       retries: 10
     environment:
+      # The bootstrap superuser. There is no role named postgres.
+      POSTGRES_USER: supabase_admin
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
       POSTGRES_HOST: /var/run/postgresql
       PGPORT: ${POSTGRES_PORT}
       POSTGRES_PORT: ${POSTGRES_PORT}
@@ -250,7 +253,6 @@ services:
     command:
       [
         "postgres",
-        "-c", "config_file=/etc/postgresql/postgresql.conf",
         "-c", "log_min_messages=fatal"
       ]
 
@@ -402,13 +404,12 @@ services:
       start_period: 30s
 
 volumes:
-  db-config:
   cups-spool:
   sensor-bridge-data:
 
 # Three project-scoped networks; services resolve each other by DNS name only
 # on a network they share (tests/compose-networks.test.mjs holds the table).
-#   default   the gateway, its upstreams, the PDF and image helpers
+#   default   the gateway and its upstreams
 #   database  the database and the services that open a connection to it
 #   renderer  internal (no outside route): the function runtime and the PDF renderer only
 # A service that is not listed under `database` cannot open a connection to

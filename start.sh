@@ -11,6 +11,8 @@ exec 9>"$STATE/config/operator.lock"
 if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
 # Before anything is changed: Docker must be able to allocate the subnet of the internal renderer network.
 bash "$ROOT/scripts/network-preflight.sh"
+# Before the db container is recreated: a PostgreSQL 15 database must go through the baseline reload.
+bash "$ROOT/scripts/db-version-preflight.sh"
 # --remove-orphans removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.

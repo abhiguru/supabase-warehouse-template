@@ -33,17 +33,12 @@ while (($#)); do
 done
 [[ "$expect_last" =~ ^[0-9]+$ ]] || { echo '--expect-last N is required (the number of the last migration of the chain)' >&2; exit 2; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/baseline-dump.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$out.tmp"' EXIT
 q() { db_psql "$container" -At "$@"; }
 
 # Precondition 1: the ledger of the chain database holds 0..N without a gap (050 was never written), ending at --expect-last.
 q -c "SELECT split_part(name, '_', 1)::bigint FROM warehouse_migrations.applied ORDER BY 1" > "$work/ledger.txt"
-awk -v last="$expect_last" 'BEGIN { prev = -1 }
-  { n = $1 + 0
-    if (n != prev + 1 && !(prev + 2 == n && n == 51 && prev == 49)) { printf "Gap in the migration chain: %d is followed by %d\n", prev, n; bad = 1 }
-    prev = n }
-  END { if (prev != last) { printf "The chain ends at %d, expected --expect-last %d\n", prev, last; bad = 1 }
-        exit bad }' "$work/ledger.txt" >&2 || { echo 'The chain database is not the final chain (are migrations 100-102, 109 and the others in the root?)' >&2; exit 1; }
+awk -v last="$expect_last" -f "$here/check-ledger.awk" "$work/ledger.txt" >&2 || { echo 'The chain database is not the final chain (are migrations 100-102, 109 and the others in the root?)' >&2; exit 1; }
 
 # Precondition 2: no removed role the chain created (warehouse_*) is left at the chain end; a chain migration drops it.
 if [[ -z "$removed" ]]; then removed=$(EDIT_MODULE="$(cd "$here" && pwd)/edit-dump.mjs" node -e "import(process.env.EDIT_MODULE).then(m => process.stdout.write(m.DEFAULT_REMOVED_ROLES.join(',')))"); fi
@@ -53,7 +48,8 @@ removed_sql="string_to_array('$removed', ',')"
 
 # Schemas that belong to the image or to the runner, never dumped (auth is dumped for its functions only).
 image_schemas="'auth','extensions','graphql','graphql_public','pgbouncer','realtime','_realtime','storage','vault','supabase_functions','net','cron','pgsodium','pgsodium_masks','warehouse_migrations','information_schema'"
-mapfile -t schemas < <(q -c "SELECT nspname FROM pg_namespace WHERE nspname NOT IN ($image_schemas) AND nspname !~ '^pg_' ORDER BY 1")
+q -c "SELECT nspname FROM pg_namespace WHERE nspname NOT IN ($image_schemas) AND nspname !~ '^pg_' ORDER BY 1" > "$work/schemas.txt"
+mapfile -t schemas < "$work/schemas.txt"
 [[ " ${schemas[*]} " == *" public "* ]] || { echo 'The database has no public schema' >&2; exit 1; }
 n_flags=()
 for s in "${schemas[@]}" auth; do n_flags+=(-n "$s"); done
@@ -76,11 +72,13 @@ if ((${#seed_tables[@]})); then
   # A partitioned parent holds no rows of its own and `-t parent` dumps none: dump the leaf partitions.
   t_flags=()
   for t in "${seed_tables[@]}"; do
-    # pg_partition_tree lists nothing for a table that is not partitioned: that table is its own leaf.
-    while IFS= read -r leaf; do t_flags+=(-t "$leaf"); done < <(q -c "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    # pg_partition_tree lists nothing for a table that is not partitioned: that table is its own leaf. The query runs into a file, so a
+    # failure stops the script instead of dropping a seed table silently.
+    q -c "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE c.oid = '$t'::regclass AND c.relkind = 'r'
       UNION SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE c.relkind = 'r' AND c.oid IN (SELECT relid FROM pg_partition_tree('$t'::regclass) WHERE isleaf) ORDER BY 1")
+      WHERE c.relkind = 'r' AND c.oid IN (SELECT relid FROM pg_partition_tree('$t'::regclass) WHERE isleaf) ORDER BY 1" > "$work/leaves.txt"
+    while IFS= read -r leaf; do t_flags+=(-t "$leaf"); done < "$work/leaves.txt"
   done
   ((${#t_flags[@]})) || { echo 'No table to dump rows from (the seed tables have no leaf)' >&2; exit 1; }
   docker exec -e PGPASSWORD="$DB_PASSWORD" "$container" pg_dump -U supabase_admin -d postgres --data-only --column-inserts --on-conflict-do-nothing --strict-names \
@@ -88,9 +86,19 @@ if ((${#seed_tables[@]})); then
   # Only the dump's header is filtered (SET lines, set_config, psql meta commands, up to the first INSERT); the unrestrict
   # line at the end goes too. Lines inside a multi-line string value stay as they are.
   awk 'BEGIN { head = 1 } head && /^INSERT /{ head = 0 } head && /^(SET |SELECT pg_catalog\.set_config|\\)/ { next } /^\\(un)?restrict / { next } { print }' "$work/data.raw" > "$work/data.sql"
+  # The same check as edit-dump.mjs makes for the schema part: no psql meta command and no session setting left in the rows.
+  if bad=$(grep -nE '^(\\|SET [A-Za-z_.]+ *(=|TO) |SELECT pg_catalog\.set_config)' "$work/data.sql" | head -5); [[ -n "$bad" ]]; then
+    echo 'The seed rows hold a psql meta command or a session setting:' >&2; echo "$bad" | cut -c1-200 >&2; exit 1
+  fi
 fi
-q -c "SELECT format('SELECT pg_catalog.setval(%L, %s, %s);', quote_ident(schemaname) || '.' || quote_ident(sequencename), last_value, 'true')
-        FROM pg_sequences WHERE last_value IS NOT NULL AND schemaname IN ($schema_list) ORDER BY 1" > "$work/setval.sql"
+# Every sequence whose real state (last_value, is_called) is not the one a new sequence has: setval(seq, last_value, is_called). A
+# sequence that was set with is_called = false (setval(s, 5, false)) is written as such; pg_sequences.last_value hides that state.
+q -c "SELECT format('SELECT pg_catalog.setval(%L, %s, %s);', quote_ident(s.schemaname) || '.' || quote_ident(s.sequencename),
+        (xpath('/row/last_value/text()', st.x))[1]::text, (xpath('/row/is_called/text()', st.x))[1]::text)
+        FROM pg_sequences s CROSS JOIN LATERAL (SELECT query_to_xml(format('SELECT last_value, is_called FROM %I.%I', s.schemaname, s.sequencename), false, true, '') AS x) st
+       WHERE s.schemaname IN ($schema_list)
+         AND NOT ((xpath('/row/last_value/text()', st.x))[1]::text::bigint = s.start_value AND (xpath('/row/is_called/text()', st.x))[1]::text = 'false')
+       ORDER BY 1" > "$work/setval.sql"
 
 # Part 2: extensions (plpgsql is built in). An extension that needs another comes after it; the set must be the expected one.
 actual_ext=$(q -c "SELECT string_agg(extname, ',' ORDER BY extname COLLATE \"C\") FROM pg_extension WHERE extname <> 'plpgsql'")
@@ -99,6 +107,45 @@ expected_sorted=$(tr ',' '\n' <<< "$expected_ext" | LC_ALL=C sort | paste -sd,)
 q -c "SELECT format('CREATE EXTENSION IF NOT EXISTS %I WITH SCHEMA %I;', e.extname, n.nspname)
         FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname <> 'plpgsql'
         ORDER BY (SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_extension'::regclass AND d.objid = e.oid AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'), e.extname" > "$work/ext.sql"
+
+# Part 2b: the privileges of extension members. The dump skips extension members, but their ACLs are not the extension script's
+# alone: in the chain the image's default privileges changed them (the pg_trgm functions lose PUBLIC EXECUTE and gain
+# service_role), and on a database without default privileges CREATE EXTENSION leaves the built-in PUBLIC EXECUTE. So the
+# baseline replays the chain's ACL of every extension member that has an explicit one, right after the CREATE EXTENSION lines:
+# PUBLIC is revoked, then PUBLIC, the owner-independent role entries and their grant options are granted again as the chain
+# has them. Grants to roles the new database does not have (postgres, dashboard_user, ...) are not replayed. Members in schema
+# extensions are left alone: the bootstrap owns that schema, and the extension scripts give the same ACLs on both images (the
+# verify run compares them; pg_stat_statements even differs in version and signature between PostgreSQL 15 and 17).
+db_psql "$container" -At > "$work/extacl.sql" <<ACLSQL
+SET search_path = pg_catalog;
+WITH kept AS (
+  SELECT oid, rolname FROM pg_roles
+   WHERE rolname IN ('anon', 'authenticated', 'service_role', 'authenticator', 'supabase_storage_admin', 'pgbouncer', 'supabase_admin')
+      OR (rolname LIKE 'warehouse\\_%' AND rolname <> ALL($removed_sql))
+), members AS (
+  SELECT 'FUNCTION ' || quote_ident(n.nspname) || '.' || quote_ident(p.proname) || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS target,
+         p.proacl AS acl, p.proowner AS owner
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_depend d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e' AND d.refclassid = 'pg_extension'::regclass
+   WHERE p.proacl IS NOT NULL AND n.nspname <> 'extensions'
+  UNION ALL
+  SELECT CASE WHEN c.relkind = 'S' THEN 'SEQUENCE ' ELSE 'TABLE ' END || quote_ident(n.nspname) || '.' || quote_ident(c.relname), c.relacl, c.relowner
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.objsubid = 0 AND d.deptype = 'e' AND d.refclassid = 'pg_extension'::regclass
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S') AND c.relacl IS NOT NULL AND n.nspname <> 'extensions'
+), entries AS (
+  SELECT m.target, a.grantee, a.is_grantable, string_agg(a.privilege_type, ', ' ORDER BY a.privilege_type) AS privs
+    FROM members m, LATERAL aclexplode(m.acl) a
+   WHERE a.grantee <> m.owner GROUP BY m.target, a.grantee, a.is_grantable
+)
+SELECT stmt FROM (
+  SELECT target AS k1, 0 AS k2, '' AS k3, 'REVOKE ALL ON ' || target || ' FROM PUBLIC;' AS stmt FROM (SELECT DISTINCT target FROM members) t
+  UNION ALL
+  SELECT e.target, 1, coalesce(r.rolname, 'PUBLIC'),
+         'GRANT ' || e.privs || ' ON ' || e.target || ' TO ' || coalesce(quote_ident(r.rolname), 'PUBLIC') || CASE WHEN e.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END || ';'
+    FROM entries e LEFT JOIN kept r ON r.oid = e.grantee WHERE e.grantee = 0 OR r.oid IS NOT NULL
+) x ORDER BY k1 COLLATE "C", k2, k3 COLLATE "C";
+ACLSQL
 
 # Part 3: roles the chain created (names warehouse_*, except the removed ones), with attributes, memberships and role settings.
 q -c "SELECT format(\$f\$  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %L) THEN
@@ -140,6 +187,11 @@ HEADER
   echo '-- Extensions'
   cat "$work/ext.sql"
   echo
+  if [[ -s "$work/extacl.sql" ]]; then
+    echo '-- Privileges of extension members, as the chain has them'
+    cat "$work/extacl.sql"
+    echo
+  fi
   if [[ -s "$work/roles-create.sql" ]]; then
     echo '-- Roles created by the chain (the image'"'"'s own roles come from the bootstrap)'
     echo 'DO $roles$'
@@ -155,7 +207,7 @@ HEADER
     echo '-- Seed data: the rows a fresh install holds. Triggers stay quiet while it is loaded.'
     echo 'SET LOCAL session_replication_role = replica;'
     cat "$work/data.sql"
-    echo 'RESET session_replication_role;'
+    echo 'SET LOCAL session_replication_role = origin;'
   fi
   if [[ -s "$work/setval.sql" ]]; then echo; echo '-- Sequence positions'; cat "$work/setval.sql"; fi
 } > "$out.tmp"

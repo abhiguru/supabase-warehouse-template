@@ -101,9 +101,8 @@ test('each report reads its existing RPC with the arguments the app uses, at the
     assert.deepEqual(reportLevel(odd).rpc(odd).args, { p_customer_id: null, ...items }, field);
     assert.deepEqual(buildReport(odd, { items: [] }).sort.field, 'item', field);
   }
-  // Every RPC named here exists in the migrations.
-  const sql = ['00000000000000_initial_schema.sql', '00000000000052_report_sort.sql']
-    .map(name => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join('\n');
+  // Every RPC named here exists in the baseline migration (the squash of migrations 0 to 110).
+  const sql = readFileSync(new URL('../migrations/00000000000000_baseline.sql', import.meta.url), 'utf8');
   for (const [one, all] of Object.values(calls)) {
     for (const call of [one, all]) assert.match(sql, new RegExp(`FUNCTION public\\.${call.name}\\(`), call.name);
   }
@@ -479,18 +478,13 @@ test('generate-report-pdf is routed for signed-in callers and gets the document 
     "import { reportPdf } from '../_shared/report-pdf.ts';\nDeno.serve(reportPdf);\n");
 });
 
-test('migration 53 lists exactly the paths generate-report-pdf writes, in ASCII', () => {
-  const sql = readFileSync(new URL('../migrations/00000000000053_report_pdf_retention.sql', import.meta.url), 'utf8');
-  assert.doesNotMatch(sql, /[^\x09\x0A\x0D\x20-\x7E]/);
-  assert.match(sql, /^-- /);
-  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
-  assert.match(sql, /CREATE OR REPLACE FUNCTION warehouse_maintenance\.expired_generated_documents\(p_now timestamptz DEFAULT now\(\)\)/);
-  const names = /\^report\/\(([a-z|-]+)\)\//.exec(sql)[1].split('|');
+test('the baseline lists exactly the paths generate-report-pdf writes in expired_generated_documents (migration 53)', () => {
+  const sql = readFileSync(new URL('../migrations/00000000000000_baseline.sql', import.meta.url), 'utf8');
+  const start = sql.indexOf('CREATE FUNCTION warehouse_maintenance.expired_generated_documents(');
+  assert.ok(start > 0, 'expired_generated_documents is in the baseline');
+  const body = sql.slice(start, sql.indexOf('\n$$;', start));
+  const names = /\^report\/\(([a-z|-]+)\)\//.exec(body)[1].split('|');
   assert.deepEqual(names, [...reportNames]);
-  // The document pattern of migration 43 is kept as it was.
-  const old = readFileSync(new URL('../migrations/00000000000043_image_paths_and_document_expiry.sql', import.meta.url), 'utf8');
-  const documentPattern = /o\.name ~ '(\^\(grn\|dispatch\|invoice\|stock\)[^']+)'/.exec(old)[1];
-  assert.ok(sql.includes(`o.name ~ '${documentPattern}'`));
   const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
   assert.match(migrations, /"\$ROOT\/tests\/report_pdf_retention\.sql"/);
 });
@@ -949,27 +943,8 @@ test('the label table holds no weight or kg label, and the GRN document PDF says
   assert.doesNotMatch(source, /line\.qty\s*\*\s*line\.weight|line\.weight\s*\*\s*line\.qty/);
 });
 
-test('migration 59 is ASCII, patches only the weight totals with counted markers, and its SQL test is registered after the dispatch weight one', () => {
-  const sql = readFileSync(new URL('../migrations/00000000000059_grn_activity_weight.sql', import.meta.url), 'utf8');
-  assert.doesNotMatch(sql, /[^\x09\x0A\x0D\x20-\x7E]/);
-  assert.match(sql, /^-- /);
-  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
-  // Every entry: [signature, before text, after text, expected count]; the whole VALUES list, in order.
-  const entries = [...sql.matchAll(/\('(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
-    .map(match => [match[1], match[2], match[3], Number(match[4])]);
-  assert.deepEqual(entries.map(([signature, , , times]) => [signature, times]), [
-    ['public.get_customer_grn_activity(uuid,date,date)', 2], ['public.get_customer_grn_activity(uuid,date,date)', 1],
-    ['public.get_customer_grn_activity(uuid,date,date)', 1], ['public.get_customer_grn_activity(uuid,date,date)', 1],
-    ['public.get_customer_grn_activity(uuid,date,date)', 1], ['public.get_customer_grn_activity(uuid,date,date)', 1],
-    ['public.get_all_grn_activity(date,date)', 1], ['public.get_all_grn_activity(date,date)', 1],
-  ]);
-  // One entry changes text (the bags join the sum, twice); every other one is a guard: its text is unchanged.
-  const changing = entries.filter(([, before, after]) => before !== after);
-  assert.deepEqual(changing.map(([, before, after]) => [before, after]), [
-    ['SUM(grt.weight) as total_weight', 'COALESCE(SUM(grt.weight::numeric * grt.qty), 0) as total_weight'],
-  ]);
+test('the SQL test for the GRN activity weight is registered after the dispatch weight one (migration 59)', () => {
   const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  // Registered, and after the dispatch weight test; what else follows it in the list is not this test's business.
   const dispatchWeight = migrations.indexOf('"$ROOT/tests/report_dispatch_weight.sql"');
   const grnWeight = migrations.indexOf('"$ROOT/tests/report_grn_weight.sql"');
   assert.ok(dispatchWeight >= 0 && grnWeight > dispatchWeight);
@@ -1152,62 +1127,16 @@ test('the app\'s net sort of the invoice history is still accepted at both level
   assert.deepEqual(sortFields(parseReportRequest({ report: 'invoice-history', ...invoicePeriod })), ['customer', 'invoices', 'amount', 'latest', 'net']);
 });
 
-test('migration 61 is ASCII, patches only the invoice amounts with counted markers, and its SQL test is registered after the PDF retention one', () => {
-  const sql = readFileSync(new URL('../migrations/00000000000061_invoice_report_amounts.sql', import.meta.url), 'utf8');
-  assert.doesNotMatch(sql, /[^\x09\x0A\x0D\x20-\x7E]/);
-  assert.match(sql, /^-- /);
-  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
-  assert.doesNotMatch(sql, /authorize_rpc\(|CREATE (OR REPLACE )?FUNCTION (?!pg_temp)/, 'it redefines no function and does not touch the guard');
-  // Every entry: [step, signature, before text, after text, expected count], in order.
-  const entries = [...sql.matchAll(/\((\d+), '(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
-    .map(match => [Number(match[1]), match[2], match[3], match[4], Number(match[5])]);
-  assert.deepEqual(entries.map(([step, signature, , , times]) => [step, signature, times]), [
-    [1, 'public.get_customer_invoice_summary(uuid,date,date,integer)', 2], [2, 'public.get_customer_invoice_summary(uuid,date,date,integer)', 1],
-    [3, 'public.get_customer_invoice_summary(uuid,date,date,integer)', 1], [4, 'public.get_customer_invoice_summary(uuid,date,date,integer)', 1],
-    [5, 'public.get_customer_activity_detail(uuid,date,date)', 2], [6, 'public.get_customer_activity_detail(uuid,date,date)', 1],
-    [7, 'public.get_all_customer_activity_summary(date,date)', 1],
-  ]);
-  // The three sums become the total; none of the new texts mentions labour, tax or discount.
-  for (const [step, , before, after] of entries.filter(([step]) => [1, 5, 6, 7].includes(step))) {
-    assert.match(before, /\+ COALESCE\((i\.)?labour, 0\) \+ COALESCE\((i\.)?tax_amount, 0\) - COALESCE\((i\.)?discount, 0\)/, `step ${step}`);
-    assert.doesNotMatch(after, /labour|tax_amount|discount/, `step ${step}`);
-  }
+test('the SQL test for the invoice amounts is registered once, after the PDF retention one (migration 61)', () => {
   const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  // Registered once, after the PDF retention test and before the report_to_date one; what follows is not this test's business.
   const retention = migrations.indexOf('"$ROOT/tests/report_pdf_retention.sql"');
   const amounts = migrations.indexOf('"$ROOT/tests/report_invoice_amounts.sql"');
   assert.equal(migrations.split('"$ROOT/tests/report_invoice_amounts.sql"').length - 1, 1);
   assert.ok(retention >= 0 && amounts > retention && amounts < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
 });
 
-test('migration 62 is ASCII, patches only the paid and pending expressions with counted markers, and its SQL test is registered after the invoice amounts one', () => {
-  const sql = readFileSync(new URL('../migrations/00000000000062_invoice_paid_follows_money.sql', import.meta.url), 'utf8');
-  assert.doesNotMatch(sql, /[^\x09\x0A\x0D\x20-\x7E]/);
-  assert.match(sql, /^-- /);
-  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
-  assert.doesNotMatch(sql, /authorize_rpc\(|CREATE (OR REPLACE )?FUNCTION (?!pg_temp)/, 'it redefines no function and does not touch the guard');
-  assert.ok(!sql.includes('get_all_customer_activity_summary(date,date)\''), 'the all-customers activity summary has no paid or pending figure and is not patched');
-  // Every entry: [step, signature, before text, after text, expected count], in order.
-  const entries = [...sql.matchAll(/\((\d+), '(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
-    .map(match => [Number(match[1]), match[2], match[3], match[4], Number(match[5])]);
-  const summary = 'public.get_customer_invoice_summary(uuid,date,date,integer)';
-  const detail = 'public.get_customer_activity_detail(uuid,date,date)';
-  assert.deepEqual(entries.map(([step, signature, , , times]) => [step, signature, times]), [
-    [1, summary, 1], [2, summary, 1], [3, summary, 1], [4, summary, 1], [5, summary, 1], [6, summary, 1], [7, summary, 1], [8, summary, 1], [9, summary, 1],
-    [10, detail, 1], [11, detail, 1], [12, detail, 1],
-  ]);
-  // The rule is written with the tolerance of get_open_invoices_for_customer, 0.50, and the cap GREATEST(0, LEAST(sum, total)).
-  const after = step => entries.find(entry => entry[0] === step)[3];
-  assert.match(after(3), /bal\.balance <= 0\.50/);
-  assert.match(after(2), /GREATEST\(0, LEAST\(COALESCE\(ps\.paid_sum, 0\), COALESCE\(id\.total, 0\)\)\)/);
-  assert.match(after(12), /<= 0\.50 THEN 'paid' ELSE 'pending'/);
-  assert.match(after(10), /GREATEST\(0, LEAST\(/);
-  // Steps 7 and 8 change nothing: they only fail the migration when the counts no longer read the status.
-  for (const step of [7, 8]) assert.equal(entries.find(entry => entry[0] === step)[2], after(step), `step ${step} is a check`);
-  // No replacement touches the sums of the total, the day cuts or the payments' total_paid_amount.
-  for (const [, , , text] of entries) assert.doesNotMatch(text, /business_day_start|business_date|total_paid_amount|net_amount/);
+test('the SQL test for paid and pending is registered once, directly after the invoice amounts one (migration 62)', () => {
   const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  // Registered once, on the line directly after the invoice amounts test.
   assert.equal(migrations.split('"$ROOT/tests/report_invoice_paid.sql"').length - 1, 1);
   assert.ok(migrations.includes('  "$ROOT/tests/report_invoice_amounts.sql"\n  "$ROOT/tests/report_invoice_paid.sql"\n'));
   assert.ok(migrations.indexOf('"$ROOT/tests/report_invoice_paid.sql"') < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
@@ -1831,42 +1760,7 @@ test('the totals row of a table cut at the limit says "Total of rows shown"; a t
 // ---------------------------------------------------------------------------
 // Migration 63: one row per receipt in the GRN activity of one customer
 // ---------------------------------------------------------------------------
-test('migration 63 is ASCII, patches only invoice_status and its default with counted markers whose before-text is not in the after-text, and its SQL test closes the list', () => {
-  const name = '00000000000063_grn_activity_one_row_per_grn.sql';
-  const sql = readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
-  assert.match(sql, /^[\x00-\x7F]*$/, 'ASCII only');
-  assert.match(sql, /^-- /);
-  assert.match(sql, /NOTIFY pgrst, 'reload schema';\n$/);
-  assert.doesNotMatch(sql, /authorize_rpc\(|CREATE (OR REPLACE )?FUNCTION (?!pg_temp)/, 'it redefines no function and does not touch the guard');
-  // Every entry: [step, signature, before text, after text, expected count], in order.
-  const entries = [...sql.matchAll(/\((\d+), '(public\.[a-z_]+\([a-z,]+\))',\s*\$b\$(.*?)\$b\$,\s*\$a\$(.*?)\$a\$, (\d+)\)/gs)]
-    .map(match => [Number(match[1]), match[2], match[3], match[4], Number(match[5])]);
-  const customer = 'public.get_customer_grn_activity(uuid,date,date)';
-  assert.deepEqual(entries.map(([step, signature, , , times]) => [step, signature, times]), [1, 2, 3, 4, 5, 6].map(step => [step, customer, 1]));
-  assert.ok(!sql.includes("'public.get_all_grn_activity("), 'get_all_grn_activity has no invoice join and is not patched');
-  // Steps 1 and 2 change text; 3 to 6 only fail the migration when the text the fix relies on is no longer there once.
-  const changing = entries.filter(([, , before, after]) => before !== after);
-  assert.deepEqual(changing.map(([step]) => step), [1, 2]);
-  for (const step of [3, 4, 5, 6]) assert.equal(entries[step - 1][2], entries[step - 1][3], `step ${step} is a check`);
-  assert.deepEqual(entries.slice(2).map(entry => entry[2]), [
-    'LEFT JOIN invoice_status inv ON gd.grn_id = inv.gr_id', "'total_grns', COUNT(*),",
-    "'total_invoiced_grns', COUNT(*) FILTER (WHERE (invoice_status->>'is_invoiced')::boolean = true),", "'invoice_status', invoice_status,",
-  ]);
-  // A second direct run must fail with the count error, not patch again: no replacement contains its own marker.
-  for (const [step, , before, after] of changing) assert.ok(!after.includes(before), `step ${step}: the before-text is not contained in the after-text`);
-  // The fix: one row per receipt from the latest invoice, plus the count; the default says 0. Nothing else is in the replacements.
-  const [, , , cte] = entries[0];
-  assert.match(cte, /SELECT DISTINCT ON \(i\.gr_id\)/);
-  assert.match(cte, /'invoice_count', COUNT\(\*\) OVER \(PARTITION BY i\.gr_id\)/);
-  assert.match(cte, /ORDER BY i\.gr_id, i\.inv_date DESC, i\.inv_fin_year DESC, i\.inv_no DESC, i\.id DESC/);
-  assert.match(cte, /WHERE i\.deleted_at IS NULL/);
-  assert.match(entries[1][3], /'invoice_number', null, 'invoice_count', 0\)\) as invoice_status,/);
-  for (const [, , , text] of entries) assert.doesNotMatch(text, /business_day_start|business_date|weight|total_qty|jsonb_agg/);
-  // The pg_temp helper is the one of migration 62 and is dropped again.
-  const helper = text => text.match(/CREATE FUNCTION pg_temp\.replace_marker[\s\S]*?END \$\$;/)[0];
-  assert.equal(helper(sql), helper(readFileSync(new URL('../migrations/00000000000062_invoice_paid_follows_money.sql', import.meta.url), 'utf8')));
-  assert.match(sql, /DROP FUNCTION pg_temp\.replace_marker\(text, text, text, text, integer\);\nNOTIFY/);
-  // The test is on a new line at the very end of the list, after the line that ends with the GRN weight test.
+test('the SQL test for one GRN row per receipt closes the list and is ASCII (migration 63)', () => {
   const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
   assert.equal(migrations.split('"$ROOT/tests/report_grn_invoices.sql"').length - 1, 1);
   assert.ok(migrations.includes('"$ROOT/tests/report_grn_weight.sql"\n  "$ROOT/tests/report_grn_invoices.sql"\n)\nfor test_sql in'));

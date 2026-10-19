@@ -18,7 +18,8 @@
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. --allow-unsigned is only for a
 # lost backup key (then --backup-key is left out and nothing proves the backup
-# genuine). Only backup format v5 is accepted; an older format is refused. A v5 backup
+# genuine). Only backup format v5 is accepted; an older format is refused, and so is a backup made on the earlier
+# supabase/postgres image (scripts/backup-image.sh). A v5 backup
 # whose signature file is missing is refused while --backup-key is given. Nothing
 # outside the new state is changed; the source backup is only read.
 set -euo pipefail
@@ -123,6 +124,10 @@ done
 # Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
 [[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; die "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)."; }
+# A backup made on the earlier supabase/postgres image (or with no image line) is refused: scripts/backup-image.sh.
+# shellcheck source=scripts/backup-image.sh
+source "$ROOT/scripts/backup-image.sh"
+backup_check_database_image "$backup" || exit 1
 # Signature and checksums first: compose.env from the backup becomes this host's configuration.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 env_get() { sed -n "s/^$1=//p" "$backup/compose.env" | head -n 1; }
@@ -144,22 +149,13 @@ local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$
 
 # 4. A new host has no trace of this installation's containers.
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ]] || die "Refusing: containers of $project already exist on this host. This is not a fresh host for this installation (use npm run db:restore on the original state instead)."
-# Nor the Docker volume that carries database state. The restore replaces the
-# database (data/db) and the stored files (data/storage); the one named volume
-# those services mount, <project>_db-config, holds the previous cluster's custom
-# configuration and pgsodium root key, is not part of a backup, and would
-# otherwise be reused silently by the restored database. Other volumes of the
-# project (the print spool, the sensor data) hold nothing a restore replaces, so they do not stop it.
-# tests/restore-host.test.mjs compares this list with the Compose files.
-STATE_VOLUMES=(db-config)
-blocking=() kept=()
+# The restore replaces the database (data/db) and the stored files (data/storage). The project's other
+# Docker volumes (the print spool, the sensor data) hold nothing a restore replaces, so they do not stop it.
+kept=()
 present="$(docker volume ls -q --filter "name=^${project}_")"
 while IFS= read -r volume; do
-  [[ -n "$volume" ]] || continue
-  if [[ " ${STATE_VOLUMES[*]} " == *" ${volume#"${project}_"} "* ]]; then blocking+=("$volume"); else kept+=("$volume"); fi
+  [[ -n "$volume" ]] && kept+=("$volume")
 done <<<"$present"
-((${#blocking[@]} == 0)) || die "Refusing: the Docker volume ${blocking[*]} of the previous database remains on this host. The restored database would reuse its old configuration and key material. If the previous installation on this host is really gone, remove it with:
-  docker volume rm ${blocking[*]}"
 if ((${#kept[@]})); then
   list="$(printf '%s, ' "${kept[@]}")"
   echo "Kept the Docker volumes ${list%, }: they hold no database or storage state (print spool, sensor data) and are reused as they are."

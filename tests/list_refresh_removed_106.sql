@@ -41,6 +41,6 @@ SELECT pg_temp.lr_assert((SELECT bool_and(position('pg_advisory_xact_lock(71040)
 SELECT pg_temp.lr_assert((SELECT position('''get_dispatch_list''' IN prosrc) = 0 AND position('get_list_freshness' IN prosrc) = 0
      AND position('''get_dispatch_list_with_items''' IN prosrc) > 0 AND position('''get_invoices_list''' IN prosrc) > 0
    FROM pg_proc WHERE oid = 'warehouse_security.authorize_rpc(text,jsonb)'::regprocedure), 'authorize_rpc allow-list');
-SELECT pg_temp.lr_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000106_lists_read_tables.sql'), 'migration 106 is recorded');
+SELECT pg_temp.lr_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql'), 'the baseline (which holds migration 106) is recorded');
 ROLLBACK;
 SELECT 'list refresh machinery removed, the lists that stay are intact' AS result;

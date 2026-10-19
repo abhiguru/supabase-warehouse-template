@@ -498,14 +498,17 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     assert.match(readEnv(envPath).DB_PASSWORD_POOLER, /^[0-9a-f]{64}$/);
     assert.equal(readFileSync(envPath, 'utf8').split('\n').length, after.split('\n').length);
 
-    // A state written before the Auth service was removed still has a DB_PASSWORD_AUTH line. It is an extra key:
-    // nothing reads it, nothing fails on it, and setup leaves it as it is.
-    const legacy = readFileSync(envPath, 'utf8') + `DB_PASSWORD_AUTH=${'9'.repeat(64)}\n`;
+    // A state written before the Auth service and the monitoring login were removed still has their password
+    // lines. Nothing reads them, and every facility reload reruns setup, so setup removes them.
+    const clean = readFileSync(envPath, 'utf8');
+    const legacy = clean + `DB_PASSWORD_AUTH=${'9'.repeat(64)}\nDB_PASSWORD_MONITORING=${'8'.repeat(64)}\n`;
     writeFileSync(envPath, legacy, { mode: 0o600 });
     const kept = cli('--state-dir', stateDir);
     assert.equal(kept.status, 0, kept.stderr);
-    assert.match(kept.stdout, /^Preserved existing operator state unchanged\.\n$/);
-    assert.equal(readFileSync(envPath, 'utf8'), legacy);
+    assert.match(kept.stdout, /^Preserved existing operator state; removed the unused DB_PASSWORD_AUTH, DB_PASSWORD_MONITORING\.\n$/);
+    assert.equal(readFileSync(envPath, 'utf8'), clean);
+    const again = cli('--state-dir', stateDir);
+    assert.match(again.stdout, /^Preserved existing operator state unchanged\.\n$/);
     assert.equal(validateOperatorEnv(readEnv(envPath), stateDir).origin, options.apiUrl);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -1,38 +1,56 @@
 #!/usr/bin/env bash
 # Tests ONLY a newly created, network-isolated, disposable database. No host ports.
+#
+# The database is the shipped one: the official Postgres image of scripts/db-image.sh, started as production starts it
+# (POSTGRES_USER=supabase_admin, en_US.UTF-8, the `-c` flags of docker/docker-compose.override.yml, the init scripts
+# 00-bootstrap.sql and roles.sql). The order is setup.sh's: database, migrations (the baseline, run twice), then the real
+# Storage 1.80.2 on a throwaway --internal network (DB_SUPER_USER=supabase_storage_admin, DB_INSTALL_ROLES=false), then
+# scripts/configure-storage.sql, then the SQL suites. No schema fixture stands in for Storage.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# new_name, create_net, run_storage and storage_image (throwaway containers named slim-tool-*, removed by their own code).
+source "$ROOT/scripts/baseline/lib.sh"
 suffix=$(openssl rand -hex 6)
 container="warehouse-migrations-$suffix"
+net=''
 created=false
 cleanup() {
-  if [[ "$created" == true ]]; then docker rm -f "$container" >/dev/null; fi
+  if [[ "$created" == true ]]; then docker rm -fv "$container" >/dev/null 2>&1 || true; fi
+  remove_storage_containers
+  if [[ -n "$net" ]]; then docker network rm "$net" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
-# The library settings the shipped database runs with (docker/docker-compose.override.yml): the same `-c` flags
-# are passed here, so the harness tests what ships (the bare image would also preload the image's other libraries).
-# One addition: pg_net is appended to shared_preload_libraries, only because the block "Migrations 93 and 103" below
-# rebuilds a pre-103 database, which needs CREATE EXTENSION pg_net; the shipped stack does not preload it.
+# The library settings the shipped database runs with (docker/docker-compose.override.yml): the same `-c` flags are passed here,
+# so the harness tests what ships.
 shipped_flags=()
 while IFS= read -r flag; do
-  case "$flag" in "-c shared_preload_libraries="*) flag="$flag,pg_net" ;; esac
   shipped_flags+=(-c "${flag#-c }")
 done < <(
-  sed -n 's/^ *\(-c \(shared_preload_libraries\|wal_level\|pg_stat_statements\.[a-z_]*\|cron\.[a-z_]*\)=.*\)$/\1/p' "$ROOT/docker/docker-compose.override.yml")
-[[ " ${shipped_flags[*]} " == *shared_preload_libraries=* ]] || { echo 'No shared_preload_libraries in docker-compose.override.yml' >&2; exit 1; }
+  sed -n 's/^ *\(-c \(shared_preload_libraries\|wal_level\|timezone\|log_timezone\|extra_float_digits\|pg_stat_statements\.[a-z_]*\)=.*\)$/\1/p' "$ROOT/docker/docker-compose.override.yml")
+[[ " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements\ * || " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements ]] || { echo 'shared_preload_libraries is not exactly pg_stat_statements in docker-compose.override.yml' >&2; exit 1; }
 [[ " ${shipped_flags[*]} " == *wal_level=replica* ]] || { echo 'No wal_level=replica in docker-compose.override.yml' >&2; exit 1; }
+db_image="$(bash "$ROOT/scripts/db-image.sh")"
+# Random service passwords for the init script roles.sql (it needs 32 to 128 distinct characters of [A-Za-z0-9_-]).
+net=$(create_net)
 docker run -d --name "$container" --label purpose=warehouse-migration-test \
-  --network none --memory 1g --cpus 1 \
+  --network "$net" --memory 1g --cpus 1 \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
-  -e POSTGRES_PASSWORD=disposable-test-database-only \
-  supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6 \
-  postgres -D /etc/postgresql "${shipped_flags[@]}" >/dev/null
+  -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \
+  -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" -e DB_PASSWORD_POOLER="$(openssl rand -hex 32)" \
+  -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
+  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
+  -v "$ROOT/docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro" \
+  "$db_image" \
+  postgres "${shipped_flags[@]}" >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
-  if docker exec "$container" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+  # The image's temporary server answers while the init scripts still run: wait for the end of init, then for the real server.
+  init_log=$(docker logs "$container" 2>&1 || true)
+  if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
+    && docker exec "$container" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Test database did not start' >&2; exit 1; }
@@ -40,77 +58,64 @@ mig_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$contai
 # The migration plan of a directory that holds a `migrations/` folder.
 plan_of() { PLAN_MODULE="$ROOT/scripts/migration-plan.mjs" PLAN_ROOT="$1" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT)))"; }
 
-# Migration 106 moves get_invoices_list from the materialized view mv_invoice_list to the tables and removes pg_cron
-# and the list refresher. So that the move can be compared, the migrations up to 105 are applied first, the answers
-# of the old function are recorded on a fixed set of invoices (tests/invoice_list_parity.sql), migration 106 is
-# applied, and the same file must then print the same answers.
-stage105=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-stage105.XXXXXX")
-mkdir "$stage105/migrations"
-for migration_file in "$ROOT"/migrations/*.sql; do
-  migration_name=$(basename "$migration_file")
-  if (( 10#${migration_name%%_*} < 106 )); then cp "$migration_file" "$stage105/migrations/"; fi
-done
-# Migration 105 removes what the Realtime service left behind: give it schemas, a partitioned table, a function, a
-# tenant row and a second publication to remove (tests/realtime_fixture_105.sql).
-mig_psql < "$ROOT/tests/realtime_fixture_105.sql"
-# Migration 105 must refuse, and change nothing, while an object outside the Realtime schemas depends on one inside
-# them. So the probe has something to refuse on, the migrations before 105 are applied first.
-stage104=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-stage104.XXXXXX")
-mkdir "$stage104/migrations"
-for migration_file in "$ROOT"/migrations/*.sql; do
-  migration_name=$(basename "$migration_file")
-  if (( 10#${migration_name%%_*} < 105 )); then cp "$migration_file" "$stage104/migrations/"; fi
-done
-plan_of "$stage104" | mig_psql
-rm -rf "$stage104"
-mig_psql -c 'CREATE VIEW public.mig105_probe AS SELECT id FROM realtime.messages'
-if err=$({ echo 'BEGIN;'; cat "$ROOT/migrations/00000000000105_remove_realtime.sql"; echo 'ROLLBACK;'; } | mig_psql 2>&1 >/dev/null); then
-  echo 'Migration 105 must refuse while a view outside the Realtime schemas reads realtime.messages.' >&2; exit 1; fi
-[[ "$err" == *'depends on an object inside them, so they are not dropped: rule _RETURN on view mig105_probe'* ]] || { echo "Migration 105 refused, but not for the probe view; it said: $err" >&2; exit 1; }
-[[ "$(mig_psql -At -c "SELECT (SELECT count(*) FROM pg_publication WHERE pubname IN ('supabase_realtime', 'supabase_realtime_messages_publication')) || ',' || (SELECT count(*) FROM pg_class WHERE oid IN ('public.orders'::regclass, 'public.sensor_latest'::regclass) AND relreplident = 'f') || ',' || (to_regnamespace('realtime') IS NOT NULL)::text || ',' || (to_regnamespace('_realtime') IS NOT NULL)::text")" == '2,2,true,true' ]] || {
-  echo 'A refused migration 105 changed the database.' >&2; exit 1; }
-mig_psql -c 'DROP VIEW public.mig105_probe'
-for pass in 1 2; do
-  echo "Migration ledger pass $pass up to 105 (second pass must skip unchanged files)"
-  plan_of "$stage105" | mig_psql
-done
-rm -rf "$stage105"
-# Migration 108 replaces pgjwt's extensions.sign by warehouse_security.jwt_sign_hs256 and drops pgjwt. While pgjwt still
-# exists (the database stands at 105), the function block marked in the migration is created under another name and
-# compared with extensions.sign for many payloads and secrets (tests/jwt_sign_108_before.sql); the probe is then dropped.
-jwt_block=$(sed -n '/^-- BEGIN jwt_sign_hs256$/,/^-- END jwt_sign_hs256$/p' "$ROOT/migrations/00000000000108_jwt_sign_without_pgjwt.sql" \
-  | sed 's/jwt_sign_hs256(p_payload/jwt_sign_hs256_probe108(p_payload/')
-[[ "$jwt_block" == *'CREATE OR REPLACE FUNCTION warehouse_security.jwt_sign_hs256_probe108('* ]] || { echo 'The jwt_sign_hs256 block of migration 108 was not found.' >&2; exit 1; }
-printf '%s\n' "$jwt_block" | mig_psql
-jwt_notice=$(mig_psql -v fn=jwt_sign_hs256_probe108 2>&1 < "$ROOT/tests/jwt_sign_108_before.sql") || { echo "$jwt_notice" >&2; exit 1; }
-grep -q '27 token pairs identical to pgjwt' <<< "$jwt_notice" || { echo "$jwt_notice" >&2; echo 'The pgjwt equality test did not report 27 identical token pairs.' >&2; exit 1; }
-echo "$jwt_notice" | grep 'jwt_sign_108_before:'
-mig_psql -c 'DROP FUNCTION warehouse_security.jwt_sign_hs256_probe108(json, text)'
-parity_old=$(mig_psql -At < "$ROOT/tests/invoice_list_parity.sql")
-[[ "$(printf '%s\n' "$parity_old" | wc -l)" -ge 150 && "$(printf '%s\n' "$parity_old" | grep -c 'sort total desc')" -ge 3 ]] || {
-  echo 'The invoice list parity run before migration 106 produced too few answers.' >&2; exit 1; }
-# Migration 106 must refuse, and change nothing, while the cron table holds a job that is not the list refresh.
-mig_psql -At -c "SELECT cron.schedule('mig106_probe', '0 0 1 1 *', 'SELECT 1')" -c "SELECT cron.schedule('0 0 1 1 *', 'SELECT 2')" >/dev/null
-if err=$({ echo 'BEGIN;'; cat "$ROOT/migrations/00000000000106_lists_read_tables.sql"; echo 'ROLLBACK;'; } | mig_psql 2>&1 >/dev/null); then
-  echo 'Migration 106 must refuse while another pg_cron job exists.' >&2; exit 1; fi
-[[ "$err" == *'jobs that are not the list refresh: mig106_probe (job '*'(no name) (job '* ]] || { echo "Migration 106 refused, but not for the foreign job; it said: $err" >&2; exit 1; }
-[[ "$(mig_psql -At -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_cron'" -c "SELECT count(*) FROM pg_matviews WHERE matviewname = 'mv_invoice_list'")" = $'1\n1' ]] || {
-  echo 'A refused migration 106 changed the database.' >&2; exit 1; }
-mig_psql -At -c "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname IS NULL OR jobname = 'mig106_probe'" >/dev/null
-for pass in 1 2; do
-  echo "Migration ledger pass $pass with 106 (second pass must skip unchanged files)"
-  plan_of "$ROOT" | mig_psql
-done
-parity_new=$(mig_psql -At < "$ROOT/tests/invoice_list_parity.sql")
-if [[ "$parity_new" != "$parity_old" ]]; then
-  diff <(printf '%s\n' "$parity_old") <(printf '%s\n' "$parity_new") | cut -c1-300 | head -20 >&2
-  echo 'get_invoices_list answers differ between the old (view) and the new (tables) function.' >&2; exit 1
-fi
-echo "get_invoices_list: $(printf '%s\n' "$parity_new" | wc -l) answers identical before and after migration 106."
+# The ledger, run twice: the first pass applies the baseline, the second must skip it.
+first=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$first" | tail -20 >&2; echo 'The first ledger pass failed.' >&2; exit 1; }
+[[ "$first" == *'Applying: 00000000000000_baseline.sql'* ]] || { echo "The first ledger pass did not apply the baseline: $first" >&2; exit 1; }
+second=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$second" | tail -20 >&2; echo 'The second ledger pass failed.' >&2; exit 1; }
+[[ "$second" == *'Already applied: 00000000000000_baseline.sql'* && "$second" != *'Applying:'* ]] || { echo "The second ledger pass must skip the baseline: $second" >&2; exit 1; }
+# The ledger holds exactly the files of migrations/ (the baseline today, more once a migration follows it).
+[[ "$(mig_psql -At -c 'SELECT string_agg(name, $$,$$ ORDER BY name) FROM warehouse_migrations.applied')" == "$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | paste -sd,)" ]] || { echo 'The ledger does not hold exactly the migration files.' >&2; exit 1; }
+migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
+
+# A changed baseline must fail closed: a space appended to a temporary copy.
+changed=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-changed.XXXXXX")
+mkdir "$changed/migrations"
+cp "$ROOT/migrations/00000000000000_baseline.sql" "$changed/migrations/"
+printf ' ' >> "$changed/migrations/00000000000000_baseline.sql"
+if err=$(plan_of "$changed" | mig_psql 2>&1 >/dev/null); then echo 'A changed baseline was accepted.' >&2; exit 1; fi
+[[ "$err" == *'Applied migration changed: 00000000000000_baseline.sql'* ]] || { echo "A changed baseline was refused, but not with the checksum message: $err" >&2; exit 1; }
+rm -rf "$changed"
+
+# A database that recorded a migration this release does not contain (the old chain, or a deleted file) is refused, with the
+# pointer to the reload section, and nothing is changed.
+mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
+if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'A ledger with an unknown migration was accepted.' >&2; exit 1; fi
+[[ "$err" == *'recorded migrations that are not in this release (00000000000107_gone.sql)'* && "$err" == *'docs/OPERATOR_INSTALL.md, "Baseline reload"'* && "$err" == *'newer than this checkout'* ]] || { echo "The unknown-migration refusal is not the expected one: $err" >&2; exit 1; }
+mig_psql -c "DELETE FROM warehouse_migrations.applied WHERE name = '00000000000107_gone.sql'"
+plan_of "$ROOT" | mig_psql >/dev/null
+
+# The refusal happens before any file runs: a checkout that holds the baseline and a further migration, against a ledger with
+# an unknown name, creates nothing from that further migration.
+probe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-probe.XXXXXX")
+mkdir "$probe/migrations"
+cp "$ROOT/migrations/00000000000000_baseline.sql" "$probe/migrations/"
+printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000111_probe.sql"
+mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
+if plan_of "$probe" | mig_psql >/dev/null 2>&1; then echo 'A ledger with an unknown migration was accepted next to a new migration.' >&2; exit 1; fi
+[[ "$(mig_psql -At -c "SELECT to_regclass('public.ledger_guard_probe') IS NULL")" == t ]] || { echo 'The refusal ran a migration file before it stopped.' >&2; exit 1; }
+mig_psql -c "DELETE FROM warehouse_migrations.applied WHERE name = '00000000000107_gone.sql'"
+rm -rf "$probe"
+
+# A database with application tables and an empty ledger (untracked) is refused too, and the ledger stays empty.
+mig_psql -c "CREATE TABLE warehouse_migrations.applied_saved AS SELECT * FROM warehouse_migrations.applied; DELETE FROM warehouse_migrations.applied;"
+if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'An untracked database was accepted.' >&2; exit 1; fi
+[[ "$err" == *'Refusing to initialize an existing, untracked warehouse database'* ]] || { echo "The untracked-database refusal is not the expected one: $err" >&2; exit 1; }
+[[ "$(mig_psql -At -c 'SELECT count(*) FROM warehouse_migrations.applied')" == 0 ]] || { echo 'The untracked-database refusal wrote to the ledger.' >&2; exit 1; }
+mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_migrations.applied_saved; DROP TABLE warehouse_migrations.applied_saved;"
+
+# Storage, as setup.sh does after the migrations: the real Storage 1.80.2 builds its own tables in the schema the bootstrap made.
+run_storage "$container" "$net" "$(storage_image)" >/dev/null
+[[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
+# The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
+[[ "$(mig_psql -At -c "SELECT bool_and(has_schema_privilege(r, 'storage', 'USAGE')) FROM unnest(ARRAY['anon','authenticated','service_role']) r")" == t ]] || { echo 'An API role cannot use the storage schema.' >&2; exit 1; }
+# Storage 1.80.2 guards storage.objects and storage.buckets with a statement trigger that refuses every DELETE unless
+# storage.allow_delete_query is 'true', also a DELETE that row-level security would leave with 0 rows. The SQL suites below delete
+# as staff to prove that the policies hide the rows, so the setting is on for them (database level of this disposable database
+# only); it is reset before the customer-images block, which must see the guard as it is.
+mig_psql -c "ALTER DATABASE postgres SET storage.allow_delete_query = 'true'"
 test_files=(
-  "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
+  "$ROOT/tests/baseline_roles.sql" "$ROOT/tests/baseline_owners.sql" "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
   "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
-  "$ROOT/tests/storage_policy_fixture.sql"
   "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
@@ -155,27 +160,12 @@ for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 
+
+mig_psql -c "ALTER DATABASE postgres RESET storage.allow_delete_query"
+
 # The bucket customer-images (no longer created) is removed by configure-storage.sql while it is empty,
 # and configure stops, deleting nothing, while it holds a file.
 legacy_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
-# The image's Storage schema is older than the Storage release in use (v1.80.2), which guards storage.buckets
-# with a statement trigger that refuses every DELETE unless storage.allow_delete_query is 'true'. Create the same
-# function and trigger here (function body copied from a v1.80.2 database), so a plain DELETE fails as it does live.
-legacy_psql >/dev/null <<'SQL'
-CREATE OR REPLACE FUNCTION storage.protect_delete() RETURNS trigger LANGUAGE plpgsql AS $function$
-BEGIN
-    -- Check if storage.allow_delete_query is set to 'true'
-    IF COALESCE(current_setting('storage.allow_delete_query', true), 'false') != 'true' THEN
-        RAISE EXCEPTION 'Direct deletion from storage tables is not allowed. Use the Storage API instead.'
-            USING HINT = 'This prevents accidental data loss from orphaned objects.',
-                  ERRCODE = '42501';
-    END IF;
-    RETURN NULL;
-END;
-$function$;
-DROP TRIGGER IF EXISTS protect_buckets_delete ON storage.buckets;
-CREATE TRIGGER protect_buckets_delete BEFORE DELETE ON storage.buckets FOR EACH STATEMENT EXECUTE FUNCTION storage.protect_delete();
-SQL
 # No customer-images bucket: configure must be a no-op, not a refused DELETE.
 legacy_psql < "$ROOT/scripts/configure-storage.sql" >/dev/null
 legacy_psql -c "INSERT INTO storage.buckets(id,name,public) VALUES ('customer-images','customer-images',false)" >/dev/null
@@ -194,158 +184,7 @@ fi
   || { echo 'A refused configure must delete nothing.' >&2; exit 1; }
 legacy_psql -c "SELECT set_config('storage.allow_delete_query','true',false); DELETE FROM storage.objects WHERE bucket_id='customer-images'; DELETE FROM storage.buckets WHERE id='customer-images'" >/dev/null
 
-# Migrations 93 and 103 on an install that still holds what the template and the image used to install.
-# Migration 93 (TW-BE-004) locked down pg_net; migration 103 removed pg_net, http, pg_graphql and supabase_vault,
-# so the database here has none of them. Both must be harmless on such a database, and migration 103 must also
-# remove them from one that still has them. The block below rebuilds the old state (pg_net with its schema
-# and webhook set-up, the extension http, the role supabase_functions_admin, the three event triggers of the
-# image) after all migrations, replays 93 and 103 on it, and the absence test must then pass again.
-pg_net_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
-unused_absent() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/unused_extensions_absent.sql"; }
-# 93 on a database without pg_net: nothing to do, and it does not bring the schema back.
-no_net=$({ echo 'BEGIN;'
-  cat "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
-  echo "SELECT CASE WHEN to_regnamespace('net') IS NULL THEN 'no-op' ELSE 'net came back' END;"
-  echo 'ROLLBACK;'; } | pg_net_psql)
-[[ "${no_net##*$'\n'}" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
-# 103 a second time, on a database that already lost everything: nothing to drop, no failure.
-{ echo 'BEGIN;'; cat "$ROOT/migrations/00000000000103_drop_unused_extensions.sql"; echo 'ROLLBACK;'; } | pg_net_psql >/dev/null
-# The old state, rebuilt.
-pg_net_psql >/dev/null <<'SQL'
-CREATE EXTENSION http SCHEMA public;
-CREATE EXTENSION pg_net SCHEMA extensions;
-CREATE SCHEMA graphql_public;
-CREATE EXTENSION pg_graphql;
--- The wrapper outside the extension, as a restore leaves it.
-CREATE OR REPLACE FUNCTION graphql_public.graphql("operationName" text DEFAULT NULL, query text DEFAULT NULL, variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL)
-  RETURNS jsonb LANGUAGE sql AS $$ SELECT graphql.resolve(query := query) $$;
-CREATE EXTENSION supabase_vault;
-CREATE ROLE supabase_functions_admin NOINHERIT CREATEROLE NOLOGIN;
-CREATE SCHEMA supabase_functions AUTHORIZATION supabase_admin;
-CREATE TABLE supabase_functions.hooks (id bigserial PRIMARY KEY, hook_table_id integer NOT NULL, hook_name text NOT NULL);
-CREATE TABLE supabase_functions.migrations (version text PRIMARY KEY);
-ALTER TABLE supabase_functions.hooks OWNER TO supabase_functions_admin;
-CREATE FUNCTION supabase_functions.http_request() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN NEW; END $$;
-ALTER FUNCTION supabase_functions.http_request() OWNER TO supabase_functions_admin;
-GRANT USAGE ON SCHEMA supabase_functions TO supabase_functions_admin;
--- The three event triggers of the image, with its function bodies (read from the pinned image), created last so
--- that building the old state does not fire them. issue_graphql_placeholder is the one that would put a stand-in
--- graphql function back when pg_graphql is dropped, so the order of migration 103 is exercised.
-CREATE OR REPLACE FUNCTION extensions.grant_pg_net_access() RETURNS event_trigger LANGUAGE plpgsql AS $function$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_event_trigger_ddl_commands() AS ev JOIN pg_extension AS ext ON ev.objid = ext.oid WHERE ext.extname = 'pg_net'
-  ) THEN
-    GRANT USAGE ON SCHEMA net TO supabase_functions_admin, postgres, service_role;
-  END IF;
-END;
-$function$;
-CREATE OR REPLACE FUNCTION extensions.grant_pg_graphql_access() RETURNS event_trigger LANGUAGE plpgsql AS $function$
-DECLARE
-    func_is_graphql_resolve bool;
-BEGIN
-    func_is_graphql_resolve = (
-        SELECT n.proname = 'resolve'
-        FROM pg_event_trigger_ddl_commands() AS ev
-        LEFT JOIN pg_catalog.pg_proc AS n
-        ON ev.objid = n.oid
-    );
-    IF func_is_graphql_resolve THEN
-        DROP FUNCTION IF EXISTS graphql_public.graphql;
-        create or replace function graphql_public.graphql("operationName" text default null, query text default null, variables jsonb default null, extensions jsonb default null)
-            returns jsonb language sql as $$ select graphql.resolve(query := query, variables := coalesce(variables, '{}'), "operationName" := "operationName", extensions := extensions); $$;
-        grant usage on schema graphql to postgres, anon, authenticated, service_role;
-        grant usage on schema graphql_public to postgres with grant option;
-    END IF;
-END;
-$function$;
-CREATE OR REPLACE FUNCTION extensions.set_graphql_placeholder() RETURNS event_trigger LANGUAGE plpgsql AS $function$
-    DECLARE
-    graphql_is_dropped bool;
-    BEGIN
-    graphql_is_dropped = (
-        SELECT ev.schema_name = 'graphql_public'
-        FROM pg_event_trigger_dropped_objects() AS ev
-        WHERE ev.schema_name = 'graphql_public'
-    );
-    IF graphql_is_dropped THEN
-        create or replace function graphql_public.graphql("operationName" text default null, query text default null, variables jsonb default null, extensions jsonb default null)
-            returns jsonb language plpgsql as $$ BEGIN RETURN jsonb_build_object('errors', jsonb_build_array(jsonb_build_object('message', 'pg_graphql extension is not enabled.'))); END; $$;
-    END IF;
-    END;
-$function$;
-CREATE EVENT TRIGGER issue_pg_net_access ON ddl_command_end WHEN TAG IN ('CREATE EXTENSION') EXECUTE FUNCTION extensions.grant_pg_net_access();
-CREATE EVENT TRIGGER issue_pg_graphql_access ON ddl_command_end WHEN TAG IN ('CREATE FUNCTION') EXECUTE FUNCTION extensions.grant_pg_graphql_access();
-CREATE EVENT TRIGGER issue_graphql_placeholder ON sql_drop WHEN TAG IN ('DROP EXTENSION') EXECUTE FUNCTION extensions.set_graphql_placeholder();
-SQL
-[[ "$(pg_net_psql -c "SELECT count(*) FROM pg_event_trigger WHERE evtname IN ('issue_pg_net_access','issue_pg_graphql_access','issue_graphql_placeholder')")" = 3 ]] || {
-  echo 'The test could not rebuild the three event triggers of the image.' >&2; exit 1; }
-[[ "$(pg_net_psql -c "SELECT count(*) FROM pg_extension WHERE extname IN ('http','pg_net','pg_graphql','supabase_vault')")" = 4 ]] || {
-  echo 'The test could not rebuild the extensions that migration 103 removes.' >&2; exit 1; }
-# Migration 103 must refuse, with the message that says why, and change nothing, while something still uses what it removes.
-migration_103_refuses() {
-  local expected=$1 err
-  if err=$(pg_net_psql < "$ROOT/migrations/00000000000103_drop_unused_extensions.sql" 2>&1 >/dev/null); then
-    echo "Migration 103 must refuse: $expected" >&2; exit 1; fi
-  [[ "$err" == *"$expected"* ]] || { echo "Migration 103 refused, but not with the expected message ($expected); it said: $err" >&2; exit 1; }
-  [[ "$(pg_net_psql -c "SELECT count(*) FROM pg_extension WHERE extname IN ('http','pg_net','pg_graphql','supabase_vault')")" = 4 ]] || {
-    echo 'A refused migration 103 changed the database.' >&2; exit 1; }
-  [[ "$(pg_net_psql -c "SELECT count(*) FROM pg_event_trigger WHERE evtname IN ('issue_pg_net_access','issue_pg_graphql_access','issue_graphql_placeholder')")" = 3 ]] || {
-    echo 'A refused migration 103 dropped an event trigger.' >&2; exit 1; }
-}
-# A webhook trigger that still calls supabase_functions.http_request().
-pg_net_psql >/dev/null -c 'CREATE TABLE public.mig103_probe (id int)' -c 'CREATE TRIGGER mig103_hook AFTER INSERT ON public.mig103_probe FOR EACH ROW EXECUTE FUNCTION supabase_functions.http_request()'
-migration_103_refuses 'still calls supabase_functions.http_request()'
-pg_net_psql >/dev/null -c 'DROP TABLE public.mig103_probe'
-# A secret in the vault would be deleted with the extension.
-pg_net_psql >/dev/null -c "INSERT INTO vault.secrets (secret, name) VALUES ('mig103', 'mig103')"
-migration_103_refuses 'The vault still holds secrets'
-pg_net_psql >/dev/null -c "DELETE FROM vault.secrets WHERE name = 'mig103'"
-# A pg_cron job that calls net.* or http(...), whichever way it is written.
-cron_made=false
-if [[ "$(pg_net_psql -c "SELECT to_regprocedure('cron.schedule(text,text,text)') IS NOT NULL")" != t ]]; then
-  # No pg_cron in this database: a stand-in table with the two columns the migration reads.
-  pg_net_psql >/dev/null -c 'CREATE SCHEMA cron' -c 'CREATE TABLE cron.job (jobid serial PRIMARY KEY, jobname text, command text)'; cron_made=true
-fi
-add_cron_job() {
-  if [[ "$cron_made" == true ]]; then pg_net_psql >/dev/null -c "INSERT INTO cron.job (jobname, command) VALUES ('mig103_probe', \$cron\$$1\$cron\$)"
-  else pg_net_psql >/dev/null -c "SELECT cron.schedule('mig103_probe', '0 0 1 1 *', \$cron\$$1\$cron\$)"; fi
-}
-remove_cron_job() { pg_net_psql >/dev/null -c "DELETE FROM cron.job WHERE jobname = 'mig103_probe'"; }
-for command in "SELECT net.http_post('http://example.invalid')" "select  HTTP_POST ( 'a', 'b', 'c' )" "SELECT http('x')"; do
-  add_cron_job "$command"
-  migration_103_refuses 'A scheduled pg_cron job still calls'
-  remove_cron_job
-done
-# A job that calls neither does not stop it, even if a word only ends in "net." (cabinet.).
-add_cron_job "SELECT 1; SELECT 'cabinet.'"
-pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
-pg_net_psql < "$ROOT/migrations/00000000000103_drop_unused_extensions.sql"
-unused_absent
-# The unrelated job was not stopped by the refusal and is still there; the stand-in cron table, if made, goes.
-[[ "$(pg_net_psql -c "SELECT count(*) FROM cron.job WHERE jobname = 'mig103_probe'")" = 1 ]] || { echo 'Migration 103 touched a cron job.' >&2; exit 1; }
-remove_cron_job
-if [[ "$cron_made" == true ]]; then pg_net_psql >/dev/null -c 'DROP SCHEMA cron CASCADE'; fi
-# The graphql stand-in function must not have come back (issue_graphql_placeholder was dropped first).
-[[ "$(pg_net_psql -c "SELECT count(*) FROM pg_proc WHERE proname = 'graphql' AND pronamespace::regnamespace::text = 'graphql_public'")" = 0 ]] || {
-  echo 'The graphql placeholder came back after migration 103.' >&2; exit 1; }
-# A second run, where there is nothing left to do, changes nothing.
-pg_net_psql < "$ROOT/migrations/00000000000103_drop_unused_extensions.sql"
-unused_absent
-# A role that still owns something in another database is kept: the migration must not break, and says why.
-pg_net_psql >/dev/null -c 'CREATE ROLE supabase_functions_admin NOLOGIN' -c 'CREATE DATABASE mig103_other OWNER supabase_functions_admin'
-pg_net_psql < "$ROOT/migrations/00000000000103_drop_unused_extensions.sql"
-[[ "$(pg_net_psql -c "SELECT count(*) FROM pg_roles WHERE rolname = 'supabase_functions_admin'")" = 1 ]] || {
-  echo 'Migration 103 dropped a role that owns a database.' >&2; exit 1; }
-pg_net_psql >/dev/null -c 'DROP DATABASE mig103_other' -c 'DROP ROLE supabase_functions_admin'
-# A role that owns an object in this database is kept as well, with a NOTICE that says so.
-pg_net_psql >/dev/null -c 'CREATE ROLE supabase_functions_admin NOLOGIN' -c 'CREATE TABLE public.mig103_owned (id int)' -c 'ALTER TABLE public.mig103_owned OWNER TO supabase_functions_admin'
-notice=$(pg_net_psql < "$ROOT/migrations/00000000000103_drop_unused_extensions.sql" 2>&1 >/dev/null)
-[[ "$notice" == *'supabase_functions_admin is kept: it owns 1 object(s) in this database'* ]] || {
-  echo "Migration 103 must keep a role that owns an object here and say so; it said: $notice" >&2; exit 1; }
-[[ "$(pg_net_psql -c "SELECT count(*) FROM pg_roles WHERE rolname = 'supabase_functions_admin'")" = 1 ]] || {
-  echo 'Migration 103 dropped a role that owns a table.' >&2; exit 1; }
-pg_net_psql >/dev/null -c 'DROP TABLE public.mig103_owned' -c 'DROP ROLE supabase_functions_admin'
+
 for pass in 1 2; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only \
     -e SMS_PROVIDER=msg91 -e SMS_PRODUCTION_MODE=true \
@@ -380,11 +219,6 @@ SQL
   echo 'The signing secret is held as a database or role setting after the migrations.' >&2; exit 1; }
 [[ "$(printf '%s\n' "SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%app.settings.jwt_secret%'" | jwt_sql)" = 0 ]] || {
   echo 'A database function reads the signing secret setting.' >&2; exit 1; }
-# Migration 92 on a database that holds the setting at database level and for three kinds of role setting.
-plant_secret_settings
-jwt_sql < "$ROOT/migrations/00000000000092_jwt_secret_guc.sql"
-[[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
-  echo 'Migration 92 must remove the signing secret setting from the database and from every role.' >&2; exit 1; }
 # The auth configuration below must remove it as well, in case it came back (a restored or hand-edited database).
 plant_secret_settings
 for pass in 1 2; do
@@ -464,22 +298,16 @@ configure_central -v central_issuer=
 # The database container needs no CENTRAL_ISSUER of its own.
 if docker exec "$container" printenv CENTRAL_ISSUER >/dev/null 2>&1; then echo 'The test database must not carry CENTRAL_ISSUER.' >&2; exit 1; fi
 
-# Migration 107: the monitoring role does not exist; a role given back by hand (with a login, a password, a pg_monitor
-# membership and a grant, as an old backup or an old install would have it) is dropped again when the migration file runs
-# again (migration 94 stays as history), and running it on a database without the role changes nothing.
-monitoring_state="SELECT count(*) FROM pg_roles WHERE rolname = 'warehouse_monitoring'"
-[[ "$(mig_psql -At -c "$monitoring_state")" == '0' ]] || { echo 'Migration 107 left the role warehouse_monitoring.' >&2; exit 1; }
-mig_psql -c "CREATE ROLE warehouse_monitoring LOGIN PASSWORD 'old-install-monitoring-password'; GRANT pg_monitor TO warehouse_monitoring; GRANT USAGE ON SCHEMA public TO warehouse_monitoring"
-mig_psql < "$ROOT/migrations/00000000000107_drop_monitoring_role.sql"
-[[ "$(mig_psql -At -c "$monitoring_state")" == '0' ]] || { echo 'Migration 107 did not drop the role again.' >&2; exit 1; }
-mig_psql < "$ROOT/migrations/00000000000107_drop_monitoring_role.sql"
-[[ "$(mig_psql -At -c "$monitoring_state")" == '0' ]] || { echo 'Migration 107 is not idempotent.' >&2; exit 1; }
+
+# None of the roles of the earlier image exists (tests/baseline_roles.sql holds the exact set): a state assertion that
+# configure-db-roles.sql below must not change either.
+removed_roles_state="SELECT count(*) FROM pg_roles WHERE rolname IN ('postgres','dashboard_user','supabase_read_only_user','supabase_replication_admin','supabase_realtime_admin','supabase_auth_admin','supabase_functions_admin','supabase_etl_admin','warehouse_list_refresher','warehouse_monitoring')"
+[[ "$(mig_psql -At -c "$removed_roles_state")" == '0' ]] || { echo 'The baseline has a role of the earlier image.' >&2; exit 1; }
 
 # scripts/configure-db-roles.sql (TW-BE-002, migration 94): through the prelude of
 # scripts/db-roles.mjs, as scripts/db-roles.sh sends it. Each login stores exactly the
 # SCRAM verifier it was given (never a password); a rerun applies again; a missing or
-# plaintext value changes nothing; a monitoring role brought back with a login (what a restore
-# of an old install replays) is dropped again. Logins themselves are proven over the network by
+# plaintext value changes nothing; no role of the earlier image is created or needed. Logins themselves are proven over the network by
 # `npm run test:db-roles` in the operator-install job: this container has none.
 roles_sql() {
   docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "$1"
@@ -513,16 +341,9 @@ if apply_db_roles <<< "$(grep -v '^\\set pooler_verifier' <<< "$prelude")" >/dev
 if apply_db_roles <<< "$(sed "s/^\\\\set storage_verifier .*/\\\\set storage_verifier 'plaintext-password-not-a-verifier'/" <<< "$prelude")" >/dev/null 2>&1; then
   echo 'configure-db-roles.sql accepted a plaintext password.' >&2; exit 1; fi
 [[ "$(roles_sql "$stored_verifiers")" == "$before_refusals" ]] || { echo 'A refused configure-db-roles.sql run changed a password.' >&2; exit 1; }
-# After a restore the image has created supabase_auth_admin with a login (a backup holds only role names and the
-# ledger skips 104); configure-db-roles.sql (and migration 104) take the login and the password away.
-roles_sql "ALTER ROLE supabase_auth_admin LOGIN PASSWORD 'old-install-auth-password'" >/dev/null
 apply_db_roles <<< "$prelude"
-[[ "$(roles_sql "SELECT rolcanlogin::text || ' ' || (rolpassword IS NULL)::text FROM pg_authid WHERE rolname = 'supabase_auth_admin'")" == 'false true' ]] || {
-  echo 'configure-db-roles.sql left supabase_auth_admin able to log in.' >&2; exit 1; }
-roles_sql "CREATE ROLE warehouse_monitoring LOGIN PASSWORD 'old-install-monitoring-password'; GRANT pg_monitor TO warehouse_monitoring; GRANT USAGE ON SCHEMA public TO warehouse_monitoring" >/dev/null
-apply_db_roles <<< "$prelude"
-[[ "$(roles_sql "$monitoring_state")" == '0' ]] || {
-  echo 'configure-db-roles.sql left the role warehouse_monitoring.' >&2; exit 1; }
+[[ "$(roles_sql "$removed_roles_state")" == '0' ]] || {
+  echo 'configure-db-roles.sql created a role of the earlier image.' >&2; exit 1; }
 rm -f "$roles_env"
 unset prelude expected before_refusals
 # The baseline holds after the logins were configured too.
@@ -571,30 +392,12 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 # receipt rule under two users acting at the same moment.
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
-# Migration 42: its closing check stays strict for the nineteen business tables
-# and lets an operator's own table in `public` through.
-bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
-
-# Migration 48: the author-name backfill of invoice_discount_history, on rows
-# as an installation that had discounts before the upgrade holds them.
-bash "$ROOT/tests/history_author_backfill.sh" "$container"
-
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
 
-# Applied migration history is immutable: changing an old file must fail closed.
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
-trap 'rm -rf "$scratch"; cleanup' EXIT
-cp -a "$ROOT/migrations" "$ROOT/scripts" "$scratch/"
-printf '\n-- deliberate checksum mismatch for test\n' >> "$scratch/migrations/00000000000001_seed_data.sql"
-if node "$scratch/scripts/migration-plan.mjs" 2>/dev/null | docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
-  psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
-  echo 'Changed applied migration was incorrectly accepted.' >&2
-  exit 1
-fi
-migration_files=("$ROOT"/migrations/*.sql)
-[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "${#migration_files[@]}" ]] || {
-  echo 'Migration mismatch changed the ledger.' >&2; exit 1;
+# The ledger after a rejected, changed copy (above) still holds exactly the baseline.
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "$migration_count" ]] || {
+  echo 'A rejected migration run changed the ledger.' >&2; exit 1;
 }
 
 # Backup verification on real containers: this database is dumped into a signed

@@ -4,8 +4,8 @@
 
 The Compose project has three networks. A container resolves and reaches
 another only on a network both are attached to
-(`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts this
-table from the rendered configuration).
+(`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts the
+network table from the rendered configuration).
 
 ```
  cloudflared ──▶ 127.0.0.1:18000
@@ -25,9 +25,19 @@ table from the rendered configuration).
               └─────────────────────────────────────────────────────────────┘
 ```
 
-The monitoring checker (`scripts/watch.mjs`, run every 5 minutes by a systemd timer on the host) is not a container and
-is on no network: it asks Docker and the database container what they see, and posts to Slack
-([MONITORING.md](MONITORING.md)).
+| Service | Image | Port (inside) | Started |
+|---|---|---|---|
+| kong | Kong 3.9.3, one worker | 8000, published on `127.0.0.1:${KONG_HTTP_PORT}` (default 18000) | always |
+| rest | PostgREST v16.4 | 3000 | always |
+| storage | Supabase storage-api 1.80.2 | 5000 | always |
+| functions | Supabase edge-runtime 1.77.4 | 9000 | always |
+| db | PostgreSQL 17 (official `postgres:17.11-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
+| pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
+| supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler` |
+| cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |
+| sensor-bridge | own recipe (GPL-3.0-or-later) | none | profile `sensors` |
+
+Only Kong publishes a host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed container address.
 
 | Network | Attached services | Purpose |
 |---|---|---|
@@ -35,21 +45,39 @@ is on no network: it asks Docker and the database container what they see, and p
 | `database` | db, rest, storage, supavisor | Connections to PostgreSQL |
 | `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database or Kong, and only the function runtime can reach it |
 
-Kong, CUPS and the sensor bridge are on `default` only;
-the function runtime is on `default` and `renderer`; the PDF renderer is on
-`renderer` only. None of them can open a connection to PostgreSQL. There is
-no web dashboard for the database; operators use `psql` (see
-[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), "Ordinary operation"). Only Kong publishes a
-host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed
-container address.
+Kong, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF
+renderer is on `renderer` only. None of them can open a connection to PostgreSQL. There is no web dashboard for the
+database; operators use `psql` (see [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation)). Rules for each image
+and network: [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md).
 
-## Request Flow
+The monitoring checker (`scripts/watch.mjs`, run every 5 minutes by a systemd timer on the host) is not a container and
+is on no network: it asks Docker and the database container what they see, and posts to Slack
+([MONITORING.md](MONITORING.md)).
 
-### API Request (PostgREST)
+## Request flow
+
+### API request (PostgREST)
 ```
 Client → Kong :8000 → PostgREST :3000 → PostgreSQL :5432
-         (key-auth)   (JWT verify)       (RLS enforced)
+         (key-auth,   (JWT verify,       (RLS and guarded
+          rate limit)  check_session)     RPCs)
 ```
+
+### Edge function request
+```
+Client → Kong :8000 → Edge Runtime :9000 → worker (Deno isolate)
+         (CORS,       (main router)        → Kong :8000 → PostgREST / Storage   (REST over HTTP)
+          rate limit)                      → pdf-renderer :3000                  (PDF)
+                                           → CUPS                                (print, when enabled)
+```
+
+The main router checks the caller's JWT for every function except the public ones (`hello`, `get-public-config`,
+`operator-otp`, `central-exchange`, `ingest-sensor-readings`).
+
+A function never opens a connection to PostgreSQL: the `functions` container is not on the `database` network. It reaches
+the data only through Kong (`SUPABASE_URL=http://kong:8000`), with plain `fetch` calls (`functions/_shared/supabase-rest.ts`,
+or a direct `fetch` of `/rest/v1/rpc/<name>`) that carry either the caller's own token (document functions, so the RPC
+guard and row policies decide) or the service key (sign-in, configuration, sensor ingest and PDF upload).
 
 Kong compresses JSON and text answers with gzip (nginx `gzip`, set by the
 `KONG_NGINX_PROXY_GZIP*` variables of the `kong` service in
@@ -66,20 +94,24 @@ preview is about 2.2 MB of JSON (after migration 101) and compresses to a small
 fraction of that. A change to these variables needs
 `bash scripts/compose.sh up -d --force-recreate --wait kong`.
 
-### Edge Function Request
+### Sign-in with an SMS code
 ```
-Client → Kong :8000 → Edge Runtime :9000 → Worker (Deno V8 isolate)
-         (CORS)       (JWT verify)          → PostgreSQL (direct)
-                                            → pdf-renderer (PDF)
-                                            → CUPS (print)
+App → Kong → operator-otp /request → operator_prepare_otp (limits, stores the keyed hash of a new code)
+                                   → MSG91 (sends the code) → operator_finish_otp (records the outcome)
+App → Kong → operator-otp /verify  → operator_verify_otp
+              → warehouse_security.issue_session(user) → access token (HS256, one hour) + refresh token
+App → Kong (Authorization: Bearer access token) → PostgREST → public.check_session → RPCs / RLS
 ```
+`operator-otp` calls the `operator_*` RPCs with the service key. A pending customer gets an enrollment token instead of a
+session until an administrator approves them. `refresh_jwt_token` (a PostgREST call, no function) renews the access token and replaces the refresh token each time.
 
-### OTP Authentication
+### Sign-in with the association's central login (optional)
 ```
-Client → Kong → PostgREST → send_otp() → Twilio/MSG91
-Client → Kong → PostgREST → verify_otp_or_register() → JWT token
-Client → Kong (with JWT) → PostgREST → Data (RLS enforced)
+App → Kong → central-exchange → verifies the identity token (ES256, issuer, audience = this facility, lifetime, type)
+                              → operator_central_exchange (accepts the token once)
+                              → warehouse_security.issue_session(user) → the same session as above
 ```
+Described in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md).
 
 ### Sensor readings
 ```
@@ -92,7 +124,6 @@ Compose project posting through the tunnel ([SENSORS.md](SENSORS.md)).
 
 ## Lists
 
-Every list RPC reads the tables directly, so a committed write is in the next list read. Until migration
-106 the Invoices list read a materialized view that a pg_cron job refreshed after each write; that view,
-its refresh queue, the job and the `pg_cron` extension are gone (see [API_CONTRACT.md](API_CONTRACT.md),
-"List freshness").
+Every list RPC reads the tables directly, so a committed write is in the next list read; there is no refresh job
+(see [API_CONTRACT.md](API_CONTRACT.md#list-freshness-migration-106-2026-10-19)). The app re-reads open order and
+sensor screens on a timer; there is no live push.

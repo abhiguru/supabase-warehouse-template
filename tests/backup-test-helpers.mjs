@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const repo = fileURLToPath(new URL('..', import.meta.url));
+// The database image a backup of this release records (scripts/db-image.sh: the FROM line of docker/postgres/Dockerfile).
+export const currentDatabaseImage = () => readFileSync(join(repo, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (postgres:\S+@sha256:[0-9a-f]{64})$/m)[1];
 export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n';
 // A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
 export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
@@ -48,7 +50,7 @@ export function makeState(scratch, { env } = {}) {
 // the storage root, defaulting to the tenant-prefixed layout of every object.
 // v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
 // `centralKey` adds the optional central-jwks.json (text), checksummed like the rest.
-export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null,
+export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
   objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
@@ -62,8 +64,8 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', key = backupKe
   spawnSync('rm', ['-rf', tree]);
   const content = {
     'database.dump': 'fake database dump\n', 'integrity.txt': integrity,
-    'metadata.txt': `format=${format}\ncreated_at_utc=20260101T000000Z\n`,
-    'compose.env': env, 'instance.json': instance, 'roles.txt': 'postgres\nsupabase_admin\nsupabase_realtime_admin\n',
+    'metadata.txt': `format=${format}\ncreated_at_utc=20260101T000000Z\n${databaseImage === null ? '' : `database_image=${databaseImage}\n`.repeat(imageLines)}`,
+    'compose.env': env, 'instance.json': instance, 'roles.txt': roles,
   };
   if (format === 'warehouse-backup-v4' || format === 'warehouse-backup-v5') {
     content['_supabase.dump'] = 'fake supabase dump\n';
@@ -95,7 +97,7 @@ case "$1" in
   ps) exit 0 ;;
   run) printf 'deadbeefcafe\\n' ;;
   cp|rm|volume) exit 0 ;;
-  logs) printf 'fake container log line\\n'; if [ "$FAKE_LOG_NO_SPACE" = yes ]; then printf 'ERROR:  could not extend file "base/1/2": No space left on device\\n'; fi ;;
+  logs) printf 'fake container log line\\nPostgreSQL init process complete; ready for start up.\\n'; if [ "$FAKE_LOG_NO_SPACE" = yes ]; then printf 'ERROR:  could not extend file "base/1/2": No space left on device\\n'; fi ;;
   inspect)
     case "$3" in
       *State.Health.Status*) printf 'healthy\\n' ;;
@@ -104,6 +106,7 @@ case "$1" in
   exec)
     case "$*" in
       *' pg_isready '*) exit 0 ;;
+      *'Dumped from database version'*) printf '%s\\n' "\${FAKE_DUMP_VERSION:-17.11}" ;;
       *pg_stat_activity*) printf '41|client backend|template1|idle\\n' ;;
       *' createdb '*) if [ "$FAKE_FAIL_CREATEDB" = yes ]; then echo 'createdb: error: database creation failed: ERROR:  source database is being accessed by other users' >&2; exit 1; fi ;;
       *'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
@@ -133,7 +136,9 @@ export function scriptRoot(scratch) {
   for (const name of readdirSync(join(repo, 'scripts'))) {
     if (/\.(sh|sql|mjs)$/.test(name)) copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
   }
-  copyFileSync(join(repo, 'docker/volumes/db/jwt.sql'), join(root, 'docker/volumes/db/jwt.sql'));
+  copyFileSync(join(repo, 'docker/volumes/db/00-bootstrap.sql'), join(root, 'docker/volumes/db/00-bootstrap.sql'));
+  mkdirSync(join(root, 'docker/postgres'), { recursive: true, mode: 0o700 });
+  copyFileSync(join(repo, 'docker/postgres/Dockerfile'), join(root, 'docker/postgres/Dockerfile'));
   if (!existsSync(join(root, 'scripts/operator-lock.sh'))) {
     writeFileSync(join(root, 'scripts/operator-lock.sh'), [
       '#!/usr/bin/env bash',

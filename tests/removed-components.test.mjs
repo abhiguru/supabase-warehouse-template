@@ -41,8 +41,6 @@ const components = [
       skipPrefix: 'docker/pdf-renderer/',
       allowed: new Map([
         ['CHANGELOG.md', 'history'],
-        ['docs/CONTAINER_SECURITY.md', 'history and the renderer posture compared with Gotenberg'],
-        ['docs/PDF_GENERATION.md', 'what the renderer replaced'],
         ['tests/compose-networks.test.mjs', 'asserts the service is gone'],
         [SELF, 'this test'],
       ]),
@@ -57,8 +55,6 @@ const components = [
       allowed: new Map([
         ['CHANGELOG.md', 'history'],
         [SELF, 'this test'],
-        // Applied and checksum-locked: a comment there stays as it is.
-        ['migrations/00000000000094_monitoring_role.sql', 'locked migration'],
       ]),
     },
     clean: [{ files: ['docker/docker-compose.yml', 'docker/docker-compose.override.yml', 'package.json', '.github/workflows/ci.yml', '.github/dependabot.yml', '.env.example', 'scripts/configure.mjs', 'scripts/db-roles.mjs', 'scripts/image-recipes.mjs', 'docker/image-exceptions.json'], pattern: /grafana/i }],
@@ -66,10 +62,10 @@ const components = [
   {
     name: 'wal-g (backups are pg_dump, archive_mode is off)',
     gone: ['docker/postgres/walg.go.mod', 'docker/postgres/walg.go.sum', 'LICENSES/wal-g'],
-    checks: [['the database Dockerfile has no walg stage and checks that wal-g is gone', () => {
+    checks: [['the database Dockerfile has no walg stage and does not mention wal-g', () => {
       const dockerfile = read('docker/postgres/Dockerfile');
       assert.doesNotMatch(dockerfile, /\bAS walg\b/i, 'no walg build stage');
-      assert.ok(dockerfile.includes('! command -v wal-g'), 'the build fails if wal-g is on the path');
+      assert.doesNotMatch(dockerfile, /wal-g|walg/i, 'the official image carries no wal-g, so the recipe does not mention it');
     }]],
   },
   {
@@ -82,11 +78,9 @@ const components = [
       allowed: new Map([
         ['CHANGELOG.md', 'history'],
         [SELF, 'this test'],
-        ['migrations/00000000000104_auth_admin_nologin.sql', 'locked migration, comment'],
         ['tests/configure.test.mjs', 'checks the variable is gone'],
         ['tests/db-roles.test.mjs', 'checks the variable is harmless'],
-        ['scripts/restore.sh', 'ignores a legacy line'],
-        ['tests/restore.test.mjs', 'tests that legacy line'],
+        ['scripts/configure.mjs', 'removes the line from an older state on every setup run'],
       ]),
     },
     checks: [
@@ -97,9 +91,11 @@ const components = [
         }
         assert.doesNotMatch(read('docker/kong.yml'), /auth:9999|\/auth\/v1/);
       }],
-      ['the role supabase_auth_admin is made NOLOGIN by migration 104 and by every setup run', () => {
-        assert.match(read('migrations/00000000000104_auth_admin_nologin.sql'), /ALTER ROLE supabase_auth_admin WITH NOLOGIN PASSWORD NULL;/);
-        assert.match(read('scripts/configure-db-roles.sql'), /ALTER ROLE supabase_auth_admin WITH NOLOGIN PASSWORD NULL;/);
+      ['the role supabase_auth_admin does not exist on the new image: setup touches nothing about it, and the baseline creates and grants nothing for it', () => {
+        assert.doesNotMatch(read('scripts/configure-db-roles.sql'), /supabase_auth_admin/);
+        // Only pg_dump's comment headers name it ("Owner: supabase_auth_admin"); no statement does.
+        const statements = read('migrations/00000000000000_baseline.sql').split('\n').filter(line => !line.startsWith('--') && /supabase_auth_admin/.test(line));
+        assert.deepEqual(statements, []);
       }],
       ['.env.example has no GoTrue mail, SMS or signup setting', () => {
         const text = read('.env.example');
@@ -121,7 +117,6 @@ const components = [
       allowed: new Map([
         ['CHANGELOG.md', 'history'],
         [SELF, 'this test'],
-        ['docs/CONTAINER_SECURITY.md', 'dated entries'],
       ]),
     },
     clean: [{ files: ['docker/docker-compose.yml', 'docker/docker-compose.override.yml'], pattern: /imgproxy/i }, { files: ['.env.example'], pattern: /IMGPROXY/ }],
@@ -159,7 +154,7 @@ const components = [
         pattern: /prometheus|alertmanager|cadvisor|node-exporter|postgres-exporter|start-monitoring|monitoring-check|alert-rules|test:monitoring/i,
       },
       // scripts/configure.mjs is not in the list above: its message names the old files it removes on a rerun.
-      { files: ['scripts/configure.mjs'], pattern: /start-monitoring|monitoring-check|alert-rules|test:monitoring|DB_PASSWORD_MONITORING/i },
+      { files: ['scripts/configure.mjs'], pattern: /start-monitoring|monitoring-check|alert-rules|test:monitoring/i },
       { files: ['.env.example', 'scripts/db-roles.mjs', 'scripts/configure-db-roles.sql', 'docker/volumes/db/roles.sql', 'scripts/rotate-db-passwords.sh', 'scripts/db-roles.sh'], pattern: /DB_PASSWORD_MONITORING|monitoring_verifier/ },
     ],
     checks: [
@@ -185,7 +180,7 @@ const components = [
         assert.match(read('stop.sh'), /node scripts\/watch\.mjs mute <minutes>/);
         assert.match(read('scripts/doctor.mjs'), /checkerWarnings/);
         assert.match(read('.github/workflows/ci.yml'), /node scripts\/watch\.mjs run\n/);
-        assert.match(read('migrations/00000000000107_drop_monitoring_role.sql'), /DROP ROLE warehouse_monitoring;/);
+        assert.doesNotMatch(read('migrations/00000000000000_baseline.sql'), /warehouse_monitoring/, 'the baseline neither creates nor grants the dropped role');
       }],
     ],
   },

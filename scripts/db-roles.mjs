@@ -1,13 +1,13 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { replaceEnvLines, retireGraphqlSchema } from './keys.mjs';
+import { replaceEnvLines } from './keys.mjs';
 import { readEnv } from './doctor-common.mjs';
 import { isMain } from './is-main.mjs';
 
 // Per-role database passwords (docs/CONTAINER_SECURITY.md, "Database passwords").
 // Every service login has its own generated password in config/compose.env;
-// POSTGRES_PASSWORD stays the superuser password (postgres, supabase_admin),
+// POSTGRES_PASSWORD stays the superuser password (supabase_admin, the only superuser),
 // used by the operator scripts and Supavisor's
 // metadata connection.
 //   env       the compose.env line
@@ -22,9 +22,8 @@ export const DB_ROLE_LOGINS = [
   { env: 'DB_PASSWORD_STORAGE', role: 'supabase_storage_admin', variable: 'storage_verifier', usedBy: 'Storage' },
   { env: 'DB_PASSWORD_POOLER', role: 'pgbouncer', variable: 'pooler_verifier', usedBy: "Supavisor's pool user" },
 ];
-// The superuser logins; both have POSTGRES_PASSWORD.
+// The superuser login: supabase_admin, with POSTGRES_PASSWORD. There is no role named postgres.
 export const SUPERUSER_ROLES = [
-  { role: 'postgres', variable: 'postgres_verifier' },
   { role: 'supabase_admin', variable: 'supabase_admin_verifier' },
 ];
 
@@ -80,7 +79,7 @@ export function scramVerifier(password, salt = randomBytes(16), iterations = 409
 }
 
 // The psql prelude for scripts/configure-db-roles.sql: one `\set` line per
-// login. With `superuser`, also the two superuser logins (rotation only).
+// login. With `superuser`, also the superuser login (rotation only).
 export function psqlPrelude(env, { superuser = false } = {}) {
   validateDbValues(env);
   const lines = DB_ROLE_LOGINS.map(({ env: name, variable }) => `\\set ${variable} '${scramVerifier(env[name])}'`);
@@ -122,14 +121,11 @@ export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {
 }
 
 // Adds the missing values to a compose.env in place (through a same-directory
-// temporary). Returns the names added (the PGRST_DB_SCHEMAS rewrite is not one of them).
+// temporary). Returns the names added.
 export function addMissingDbValuesToFile(envPath) {
   privateFile(envPath);
   const current = readFileSync(envPath, 'utf8');
-  const { text: withValues, added } = addMissingDbValues(current);
-  // A backup's compose.env from before migration 103 also names the GraphQL schema, which the restore drops
-  // (the migration runs after the replay); both restore paths call this before the database starts.
-  const text = retireGraphqlSchema(withValues);
+  const { text, added } = addMissingDbValues(current);
   if (text === current) return added;
   const stage = `${envPath}.${randomBytes(8).toString('hex')}`;
   writeFileSync(stage, text, { mode: 0o600, flag: 'wx' });

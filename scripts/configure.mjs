@@ -274,6 +274,12 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       const withoutGraphql = retireGraphqlSchema(readFileSync(envPath, 'utf8'));
       const restSchemasUpdated = withoutGraphql !== readFileSync(envPath, 'utf8');
       if (restSchemasUpdated) replaceFileAtomically(envPath, withoutGraphql);
+      // Database logins of removed components (the Auth service, the monitoring login) left a password line in
+      // older states. Nothing reads them, so a rerun of setup (every facility reload runs it) removes them.
+      const retiredKeys = ['DB_PASSWORD_AUTH', 'DB_PASSWORD_MONITORING'];
+      const beforeRetire = readFileSync(envPath, 'utf8');
+      const retiredKeysRemoved = retiredKeys.filter(key => new RegExp(`^${key}=`, 'm').test(beforeRetire));
+      if (retiredKeysRemoved.length) replaceFileAtomically(envPath, beforeRetire.split('\n').filter(line => !retiredKeys.some(key => line.startsWith(`${key}=`))).join('\n'));
       // A list the operator changed by hand is kept, but one that still names the removed schema breaks PostgREST.
       const graphqlSchemaKept = /^PGRST_DB_SCHEMAS=.*\bgraphql_public\b/m.test(readFileSync(envPath, 'utf8'));
       // An installation made before signed backups gets its backup key here;
@@ -287,7 +293,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -347,7 +353,8 @@ if (isMain(import.meta.url)) {
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
             : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).'
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
-                : 'Preserved existing operator state unchanged.');
+                : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
+                  : 'Preserved existing operator state unchanged.');
     // The first message above names only one change; the schema list is always reported, even beside another change.
     if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
       console.log('Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).');

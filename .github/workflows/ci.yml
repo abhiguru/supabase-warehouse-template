@@ -345,11 +345,9 @@ jobs:
           # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
           install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
-          project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
-          # Lose the host: no containers and no database volume of this installation remain;
+          # Lose the host: no containers of this installation remain;
           # only the backup is carried over. The old state stays where it is, unused.
           bash scripts/compose.sh --profile '*' down
-          docker volume rm "${project}_db-config"
           restored="$RUNNER_TEMP/core-backend-test-20260930"
           if npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup; then
             echo 'restore-host accepted a backup without the backup key' >&2; exit 1

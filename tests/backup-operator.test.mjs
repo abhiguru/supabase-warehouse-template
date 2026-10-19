@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet } from './backup-test-helpers.mjs';
+import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,7 +57,8 @@ case "$1" in
       *' ps -q '*) : ;;
       *'exec -T db pg_dump'*' -d _supabase '*) printf 'fake supabase dump\\n' ;;
       *'exec -T db pg_dump'*) if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
-      *'exec -T db psql'*' -c SELECT rolname'*) printf 'postgres\\nsupabase_functions_admin\\n' ;;
+      *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-17|true}" ;;
+      *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
       *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
       *'exec -T db psql'*) printf 'fake integrity\\n' ;;
     esac ;;
@@ -72,6 +73,8 @@ esac
     assert.equal(readFileSync(join(destination, 'storage_objects.txt'), 'utf8'), 'documents/a.pdf/v1\n');
     assert.equal(readFileSync(join(destination, 'compose.env'), 'utf8').includes('WAREHOUSE_PROJECT_NAME='), true);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v5/);
+    assert.equal(readFileSync(join(destination, 'metadata.txt'), 'utf8').match(/^database_image=(.*)$/m)?.[1], currentDatabaseImage(), 'the image line is the Dockerfile pin');
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^database_image=postgres:17\.\S+@sha256:[0-9a-f]{64}$/m);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^source_commit=([0-9a-f]{40}|unknown)$/m);
     // The installation had no backup key: the first backup creates it, private, and signs with it.
     const keyPath = join(state, 'config/backup.key');
@@ -83,7 +86,7 @@ esac
       `warehouse-backup-hmac-v1 ${hmacHex(key, 'warehouse-backup-manifest-v1', readFileSync(join(destination, 'SHA256SUMS')))}\n`, 'signature is the HMAC of SHA256SUMS under the backup key');
     assert.ok(!readdirSync(destination).includes('backup.key') && !readFileSync(join(destination, 'SHA256SUMS'), 'utf8').includes('backup.key'), 'the key never enters the backup');
     for (const name of readdirSync(destination)) if (statSync(join(destination, name)).isFile()) assert.ok(!readFileSync(join(destination, name), 'latin1').includes(key), `${name} does not contain the key`);
-    assert.match(readFileSync(join(destination, 'roles.txt'), 'utf8'), /supabase_functions_admin/);
+    assert.match(readFileSync(join(destination, 'roles.txt'), 'utf8'), /supabase_admin/);
     const sums = readFileSync(join(destination, 'SHA256SUMS'), 'utf8');
     for (const file of ['database.dump', '_supabase.dump', 'storage.tar.gz', 'storage_objects.txt', 'integrity.txt', 'metadata.txt', 'compose.env', 'instance.json', 'roles.txt'])
       assert.match(sums, new RegExp(`^[0-9a-f]{64}  ${file.replace('.', '\\.')}$`, 'm'), `${file} is checksummed`);
@@ -322,7 +325,7 @@ test('a failed verification saves the container log and database sessions before
     assert.notEqual(result.status, 0);
     const [dir] = readdirSync(join(scratch, 'diagnostics'));
     assert.match(dir, /^verify-restore-\d{8}T\d{6}Z-[0-9a-f]{12}$/);
-    assert.equal(readFileSync(join(scratch, 'diagnostics', dir, 'container.log'), 'utf8'), 'fake container log line\n');
+    assert.equal(readFileSync(join(scratch, 'diagnostics', dir, 'container.log'), 'utf8'), 'fake container log line\nPostgreSQL init process complete; ready for start up.\n');
     assert.match(readFileSync(join(scratch, 'diagnostics', dir, 'pg_stat_activity.txt'), 'utf8'), /client backend\|template1/);
     assert.equal(statSync(join(scratch, 'diagnostics', dir)).mode & 0o777, 0o700);
     assert.match(result.stderr, new RegExp(`were saved in ${join(scratch, 'diagnostics', dir)}`));
@@ -453,7 +456,7 @@ test('restore verifier sizes the disposable database from the dumps and can be o
     let result = verify(small, scratch, { WAREHOUSE_VERIFY_STORAGE: 'tmpfs' });
     assert.equal(result.status, 0, result.stderr);
     assert.match(runLine(result), /--memory 1024m .*--tmpfs \/var\/lib\/postgresql\/data:rw,size=768m /);
-    assert.match(runLine(result), /supabase\/postgres:15\.8\.1\.135@sha256:[0-9a-f]{64}$/, 'the image is pinned by digest');
+    assert.ok(runLine(result).endsWith(readFileSync(new URL('../docker/postgres/Dockerfile', import.meta.url), 'utf8').match(/^FROM (postgres:\S+@sha256:[0-9a-f]{64})$/m)[1]), 'the image is the Dockerfile pin, by digest');
     // 1 MiB of dumps x 300 = 300 MiB of data, as much again for WAL, 256 MiB for the cluster.
     result = verify(small, scratch, { WAREHOUSE_VERIFY_STORAGE: 'tmpfs', WAREHOUSE_VERIFY_SIZE_FACTOR: '300' });
     assert.equal(result.status, 0, result.stderr);
@@ -607,5 +610,100 @@ test('restore verifier lists the storage archive and never unpacks it', () => {
     assert.match(files, /archive_files\.txt/, 'the listing was taken while the verifier was at work');
     assert.doesNotMatch(files, /a\.pdf|photo\.jpg/, 'no stored object was written to the temporary directory');
     assert.deepEqual(readdirSync(temp), [], 'the temporary directory is removed');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('backup refuses a database that is not this release\'s (an earlier major version or a role postgres), before any service is stopped', () => {
+  for (const [label, server, reason] of [
+    ['PostgreSQL 15', '15|true', /reports '15\|true'.*migrations-pre-baseline.*Baseline reload/s],
+    ['a role postgres', '17|false', /reports '17\|false'/],
+  ]) {
+    const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-server-'));
+    const state = join(scratch, 'state');
+    const bin = join(scratch, 'bin');
+    const log = join(scratch, 'docker.log');
+    try {
+      for (const path of [state, join(state, 'config'), join(state, 'public'), join(state, 'data'), join(state, 'data/db'), join(state, 'data/storage'), bin]) mkdirSync(path, { recursive: true, mode: 0o700 });
+      writeFileSync(join(state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\nWAREHOUSE_STORAGE_PATH=${state}/data/storage\n`, { mode: 0o600 });
+      writeFileSync(join(state, 'public/instance.json'), '{"schemaVersion":1}\n');
+      writeFileSync(join(bin, 'docker'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  inspect) case "$3" in *State.Health.Status*) printf 'healthy\\n' ;; *State.Running*) printf 'true\\n' ;; esac ;;
+  compose) case "$*" in
+      *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
+      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
+      *'exec -T db psql'*server_version_num*) printf '%s\\n' "$FAKE_SERVER" ;;
+    esac ;;
+esac
+`, { mode: 0o700 });
+      const destination = join(scratch, 'backup');
+      const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_SERVER: server },
+      });
+      assert.notEqual(result.status, 0, label);
+      assert.match(result.stderr, reason, label);
+      const calls = readFileSync(log, 'utf8');
+      assert.doesNotMatch(calls, / stop | pg_dump /, `${label}: nothing was stopped or dumped`);
+      assert.equal(existsSync(destination), false, label);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+const imageCheck = backup => spawnSync('bash', ['-c', 'source "$1"; backup_check_database_image "$2"', 'x', new URL('../scripts/backup-image.sh', import.meta.url).pathname, backup], { encoding: 'utf8' });
+
+test('the image check: a repeated image line is damaged metadata, an older postgres 17 pin is accepted, a listed earlier-image role refuses', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-imagecheck-'));
+  try {
+    const twice = imageCheck(makeBackup(join(scratch, 'twice'), { imageLines: 2 }));
+    assert.equal(twice.status, 1);
+    assert.match(twice.stderr, /records 2 database_image= lines instead of one; the backup metadata is damaged/);
+    assert.doesNotMatch(twice.stderr, /before the move to PostgreSQL 17/);
+    const older = imageCheck(makeBackup(join(scratch, 'older'), { databaseImage: `postgres:17.4-trixie@sha256:${'a'.repeat(64)}` }));
+    assert.equal(older.status, 0, 'a Dependabot bump of the pin does not strand earlier PostgreSQL 17 backups');
+    for (const role of ['postgres', 'supabase_auth_admin', 'dashboard_user']) {
+      const named = imageCheck(makeBackup(join(scratch, role), { roles: `anon\n${role}\nsupabase_admin\n` }));
+      assert.equal(named.status, 1, role);
+      assert.match(named.stderr, new RegExp(`lists the role '${role}'.*migrations-pre-baseline.*Baseline reload`, 's'), role);
+    }
+    assert.equal(imageCheck(makeBackup(join(scratch, 'plain'))).status, 0);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the ACL filter keeps ACL and DEFAULT ACL entries of a real table of contents and nothing else', () => {
+  const restoreSh = readFileSync(new URL('../scripts/restore.sh', import.meta.url), 'utf8');
+  const verifySh = readFileSync(new URL('../scripts/verify-restore.sh', import.meta.url), 'utf8');
+  const program = restoreSh.match(/^acl_awk='(.*)'$/m)?.[1];
+  assert.ok(program, 'restore.sh holds the filter');
+  assert.equal(verifySh.match(/^acl_awk='(.*)'$/m)?.[1], program, 'verify-restore.sh uses the same filter');
+  const listing = [
+    ';',
+    '; Archive created at 2026-10-20 10:00:00 UTC',
+    ';     Dumped from database version: 17.11 (Debian 17.11-1.pgdg13+1)',
+    ';',
+    '3411; 1259 16400 TABLE public items supabase_admin',
+    '3412; 1259 16410 TABLE public ACL supabase_admin',
+    '4001; 0 0 ACL public items supabase_admin',
+    '4002; 0 0 ACL public FUNCTION check_session() supabase_admin',
+    '4003; 0 0 DEFAULT ACL public DEFAULT PRIVILEGES FOR TABLES supabase_admin',
+    '4004; 0 0 ACL public COLUMN items.name supabase_admin',
+    '4005; 0 0 COMMENT - EXTENSION pg_trgm',
+    '4006; 0 0 ACL - SCHEMA public',
+    '4007; 0 0 COMMENT public TABLE ACL supabase_admin',
+  ].join('\n') + '\n';
+  const kept = spawnSync('awk', [program], { input: listing, encoding: 'utf8' });
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.deepEqual(kept.stdout.trim().split('\n').map(line => line.split(';')[0]), ['4001', '4002', '4003', '4004', '4006']);
+});
+
+test('restore verifier refuses a dump made by a server older than PostgreSQL 17, and an archive without privileges', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-dumped-from-'));
+  try {
+    const backup = makeBackup(join(scratch, 'backup'));
+    const old = verify(backup, scratch, { FAKE_DUMP_VERSION: '15.8' });
+    assert.notEqual(old.status, 0);
+    assert.match(old.stderr, /made by PostgreSQL '15\.8', before PostgreSQL 17.*migrations-pre-baseline.*Baseline reload/s);
+    assert.doesNotMatch(old.calls, /--section=pre-data/, 'nothing was restored');
+    assert.equal(verify(backup, scratch, { FAKE_DUMP_VERSION: '17.11' }).status, 0);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

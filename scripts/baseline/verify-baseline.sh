@@ -11,7 +11,8 @@
 #   --baseline    trial mode: use this file as the only baseline migration (no later migrations), and the chain of
 #                 this checkout (migrations/*.sql) as the chain.
 #   --chain-root  a directory with a migrations/ folder to use as the chain instead.
-#   --baseline-image / --chain-image  database images (default: the one tests/migrations.sh pins). For another image
+#   --baseline-image / --chain-image  database images (default: the chain on the OLD image of lib.sh; the baseline on the
+#                 OLD image too, or on the shipped image of scripts/db-image.sh when --bootstrap is given). For another image
 #                 set DB_COMMAND if its server command differs (see lib.sh).
 #   --bootstrap   postgres:17 mode: the baseline database is --baseline-image (a postgres:17 image) started with the
 #                 init scripts in <dir> (docker/volumes/db of the new-image branch). The chain database stays on the
@@ -26,7 +27,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 here="$(dirname "${BASH_SOURCE[0]}")"
-baseline_file='' chain_root='' b_image="$DEFAULT_DB_IMAGE" c_image="$DEFAULT_DB_IMAGE" allow='' keep=false bootstrap='' storage_ref='' chain_given=''
+baseline_file='' chain_root='' b_image='' c_image="$OLD_DB_IMAGE" allow='' keep=false bootstrap='' storage_ref='' chain_given=''
 while (($#)); do
   case "$1" in
     --baseline) baseline_file="$2"; shift 2 ;;
@@ -46,6 +47,7 @@ chain_c='' base_c='' net=''
 # Only containers and the network this run made are removed (a given --chain-container is never touched).
 cleanup() {
   if [[ "$keep" == false ]]; then
+    remove_storage_containers
     for c in $chain_c $base_c; do [[ "$c" == "$chain_given" ]] || docker rm -f -v "$c" >/dev/null 2>&1 || true; done
     [[ -z "$net" ]] || docker network rm "$net" >/dev/null 2>&1 || true
   else
@@ -54,6 +56,8 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
+
+[[ -n "$b_image" ]] || { if [[ -n "$bootstrap" ]]; then b_image="$NEW_DB_IMAGE"; else b_image="$OLD_DB_IMAGE"; fi; }
 
 # --- the chain root and the baseline root -------------------------------------------------------------------
 baseline_name=00000000000000_baseline.sql
@@ -79,6 +83,14 @@ else
   fi
 fi
 echo "Chain: $(ls "$work/chain/migrations" | wc -l) files; baseline side: $(ls "$work/baseline/migrations" | wc -l) file(s)" >&2
+# What this run compared, so two runs (old image, postgres:17) can be shown to have used the same input.
+echo "Baseline sha256: $(sha256sum "$work/baseline/migrations/$baseline_name" | cut -d' ' -f1)" >&2
+if [[ -n "$chain_given" ]]; then
+  echo "Chain: the running database $chain_given (not rebuilt; seed rows compared unmasked)" >&2
+else
+  echo "Chain files sha256: $(cd "$work/chain/migrations" && sha256sum -- *.sql | sha256sum | cut -d' ' -f1) ($(ls "$work/chain/migrations" | head -n 1) .. $(ls "$work/chain/migrations" | tail -n 1))" >&2
+fi
+echo "Allow-list sha256: $(sha256sum "${allow:-$here/allowed-differences.txt}" | cut -d' ' -f1)" >&2
 
 # --- the two databases --------------------------------------------------------------------------------------
 image_kind=supabase

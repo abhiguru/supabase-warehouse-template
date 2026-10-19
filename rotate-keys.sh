@@ -20,6 +20,8 @@ fi
 state="$(operator_state)"
 operator_lock "$state"
 compose config --quiet
+# This recreates db: a PostgreSQL 15 database must go through the baseline reload instead.
+bash "$ROOT/scripts/db-version-preflight.sh"
 db_id=$(compose ps -q db)
 [[ -n "$db_id" ]] || { echo 'Database service is not running; start the instance first.' >&2; exit 1; }
 if ! docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx healthy; then

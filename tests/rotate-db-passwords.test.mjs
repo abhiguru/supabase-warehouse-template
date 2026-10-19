@@ -31,6 +31,7 @@ printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 config="$WAREHOUSE_STATE_DIR/config"
 case "$1" in
   ps) exit 0 ;;
+  run) printf '17\\n' ;;   # the version preflight reads PG_VERSION of the data directory
   info) printf '28.0.0\\n' ;;
   inspect)
     case "$3" in
@@ -159,7 +160,7 @@ test('--superuser also replaces POSTGRES_PASSWORD, signing in with the old super
     assert.deepEqual(changedLines(beforeText, readFileSync(f.envPath, 'utf8')), ['POSTGRES_PASSWORD', ...roleNames].sort());
     assert.notEqual(after.POSTGRES_PASSWORD, before.POSTGRES_PASSWORD);
     const [apply] = f.applies();
-    assertApply(apply, after, before.POSTGRES_PASSWORD, [['postgres_verifier', after.POSTGRES_PASSWORD], ['supabase_admin_verifier', after.POSTGRES_PASSWORD]]);
+    assertApply(apply, after, before.POSTGRES_PASSWORD, [['supabase_admin_verifier', after.POSTGRES_PASSWORD]]);
     assert.equal(apply.includes(after.POSTGRES_PASSWORD), false, 'the new superuser password travels only as its verifiers');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
@@ -195,7 +196,7 @@ for (const [step, superuser] of [['up', false], ['check', false], ['up', true]])
       const signIn = back.split('\n')[0];
       if (superuser) assert.notEqual(signIn, before.POSTGRES_PASSWORD, 'the new superuser password signs in for the reversal');
       else assert.equal(signIn, before.POSTGRES_PASSWORD);
-      assertApply(back, before, signIn, superuser ? [['postgres_verifier', before.POSTGRES_PASSWORD], ['supabase_admin_verifier', before.POSTGRES_PASSWORD]] : []);
+      assertApply(back, before, signIn, superuser ? [['supabase_admin_verifier', before.POSTGRES_PASSWORD]] : []);
       const recreations = readFileSync(f.log, 'utf8').split('\n').filter(line => line.includes('--force-recreate'));
       assert.equal(recreations.length, 2, 'the services are recreated again with the previous values');
     } finally { rmSync(f.scratch, { recursive: true, force: true }); }

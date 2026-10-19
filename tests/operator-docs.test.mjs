@@ -39,9 +39,9 @@ test('the API contract guide names commands that exist', () => {
 test('the container security record names commands that exist', () => {
   const guide = read('docs/CONTAINER_SECURITY.md');
   const scripts = JSON.parse(read('package.json')).scripts;
-  // `npm run test:api` was removed with the historical API demos; the contract check is check:contract.
+  // `npm run test:api` was removed with the historical API demos; the contract check is check:contract,
+  // described in docs/API_CONTRACT.md and docs/RELEASE_CHECKLIST.md (the old acceptance narrative that named it here is gone).
   assert.doesNotMatch(guide, /test:api/);
-  assert.match(guide, /npm run check:contract -- <app path>/);
   for (const name of [...guide.matchAll(/npm run ([a-z:-]+)/g)].map(match => match[1])) {
     assert.ok(scripts[name], `docs/CONTAINER_SECURITY.md names npm run ${name}, which package.json does not have`);
   }
@@ -62,14 +62,19 @@ test('the OTP cleanup is described as it runs, and pg_cron is named only where a
   // trigger_auto_cleanup_otps) and the rest is the manual retention command.
   const createsPgCron = readdirSync(new URL('../migrations/', import.meta.url))
     .some(name => /CREATE\s+EXTENSION[^;]*pg_cron/i.test(read(`migrations/${name}`)));
-  if (!createsPgCron) assert.doesNotMatch(read('docs/OPERATOR_INSTALL.md'), /pg_cron/);
+  // The baseline does not create it; the guide may name it only in the upgrade note about migration 106 (the removal).
+  if (!createsPgCron) {
+    const stray = read('docs/OPERATOR_INSTALL.md').split(/\n\s*\n/).filter(paragraph => /pg_cron/.test(paragraph) && !/migration 106/i.test(paragraph));
+    assert.deepEqual(stray, []);
+  }
   const section = otpSection();
   assert.match(section, /OTPs expire after 5 minutes/);
-  assert.match(section, /not removed on a timer/);
+  assert.match(section, /not removed on a database timer/);
+  assert.match(section, /checker's daily run/);
   assert.match(section, /Every 100th new code/);
   assert.match(section, /retention:apply/);
-  assert.match(read('migrations/00000000000000_initial_schema.sql'), /Run cleanup every 100 OTP insertions/);
-  assert.match(read('docs/OPERATOR_INSTALL.md'), /## Retention\n\nNothing is deleted on a timer/);
+  assert.match(read('migrations/00000000000000_baseline.sql'), /Run cleanup every 100 OTP insertions/);
+  assert.match(read('docs/OPERATOR_INSTALL.md'), /## Retention\n\nRetention is the owner-approved clean-up/);
 });
 
 test('the OTP section names the HMAC-SHA256 construction and what a key rotation does to pending codes', () => {
@@ -78,7 +83,7 @@ test('the OTP section names the HMAC-SHA256 construction and what a key rotation
   assert.match(section, /HMAC-SHA256 over `phone:code:request id`/);
   assert.match(section, /never as a bare\s+SHA-256/);
   assert.match(section, /rotation changes that secret[\s\S]*codes issued before it stop\s+verifying/);
-  assert.match(read('migrations/00000000000047_review_followups.sql'), /extensions\.hmac\(phone\|\|':'\|\|code\|\|':'\|\|request_id::text,secret,'sha256'\)/);
+  assert.match(read('migrations/00000000000000_baseline.sql'), /extensions\.hmac\(phone\|\|':'\|\|code\|\|':'\|\|request_id::text,secret,'sha256'\)/);
   assert.match(read('scripts/rotate-auth.sql'), /Pending challenges hold HMACs of the previous secret/);
 });
 
@@ -93,7 +98,7 @@ test('the OTP section states the provider request-ID contract and the success wi
   assert.match(section, /`success_no_id`/);
   assert.match(section, /no second SMS is sent/);
   assert.match(section, /`type`\s+and `status` disagree/);
-  assert.match(read('migrations/00000000000097_otp_provider_status.sql'), /'success_no_id'/);
+  assert.match(read('migrations/00000000000000_baseline.sql'), /'success_no_id'/);
 });
 
 test('the OTP section documents the provider-request ceiling, the timeout rule and the no-send switch', () => {
@@ -103,7 +108,7 @@ test('the OTP section documents the provider-request ceiling, the timeout rule a
   assert.match(section, /`provider_ambiguous`/);
   assert.match(section, /warehouse_security\.otp_provider_attempts/);
   assert.match(section, /A cap of text `0` is accepted and blocks every send/);
-  const migration = read('migrations/00000000000097_otp_provider_status.sql');
+  const migration = read('migrations/00000000000000_baseline.sql');
   for (const name of ['otp_daily_provider_attempt_cap', 'provider_ambiguous', 'otp_provider_attempts']) assert.ok(migration.includes(name), name);
   // The one rule for which values are placeholders is described where fixtures are installed (X-7).
   const guide = read('docs/OPERATOR_INSTALL.md');

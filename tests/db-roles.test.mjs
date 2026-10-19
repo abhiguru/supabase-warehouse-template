@@ -91,8 +91,10 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   const body = sql.slice(sql.indexOf('\nBEGIN;'), sql.indexOf('\nCOMMIT;'));
   assert.ok(body.indexOf("SET LOCAL pg_stat_statements.track = 'none'") < body.indexOf('ALTER ROLE'));
   assert.equal((sql.match(/ALTER ROLE [a-z_]+ WITH (?:LOGIN )?PASSWORD :'/g) ?? []).length, (body.match(/ALTER ROLE [a-z_]+ WITH (?:LOGIN )?PASSWORD :'/g) ?? []).length);
-  assert.match(body, /ALTER ROLE supabase_functions_admin WITH NOLOGIN PASSWORD NULL;/);
-  assert.match(body, /DROP ROLE warehouse_monitoring;/);
+  // Only the roles of the agreed set exist: nothing is altered or dropped for a role of the earlier image.
+  assert.doesNotMatch(sql, /supabase_functions_admin|supabase_auth_admin|warehouse_monitoring|DROP ROLE|ALTER ROLE postgres|postgres_verifier/);
+  assert.deepEqual(SUPERUSER_ROLES, [{ role: 'supabase_admin', variable: 'supabase_admin_verifier' }], 'supabase_admin is the only superuser login');
+  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role).sort(), ['authenticator', 'pgbouncer', 'supabase_storage_admin']);
   assert.doesNotMatch(sql, /monitoring_verifier|LOGIN PASSWORD :'monitoring/, 'the monitoring login has no password any more (migration 107)');
   // roles.sql (first start) takes the three logins that exist before the migrations from the db environment.
   const roles = read('docker/volumes/db/roles.sql');
@@ -108,7 +110,6 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   assert.doesNotMatch(roles, /supabase_functions_admin/);
   // supabase_auth_admin has no password at first start: the Auth service is gone (migration 104 makes it NOLOGIN).
   assert.doesNotMatch(roles, /supabase_auth_admin|DB_PASSWORD_AUTH(?![A-Z_])/);
-  assert.match(body, /ALTER ROLE supabase_auth_admin WITH NOLOGIN PASSWORD NULL;/);
   // Each service names its own value, with :? so a state without it fails at `compose config`.
   const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:' };
   for (const [name, prefix] of Object.entries(uses)) assert.ok(compose.includes(`${prefix}\${${name}:?`), `${name} is required where it is used`);
@@ -148,34 +149,26 @@ test('staging a rotation replaces only the role lines (and the superuser pair on
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('add-missing retires the old PGRST_DB_SCHEMAS default, keeps a custom list and leaves an unchanged file byte for byte', () => {
+test('add-missing adds missing values only and leaves PGRST_DB_SCHEMAS and an unchanged file alone, byte for byte', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-schemas-'));
   try {
     const file = join(scratch, 'compose.env');
     const complete = Object.entries(env()).map(([name, value]) => `${name}=${value}\n`).join('');
     const write = text => writeFileSync(file, text, { mode: 0o600 });
-    // The old default loses graphql_public, nothing else changes, and the file keeps its mode.
-    write(`A=1\nPGRST_DB_SCHEMAS=public,storage,graphql_public\n${complete}B=2\n`);
-    assert.deepEqual(addMissingDbValuesToFile(file), [], 'the schema rewrite is not a generated value');
-    assert.equal(readFileSync(file, 'utf8'), `A=1\nPGRST_DB_SCHEMAS=public,storage\n${complete}B=2\n`);
-    assert.equal(statSync(file).mode & 0o777, 0o600);
-    // A list an operator wrote is theirs.
-    for (const custom of ['public,storage,graphql_public,extra', 'public,graphql_public,storage', 'public,storage,extra']) {
-      const text = `PGRST_DB_SCHEMAS=${custom}\n${complete}`;
+    // Whatever the list is, it is not touched here (a backup of this release names no GraphQL schema; setup keeps its own rewrite).
+    for (const list of ['public,storage', 'public,storage,graphql_public', 'public,storage,extra']) {
+      const text = `A=1\nPGRST_DB_SCHEMAS=${list}\n${complete}B=2\n`;
       write(text);
-      addMissingDbValuesToFile(file);
-      assert.equal(readFileSync(file, 'utf8'), text, custom);
+      const before = statSync(file).ino;
+      assert.deepEqual(addMissingDbValuesToFile(file), []);
+      assert.equal(readFileSync(file, 'utf8'), text, list);
+      assert.equal(statSync(file).ino, before, 'nothing to change: the file was not rewritten');
+      assert.equal(statSync(file).mode & 0o777, 0o600);
     }
-    // Nothing to change: the same inode is kept, so the file was not rewritten.
-    write(`PGRST_DB_SCHEMAS=public,storage\n${complete}`);
-    const before = statSync(file).ino;
-    addMissingDbValuesToFile(file);
-    assert.equal(statSync(file).ino, before);
-    assert.equal(readFileSync(file, 'utf8'), `PGRST_DB_SCHEMAS=public,storage\n${complete}`);
-    // Missing values are still added, and the old default is retired in the same pass.
-    write('PGRST_DB_SCHEMAS=public,storage,graphql_public\nPOSTGRES_PASSWORD=' + superuser + '\n');
+    // Missing values are added.
+    write('PGRST_DB_SCHEMAS=public,storage\nPOSTGRES_PASSWORD=' + superuser + '\n');
     const added = addMissingDbValuesToFile(file);
-    assert.ok(added.length > 0);
+    assert.deepEqual(added, GENERATED_DB_NAMES);
     assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public,storage$/m);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -15,7 +15,7 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
-IMAGE='supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6'
+IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
 usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 allow_unsigned=false
 backup=''
@@ -39,6 +39,9 @@ source "$ROOT/scripts/backup-key.sh"
 [[ ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
 format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
 [[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)." >&2; exit 1; }
+# shellcheck source=scripts/backup-image.sh
+source "$ROOT/scripts/backup-image.sh"
+backup_check_database_image "$backup" || exit 1
 # Signature, then checksums: nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
 for file in compose.env instance.json roles.txt _supabase.dump storage_objects.txt; do
@@ -207,20 +210,25 @@ docker run -d --pull missing --name "$container" --label purpose=warehouse-resto
   "${data_args[@]}" \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=disabled -e APP_ENV=verification \
-  -e POSTGRES_PASSWORD=disposable-restore-only \
+  -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD=disposable-restore-only \
+  -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
+  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
   "$IMAGE" >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
-  if docker exec "$container" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+  # The image's temporary server answers while the bootstrap still runs: wait for the end of init, then for the real server.
+  init_log="$(docker logs "$container" 2>&1 || true)"
+  if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
+    && docker exec "$container" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
   # A container that has already exited will not become ready.
   [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != false ]] || break
   sleep 2
 done
 [[ "$ready" == true ]] || { echo "Restore database did not start (data directory of $data_mb MiB on $storage, memory limit $memory_mb MiB)." >&2; exit 1; }
-# The logical dump preserves ACLs, while Compose init scripts may add grant
-# targets that the bare pinned image lacks. Recreate absent names in this
-# disposable database so pg_restore verifies the original ACLs.
+# The logical dump preserves ACLs. The bootstrap above made the roles, role settings (the search_path that finds
+# extensions.digest) and schemas the stack needs; a role that a backup names and the bootstrap does not make
+# is recreated here so pg_restore verifies the original ACLs.
 docker cp "$backup/roles.txt" "$container:/tmp/roles.txt"
 docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
   psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
@@ -242,13 +250,16 @@ docker cp "$backup/database.dump" "$container:/tmp/database.dump"
 # accepts no connections, and a dump restores completely into a copy of it.
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
   -U supabase_admin -T template0 warehouse_restore
-# pg_cron (a backup made before migration 106 holds it: the list refresher of migration 91) can only be
-# created in the database that cron.database_name named, postgres, and this check restores into
-# warehouse_restore. The extension and its own objects (schema cron:
-# jobs, run history, their sequences and grants) are left out here, as the in-place restore (restore.sh) leaves
-# them out. pg_net is left out too: a backup made before migration 103 holds it, and the database no longer
-# preloads it, so the in-place restore skips it as well.
-docker exec "$container" sh -c "pg_restore -l /tmp/database.dump | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_cron|COMMENT - EXTENSION pg_cron|ACL - SCHEMA cron|[A-Z ]+ cron)( |$)' | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_net|COMMENT - EXTENSION pg_net|ACL - SCHEMA net|SCHEMA - net|[A-Z ]+ net)( |$)' > /tmp/restore.list"
+# Every entry of the dump is replayed: a backup of this version holds no extension that needs preloading.
+docker exec "$container" sh -c "pg_restore -l /tmp/database.dump > /tmp/restore.list"
+# The dump header names the server it came from. A dump of an earlier major version holds the earlier
+# schema and roles (the image label of metadata.txt is not enough: it describes the checkout, not the dumped server).
+dumped_from="$(docker exec "$container" sh -c "sed -n 's/^;[[:space:]]*Dumped from database version: //p' /tmp/restore.list | head -n 1")"
+dumped_major="${dumped_from%%.*}"
+if [[ ! "$dumped_major" =~ ^[0-9]+$ ]] || ((dumped_major < 17)); then
+  echo "Refusing: the database dump was made by PostgreSQL '${dumped_from:-unknown}', before PostgreSQL 17. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, \"Baseline reload\")." >&2
+  exit 1
+fi
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --clean --if-exists \
   --no-acl --section=pre-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
@@ -258,34 +269,14 @@ docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --no-acl \
   --section=post-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
-# Backups made before migration 103 hold pg_graphql, whose wrapper function is not recreated by the
-# replay order; a backup made after it holds no GraphQL objects and this does nothing.
-docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
-  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore <<'SQL'
-DO $repair$
-BEGIN
-  -- Only a backup made before migration 103 holds pg_graphql. Its dump cannot recreate the wrapper in the
-  -- order it replays, and the ACL replay needs it.
-  IF to_regnamespace('graphql_public') IS NOT NULL AND to_regnamespace('graphql') IS NOT NULL THEN
-    CREATE OR REPLACE FUNCTION graphql_public.graphql(
-      "operationName" text DEFAULT NULL, query text DEFAULT NULL,
-      variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL
-    ) RETURNS jsonb LANGUAGE sql AS $fn$
-      SELECT graphql.resolve(
-        query := query, variables := coalesce(variables, '{}'::jsonb),
-        "operationName" := "operationName", extensions := extensions
-      );
-    $fn$;
-  END IF;
-END
-$repair$;
-SQL
-# Replay ACLs only after all objects, including extension-owned wrappers, exist.
-docker exec "$container" sh -c "awk '/^[0-9]+; .* ACL / { print }' /tmp/restore.list > /tmp/acl.list"
+# Replay ACLs only after all objects exist.
+acl_awk='$1 ~ /^[0-9]+;$/ && ($4 == "ACL" || ($4 == "DEFAULT" && $5 == "ACL")) { print }'
+docker exec "$container" sh -c 'awk "$1" /tmp/restore.list > /tmp/acl.list && [ -s /tmp/acl.list ]' sh "$acl_awk" \
+  || { echo 'Refusing: the database dump lists no privileges (ACL entries).' >&2; exit 1; }
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner -L /tmp/acl.list \
   --exit-on-error /tmp/database.dump
-# The _supabase pooler database (_supavisor; older installs also carry an empty _analytics) must replay completely as well.
+# The _supabase database (the pooler's _supavisor schema) must replay completely as well.
 docker cp "$backup/_supabase.dump" "$container:/tmp/_supabase.dump"
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
   -U supabase_admin -T template0 _supabase_restore

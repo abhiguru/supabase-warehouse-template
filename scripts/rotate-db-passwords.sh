@@ -26,7 +26,7 @@ Storage and the pooler), sets them in the
 database, and restarts the database and the services that sign in to it
 (about a minute; the API is unavailable for some seconds of it). With
 --superuser, POSTGRES_PASSWORD (the
-postgres and supabase_admin logins) change too.
+supabase_admin login) changes too.
 Take a db:backup first. Nothing was changed. Rerun with --yes to confirm.
 USAGE
   exit 1
@@ -44,6 +44,8 @@ done
 state="$(operator_state)"
 operator_lock "$state"
 compose config --quiet
+# This recreates db: a PostgreSQL 15 database must go through the baseline reload instead.
+bash "$ROOT/scripts/db-version-preflight.sh"
 live="$state/config/compose.env"
 staged="$state/config/compose.env.rotating-db"
 previous="$state/config/compose.env.before-db-rotation"

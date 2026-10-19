@@ -1,6 +1,6 @@
 -- Prints "seed|schema.table|rows N hash H masked …" for every ordinary table that has rows (outside system schemas,
 -- extension members and the migration ledger), so the seed data a fresh chain install leaves can be compared, and
--- "seqstate|schema.sequence|last_value N" for every sequence (NULL = never called). Read-only.
+-- "seqstate|schema.sequence|last_value N is_called t|f" for every sequence (its real state: setval(s, 5, false) differs from setval(s, 1, false)). Read-only.
 -- The hash covers every row as JSON, in text order. A fresh install stamps some seed rows with the moment it ran and with
 -- random ids, so two installs of the same chain cannot agree on those. Only these are left out of the hash (the line says
 -- which columns): timestamp columns whose DEFAULT is a clock function, and uuid VALUES of version 1 or 4 in columns whose
@@ -42,8 +42,10 @@ FROM (
 ) t
 WHERE t.n <> '0'
 UNION ALL
-SELECT format('seqstate|%s.%s|last_value %s', quote_ident(s.schemaname), quote_ident(s.sequencename), COALESCE(s.last_value::text, 'NULL')), s.schemaname || s.sequencename
+SELECT format('seqstate|%s.%s|last_value %s is_called %s', quote_ident(s.schemaname), quote_ident(s.sequencename),
+    (xpath('/row/last_value/text()', st.x))[1]::text, (xpath('/row/is_called/text()', st.x))[1]::text), s.schemaname || s.sequencename
   FROM pg_sequences s
+  CROSS JOIN LATERAL (SELECT query_to_xml(format('SELECT last_value, is_called FROM %I.%I', s.schemaname, s.sequencename), false, true, '') AS x) st
  WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema', 'warehouse_migrations') AND s.schemaname !~ '^pg_(toast|temp)'
    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = (quote_ident(s.schemaname) || '.' || quote_ident(s.sequencename))::regclass AND d.deptype = 'e')
 ) q

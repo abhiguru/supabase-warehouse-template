@@ -100,6 +100,8 @@ export function editDump(raw, { removedRoles = DEFAULT_REMOVED_ROLES } = {}) {
       // pg_dump writes this when a grantor is not the owner: the grants after it would run as a removed role.
       if (sessionAuth.test(line)) left.push(line);
       // A session-level setting would leak into the files applied after the baseline (design 13, M2).
+      // A psql meta command (\connect, \restrict, ...) cannot run inside a migration file (review L-7).
+      if (b.type !== 'FUNCTION' && /^\\/.test(line)) left.push(line);
       if (b.type !== 'FUNCTION' && (/^SET (?!LOCAL |SESSION AUTHORIZATION)/.test(line) || /^SELECT pg_catalog\.set_config\(.*, false\)/.test(line))) left.push(line);
     }
   }

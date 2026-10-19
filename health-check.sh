@@ -14,7 +14,7 @@ for service in db kong rest storage functions pdf-renderer; do
     failed=1
   fi
 done
-compose exec -T db pg_isready -U postgres || failed=1
+compose exec -T db pg_isready -U supabase_admin -d postgres || failed=1
 # Probe the intended project internally, never an unrelated server on a fixed host port.
 # Each probe runs in a container that shares a network with its target
 # (docker/docker-compose.yml, `networks:`): the storage service for the gateway

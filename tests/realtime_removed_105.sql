@@ -11,7 +11,7 @@ SELECT pg_temp.rt_assert((SELECT count(*) = 2 AND bool_and(relreplident = 'd') F
 SELECT pg_temp.rt_assert(NOT EXISTS (SELECT 1 FROM pg_class WHERE relreplident = 'f' AND relnamespace = 'public'::regnamespace), 'a public table is still REPLICA IDENTITY FULL');
 SELECT pg_temp.rt_assert(to_regnamespace('realtime') IS NULL AND to_regnamespace('_realtime') IS NULL, 'the schema realtime or _realtime remains');
 SELECT pg_temp.rt_assert(NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name LIKE 'supabase\_realtime%' OR slot_name LIKE 'realtime%'), 'a Realtime replication slot remains');
-SELECT pg_temp.rt_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000105_remove_realtime.sql'), 'migration 105 is recorded');
+SELECT pg_temp.rt_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql'), 'the ledger does not hold the baseline');
 -- The tables still work for the app: the policies and grants of migrations 14 and 74 are untouched.
 SELECT pg_temp.rt_assert(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.sensor_latest'::regclass AND polname = 'starter_staff'), 'the sensor_latest policy remains');
 ROLLBACK;

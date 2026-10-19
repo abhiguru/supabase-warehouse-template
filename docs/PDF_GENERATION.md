@@ -37,9 +37,9 @@ note when cut, and returns the same `{ success, pdf_url, expires_in, document }`
 answer with `document.type = "report"`. Code: `functions/_shared/report-*.ts`.
 
 The `pdf-renderer` service (`docker/pdf-renderer`: chrome-headless-shell driven by
-puppeteer-core; it replaced Gotenberg) renders escaped HTML with a restrictive
+puppeteer-core) renders escaped HTML with a restrictive
 content policy: JavaScript is off, and every network request the page makes is
-refused. The functions call `POST /render` with the same form fields as before
+refused. The functions call `POST /render`
 (`functions/_shared/pdf-renderer-client.ts`, URL from `PDF_RENDERER_URL`, default
 `http://pdf-renderer:3000`). A render has a 30 s client timeout and a 25 s
 renderer deadline; a refusal (queue full, browser restarting) is HTTP 503 and
@@ -70,10 +70,9 @@ request. To change the age, as the database owner:
 (1 to 3650 days). A removed PDF is simply generated again on the next request.
 
 After [operator setup](OPERATOR_INSTALL.md), verify all four document downloads
-with approved test accounts and records in the isolated pilot. Confirm the
-warehouse name and customer access restrictions. Historical demo smoke
-commands do not apply to the current checkout.
+with approved test accounts and records. Confirm the warehouse name and customer
+access restrictions.
 
 Printer-specific/preprinted endpoints are separate incomplete optional
-integrations; see [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md).
-> The demo setup command below applies only to the immutable `v0.2.2-demo` tag. Current checkout accepts `setup.sh --operator` only.
+integrations; see [PRINTING.md](PRINTING.md) and
+[PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md).

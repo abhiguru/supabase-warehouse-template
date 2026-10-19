@@ -5,8 +5,6 @@ It checks the host, the database, the containers, the gateway and the backups, t
 when something is wrong, and once a day makes and verifies a backup and applies retention. There are no dashboards, no
 metric history and no extra containers: Slack is the only way an alert leaves the host.
 
-It replaced Prometheus, Alertmanager and the three exporters (release notes in [CHANGELOG.md](../CHANGELOG.md)).
-
 ## Install the timer
 
 Installing a systemd unit needs root, which `setup.sh`, `start.sh` and `db:restore-host` never use. Like the tunnel
@@ -58,9 +56,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `operator_lock_stuck` | A setup, backup or restore has held the operator lock for 2 hours or more |
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
-services on purpose. Two rules changed from the old Prometheus rules: only the 300 s transaction rule remains (the 60 s
-"slow query" rule fired on normal reports and restore tools), and the cache-hit rule needs a minimum sample, so a
-restart does not read as a bad ratio. The rules for Prometheus's own targets and for the "Watchdog" went with Prometheus.
+services on purpose.
 
 ## How alerts behave
 
@@ -79,7 +75,7 @@ backup, then it prunes older backups, then `scripts/retention.sh apply`. A faile
 most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
 by hand there, with the same name pattern and instance, count towards the 7) and removes nothing if a backup is dated in
 the future. Retention runs only after a verified backup. The USB backup drive is separate
-([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md)).
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
 
 ## Mute and unmute
 
@@ -120,18 +116,13 @@ installs it. `setup.sh --operator` needs it:
   records alerts without posting them. `npm run doctor` warns `No Slack webhook` on every run.
 
 The URL is stored at `config/slack-webhook-url` in the state (mode 0600; never in git, a log, an environment variable or a
-command line). Installations made before this change kept it at `config/monitoring/alertmanager/webhook-url`; the next
-`setup.sh --operator` run moves it and removes the old Prometheus and Alertmanager files under `config/monitoring`. The
-checker reads the old path until then. The URL is not in a backup, so after `db:restore-host` run setup again to give it
-back. It is a secret that `rotate-keys.sh` does not change ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md)).
+command line). The URL is not in a backup, so after `db:restore-host` run setup again to give it back. It is a secret
+that `rotate-keys.sh` does not change
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
 
-## What was dropped, and why
+## What it does not cover
 
-- **Metric history.** Prometheus kept 15 days of metrics; since the dashboards were removed (2026-10-18) nobody could view them. The
-  checker keeps only its state (`config/watch-state.json`, `config/watch-mutes.json`) and the last backup and retention
-  results (`config/watch-backup.last`, `config/watch-retention.last`).
-- **Five containers and their images:** Prometheus, Alertmanager, the Postgres, node and cAdvisor exporters (all rebuilt
-  from Go source), the gateway's metrics plugin and its status port, the `monitoring` Compose profile, the
-  `prometheus_data` volume, and the `warehouse_monitoring` database password (the role is dropped, migration 107).
-- **Not covered, as before:** the Cloudflare tunnel process (the public-address check sees its effect), certificate
-  expiry, SMS delivery failures, application errors. Email and paging are not supported by this repository.
+There is no metric history and no dashboard: the checker keeps only its state (`config/watch-state.json`,
+`config/watch-mutes.json`) and the last backup and retention results (`config/watch-backup.last`,
+`config/watch-retention.last`). Not covered: the Cloudflare tunnel process (the public-address check sees its effect),
+certificate expiry, SMS delivery failures, application errors. Email and paging are not supported by this repository.

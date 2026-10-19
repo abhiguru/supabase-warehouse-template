@@ -162,7 +162,7 @@ test('storage is not sent the CF-Connecting-IP header, and the log contract says
   // Kong adds X-Real-IP and X-Forwarded-For itself after the plugins ran, so listing them would promise too much.
   assert.doesNotMatch(storage, /^\s+- (?:X-Real-IP|X-Forwarded-For)$/im);
   const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
-  const start = docs.indexOf('\n## Logs (2026-10-17)\n');
+  const start = docs.indexOf('\n## Logs\n');
   assert.ok(start > 0, 'docs/CONTAINER_SECURITY.md has the Logs section');
   const section = docs.slice(start + 1, docs.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
   for (const needed of ['warehouse_redacted', 'no log line holds a token, a key, an OTP', 'X-Real-IP', 'X-Forwarded-For', 'error log', '3 x 10 MB']) {
@@ -185,10 +185,10 @@ test('the JWT signing secret is not published as a database or PostgREST setting
   // The database code reads warehouse_security.auth_config; PostgREST takes the secret from PGRST_JWT_SECRET.
   assert.doesNotMatch(compose, /APP_SETTINGS_JWT_SECRET/, 'PostgREST must not set the secret as an app setting');
   assert.match(compose, /\n\s+PGRST_JWT_SECRET: \$\{JWT_SECRET\}\n/, 'PostgREST still verifies tokens');
-  assert.match(compose, /\n\s+PGRST_APP_SETTINGS_JWT_EXP: \$\{JWT_EXPIRY\}\n/, 'the expiry setting is not part of this change');
-  const jwtSql = withoutComments('docker/volumes/db/jwt.sql');
-  assert.doesNotMatch(jwtSql, /jwt_secret|JWT_SECRET/i, 'jwt.sql must not set or read the secret');
-  assert.match(jwtSql, /ALTER DATABASE postgres SET "app\.settings\.jwt_exp"/, 'jwt.sql still sets the expiry');
+  // Nothing reads app.settings.jwt_exp (the database code takes the lifetime from warehouse_security.auth_config), so no
+  // database setting and no PostgREST app setting carries it either.
+  assert.doesNotMatch(compose, /APP_SETTINGS_JWT_EXP/, 'PostgREST must not set the expiry as an app setting');
+  assert.ok(!existsSync(new URL('../docker/volumes/db/jwt.sql', import.meta.url)), 'jwt.sql is gone: nothing sets app.settings.jwt_exp');
   assert.doesNotMatch(withoutComments('scripts/rotate-auth.sql'), /app\.settings\.jwt_secret/, 'rotation must not set the secret as a database setting');
   // Every run of the auth configuration removes it again, at database level and for roles.
   const configure = withoutComments('scripts/configure-auth.sql');
@@ -205,7 +205,7 @@ test('the rendered Compose project has no app setting that carries the JWT signi
     const settings = Object.keys(definition.environment ?? {}).filter(key => /APP_SETTINGS_JWT_SECRET/.test(key));
     assert.deepEqual(settings, [], `${name} publishes the signing secret as an app setting`);
   }
-  assert.ok(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, 'the expiry app setting must stay');
+  assert.equal(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, undefined, 'the expiry app setting is not set');
 });
 
 test('ingress is Cloudflare Tunnel only', () => {

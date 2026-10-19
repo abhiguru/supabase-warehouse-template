@@ -48,6 +48,15 @@ if [[ -d "$STATE/config" ]]; then
   if ! flock -n 9; then echo 'Another operator setup, start, stop, backup, restore or key rotation is running for this state.' >&2; exit 1; fi
   LOCKED=1
 fi
+# An existing installation of the earlier PostgreSQL 15 release is refused here, before configure.mjs rewrites its
+# compose.env (a refusal then changes no file at all). Only a refusal counts: when the check cannot run yet (the Compose
+# configuration of an older state may not resolve), the same check below decides, after configure.mjs.
+if [[ -n "$LOCKED" && -f "$STATE/config/compose.env" ]]; then
+  if ! early="$(bash "$ROOT/scripts/db-version-preflight.sh" 2>&1)" && [[ "$early" == Refusing:* ]]; then
+    echo "$early" >&2
+    exit 1
+  fi
+fi
 # Alerts go to the facility's own Slack channel (docs/MONITORING.md, "Alert delivery"). Without
 # --alert-webhook-file, a terminal is asked for the webhook URL (typed without echo, passed to
 # configure.mjs through a private temporary file that is deleted when setup ends); with no terminal setup
@@ -75,13 +84,15 @@ node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
 # Before anything is changed: Docker must be able to allocate the subnet of the internal renderer network.
 bash "$ROOT/scripts/network-preflight.sh"
+# Before the image is rebuilt or the db container recreated: a PostgreSQL 15 database must go through the baseline reload.
+bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation.
 bash "$ROOT/scripts/build-images.sh"
-# Release 105 runs the db with wal_level=replica, which refuses to start while a logical slot exists: drop idle ones
+# The shipped db runs with wal_level=replica (set since the tag's migration 105), which refuses to start while a logical slot exists: drop idle ones
 # (and refuse if one is in use) while the db still runs with its old settings.
 bash "$ROOT/scripts/drop-logical-slots.sh"
-# --remove-orphans stops the old realtime container before migration 105 drops its schemas.
+# --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.
 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
 # Every service login has its own password (docs/CONTAINER_SECURITY.md, "Database

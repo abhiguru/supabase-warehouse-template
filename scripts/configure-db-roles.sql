@@ -22,7 +22,7 @@ FROM (VALUES (:'authenticator_verifier'), (:'storage_verifier'),
 \else
   DO $$ BEGIN RAISE EXCEPTION 'configure-db-roles.sql accepts SCRAM-SHA-256 verifiers only; no password was changed'; END $$;
 \endif
-SELECT :{?postgres_verifier} AND :{?supabase_admin_verifier} AS rotate_superuser \gset
+SELECT :{?supabase_admin_verifier} AS rotate_superuser \gset
 
 BEGIN;
 -- The statements below carry verifiers, not passwords; they are kept out of
@@ -35,45 +35,11 @@ ALTER ROLE authenticator WITH LOGIN PASSWORD :'authenticator_verifier';
 ALTER ROLE supabase_storage_admin WITH LOGIN PASSWORD :'storage_verifier';
 ALTER ROLE pgbouncer WITH LOGIN PASSWORD :'pooler_verifier';
 
--- Nothing logs in as supabase_functions_admin. Migration 103 drops it; where it is kept
--- (it still owns something) it must not sign in. It once had the shared password.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_functions_admin') THEN
-    ALTER ROLE supabase_functions_admin WITH NOLOGIN PASSWORD NULL;
-  END IF;
-END $$;
-
--- Nothing logs in as supabase_auth_admin either (the Auth service is gone; migration 104 makes the role
--- NOLOGIN). After a restore this is what corrects the role: a backup holds only role names, every restore starts a
--- fresh cluster where the image creates the role with LOGIN, and the restored ledger skips migration 104.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
-    ALTER ROLE supabase_auth_admin WITH NOLOGIN PASSWORD NULL;
-  END IF;
-END $$;
-
--- warehouse_monitoring is gone (the monitoring database exporter is removed; migration 107 drops the role).
--- Same reason as above: a restore does not rerun an applied migration, and an older backup may bring the role back.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warehouse_monitoring') THEN
-    IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
-               WHERE r.rolname = 'warehouse_monitoring' AND g.rolname = 'pg_monitor') THEN
-      REVOKE pg_monitor FROM warehouse_monitoring;
-    END IF;
-    DROP OWNED BY warehouse_monitoring;
-    DROP ROLE warehouse_monitoring;
-  END IF;
-END $$;
-
--- The superuser password: only scripts/rotate-db-passwords.sh --superuser
--- passes these two verifiers.
+-- The superuser password (supabase_admin, the only superuser): only scripts/rotate-db-passwords.sh
+-- --superuser passes this verifier.
 \if :rotate_superuser
-SELECT :'postgres_verifier' ~ '^SCRAM-SHA-256\$4096:' AND :'supabase_admin_verifier' ~ '^SCRAM-SHA-256\$4096:' AS valid_superuser \gset
+SELECT :'supabase_admin_verifier' ~ '^SCRAM-SHA-256\$4096:' AS valid_superuser \gset
 \if :valid_superuser
-ALTER ROLE postgres WITH PASSWORD :'postgres_verifier';
 ALTER ROLE supabase_admin WITH PASSWORD :'supabase_admin_verifier';
 \else
   DO $$ BEGIN RAISE EXCEPTION 'configure-db-roles.sql accepts SCRAM-SHA-256 verifiers only; no password was changed'; END $$;

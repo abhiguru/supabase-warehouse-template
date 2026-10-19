@@ -182,40 +182,22 @@ BEGIN
 END
 $$;
 
--- The monitoring role (migration 94) is dropped by migration 107 and by
--- scripts/configure-db-roles.sql after a restore. Nothing may bring it back, and
--- nothing may hold an entry that names it.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'warehouse_monitoring') THEN
-    RAISE EXCEPTION 'The monitoring login warehouse_monitoring must not exist (migration 107 drops it)';
-  END IF;
-END
-$$;
-
--- supabase_functions_admin owns the webhook functions; nothing signs in as it
--- (migration 94). The role exists only where the Compose init scripts ran.
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_authid WHERE rolname = 'supabase_functions_admin' AND (rolcanlogin OR rolpassword IS NOT NULL)) THEN
-    RAISE EXCEPTION 'supabase_functions_admin must have no login and no password';
-  END IF;
-END
-$$;
-
--- supabase_auth_admin owns auth.uid(), auth.role(), auth.email() and 26 auth relations and holds default privileges
--- in schema auth (supabase_admin owns the schema and auth.jwt()); the row policies use these functions, so the role
--- stays. The Auth service is gone and nothing signs in as it (migration 104).
+-- The roles of the earlier image and the removed warehouse roles do not exist, and the auth functions
+-- (auth.uid(), auth.role(), auth.email(), auth.jwt()) belong to supabase_admin. The exact role set is asserted by
+-- tests/baseline_roles.sql, and scripts/backup-image.sh refuses a backup that names one of these roles, so nothing
+-- brings them back.
 DO $$
 DECLARE
-  state record;
+  present text;
 BEGIN
-  SELECT rolcanlogin, rolpassword IS NOT NULL AS has_password INTO state FROM pg_authid WHERE rolname = 'supabase_auth_admin';
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'supabase_auth_admin must exist: it owns the auth schema objects';
+  SELECT string_agg(rolname, ', ' ORDER BY rolname) INTO present FROM pg_roles
+   WHERE rolname IN ('postgres', 'dashboard_user', 'supabase_auth_admin', 'supabase_realtime_admin', 'supabase_functions_admin',
+                     'supabase_read_only_user', 'supabase_replication_admin', 'supabase_etl_admin', 'warehouse_monitoring', 'warehouse_list_refresher');
+  IF present IS NOT NULL THEN
+    RAISE EXCEPTION 'roles of the earlier image or removed roles exist: %', present;
   END IF;
-  IF state.rolcanlogin OR state.has_password THEN
-    RAISE EXCEPTION 'supabase_auth_admin must have no login and no password (login %, password %)', state.rolcanlogin, state.has_password;
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'auth'::regnamespace AND pg_get_userbyid(p.proowner) <> 'supabase_admin') THEN
+    RAISE EXCEPTION 'a function in schema auth is not owned by supabase_admin';
   END IF;
 END
 $$;

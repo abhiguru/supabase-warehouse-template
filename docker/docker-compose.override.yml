@@ -12,17 +12,17 @@ x-logging: &default-logging
 services:
   db:
     logging: *default-logging
-    # PostgreSQL performance tuning
-    # pg_cron stays preloaded only because locked migration 91 creates the extension on a fresh install;
-    # migration 106 drops it again. The squashed baseline removes both.
+    # PostgreSQL performance tuning. timezone and log_timezone are set to UTC (the facilities ran Etc/UTC, the same offset):
+    # the SQL code and its tests assume the time zone is named UTC. extra_float_digits is not set: the facilities ran the
+    # server default of 1 and the official image starts the same way.
     command: >-
       postgres
       -c max_connections=100
       -c listen_addresses=*
-      -c shared_preload_libraries=pg_stat_statements,pg_cron
+      -c shared_preload_libraries=pg_stat_statements
       -c pg_stat_statements.track=all
-      -c cron.database_name=postgres
-      -c cron.log_statement=off
+      -c timezone=UTC
+      -c log_timezone=UTC
       -c random_page_cost=1.1
       -c effective_io_concurrency=200
       -c log_min_messages=warning

@@ -20,6 +20,7 @@ const fakeDocker = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
   ps) exit 0 ;;
+  run) printf '17\\n' ;;   # the version preflight reads PG_VERSION of the data directory
   info) printf '28.0.0\\n' ;;
   inspect)
     case "$3" in

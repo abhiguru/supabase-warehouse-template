@@ -2,8 +2,9 @@
 
 Printing is not ready to enable on the operator branch. The public discovery
 capability defaults to `false`, and the main Edge router rejects print routes.
-The authoritative [operator ledger](PRODUCTION_DEPENDENCIES.md#independent-operator-installation-work)
-tracks the remaining software and physical acceptance. Starting CUPS or changing
+[PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md#needs-hardware-or-a-device)
+lists the physical acceptance, and its [code and build work](PRODUCTION_DEPENDENCIES.md#needs-code-or-build-work)
+lists the software item (vendor `npm:ipp`). Starting CUPS or changing
 a capability flag does not complete that work.
 
 The repository retains the LQ-1310 ESC/P layouts and CUPS image. The isolated
@@ -31,9 +32,9 @@ The mobile app must submit under its own authorized user session.
 
 ## Activation acceptance
 
-The five printing routes still answer 503 (`functions/main/index.ts`). The
-review of 2026-10-13 (PRINT1-5) found five faults in the dormant code; these are
-now enforced in code and covered by tests that run without a printer:
+The five printing routes still answer 503 (`functions/main/index.ts`). These
+five rules of the dormant code are enforced in code and covered by tests that run
+without a printer:
 
 - **Invoice pages by printed rows.** A page holds at most 20 item rows, the GRN
   group header rows included; a group that goes on to the next page repeats its

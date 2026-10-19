@@ -14,8 +14,7 @@
 #       POSTGRES_PASSWORD is refused and its own value accepted, over a network
 #       connection that PostgreSQL authenticates with SCRAM (connections from
 #       127.0.0.1 inside the database container are trusted by the image, so they
-#       would prove nothing), and that supabase_functions_admin and supabase_auth_admin
-#       cannot log in at all and warehouse_monitoring does not exist.
+#       would prove nothing). The roles of the earlier image do not exist and are not checked.
 #   bash scripts/db-roles.sh matches FILE
 #       Whether the database takes FILE's values (authenticator and supabase_admin
 #       sign in with them over the same network connection): exit 0 yes, 1 no,
@@ -92,27 +91,6 @@ case "$command" in
           echo "FAIL $role does not accept its own password over the network (${answer:-refused})"; failed=1
         fi
       done
-      # One row always ("absent" when the role does not exist): no answer is a failure.
-      functions_login="$(PGPASSWORD="$superuser_password" psql -X -qAt -h /var/run/postgresql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT coalesce((SELECT rolcanlogin::text || '\'' '\'' || (rolpassword IS NULL)::text FROM pg_authid WHERE rolname = '\''supabase_functions_admin'\''), '\''absent'\'')" 2>/dev/null || true)"
-      case "$functions_login" in
-        "false true") echo "ok   supabase_functions_admin cannot log in and has no password" ;;
-        absent) echo "ok   supabase_functions_admin does not exist" ;;
-        "") echo "FAIL supabase_functions_admin: its login state could not be read (pg_authid as supabase_admin)"; failed=1 ;;
-        *) echo "FAIL supabase_functions_admin login state: $functions_login"; failed=1 ;;
-      esac
-      auth_login="$(PGPASSWORD="$superuser_password" psql -X -qAt -h /var/run/postgresql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT coalesce((SELECT rolcanlogin::text || '\'' '\'' || (rolpassword IS NULL)::text FROM pg_authid WHERE rolname = '\''supabase_auth_admin'\''), '\''absent'\'')" 2>/dev/null || true)"
-      case "$auth_login" in
-        "false true") echo "ok   supabase_auth_admin cannot log in and has no password" ;;
-        absent) echo "ok   supabase_auth_admin does not exist" ;;
-        "") echo "FAIL supabase_auth_admin: its login state could not be read (pg_authid as supabase_admin)"; failed=1 ;;
-        *) echo "FAIL supabase_auth_admin login state: $auth_login"; failed=1 ;;
-      esac
-      monitoring_login="$(PGPASSWORD="$superuser_password" psql -X -qAt -h /var/run/postgresql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT coalesce((SELECT rolcanlogin::text || '\'' '\'' || (rolpassword IS NULL)::text FROM pg_authid WHERE rolname = '\''warehouse_monitoring'\''), '\''absent'\'')" 2>/dev/null || true)"
-      case "$monitoring_login" in
-        absent) echo "ok   warehouse_monitoring does not exist" ;;
-        "") echo "FAIL warehouse_monitoring: its login state could not be read (pg_authid as supabase_admin)"; failed=1 ;;
-        *) echo "FAIL warehouse_monitoring exists (migration 107 drops it): $monitoring_login"; failed=1 ;;
-      esac
       exit "$failed"' sh "$remote_query"
     echo 'Every database login refuses the superuser password and accepts only its own.'
     ;;

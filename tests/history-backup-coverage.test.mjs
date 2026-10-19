@@ -29,7 +29,7 @@ test('the backup integrity report counts the histories only for a backup that ha
   const close = lines.findIndex((line, index) => index > open && /^\\endif$/.test(line));
   assert.ok(open > 0 && close > open, 'no \\if :histories_recorded ... \\endif block');
   assert.match(lines.slice(0, open).join('\n'),
-    /SELECT EXISTS \(SELECT 1 FROM warehouse_migrations\.applied WHERE name = '00000000000048_owner_decisions\.sql'\) AS histories_recorded \\gset/);
+    /SELECT EXISTS \(SELECT 1 FROM warehouse_migrations\.applied WHERE name IN \('00000000000000_baseline\.sql', '00000000000048_owner_decisions\.sql'\)\) AS histories_recorded \\gset/);
   const inside = lines.slice(open + 1, close).join('\n');
   for (const table of histories) assert.match(inside, new RegExp(`'${table}_count=' \\|\\| count\\(\\*\\) FROM public\\.${table};`), `${table} is not counted`);
   assert.match(inside, /acl_authenticated_invoice_internal_columns=/);
@@ -45,7 +45,7 @@ test('the payment, order line and order revision counts sit only in a block gate
   const close = lines.findIndex((line, index) => index > open && /^\\endif$/.test(line));
   assert.ok(open > 0 && close > open, 'no \\if :order_detail_recorded ... \\endif block');
   const gate = lines.slice(0, open).join('\n');
-  assert.match(gate, /WHERE name >= '00000000000095'[^\n]*\n[^\n]*AND EXISTS \(SELECT 1 FROM warehouse_migrations\.applied WHERE name = '00000000000048_owner_decisions\.sql'\) AS order_detail_recorded \\gset/);
+  assert.match(gate, /WHERE name = '00000000000000_baseline\.sql'\)\n\s+OR \(EXISTS[^\n]*WHERE name >= '00000000000095'[^\n]*\n[^\n]*AND EXISTS \(SELECT 1 FROM warehouse_migrations\.applied WHERE name = '00000000000048_owner_decisions\.sql'\)\) AS order_detail_recorded \\gset/);
   const inside = lines.slice(open + 1, close).join('\n');
   for (const [name, table] of [['payment', 'payments'], ['order_item', 'order_items'], ['order_revision', 'order_revisions']]) {
     assert.match(inside, new RegExp(`'${name}_count=' \\|\\| count\\(\\*\\) FROM public\\.${table};`), `${table} is not counted`);

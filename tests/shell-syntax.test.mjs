@@ -20,10 +20,15 @@ test('every tracked shell script passes a syntax check with its own interpreter'
 });
 
 test('the disposable databases use the image digest the production database is built from', () => {
-  const pinned = readFileSync(join(root, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (supabase\/postgres:\S+@sha256:[0-9a-f]{64})$/m)[1];
-  for (const script of ['scripts/verify-restore.sh', 'tests/migrations.sh', 'scripts/backup.sh']) {
-    const refs = readFileSync(join(root, script), 'utf8').match(/supabase\/postgres:[^\s'"]+/g) || [];
-    assert.ok(refs.length > 0, `${script} names the image`);
-    for (const ref of refs) assert.equal(ref, pinned, `${script} must reference ${pinned}`);
+  const pinned = readFileSync(join(root, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (postgres:17\.\d+-trixie@sha256:[0-9a-f]{64})$/m)[1];
+  const printed = spawnSync('bash', [join(root, 'scripts/db-image.sh')], { encoding: 'utf8' });
+  assert.equal(printed.status, 0, printed.stderr);
+  assert.equal(printed.stdout.trim(), pinned, 'scripts/db-image.sh prints the Dockerfile pin');
+  // The scripts take the pin from scripts/db-image.sh; none names an image of its own.
+  for (const script of ['scripts/verify-restore.sh', 'tests/migrations.sh', 'scripts/backup.sh', 'tests/backup-operator.test.mjs']) {
+    const text = readFileSync(join(root, script), 'utf8');
+    assert.doesNotMatch(text, /(?:supabase\/)?postgres:[0-9][^\s'"]*@sha256:[0-9a-f]{64}/, `${script} does not pin a database image itself`);
+    if (script.endsWith('.sh')) assert.match(text, /db-image\.sh/, `${script} reads the shared pin`);
   }
+  assert.doesNotMatch(readFileSync(join(root, 'docker/docker-compose.yml'), 'utf8'), /^\s+image:\s*(?:supabase\/)?postgres:/m, 'the db service is built from the Dockerfile');
 });

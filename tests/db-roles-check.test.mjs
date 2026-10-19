@@ -37,9 +37,6 @@ eval "want=\\\${FAKE_DB_$user:-}"
 if [ -z "$want" ] || [ "$PGPASSWORD" != "$want" ]; then echo "psql: error: FATAL:  password authentication failed for user \\"$user\\"" >&2; exit 2; fi
 case "$query" in
   *inet_client_addr*) echo "$user remote" ;;
-  *warehouse_monitoring*) echo "\${FAKE_MONITORING_ADMIN:-absent}" ;;
-  *supabase_auth_admin*) echo "\${FAKE_AUTH_ADMIN:-false true}" ;;
-  *pg_authid*) echo "\${FAKE_FUNCTIONS_ADMIN:-false true}" ;;
   *) echo 1 ;;
 esac
 `;
@@ -75,7 +72,7 @@ test('check passes when every login behaves and POSTGRES_PASSWORD is the live su
     const result = f.run(['check']);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /^ok   supabase_admin accepts POSTGRES_PASSWORD \(SCRAM, network connection\)/m);
-    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 10);
+    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 7, 'supabase_admin, then two lines for each of the three logins');
     assert.doesNotMatch(result.stdout, /^FAIL/m);
     assert.match(result.stdout, /Every database login refuses the superuser password and accepts only its own\.\n$/);
     const calls = readFileSync(join(f.scratch, 'docker.log'), 'utf8');
@@ -94,31 +91,20 @@ test('check fails when compose.env does not hold the superuser password the data
   } finally { clean(f); }
 });
 
-test('a failed read of supabase_functions_admin fails the check instead of reporting the role absent', () => {
-  const f = fixture('warehouse-db-check-authid-');
+test('check reads only the logins of the agreed role set: no role of the earlier image is looked up or reported', () => {
+  const f = fixture('warehouse-db-check-roleset-');
   try {
-    const failed = f.run(['check'], { FAKE_SOCKET_FAIL: 'yes' });
-    assert.notEqual(failed.status, 0);
-    assert.match(failed.stdout, /^FAIL supabase_functions_admin: its login state could not be read/m);
-    assert.doesNotMatch(failed.stdout, /does not exist/);
-    const absent = f.run(['check'], { FAKE_FUNCTIONS_ADMIN: 'absent' });
-    assert.equal(absent.status, 0, absent.stdout);
-    assert.match(absent.stdout, /^ok   supabase_functions_admin does not exist$/m);
-    const login = f.run(['check'], { FAKE_FUNCTIONS_ADMIN: 'true false' });
-    assert.notEqual(login.status, 0);
-    assert.match(login.stdout, /^FAIL supabase_functions_admin login state: true false$/m);
-    const auth = f.run(['check'], { FAKE_AUTH_ADMIN: 'true false' });
-    assert.notEqual(auth.status, 0);
-    assert.match(auth.stdout, /^FAIL supabase_auth_admin login state: true false$/m);
-    assert.match(f.run(['check']).stdout, /^ok   supabase_auth_admin cannot log in and has no password$/m);
-    // warehouse_monitoring is dropped (migration 107): while it exists, even without a login, the check fails.
-    const monitoring = f.run(['check'], { FAKE_MONITORING_ADMIN: 'false true' });
-    assert.notEqual(monitoring.status, 0);
-    assert.match(monitoring.stdout, /^FAIL warehouse_monitoring exists \(migration 107 drops it\): false true$/m);
-    const monitoringLogin = f.run(['check'], { FAKE_MONITORING_ADMIN: 'true false' });
-    assert.notEqual(monitoringLogin.status, 0);
-    assert.match(monitoringLogin.stdout, /^FAIL warehouse_monitoring exists \(migration 107 drops it\): true false$/m);
-    assert.match(f.run(['check']).stdout, /^ok   warehouse_monitoring does not exist$/m);
+    const ok = f.run(['check']);
+    assert.equal(ok.status, 0, ok.stdout);
+    for (const role of ['authenticator', 'supabase_storage_admin', 'pgbouncer']) {
+      assert.match(ok.stdout, new RegExp(`^ok   ${role} refuses POSTGRES_PASSWORD$`, 'm'));
+      assert.match(ok.stdout, new RegExp(`^ok   ${role} accepts its own password \\(SCRAM, network connection\\)$`, 'm'));
+    }
+    assert.match(ok.stdout, /^ok   supabase_admin accepts POSTGRES_PASSWORD/m);
+    assert.doesNotMatch(ok.stdout, /postgres\b|supabase_auth_admin|supabase_functions_admin|warehouse_monitoring|does not exist|FAIL/, 'the roles that do not exist are not reported');
+    assert.doesNotMatch(readFileSync(join(root, 'scripts/db-roles.sh'), 'utf8'), /pg_authid|supabase_auth_admin|supabase_functions_admin|warehouse_monitoring/, 'db-roles.sh does not look them up');
+    // An unreadable socket changes nothing for the check: it never asks.
+    assert.equal(f.run(['check'], { FAKE_SOCKET_FAIL: 'yes' }).status, 0);
   } finally { clean(f); }
 });
 
