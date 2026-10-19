@@ -1,4 +1,4 @@
-# No history-keyed exemptions; the tree starts fresh at v0.3.0.
+# History-keyed exemptions only for the fictional fixtures listed below.
 # Fictional fixtures (T0000000/B0000000/fictional webhooks, a repeated-character key) in the recorded pre-squash commits.
 e9f4ceb2700bfd48e977ebfdc0bc2115f9285e81:scripts/alert-rules-check.sh:slack-webhook-url:50
 4dc3bb1c468cc7168f1ef29f3aa29cc601dc1ff6:tests/start-monitoring.test.mjs:slack-webhook-url:25
