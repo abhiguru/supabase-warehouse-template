@@ -35,6 +35,44 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
    No rows: go on.
 
+## Unreleased: Review decisions (migration 121)
+
+New migration (`review_decisions`), server side of the owner decisions of 2026-10-20 on dispatch, GRN, invoice and order writes
+(D1 to D18, D23, D24). Every new request key and trailing parameter is optional (absent: no check); every new refusal has one
+shape, `{success:false, error_code:'WH409', reason, error, message, ...fields}`. One new column (`invoice.updated_at`), five triggers, new
+RPC `get_grn_edit_state`, no data changed. Details and every `reason`: [docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Review
+decisions (migration 121)".
+
+- **Stale edits (D1).** `update_dispatch_smart` and `update_invoice` read `expected_updated_at` in their data; `update_grn`,
+  `update_order_item_quantity` and `remove_item_from_order` take a new trailing `p_expected_updated_at` (the old signatures are dropped). A
+  record whose `updated_at` differs answers `STALE_RECORD` and nothing is written; the check runs after the saved-answer replay of a request
+  code, so a resend of one's own lost save is never refused. Success answers carry the new token; `invoice.updated_at` is new (read only
+  through the RPCs); `get_invoice_detail` / `get_invoice_data` return it; `get_grn_edit_state` returns the GRN's with each line's locks.
+- **Locks after invoicing (D2, D23).** `update_grn` refuses a changed item, packing or weight of an invoiced lot (`LOT_INVOICED`), a
+  changed item or packing of a dispatched lot (`LOT_DISPATCHED`; its stored name is kept) and a changed date of an invoiced GRN
+  (`GRN_DATE_LOCKED`); `update_dispatch_smart` refuses a changed date or number of a dispatch on a live invoice (`DISPATCH_INVOICED`).
+- **Date rules (D3).** Dispatch create and edit refuse a future day and a day before a lot's GRN day (an edit only when its day changes, or
+  for lines it adds, so legacy rows stay editable); `update_grn` refuses a GRN day after the first dispatch (`GRN_DATE_AFTER_DISPATCH`).
+- **Orders in step with dispatch edits (D4).** An edit that lowers or removes a line gives back to the order what the line took; one that
+  raises or adds takes from the order's line (answer `order_sync:{given_back, taken}`); delete gives back at most what the line holds and
+  writes the change-log entry for every cart that got something back; takes are logged as dispatch reductions. New helper
+  `warehouse_security.restore_to_order`.
+- **Generate Dispatch (D5).** `source_order_updated_at` in the dispatch data: a moved order answers `ORDER_CHANGED`.
+- **GRN number (D6, D8).** `update_grn` refuses a changed number (`GRN_NUMBER_LOCKED`); `get_next_grn_number` follows the highest letter in use.
+- **No invoice while stock remains (D9).** Both `save_invoice` signatures and `update_invoice` refuse a GRN with stock (`GRN_HAS_STOCK`); an
+  invoiced GRN takes no new line (`GRN_INVOICED`). An existing invoice on a GRN that holds stock is refused on its next edit.
+- **Rates (D10, D24).** An edit that drops a rate set for the GRN alone is refused for staff (`RATES_NEED_MANAGER`) and, when a changed
+  weight or pricing mode leaves a line without one and the save sets no new one, for administrators and supervisors (`RATES_WOULD_DROP`).
+- **Removing a line (D11).** A line with dispatch or stock history, or on an order, is refused by name (`LINE_DISPATCHED_BEFORE`,
+  `LINE_ON_ORDER`) instead of the raw foreign-key text.
+- **GRN history (D12).** Inserts, deletes and real edits of GRNs and their lines are written to `audit_log` (not stock-only or
+  derived-flag-only updates); history starts at the deploy.
+- **Form lengths and digits (D13, D15).** A registration over 20 characters is refused by name (`registration_too_long`); rack and package
+  mark are stored with the digits 0-9 (`warehouse_security.ascii_digits`); stored rows are not converted.
+- **Invoice total (D18).** `expected_total` in the invoice data: a total that differs from the server's by more than 1.00 rolls the save
+  back and answers `TOTAL_CHANGED` with the days the server used.
+- **Deactivated business (D16, corrected).** Orders and dispatch are not refused for it; a new GRN is refused as before.
+
 ## Unreleased: Review fixes (migration 120)
 
 New migration (`review_fixes`), server side of the 2026-10-20 order, dispatch, GRN and invoice reviews and of owner decisions D20 and

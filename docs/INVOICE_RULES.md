@@ -221,6 +221,11 @@ columns only:
   `tests/security_baseline.sql`; that test fails for a column that is neither,
   so a new column is neither exposed nor hidden without a decision.
 
+**A version token (migration 121).** `invoice.updated_at` (`timestamptz NOT NULL DEFAULT now()`, bumped by the trigger
+`trigger_invoice_updated_at` on every update) is not granted to the app role either: it is read only through `get_invoice_detail`
+(`invoice.updated_at`) and `get_invoice_data` (`data.header.updated_at`), and `update_invoice` answers it after a save. It is not in
+`invoiceHeaderColumns` (`functions/_shared/document-columns.ts`). An existing invoice has the migration's time until it is edited.
+
 `invoice_trl`, `invoice_discount_history` and `invoice_zero_charge_history` are
 unchanged. `tests/invoice_column_grants.sql` reads the table as a customer
 account, as staff, as supervisor, as administrator and with the service key.
@@ -294,6 +299,32 @@ DELETE SET NULL`, migration 120). Only a soft-deleted invoice can have such a
 line: removing or changing a dispatch line of a live invoice stays refused
 (`Cannot modify invoiced items`, and deleting a dispatch with a live invoice
 line), and the guards count only live invoices.
+
+**A deleted number is free again (owner decision D7, 2026-10-20).** The number of a dispatch or an invoice that was deleted
+(`delete_dispatch_with_order_cleanup`, `delete_invoice`: the row is removed) can be used again, and `get_next_dispatch_number` /
+`get_next_invoice_number` offer it again when it is the highest or the year's next. A saved create answer of a deleted document is
+not replayed (migration 120), so entering the same document again creates it. `I1` and `I0001` are different strings: an invoice
+or dispatch number is compared as it is stored. (A soft-deleted invoice row, which only the service key or an operator makes, still
+reserves its number, as above.)
+
+## Invoices only when the goods are out, and the total the user confirmed (migration 121, owner decisions D9, D18, D23)
+
+- **No invoice while stock remains (D9).** `save_invoice` (both signatures) and `update_invoice` refuse, before writing, a GRN that has
+  stock in any of its lots: `GRN_HAS_STOCK` (`gr_no`, `stock`, `lots`; "GRN <no> still has <stock> in stock. Dispatch it first, then
+  make the invoice."). The rule is on the GRN the request names, whatever the lines of the invoice are. An invoice that already exists
+  on a GRN that now holds stock (for example after a dispatch was deleted) is refused on its next edit too, until the stock is
+  dispatched again or the invoice is deleted. An invoiced GRN takes no new lot in `update_grn` (`GRN_INVOICED`).
+- **The total the user confirmed (D18).** The app sends `expected_total` (rupees, a number) in the invoice data of
+  `save_invoice(uuid,jsonb,jsonb[])` and `update_invoice`. After `recalculate_invoice_header`, when `abs(invoice.total - expected_total)
+  > 1.00` the save is rolled back and answered `TOTAL_CHANGED` with `current_total`, `expected_total` and `lines` (`disp_trl_id`,
+  `duration`, `no_of_days` as the server just computed them): a date that moved, or another phone's edit, can change the days between
+  the preview and the save. No `expected_total` (older apps): no check; their `total` key stays an estimate that the server ignores.
+  `save_invoice(jsonb)` is not checked.
+- **The GRN date and the dispatch date and number are locked once invoiced (D2, D23).** The invoice's days are counted from them, so
+  `update_grn` refuses a changed GRN date (`GRN_DATE_LOCKED`) and `update_dispatch_smart` a changed dispatch date or number
+  (`DISPATCH_INVOICED`) while a live invoice holds the GRN, or a line of the dispatch. Delete or edit the invoice first.
+- **A stale edit is refused (D1).** `update_invoice` compares `expected_updated_at` (the `invoice.updated_at` the form read) and answers
+  `STALE_RECORD` for an invoice that changed since.
 
 ## Reproducible fixture
 
