@@ -192,6 +192,8 @@ SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispa
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'ir-d2')$q$,
   :'dispatch_for',jsonb_build_object('disp_no','IRD2','disp_date',:'dm9'),jsonb_build_object('gr_trl_id',:'fig_lot','disp_qty',4))) AS disp2 \gset
 SELECT pg_temp.ir_assert(:'disp1'::jsonb->>'success'='true' AND :'disp2'::jsonb->>'success'='true','fixture dispatches: '||:'disp1'||:'disp2');
+-- Migration 121 D9: an invoice needs a GRN with no stock left. The Pear lot is never dispatched here; its 2 bags are taken out of stock directly.
+UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=pg_temp.ir_grn('IR-INV') AND item_name='IR Pear';
 -- Before the invoice: the item's rate, not invoiced.
 SELECT pg_temp.ir_get(:'staff_claims'::jsonb,'IR-INV') AS inv_before \gset
 SELECT pg_temp.ir_assert(:'inv_before'::jsonb#>>'{data,invoiced}'='false' AND pg_temp.ir_row(:'inv_before'::jsonb,'IR Fig',10)='item 4/1.5/5 0-50 false',

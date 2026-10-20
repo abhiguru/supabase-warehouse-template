@@ -189,6 +189,8 @@ BEGIN
 END $$;
 -- This one call joins by a merge join instead (on the baseline a hash join happens to keep the input order here, a merge join
 -- hands the lines back in dispatch line id order): either way the saved order has to be the given order.
+-- Migration 121 D9: an invoice needs a GRN with no stock left; the lots of LO1 are taken out of stock directly (a stand-in for dispatching the rest).
+UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO1');
 SET LOCAL enable_hashjoin = off;
 SET LOCAL enable_mergejoin = on;
 SELECT pg_temp.oi_as_admin();
@@ -215,6 +217,8 @@ SELECT public.update_invoice(:'inv1'::uuid, jsonb_build_object('inv_no', 9801, '
 RESET ROLE;
 SELECT pg_temp.oi_assert((:'updated_invoice'::jsonb)->>'success'='true','update_invoice: '||:'updated_invoice');
 SELECT pg_temp.oi_assert(pg_temp.oi_invoice_lots(:'inv1'::uuid) = 'L4,L1,L3,L2', 'update_invoice: lines in the order given: ' || pg_temp.oi_invoice_lots(:'inv1'::uuid));
+-- Migration 121 D9: an invoice needs a GRN with no stock left; the lots of LO2 are taken out of stock directly (a stand-in for dispatching the rest).
+UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO2');
 -- save_invoice with an invoice id (save_invoice_internal), on a new invoice of the second receipt.
 SELECT pg_temp.oi_as_admin();
 SELECT public.save_invoice(NULL::uuid, jsonb_build_object('inv_no', 9802, 'inv_fin_year', 2026, 'gr_id', (SELECT id FROM public.goodsreceived WHERE gr_no='LO2'), 'gr_no', 'LO2',
@@ -270,6 +274,8 @@ SELECT pg_temp.oi_assert((SELECT string_agg(i->>'grn_items_package_mark', ',' OR
     FROM jsonb_array_elements((:'printed_dispatch'::jsonb)->'data') AS x, jsonb_array_elements(x->'items') WITH ORDINALITY AS t(i,n)
     WHERE x->>'disp_no' = 'LOD3') = 'W1,W2', 'the dispatch print keeps the older line first across a wrap: ' || left(:'printed_dispatch', 300));
 -- The invoice: its lines are saved W1 then W2, then given the same wrapped ids.
+-- Migration 121 D9: the lots of LO3 are taken out of stock directly (a stand-in for dispatching the rest).
+UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO3');
 SELECT pg_temp.oi_as_admin();
 SELECT public.save_invoice(jsonb_build_object('inv_no', 9803, 'inv_fin_year', 2026, 'gr_id', :'lo3', 'gr_no', 'LO3',
   'customer_id', :'lines_customer', 'customer_name', 'Open Items Lines Customer', 'inv_date', '2026-06-21T06:00:00Z',

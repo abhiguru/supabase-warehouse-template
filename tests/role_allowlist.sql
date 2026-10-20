@@ -108,6 +108,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- migration 120: what became of a save whose answer was lost (the caller's own saved answers only)
  ('get_submission_result',true,'no'),
+ -- migration 121: the edit state of a GRN (version token, locks) for the staff roles; customers are refused
+ ('get_grn_edit_state',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
@@ -184,6 +186,10 @@ END $$;
 -- are checked for that answer; the unknown-id sweep takes them to the guard.
 CREATE FUNCTION pg_temp.ra_id_checked_first() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['get_customer_dispatch_list','get_customer_grn_items','get_grn_item_dispatches'] $$;
+-- Migration 120: a line that does not exist (NULL or unknown id) acts on nothing, so these two answer "Order item not found"
+-- before the guard's customer check; a line that exists is still checked against its customer (tests/review_fixes_120.sql).
+CREATE FUNCTION pg_temp.ra_missing_line_first() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY['update_order_item_quantity','remove_item_from_order'] $$;
 -- Runs as the caller. Calls every granted function that takes a customer id
 -- with `customer` in that argument and NULL elsewhere, and names those the
 -- guard did not refuse.
@@ -395,10 +401,15 @@ SELECT pg_temp.ra_assert(warehouse_security.active_role()='customer','actual cus
 -- The sweep: every function that is not open to every signed-in account is
 -- refused without a customer or document of the account. This covers every
 -- all-customers report, pricing, sensors, user management and every write.
-SELECT pg_temp.ra_assert(pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_id_checked_first())='',
- 'customer is not refused:'||pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_id_checked_first()));
-SELECT pg_temp.ra_assert(pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any'),true)='',
- 'customer is not refused with unknown ids:'||pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any'),true));
+SELECT pg_temp.ra_assert(pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_id_checked_first()||pg_temp.ra_missing_line_first())='',
+ 'customer is not refused:'||pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_id_checked_first()||pg_temp.ra_missing_line_first()));
+SELECT pg_temp.ra_assert(pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_missing_line_first(),true)='',
+ 'customer is not refused with unknown ids:'||pg_temp.ra_not_refused(ARRAY(SELECT name FROM ra_rpc WHERE customer='any')||pg_temp.ra_missing_line_first(),true));
+-- ... and those two say so plainly, writing nothing.
+SELECT pg_temp.ra_assert(public.update_order_item_quantity(gen_random_uuid(),5)->>'message'='Order item not found'
+ AND public.remove_item_from_order(gen_random_uuid())->>'message'='Order item not found'
+ AND public.update_order_item_quantity(NULL,5)->>'success'='false',
+ 'a customer asking about a line that does not exist is told it was not found');
 SELECT pg_temp.ra_assert(public.get_customer_dispatch_list(NULL)->>'success'='false' AND public.get_customer_dispatch_list(NULL)->'data'='null'
  AND public.get_customer_grn_items(NULL)->>'success'='false' AND public.get_customer_grn_items(NULL)->'data'='null'
  AND public.get_grn_item_dispatches(NULL)->>'success'='false' AND NOT public.get_grn_item_dispatches(NULL) ? 'data',

@@ -120,7 +120,12 @@ SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','GEI
  'customer_id',:'customer_id','customer_name','Integrity Customer','supervisor_id',:'admin_profile','supervisor_name','Integrity Administrator'),
  ARRAY[jsonb_build_object('gr_trl_id',:'line_a','disp_qty',4)],0,'gei-dispatch') AS dispatched \gset
 SELECT pg_temp.gei_assert(:'dispatched'::jsonb->>'success'='true','4 of 10 dispatched: ' || :'dispatched');
-SELECT id AS disp_line FROM public.dispatch_trl WHERE gr_trl_id=:'line_a'::uuid \gset
+-- Migration 121 D9: an invoice needs a GRN with no stock left, so the other 6 bags go out on a second dispatch that is not invoiced here.
+SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','GEID1B','disp_date','2026-06-01T12:00:00Z',
+ 'customer_id',:'customer_id','customer_name','Integrity Customer','supervisor_id',:'admin_profile','supervisor_name','Integrity Administrator'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'line_a','disp_qty',6)],0,'gei-dispatch-rest') AS dispatched_rest \gset
+SELECT pg_temp.gei_assert(:'dispatched_rest'::jsonb->>'success'='true','the other 6 dispatched: ' || :'dispatched_rest');
+SELECT id AS disp_line FROM public.dispatch_trl WHERE gr_trl_id=:'line_a'::uuid AND disp_qty=4 \gset
 SELECT public.save_invoice(NULL::uuid,jsonb_build_object('inv_no',96501,'inv_fin_year',2026,'customer_id',:'customer_id',
  'customer_name','Integrity Customer','inv_date','2026-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,
  'duration_mode','legacy','gr_id',:'grn_a','gr_no','GEIA'),

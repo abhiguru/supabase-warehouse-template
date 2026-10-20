@@ -119,8 +119,8 @@ SELECT (:'today'::date-100) AS d100, (:'today'::date-13) AS dm13, (:'today'::dat
 SELECT pg_temp.gr_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn')
  AND (SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn')
  AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_duration_mode character varying, p_rates jsonb' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn')
- AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_idempotency_key text, p_rates jsonb' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
- 'save_grn and update_grn have one overload each, p_rates last');
+ AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_idempotency_key text, p_rates jsonb, p_expected_updated_at timestamp with time zone' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
+ 'save_grn and update_grn have one overload each, p_rates last on save_grn and before p_expected_updated_at (migration 121) on update_grn');
 -- Owner, options and grants as before the re-create (the migration compares them with what it dropped);
 -- here: the same as a sibling that was never re-created, and the options the two had.
 SELECT pg_temp.gr_assert((SELECT bool_and(p.prosecdef AND p.proacl::text=(SELECT proacl::text FROM pg_proc WHERE proname='replace_item_rates' AND pronamespace='public'::regnamespace)
@@ -314,6 +314,8 @@ SELECT id AS plum_lot FROM public.goodsreceived_trl WHERE gr_id=pg_temp.gr_grn('
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'grn-rates-d1')$q$,
   :'dispatch_for',jsonb_build_object('disp_no','GRD1','disp_date',:'dm8'),jsonb_build_object('gr_trl_id',:'plum_lot','disp_qty',5))) AS disp1 \gset
 SELECT pg_temp.gr_assert(:'disp1'::jsonb->>'success'='true','dispatch of the Plum lot: '||:'disp1');
+-- Migration 121 D9: an invoice needs a GRN with no stock left. The one Kiwi bag is taken out of stock here (a stand-in for its dispatch).
+UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=pg_temp.gr_grn('GRN-G1') AND item_name='GR Kiwi';
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1')) AS rows1 \gset
 SELECT pg_temp.gr_assert(:'rows1'::jsonb->>'success'='true' AND jsonb_array_length(:'rows1'::jsonb->'rows')=1
  AND (:'rows1'::jsonb#>>'{rows,0,charge}')::numeric=8 AND (:'rows1'::jsonb#>>'{rows,0,labour_rate}')::numeric=2 AND (:'rows1'::jsonb#>>'{rows,0,tax_percent}')::numeric=5
@@ -369,7 +371,7 @@ SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p
   pg_temp.gr_grn('GRN-INV'),pg_temp.gr_items('GRN-INV'))) AS inv_note \gset
 SELECT pg_temp.gr_assert(:'inv_note'::jsonb->>'success'='true' AND (SELECT note='note only' FROM public.goodsreceived WHERE gr_no='GRN-INV')
  AND pg_temp.gr_rows(pg_temp.gr_item('GR Cherry'),NULL)='(none)','a note-only edit of an invoiced GRN with an unpriced line saves, and no shared rate appears: '||:'inv_note');
--- Cherry again, with a GRN-only rate 0-10 that is invoiced; fas-sync then changes the weight to 20 (no p_rates).
+-- Cherry again, with a GRN-only rate 0-10 that is invoiced; a weight change to 20 (no p_rates, as fas-sync sends) is refused since migration 121 D2.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-INV2',:'dm9'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Cherry',2,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Cherry',0,10,4,1,5))) AS inv2_s \gset
 SELECT pg_temp.gr_invoice(:'admin_claims'::jsonb,'GRN-INV2','GRD3',20269903,:'orchard'::uuid,:'admin_profile'::uuid,:'dm8'::date) AS inv2_a \gset
@@ -377,8 +379,9 @@ SELECT pg_temp.gr_assert(:'inv2_s'::jsonb->>'success'='true' AND :'inv2_a'::json
  AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly','fixture: an invoiced GRN with a GRN-only rate: '||:'inv2_s'||:'inv2_a');
 SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb)$q$,
   pg_temp.gr_grn('GRN-INV2'),(SELECT jsonb_agg(jsonb_set(x,'{weight}','20'::jsonb)) FROM jsonb_array_elements(pg_temp.gr_items('GRN-INV2')) x))) AS inv2_w \gset
-SELECT pg_temp.gr_assert(:'inv2_w'::jsonb->>'success'='true' AND (SELECT weight=20 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='GRN-INV2')
- AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly','the weight of an invoiced line changes without p_rates; the archived rate stays: '||:'inv2_w');
+SELECT pg_temp.gr_assert(:'inv2_w'::jsonb->>'success'='false' AND :'inv2_w'::jsonb->>'reason'='LOT_INVOICED' AND :'inv2_w'::jsonb->'fields'='["weight"]'::jsonb
+ AND (SELECT weight=10 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='GRN-INV2')
+ AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly','the weight of an invoiced line is locked (migration 121 D2), without p_rates too; the weight and the GRN rate stay: '||:'inv2_w');
 -- The app now re-sends the stored set against a line that no longer fits it: it saves (it was RATE_NOT_FOR_GRN) ...
 SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-INV2',jsonb_build_array(pg_temp.gr_rate('grn','GR Cherry',0,10,4,1,5))) AS inv2_same \gset
 SELECT pg_temp.gr_assert(:'inv2_same'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-INV2')='GR Cherry 0-10@4.00/1.00/5 monthly',
@@ -413,22 +416,34 @@ SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_item_grn
 SELECT pg_temp.gr_assert(:'o1'::jsonb->>'success'='true' AND :'o2'::jsonb->>'success'='true'
  AND (SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_c'::jsonb#>'{data,rates}') r)='["GRN-O1", "GRN-O2", "GRN-INV2"]'::jsonb,
  'the same India day is ordered by GRN number (O1 before O2 although O2 is later), archived last: '||(SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_c'::jsonb#>'{data,rates}') r)::text);
--- C4: a pricing-mode change takes the GRN's own rates of the other kind with it (no p_rates).
+-- C4 / D24 (migration 121): a pricing-mode change that would drop the GRN's own rate is refused unless the same save sends a new rate.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-MM',:'dm5'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Pear',1,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Pear',0,50,7,2,5))) AS mm \gset
 SELECT pg_temp.gr_assert(:'mm'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-MM')='GR Pear 0-50@7.00/2.00/5 monthly','fixture: a monthly GRN with its own rate');
 SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_pricing_mode=>'ONE_TIME',p_items=>%L::jsonb)$q$,
   pg_temp.gr_grn('GRN-MM'),pg_temp.gr_items('GRN-MM'))) AS mm_u \gset
-SELECT pg_temp.gr_assert(:'mm_u'::jsonb->>'success'='true' AND (SELECT pricing_mode='ONE_TIME' FROM public.goodsreceived WHERE gr_no='GRN-MM') AND pg_temp.gr_own('GRN-MM')='(none)',
- 'after the mode change the monthly rate is gone: '||:'mm_u'||pg_temp.gr_own('GRN-MM'));
--- C4: a weight change takes the rate whose band no longer holds the line; the rate of the other line stays.
+SELECT pg_temp.gr_assert(:'mm_u'::jsonb->>'success'='false' AND :'mm_u'::jsonb->>'reason'='RATES_WOULD_DROP' AND :'mm_u'::jsonb->'items'='["GR Pear"]'::jsonb
+ AND (SELECT pricing_mode='MONTHLY' FROM public.goodsreceived WHERE gr_no='GRN-MM') AND pg_temp.gr_own('GRN-MM')='GR Pear 0-50@7.00/2.00/5 monthly',
+ 'the mode change that would drop the monthly rate is refused (D24), the mode and the rate stay: '||:'mm_u'||pg_temp.gr_own('GRN-MM'));
+SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_pricing_mode=>'ONE_TIME',p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
+  pg_temp.gr_grn('GRN-MM'),pg_temp.gr_items('GRN-MM'),jsonb_build_array(pg_temp.gr_rate('grn','GR Pear',0,50,6,1,5)))) AS mm_t \gset
+SELECT pg_temp.gr_assert(:'mm_t'::jsonb->>'success'='true' AND (SELECT pricing_mode='ONE_TIME' FROM public.goodsreceived WHERE gr_no='GRN-MM')
+ AND pg_temp.gr_own('GRN-MM')='GR Pear 0-50@6.00/0.00/5 one_time',
+ 'the same mode change with a new rate in the same save is accepted and the monthly rate is replaced: '||:'mm_t'||pg_temp.gr_own('GRN-MM'));
+-- C4 / D24: a weight change that moves a line out of its GRN-only rate band is refused unless a new rate comes with it; the rate of the other line stays.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-WC',:'dm5'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Kiwi',1,10),pg_temp.gr_line('GR Apple',1,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Kiwi',0,10,9,1,5),pg_temp.gr_rate('grn','GR Apple',0,50,8,1,5))) AS wc \gset
 SELECT pg_temp.gr_assert(:'wc'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-WC')='GR Apple 0-50@8.00/1.00/5 monthly | GR Kiwi 0-10@9.00/1.00/5 monthly','fixture: two GRN rates: '||:'wc');
 SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb)$q$,
   pg_temp.gr_grn('GRN-WC'),(SELECT jsonb_agg(CASE WHEN x->>'item_name'='GR Kiwi' THEN jsonb_set(x,'{weight}','20'::jsonb) ELSE x END) FROM jsonb_array_elements(pg_temp.gr_items('GRN-WC')) x))) AS wc_u \gset
-SELECT pg_temp.gr_assert(:'wc_u'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-WC')='GR Apple 0-50@8.00/1.00/5 monthly',
- 'the Kiwi rate 0-10 goes when the Kiwi line moves to 20 kg; the Apple rate stays: '||:'wc_u'||pg_temp.gr_own('GRN-WC'));
+SELECT pg_temp.gr_assert(:'wc_u'::jsonb->>'success'='false' AND :'wc_u'::jsonb->>'reason'='RATES_WOULD_DROP' AND :'wc_u'::jsonb->'items'='["GR Kiwi"]'::jsonb
+ AND pg_temp.gr_own('GRN-WC')='GR Apple 0-50@8.00/1.00/5 monthly | GR Kiwi 0-10@9.00/1.00/5 monthly',
+ 'the Kiwi line moving to 20 kg would drop the Kiwi rate 0-10: refused (D24), both rates stay: '||:'wc_u'||pg_temp.gr_own('GRN-WC'));
+SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.update_grn(p_grn_id=>%L::uuid,p_items=>%L::jsonb,p_rates=>%L::jsonb)$q$,
+  pg_temp.gr_grn('GRN-WC'),(SELECT jsonb_agg(CASE WHEN x->>'item_name'='GR Kiwi' THEN jsonb_set(x,'{weight}','20'::jsonb) ELSE x END) FROM jsonb_array_elements(pg_temp.gr_items('GRN-WC')) x),
+  jsonb_build_array(pg_temp.gr_rate('grn','GR Kiwi',0,50,9,1,5),pg_temp.gr_rate('grn','GR Apple',0,50,8,1,5)))) AS wc_t \gset
+SELECT pg_temp.gr_assert(:'wc_t'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-WC')='GR Apple 0-50@8.00/1.00/5 monthly | GR Kiwi 0-50@9.00/1.00/5 monthly',
+ 'the same weight change with a new Kiwi rate is accepted: '||:'wc_t'||pg_temp.gr_own('GRN-WC'));
 -- C4: a line that is replaced by another item takes its rate with it.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-LR',:'dm5'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Kiwi',1,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Kiwi',0,50,8,1,5))) AS lr \gset

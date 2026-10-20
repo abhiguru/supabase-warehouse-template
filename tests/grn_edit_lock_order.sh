@@ -28,7 +28,7 @@ INSERT INTO public.customers(name,mobile) VALUES ('Lock Order Customer','9888888
 INSERT INTO public.items(name,packaging) VALUES ('Lock Order Potatoes','Bag') ON CONFLICT DO NOTHING;
 SELECT set_config('request.jwt.claims',:'claims',false);
 SET ROLE authenticated;
-SELECT (public.save_grn(p_gr_no=>'LOCKA',p_date=>now(),p_customer_id=>(SELECT id FROM public.customers WHERE name='Lock Order Customer'),
+SELECT (public.save_grn(p_gr_no=>'LOCKA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Lock Order Customer'),
   p_customer_name=>'Lock Order Customer',p_items=>jsonb_build_array(jsonb_build_object(
   'item_id',(SELECT id FROM public.items WHERE name='Lock Order Potatoes'),'item_name','Lock Order Potatoes','packaging','Bag','qty',10,'weight',5)),
   p_idempotency_key=>'lock-order-receipt'))->>'success';
@@ -75,7 +75,7 @@ echo 'GRN edit lock-order check passed under a concurrent item-table writer.'
 lot_id=$(psql_exec -At -v claims="$claims" <<'SQL'
 SELECT set_config('request.jwt.claims',:'claims',false);
 SET ROLE authenticated;
-SELECT (public.save_grn(p_gr_no=>'LOCKB',p_date=>now(),p_customer_id=>(SELECT id FROM public.customers WHERE name='Lock Order Customer'),
+SELECT (public.save_grn(p_gr_no=>'LOCKB',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Lock Order Customer'),
   p_customer_name=>'Lock Order Customer',p_items=>jsonb_build_array(jsonb_build_object(
   'item_id',(SELECT id FROM public.items WHERE name='Lock Order Potatoes'),'item_name','Lock Order Potatoes','packaging','Bag','qty',10,'weight',5)),
   p_idempotency_key=>'lock-order-receipt-b'))->>'success';

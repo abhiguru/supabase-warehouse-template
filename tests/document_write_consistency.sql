@@ -240,10 +240,11 @@ SELECT pg_temp.dw_assert((SELECT bool_and(disp_qty=5) FROM public.dispatch_trl W
  AND (SELECT stock=11 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the valid edit moved two more boxes');
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[]::jsonb[])='saved','an empty list still removes every line');
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[]::jsonb[])='A dispatch needs at least one line','an empty list is refused (migration 120), it no longer removes every line');
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',jsonb_build_object('note','still five'),NULL)='saved','no list sent keeps the lines and saves the header');
 RESET ROLE;
-SELECT pg_temp.dw_assert((SELECT count(*)=0 FROM public.dispatch_trl WHERE disp_id=:'dispatch_2'::uuid)
- AND (SELECT stock=16 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the emptied dispatch returned its five boxes');
+SELECT pg_temp.dw_assert((SELECT count(*)=1 AND bool_and(disp_qty=5) FROM public.dispatch_trl WHERE disp_id=:'dispatch_2'::uuid)
+ AND (SELECT stock=11 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the refused empty list changed no line and no stock');
 
 -- 3 to 5. Receipt edit. DWC3 has no dispatch, invoice or cart line.
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
