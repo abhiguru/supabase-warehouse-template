@@ -185,7 +185,7 @@ it); it uses the India day, stores labour 0 for one-time and refuses an overlapp
 (`BANDS_OVERLAP`). `get_item_storage_prices` without `include_expired` hides rows that ended before
 the India day.
 
-### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date)`
+### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_seen_rows uuid[] DEFAULT NULL)`
 
 Undoes the change of one scope that starts on `p_starts_on` in one transaction: the rows with
 `effective_from = p_starts_on` are deleted, and the rows that ended the day before
@@ -198,8 +198,19 @@ The history trigger records the deletes and updates. Answer:
 `error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`; since migration 86 the earliest day is the rate start floor, `data.earliest`),
 `PAST_DATE_NOT_ALLOWED` (unreachable since migration 90: it was staff, change starting today or earlier), `ITEM_NOT_FOUND`,
 `CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
-`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
+`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed), `STALE_RATES` (pricing review migration, below). A customer account is
 refused with SQLSTATE 42501.
+
+`p_seen_rows` (pricing review migration, default NULL = no check; an older app that sends four arguments is unchanged): the ids of the
+rows the editor loaded for this scope (item, customer, price type), as in `replace_item_rates`. The caller must send EVERY row id
+of the scope it loaded, ended and planned rows included (like `replace_item_rates`' `p_seen_rows`): a row of the scope that is
+missing from the list and that the call would touch (see below) makes the answer `STALE_RATES`, so an app that leaves out a
+planned later change always gets `STALE_RATES` when it cancels an earlier change. After the scope is locked,
+a row of the scope that this call would delete (starts on `p_starts_on`), reopen (ended the day before) or that decides
+where the reopened rate ends (starts later, or has no end) and whose id is not listed was added or changed by someone else:
+nothing is written, answer `STALE_RATES` with `data.ids` = the unlisted ids that triggered it (sorted). Checked before `NOTHING_TO_UNDO`.
+A row that ended before `p_starts_on - 1` is never touched and never counts, listed or not. A new app that sends `p_seen_rows` to a
+facility without this migration gets PGRST202 (no such function), because the old signature has four arguments.
 
 ### Changed price functions
 
@@ -336,7 +347,7 @@ Roles: admin, supervisor (staff are refused by the guard since migration 90). An
 `{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
 (`updated_at` and `updated_by_name` are null when never saved).
 
-### `set_standard_rate(p_tiers jsonb)`
+### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false)`
 
 Roles: admin, supervisor. Staff and customers are refused by the guard (SQLSTATE 42501) whatever tiers they
 send; `STANDARD_RATE_MANAGER_ONLY`, which migration 85 answered to staff from the body, is unreachable since
@@ -352,7 +363,31 @@ all** (any dates; customer rates do not count) one monthly default row per tier,
 day of the item's first GRN that is not deleted, else today, without an end date, authored by the
 caller (so the price history names them). Items whose default rate ended or was stopped, and inactive
 items, are not touched. Answer
-`{ success: true, data: { tiers: [tier, ...], items_priced } }`.
+`{ success: true, data: { tiers: [tier, ...], items_priced, dry_run: false, updated_at } }`
+(`updated_at`: the new version, also what `get_standard_rate` returns next).
+
+The two extra arguments belong to the pricing review migration. Older apps that send only `p_tiers` are unchanged; a new app that
+sends the new arguments to a facility without this migration gets PGRST202 (no such function).
+
+- `p_expected_updated_at`: the `updated_at` that `get_standard_rate` returned when the editor loaded the rate. After the
+  validation and the save lock, if it is given and differs from the current version (`max(updated_at)` of the tiers; all
+  tiers of a save carry one time) nothing is written and the answer is `error_code` `STALE_STANDARD_RATE`
+  ("The standard rate was changed by someone else; reload and try again", `data.updated_at` = the current version, null if none).
+  NULL skips the check (older apps). `'-infinity'` means "I loaded no tiers" (the rate was never saved): it matches only an empty
+  tier table, so the very first save is protected too (a rate saved meanwhile gives `STALE_STANDARD_RATE`). An app must send the
+  value as the `updated_at` STRING exactly as `get_standard_rate` returned it, or as the last `set_standard_rate` answer carried it
+  (`data.updated_at`), never through a JS `Date` (milliseconds would cut the microseconds and every save would be stale). It must
+  be the value from when the draft was built, not one from a later background refresh, or the check would not see the change.
+- `p_dry_run`: true runs every check above (and the stale check), writes nothing and answers
+  `{ success: true, data: { dry_run: true, items_priced, tiers: <as sent>, updated_at: <current> } }`, where `items_priced` is
+  the number of **active items that never had a default rate row** (no `item_storage_prices` row with `customer_id` null, of any
+  price type, dated any day) that a real save would price right now: the count for "Give this rate to N items that have no rate?".
+  Only default rows matter, so an item with only customer rows is counted and priced. Not counted and not priced: inactive items,
+  items whose default rate ended or was stopped, and items whose only default rate is planned (starts later). The app's "No rate"
+  label (no default rate in force today) is therefore wider than this count. A real save can differ if items change between the
+  two calls.
+- Other `error_code`s of this function: `STANDARD_RATE_MANAGER_ONLY` (unreachable), `INVALID_BANDS`, `INVALID_BAND`,
+  `INVALID_AMOUNT`, `BANDS_OVERLAP`, `BANDS_GAP` (all existed); `STALE_STANDARD_RATE` is new.
 
 ### `create_item(p_name, p_packaging, p_description, p_active, p_rate_from_item uuid DEFAULT NULL)`
 

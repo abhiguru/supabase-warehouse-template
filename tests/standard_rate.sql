@@ -77,7 +77,7 @@ SELECT pg_temp.sr_assert(bool_and(has_function_privilege('authenticated',f,'EXEC
    AND NOT has_function_privilege('anon',f,'EXECUTE'))
  AND bool_and(pg_get_functiondef(f::regprocedure) ~ 'BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''(get|set)_standard_rate''')
  AND bool_and(prosecdef), 'the new functions are granted and guarded')
- FROM (SELECT 'public.get_standard_rate()'::regprocedure AS f UNION ALL SELECT 'public.set_standard_rate(jsonb)'::regprocedure) q
+ FROM (SELECT 'public.get_standard_rate()'::regprocedure AS f UNION ALL SELECT 'public.set_standard_rate(jsonb,timestamptz,boolean)'::regprocedure) q
  JOIN pg_proc p ON p.oid=q.f;
 SELECT pg_temp.sr_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.standard_rate_tiers'::regclass)
  AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','INSERT')
@@ -384,4 +384,57 @@ SELECT pg_temp.sr_assert(:'copy_nested'::jsonb->>'success'='true' AND :'copy_nes
 SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":0.0,"weight_max":10.0,"unit_price":3,"labour_rate":1,"tax_percent":5},{"weight_min":11,"weight_max":50.00,"unit_price":4,"labour_rate":1,"tax_percent":5}]') AS save5 \gset
 SELECT pg_temp.sr_assert(:'save5'::jsonb->>'success'='true' AND (SELECT string_agg(weight_min||'-'||weight_max,',' ORDER BY weight_min)='0-10,11-50' FROM public.standard_rate_tiers),
  'weights with a decimal point: '||:'save5');
+-- ---------------------------------------------------------------------------
+-- 111. Pricing review migration: set_standard_rate p_expected_updated_at (STALE_STANDARD_RATE) and p_dry_run
+-- ---------------------------------------------------------------------------
+-- One transaction means now() never changes, so the saved rate is first aged by an hour: a save then
+-- visibly moves the version.
+SELECT pg_temp.sr_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='set_standard_rate')
+ AND has_function_privilege('authenticated','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE')
+ AND has_function_privilege('service_role','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE')
+ AND NOT has_function_privilege('anon','public.set_standard_rate(jsonb,timestamptz,boolean)','EXECUTE'),
+ 'set_standard_rate has one overload (three arguments) with the baseline grants');
+UPDATE public.standard_rate_tiers SET updated_at = now() - interval '1 hour';
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Dry A','Bag')$q$) AS dry_a \gset
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.create_item('SR Dry B','Bag')$q$) AS dry_b \gset
+DELETE FROM public.item_storage_prices WHERE item_id IN (pg_temp.sr_item('SR Dry A'),pg_temp.sr_item('SR Dry B'));
+SELECT pg_temp.sr_unpriced() AS dry_n \gset
+SELECT pg_temp.sr_assert(:dry_n >= 2,'two items without a default row at least: '||:dry_n);
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,'SELECT public.get_standard_rate()')#>>'{data,updated_at}' AS v1 \gset
+SELECT pg_temp.sr_assert(:'v1'::timestamptz = now() - interval '1 hour','get_standard_rate returns the version: '||:'v1');
+-- Dry run: counts, writes nothing.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":6,"labour_rate":1,"tax_percent":5}]'::jsonb,NULL,true)$q$) AS dry \gset
+SELECT pg_temp.sr_assert((:'dry'::jsonb#>>'{data,dry_run}')='true' AND (:'dry'::jsonb#>>'{data,items_priced}')::int = :dry_n
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR Dry A'),NULL)='(none)'
+ AND (SELECT count(*)=2 AND max(updated_at) = :'v1'::timestamptz AND max(unit_price) = 4 FROM public.standard_rate_tiers),
+ 'dry run: counts '||:dry_n||' items and changes nothing: '||:'dry');
+-- A save with the version loaded: written, version moves, the dry-run count was right.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":6,"labour_rate":1,"tax_percent":5}]'::jsonb,%L::timestamptz)$q$,:'v1')) AS fresh \gset
+SELECT pg_temp.sr_assert(:'fresh'::jsonb->>'success'='true' AND (:'fresh'::jsonb#>>'{data,items_priced}')::int = :dry_n
+ AND (:'fresh'::jsonb#>>'{data,updated_at}')::timestamptz = now() AND (:'fresh'::jsonb#>>'{data,updated_at}')::timestamptz <> :'v1'::timestamptz
+ AND pg_temp.sr_rows(pg_temp.sr_item('SR Dry A'),NULL) ~ '^0-50@6\.00/1\.00/5 '
+ AND (SELECT count(*)=1 AND max(unit_price)=6 FROM public.standard_rate_tiers),'save with the current version: '||:'fresh');
+-- The same version again is now stale: refused, nothing written.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":9,"labour_rate":1,"tax_percent":5}]'::jsonb,%L::timestamptz)$q$,:'v1')) AS stale \gset
+SELECT pg_temp.sr_assert(:'stale'::jsonb->>'success'='false' AND :'stale'::jsonb->>'error_code'='STALE_STANDARD_RATE'
+ AND (:'stale'::jsonb#>>'{data,updated_at}')::timestamptz = now()
+ AND (SELECT count(*)=1 AND max(unit_price)=6 FROM public.standard_rate_tiers),'old version is refused, tiers unchanged: '||:'stale');
+-- A dry run with the old version is refused too; no version at all (older apps) still saves.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":6,"labour_rate":1,"tax_percent":5}]'::jsonb,%L::timestamptz,true)$q$,:'v1')) AS stale_dry \gset
+SELECT pg_temp.sr_assert(:'stale_dry'::jsonb->>'error_code'='STALE_STANDARD_RATE','a dry run with an old version is refused: '||:'stale_dry');
+SELECT pg_temp.sr_set(:'admin_claims'::jsonb,'[{"weight_min":0,"weight_max":50,"unit_price":8,"labour_rate":1,"tax_percent":5}]') AS legacy \gset
+SELECT pg_temp.sr_assert(:'legacy'::jsonb->>'success'='true' AND (SELECT max(unit_price)=8 FROM public.standard_rate_tiers),'the old one-argument call still saves: '||:'legacy');
+-- '-infinity' means "I loaded no tiers": it matches only an empty table. Against the saved rate it is stale.
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":5,"labour_rate":1,"tax_percent":5}]'::jsonb,'-infinity'::timestamptz)$q$) AS inf_stale \gset
+SELECT pg_temp.sr_assert(:'inf_stale'::jsonb->>'error_code'='STALE_STANDARD_RATE' AND (SELECT max(unit_price)=8 FROM public.standard_rate_tiers),
+ '-infinity against a saved rate is stale and writes nothing: '||:'inf_stale');
+-- An empty tier table: a real version is stale (data.updated_at null), '-infinity' saves, NULL still saves.
+DELETE FROM public.standard_rate_tiers;
+SELECT pg_temp.sr_assert((SELECT count(*)=0 FROM public.standard_rate_tiers),'the tier table is empty here');
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,format($q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":5,"labour_rate":1,"tax_percent":5}]'::jsonb,%L::timestamptz)$q$,:'v1')) AS empty_stale \gset
+SELECT pg_temp.sr_assert(:'empty_stale'::jsonb->>'error_code'='STALE_STANDARD_RATE' AND :'empty_stale'::jsonb#>'{data,updated_at}'='null'::jsonb
+ AND (SELECT count(*)=0 FROM public.standard_rate_tiers),'a version against an empty table is stale, nothing written: '||:'empty_stale');
+SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT public.set_standard_rate('[{"weight_min":0,"weight_max":50,"unit_price":5,"labour_rate":1,"tax_percent":5}]'::jsonb,'-infinity'::timestamptz)$q$) AS inf_first \gset
+SELECT pg_temp.sr_assert(:'inf_first'::jsonb->>'success'='true' AND (:'inf_first'::jsonb#>>'{data,updated_at}')::timestamptz = now()
+ AND (SELECT count(*)=1 AND max(unit_price)=5 FROM public.standard_rate_tiers),'-infinity against an empty table saves: '||:'inf_first');
 ROLLBACK;

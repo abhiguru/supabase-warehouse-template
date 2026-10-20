@@ -53,6 +53,7 @@ place that prints the pin) instead of the Supabase image, and the chain of migra
 from `main`) and verified on both images (baseline sha256 `fcd627d11323af7ef35f101dd0827dff55adee3970cb420355e33a6b007b6ed8`:
 0 unexpected differences and no unused allow-list entry on the old image and on postgres:17).
 
+- **Pricing review.** `set_standard_rate` takes `p_expected_updated_at` (stale check, `'-infinity'` for a first save) and `p_dry_run` (the count of items that would be priced); `undo_rate_change` takes `p_seen_rows` (`STALE_RATES`). One new migration, defaulted arguments, older apps unchanged.
 - **Image.** `POSTGRES_USER=supabase_admin` (there is no role `postgres`), `en_US.UTF-8`, no `config_file`, health check
   `pg_isready -U supabase_admin -d postgres`. `docker/volumes/db/00-bootstrap.sql` makes the roles, schemas and grants the stack
   needs (no default privileges; `supabase_storage_admin` and `authenticator` are NOINHERIT). The recipe keeps the rebuilt gosu.

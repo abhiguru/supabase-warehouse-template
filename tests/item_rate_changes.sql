@@ -507,10 +507,10 @@ SELECT id AS ub FROM public.items WHERE name='Rate Undo B' \gset
 SELECT id AS uc FROM public.items WHERE name='Rate Undo C' \gset
 SELECT id AS ud FROM public.items WHERE name='Rate Undo D' \gset
 SELECT id AS ue FROM public.items WHERE name='Rate Undo E' \gset
-SELECT pg_temp.rc_assert(has_function_privilege('authenticated','public.undo_rate_change(uuid,uuid,text,date)','EXECUTE')
- AND has_function_privilege('service_role','public.undo_rate_change(uuid,uuid,text,date)','EXECUTE')
- AND NOT has_function_privilege('anon','public.undo_rate_change(uuid,uuid,text,date)','EXECUTE')
- AND pg_get_functiondef('public.undo_rate_change(uuid,uuid,text,date)'::regprocedure)
+SELECT pg_temp.rc_assert(has_function_privilege('authenticated','public.undo_rate_change(uuid,uuid,text,date,uuid[])','EXECUTE')
+ AND has_function_privilege('service_role','public.undo_rate_change(uuid,uuid,text,date,uuid[])','EXECUTE')
+ AND NOT has_function_privilege('anon','public.undo_rate_change(uuid,uuid,text,date,uuid[])','EXECUTE')
+ AND pg_get_functiondef('public.undo_rate_change(uuid,uuid,text,date,uuid[])'::regprocedure)
    ~ 'BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''undo_rate_change''','undo_rate_change: grants and the guard call');
 -- Items A..E each start with 6.00 since 200 days ago.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -590,6 +590,39 @@ SELECT pg_temp.rc_assert(:'undo_b'::jsonb->>'success'='true' AND :'undo_b'::json
 SELECT pg_temp.rc_assert(:'undo_b_again'::jsonb->>'success'='false' AND :'undo_b_again'::jsonb->>'error_code'='NOTHING_TO_UNDO'
  AND :'undo_b_again'::jsonb->>'error'='There is no change starting on that day to undo' AND pg_temp.rc_rows(:'ub'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),
  '(e) NOTHING_TO_UNDO and nothing changed: '||:'undo_b_again');
+
+-- (g) Pricing review migration: p_seen_rows. Item B has one open row; a change from d30 adds a second row the editor never saw.
+SELECT array_agg(id)::text AS ub_old_ids FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_replace(:'ub'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS ub_g_change \gset
+RESET ROLE;
+SELECT id AS ub_new_id FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_from=:'d30'::date \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,%L::uuid[])',:'ub','monthly',:'d30',:'ub_old_ids')) AS undo_g_stale \gset
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,%L::uuid[])',:'ub','monthly',:'d30',(SELECT array_agg(id)::text FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly'))) AS undo_g_ok \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'undo_g_stale'::jsonb->>'success'='false' AND :'undo_g_stale'::jsonb->>'error_code'='STALE_RATES'
+ AND :'undo_g_stale'::jsonb#>>'{data,ids}'=format('["%s"]',:'ub_new_id') AND :'ub_g_change'::jsonb->>'success'='true',
+ '(g) a row the editor did not list: STALE_RATES naming it: '||:'undo_g_stale');
+SELECT pg_temp.rc_assert(:'undo_g_ok'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'ub'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),
+ '(g) with every row listed the undo goes through (and the stale answer had changed nothing): '||:'undo_g_ok'||pg_temp.rc_rows(:'ub'::uuid,NULL,'monthly'));
+
+-- (h) A row the call cannot touch does not count: an unlisted row that ended long before p_starts_on - 1 is no STALE_RATES, and
+-- STALE_RATES comes before NOTHING_TO_UNDO. Item B now has one open row; a row that ended before it started is written directly.
+SELECT pg_temp.rc_row(:'ub'::uuid,NULL,0,100,3,:'old_start'::date-60,:'old_end'::date);
+SELECT id AS ub_open_id FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_to IS NULL \gset
+SELECT id AS ub_ended_id FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_to IS NOT NULL \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,ARRAY[%L]::uuid[])',:'ub','monthly',:'d30',:'ub_open_id')) AS undo_h_seen_open \gset
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,ARRAY[]::uuid[])',:'ub','monthly',:'d30')) AS undo_h_none_seen \gset
+RESET ROLE;
+SELECT pg_temp.rc_assert(:'undo_h_seen_open'::jsonb->>'error_code'='NOTHING_TO_UNDO',
+ '(h) the unlisted ended row is not counted (NOTHING_TO_UNDO, not STALE_RATES): '||:'undo_h_seen_open');
+SELECT pg_temp.rc_assert(:'undo_h_none_seen'::jsonb->>'error_code'='STALE_RATES' AND :'undo_h_none_seen'::jsonb#>>'{data,ids}'=format('["%s"]',:'ub_open_id'),
+ '(h) STALE_RATES comes before NOTHING_TO_UNDO and names only the open row, not the ended one: '||:'undo_h_none_seen');
 
 -- (c) two planned changes (d30 and d120): undo(d30) re-opens the old row up to d119; the d120 row stays.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
