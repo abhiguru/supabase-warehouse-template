@@ -152,7 +152,7 @@ test_files=(
   "$ROOT/tests/unused_extensions_absent.sql" "$ROOT/tests/fingerprint_collation.sql" "$ROOT/tests/jwt_sign_108.sql"
   "$ROOT/tests/catalog_receipt_width.sql" "$ROOT/tests/central_refusal_no_write.sql"
   "$ROOT/tests/grn_receipt_pages_98.sql" "$ROOT/tests/customer_dispatch_items_order_99.sql"
-  "$ROOT/tests/grn_heavy_dispatch.sql"
+  "$ROOT/tests/customers_review.sql" "$ROOT/tests/grn_heavy_dispatch.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
 )

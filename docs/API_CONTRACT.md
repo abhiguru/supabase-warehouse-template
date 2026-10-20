@@ -530,3 +530,38 @@ be split across two pages. Both accept one more, opt-in key in `p_filters`:
   are unchanged, and other unknown values still match nothing in the customer list.
 
 `tests/grn_receipt_pages_98.sql` covers both functions.
+
+## Customers: duplicates, stale edit, deactivated search (customers review, migration 112)
+
+Errors use the shape `{success:false, data:null, message, error:{code, field?, details?}}`.
+
+- **Mobile key** (`utils.mobile_key`, used for every comparison). The digits of the number; a 12-digit number starting `91`
+  is read as its 10-digit national number and an 11-digit number with a leading trunk `0` loses that `0` (the app's
+  `nationalMobileDigits`). `+91 98765 43210`, `919876543210` and `9876543210` are one key.
+- **Input clean-up.** `create_customer` and `update_customer` remove only spaces, `+`, `(`, `)`, `-` and `.` from `p_mobile`,
+  then require 10-15 digits; anything else (letters) is `VALIDATION_FAILED` (`field:'mobile'`), never turned into other
+  digits. The stored text is the digits as sent; no shortening (the app sends the 12-digit `91...` form today).
+- `create_customer(...)` (signature unchanged): `DUPLICATE_MOBILE` (`field:'mobile'`) when another ACTIVE, undeleted customer
+  has the same key; a deactivated customer's number does not block. `DUPLICATE_NAME` (`field:'name'`) for
+  `customers_name_key`, a plain case-sensitive UNIQUE(name) that also covers deactivated and deleted rows. For both,
+  `error.details` is a JSON object `{customer_id, name, active}` of the clashing customer (absent only if it cannot be
+  found). Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
+  supervisor), `VALIDATION_FAILED` (`field` `name` or `mobile`), `DATABASE_ERROR`.
+- `update_customer(..., p_image_urls, p_expected_updated_at timestamptz DEFAULT NULL)`: the mobile is checked only when
+  `p_mobile` is sent AND its key differs from the customer's own (pairs that already share a number stay editable; a
+  deactivated customer's number is allowed); same `DUPLICATE_MOBILE` / `DUPLICATE_NAME` / `details` object as above.
+  With `p_expected_updated_at` given and different from the row's `updated_at`, answers `STALE_CUSTOMER` (no `field`) and
+  changes nothing. Send `updated_at` back exactly as the string read from `customers` (microseconds): a JavaScript `Date`
+  round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` is `VALIDATION_FAILED`;
+  a name is trimmed. Other codes: `PERMISSION_DENIED`, `CUSTOMER_NOT_FOUND` (unknown id), `DATABASE_ERROR`.
+  `set_customer_active` has no `error.code` (it answers `{success:false, message}`); Activate does not re-check the
+  mobile, so re-activating a customer can recreate a number shared with another active customer.
+- `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
+  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
+  supervisors only and then also returns deactivated customers; for staff and customers it is ignored (active customers
+  they may access only). Soft-deleted customers are never returned. A query made only of digits and number punctuation
+  also matches the mobile by its digits, by its key, and (when it starts `91` and is longer than 2 digits) by the digits
+  after `91`, all as prefixes; any such match ranks first.
+- The Customers list and the Edit form read the `customers` table directly (no list RPC): the "Deactivated" filter is
+  `active = false` and the two counts are two `count: 'exact', head: true` reads (`active = true`, `active = false`);
+  `updated_at` is already a column of that read.
