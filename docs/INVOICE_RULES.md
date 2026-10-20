@@ -290,9 +290,10 @@ that an invalid dispatch reference rolls back the invoice header.
 
 ## Unsupported contract
 
-Use `create_item_storage_price` with `p_price_type` and `p_unit_price`, as the
-mobile client does. The legacy overload accepting `p_unit_price_monthly` and
-`p_unit_price_one_time` fails the existing required `price_type` constraint and
-is unsupported. No combined-rate semantics or additional grants are introduced.
+`create_item_storage_price` takes `p_price_type` and `p_unit_price`. The mobile
+client does not call it (it sets rates through the item-rate functions). The
+legacy overload accepting `p_unit_price_monthly` and `p_unit_price_one_time`
+always failed the required `price_type` constraint and has been dropped. No
+combined-rate semantics or additional grants are introduced.
 Tax jurisdiction, discount application, payments and production billing approval
 remain business-owner decisions.

@@ -92,7 +92,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_customer_stock_analysis_v2',false,'own'),
  -- warehouse-wide: staff documents (migrations 18 to 28)
  ('save_grn',true,'no'),('update_grn',true,'no'),('check_grn_exists',true,'no'),('get_next_grn_number',true,'no'),
- ('get_all_grn_items',true,'no'),('get_grn_list',true,'no'),('get_grn_autocomplete',true,'no'),
+ ('get_all_grn_items',true,'no'),('get_grn_list',true,'no'),
  ('get_grn_prefixes_with_stock',true,'no'),('get_all_grn_activity',true,'no'),
  ('search_customers',true,'no'),('get_supervisors',true,'no'),('get_vehicle_suggestions',true,'no'),
  ('register_grn_image_upload',true,'no'),('confirm_grn_image_upload',true,'no'),

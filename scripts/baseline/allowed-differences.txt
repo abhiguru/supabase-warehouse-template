@@ -104,8 +104,8 @@ B@pg17 ^acl\|ext-member\|pg_stat_statements:function extensions\.pg_stat_stateme
 A@pg17 ^function\|pgbouncer\.get_auth\(p_usename text\)\|
 B@pg17 ^function\|pgbouncer\.get_auth\(p_usename text\)\|kind f owner supabase_admin secdef t .* config \{search_path=pg_catalog\} language plpgsql def .*WHERE usename = p_usename AND NOT usesuper
 # PG17 prints the columns of single-table views without the table qualifier (same view, different deparse).
-A@pg17 ^viewdef\|public\.(customers_with_priority_contact|high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
-B@pg17 ^viewdef\|public\.(customers_with_priority_contact|high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
+A@pg17 ^viewdef\|public\.(high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
+B@pg17 ^viewdef\|public\.(high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
 # Roles of the old image that the bootstrap does not create, their memberships, and their settings.
 A@pg17 ^role\|(postgres|dashboard_user|supabase_etl_admin|supabase_read_only_user|supabase_replication_admin)\|
 A@pg17 ^member\|(postgres|supabase_etl_admin|supabase_read_only_user) in 

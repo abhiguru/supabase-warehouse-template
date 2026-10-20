@@ -130,7 +130,17 @@ from `main`) and verified on both images (baseline sha256 `fcd627d11323af7ef35f1
 - Functions and a view that still read GoTrue tables or the removed `pgjwt` fail when called on PostgreSQL 17 (no caller):
   `verify_otp`, `verify_otp_secure`, `phone_auth_login`, `track_user_activity`, `update_customer_contact_with_auth_phone`,
   `get_priority_contact_for_customer`, `bulk_update_customers_priority_contact()` and the view `customers_with_priority_contact`.
-  A later item drops them.
+  The open-items migration (`00000000000119_open_items_2026_10_20.sql`) drops them, with the unused `get_grn_autocomplete` and the `create_item_storage_price` overload
+  that took `p_unit_price_one_time` and `p_unit_price_monthly` (it inserted no `price_type`, so it always failed).
+- **Order and deleted invoices.** The GRN picker (`get_customer_grns_with_stock_dispatch_sorted`) sorts before it pages: the first
+  page is the GRNs dispatched most recently, then by GRN date, number and id. `get_invoice_data` and `get_invoice_detail` answer
+  "Invoice not found" for a deleted invoice, and the print range skips it. Item search, the stock aging report and
+  `user_accessible_customers()` have a total order (unique last keys; the staff branch of the function is ordered by id, which
+  is cheap, because `search_customers` calls it once per row). `update_invoice` answers "Invoice not found" for a deleted invoice,
+  and `get_dispatch_details` shows a deleted invoice as if the lines had none. Dispatch and invoice lines are stored in the order they
+  were given and read back in the order they were saved (`uuid_extract_timestamp` of the line id, then the id).
+- **Health check.** `health-check.sh` reads the container health with `index`, as `scripts/watch.mjs` does, so a docker CLI that
+  refuses `.State.Health` for a container without a healthcheck no longer stops it.
 - **Roles and restore.** One superuser, `supabase_admin`; the agreed roles are `anon`, `authenticated`, `service_role`, `authenticator`,
   `supabase_storage_admin` and (optional pooler) `pgbouncer`. `scripts/configure-db-roles.sql`, `scripts/db-roles.mjs`,
   `scripts/db-roles.sh` (`npm run test:db-roles`) and `scripts/rotate-db-passwords.sh --superuser` no longer know `postgres`,
