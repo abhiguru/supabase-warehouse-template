@@ -16,7 +16,7 @@ env:
   # `check-mobile-contract.mjs --live` against a running stack, which is a step
   # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
   # CONTRIBUTING.md "Mobile companion pin".
-  MOBILE_REF: 625958ed9a8b62e3c832bc7363f920cca647e866
+  MOBILE_REF: cfdb0decb01136dfd2997fb42ca66acc6b4a102a
 jobs:
   validate:
     # Where this job runs is the repository variable CI_RUNNER (a JSON value for
