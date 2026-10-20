@@ -70,7 +70,7 @@ migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
 # A changed baseline must fail closed: a space appended to a temporary copy.
 changed=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-changed.XXXXXX")
 mkdir "$changed/migrations"
-cp "$ROOT/migrations/00000000000000_baseline.sql" "$changed/migrations/"
+cp "$ROOT"/migrations/*.sql "$changed/migrations/"
 printf ' ' >> "$changed/migrations/00000000000000_baseline.sql"
 if err=$(plan_of "$changed" | mig_psql 2>&1 >/dev/null); then echo 'A changed baseline was accepted.' >&2; exit 1; fi
 [[ "$err" == *'Applied migration changed: 00000000000000_baseline.sql'* ]] || { echo "A changed baseline was refused, but not with the checksum message: $err" >&2; exit 1; }
@@ -88,8 +88,8 @@ plan_of "$ROOT" | mig_psql >/dev/null
 # an unknown name, creates nothing from that further migration.
 probe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-probe.XXXXXX")
 mkdir "$probe/migrations"
-cp "$ROOT/migrations/00000000000000_baseline.sql" "$probe/migrations/"
-printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000111_probe.sql"
+cp "$ROOT"/migrations/*.sql "$probe/migrations/"
+printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000999_probe.sql"
 mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
 if plan_of "$probe" | mig_psql >/dev/null 2>&1; then echo 'A ledger with an unknown migration was accepted next to a new migration.' >&2; exit 1; fi
 [[ "$(mig_psql -At -c "SELECT to_regclass('public.ledger_guard_probe') IS NULL")" == t ]] || { echo 'The refusal ran a migration file before it stopped.' >&2; exit 1; }

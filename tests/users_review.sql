@@ -208,13 +208,13 @@ UPDATE public.user_profiles SET deleted_at=NULL WHERE mobile='919444444408';
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444406',:'cust_off')) AS as_off,
-       pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444499',:'cust_a')) AS as_nouser,
-       pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444403',gen_random_uuid())) AS as_nocust \gset
+       pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444499',:'cust_a')) AS as_nouser \gset
 RESET ROLE;
 UPDATE public.user_profiles SET active=true,enrollment_status='approved' WHERE id=:'sync_id'::uuid;
 UPDATE public.user_profiles SET is_service_account=false, role='customer' WHERE id=:'sync_id'::uuid; -- assignments apply only to the Customer role
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444406',:'cust_off')) AS as_off2 \gset
+SELECT pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444406',:'cust_off')) AS as_off2,
+       pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444406',gen_random_uuid())) AS as_nocust \gset
 RESET ROLE;
 SELECT pg_temp.ur_assert(:'as_off2'::jsonb->>'raised' LIKE 'CUSTOMER_INACTIVE:%' AND :'as_nouser'::jsonb->>'raised' LIKE 'NOT_FOUND:%'
  AND :'as_nocust'::jsonb->>'raised' LIKE 'NOT_FOUND:%','assignment codes: '||:'as_off2'||:'as_nouser'||:'as_nocust');

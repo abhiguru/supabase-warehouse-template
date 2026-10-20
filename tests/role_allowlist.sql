@@ -705,7 +705,7 @@ SELECT public.update_user_role(:'rejected_profile'::uuid,'supervisor') AS s_reje
 SELECT public.update_user_status(:'pending_profile'::uuid,true) AS s_pending_on \gset
 SELECT public.update_user_role(:'pending_profile'::uuid,'staff') AS s_pending_role \gset
 SELECT pg_temp.ra_assert(:'s_rejected_on'::jsonb->>'success'='false' AND :'s_rejected_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
- AND :'s_rejected_role'::jsonb->>'success'='false' AND :'s_rejected_role'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED',
+ AND :'s_rejected_role'::jsonb->>'success'='false' AND :'s_rejected_role'::jsonb->>'error'='ENROLLMENT_REJECTED',
  'supervisor cannot re-approve a rejected access request or give it a role: '||:'s_rejected_on'||:'s_rejected_role');
 SELECT pg_temp.ra_assert(:'s_pending_on'::jsonb->>'success'='false' AND :'s_pending_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
  AND :'s_pending_role'::jsonb->>'success'='false' AND :'s_pending_role'::jsonb->>'error'='ENROLLMENT_PENDING',

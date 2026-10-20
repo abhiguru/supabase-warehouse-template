@@ -149,6 +149,7 @@ INSERT INTO public.items(name,active) VALUES ('OF Garlic ',true),('of garlic',tr
 SELECT id AS garlic FROM public.items WHERE name='OF Garlic ' \gset
 SELECT id AS rice FROM public.items WHERE name='OF Rice' \gset
 SELECT id AS wheat FROM public.items WHERE name='OF Wheat' \gset
+INSERT INTO public.standard_rate_tiers(weight_min,weight_max,unit_price,labour_rate,tax_percent) VALUES (0,50,10,1,0); -- the standard rate is empty on a fresh database
 SET LOCAL ROLE authenticated;
 SELECT public.update_item(:'garlic'::uuid,'OF Garlic') AS r \gset
 SELECT pg_temp.of_assert(:'r'::jsonb->>'success'='true' AND (SELECT name='OF Garlic' FROM public.items WHERE id=:'garlic'::uuid),'unchanged name (stored with a trailing space) is not refused as a duplicate: '||:'r');
