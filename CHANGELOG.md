@@ -21,6 +21,48 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    and `<project>_prometheus_data`, and the images of the removed services (`docker image rm`).
 7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
    "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
+8. **Before migration 117 (customer names), check for names that already clash.** The unique index `customers_name_norm_key` fails to
+   build, and so does the whole migration, if two customers have the same name apart from capitals and spaces. The function that
+   makes the key does not exist before 117, so run its expression inline, as `supabase_admin`, against the facility database:
+
+   ```sql
+   SELECT pg_catalog.btrim(pg_catalog.regexp_replace(pg_catalog.lower(name),
+          '[\s\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+', ' ', 'g'), ' ') AS key,
+          array_agg(name) AS names
+   FROM public.customers GROUP BY 1 HAVING count(*) > 1;
+   ```
+
+   Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
+   No rows: go on.
+
+## Unreleased: Push review fixes (migration 118)
+
+New migration (`push_review`): `create_customer` and `update_customer` refuse a name that is only tabs, new lines or no-break
+spaces (empty name key) with `VALIDATION_FAILED`, `field:'name'` (`update_customer` only when `p_name` is sent); `delete_user_account`
+also sets `enrollment_status = 'disabled'` on the deleted profile. Same signatures, grants kept. Details: `docs/API_CONTRACT.md`.
+
+## Unreleased: Pricing review (migration 115)
+
+`set_standard_rate` takes `p_expected_updated_at` (stale check, `'-infinity'` for a first save) and `p_dry_run` (the count of items that would be priced); `undo_rate_change` takes `p_seen_rows` (`STALE_RATES`). Defaulted arguments, older apps unchanged.
+
+## Unreleased: Items review (migration 114)
+
+`update_item`: `p_active` now defaults to NULL, which keeps the stored value (before, a call without it switched the item on again). New `get_item_usage`
+(where an item is used, for the delete and deactivate warnings) and index `grn_rates_item_id_idx`. Refusals of `create_item`, `update_item` and `get_item_usage` carry `error_code`. Details: `docs/API_CONTRACT.md`, "Items screens".
+
+## Unreleased: Customers review (migration 112)
+
+`create_customer` and `update_customer` answer `DUPLICATE_MOBILE` and `DUPLICATE_NAME` (with `error.details` of the clashing customer);
+`update_customer` takes `p_expected_updated_at` (`STALE_CUSTOMER`); `search_customers` takes `p_include_inactive`. The old signatures of
+`update_customer` and `search_customers` are dropped, so **a new app on an older server gets PGRST202** (function not found): deploy the backend first.
+Details: `docs/API_CONTRACT.md`, "Customers: duplicates, stale edit, deactivated search".
+
+## Unreleased: Sensor temperature limits (migration 111)
+
+`update_sensor_device` takes `p_temperature_min`, `p_temperature_max` and `p_set_temperature_limits` (limits are written only when the flag is true;
+`INVALID_TEMPERATURE_LIMIT` for a value outside -100 to 100 or a lowest not below the highest). The old four-argument function is dropped (two overloads would
+make a short call ambiguous); calls by name with the four old parameters behave as before. `sensor_status` gets a last column `temperature_alert`
+(`HIGH`, `LOW` or null); `get_sensor_device` and `get_sensor_polling_data` carry it.
 
 ## Unreleased: Customer names that differ only in capitals or spaces are one name
 
@@ -61,7 +103,6 @@ place that prints the pin) instead of the Supabase image, and the chain of migra
 from `main`) and verified on both images (baseline sha256 `fcd627d11323af7ef35f101dd0827dff55adee3970cb420355e33a6b007b6ed8`:
 0 unexpected differences and no unused allow-list entry on the old image and on postgres:17).
 
-- **Pricing review.** `set_standard_rate` takes `p_expected_updated_at` (stale check, `'-infinity'` for a first save) and `p_dry_run` (the count of items that would be priced); `undo_rate_change` takes `p_seen_rows` (`STALE_RATES`). One new migration, defaulted arguments, older apps unchanged.
 - **Image.** `POSTGRES_USER=supabase_admin` (there is no role `postgres`), `en_US.UTF-8`, no `config_file`, health check
   `pg_isready -U supabase_admin -d postgres`. `docker/volumes/db/00-bootstrap.sql` makes the roles, schemas and grants the stack
   needs (no default privileges; `supabase_storage_admin` and `authenticator` are NOINHERIT). The recipe keeps the rebuilt gosu.

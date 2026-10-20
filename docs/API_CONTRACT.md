@@ -30,6 +30,15 @@ count. `manage-print-jobs` is absent; the app does not call it.
 The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
 behaviour validation, and a missing endpoint is never replaced with a success stub to make the check pass.
 
+## Error shapes
+
+Refusals do not have one shape; each family has its own, and the app reads the one of the function it calls.
+- **Customer functions** (migrations 112, 116, 117, 118): `{success:false, data:null, message, error:{code, field?, details?}}`.
+  Two exceptions: `set_customer_active` and `restore_customer` answer an uncoded `{success:false, message}` (an unknown id, a missing
+  argument), except `DUPLICATE_MOBILE`, which carries `error:{code, field, details}`.
+- **Users, items, pricing and sensors:** a flat `error_code`. Users put the code in `error` too (`error` = the code, `message` = the text);
+  items put the English text in `error` and the code in `error_code`. `delete_item_safe` sets `error_code` only on `NOT_FOUND`.
+
 ## Tested runtime behaviour
 
 CI's install job runs four operator fixture drivers against a fresh installation (`operator-api-core.mjs`,
@@ -49,7 +58,7 @@ The imported schema includes unexposed internal/legacy/admin functions.
 Do not grant blanket API execution to make an unsupported call work.
 See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining business, Storage and native acceptance.
 
-## Sensors (migration 74)
+## Sensors (migrations 74 and 111)
 
 The sensor bridge, not the app, writes readings (key minted with
 `scripts/sensor-ingest-key.sql`, stored hashed; guide:
@@ -82,7 +91,8 @@ What the app reads:
   `alert_config`) are written only when `p_set_temperature_limits` is true, both as
   given (NULL clears one); the first four parameters work as before. `sensor_status`,
   `get_sensor_device` and `get_sensor_polling_data` carry `temperature_alert`
-  (`HIGH`, `LOW` or null).
+  (`HIGH`, `LOW` or null). A limit outside -100 to 100 °C, or a lowest not below the highest, is a 200
+  `{success:false, error_code:'INVALID_TEMPERATURE_LIMIT', error}`; nothing is written.
 - Table `sensor_latest` (one row per device), readable by administrator,
   supervisor and staff; the app re-reads it on a timer. Customers and `anon` read no sensor table.
 - `capabilities.sensors` in `get-public-config` (from the state's
@@ -245,12 +255,13 @@ for any other value; the earlier refusals are unchanged. Returned as `error_code
   Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
   `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
 
-## Users screens (migration 113, tweak batch 2026-10-20)
+## Users screens (migrations 113, 116 and 118, tweak batch 2026-10-20)
 
 All answers below are `{ success, ... }`; a refusal is `{ success: false, error, error_code, message }` (`error` keeps its
 earlier value, `error_code` is the stable code the app reads). The user row carries the same keys in `get_users_list`
 (`users[]`) and `get_user_details` (`user`).
 
+- **`delete_user_account`** also sets `enrollment_status = 'disabled'` (migration 118), so a deleted profile never reads as approved.
 - **`user_profiles.deleted_at`**: set by `delete_user_account`; accounts deleted earlier are backfilled (mobile `DEL` plus 12 hex
   characters, name `Deleted User`; whatever their state, they are also set inactive and `disabled`). A deleted profile keeps its row.
 - **New row keys** in both reads: `enrollment_status` (`'pending'`, `'rejected'` or `null`: approved and disabled are `null`),
@@ -405,7 +416,7 @@ else `standard` when a standard rate is saved (its tiers from today); else `none
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
 from today (nothing when no standard rate is saved). The answer is unchanged.
 
-## Items screens (tweak 2026-10-20)
+## Items screens (migration 114, tweak 2026-10-20)
 
 Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: false, error_code, error, message }`
 (`error_code` and `error` are new on these refusals; `message` is the English text they had before. The app reads
@@ -650,7 +661,7 @@ be split across two pages. Both accept one more, opt-in key in `p_filters`:
 
 `tests/grn_receipt_pages_98.sql` covers both functions.
 
-## Customers: duplicates, stale edit, deactivated search (customers review, migration 112)
+## Customers: duplicates, stale edit, deactivated search (migrations 112, 117 and 118)
 
 Errors use the shape `{success:false, data:null, message, error:{code, field?, details?}}`.
 
@@ -666,7 +677,9 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   `error.details` is a JSON object `{customer_id, name, active}` of the clashing customer (absent only if it cannot be
   found). Names that differ only in capitals or spaces are the same name (`utils.customer_name_key`: trimmed, runs of white space
   made one space, lower case) and are refused with `DUPLICATE_NAME` against every customer, active, deactivated or deleted;
-  `details.name` is the stored name of the holder. The unique index `customers_name_norm_key` backs it. Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
+  `details.name` is the stored name of the holder. The unique index `customers_name_norm_key` backs it, and so does the older `customers_name_key`
+  (UNIQUE(name)); either violation is answered as `DUPLICATE_NAME`. A name whose key is empty (only tabs, new lines, no-break or other Unicode spaces) is
+  `VALIDATION_FAILED` with `field:'name'` (migration 118). Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
   supervisor), `VALIDATION_FAILED` (`field` `name` or `mobile`), `DATABASE_ERROR`.
 - `update_customer(..., p_image_urls, p_expected_updated_at timestamptz DEFAULT NULL)`: the mobile is checked only when
   `p_mobile` is sent AND its key differs from the customer's own (pairs that already share a number stay editable; a
@@ -674,7 +687,7 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   The name is checked only when `p_name` is sent AND its key differs from the customer's own (an unchanged name, in any capitals or spacing, never refuses).
   With `p_expected_updated_at` given and different from the row's `updated_at`, answers `STALE_CUSTOMER` (no `field`) and
   changes nothing. Send `updated_at` back exactly as the string read from `customers` (microseconds): a JavaScript `Date`
-  round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` is `VALIDATION_FAILED`;
+  round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` (also only tabs or no-break spaces, migration 118) is `VALIDATION_FAILED`;
   a name is trimmed. Other codes: `PERMISSION_DENIED`, `CUSTOMER_NOT_FOUND` (unknown id), `DATABASE_ERROR`.
   `set_customer_active` has no `error.code` for an unknown id or a missing argument (it answers `{success:false, message}`).
   **Activate re-checks the mobile (owner decision 2026-10-20).** `set_customer_active(id, true)`, `update_customer(..., p_active => true)`
@@ -685,8 +698,8 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).
 - `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
   now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
-  supervisors only and then also returns deactivated customers; for staff and customers it is ignored (active customers
-  they may access only). Soft-deleted customers are never returned. A query made only of digits and number punctuation
+  supervisors only and then also returns deactivated customers; for staff it is ignored (active customers they may access
+  only); customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
   also matches the mobile by its digits, by its key, and (when it starts `91` and is longer than 2 digits) by the digits
   after `91`, all as prefixes; any such match ranks first.
 - The Customers list and the Edit form read the `customers` table directly (no list RPC): the "Deactivated" filter is

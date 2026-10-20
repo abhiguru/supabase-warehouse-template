@@ -374,8 +374,9 @@ several customers calls once per customer.
 | Sensors | yes | yes | **yes** | no |
 | Customers and items: create, edit, delete (items also `get_item_usage`) | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
-| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47) | no | no |
+| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47). Customer assignments are for the Customer role only (`ROLE_NOT_CUSTOMER`, migration 116) | no | no |
 | Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
+| Change a rejected profile (any change, by anyone) | **no one** until an administrator uses "Review again" (`review_enrollment_again`); the call answers `ENROLLMENT_REJECTED` | no | no | no |
 | Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
 | Review enrollment requests | yes | no | no | no |
 | Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
