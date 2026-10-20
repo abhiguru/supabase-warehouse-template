@@ -664,11 +664,14 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   has the same key; a deactivated customer's number does not block. `DUPLICATE_NAME` (`field:'name'`) for
   `customers_name_key`, a plain case-sensitive UNIQUE(name) that also covers deactivated and deleted rows. For both,
   `error.details` is a JSON object `{customer_id, name, active}` of the clashing customer (absent only if it cannot be
-  found). Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
+  found). Names that differ only in capitals or spaces are the same name (`utils.customer_name_key`: trimmed, runs of white space
+  made one space, lower case) and are refused with `DUPLICATE_NAME` against every customer, active, deactivated or deleted;
+  `details.name` is the stored name of the holder. The unique index `customers_name_norm_key` backs it. Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
   supervisor), `VALIDATION_FAILED` (`field` `name` or `mobile`), `DATABASE_ERROR`.
 - `update_customer(..., p_image_urls, p_expected_updated_at timestamptz DEFAULT NULL)`: the mobile is checked only when
   `p_mobile` is sent AND its key differs from the customer's own (pairs that already share a number stay editable; a
   deactivated customer's number is allowed); same `DUPLICATE_MOBILE` / `DUPLICATE_NAME` / `details` object as above.
+  The name is checked only when `p_name` is sent AND its key differs from the customer's own (an unchanged name, in any capitals or spacing, never refuses).
   With `p_expected_updated_at` given and different from the row's `updated_at`, answers `STALE_CUSTOMER` (no `field`) and
   changes nothing. Send `updated_at` back exactly as the string read from `customers` (microseconds): a JavaScript `Date`
   round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` is `VALIDATION_FAILED`;
