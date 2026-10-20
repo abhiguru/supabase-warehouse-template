@@ -35,7 +35,7 @@ function fixture() {
   recipe('cups', { profiles: ['printing'] });
   // No `image:`: Compose tags every built image `<project>-<service>`, the sensor bridge included.
   recipe('sensor-bridge', { profiles: ['sensors'] });
-  services.kong = { image: 'kong:3.9.3-ubuntu' };
+  services.kong = { image: 'kong:3.9.4-ubuntu' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
   writeConfig();

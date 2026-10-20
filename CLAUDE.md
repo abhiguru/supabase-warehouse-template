@@ -79,7 +79,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
   (migration 48; [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Internal columns").
   What supervisors, staff and customers may do is in
   [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table under "Roles after
-  migration 45", current through migration 90; `tests/role_allowlist.sql` classifies every granted function);
+  migration 45", current through migration 118; `tests/role_allowlist.sql` classifies every granted function);
   invoice amounts in
   [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md).
 
@@ -87,7 +87,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 
 - Schema changes are **new, append-only migrations** in `migrations/`; applied files are
   checksum-locked and must never be edited. Migrations 000-110 are the one file `00000000000000_baseline.sql`
-  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000111_<topic>.sql`. Patch large baseline functions with the
+  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000119_<topic>.sql`. Patch large baseline functions with the
   `DO $patch$` + marker-count pattern used by earlier migrations.
 - Roles are never created, altered or dropped in a migration (`tests/migration-roles.test.mjs`): they live in
   `docker/volumes/db/00-bootstrap.sql`, and a database-level bootstrap fix also ships as a migration

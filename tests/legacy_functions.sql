@@ -198,7 +198,7 @@ SELECT pg_temp.lf_assert(to_regprocedure('public.record_sensor_reading(character
 SELECT pg_temp.lf_assert(count(*) = 0, 'a function by a retired sensor writer''s name is still in public: ' || COALESCE(string_agg(p.oid::regprocedure::text, ', '), ''))
 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN ('record_sensor_reading', 'update_sensor');
 SELECT pg_temp.lf_assert(to_regprocedure('public.record_sensor_batch(text,jsonb,jsonb)') IS NOT NULL
-  AND to_regprocedure('public.update_sensor_device(uuid,text,text,integer)') IS NOT NULL,
+  AND to_regprocedure('public.update_sensor_device(uuid,text,text,integer,numeric,numeric,boolean)') IS NOT NULL,
   'record_sensor_batch and update_sensor_device replace them');
 
 ROLLBACK;

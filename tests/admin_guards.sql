@@ -75,7 +75,7 @@ SELECT pg_temp.admin_assert(pg_get_functiondef('public.update_user_status(uuid,b
   '%IF v_old_role = ''admin'' AND NOT warehouse_security.other_active_admin_exists(v_target_id) THEN%LAST_ADMIN%',
   'status and role changes carry the last-administrator rule');
 -- The patched functions still work for ordinary changes.
-UPDATE public.user_profiles SET role='admin',active=true,enrollment_status='approved',mobile='919888888502' WHERE id=:'profile_b'::uuid;
+UPDATE public.user_profiles SET role='admin',active=true,enrollment_status='approved',mobile='919888888502',deleted_at=NULL WHERE id=:'profile_b'::uuid;
 SELECT set_config('request.jwt.claims',:'claims_a',true);
 SET LOCAL ROLE authenticated;
 SELECT public.update_user_role(:'profile_b'::uuid,'supervisor') AS demoted \gset

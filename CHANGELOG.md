@@ -21,6 +21,77 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    and `<project>_prometheus_data`, and the images of the removed services (`docker image rm`).
 7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
    "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
+8. **Before migration 117 (customer names), check for names that already clash.** The unique index `customers_name_norm_key` fails to
+   build, and so does the whole migration, if two customers have the same name apart from capitals and spaces. The function that
+   makes the key does not exist before 117, so run its expression inline, as `supabase_admin`, against the facility database:
+
+   ```sql
+   SELECT pg_catalog.btrim(pg_catalog.regexp_replace(pg_catalog.lower(name),
+          '[\s\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+', ' ', 'g'), ' ') AS key,
+          array_agg(name) AS names
+   FROM public.customers GROUP BY 1 HAVING count(*) > 1;
+   ```
+
+   Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
+   No rows: go on.
+
+## Unreleased: Push review fixes (migration 118)
+
+New migration (`push_review`): `create_customer` and `update_customer` refuse a name that is only tabs, new lines or no-break
+spaces (empty name key) with `VALIDATION_FAILED`, `field:'name'` (`update_customer` only when `p_name` is sent); `delete_user_account`
+also sets `enrollment_status = 'disabled'` on the deleted profile. Same signatures, grants kept. Details: `docs/API_CONTRACT.md`.
+
+## Unreleased: Pricing review (migration 115)
+
+`set_standard_rate` takes `p_expected_updated_at` (stale check, `'-infinity'` for a first save) and `p_dry_run` (the count of items that would be priced); `undo_rate_change` takes `p_seen_rows` (`STALE_RATES`). Defaulted arguments, older apps unchanged.
+
+## Unreleased: Items review (migration 114)
+
+`update_item`: `p_active` now defaults to NULL, which keeps the stored value (before, a call without it switched the item on again). New `get_item_usage`
+(where an item is used, for the delete and deactivate warnings) and index `grn_rates_item_id_idx`. Refusals of `create_item`, `update_item` and `get_item_usage` carry `error_code`. Details: `docs/API_CONTRACT.md`, "Items screens".
+
+## Unreleased: Customers review (migration 112)
+
+`create_customer` and `update_customer` answer `DUPLICATE_MOBILE` and `DUPLICATE_NAME` (with `error.details` of the clashing customer);
+`update_customer` takes `p_expected_updated_at` (`STALE_CUSTOMER`); `search_customers` takes `p_include_inactive`. The old signatures of
+`update_customer` and `search_customers` are dropped, so **a new app on an older server gets PGRST202** (function not found): deploy the backend first.
+Details: `docs/API_CONTRACT.md`, "Customers: duplicates, stale edit, deactivated search".
+
+## Unreleased: Sensor temperature limits (migration 111)
+
+`update_sensor_device` takes `p_temperature_min`, `p_temperature_max` and `p_set_temperature_limits` (limits are written only when the flag is true;
+`INVALID_TEMPERATURE_LIMIT` for a value outside -100 to 100 or a lowest not below the highest). The old four-argument function is dropped (two overloads would
+make a short call ambiguous); calls by name with the four old parameters behave as before. `sensor_status` gets a last column `temperature_alert`
+(`HIGH`, `LOW` or null); `get_sensor_device` and `get_sensor_polling_data` carry it.
+
+## Unreleased: Customer names that differ only in capitals or spaces are one name
+
+New migration (`customer_name_rule`): `create_customer` and `update_customer` refuse a name whose key (trimmed, white space collapsed, lower case) is already used by any customer, active, deactivated or deleted, with `DUPLICATE_NAME`; `update_customer` checks only when the name is sent and changes key. A unique index `customers_name_norm_key` backs it and fails to build if two rows already share a key. Details: `docs/API_CONTRACT.md`.
+
+## Unreleased: Activate refuses a shared mobile; customer assignments only for the Customer role
+
+New migration (`owner_followups`): `set_customer_active(id, true)`, `update_customer(..., p_active => true)` on a deactivated or deleted customer and `restore_customer` answer `DUPLICATE_MOBILE` (with the other customer in `error.details`) while another active customer has the same mobile; `assign_customer_to_user` raises `ROLE_NOT_CUSTOMER` for a person whose role is not Customer. Details: `docs/API_CONTRACT.md`.
+
+## Unreleased: Users screens review (server half)
+
+New migration (`users_review`): `user_profiles.deleted_at`; access-request tags, deleted flag and assigned-customer state in
+`get_users_list` / `get_user_details`; `update_user_status` no longer approves a pending or rejected request and refuses deleted
+accounts and a supervisor disconnecting a service account; `update_user_role` removes the customer assignments of a Customer given
+another role; new `review_enrollment_again`; coded errors for the customer assignment RPCs; `delete_user_account` retry succeeds.
+Details: `docs/API_CONTRACT.md`, "Users screens".
+
+## Unreleased: Kong 3.9.4 and the sensor bridge on Python 3.15 (2026-10-20)
+
+No migration. The setup rerun pulls the new Kong image and rebuilds the sensor bridge image (profile `sensors` only).
+
+- **Kong 3.9.4-ubuntu** (was 3.9.3), by the multi-architecture index digest `sha256:aa4a4687...` (`docker/docker-compose.yml`);
+  the digest-pin test in `tests/gateway-config.test.mjs`, the notices, the attribution review, the architecture note and the
+  container security note name 3.9.4. This replaces Dependabot pull request 130, whose CI failed because that test still
+  required 3.9.3.
+- **Python 3.15-slim-bookworm** (was 3.14), by digest `sha256:2a41267d...`. `docker/sensor-bridge/requirements.txt` hashes
+  are regenerated for CPython 3.15 and abi3 wheels (same versions); `frozenlist` 1.8.0 has no CPython 3.15 wheel, so its pure
+  Python wheel is used. The CI `bridge` job runs on 3.15. This replaces Dependabot pull request 131. Not run here: the
+  bridge unit tests and an image rebuild on 3.15, and a new image scan (`docker/image-exceptions.json` still records the 3.14 scan).
 
 ## Unreleased: PostgreSQL 17 on the official image and one baseline migration
 

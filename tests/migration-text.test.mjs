@@ -68,6 +68,6 @@ test('the ledger refuses a database that recorded a migration this release does 
   assert.ok(guard > 0, 'the guard is in the plan');
   assert.ok(guard > plan.indexOf('CREATE TABLE IF NOT EXISTS warehouse_migrations.applied'), 'after the ledger table exists');
   assert.ok(guard < plan.indexOf(`Applying: ${BASELINE}`), 'before any migration runs');
-  assert.ok(plan.includes(`WHERE name <> ALL (ARRAY['${BASELINE}']::text[])`), 'the names of this directory are the list');
+  assert.ok(/WHERE name <> ALL \(ARRAY\[[^\]]*\]::text\[\]\)/.test(plan) && plan.includes(`'${BASELINE}'`), 'the baseline is in the list of this directory');
   assert.ok(plan.includes('docs/OPERATOR_INSTALL.md, "Baseline reload"'), 'the message points at the section by its exact title');
 });

@@ -1,6 +1,6 @@
 # Tapo sensor bridge (README.md). GPL-3.0-or-later, see LICENSE in this folder.
-# python:3.14-slim-bookworm (Python 3.14.x), multi-architecture index digest, resolved 2026-10-13.
-FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
+# python:3.15-slim-bookworm (Python 3.15.x), multi-architecture index digest, resolved 2026-10-20.
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -17,7 +17,7 @@ RUN apt-get update \
 # Wheels only: nothing is compiled, so the image needs no compiler. pip is only
 # a build tool here and is removed once the requirements are installed: the
 # base image's pip 26.2.1 vendors msgpack 1.1.2, urllib3 2.7.0 and setuptools
-# 70.3.0, each behind a fixed HIGH advisory (scan of 2026-10-18).
+# 70.3.0, each behind a fixed HIGH advisory (3.14 image, scan of 2026-10-18).
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement /app/requirements.txt \
     && python -m pip uninstall --yes --no-cache-dir pip \

@@ -16,7 +16,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - `bash tests/migrations.sh` — applies every migration twice to a disposable, network-isolated container of the database image (`postgres:17`, the pin printed by `scripts/db-image.sh`) (the second pass must skip unchanged files) and runs the SQL tests. Needs Docker.
 - `for f in *.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done` — shell syntax, as in CI.
 - `node scripts/check-mobile-contract.mjs <mobile checkout>` — static name inventory against the app (needs the app's `node_modules`).
-- Sensor bridge: `cd docker/sensor-bridge && python3 -m unittest discover -s tests -t .` (Python 3.14 with `requirements.txt` installed; CI job `bridge`), and `npm run test:sensors` on an installed state (builds the image; `--check-config` must exit 0 with fictional values and 78 without; the unit tests run inside the image). Without `docker/sensor-bridge/Dockerfile` it prints "Skipped" and exits 0.
+- Sensor bridge: `cd docker/sensor-bridge && python3 -m unittest discover -s tests -t .` (Python 3.15 with `requirements.txt` installed; CI job `bridge`), and `npm run test:sensors` on an installed state (builds the image; `--check-config` must exit 0 with fictional values and 78 without; the unit tests run inside the image). Without `docker/sensor-bridge/Dockerfile` it prints "Skipped" and exits 0.
 - Everything else (`npm run test:gateway`, `test:rotation`, `db:backup`, ...) needs an installed operator state; CI exercises them in the `operator-install` job.
 
 ## Backup key, signing and the restore verifier
@@ -103,7 +103,7 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 | `validate` | `npm test`, the container source dependency audit (`npm run check:container-dependencies`) and shell syntax. |
 | `migrations` | `tests/migrations.sh` on a disposable database: idempotent ledger, security baseline, operator auth, staff/customer policies, invoice rules, enrollment status, retention. |
 | `contract` | `check-mobile-contract.mjs` against the pinned mobile commit (below). |
-| `bridge` | The sensor bridge (`docker/sensor-bridge/`) on Python 3.14 with its pinned requirements: `compileall` and the unit tests, without Docker or hubs. |
+| `bridge` | The sensor bridge (`docker/sensor-bridge/`) on Python 3.15 with its pinned requirements: `compileall` and the unit tests, without Docker or hubs. |
 | `secrets` | Redacted source and history scan (`scripts/scan-secrets.sh`). |
 | `operator-install` | A complete isolated `setup.sh --operator` with fictional inputs: local doctor, key rotation and session revocation, API/document/account lifecycle, gateway (CORS, payload, TLS, upstream IP change), retention preview, load smoke, one pass of the monitoring checker, backup with isolated and in-place restore drills, pooler, CUPS, the sensor bridge image check (`npm run test:sensors`), owned-service recovery, a configuration-preserving rerun, the lost-host restore drill, and last `retention:apply` on a document aged in SQL (its catalog row and its file must be gone; this is the only place the expired-PDF removal calls the real Storage API, and it must stay the last step that uses the stack). |
 | `pdf-renderer` | The PDF renderer (`docker/pdf-renderer/`): its unit tests on a fake browser, then `test/integration.sh`, which builds the image, runs it with the compose hardening flags and checks health, a real render, blocked network access and the 400/413 cases. |

@@ -16,7 +16,7 @@ env:
   # `check-mobile-contract.mjs --live` against a running stack, which is a step
   # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
   # CONTRIBUTING.md "Mobile companion pin".
-  MOBILE_REF: e6a513b2294c07dcc5ea05b4cb4e90162ddafab7
+  MOBILE_REF: cfdb0decb01136dfd2997fb42ca66acc6b4a102a
 jobs:
   validate:
     # Where this job runs is the repository variable CI_RUNNER (a JSON value for
@@ -67,7 +67,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: '3.15'
       - run: 'pip install --require-hashes --only-binary=:all: -r docker/sensor-bridge/requirements.txt'
       - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
       - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge

@@ -132,7 +132,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
  ('update_order_metadata',false,'no'),
  -- the price history of migration 48: administrators and supervisors only
- ('get_item_price_history',false,'no'),
+ ('get_item_price_history',false,'no'),('get_item_usage',false,'no'),
  -- migration 49: administrators only; the guard refuses a supervisor as well
  -- (tests/central_login.sql). operator_central_exchange is, like
  -- operator_verify_otp, granted to the service role alone and so not listed.
@@ -143,7 +143,9 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- migration 78: marking a service account, administrators only (tests/service_accounts.sql)
  ('set_service_account',false,'no'),
  -- migration 82: switching a business off or on, administrators and supervisors only
- ('set_customer_active',false,'no');
+ ('set_customer_active',false,'no'),
+ -- users review: administrators only (a supervisor passes the guard and is refused in the body)
+ ('review_enrollment_again',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.
@@ -703,7 +705,7 @@ SELECT public.update_user_role(:'rejected_profile'::uuid,'supervisor') AS s_reje
 SELECT public.update_user_status(:'pending_profile'::uuid,true) AS s_pending_on \gset
 SELECT public.update_user_role(:'pending_profile'::uuid,'staff') AS s_pending_role \gset
 SELECT pg_temp.ra_assert(:'s_rejected_on'::jsonb->>'success'='false' AND :'s_rejected_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
- AND :'s_rejected_role'::jsonb->>'success'='false' AND :'s_rejected_role'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED',
+ AND :'s_rejected_role'::jsonb->>'success'='false' AND :'s_rejected_role'::jsonb->>'error'='ENROLLMENT_REJECTED',
  'supervisor cannot re-approve a rejected access request or give it a role: '||:'s_rejected_on'||:'s_rejected_role');
 SELECT pg_temp.ra_assert(:'s_pending_on'::jsonb->>'success'='false' AND :'s_pending_on'::jsonb->>'error'='ENROLLMENT_NOT_APPROVED'
  AND :'s_pending_role'::jsonb->>'success'='false' AND :'s_pending_role'::jsonb->>'error'='ENROLLMENT_PENDING',
@@ -783,8 +785,9 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert(public.update_user_role(:'managed_profile'::uuid,'admin')->>'success'='true'
  AND public.update_user_role(:'managed_profile'::uuid,'customer')->>'success'='true',
  'administrator grants and takes back the administrator role');
-SELECT pg_temp.ra_assert(public.assign_customer_to_user('919888888933',:'gamma'::uuid)
- AND public.remove_customer_assignment('919888888933',:'gamma'::uuid),'administrator changes a supervisor''s customer assignments');
+-- Owner decision 2026-10-20: customer assignments apply only to the Customer role; removing a stale one still works.
+SELECT pg_temp.ra_assert(pg_temp.ra_call(format('SELECT to_jsonb(public.assign_customer_to_user(''919888888933'',%L::uuid))',:'gamma'))->>'raised' LIKE 'ROLE_NOT_CUSTOMER: %'
+ AND public.remove_customer_assignment('919888888933',:'gamma'::uuid),'administrator cannot assign a customer to a supervisor (ROLE_NOT_CUSTOMER); removal still works');
 SELECT pg_temp.ra_assert(public.update_user_status(:'admin2_profile'::uuid,false)->>'success'='true',
  'administrator deactivates the other administrator');
 RESET ROLE;

@@ -109,8 +109,10 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
 - **Refusals roll back.** A refused dispatch edit (invoiced lines, insufficient
   stock) no longer leaves a half-applied header (migration 25).
 - **Status changes.** `update_user_status(false)` disables the enrollment and
-  revokes sessions; `update_user_status(true)` re-approves a disabled or
-  rejected profile. Pending enrollments still need `operator_review_enrollment`.
+  revokes sessions; `update_user_status(true)` re-activates a disabled profile
+  only. A pending request answers ENROLLMENT_PENDING (decide it with
+  `operator_review_enrollment`) and a rejected one ENROLLMENT_REJECTED
+  ("Review again", `review_enrollment_again`, puts it back in Access requests).
 
 ## Orders and queue, 9 October 2026
 
@@ -370,12 +372,15 @@ several customers calls once per customer.
 | The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
 | Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
-| Customers and items: create, edit, delete | yes | yes | no | no |
+| Customers and items: create, edit, delete (items also `get_item_usage`) | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
-| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47) | no | no |
+| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47). Customer assignments are for the Customer role only (`ROLE_NOT_CUSTOMER`, migration 116) | no | no |
 | Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
+| Change a rejected profile (any change, by anyone) | **no one** until an administrator uses "Review again" (`review_enrollment_again`); the call answers `ENROLLMENT_REJECTED` | no | no | no |
 | Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
 | Review enrollment requests | yes | no | no | no |
+| Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
+| Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |

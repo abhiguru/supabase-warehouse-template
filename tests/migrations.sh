@@ -70,7 +70,7 @@ migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
 # A changed baseline must fail closed: a space appended to a temporary copy.
 changed=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-changed.XXXXXX")
 mkdir "$changed/migrations"
-cp "$ROOT/migrations/00000000000000_baseline.sql" "$changed/migrations/"
+cp "$ROOT"/migrations/*.sql "$changed/migrations/"
 printf ' ' >> "$changed/migrations/00000000000000_baseline.sql"
 if err=$(plan_of "$changed" | mig_psql 2>&1 >/dev/null); then echo 'A changed baseline was accepted.' >&2; exit 1; fi
 [[ "$err" == *'Applied migration changed: 00000000000000_baseline.sql'* ]] || { echo "A changed baseline was refused, but not with the checksum message: $err" >&2; exit 1; }
@@ -88,8 +88,8 @@ plan_of "$ROOT" | mig_psql >/dev/null
 # an unknown name, creates nothing from that further migration.
 probe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-probe.XXXXXX")
 mkdir "$probe/migrations"
-cp "$ROOT/migrations/00000000000000_baseline.sql" "$probe/migrations/"
-printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000111_probe.sql"
+cp "$ROOT"/migrations/*.sql "$probe/migrations/"
+printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000999_probe.sql"
 mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
 if plan_of "$probe" | mig_psql >/dev/null 2>&1; then echo 'A ledger with an unknown migration was accepted next to a new migration.' >&2; exit 1; fi
 [[ "$(mig_psql -At -c "SELECT to_regclass('public.ledger_guard_probe') IS NULL")" == t ]] || { echo 'The refusal ran a migration file before it stopped.' >&2; exit 1; }
@@ -144,15 +144,15 @@ test_files=(
   "$ROOT/tests/dispatch_invoice_read_figures.sql"
   "$ROOT/tests/grn_image_visibility.sql"
   "$ROOT/tests/stock_summary_item_identity.sql"
-  "$ROOT/tests/sensor_ingest.sql"
-  "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql"
-  "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
+  "$ROOT/tests/sensor_ingest.sql" "$ROOT/tests/sensor_limits.sql"
+  "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql" "$ROOT/tests/users_review.sql"
+  "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql" "$ROOT/tests/items_review.sql"
   "$ROOT/tests/list_refresh_removed_106.sql" "$ROOT/tests/invoice_list_live.sql"
   "$ROOT/tests/realtime_removed_105.sql"
   "$ROOT/tests/unused_extensions_absent.sql" "$ROOT/tests/fingerprint_collation.sql" "$ROOT/tests/jwt_sign_108.sql"
   "$ROOT/tests/catalog_receipt_width.sql" "$ROOT/tests/central_refusal_no_write.sql"
   "$ROOT/tests/grn_receipt_pages_98.sql" "$ROOT/tests/customer_dispatch_items_order_99.sql"
-  "$ROOT/tests/grn_heavy_dispatch.sql"
+  "$ROOT/tests/customers_review.sql" "$ROOT/tests/owner_followups.sql" "$ROOT/tests/customer_name_rule.sql" "$ROOT/tests/push_review.sql" "$ROOT/tests/grn_heavy_dispatch.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
 )

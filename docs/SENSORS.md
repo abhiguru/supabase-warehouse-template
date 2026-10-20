@@ -55,6 +55,13 @@ recorded separately before anyone is told the screen works.
   5-minute samples, so a restart or a failed poll or two does not flag it.
   `sensor_status` computes `stale` and `values_stale` at read time; nothing is
   written when a sensor goes quiet, so the app recomputes it from the clock.
+- **Temperature limits.** An administrator sets a lowest and a highest temperature
+  per sensor (`update_sensor_device`, parameters `p_temperature_min`,
+  `p_temperature_max`, written only when `p_set_temperature_limits` is true; stored in
+  `sensor_devices.alert_config`). `sensor_status`, `get_sensor_device` and
+  `get_sensor_polling_data` then carry `temperature_alert`: `HIGH` above the highest,
+  `LOW` below the lowest, null otherwise. No flag while the hub is offline or the
+  temperature (`temperature_at`) is older than the sensor's staleness threshold.
 - **Hub offline.** After three failed polls of a hub (about 10 minutes with the
   5-minute poll) the bridge sends heartbeats
   with `online=false` for it and keeps reconnecting with backoff; the app shows

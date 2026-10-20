@@ -402,7 +402,9 @@ for both and the user signs in again. The database log then carries
 `Refresh token reuse: session ... revoked`.
 
 Disabling a user (`update_user_status(false)`) revokes their sessions; enabling
-them again re-approves a disabled or rejected profile.
+them again re-activates a disabled profile. It does not approve a request: a pending
+one answers ENROLLMENT_PENDING and a rejected one ENROLLMENT_REJECTED; an administrator's
+"Review again" (`review_enrollment_again`) puts a rejected request back in Access requests.
 
 **The last administrator.** The only active administrator cannot delete their
 own account, and an administrator cannot be deactivated or given another role

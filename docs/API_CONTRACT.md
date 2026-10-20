@@ -30,6 +30,15 @@ count. `manage-print-jobs` is absent; the app does not call it.
 The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
 behaviour validation, and a missing endpoint is never replaced with a success stub to make the check pass.
 
+## Error shapes
+
+Refusals do not have one shape; each family has its own, and the app reads the one of the function it calls.
+- **Customer functions** (migrations 112, 116, 117, 118): `{success:false, data:null, message, error:{code, field?, details?}}`.
+  Two exceptions: `set_customer_active` and `restore_customer` answer an uncoded `{success:false, message}` (an unknown id, a missing
+  argument), except `DUPLICATE_MOBILE`, which carries `error:{code, field, details}`.
+- **Users, items, pricing and sensors:** a flat `error_code`. Users put the code in `error` too (`error` = the code, `message` = the text);
+  items put the English text in `error` and the code in `error_code`. `delete_item_safe` sets `error_code` only on `NOT_FOUND`.
+
 ## Tested runtime behaviour
 
 CI's install job runs four operator fixture drivers against a fresh installation (`operator-api-core.mjs`,
@@ -49,7 +58,7 @@ The imported schema includes unexposed internal/legacy/admin functions.
 Do not grant blanket API execution to make an unsupported call work.
 See [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) for the remaining business, Storage and native acceptance.
 
-## Sensors (migration 74)
+## Sensors (migrations 74 and 111)
 
 The sensor bridge, not the app, writes readings (key minted with
 `scripts/sensor-ingest-key.sql`, stored hashed; guide:
@@ -77,7 +86,13 @@ What the app reads:
   `latest_reading_timestamp`, `is_stale` and `earliest_reading_at` repeat
   `temperature`, `humidity`, `measured_at`, `stale` and `first_reading_at`.
 - `update_sensor_device(p_device_id, p_device_name, p_location,
-  p_staleness_threshold_minutes)` (new; administrator only).
+  p_staleness_threshold_minutes, p_temperature_min, p_temperature_max,
+  p_set_temperature_limits)` (administrator only). The limits (°C, stored in
+  `alert_config`) are written only when `p_set_temperature_limits` is true, both as
+  given (NULL clears one); the first four parameters work as before. `sensor_status`,
+  `get_sensor_device` and `get_sensor_polling_data` carry `temperature_alert`
+  (`HIGH`, `LOW` or null). A limit outside -100 to 100 °C, or a lowest not below the highest, is a 200
+  `{success:false, error_code:'INVALID_TEMPERATURE_LIMIT', error}`; nothing is written.
 - Table `sensor_latest` (one row per device), readable by administrator,
   supervisor and staff; the app re-reads it on a timer. Customers and `anon` read no sensor table.
 - `capabilities.sensors` in `get-public-config` (from the state's
@@ -180,7 +195,7 @@ it); it uses the India day, stores labour 0 for one-time and refuses an overlapp
 (`BANDS_OVERLAP`). `get_item_storage_prices` without `include_expired` hides rows that ended before
 the India day.
 
-### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date)`
+### `undo_rate_change(p_item_id uuid, p_customer_id uuid, p_price_type text, p_starts_on date, p_seen_rows uuid[] DEFAULT NULL)`
 
 Undoes the change of one scope that starts on `p_starts_on` in one transaction: the rows with
 `effective_from = p_starts_on` are deleted, and the rows that ended the day before
@@ -193,8 +208,19 @@ The history trigger records the deletes and updates. Answer:
 `error_code`: `INVALID_PRICE_TYPE`, `INVALID_DATE` (same range as `replace_item_rates`; since migration 86 the earliest day is the rate start floor, `data.earliest`),
 `PAST_DATE_NOT_ALLOWED` (unreachable since migration 90: it was staff, change starting today or earlier), `ITEM_NOT_FOUND`,
 `CUSTOMER_NOT_FOUND`, `NOTHING_TO_UNDO` ("There is no change starting on that day to undo"),
-`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed). A customer account is
+`BANDS_OVERLAP` (reopening would overlap another row; nothing is changed), `STALE_RATES` (pricing review migration, below). A customer account is
 refused with SQLSTATE 42501.
+
+`p_seen_rows` (pricing review migration, default NULL = no check; an older app that sends four arguments is unchanged): the ids of the
+rows the editor loaded for this scope (item, customer, price type), as in `replace_item_rates`. The caller must send EVERY row id
+of the scope it loaded, ended and planned rows included (like `replace_item_rates`' `p_seen_rows`): a row of the scope that is
+missing from the list and that the call would touch (see below) makes the answer `STALE_RATES`, so an app that leaves out a
+planned later change always gets `STALE_RATES` when it cancels an earlier change. After the scope is locked,
+a row of the scope that this call would delete (starts on `p_starts_on`), reopen (ended the day before) or that decides
+where the reopened rate ends (starts later, or has no end) and whose id is not listed was added or changed by someone else:
+nothing is written, answer `STALE_RATES` with `data.ids` = the unlisted ids that triggered it (sorted). Checked before `NOTHING_TO_UNDO`.
+A row that ended before `p_starts_on - 1` is never touched and never counts, listed or not. A new app that sends `p_seen_rows` to a
+facility without this migration gets PGRST202 (no such function), because the old signature has four arguments.
 
 ### Changed price functions
 
@@ -229,11 +255,65 @@ for any other value; the earlier refusals are unchanged. Returned as `error_code
   Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
   `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
 
+## Users screens (migrations 113, 116 and 118, tweak batch 2026-10-20)
+
+All answers below are `{ success, ... }`; a refusal is `{ success: false, error, error_code, message }` (`error` keeps its
+earlier value, `error_code` is the stable code the app reads). The user row carries the same keys in `get_users_list`
+(`users[]`) and `get_user_details` (`user`).
+
+- **`delete_user_account`** also sets `enrollment_status = 'disabled'` (migration 118), so a deleted profile never reads as approved.
+- **`user_profiles.deleted_at`**: set by `delete_user_account`; accounts deleted earlier are backfilled (mobile `DEL` plus 12 hex
+  characters, name `Deleted User`; whatever their state, they are also set inactive and `disabled`). A deleted profile keeps its row.
+- **New row keys** in both reads: `enrollment_status` (`'pending'`, `'rejected'` or `null`: approved and disabled are `null`),
+  `is_deleted` (boolean), `deleted_at` (timestamp or `null`). A deleted account has `mobile: null` (no phone is shown or
+  searched).
+- **`get_users_list(p_search_query, p_role_filter, p_active_filter, p_limit, p_offset)`** (signature unchanged).
+  `pagination.total_count` counts live accounts only; new `pagination.total_with_deleted` counts every row the list can return.
+  Rows are ordered live accounts first (by name, then id), deleted accounts after them, so the first `total_count` rows are live;
+  `has_more` is `offset + limit < total_with_deleted`. Errors: `PERMISSION_DENIED`, `INTERNAL_ERROR`.
+- **`get_user_details(p_user_id)`**: `assigned_customers[]` is sorted by customer name, then id, and each entry has the new key
+  `customer_active` (the business's `active`). Errors: `PERMISSION_DENIED` (not admin or supervisor, or a supervisor asking for an
+  administrator), `INVALID_INPUT`, `NOT_FOUND`, `INTERNAL_ERROR`. A staff or customer caller is refused by the guard with SQLSTATE 42501
+  'Staff access required', but this function (and `get_users_list`) catches every error, so the caller actually gets
+  `{ success: false, error: 'INTERNAL_ERROR', error_code: 'INTERNAL_ERROR', message: 'Failed to retrieve user details: Staff access required' }`
+  (an old pattern, unchanged); the app must treat that as a refusal.
+- **`update_user_status(p_user_id, p_active)`** (unchanged signature). Order of refusals: `PERMISSION_DENIED` (caller),
+  `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`, `SERVICE_ACCOUNT_READ_ONLY` (switching a service account on),
+  `PERMISSION_DENIED` (a supervisor switching a service account off: the FAS sync "Disconnect" is administrator only),
+  `SELF_EDIT_FORBIDDEN`, `CANNOT_MODIFY_ADMIN` (supervisor on an administrator), `ENROLLMENT_NOT_APPROVED` (supervisor on a
+  person whose access is not approved), `ENROLLMENT_PENDING` / `ENROLLMENT_REJECTED` (only when `p_active` is true: the switch
+  never approves an access request; the pending one is reviewed in Access requests, the rejected one with `review_enrollment_again`),
+  `LAST_ADMIN`, `INTERNAL_ERROR`. Setting a pending or rejected person inactive is "Status unchanged" (success).
+- **`update_user_role(p_user_id, p_new_role)`** (unchanged signature). A Customer given another role has all active customer
+  assignments set inactive in the same transaction; the answer has the new key `removed_customer_count` (integer, 0 when none or
+  when the role is unchanged). Errors: `PERMISSION_DENIED`, `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`,
+  `SERVICE_ACCOUNT_READ_ONLY`, `SELF_EDIT_FORBIDDEN`, `CANNOT_MODIFY_ADMIN` (supervisor on an administrator; `error` is still
+  `PERMISSION_DENIED` for old apps), `CANNOT_PROMOTE_TO_ADMIN`, `ENROLLMENT_PENDING`, `ENROLLMENT_REJECTED` (a rejected person's role cannot be changed; use
+  `review_enrollment_again` first), `ENROLLMENT_NOT_APPROVED`, `LAST_ADMIN`,
+  `INTERNAL_ERROR`.
+- **`review_enrollment_again(p_user_id uuid)`** (new, administrators only; a supervisor gets `PERMISSION_DENIED`, staff and
+  customers are refused by the guard: the call raises SQLSTATE 42501, it is not turned into an INTERNAL_ERROR answer). A rejected
+  request becomes `pending` with role `customer` (the request's original state; approval picks the role), the profile stays
+  inactive, and it shows in Access requests again. Answer `{ success: true, user_id, enrollment_status: 'pending', changed, message }`; `changed` is
+  `false` when it was already pending (idempotent). Errors: `PERMISSION_DENIED`, `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`,
+  `SERVICE_ACCOUNT_READ_ONLY`, `NOT_REJECTED` (approved or disabled), `INTERNAL_ERROR`.
+- **`assign_customer_to_user(target_user_mobile, target_customer_id, assigner_comment)`** and
+  **`remove_customer_assignment(target_user_mobile, target_customer_id)`** still return a boolean and raise on refusal; the
+  exception message now starts with a stable code and a colon (`CODE: text`): `PERMISSION_DENIED`, `NOT_FOUND` (person not found or
+  inactive, or the customer does not exist or is deleted), `SELF_EDIT_FORBIDDEN` and `CANNOT_MODIFY_ADMIN` (supervisor, SQLSTATE
+  42501), `SERVICE_ACCOUNT_READ_ONLY`, and for assign only `CUSTOMER_INACTIVE` (a deactivated business) and `ROLE_NOT_CUSTOMER`
+  (owner decision 2026-10-20: the person's role is not Customer; message `ROLE_NOT_CUSTOMER: Customer assignments apply only to the
+  Customer role.`, checked after the administrator and service-account rules, before the customer is looked up). Removing an
+  assignment is allowed for any role, so a stale assignment of a person who is no longer a Customer can still be removed.
+- **`delete_user_account()`**: a caller whose account is already deleted gets `{ success: true, message: 'Account deleted',
+  already_deleted: true }` (the retry of a timed-out delete). Other answers unchanged; `LAST_ADMIN` now also carries `error_code`.
+- **`warehouse_security.other_active_admin_exists`** leaves out deleted accounts.
+
 ## Customers: deactivate, delete, restore (migration 82, 2026-10-15)
 
 A deactivated business (`active = false`) is offered by no staff customer picker (`search_customers`: new GRN, dispatch, order, and the list-filter
 customer search) and not by the all-customers branch of `search_customer_items_for_order`, and
-`assign_customer_to_user` cannot give it a new customer login. Everything else keeps working for it: its
+`assign_customer_to_user` cannot give it a new customer login (and refuses any person whose role is not Customer: `ROLE_NOT_CUSTOMER`). Everything else keeps working for it: its
 customer logins read all past records and order their goods out,
 staff and administrators still see its stock, invoices and activity, and dispatch creation accepts it
 (`update_grn` too, so an existing GRN can still be edited). Since migration 83 `save_grn` (a NEW GRN) refuses
@@ -245,7 +325,8 @@ ever deleted.
   customers get 42501). `false` sets `active = false` only (no stock check, never `deleted_at`); `true` sets
   `active = true` and clears `deleted_at` / `deleted_by`. Answer `{success:true, message, data:{id, active}}`
   (message `... is already inactive` / `... is already active` when nothing changes); `{success:false,
-  message}` for an unknown id (`Customer not found`) or a missing argument.
+  message}` for an unknown id (`Customer not found`) or a missing argument. `true` is refused with `DUPLICATE_MOBILE` when another
+  active customer uses the same mobile (owner decision 2026-10-20; details in "Customers: duplicates, stale edit, deactivated search").
 - `update_customer(..., p_active)` (migration 83): `p_active = true` also clears `deleted_at` / `deleted_by`, so a
   business is never active and deleted at once; `false` and NULL leave `deleted_at` untouched.
 - `safe_delete_customer(p_customer_id uuid, p_permanent boolean DEFAULT false)`. "Data" means any GRN,
@@ -260,7 +341,7 @@ ever deleted.
   permanent (`delete_type:'permanent'`) also removes its empty OPEN carts and switched-off assignments.
 - `restore_customer(p_customer_id uuid)`: takes a business that is deleted OR inactive and makes it active
   with `deleted_at` / `deleted_by` cleared (same as `set_customer_active(id, true)`); an active, undeleted
-  business answers `{success:false, message:'Customer not found or not deleted'}`.
+  business answers `{success:false, message:'Customer not found or not deleted'}`; it is refused with `DUPLICATE_MOBILE` like Activate (see "Customers: duplicates, stale edit, deactivated search") when another active customer uses the number.
 - `get_orders_list` leaves out orders of a deleted business.
 - Five readers that no longer hide a deactivated business from staff and administrators (filter is
   `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
@@ -281,7 +362,7 @@ Roles: admin, supervisor (staff are refused by the guard since migration 90). An
 `{ success: true, data: { tiers: [tier, ...] (by weight_min; [] when never saved), updated_at, updated_by_name } }`
 (`updated_at` and `updated_by_name` are null when never saved).
 
-### `set_standard_rate(p_tiers jsonb)`
+### `set_standard_rate(p_tiers jsonb, p_expected_updated_at timestamptz DEFAULT NULL, p_dry_run boolean DEFAULT false)`
 
 Roles: admin, supervisor. Staff and customers are refused by the guard (SQLSTATE 42501) whatever tiers they
 send; `STANDARD_RATE_MANAGER_ONLY`, which migration 85 answered to staff from the body, is unreachable since
@@ -297,7 +378,31 @@ all** (any dates; customer rates do not count) one monthly default row per tier,
 day of the item's first GRN that is not deleted, else today, without an end date, authored by the
 caller (so the price history names them). Items whose default rate ended or was stopped, and inactive
 items, are not touched. Answer
-`{ success: true, data: { tiers: [tier, ...], items_priced } }`.
+`{ success: true, data: { tiers: [tier, ...], items_priced, dry_run: false, updated_at } }`
+(`updated_at`: the new version, also what `get_standard_rate` returns next).
+
+The two extra arguments belong to the pricing review migration. Older apps that send only `p_tiers` are unchanged; a new app that
+sends the new arguments to a facility without this migration gets PGRST202 (no such function).
+
+- `p_expected_updated_at`: the `updated_at` that `get_standard_rate` returned when the editor loaded the rate. After the
+  validation and the save lock, if it is given and differs from the current version (`max(updated_at)` of the tiers; all
+  tiers of a save carry one time) nothing is written and the answer is `error_code` `STALE_STANDARD_RATE`
+  ("The standard rate was changed by someone else; reload and try again", `data.updated_at` = the current version, null if none).
+  NULL skips the check (older apps). `'-infinity'` means "I loaded no tiers" (the rate was never saved): it matches only an empty
+  tier table, so the very first save is protected too (a rate saved meanwhile gives `STALE_STANDARD_RATE`). An app must send the
+  value as the `updated_at` STRING exactly as `get_standard_rate` returned it, or as the last `set_standard_rate` answer carried it
+  (`data.updated_at`), never through a JS `Date` (milliseconds would cut the microseconds and every save would be stale). It must
+  be the value from when the draft was built, not one from a later background refresh, or the check would not see the change.
+- `p_dry_run`: true runs every check above (and the stale check), writes nothing and answers
+  `{ success: true, data: { dry_run: true, items_priced, tiers: <as sent>, updated_at: <current> } }`, where `items_priced` is
+  the number of **active items that never had a default rate row** (no `item_storage_prices` row with `customer_id` null, of any
+  price type, dated any day) that a real save would price right now: the count for "Give this rate to N items that have no rate?".
+  Only default rows matter, so an item with only customer rows is counted and priced. Not counted and not priced: inactive items,
+  items whose default rate ended or was stopped, and items whose only default rate is planned (starts later). The app's "No rate"
+  label (no default rate in force today) is therefore wider than this count. A real save can differ if items change between the
+  two calls.
+- Other `error_code`s of this function: `STANDARD_RATE_MANAGER_ONLY` (unreachable), `INVALID_BANDS`, `INVALID_BAND`,
+  `INVALID_AMOUNT`, `BANDS_OVERLAP`, `BANDS_GAP` (all existed); `STALE_STANDARD_RATE` is new.
 
 ### `create_item(p_name, p_packaging, p_description, p_active, p_rate_from_item uuid DEFAULT NULL)`
 
@@ -310,6 +415,36 @@ else `standard` when a standard rate is saved (its tiers from today); else `none
 
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
 from today (nothing when no standard rate is saved). The answer is unchanged.
+
+## Items screens (migration 114, tweak 2026-10-20)
+
+Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: false, error_code, error, message }`
+(`error_code` and `error` are new on these refusals; `message` is the English text they had before. The app reads
+`error_code`). Codes:
+`DUPLICATE_NAME` (another item has this name: the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
+covers deactivated items; saving an item under the name it already has is never refused, even if an older item differs from it only in case; the unique constraint `items_name_key` also maps to it when two saves race),
+`NOT_FOUND` (`update_item`, `get_item_usage`: the item does not exist, for example deleted by someone else),
+`INVALID_INPUT` (blank name; name over 80 characters; packaging or description over 40),
+`PERMISSION_DENIED` (role check inside the body). Staff and customers never reach the body: the guard raises
+SQLSTATE 42501 first.
+
+- `create_item`: signature unchanged; the codes above (`DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`).
+- `update_item(p_item_id, p_name, p_packaging DEFAULT NULL, p_description DEFAULT NULL, p_active DEFAULT NULL)`:
+  `p_active` not sent or NULL keeps the item's current value (it used to default to true and re-activate the item).
+  Sending true or false sets it as before. `p_packaging` and `p_description` are different: not sent or NULL
+  CLEARS them (as before), so the app must always send the current values. `create_item` with `p_active` NULL
+  creates an active item. Codes: `NOT_FOUND`, `DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`.
+  The name is compared with the stored name after trimming both, so an item stored as `Garlic ` saved as `Garlic` is not re-checked for a duplicate.
+  When the save switches an item from inactive to active and that gave it the standard rate tiers, `data` also carries `rate_source: 'standard'`; otherwise `data` has no `rate_source`.
+- `delete_item_safe(p_item_id)`: for an item that does not exist the refusal also carries `error_code: 'NOT_FOUND'` (still `{ success: false, message: 'Item not found' }`); its other refusals and texts are unchanged.
+- `get_items`: the search text also matches `packaging` (case-insensitive substring, like name and description).
+  Order, paging and the answer are unchanged.
+- `get_item_usage(p_item_id uuid)`, read-only, administrators and supervisors: answer
+  `{ success: true, data: { item_id, name, active, grn_lines, order_lines, grn_rates, price_rows, rate_count,
+  in_use, can_delete } }`. `grn_lines` (GRN lines, including lines of deleted GRNs, as `delete_item_safe` counts them), `order_lines` and `grn_rates` are what makes
+  `delete_item_safe` refuse; `in_use` is true when any of the three is above 0 and `can_delete` is its opposite.
+  `price_rows` are the item's storage price rows (deleted with the item) and `rate_count` the same rows counted as
+  the Item pricing screens do (one per customer or default, price type and start date). Unknown id: `NOT_FOUND`.
 
 ## Rates on the GRN sheet and the rate start floor (migration 86, 2026-10-15)
 
@@ -525,3 +660,48 @@ be split across two pages. Both accept one more, opt-in key in `p_filters`:
   are unchanged, and other unknown values still match nothing in the customer list.
 
 `tests/grn_receipt_pages_98.sql` covers both functions.
+
+## Customers: duplicates, stale edit, deactivated search (migrations 112, 117 and 118)
+
+Errors use the shape `{success:false, data:null, message, error:{code, field?, details?}}`.
+
+- **Mobile key** (`utils.mobile_key`, used for every comparison). The digits of the number; a 12-digit number starting `91`
+  is read as its 10-digit national number and an 11-digit number with a leading trunk `0` loses that `0` (the app's
+  `nationalMobileDigits`). `+91 98765 43210`, `919876543210` and `9876543210` are one key.
+- **Input clean-up.** `create_customer` and `update_customer` remove only spaces, `+`, `(`, `)`, `-` and `.` from `p_mobile`,
+  then require 10-15 digits; anything else (letters) is `VALIDATION_FAILED` (`field:'mobile'`), never turned into other
+  digits. The stored text is the digits as sent; no shortening (the app sends the 12-digit `91...` form today).
+- `create_customer(...)` (signature unchanged): `DUPLICATE_MOBILE` (`field:'mobile'`) when another ACTIVE, undeleted customer
+  has the same key; a deactivated customer's number does not block. `DUPLICATE_NAME` (`field:'name'`) for
+  `customers_name_key`, a plain case-sensitive UNIQUE(name) that also covers deactivated and deleted rows. For both,
+  `error.details` is a JSON object `{customer_id, name, active}` of the clashing customer (absent only if it cannot be
+  found). Names that differ only in capitals or spaces are the same name (`utils.customer_name_key`: trimmed, runs of white space
+  made one space, lower case) and are refused with `DUPLICATE_NAME` against every customer, active, deactivated or deleted;
+  `details.name` is the stored name of the holder. The unique index `customers_name_norm_key` backs it, and so does the older `customers_name_key`
+  (UNIQUE(name)); either violation is answered as `DUPLICATE_NAME`. A name whose key is empty (only tabs, new lines, no-break or other Unicode spaces) is
+  `VALIDATION_FAILED` with `field:'name'` (migration 118). Any other unique violation is `DATABASE_ERROR`. Other codes: `PERMISSION_DENIED` (not administrator or
+  supervisor), `VALIDATION_FAILED` (`field` `name` or `mobile`), `DATABASE_ERROR`.
+- `update_customer(..., p_image_urls, p_expected_updated_at timestamptz DEFAULT NULL)`: the mobile is checked only when
+  `p_mobile` is sent AND its key differs from the customer's own (pairs that already share a number stay editable; a
+  deactivated customer's number is allowed); same `DUPLICATE_MOBILE` / `DUPLICATE_NAME` / `details` object as above.
+  The name is checked only when `p_name` is sent AND its key differs from the customer's own (an unchanged name, in any capitals or spacing, never refuses).
+  With `p_expected_updated_at` given and different from the row's `updated_at`, answers `STALE_CUSTOMER` (no `field`) and
+  changes nothing. Send `updated_at` back exactly as the string read from `customers` (microseconds): a JavaScript `Date`
+  round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` (also only tabs or no-break spaces, migration 118) is `VALIDATION_FAILED`;
+  a name is trimmed. Other codes: `PERMISSION_DENIED`, `CUSTOMER_NOT_FOUND` (unknown id), `DATABASE_ERROR`.
+  `set_customer_active` has no `error.code` for an unknown id or a missing argument (it answers `{success:false, message}`).
+  **Activate re-checks the mobile (owner decision 2026-10-20).** `set_customer_active(id, true)`, `update_customer(..., p_active => true)`
+  on a deactivated or deleted customer (the number checked is the one sent in the same call, else the stored one) and the legacy
+  `restore_customer` answer `{success:false, data:null, message:'<other name> already uses this mobile number. Change one of the numbers
+  first.', error:{code:'DUPLICATE_MOBILE', field:'mobile', details:{customer_id, name, active:true}}}` when another ACTIVE, undeleted
+  customer has the same mobile key; `details` is the OTHER customer, and nothing changes. A customer with no mobile is never refused,
+  and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).
+- `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
+  now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
+  supervisors only and then also returns deactivated customers; for staff it is ignored (active customers they may access
+  only); customers are refused by the guard. Soft-deleted customers are never returned. A query made only of digits and number punctuation
+  also matches the mobile by its digits, by its key, and (when it starts `91` and is longer than 2 digits) by the digits
+  after `91`, all as prefixes; any such match ranks first.
+- The Customers list and the Edit form read the `customers` table directly (no list RPC): the "Deactivated" filter is
+  `active = false` and the two counts are two `count: 'exact', head: true` reads (`active = true`, `active = false`);
+  `updated_at` is already a column of that read.
