@@ -27,7 +27,7 @@
 --    lowered or removed line and takes from the order on a raised or added one (answer: order_sync {given_back, taken}); what a
 --    dispatch takes (create from an order, direct create, edit) is logged as auto_quantity_reduction; what an edit gives back
 --    as one UPDATE entry per order.
---  * D5 dispatch create from an order: source_order_updated_at in p_dispatch_data, ORDER_CHANGED when the order moved.
+--  * D5 dispatch create from an order: source_order_updated_at in p_dispatch_data, ORDER_CHANGED when the order's lines changed since the form opened.
 --  * D6 GRN_NUMBER_LOCKED. D8 get_next_grn_number follows the highest letter. D9 GRN_HAS_STOCK on invoice save and edit and
 --    GRN_INVOICED for a new line on an invoiced GRN. D10 RATES_NEED_MANAGER (staff) and D24 RATES_WOULD_DROP (administrators
 --    and supervisors) when an edit drops a rate set for the GRN alone. D11 LINE_DISPATCHED_BEFORE and LINE_ON_ORDER.
@@ -76,7 +76,7 @@ BEGIN
 
     -- The token is read before the lines: a change that lands in between shows in the lines but not in the token, so
     -- the next save is refused as stale, never accepted over it.
-    SELECT g.id, g.gr_no, g.date, g.updated_at, g.customer_name
+    SELECT g.id, g.gr_no, g.date, g.updated_at, g.customer_name, COALESCE(g.invoiced, false) AS invoiced
     INTO v_grn
     FROM goodsreceived g
     WHERE g.id = p_grn_id AND g.deleted_at IS NULL;
@@ -91,6 +91,12 @@ BEGIN
     WHERE i.gr_id = p_grn_id AND i.deleted_at IS NULL
     ORDER BY i.inv_fin_year, i.inv_no, i.id
     LIMIT 1;
+
+    -- One rule for "invoiced GRN": a live invoice, or the invoiced flag the server enforces (update_grn locks on both). When
+    -- only the flag is set, the invoice object is there with null number, id and year.
+    IF v_invoice IS NULL AND v_grn.invoiced THEN
+        v_invoice := jsonb_build_object('id', NULL, 'inv_no', NULL, 'inv_fin_year', NULL);
+    END IF;
 
     SELECT to_char(warehouse_security.business_date(d.disp_date), 'YYYY-MM-DD')
     INTO v_first_day
@@ -253,6 +259,7 @@ DECLARE
     v_prefix CHAR(1);
     v_num INTEGER;
     v_next_prefix CHAR(1);
+    v_next_max INTEGER;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('get_next_grn_number',jsonb_build_object());
     -- The letter is the highest one in use (migration 121), not the letter of the GRN entered last: a GRN entered under
@@ -277,6 +284,14 @@ BEGIN
             v_next_prefix := 'A';
         ELSE
             v_next_prefix := CHR(ASCII(v_prefix) + 1);
+        END IF;
+        -- The next letter's series may exist already (A after Z): it is continued, not started again at 0001.
+        SELECT MAX(CAST(SUBSTRING(gr_no FROM 2) AS INTEGER))
+        INTO v_next_max
+        FROM goodsreceived
+        WHERE LEFT(gr_no, 1) = v_next_prefix AND gr_no ~ '^[A-Z][0-9]{1,7}$';
+        IF v_next_max IS NOT NULL AND v_next_max < 1000 THEN
+            RETURN v_next_prefix || LPAD((v_next_max + 1)::TEXT, 4, '0');
         END IF;
         RETURN v_next_prefix || '0001';
     ELSE
@@ -836,6 +851,24 @@ BEGIN
 
     -- v_restored_items collects the cart lines actually given back, below (migration 121).
 
+    -- Locks (migration 121): the lots of the dispatch, then the order lines the give-back may change, each in id order, before any
+    -- stock or order line is written, so a dispatch edit or create that touches the same lots and lines waits instead of
+    -- deadlocking. The dispatch row itself is not locked here (it is read above, as before).
+    PERFORM gt.id
+    FROM goodsreceived_trl gt
+    WHERE gt.id IN (SELECT dt.gr_trl_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL)
+    ORDER BY gt.id
+    FOR UPDATE OF gt;
+
+    PERFORM oi.id
+    FROM order_items oi
+    WHERE oi.grn_items_id IN (SELECT dt.gr_trl_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL)
+      AND (oi.order_id = v_dispatch_record.source_order_id
+           OR EXISTS (SELECT 1 FROM orders o WHERE o.id = oi.order_id AND o.status = 'OPEN' AND o.deleted_at IS NULL)
+           OR oi.id IN (SELECT dt.source_order_item_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id))
+    ORDER BY oi.id
+    FOR UPDATE OF oi;
+
     -- Get the source order number if we have a source order
     IF v_dispatch_record.source_order_id IS NOT NULL THEN
         -- Get order_no, or generate one if it's null/empty
@@ -1194,6 +1227,7 @@ DECLARE
     v_customer_name text;
     v_supervisor_name text;
     v_order_lines_left integer;
+    v_order_lines_changed boolean;
     v_order_updated_at timestamptz;
     v_expected_order_at timestamptz;
     v_disp_day date;
@@ -1257,13 +1291,26 @@ BEGIN
             RAISE EXCEPTION 'The order belongs to another customer' USING ERRCODE = 'WH409';
         END IF;
 
-        -- D5 (migration 121): the form was made from the order as it was at source_order_updated_at. An order that changed
-        -- since (a line added, changed or removed, or taken by another dispatch) is not dispatched from a stale form. The
-        -- order is read without a lock. No key (an older app, a direct dispatch): no check. A retry of this user's own
-        -- committed create was answered from the saved answer above, so it is not refused for what its first try changed.
+        -- D5 (migration 121): the form was made from the order as it was at source_order_updated_at (the order's updated_at
+        -- when the form was opened). An order whose LINES changed since (a line added, changed, removed, or taken by another
+        -- dispatch) is not dispatched from a stale form; a changed note, priority or requested date is not a reason. The
+        -- lines are told apart from the order's own fields by their own updated_at (greater than the value sent), and a
+        -- removed line by its change-log entry, written more than 2 seconds after the sent value (an entry is written a few
+        -- milliseconds after the updated_at it goes with). The order is read without a lock. No key (an older app, a direct
+        -- dispatch): no check. A retry of this user's own committed create was answered from the saved answer above, so it
+        -- is not refused for what its first try changed. The app sends the same value as before (the order's updated_at).
         IF NULLIF(p_dispatch_data->>'source_order_updated_at', '') IS NOT NULL THEN
             v_expected_order_at := (p_dispatch_data->>'source_order_updated_at')::timestamptz;
-            IF date_trunc('milliseconds', v_order_updated_at) IS DISTINCT FROM date_trunc('milliseconds', v_expected_order_at) THEN
+            v_order_lines_changed :=
+                EXISTS (SELECT 1 FROM order_items oi
+                        WHERE oi.order_id = v_source_order_id
+                          AND date_trunc('milliseconds', oi.updated_at) > date_trunc('milliseconds', v_expected_order_at))
+                OR EXISTS (SELECT 1 FROM order_revisions r
+                           WHERE r.order_id = v_source_order_id
+                             AND r.changed_at > v_expected_order_at + interval '2 seconds'
+                             AND (r.action IN ('auto_quantity_reduction', 'dispatch_deleted')
+                                  OR r.entry->'changes'->'removed_item' IS NOT NULL));
+            IF v_order_lines_changed THEN
                 RETURN warehouse_security.refuse('ORDER_CHANGED', 'This order changed after you opened it.',
                     jsonb_build_object('source_order_id', v_source_order_id,
                                        'expected_updated_at', v_expected_order_at,
@@ -1324,6 +1371,16 @@ BEGIN
     IF v_locked_lots <> cardinality(p_dispatch_items) THEN
         RAISE EXCEPTION 'A lot of this dispatch was removed meanwhile; reload and try again' USING ERRCODE = 'WH409';
     END IF;
+
+    -- The order lines this create may change are locked next, in id order, before any dispatch or order line is written
+    -- (migration 121), so a dispatch edit or delete on the same lots and lines waits instead of deadlocking.
+    PERFORM oi.id
+    FROM order_items oi
+    WHERE oi.grn_items_id IN (SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item)
+      AND (oi.order_id = v_source_order_id
+           OR EXISTS (SELECT 1 FROM orders o WHERE o.id = oi.order_id AND o.status = 'OPEN' AND o.deleted_at IS NULL))
+    ORDER BY oi.id
+    FOR UPDATE OF oi;
 
     -- A dispatch carries only its own customer's lots. The receipts are
     -- key-share locked so update_grn cannot move one to another customer meanwhile.
@@ -1469,7 +1526,13 @@ BEGIN
         SELECT 1 FROM goodsreceived_trl grt
         WHERE grt.gr_id = gr.id AND grt.stock > 0
     )
-    WHERE gr.id = ANY(v_affected_gr_ids);
+    WHERE gr.id = ANY(v_affected_gr_ids)
+      -- Only a GRN whose flag really changes is touched (migration 121): an unrelated dispatch does not move its version
+      -- token, so an open GRN edit is not made stale by it.
+      AND gr.out_of_stock IS DISTINCT FROM (NOT EXISTS (
+        SELECT 1 FROM goodsreceived_trl grt
+        WHERE grt.gr_id = gr.id AND grt.stock > 0
+    ));
 
     -- BUILD DISPATCH ITEMS RESPONSE
     SELECT ARRAY(
@@ -1714,6 +1777,9 @@ DECLARE
     v_sync record;
     v_back integer;
     v_take integer;
+    v_gave integer;
+    v_use_src uuid;
+    v_use_item uuid;
     v_given_back integer := 0;
     v_taken integer := 0;
     v_cart uuid;
@@ -1913,13 +1979,13 @@ BEGIN
         RAISE EXCEPTION 'The supervisor must be an administrator, supervisor or staff member' USING ERRCODE = 'WH409';
     END IF;
 
-    -- D2, D3 (migration 121, IST days). The date sent is "changed" when its day differs from both the UTC day and the IST day
-    -- of the stored date, so a legacy row with an odd time of day is not changed by the app sending its own day back. The
-    -- number is changed when it differs from the stored text. Nothing is written before these checks.
+    -- D2, D3 (migration 121, IST days everywhere). The date sent is "changed" when its day differs from the IST day of the
+    -- stored date; when it is not changed the stored date is kept as it is (the header update below), so a legacy row with an
+    -- odd time of day is not rewritten by the app sending its own day back. The number is changed when it differs from the
+    -- stored text. Nothing is written before these checks.
     v_sent_day := (p_dispatch_data->>'disp_date')::date;
     IF v_sent_day IS NOT NULL THEN
-        v_day_changed := v_sent_day IS DISTINCT FROM (v_stored_disp_date AT TIME ZONE 'UTC')::date
-                         AND v_sent_day IS DISTINCT FROM warehouse_security.business_date(v_stored_disp_date);
+        v_day_changed := v_sent_day IS DISTINCT FROM warehouse_security.business_date(v_stored_disp_date);
     END IF;
     v_no_changed := p_dispatch_data->>'disp_no' IS NOT NULL AND (p_dispatch_data->>'disp_no') IS DISTINCT FROM v_stored_disp_no;
 
@@ -1987,7 +2053,7 @@ BEGIN
     IF p_dispatch_data IS NOT NULL THEN
         UPDATE dispatch SET
             disp_no = COALESCE(p_dispatch_data->>'disp_no', disp_no),
-            disp_date = COALESCE((p_dispatch_data->>'disp_date')::date::timestamptz, disp_date),
+            disp_date = CASE WHEN v_day_changed THEN (p_dispatch_data->>'disp_date')::date::timestamptz ELSE disp_date END,
             registration = COALESCE(p_dispatch_data->>'registration', registration),
             customer_id = COALESCE((p_dispatch_data->>'customer_id')::uuid, customer_id),
             -- The stored names stay unless the customer or the supervisor changes; then they are the master
@@ -2057,6 +2123,20 @@ BEGIN
             SELECT (new_item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS new_item
         )
         FOR UPDATE OF gt;
+
+        -- The order lines this edit may change are locked next, in id order, before any dispatch line or order line is written
+        -- (migration 121): the lines of these lots in the source order or in an open order, and the lines the dispatch's own
+        -- lines recorded. A dispatch create or delete on the same lots and lines then waits instead of deadlocking.
+        PERFORM oi.id
+        FROM order_items oi
+        WHERE oi.grn_items_id IN (SELECT dt.gr_trl_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL
+                                  UNION
+                                  SELECT (new_item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS new_item)
+          AND (oi.order_id = (SELECT d.source_order_id FROM dispatch d WHERE d.id = p_dispatch_id)
+               OR EXISTS (SELECT 1 FROM orders o WHERE o.id = oi.order_id AND o.status = 'OPEN' AND o.deleted_at IS NULL)
+               OR oi.id IN (SELECT dt.source_order_item_id FROM dispatch_trl dt WHERE dt.disp_id = p_dispatch_id))
+        ORDER BY oi.id
+        FOR UPDATE OF oi;
 
         -- The lots of a deleted receipt are not taken from: a line this edit adds or raises is refused
         -- (migration 120). A line it leaves as it is stays.
@@ -2217,8 +2297,8 @@ BEGIN
 
         -- ========== STEP 12: BULK insert NEW dispatch items, and log a
         -- movement for exactly the rows inserted (migration 67) ==========
-        -- A line added to a dispatch from the cart is marked 'cart' (it takes
-        -- nothing from the cart, so nothing is given back for it on deletion).
+        -- A line added to a dispatch from the cart is marked 'cart'. What it takes from the order's line is recorded on it
+        -- by the D4 step below (migration 121), and a deletion gives that back.
         WITH inserted AS (
             INSERT INTO dispatch_trl (disp_id, gr_trl_id, gr_id, disp_qty, source_type)
             SELECT
@@ -2281,20 +2361,39 @@ BEGIN
             IF v_sync.new_qty < v_sync.old_qty THEN
                 -- Lowered or removed: give back what the line took, at most the quantity it gives up.
                 v_back := LEAST(v_sync.consumed, v_sync.old_qty - v_sync.new_qty);
+                v_gave := 0;
                 IF v_back > 0 THEN
+                    -- The give-back goes to the dispatch's source order only while that order is OPEN; else (and for a direct
+                    -- dispatch whose recorded order line is on an order that is not OPEN) to the customer's OPEN order, the
+                    -- rule the take path uses. restore_to_order answers NULL when no order could be used: nothing was given.
+                    v_use_src := v_src_order_id;
+                    v_use_item := v_sync.old_item;
+                    IF v_src_order_id IS NOT NULL THEN
+                        IF NOT EXISTS (SELECT 1 FROM orders o WHERE o.id = v_src_order_id AND o.status = 'OPEN' AND o.deleted_at IS NULL) THEN
+                            v_use_src := NULL;
+                            v_use_item := NULL;
+                        END IF;
+                    ELSIF v_use_item IS NOT NULL THEN
+                        IF NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                                       WHERE oi.id = v_use_item AND o.status = 'OPEN' AND o.deleted_at IS NULL) THEN
+                            v_use_item := NULL;
+                        END IF;
+                    END IF;
                     v_cart := warehouse_security.restore_to_order(
-                        p_dispatch_id, v_src_order_id, v_sync.old_item, v_cust_id, v_sync.lot, v_back, v_user_id);
+                        p_dispatch_id, v_use_src, v_use_item, v_cust_id, v_sync.lot, v_back, v_user_id);
                     IF v_cart IS NOT NULL THEN
+                        v_gave := v_back;
                         v_given_back := v_given_back + v_back;
                         IF NOT (v_cart = ANY (v_given_carts)) THEN
                             v_given_carts := v_given_carts || v_cart;
                         END IF;
                     END IF;
                 END IF;
-                -- A line that stays holds no more than its new quantity (cart_quantity_consumed <= disp_qty).
-                IF v_sync.new_qty > 0 AND (v_back > 0 OR v_sync.consumed > v_sync.new_qty) THEN
+                -- A line that stays holds no more than its new quantity (cart_quantity_consumed <= disp_qty). What it holds
+                -- goes down only by what was really given back.
+                IF v_sync.new_qty > 0 AND (v_gave > 0 OR v_sync.consumed > v_sync.new_qty) THEN
                     UPDATE dispatch_trl
-                    SET cart_quantity_consumed = LEAST(v_sync.consumed - v_back, v_sync.new_qty)
+                    SET cart_quantity_consumed = LEAST(v_sync.consumed - v_gave, v_sync.new_qty)
                     WHERE disp_id = p_dispatch_id AND gr_trl_id = v_sync.lot;
                 END IF;
             ELSE
@@ -2326,6 +2425,14 @@ BEGIN
                 IF v_line_id IS NOT NULL THEN
                     v_take := LEAST(v_line_qty, v_sync.new_qty - v_sync.old_qty);
                     v_new_line_qty := v_line_qty - v_take;
+                    -- The dispatch line records the order line before a used-up line is deleted (as the dispatch create does):
+                    -- the foreign key then empties source_order_item_id with the line, and nothing points at a line that is
+                    -- gone. At most the line's new quantity is held (cart_quantity_consumed <= disp_qty).
+                    UPDATE dispatch_trl
+                    SET cart_quantity_consumed = LEAST(COALESCE(cart_quantity_consumed, 0) + v_take, v_sync.new_qty),
+                        source_order_item_id = COALESCE(source_order_item_id, v_line_id)
+                    WHERE disp_id = p_dispatch_id AND gr_trl_id = v_sync.lot;
+
                     IF v_new_line_qty = 0 THEN
                         DELETE FROM order_items WHERE id = v_line_id;
                     ELSIF v_src_order_id IS NOT NULL THEN
@@ -2353,11 +2460,6 @@ BEGIN
                         'previous_quantity', v_line_qty,
                         'new_quantity', v_new_line_qty));
 
-                    UPDATE dispatch_trl
-                    SET cart_quantity_consumed = COALESCE(cart_quantity_consumed, 0) + v_take,
-                        source_order_item_id = COALESCE(source_order_item_id, v_line_id)
-                    WHERE disp_id = p_dispatch_id AND gr_trl_id = v_sync.lot;
-
                     v_taken := v_taken + v_take;
                 END IF;
             END IF;
@@ -2375,7 +2477,13 @@ BEGIN
             SELECT 1 FROM goodsreceived_trl grt
             WHERE grt.gr_id = gr.id AND grt.stock > 0
         )
-        WHERE gr.id = ANY(v_affected_gr_ids);
+        WHERE gr.id = ANY(v_affected_gr_ids)
+          -- Only a GRN whose flag really changes is touched (migration 121), so an unrelated dispatch does not move its
+          -- version token and an open GRN edit is not made stale by it.
+          AND gr.out_of_stock IS DISTINCT FROM (NOT EXISTS (
+            SELECT 1 FROM goodsreceived_trl grt
+            WHERE grt.gr_id = gr.id AND grt.stock > 0
+        ));
 
     END IF;
 
@@ -3170,16 +3278,28 @@ BEGIN
         END IF;
 
         -- D10, D24 (migration 121): a rate set for this GRN alone is not dropped by an edit that did not mean to.
-        -- Staff: any rate the edit removes is refused (they cannot send rates; a manager makes the change).
+        -- Staff: a rate the edit removes that fitted a line before the edit is refused (they cannot send rates; a manager makes the change).
         -- Administrators and supervisors: refused when a line whose weight, or the GRN's pricing mode, was changed by this save
         -- loses its GRN-only rate and is not priced again by this save (a rate of any scope for that item and weight in
         -- p_rates, or a GRN-only rate it still has). A rate they remove on purpose in the Rates step is not this case. The
         -- raise rolls the whole edit back and the handler answers it.
         IF v_dropped_count > 0 THEN
             IF warehouse_security.active_role() = 'staff' THEN
-                RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('RATES_NEED_MANAGER',
-                    'Ask a manager to make this change: it would remove a rate that was set for this GRN.',
-                    jsonb_build_object('gr_no', v_stored_gr_no, 'rates', v_dropped_count, 'items', to_jsonb(v_dropped_items)))::text;
+                -- Only a rate that fitted a line BEFORE this edit counts (as the D24 check below): a leftover GRN-only rate that
+                -- fitted no line before is not a reason to refuse a staff edit.
+                SELECT count(DISTINCT (d.item_id, d.weight_min, d.weight_max))::integer,
+                       COALESCE(array_agg(DISTINCT i.name ORDER BY i.name) FILTER (WHERE i.name IS NOT NULL), ARRAY[]::text[])
+                INTO v_would_drop_count, v_would_drop_items
+                FROM jsonb_to_recordset(v_dropped_rows) AS d(item_id uuid, weight_min integer, weight_max integer)
+                JOIN jsonb_to_recordset(v_lines_before) AS b(id uuid, item_id uuid, weight integer)
+                  ON b.item_id = d.item_id AND b.weight BETWEEN d.weight_min AND d.weight_max
+                LEFT JOIN items i ON i.id = d.item_id;
+
+                IF v_would_drop_count > 0 THEN
+                    RAISE EXCEPTION 'rate_fail' USING ERRCODE = 'P0001', DETAIL = warehouse_security.refuse('RATES_NEED_MANAGER',
+                        'Ask a manager to make this change: it would remove a rate that was set for this GRN.',
+                        jsonb_build_object('gr_no', v_stored_gr_no, 'rates', v_would_drop_count, 'items', to_jsonb(v_would_drop_items)))::text;
+                END IF;
             ELSIF warehouse_security.active_role() IN ('admin', 'supervisor') THEN
                 SELECT CASE WHEN upper(COALESCE(g.pricing_mode, '')) = 'ONE_TIME' THEN 'one_time' ELSE 'monthly' END
                 INTO v_type_after
@@ -3479,7 +3599,8 @@ BEGIN
 
     UPDATE goodsreceived
     SET invoiced = true
-    WHERE id = COALESCE(v_invoice_header->>'grn_id', p_invoice_data->>'gr_id')::UUID;
+    WHERE id = COALESCE(v_invoice_header->>'grn_id', p_invoice_data->>'gr_id')::UUID
+      AND invoiced IS NOT TRUE;
 
     RETURN jsonb_build_object(
         'success', true,
@@ -3674,7 +3795,7 @@ BEGIN
         END IF;
     END IF;
 
-    UPDATE goodsreceived SET invoiced = true WHERE id = v_new_gr_id;
+    UPDATE goodsreceived SET invoiced = true WHERE id = v_new_gr_id AND invoiced IS NOT TRUE;
 
     UPDATE auto_invoice_errors
     SET
@@ -3859,11 +3980,12 @@ BEGIN
             -- Another live invoice may still hold the old GRN: then it stays invoiced (migration 120).
             UPDATE goodsreceived SET invoiced = false
             WHERE id = v_old_gr_id
+              AND invoiced IS DISTINCT FROM false
               AND NOT EXISTS (SELECT 1 FROM invoice i WHERE i.gr_id = v_old_gr_id AND i.deleted_at IS NULL AND i.id <> p_invoice_id);
         END IF;
 
         IF v_new_gr_id IS NOT NULL THEN
-            UPDATE goodsreceived SET invoiced = true WHERE id = v_new_gr_id;
+            UPDATE goodsreceived SET invoiced = true WHERE id = v_new_gr_id AND invoiced IS NOT TRUE;
         END IF;
     END IF;
 

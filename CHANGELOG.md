@@ -57,7 +57,7 @@ decisions (migration 121)".
   raises or adds takes from the order's line (answer `order_sync:{given_back, taken}`); delete gives back at most what the line holds and
   writes the change-log entry for every cart that got something back; takes are logged as dispatch reductions. New helper
   `warehouse_security.restore_to_order`.
-- **Generate Dispatch (D5).** `source_order_updated_at` in the dispatch data: a moved order answers `ORDER_CHANGED`.
+- **Generate Dispatch (D5).** `source_order_updated_at` in the dispatch data: an order whose lines changed since the form opened answers `ORDER_CHANGED`.
 - **GRN number (D6, D8).** `update_grn` refuses a changed number (`GRN_NUMBER_LOCKED`); `get_next_grn_number` follows the highest letter in use.
 - **No invoice while stock remains (D9).** Both `save_invoice` signatures and `update_invoice` refuse a GRN with stock (`GRN_HAS_STOCK`); an
   invoiced GRN takes no new line (`GRN_INVOICED`). An existing invoice on a GRN that holds stock is refused on its next edit.

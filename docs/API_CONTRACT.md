@@ -796,7 +796,7 @@ GRN edit form loads its rows by direct table reads, so the token is read here fi
 
 ```
 { success:true, data:{ grn_id, gr_no, date, updated_at,
-    invoice: null | {id, inv_no, inv_fin_year},            -- the GRN's first live invoice
+    invoice: null | {id, inv_no, inv_fin_year},            -- the GRN's first live invoice; when only the `invoiced` flag is set: the object with all three null
     first_dispatch_date: null | 'YYYY-MM-DD',              -- IST day of the earliest live dispatch line of any lot
     lines:[{ id, dispatched_qty, has_history, on_invoice, invoice_no, inv_fin_year, on_order, order_customer_name }] } }
 ```
@@ -850,7 +850,8 @@ is made whatever the state of the business.
 
 `create_dispatch_with_stock_check` (through its wrappers) reads an optional `source_order_updated_at` in `p_dispatch_data` (the
 `order_data.updated_at` of `get_order_with_items`). After the "belongs to another customer" check and before any write, when it is present and
-`orders.updated_at` (a plain read) differs: `ORDER_CHANGED`. A retry of the user's own committed create is answered from the idempotency
+a LINE of the order changed after that value (an `order_items.updated_at` later than it, or a line-change entry in `order_revisions`
+written more than 2 seconds later: a line removed, or taken by a dispatch): `ORDER_CHANGED`. A changed note, priority or requested date is not a reason. A retry of the user's own committed create is answered from the idempotency
 cache first. Absent: no check.
 
 ### GRN number (D6, D8)
@@ -858,7 +859,7 @@ cache first. Absent: no check.
 `update_grn`: a non-blank `p_gr_no` that differs from the stored number is `GRN_NUMBER_LOCKED` (after the blank-number check, before the
 duplicate check); equal or NULL is fine. `get_next_grn_number` takes the letter from the highest letter in use
 (`max(left(gr_no,1))` among `^[A-Z][0-9]{1,7}$`), not from the last-entered GRN; then as before: the highest number of that letter's
-series, `>= 1000` moves to the next letter (`Z` to `A`) with `0001`; no GRN: `A0001`.
+series, `>= 1000` moves to the next letter (`Z` to `A`): with `0001`, or, when that letter's series exists already, its next number; no GRN: `A0001`.
 
 ### Dispatch and invoice numbers (D7)
 
@@ -876,7 +877,7 @@ too. `update_grn`: a line without `id` while the GRN is invoiced is `GRN_INVOICE
 ### GRN rates dropped by an edit (D10, D24)
 
 `update_grn`'s clean-up of the GRN's own rates (a rate whose band holds no weight of its item's lines any more, or of another pricing
-kind; an invoiced GRN keeps its rates) now collects what it removes. Staff (`warehouse_security.active_role() = 'staff'`): any removal is
+kind; an invoiced GRN keeps its rates) now collects what it removes. Staff (`warehouse_security.active_role() = 'staff'`): a removal of a rate that fitted a line before the edit is
 `RATES_NEED_MANAGER` (they cannot send rates; a manager makes the change). Administrators and supervisors: `RATES_WOULD_DROP` when a line
 whose weight, or the GRN's pricing mode, was changed by this save lost its GRN-only rate and is not priced by this save: not by a rate of any
 scope for that item and weight in `p_rates`, and not by a GRN-only rate it still has. A rate removed on purpose in the Rates step, a removed
