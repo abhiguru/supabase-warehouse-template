@@ -5,12 +5,12 @@
 --  * Cached create answers (B1, H1): create_dispatch_with_stock_check and save_grn replay a saved answer only while the
 --    dispatch / GRN it created still exists (and is not deleted), otherwise the key is dropped and the call creates
 --    normally; delete_dispatch_with_order_cleanup and delete_grn_safe drop the keys that point at what they delete. The
---    save_grn key lives 24 hours like the dispatch key, and a new answer replaces an expired row of its key.
+--    save_grn key lives 7 days like the dispatch key, and a new answer replaces an expired row of its key.
 --  * Request codes and get_submission_result (D22, contract items 12 to 14): update_dispatch_smart reads
 --    p_dispatch_data->>'request_key', the 3-argument save_invoice and update_invoice read p_invoice_data->>'request_key'.
 --    With a code, this user's saved success answer for it is returned as it was, under lock 71040 and before any other
 --    check, while the record it made still exists; after a successful write the answer is stored in idempotency_keys
---    (24 hours, an expired row of the code is replaced). get_submission_result(p_key) tells the caller, for its own
+--    (7 days, an expired row of the code is replaced). get_submission_result(p_key) tells the caller, for its own
 --    saved answers only, whether a lost save went through: {found:true, response} or {found:false}. It is granted to
 --    authenticated and allowed for staff in authorize_rpc (administrators and supervisors pass the gate).
 --  * Cancelled invoices keep their lines (D20): invoice_trl.disp_trl_id may be empty and its foreign key is
@@ -332,7 +332,7 @@ BEGIN
     RETURN OLD;
 END;
 $$;
--- B1, H1: the save_grn answer is replayed only while its GRN exists, lives 24 hours, and replaces an expired row
+-- B1, H1: the save_grn answer is replayed only while its GRN exists, lives 7 days, and replaces an expired row
 
 DO $patch$
 DECLARE
@@ -361,12 +361,12 @@ $m$
                 AND created_by = (SELECT id FROM user_profiles WHERE auth_user_id = auth.uid());
           END IF;
 $m$,
-    $m$              -- Kept for the 24 hours a retry is answered from it (it was the column default, 1 hour), as
+    $m$              -- Kept for the 7 days a retry is answered from it (it was the column default, 1 hour), as
               -- update_grn and the dispatch create keep theirs. A key another function or user holds is left
               -- alone unless it has expired; an expired row of this key is replaced by the new answer
               -- (migration 120).
               INSERT INTO idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
-              VALUES (p_idempotency_key, 'save_grn', v_result, v_user_profile_id, now() + interval '24 hours')
+              VALUES (p_idempotency_key, 'save_grn', v_result, v_user_profile_id, now() + interval '7 days')
               ON CONFLICT (idempotency_key) DO UPDATE SET
                   rpc_function = EXCLUDED.rpc_function,
                   response = EXCLUDED.response,
@@ -386,6 +386,38 @@ BEGIN
     v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
     IF v_count <> 1 THEN
       RAISE EXCEPTION 'save_grn: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;
+
+-- D22: the update_grn answer is kept 7 days, like every other stored request answer (baseline: 24 hours)
+
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$        -- Kept for the 24 hours a retry is answered from it. A key another
+$m$,
+    $m$            VALUES (p_idempotency_key, 'update_grn', v_result, v_user_profile_id, now() + interval '24 hours')
+$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$        -- Kept for the 7 days a retry is answered from it (migration 120). A key another
+$m$,
+    $m$            VALUES (p_idempotency_key, 'update_grn', v_result, v_user_profile_id, now() + interval '7 days')
+$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('public.update_grn(uuid, character varying, timestamp with time zone, uuid, character varying, uuid, character varying, uuid, character varying, character varying, character varying, boolean, character varying, jsonb, jsonb, character varying, text, jsonb)'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'update_grn: expected marker % once, found % times', i, v_count;
     END IF;
     v_def := replace(v_def, v_old[i], v_new[i]);
   END LOOP;
@@ -1518,10 +1550,10 @@ BEGIN
 
     -- Cache the response if idempotency key provided
     IF p_idempotency_key IS NOT NULL THEN
-        -- Kept for the 24 hours a retry is answered from it. A key another
+        -- Kept for the 7 days a retry is answered from it. A key another
         -- function or user holds is left alone unless it has expired.
         INSERT INTO idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
-        VALUES (p_idempotency_key, 'create_dispatch_with_stock_check', v_cached_response, v_user_id, NOW() + INTERVAL '24 hours')
+        VALUES (p_idempotency_key, 'create_dispatch_with_stock_check', v_cached_response, v_user_id, NOW() + INTERVAL '7 days')
         ON CONFLICT (idempotency_key) DO UPDATE SET
             rpc_function = EXCLUDED.rpc_function,
             response = EXCLUDED.response,
@@ -2029,11 +2061,11 @@ BEGIN
         'dispatch_items', v_dispatch_items_result
     );
 
-    -- The answer is kept for the 24 hours a resend is answered from it, as the dispatch create answer is (migration
+    -- The answer is kept for the 7 days a resend is answered from it, as the dispatch create answer is (migration
     -- 120). A code that another function or user holds is left alone unless it has expired.
     IF v_request_key IS NOT NULL THEN
         INSERT INTO idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
-        VALUES (v_request_key, 'update_dispatch_smart', v_result, v_user_id, now() + interval '24 hours')
+        VALUES (v_request_key, 'update_dispatch_smart', v_result, v_user_id, now() + interval '7 days')
         ON CONFLICT (idempotency_key) DO UPDATE SET
             rpc_function = EXCLUDED.rpc_function,
             response = EXCLUDED.response,
@@ -2549,11 +2581,11 @@ BEGIN
         'message', 'Invoice updated successfully'
     );
 
-    -- The answer is kept for the 24 hours a resend is answered from it, as the dispatch create answer is (migration
+    -- The answer is kept for the 7 days a resend is answered from it, as the dispatch create answer is (migration
     -- 120). A code that another function or user holds is left alone unless it has expired.
     IF v_request_key IS NOT NULL THEN
         INSERT INTO idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
-        VALUES (v_request_key, 'update_invoice', v_result, v_user_id, now() + interval '24 hours')
+        VALUES (v_request_key, 'update_invoice', v_result, v_user_id, now() + interval '7 days')
         ON CONFLICT (idempotency_key) DO UPDATE SET
             rpc_function = EXCLUDED.rpc_function,
             response = EXCLUDED.response,
@@ -2632,11 +2664,11 @@ BEGIN
     -- Step 3: Call original function (now named _internal)
     v_result := save_invoice_internal(p_invoice_id, p_invoice_data, p_invoice_items);
 
-    -- The answer is kept for the 24 hours a resend is answered from it, as the dispatch create answer is (migration
+    -- The answer is kept for the 7 days a resend is answered from it, as the dispatch create answer is (migration
     -- 120). A code that another function or user holds is left alone unless it has expired.
     IF v_request_key IS NOT NULL AND COALESCE((v_result->>'success')::boolean, false) THEN
         INSERT INTO idempotency_keys (idempotency_key, rpc_function, response, created_by, expires_at)
-        VALUES (v_request_key, 'save_invoice', v_result, v_user_id, now() + interval '24 hours')
+        VALUES (v_request_key, 'save_invoice', v_result, v_user_id, now() + interval '7 days')
         ON CONFLICT (idempotency_key) DO UPDATE SET
             rpc_function = EXCLUDED.rpc_function,
             response = EXCLUDED.response,

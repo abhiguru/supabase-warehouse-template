@@ -168,8 +168,8 @@ SELECT pg_temp.edit_assert((SELECT count(*)=3 FROM public.goodsreceived_trl WHER
  AND (SELECT count(*)=1 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid AND package_mark='RETRY'),
  'the repeated save does not add the line again');
 SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(rpc_function='update_grn' AND created_by=:'staff_profile'::uuid
-   AND expires_at BETWEEN now()+interval '23 hours 59 minutes' AND now()+interval '24 hours')
- FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry'),'the key is kept for 24 hours for its function and user');
+   AND expires_at BETWEEN now()+interval '6 days 23 hours 59 minutes' AND now()+interval '7 days')
+ FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry'),'the key is kept for 7 days for its function and user');
 SELECT (:'first_save'::jsonb#>>'{item_mapping,0,grn_trl_item_id}') AS lot_retry \gset
 SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM public.goodsreceived_trl WHERE id=:'lot_retry'::uuid AND package_mark='RETRY'),
  'the line of the first save is still the stored row');

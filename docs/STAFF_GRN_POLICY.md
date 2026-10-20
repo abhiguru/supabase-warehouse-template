@@ -449,9 +449,10 @@ These are the rules the app's forms already apply; the server did not.
   sends is ignored; a later rename of the customer still does not rewrite old
   receipts. Sender and supervisor names and the receipt date are stored as sent.
 - An idempotency key answers only the function and the user that stored it.
-  `save_grn` keeps a key for one hour and dispatch creation for 24 hours; the
-  stored row now expires at the same moment, so retention no longer removes a
-  dispatch key that would still be honoured.
+  Every stored request answer (`save_grn`, `update_grn`, dispatch creation and the
+  `request_key` saves) is kept for 7 days (migration 120; `save_grn` was one hour
+  and the others 24 hours); the stored row expires at the same moment, so retention
+  does not remove a key that would still be honoured.
 - The field filters of the receipt lists (`item_name`, `customer_name`,
   `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
   in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
@@ -491,7 +492,7 @@ the photo files staff may remove) and adds one parameter. It opens nothing.
 
 `update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
 NULL`. With a key, a save that is repeated by the same user for the same
-receipt within 24 hours changes nothing and returns the answer of the first
+receipt within 7 days changes nothing and returns the answer of the first
 save with `"idempotent": true` added, as `save_grn` does. The key is stored in
 `idempotency_keys` under the function name `update_grn`; a key that another
 user or another function stored is neither replayed nor overwritten, and the

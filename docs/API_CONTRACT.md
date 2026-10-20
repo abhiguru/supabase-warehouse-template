@@ -684,11 +684,11 @@ apps).
   any other check, a saved success answer of the calling user for that code (same function, and for an edit the same dispatch /
   invoice, not expired) is returned as it was while the record it saved still exists (dispatch or invoice not deleted); so a resend
   of a save whose answer was lost is never refused for what its own first try changed. After a successful write the answer is stored
-  in `idempotency_keys` for 24 hours (an expired row of the same code is replaced; a code another user or function holds is left
+  in `idempotency_keys` for 7 days (an expired row of the same code is replaced; a code another user or function holds is left
   alone). Without `request_key` nothing changes. The creates keep their own keys: `p_idempotency_key` of
   `create_dispatch_with_stock_check` and `save_grn` / `update_grn`; a replayed dispatch create or GRN save is not returned once its
   dispatch / GRN is deleted (the key is dropped and the call creates normally), `delete_dispatch_with_order_cleanup` and
-  `delete_grn_safe` drop the keys that point at what they delete, and the `save_grn` key lives 24 hours (it was 1).
+  `delete_grn_safe` drop the keys that point at what they delete, and the `save_grn` key lives 7 days (it was 1 hour).
 - **`get_submission_result(p_key text) RETURNS jsonb`.** For the calling user only: `{found:true, response:<the saved answer>}`
   for a non-expired saved success answer under `p_key` (any of the six keyed writes above) whose record still exists (dispatch or
   invoice not deleted; GRN not deleted, taken from `data.grn_id` of `save_grn` and `grn.id` of `update_grn`), else

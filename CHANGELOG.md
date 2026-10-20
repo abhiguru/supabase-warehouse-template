@@ -44,12 +44,13 @@ app that does not read or send it. Details: [docs/API_CONTRACT.md](docs/API_CONT
 - **A lost answer (D22).** `update_dispatch_smart`, the 3-argument `save_invoice` and `update_invoice` read an optional
   `request_key` in their data. With it, the caller's saved success answer for that code is returned as it was, under lock 71040 and
   before any other check, while the dispatch / invoice it saved still exists; after a successful write the answer is stored in
-  `idempotency_keys` for 24 hours. New `get_submission_result(p_key)` tells the caller whether a save went through
+  `idempotency_keys` for 7 days. New `get_submission_result(p_key)` tells the caller whether a save went through
   (`{found:true, response}` or `{found:false}`) for its own saved answers only (dispatch create, dispatch edit, `save_grn`,
   `update_grn`, invoice save and edit); staff may call it. Without `request_key` nothing changes.
+- **Stored request answers are kept for 7 days** (it was 24 hours), so a phone that stays offline after a lost answer can still ask whether its save went through.
 - **Saved create answers.** `create_dispatch_with_stock_check` and `save_grn` replay a saved answer only while the dispatch / GRN it
   created still exists (and is not deleted); otherwise the key is dropped and the call creates normally. `delete_dispatch_with_order_cleanup` and
-  `delete_grn_safe` drop the keys that point at what they delete. The `save_grn` key lives 24 hours (it was 1), and a new answer replaces
+  `delete_grn_safe` drop the keys that point at what they delete. The `save_grn` key lives 7 days (it was 1 hour), and a new answer replaces
   an expired row of its key.
 - **Cancelled invoices keep their lines (D20).** `invoice_trl.disp_trl_id` may be empty and its foreign key is now `ON DELETE SET NULL`:
   removing a dispatch line, or deleting the dispatch, keeps the lines and amounts of a cancelled (soft-deleted) invoice with an empty

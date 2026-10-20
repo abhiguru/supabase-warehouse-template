@@ -106,6 +106,8 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('save_invoice',true,'no'),('update_invoice',true,'no'),('get_next_invoice_number',true,'no'),
  ('get_invoiceable_grns',true,'no'),('get_invoices_list',true,'no'),
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
+ -- migration 120: what became of a save whose answer was lost (the caller's own saved answers only)
+ ('get_submission_result',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
