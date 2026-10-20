@@ -35,6 +35,50 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
    No rows: go on.
 
+## Unreleased: Review fixes (migration 120)
+
+New migration (`review_fixes`), server side of the 2026-10-20 order, dispatch, GRN and invoice reviews and of owner decisions D20 and
+D22. Same signatures, grants kept (one new RPC, `get_submission_result`); every new answer field and request option is optional for an
+app that does not read or send it. Details: [docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Order, dispatch, GRN and invoice review fixes".
+
+- **A lost answer (D22).** `update_dispatch_smart`, the 3-argument `save_invoice` and `update_invoice` read an optional
+  `request_key` in their data. With it, the caller's saved success answer for that code is returned as it was, under lock 71040 and
+  before any other check, while the dispatch / invoice it saved still exists; after a successful write the answer is stored in
+  `idempotency_keys` for 24 hours. New `get_submission_result(p_key)` tells the caller whether a save went through
+  (`{found:true, response}` or `{found:false}`) for its own saved answers only (dispatch create, dispatch edit, `save_grn`,
+  `update_grn`, invoice save and edit); staff may call it. Without `request_key` nothing changes.
+- **Saved create answers.** `create_dispatch_with_stock_check` and `save_grn` replay a saved answer only while the dispatch / GRN it
+  created still exists (and is not deleted); otherwise the key is dropped and the call creates normally. `delete_dispatch_with_order_cleanup` and
+  `delete_grn_safe` drop the keys that point at what they delete. The `save_grn` key lives 24 hours (it was 1), and a new answer replaces
+  an expired row of its key.
+- **Cancelled invoices keep their lines (D20).** `invoice_trl.disp_trl_id` may be empty and its foreign key is now `ON DELETE SET NULL`:
+  removing a dispatch line, or deleting the dispatch, keeps the lines and amounts of a cancelled (soft-deleted) invoice with an empty
+  link. Only live invoices count in the edit and delete guards, so only a cancelled invoice can have an empty link.
+- **Dispatch create.** A lot deleted before the lock is refused (`WH409`) instead of dropped; the answer gains `order_lines_left` (the
+  pending lines of the source order still open, the order queue's rule; `null` without a source order; `source_order_cleared` is
+  unchanged); `source_order_no` is the source order's own number only; `customer_name` and `supervisor_name` are the master tables'
+  names (`COALESCE(name, display_name)` for the supervisor) whatever the client sends, and the supervisor must be an administrator,
+  supervisor or staff member.
+- **Dispatch edit (`update_dispatch_smart`).** Locks the dispatch and answers "Dispatch not found"; refuses an empty line list; keeps the
+  stored names unless the customer or supervisor changes, then takes the new person's name from the master tables; stock movements of an
+  edit reference the dispatch (the line id is in `notes`); a line without a lot is never removed; only live invoices count in the edit
+  and delete guards.
+- **Numbers.** A dispatch or invoice number that is taken answers `{success:false, error_code:'WH409', reason:'NUMBER_TAKEN', number, error}`
+  from dispatch create, `update_dispatch_smart`, both `save_invoice` signatures and `update_invoice` (before: SQLSTATE 23505).
+- **Invoices.** `save_invoice_internal` and `update_invoice` refuse (`WH422`) a financial year that is not the one of the invoice date
+  (`update_invoice` only when the edit changes the date or the year); `save_invoice(jsonb)` without a year takes the year of the invoice
+  date (it took today's) and refuses another one; `update_invoice` keeps the stored `notes` and `duration_mode` when the request has no such
+  key, and clears the old GRN's `invoiced` flag on a move only when no other live invoice holds it; the 3-argument `save_invoice` no longer
+  refuses on the phone's estimated total, labour and tax amount; `delete_invoice` locks the live invoice, re-checks payments, and clears
+  `goodsreceived.invoiced` only when no other live invoice holds the GRN (also in its trigger).
+- **GRN rates.** `apply_grn_rates` (through `save_grn` / `update_grn` `p_rates`) accepts an optional `seen_ids` on each customer / everyone
+  entry and answers `STALE_RATES` (`error_code` and `reason`, `data.ids` the unlisted rows) when a row of that scope and band in force on the
+  GRN day is not listed; without `seen_ids` nothing is checked.
+- **Smaller.** `confirm_dispatch_image_upload` and `confirm_grn_image_upload` lock the pending row and answer `NOT_FOUND` when it went away;
+  `authorize_rpc` lets a missing cart line through to `update_order_item_quantity` / `remove_item_from_order`, which answer "Order item not
+  found" (a line of another customer is still refused) and lets staff call `get_submission_result`; dispatch create, `update_dispatch_smart`
+  and `add_item_to_order` refuse the lots of a deleted GRN.
+
 ## Unreleased: Push review fixes (migration 118)
 
 New migration (`push_review`): `create_customer` and `update_customer` refuse a name that is only tabs, new lines or no-break

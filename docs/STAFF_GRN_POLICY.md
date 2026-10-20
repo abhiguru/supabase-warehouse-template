@@ -84,7 +84,9 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   administrators and supervisors only (migration 41).
 - **Edits may remove lines and images; whole documents cannot be deleted.**
   `update_grn` removes undispatched lines and unlisted images, `update_dispatch_smart`
-  replaces dispatch lines and `update_invoice` replaces invoice lines. That is
+  replaces dispatch lines (migration 120: a list that is sent is never empty, an
+  empty list is refused with `A dispatch needs at least one line`; a line without
+  a lot, old data, is not in the list the app sends and is kept) and `update_invoice` replaces invoice lines. That is
   the accepted meaning of "edit". The explicit `delete_*` RPCs and direct table
   writes stay denied, which the test suite now proves through the real guarded
   RPCs rather than a direct probe that could never fail.
@@ -382,6 +384,7 @@ several customers calls once per customer.
 | Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
 | Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
+| What became of a save whose answer was lost (`get_submission_result`, migration 120): the caller's own saved answers only | yes | yes | yes | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
 

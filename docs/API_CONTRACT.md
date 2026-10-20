@@ -472,7 +472,9 @@ before anything is written; without `p_rates` a staff call works as before.
   lines are written. A failure rolls the whole call back: the GRN is not saved, an update is undone.
   Entries are
   `{scope:'grn', item_id, weight_min, weight_max, unit_price, labour_rate, tax_percent}` or
-  `{scope:'customer'|'everyone', item_id, weight_min, weight_max, to:'YYYY-MM-DD'|null, unit_price, labour_rate, tax_percent}`.
+  `{scope:'customer'|'everyone', item_id, weight_min, weight_max, to:'YYYY-MM-DD'|null, unit_price, labour_rate, tax_percent}`;
+  a customer / everyone entry may also carry `seen_ids` (migration 120, see
+  [Order, dispatch, GRN and invoice review fixes](#order-dispatch-grn-and-invoice-review-fixes-migration-120-2026-10-20)).
   A monthly GRN needs labour; a ONE_TIME GRN does not read it and stores 0.
   1. Validation: not a list or an entry not an object -> `INVALID_BANDS`; unknown scope ->
      `INVALID_SCOPE`; weights -> `INVALID_BAND` (`data.index`, `data.field`); amounts ->
@@ -622,6 +624,96 @@ rows). `create_item_storage_price` has no window, as before.
 error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing is changed), or `{success:false,
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
+
+## Order, dispatch, GRN and invoice review fixes (migration 120, 2026-10-20)
+
+Same signatures and grants as before (one new RPC, `get_submission_result`). Every new answer field and request option is
+optional: an app that does not read or send it works as before.
+
+### Dispatch create and edit
+
+- **`order_lines_left`.** The success answer of `create_dispatch_with_stock_check` gains `order_lines_left`: an integer, the
+  number of the source order's lines that are still open after this dispatch, counted the way the order queue counts them
+  (only lines with `item_status = 'pending'`); `null` when the dispatch has no source order. `source_order_cleared` is
+  unchanged (true whenever there is a source order, whether or not lines are left).
+- **`source_order_no`.** Only the source order's own `order_no`; a client-sent `source_order_no` is ignored, and a dispatch
+  without a source order has none (`NULL`).
+- **Names.** Create stores `customer_name` and `supervisor_name` from the master tables (`customers.name`,
+  `COALESCE(user_profiles.name, user_profiles.display_name)`), whatever names the client sends, and the supervisor must be an
+  administrator, supervisor or staff member. `update_dispatch_smart` keeps the stored names unless `customer_id` /
+  `supervisor_id` changes; then the stored name is the new customer's or the new supervisor's from the master tables, never the
+  client's and never the old person's.
+- **Edit.** `update_dispatch_smart` locks the dispatch and answers `{success:false, error:'Dispatch not found'}` for a dispatch
+  that is deleted or gone; refuses a line list that is sent but empty (`A dispatch needs at least one line`, `WH409`); never
+  removes a line that has no lot (old data); refuses a new or raised line of a deleted GRN (`Item belongs to a deleted GRN: ...`,
+  `WH409`); and its stock movements reference the dispatch (the line id is in the note). Create refuses a lot deleted meanwhile
+  (`A lot of this dispatch was removed meanwhile; reload and try again`, `WH409`) and the lots of a deleted GRN; `add_item_to_order`
+  answers `GRN item not found` for a lot of a deleted GRN. Only live invoices count in the guards of edit and delete.
+- **Cancelled invoices keep their lines.** `invoice_trl.disp_trl_id` may be empty and its foreign key is `ON DELETE SET NULL`:
+  removing a dispatch line, or the dispatch, keeps the lines and amounts of a soft-deleted invoice with an empty link. A live
+  invoice's line still blocks the removal (`Cannot modify invoiced items` for an edit; `Cannot delete dispatch <no>: <n> invoice items exist` for a delete).
+
+### `NUMBER_TAKEN`
+
+A dispatch or invoice number that another document holds is answered by name, before anything is written, instead of the raw
+unique-key error (SQLSTATE `23505`):
+
+```
+{ "success": false, "error_code": "WH409", "reason": "NUMBER_TAKEN", "number": "<the number>", "error": "<English text>" }
+```
+
+From `create_dispatch_with_stock_check` (`dispatch_disp_no_key`, checked over all rows, deleted ones too), `update_dispatch_smart`
+(a number another dispatch holds), `save_invoice` (both signatures) and `update_invoice` (`unique_inv_no_per_year`, within the
+financial year; an invoice that keeps its own number is not refused). The invoice answers of the three-argument path also carry
+`function_version`. `save_grn` already refuses a duplicate GRN number by name and is unchanged. The answer has no `holder`.
+
+### `seen_ids` and `STALE_RATES` on the GRN rates
+
+Each `customer` / `everyone` entry of `p_rates` (`save_grn`, `update_grn`) MAY carry `seen_ids`: the list of the
+`item_storage_prices` ids of that scope (the item for the GRN's business, or for everyone) that the sheet showed in force on the
+GRN day. When it is present and a row of that scope, price type and band (`weight_min`, `weight_max`) that is in force on the GRN
+day is not in the list, nothing is written and the answer is `{success:false, error_code:'STALE_RATES', reason:'STALE_RATES',
+error, message, data:{index, ids}}`, `data.ids` the unlisted ids (sorted), the same shape family as `replace_item_rates`. A
+`seen_ids` that is not a list of uuids is `INVALID_BANDS` (`data.field:'seen_ids'`). Without `seen_ids` nothing is checked (older
+apps).
+
+### Request codes and `get_submission_result` (owner decision D22: one rule for a lost answer)
+
+- **Request code.** `update_dispatch_smart` reads `p_dispatch_data->>'request_key'`; the three-argument `save_invoice` and
+  `update_invoice` read `p_invoice_data->>'request_key'`. When present, then under the document lock (advisory 71040) and before
+  any other check, a saved success answer of the calling user for that code (same function, and for an edit the same dispatch /
+  invoice, not expired) is returned as it was while the record it saved still exists (dispatch or invoice not deleted); so a resend
+  of a save whose answer was lost is never refused for what its own first try changed. After a successful write the answer is stored
+  in `idempotency_keys` for 24 hours (an expired row of the same code is replaced; a code another user or function holds is left
+  alone). Without `request_key` nothing changes. The creates keep their own keys: `p_idempotency_key` of
+  `create_dispatch_with_stock_check` and `save_grn` / `update_grn`; a replayed dispatch create or GRN save is not returned once its
+  dispatch / GRN is deleted (the key is dropped and the call creates normally), `delete_dispatch_with_order_cleanup` and
+  `delete_grn_safe` drop the keys that point at what they delete, and the `save_grn` key lives 24 hours (it was 1).
+- **`get_submission_result(p_key text) RETURNS jsonb`.** For the calling user only: `{found:true, response:<the saved answer>}`
+  for a non-expired saved success answer under `p_key` (any of the six keyed writes above) whose record still exists (dispatch or
+  invoice not deleted; GRN not deleted, taken from `data.grn_id` of `save_grn` and `grn.id` of `update_grn`), else
+  `{found:false}`. It never returns another user's answer and never hides a database error as `found:false` (an error is raised, so
+  the caller asks again rather than sending the save again). Allowed for administrators, supervisors and staff (`authorize_rpc`);
+  a customer account is refused (`Staff access required`).
+
+### Invoices
+
+- `update_invoice` keeps the stored `notes` and `duration_mode` when the request has no such key (the app sends neither; before, a
+  missing key stored `NULL` notes and reset the duration mode to `legacy`). A key that is present is stored as sent (`duration_mode` is
+  validated).
+- The financial year (`inv_fin_year`) must be the one of the invoice date (`WH422`): checked by both `save_invoice` signatures on
+  every save and by `update_invoice` only when the edit changes the invoice date or the year. `save_invoice(jsonb)` without a year
+  takes the year of the invoice date (it took today's).
+- `update_invoice` moving an invoice to another GRN clears the old GRN's `invoiced` flag only when no other live invoice holds it.
+- The three-argument `save_invoice` no longer refuses on the phone's estimated header `total`, `labour` and `tax_amount` (the
+  server recomputes them); the discount keeps its range check. `delete_invoice` locks the live invoice, re-checks payments, and
+  clears `goodsreceived.invoiced` only when no other live invoice holds the GRN (also in its trigger).
+
+### Smaller
+
+`confirm_dispatch_image_upload` and `confirm_grn_image_upload` lock the pending row and answer `{success:false, code:'NOT_FOUND'}` when
+it went away; `update_order_item_quantity` and `remove_item_from_order` answer `Order item not found` for a cart line that no
+longer exists (the guard lets a missing line through; a line of another customer is still refused with `Customer access denied`).
 
 ## List freshness (migration 106, 2026-10-19)
 

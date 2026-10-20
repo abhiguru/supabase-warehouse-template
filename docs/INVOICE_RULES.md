@@ -168,8 +168,11 @@ has none. `get_invoice_detail` returns `discount_reason`,
 administrators, supervisors and staff; a customer account does not receive
 them, from the RPC or from the table ("Internal columns" below).
 `get_invoice_data` does not return them yet. The
-three-argument path still validates that the submitted header numbers are
-non-negative before they are discarded. Every save validates line ownership,
+three-argument path does not range-check the submitted header `total`, `labour`
+and `tax_amount` any more (migration 120): they are the phone's estimates, the
+server discards them and stores its own figures, so an estimate is never a
+reason to refuse a save (an amount that does not fit its stored column is still
+refused). The discount keeps its range check. Every save validates line ownership,
 GRN/customer consistency and dispatch references and rolls the whole save back
 on a missing, duplicate or unrelated line. The mobile client computes the same
 numbers for display; the stored values are authoritative.
@@ -237,6 +240,16 @@ it uses the financial year of today's date in India (`Asia/Kolkata`), which
 turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date.
 
+**The year must be the invoice date's (migration 120).** `save_invoice(jsonb)`,
+when it is sent no year, takes the financial year of the invoice date in India
+(it took today's), and both `save_invoice` signatures and `update_invoice` refuse
+a year that is not the one of the invoice date with `The invoice date belongs to
+financial year <year>, not <sent>` (SQLSTATE `WH422`). `update_invoice` checks
+this only when the edit changes the invoice date or the year, so an invoice saved
+earlier under another rule can still be edited with its own date and year.
+When an edit moves an invoice to another receipt, the old receipt stays marked
+invoiced if another live invoice still holds it.
+
 **Range (migration 73).** An invoice number runs from 1 to 99999999
 (`INVOICE_NUMBER_MAX`, eight digits so that year-prefixed numbers such as
 20260929 stay valid; held by `warehouse_security.invoice_number_max()`).
@@ -254,7 +267,12 @@ migration 73 that refusal came at 2147483647 and any typed number was stored, so
 one invoice numbered 2147483647 blocked the suggestion for its whole year. The
 user can still type a free number in the range. The suggestion is not a
 reservation: two people saving at once can get the same number, and the second
-save is refused by the unique constraint.
+save is refused by name (migration 120): `{"success": false, "error_code": "WH409",
+"reason": "NUMBER_TAKEN", "number": "<the number>", "error": "Invoice number <n> is
+already used in financial year <year>"}` from `save_invoice` (both signatures)
+and `update_invoice`, checked before anything is written (an edit that keeps
+the invoice's own number is not refused). Before migration 120 the answer was the raw
+unique-constraint error (SQLSTATE `23505`, `unique_inv_no_per_year`).
 
 **Which rows count.** Every invoice row of the year, also a soft-deleted one
 (`deleted_at` set). The unique constraint `unique_inv_no_per_year` is on
@@ -268,6 +286,14 @@ and the number of a removed invoice is free again, so deleting the year's
 last invoice makes its number the next suggestion. Soft-deleted rows come only
 from the service key, an operator in the database or earlier data. If such a
 row holds 99999999, its year is refused as above.
+
+The lines of a soft-deleted (cancelled) invoice keep their amounts when the
+dispatch line they were made from is removed, by a dispatch edit or by deleting
+the dispatch: `invoice_trl.disp_trl_id` is then empty (its foreign key is `ON
+DELETE SET NULL`, migration 120). Only a soft-deleted invoice can have such a
+line: removing or changing a dispatch line of a live invoice stays refused
+(`Cannot modify invoiced items`, and deleting a dispatch with a live invoice
+line), and the guards count only live invoices.
 
 ## Reproducible fixture
 
