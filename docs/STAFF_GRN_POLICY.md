@@ -372,7 +372,7 @@ several customers calls once per customer.
 | The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
 | Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |
-| Customers and items: create, edit, delete | yes | yes | no | no |
+| Customers and items: create, edit, delete (items also `get_item_usage`) | yes | yes | no | no |
 | User list and details | yes | yes, without administrators | no | no |
 | Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47) | no | no |
 | Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |

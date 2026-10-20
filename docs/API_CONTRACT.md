@@ -366,6 +366,33 @@ else `standard` when a standard rate is saved (its tiers from today); else `none
 An item that turns from inactive to active and has no default rate row at all gets the standard tiers
 from today (nothing when no standard rate is saved). The answer is unchanged.
 
+## Items screens (tweak 2026-10-20)
+
+Refusals of `create_item`, `update_item` and `get_item_usage` are `{ success: false, error_code, error, message }`
+(`error_code` and `error` are new on these refusals; `message` is the English text they had before. The app reads
+`error_code`). Codes:
+`DUPLICATE_NAME` (another item has this name: the match ignores upper/lower case and spaces around the name (on both the sent and the stored name), and
+covers deactivated items; saving an item under the name it already has is never refused, even if an older item differs from it only in case; the unique constraint `items_name_key` also maps to it when two saves race),
+`NOT_FOUND` (`update_item`, `get_item_usage`: the item does not exist, for example deleted by someone else),
+`INVALID_INPUT` (blank name; name over 80 characters; packaging or description over 40),
+`PERMISSION_DENIED` (role check inside the body). Staff and customers never reach the body: the guard raises
+SQLSTATE 42501 first.
+
+- `create_item`: signature unchanged; the codes above (`DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`).
+- `update_item(p_item_id, p_name, p_packaging DEFAULT NULL, p_description DEFAULT NULL, p_active DEFAULT NULL)`:
+  `p_active` not sent or NULL keeps the item's current value (it used to default to true and re-activate the item).
+  Sending true or false sets it as before. `p_packaging` and `p_description` are different: not sent or NULL
+  CLEARS them (as before), so the app must always send the current values. `create_item` with `p_active` NULL
+  creates an active item. Codes: `NOT_FOUND`, `DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`.
+- `get_items`: the search text also matches `packaging` (case-insensitive substring, like name and description).
+  Order, paging and the answer are unchanged.
+- `get_item_usage(p_item_id uuid)`, read-only, administrators and supervisors: answer
+  `{ success: true, data: { item_id, name, active, grn_lines, order_lines, grn_rates, price_rows, rate_count,
+  in_use, can_delete } }`. `grn_lines` (GRN lines, including lines of deleted GRNs, as `delete_item_safe` counts them), `order_lines` and `grn_rates` are what makes
+  `delete_item_safe` refuse; `in_use` is true when any of the three is above 0 and `can_delete` is its opposite.
+  `price_rows` are the item's storage price rows (deleted with the item) and `rate_count` the same rows counted as
+  the Item pricing screens do (one per customer or default, price type and start date). Unknown id: `NOT_FOUND`.
+
 ## Rates on the GRN sheet and the rate start floor (migration 86, 2026-10-15)
 
 Errors are `{ success: false, error, error_code, data }`; those of `save_grn` and `update_grn` also carry
