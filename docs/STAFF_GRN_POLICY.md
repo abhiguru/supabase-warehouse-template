@@ -109,8 +109,10 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
 - **Refusals roll back.** A refused dispatch edit (invoiced lines, insufficient
   stock) no longer leaves a half-applied header (migration 25).
 - **Status changes.** `update_user_status(false)` disables the enrollment and
-  revokes sessions; `update_user_status(true)` re-approves a disabled or
-  rejected profile. Pending enrollments still need `operator_review_enrollment`.
+  revokes sessions; `update_user_status(true)` re-activates a disabled profile
+  only. A pending request answers ENROLLMENT_PENDING (decide it with
+  `operator_review_enrollment`) and a rejected one ENROLLMENT_REJECTED
+  ("Review again", `review_enrollment_again`, puts it back in Access requests).
 
 ## Orders and queue, 9 October 2026
 
@@ -376,6 +378,8 @@ several customers calls once per customer.
 | Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
 | Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
 | Review enrollment requests | yes | no | no | no |
+| Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
+| Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |

@@ -143,7 +143,9 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- migration 78: marking a service account, administrators only (tests/service_accounts.sql)
  ('set_service_account',false,'no'),
  -- migration 82: switching a business off or on, administrators and supervisors only
- ('set_customer_active',false,'no');
+ ('set_customer_active',false,'no'),
+ -- users review: administrators only (a supervisor passes the guard and is refused in the body)
+ ('review_enrollment_again',false,'no');
 GRANT SELECT ON ra_rpc TO authenticated;
 -- Granted functions that do not go through the guard: session plumbing and
 -- own-account calls that authorize themselves.

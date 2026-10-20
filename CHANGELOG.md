@@ -22,6 +22,14 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
 7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
    "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
 
+## Unreleased: Users screens review (server half)
+
+New migration (`users_review`): `user_profiles.deleted_at`; access-request tags, deleted flag and assigned-customer state in
+`get_users_list` / `get_user_details`; `update_user_status` no longer approves a pending or rejected request and refuses deleted
+accounts and a supervisor disconnecting a service account; `update_user_role` removes the customer assignments of a Customer given
+another role; new `review_enrollment_again`; coded errors for the customer assignment RPCs; `delete_user_account` retry succeeds.
+Details: `docs/API_CONTRACT.md`, "Users screens".
+
 ## Unreleased: Kong 3.9.4 and the sensor bridge on Python 3.15 (2026-10-20)
 
 No migration. The setup rerun pulls the new Kong image and rebuilds the sensor bridge image (profile `sensors` only).

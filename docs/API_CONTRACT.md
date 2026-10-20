@@ -234,6 +234,56 @@ for any other value; the earlier refusals are unchanged. Returned as `error_code
   Answer `{success:true, user_id, is_service_account, message}`; `error_code` `INVALID_INPUT`,
   `NOT_FOUND`, `SELF_EDIT_FORBIDDEN`, `LAST_ADMIN`.
 
+## Users screens (migration 113, tweak batch 2026-10-20)
+
+All answers below are `{ success, ... }`; a refusal is `{ success: false, error, error_code, message }` (`error` keeps its
+earlier value, `error_code` is the stable code the app reads). The user row carries the same keys in `get_users_list`
+(`users[]`) and `get_user_details` (`user`).
+
+- **`user_profiles.deleted_at`**: set by `delete_user_account`; accounts deleted earlier are backfilled (mobile `DEL` plus 12 hex
+  characters, name `Deleted User`; whatever their state, they are also set inactive and `disabled`). A deleted profile keeps its row.
+- **New row keys** in both reads: `enrollment_status` (`'pending'`, `'rejected'` or `null`: approved and disabled are `null`),
+  `is_deleted` (boolean), `deleted_at` (timestamp or `null`). A deleted account has `mobile: null` (no phone is shown or
+  searched).
+- **`get_users_list(p_search_query, p_role_filter, p_active_filter, p_limit, p_offset)`** (signature unchanged).
+  `pagination.total_count` counts live accounts only; new `pagination.total_with_deleted` counts every row the list can return.
+  Rows are ordered live accounts first (by name, then id), deleted accounts after them, so the first `total_count` rows are live;
+  `has_more` is `offset + limit < total_with_deleted`. Errors: `PERMISSION_DENIED`, `INTERNAL_ERROR`.
+- **`get_user_details(p_user_id)`**: `assigned_customers[]` is sorted by customer name, then id, and each entry has the new key
+  `customer_active` (the business's `active`). Errors: `PERMISSION_DENIED` (not admin or supervisor, or a supervisor asking for an
+  administrator), `INVALID_INPUT`, `NOT_FOUND`, `INTERNAL_ERROR`. A staff or customer caller is refused by the guard with SQLSTATE 42501
+  'Staff access required', but this function (and `get_users_list`) catches every error, so the caller actually gets
+  `{ success: false, error: 'INTERNAL_ERROR', error_code: 'INTERNAL_ERROR', message: 'Failed to retrieve user details: Staff access required' }`
+  (an old pattern, unchanged); the app must treat that as a refusal.
+- **`update_user_status(p_user_id, p_active)`** (unchanged signature). Order of refusals: `PERMISSION_DENIED` (caller),
+  `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`, `SERVICE_ACCOUNT_READ_ONLY` (switching a service account on),
+  `PERMISSION_DENIED` (a supervisor switching a service account off: the FAS sync "Disconnect" is administrator only),
+  `SELF_EDIT_FORBIDDEN`, `CANNOT_MODIFY_ADMIN` (supervisor on an administrator), `ENROLLMENT_NOT_APPROVED` (supervisor on a
+  person whose access is not approved), `ENROLLMENT_PENDING` / `ENROLLMENT_REJECTED` (only when `p_active` is true: the switch
+  never approves an access request; the pending one is reviewed in Access requests, the rejected one with `review_enrollment_again`),
+  `LAST_ADMIN`, `INTERNAL_ERROR`. Setting a pending or rejected person inactive is "Status unchanged" (success).
+- **`update_user_role(p_user_id, p_new_role)`** (unchanged signature). A Customer given another role has all active customer
+  assignments set inactive in the same transaction; the answer has the new key `removed_customer_count` (integer, 0 when none or
+  when the role is unchanged). Errors: `PERMISSION_DENIED`, `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`,
+  `SERVICE_ACCOUNT_READ_ONLY`, `SELF_EDIT_FORBIDDEN`, `CANNOT_MODIFY_ADMIN` (supervisor on an administrator; `error` is still
+  `PERMISSION_DENIED` for old apps), `CANNOT_PROMOTE_TO_ADMIN`, `ENROLLMENT_PENDING`, `ENROLLMENT_REJECTED` (a rejected person's role cannot be changed; use
+  `review_enrollment_again` first), `ENROLLMENT_NOT_APPROVED`, `LAST_ADMIN`,
+  `INTERNAL_ERROR`.
+- **`review_enrollment_again(p_user_id uuid)`** (new, administrators only; a supervisor gets `PERMISSION_DENIED`, staff and
+  customers are refused by the guard: the call raises SQLSTATE 42501, it is not turned into an INTERNAL_ERROR answer). A rejected
+  request becomes `pending` with role `customer` (the request's original state; approval picks the role), the profile stays
+  inactive, and it shows in Access requests again. Answer `{ success: true, user_id, enrollment_status: 'pending', changed, message }`; `changed` is
+  `false` when it was already pending (idempotent). Errors: `PERMISSION_DENIED`, `INVALID_INPUT`, `NOT_FOUND`, `ACCOUNT_DELETED`,
+  `SERVICE_ACCOUNT_READ_ONLY`, `NOT_REJECTED` (approved or disabled), `INTERNAL_ERROR`.
+- **`assign_customer_to_user(target_user_mobile, target_customer_id, assigner_comment)`** and
+  **`remove_customer_assignment(target_user_mobile, target_customer_id)`** still return a boolean and raise on refusal; the
+  exception message now starts with a stable code and a colon (`CODE: text`): `PERMISSION_DENIED`, `NOT_FOUND` (person not found or
+  inactive, or the customer does not exist or is deleted), `SELF_EDIT_FORBIDDEN` and `CANNOT_MODIFY_ADMIN` (supervisor, SQLSTATE
+  42501), `SERVICE_ACCOUNT_READ_ONLY`, and for assign only `CUSTOMER_INACTIVE` (a deactivated business).
+- **`delete_user_account()`**: a caller whose account is already deleted gets `{ success: true, message: 'Account deleted',
+  already_deleted: true }` (the retry of a timed-out delete). Other answers unchanged; `LAST_ADMIN` now also carries `error_code`.
+- **`warehouse_security.other_active_admin_exists`** leaves out deleted accounts.
+
 ## Customers: deactivate, delete, restore (migration 82, 2026-10-15)
 
 A deactivated business (`active = false`) is offered by no staff customer picker (`search_customers`: new GRN, dispatch, order, and the list-filter
