@@ -8,6 +8,9 @@
 --      and the invoice's trigger fires
 --   F  remove_item_from_order is what makes a dispatch form opened earlier stale (ORDER_CHANGED)
 --   G  restore_to_order's search_path ends with pg_temp
+--   H  a legacy line holding more than it dispatched (99 on 10 bags) lowered to 4 gives back 6, not 95
+--   I  a direct dispatch whose recorded order line is on a DISPATCHED order does not give back into that order
+--   J  the source order is reopened before the lines are walked: a raise in the same edit takes from it, lots sorted both ways
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -52,7 +55,7 @@ SELECT pg_temp.pr_login('9888888931') AS admin_claims \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.pr_assert(public.create_customer('Push Customer '||n,'98888889'||(40+i))->>'success'='true','customer '||n)
- FROM unnest(ARRAY['A','B','C','D','E','F']) WITH ORDINALITY AS t(n,i);
+ FROM unnest(ARRAY['A','B','C','D','E','F','G','H','I','J']) WITH ORDINALITY AS t(n,i);
 SELECT pg_temp.pr_assert(public.create_item('Push Potatoes','Bag')->>'success'='true','item potatoes');
 SELECT pg_temp.pr_assert(public.create_item('Push Onions','Bag')->>'success'='true','item onions');
 RESET ROLE;
@@ -62,6 +65,10 @@ SELECT id AS cc FROM public.customers WHERE name='Push Customer C' \gset
 SELECT id AS cd FROM public.customers WHERE name='Push Customer D' \gset
 SELECT id AS ce FROM public.customers WHERE name='Push Customer E' \gset
 SELECT id AS cf FROM public.customers WHERE name='Push Customer F' \gset
+SELECT id AS cg FROM public.customers WHERE name='Push Customer G' \gset
+SELECT id AS ch FROM public.customers WHERE name='Push Customer H' \gset
+SELECT id AS ci FROM public.customers WHERE name='Push Customer I' \gset
+SELECT id AS cj FROM public.customers WHERE name='Push Customer J' \gset
 SELECT id AS potatoes FROM public.items WHERE name='Push Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Push Onions' \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -76,7 +83,11 @@ FROM (VALUES
  ('PG5',:'ce','Push Customer E',jsonb_build_array(pg_temp.pr_line(:'onions','Push Onions',40,'PG5-U'))),
  ('PG6',:'ce','Push Customer E',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',10,'PG6-X'))),
  ('PG7',:'ce','Push Customer E',jsonb_build_array(pg_temp.pr_line(:'onions','Push Onions',10,'PG7-X'))),
- ('PG8',:'cf','Push Customer F',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG8-A'),pg_temp.pr_line(:'onions','Push Onions',20,'PG8-B')))
+ ('PG8',:'cf','Push Customer F',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG8-A'),pg_temp.pr_line(:'onions','Push Onions',20,'PG8-B'))),
+ ('PG9',:'cg','Push Customer G',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG9-X'))),
+ ('PG10',:'ch','Push Customer H',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG10-X'))),
+ ('PG11',:'ci','Push Customer I',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG11-A'),pg_temp.pr_line(:'onions','Push Onions',20,'PG11-B'))),
+ ('PG12',:'cj','Push Customer J',jsonb_build_array(pg_temp.pr_line(:'potatoes','Push Potatoes',20,'PG12-A'),pg_temp.pr_line(:'onions','Push Onions',20,'PG12-B')))
 ) AS g(no,cust,cname,items);
 RESET ROLE;
 SELECT id AS lot_1x FROM public.goodsreceived_trl WHERE package_mark='PG1-X' \gset
@@ -88,6 +99,13 @@ SELECT id AS lot_5u FROM public.goodsreceived_trl WHERE package_mark='PG5-U' \gs
 SELECT id AS lot_6 FROM public.goodsreceived_trl WHERE package_mark='PG6-X' \gset
 SELECT id AS lot_8a FROM public.goodsreceived_trl WHERE package_mark='PG8-A' \gset
 SELECT id AS lot_8b FROM public.goodsreceived_trl WHERE package_mark='PG8-B' \gset
+SELECT id AS lot_9 FROM public.goodsreceived_trl WHERE package_mark='PG9-X' \gset
+SELECT id AS lot_10 FROM public.goodsreceived_trl WHERE package_mark='PG10-X' \gset
+SELECT id AS lot_11a FROM public.goodsreceived_trl WHERE package_mark='PG11-A' \gset
+SELECT id AS lot_11b FROM public.goodsreceived_trl WHERE package_mark='PG11-B' \gset
+SELECT id AS lot_12a FROM public.goodsreceived_trl WHERE package_mark='PG12-A' \gset
+SELECT id AS lot_12b FROM public.goodsreceived_trl WHERE package_mark='PG12-B' \gset
+SELECT pg_temp.pr_assert(:'lot_11a'::uuid < :'lot_11b'::uuid AND :'lot_12a'::uuid < :'lot_12b'::uuid,'fixture: lot a sorts before lot b (the order the edit walks them in)');
 SELECT id AS grn_6 FROM public.goodsreceived WHERE gr_no='PG6' \gset
 SELECT id AS grn_7 FROM public.goodsreceived WHERE gr_no='PG7' \gset
 SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'ca','customer_name','Push Customer A','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_a \gset
@@ -95,6 +113,10 @@ SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cb','customer
 SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cc','customer_name','Push Customer C','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_c \gset
 SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cd','customer_name','Push Customer D','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_d \gset
 SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'ce','customer_name','Push Customer E','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_e \gset
+SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cg','customer_name','Push Customer G','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_g \gset
+SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'ch','customer_name','Push Customer H','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_h \gset
+SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'ci','customer_name','Push Customer I','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_i \gset
+SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cj','customer_name','Push Customer J','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_j \gset
 SELECT jsonb_build_object('disp_date','2026-05-02','customer_id',:'cf','customer_name','Push Customer F','supervisor_id',:'admin_profile','supervisor_name','Push Administrator') AS for_f \gset
 
 -- ===========================================================================
@@ -353,3 +375,89 @@ SELECT pg_temp.pr_assert(:'f_ok'::jsonb->>'success'='true','twin: the form reope
 -- ===========================================================================
 SELECT pg_temp.pr_assert((SELECT p.proconfig @> ARRAY['search_path=pg_catalog, public, pg_temp'] FROM pg_proc p
   WHERE p.oid='warehouse_security.restore_to_order(uuid,uuid,uuid,uuid,uuid,integer,uuid)'::regprocedure),'restore_to_order search_path ends with pg_temp');
+
+-- ===========================================================================
+-- H. Legacy line: cart_quantity_consumed 99 on a 10-bag line (customer G, direct dispatch), lowered to 4.
+-- ===========================================================================
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_dispatch_with_stock_check(:'for_g'::jsonb||'{"disp_no":"PDG"}'::jsonb,ARRAY[jsonb_build_object('gr_trl_id',:'lot_9','disp_qty',10)],0,'pr-ddg') AS ddg \gset
+RESET ROLE;
+SELECT (:'ddg'::jsonb->>'dispatch_id')::uuid AS disp_g \gset
+UPDATE public.dispatch_trl SET cart_quantity_consumed=99 WHERE disp_id=:'disp_g'::uuid;
+SELECT pg_temp.pr_assert(:'ddg'::jsonb->>'success'='true' AND (SELECT cart_quantity_consumed=99 AND disp_qty=10 FROM public.dispatch_trl WHERE disp_id=:'disp_g'::uuid),'fixture: a legacy line holds 99 on 10 bags: '||:'ddg');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_g'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_9','disp_qty',4)]) AS h_lower \gset
+RESET ROLE;
+SELECT pg_temp.pr_assert(:'h_lower'::jsonb->'order_sync'='{"taken": 0, "given_back": 6}'::jsonb
+ AND (SELECT cart_quantity_consumed=4 AND disp_qty=4 FROM public.dispatch_trl WHERE disp_id=:'disp_g'::uuid)
+ AND (SELECT sum(requested_quantity)=6 FROM public.order_items oi JOIN public.orders o ON o.id=oi.order_id WHERE o.customer_id=:'cg'::uuid AND oi.grn_items_id=:'lot_9'::uuid),
+ '99 held on 10 bags, lowered to 4: 6 go back (the uncapped result would be 95): '||:'h_lower');
+
+-- ===========================================================================
+-- I. Direct dispatch (no source order) whose recorded order line is on a DISPATCHED order (customer H). The order asked for 15;
+--    the dispatch took 10 (5 left on the line, the line is recorded on the dispatch line). The order is then set to DISPATCHED.
+-- ===========================================================================
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_or_create_cart(:'ch'::uuid) AS cart_h \gset
+SELECT pg_temp.pr_assert(public.add_item_to_order(:'cart_h'::uuid,:'lot_10'::uuid,15)->>'success'='true','order line for H (15)');
+SELECT public.create_dispatch_with_stock_check(:'for_h'::jsonb||'{"disp_no":"PDH"}'::jsonb,ARRAY[jsonb_build_object('gr_trl_id',:'lot_10','disp_qty',10)],0,'pr-ddh') AS ddh \gset
+RESET ROLE;
+SELECT (:'ddh'::jsonb->>'dispatch_id')::uuid AS disp_h \gset
+UPDATE public.orders SET status='DISPATCHED' WHERE id=:'cart_h'::uuid;
+SELECT pg_temp.pr_assert(:'ddh'::jsonb->>'success'='true'
+ AND (SELECT cart_quantity_consumed=10 AND source_order_item_id IS NOT NULL FROM public.dispatch_trl WHERE disp_id=:'disp_h'::uuid)
+ AND (SELECT requested_quantity=5 FROM public.order_items WHERE order_id=:'cart_h'::uuid AND grn_items_id=:'lot_10'::uuid)
+ AND (SELECT status='DISPATCHED' FROM public.orders WHERE id=:'cart_h'::uuid),'fixture: live recorded line (5 left) on a DISPATCHED order: '||:'ddh');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_h'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_10','disp_qty',4)]) AS i_lower \gset
+RESET ROLE;
+SELECT pg_temp.pr_assert(:'i_lower'::jsonb->>'success'='true'
+ AND (SELECT status='DISPATCHED' AND deleted_at IS NULL FROM public.orders WHERE id=:'cart_h'::uuid)
+ AND (SELECT requested_quantity=5 FROM public.order_items WHERE order_id=:'cart_h'::uuid AND grn_items_id=:'lot_10'::uuid)
+ AND (SELECT stock=16 FROM public.goodsreceived_trl WHERE id=:'lot_10'::uuid),
+ 'lowering a direct dispatch does not put bags into the DISPATCHED order (its line stays at 5, status DISPATCHED; the broken result is 11): '||:'i_lower');
+
+-- ===========================================================================
+-- J. Lot order inside one edit. The source order asked for 15 of lot a and 10 of lot b; the dispatch took 10 of each (a: 5 left,
+--    b: line gone); the order is DISPATCHED. The edit raises one lot by 3 and lowers the other by 6. I raises lot a (walked first),
+--    J raises lot b (walked second): both must take 3 and give 6 back.
+-- ===========================================================================
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_or_create_cart(:'ci'::uuid) AS cart_i \gset
+SELECT public.get_or_create_cart(:'cj'::uuid) AS cart_j \gset
+SELECT pg_temp.pr_assert(public.add_item_to_order(:'cart_i'::uuid,:'lot_11a'::uuid,15)->>'success'='true' AND public.add_item_to_order(:'cart_i'::uuid,:'lot_11b'::uuid,10)->>'success'='true'
+ AND public.add_item_to_order(:'cart_j'::uuid,:'lot_12a'::uuid,10)->>'success'='true' AND public.add_item_to_order(:'cart_j'::uuid,:'lot_12b'::uuid,15)->>'success'='true','order lines for I and J');
+SELECT public.create_dispatch_with_stock_check(:'for_i'::jsonb||jsonb_build_object('disp_no','PDK','source_order_id',:'cart_i'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_11a','disp_qty',10),jsonb_build_object('gr_trl_id',:'lot_11b','disp_qty',10)],0,'pr-ddk') AS ddk \gset
+SELECT public.create_dispatch_with_stock_check(:'for_j'::jsonb||jsonb_build_object('disp_no','PDL','source_order_id',:'cart_j'),
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_12a','disp_qty',10),jsonb_build_object('gr_trl_id',:'lot_12b','disp_qty',10)],0,'pr-ddl') AS ddl \gset
+RESET ROLE;
+SELECT (:'ddk'::jsonb->>'dispatch_id')::uuid AS disp_k, (:'ddl'::jsonb->>'dispatch_id')::uuid AS disp_l \gset
+UPDATE public.orders SET status='DISPATCHED' WHERE id IN (:'cart_i'::uuid,:'cart_j'::uuid);
+SELECT pg_temp.pr_assert(:'ddk'::jsonb->>'success'='true' AND :'ddl'::jsonb->>'success'='true'
+ AND (SELECT requested_quantity=5 FROM public.order_items WHERE order_id=:'cart_i'::uuid AND grn_items_id=:'lot_11a'::uuid)
+ AND NOT EXISTS (SELECT 1 FROM public.order_items WHERE order_id=:'cart_i'::uuid AND grn_items_id=:'lot_11b'::uuid)
+ AND (SELECT requested_quantity=5 FROM public.order_items WHERE order_id=:'cart_j'::uuid AND grn_items_id=:'lot_12b'::uuid)
+ AND NOT EXISTS (SELECT 1 FROM public.order_items WHERE order_id=:'cart_j'::uuid AND grn_items_id=:'lot_12a'::uuid),'fixture: I has 5 left on lot a, J has 5 left on lot b: '||:'ddk'||:'ddl');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart(:'disp_k'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_11a','disp_qty',13),jsonb_build_object('gr_trl_id',:'lot_11b','disp_qty',4)]) AS j_i \gset
+SELECT public.update_dispatch_smart(:'disp_l'::uuid,NULL,ARRAY[jsonb_build_object('gr_trl_id',:'lot_12a','disp_qty',4),jsonb_build_object('gr_trl_id',:'lot_12b','disp_qty',13)]) AS j_j \gset
+RESET ROLE;
+SELECT pg_temp.pr_assert(:'j_i'::jsonb->'order_sync'='{"taken": 3, "given_back": 6}'::jsonb
+ AND (SELECT status='OPEN' AND deleted_at IS NULL FROM public.orders WHERE id=:'cart_i'::uuid)
+ AND (SELECT requested_quantity=2 FROM public.order_items WHERE order_id=:'cart_i'::uuid AND grn_items_id=:'lot_11a'::uuid)
+ AND (SELECT requested_quantity=6 FROM public.order_items WHERE order_id=:'cart_i'::uuid AND grn_items_id=:'lot_11b'::uuid)
+ AND (SELECT cart_quantity_consumed=13 AND disp_qty=13 FROM public.dispatch_trl WHERE disp_id=:'disp_k'::uuid AND gr_trl_id=:'lot_11a'::uuid),
+ 'raise of the lot walked first takes 3 from the reopened source order, the lower gives 6 back (the broken order gives taken 0): '||:'j_i');
+SELECT pg_temp.pr_assert(:'j_j'::jsonb->'order_sync'='{"taken": 3, "given_back": 6}'::jsonb
+ AND (SELECT status='OPEN' AND deleted_at IS NULL FROM public.orders WHERE id=:'cart_j'::uuid)
+ AND (SELECT requested_quantity=2 FROM public.order_items WHERE order_id=:'cart_j'::uuid AND grn_items_id=:'lot_12b'::uuid)
+ AND (SELECT requested_quantity=6 FROM public.order_items WHERE order_id=:'cart_j'::uuid AND grn_items_id=:'lot_12a'::uuid)
+ AND (SELECT cart_quantity_consumed=13 AND disp_qty=13 FROM public.dispatch_trl WHERE disp_id=:'disp_l'::uuid AND gr_trl_id=:'lot_12b'::uuid),
+ 'raise of the lot walked second takes 3, the lower gives 6 back: '||:'j_j');

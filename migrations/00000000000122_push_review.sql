@@ -4,6 +4,9 @@
 --    A line raised past its order and then lowered gives back nothing until it drops below what it took. Delete is unchanged.
 --  * D4, source order that is not OPEN: the edit gives back into it as the dispatch delete does, whatever its status, and opens
 --    it the way the delete opens it (status OPEN, deleted_at cleared), instead of dropping the bags.
+--  * D4, legacy lines: what a line holds is capped at its old quantity (a held 99 on a 10-bag line gives back 6 when lowered to 4).
+--  * D4, a direct dispatch gives back into its recorded order line's order only while that order is OPEN (as 121 did).
+--  * D4, the source order is opened before the lines are walked whenever any line gives back to it, so lot order does not matter.
 --  * D1, a save that sends lines but no header data moves the dispatch's updated_at too, so the answer's token is new.
 --  * warehouse_security.restore_to_order: search_path ends with pg_temp, the repository's pin.
 
@@ -471,7 +474,7 @@ BEGIN
         -- here, with the lots already locked (step 2). A line without a lot is never touched by an edit.
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
                    'lot', dt.gr_trl_id, 'qty', dt.disp_qty,
-                   'consumed', COALESCE(dt.cart_quantity_consumed, 0), 'item', dt.source_order_item_id)), '[]'::jsonb)
+                   'consumed', LEAST(COALESCE(dt.cart_quantity_consumed, 0), dt.disp_qty), 'item', dt.source_order_item_id)), '[]'::jsonb)
         INTO v_old_lines
         FROM dispatch_trl dt
         WHERE dt.disp_id = p_dispatch_id AND dt.gr_trl_id IS NOT NULL;
@@ -603,17 +606,38 @@ BEGIN
         JOIN goodsreceived_trl gt ON gt.id = ins.gr_trl_id;
 
         -- ========== D4: keep the order in step with the edited lines (migration 121) ==========
-        -- A line lowered or removed gives back what it had taken from the order, at most the quantity it gives up. A line
-        -- raised or added takes the extra from the order's line for that lot (the dispatch's source order, else the
+        -- A line lowered or removed gives back the bags it held from the order that are no longer dispatched, GREATEST(held -
+        -- new quantity, 0) (migration 122; what a legacy line holds is capped at its old quantity). A source order that any
+        -- line gives back to is opened before the lines are walked. A line raised or added takes the extra from the order's line for that lot (the dispatch's source order, else the
         -- customer's OPEN order), at most what that line still asks for; the stock is taken in full either way. The cart's
         -- lines are locked, the order itself is not (the lock order stays dispatch, lots, order lines, order). A source
-        -- order that is not OPEN is not taken from. Both are done by the dispatch whatever the state of the business (a
+        -- order that is still not OPEN (nothing was given back to it) is not taken from. Both are done by the dispatch whatever the state of the business (a
         -- deactivated business is dispatched too). What was taken goes into the order's change log as a dispatch reduction; what was given back as a
         -- quantity change, one entry per order after all give-backs.
         SELECT d.customer_id, d.source_order_id, d.disp_no
         INTO v_cust_id, v_src_order_id, v_disp_no_now
         FROM dispatch d
         WHERE d.id = p_dispatch_id;
+
+        -- A source order that any line of this edit gives bags back to is opened (status OPEN, deleted_at cleared) the way the
+        -- dispatch delete opens it, before the lines are walked: a raise later in the same edit then takes from it whatever
+        -- the order of the lots.
+        IF v_src_order_id IS NOT NULL AND EXISTS (
+            SELECT 1
+            FROM (SELECT (x.e->>'lot')::uuid AS lot, (x.e->>'qty')::integer AS qty, (x.e->>'consumed')::integer AS consumed
+                  FROM jsonb_array_elements(v_old_lines) AS x(e)) AS o
+            LEFT JOIN (SELECT (ni->>'gr_trl_id')::uuid AS lot, (ni->>'disp_qty')::integer AS qty
+                       FROM unnest(p_dispatch_items) AS ni) AS n ON n.lot = o.lot
+            WHERE COALESCE(n.qty, 0) < o.qty AND o.consumed > COALESCE(n.qty, 0)) THEN
+            UPDATE orders
+            SET status = 'OPEN',
+                deleted_at = NULL,
+                deleted_by = NULL,
+                updated_by = v_user_id,
+                updated_at = now()
+            WHERE id = v_src_order_id
+              AND (status IS DISTINCT FROM 'OPEN' OR deleted_at IS NOT NULL);
+        END IF;
 
         FOR v_sync IN
             SELECT COALESCE(o.lot, n.lot) AS lot,
@@ -641,21 +665,17 @@ BEGIN
                     -- restore_to_order answers NULL when no order could be used: nothing was given.
                     v_use_src := v_src_order_id;
                     v_use_item := v_sync.old_item;
+                    IF v_src_order_id IS NULL AND v_use_item IS NOT NULL THEN
+                        -- A direct dispatch: only a recorded order line on an OPEN order is given back to (as migration 121 did).
+                        IF NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id = oi.order_id
+                                       WHERE oi.id = v_use_item AND o.status = 'OPEN' AND o.deleted_at IS NULL) THEN
+                            v_use_item := NULL;
+                        END IF;
+                    END IF;
                     v_cart := warehouse_security.restore_to_order(
                         p_dispatch_id, v_use_src, v_use_item, v_cust_id, v_sync.lot, v_back, v_user_id);
                     IF v_cart IS NOT NULL THEN
                         v_gave := v_back;
-                        -- A source order that is not OPEN is opened the way the dispatch delete opens it.
-                        IF v_cart = v_src_order_id THEN
-                            UPDATE orders
-                            SET status = 'OPEN',
-                                deleted_at = NULL,
-                                deleted_by = NULL,
-                                updated_by = v_user_id,
-                                updated_at = now()
-                            WHERE id = v_src_order_id
-                              AND (status IS DISTINCT FROM 'OPEN' OR deleted_at IS NOT NULL);
-                        END IF;
                         v_given_back := v_given_back + v_back;
                         IF NOT (v_cart = ANY (v_given_carts)) THEN
                             v_given_carts := v_given_carts || v_cart;
@@ -701,7 +721,7 @@ BEGIN
                     -- the foreign key then empties source_order_item_id with the line, and nothing points at a line that is
                     -- gone. At most the line's new quantity is held (cart_quantity_consumed <= disp_qty).
                     UPDATE dispatch_trl
-                    SET cart_quantity_consumed = LEAST(COALESCE(cart_quantity_consumed, 0) + v_take, v_sync.new_qty),
+                    SET cart_quantity_consumed = LEAST(LEAST(COALESCE(cart_quantity_consumed, 0), v_sync.old_qty) + v_take, v_sync.new_qty),
                         source_order_item_id = COALESCE(source_order_item_id, v_line_id)
                     WHERE disp_id = p_dispatch_id AND gr_trl_id = v_sync.lot;
 

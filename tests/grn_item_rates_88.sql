@@ -180,7 +180,7 @@ SELECT pg_temp.ir_assert(:'cust_details'::jsonb->>'success'='true' AND :'cust_de
 -- 4. An invoiced GRN
 -- ---------------------------------------------------------------------------
 -- IR-INV: Fig 10 kg, 10 bags, dispatched twice (dm8: 6 bags, dm9: 4 bags -- created in that order, so the
--- earlier date is the later row); Pear 10 kg, never dispatched. The invoice charges 6/1/5 for the dm8
+-- earlier date is the later row); Pear 10 kg, 2 bags, dispatched in full (IRD3, below). The invoice charges 6/1/5 for the dm8
 -- line and 7/2/5 for the dm9 line: the first line by dispatch date is the dm9 one (7/2/5), and the lot varies.
 SELECT pg_temp.ir_save(:'staff_claims'::jsonb,'IR-INV',:'dm12'::date,:'orchard'::uuid,'MONTHLY',
   jsonb_build_array(pg_temp.ir_line('IR Fig',10,10),pg_temp.ir_line('IR Pear',2,10))) AS save_inv \gset
