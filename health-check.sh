@@ -8,7 +8,8 @@ for service in db kong rest storage functions pdf-renderer; do
   if [[ -z "$id" ]]; then
     echo "$service: missing"; failed=1; continue
   fi
-  state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")
+  # `index`, not `.State.Health`: some docker CLIs stop with "map has no entry for key Health" for a container without a healthcheck.
+  state=$(docker inspect --format '{{.State.Status}} {{with index .State "Health"}}{{index . "Status"}}{{end}}' "$id")
   echo "$service: $state"
   if [[ "$state" != running* || "$state" == *unhealthy* || "$state" == *starting* ]]; then
     failed=1

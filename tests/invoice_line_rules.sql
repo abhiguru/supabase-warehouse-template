@@ -376,11 +376,11 @@ SELECT pg_temp.rule_assert(:'detail_staff'::jsonb->>'success'='true' AND :'detai
 RESET ROLE;
 
 -- Migration 109: each line of get_invoice_detail carries item_id, dispatch_id and rack, ordered as the invoice
--- form's preview orders them (item name, dispatch date, dispatch line id). The expected values come from the
+-- form's preview orders them (item name, dispatch date, the time inside the dispatch line id, the line id). The expected values come from the
 -- tables; the second run moves the dispatch that came first one day later so the order has to flip, then the change is rolled back.
 CREATE FUNCTION pg_temp.rule_expected_lines(p_invoice uuid) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_agg(jsonb_build_object('item_id',gt.item_id,'dispatch_id',d.id,'rack',gt.rack,'disp_no',d.disp_no)
-                   ORDER BY gt.item_name, d.disp_date, dt.id)
+                   ORDER BY gt.item_name, d.disp_date, uuid_extract_timestamp(dt.id), dt.id)
   FROM public.invoice_trl it
   JOIN public.dispatch_trl dt ON dt.id = it.disp_trl_id
   JOIN public.dispatch d ON d.id = dt.disp_id

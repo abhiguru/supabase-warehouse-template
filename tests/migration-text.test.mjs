@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 
-// The migrations directory holds ONE file, the baseline: an exact squash of migrations 0 to 110 (the old files are in the git
-// tag migrations-pre-baseline). The assertions that used to read single old migration files read the baseline text instead.
+// The migrations directory holds the baseline, an exact squash of migrations 0 to 110 (the old files are in the git tag
+// migrations-pre-baseline), and the migrations written after it. The assertions that used to read single old migration files
+// read the baseline text instead.
 const BASELINE = '00000000000000_baseline.sql';
 const baseline = readFileSync(new URL(`../migrations/${BASELINE}`, import.meta.url), 'utf8');
 const escaped = text => text.replace(/[^\x00-\x7F]/g, character => `\\u${character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);

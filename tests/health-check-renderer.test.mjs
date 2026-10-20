@@ -45,3 +45,12 @@ test('the probe payload succeeds on a 200 /health, fails on a 503 and when nothi
   down.close();
   assert.notEqual(await run(payload(port)), 0, 'a closed port is a failure');
 });
+
+test('the container state template reads Health with index, which a docker CLI accepts for a container without a healthcheck', () => {
+  const format = /docker inspect --format '([^']+)'/.exec(script);
+  assert.ok(format, 'health-check.sh reads the container state with docker inspect --format');
+  assert.doesNotMatch(format[1], /\.State\.Health/, 'a direct .State.Health fails with "map has no entry for key Health"');
+  assert.match(format[1], /\{\{with index \.State "Health"\}\}\{\{index \. "Status"\}\}\{\{end\}\}/);
+  // The output shape the checks below it expect stays "<status> <health>".
+  assert.match(format[1], /^\{\{\.State\.Status\}\} /);
+});
