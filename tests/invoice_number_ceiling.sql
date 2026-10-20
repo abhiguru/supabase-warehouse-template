@@ -50,8 +50,8 @@ SELECT pg_temp.inc_assert(NOT has_function_privilege(r,'warehouse_security.check
 FROM unnest(ARRAY['anon','authenticated','service_role']) AS r;
 SELECT pg_temp.inc_assert(warehouse_security.invoice_number_max()=99999999,'INVOICE_NUMBER_MAX is 99999999');
 
--- Fixture: receipt INCA of 10 bags, 4 dispatched on 2026-06-01. Financial
--- years 2097 to 2099 are far from today, so no other invoice is in them.
+-- Fixture: receipt INCA of 10 bags, all 10 dispatched on 2026-06-01 (migration 121 D9: no invoice while a GRN has stock). Financial
+-- years 2097 to 2099 are far from today, so no other invoice is in them. The invoice date sits in financial year 2097 (migration 120 refuses a year that is not the date's).
 SELECT pg_temp.inc_assert((SELECT count(*)=0 FROM public.invoice WHERE inv_fin_year BETWEEN 2097 AND 2099),'the fixture years are empty');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
@@ -68,12 +68,12 @@ SELECT id AS grn_line FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid 
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.inc_assert(public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','INCD1','disp_date','2026-06-01T12:00:00Z',
  'customer_id',:'customer_id','customer_name','Ceiling Customer','supervisor_id',:'admin_profile','supervisor_name','Ceiling Administrator'),
- ARRAY[jsonb_build_object('gr_trl_id',:'grn_line','disp_qty',4)],0,'inc-dispatch')->>'success'='true','4 of 10 dispatched');
+ ARRAY[jsonb_build_object('gr_trl_id',:'grn_line','disp_qty',10)],0,'inc-dispatch')->>'success'='true','10 of 10 dispatched');
 RESET ROLE;
 SELECT id AS disp_line FROM public.dispatch_trl WHERE gr_trl_id=:'grn_line'::uuid \gset
 -- The header and lines as the app sends them (three-argument save, update_invoice).
 SELECT jsonb_build_object('inv_fin_year',2097,'customer_id',:'customer_id','customer_name','Ceiling Customer',
- 'inv_date','2026-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
+ 'inv_date','2097-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
  'gr_id',:'grn_id','gr_no','INCA') AS header \gset
 SELECT jsonb_build_object('disp_trl_id',:'disp_line','grn_item_id',:'grn_line','duration',1,'charge',10,'tax',0,'labour_rate',2) AS line \gset
 -- The one-argument save's body: the same fields with the lines inside.
@@ -98,7 +98,7 @@ SELECT pg_temp.inc_assert((:'single_refused'::jsonb->>'answer')::jsonb->>'succes
 -- The one-argument save also reads the number from header.invoice_number.
 SELECT pg_temp.inc_call(format('SELECT public.save_invoice(%L::jsonb)',jsonb_build_object('header',
   jsonb_build_object('invoice_number','2097-100000000','financial_year','2097-98','grn_id',:'grn_id','grn_no','INCA',
-   'customer_id',:'customer_id','customer_name','Ceiling Customer','invoice_date','2026-06-01','duration_mode','legacy'),
+   'customer_id',:'customer_id','customer_name','Ceiling Customer','invoice_date','2097-06-01','duration_mode','legacy'),
   'items',jsonb_build_array(:'line'::jsonb)))) AS header_refused \gset
 SELECT pg_temp.inc_assert((:'header_refused'::jsonb->>'answer')::jsonb->>'error' LIKE '%Invoice number must be between 1 and 99999999 (SQLState: WH422)%',
  'one-argument save with header invoice number 2097-100000000 is refused: '||:'header_refused');

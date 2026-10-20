@@ -47,7 +47,7 @@ BEGIN
   SELECT t.id, t.qty INTO lot FROM public.goodsreceived_trl t WHERE t.gr_id=v_gr ORDER BY t.id LIMIT 1;
   disp := pg_temp.cw_as(claims, format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,%L)$q$,
     jsonb_build_object('customer_id',p_customer,'customer_name','CW Orchard','supervisor_id',p_sup,'supervisor_name','CW Administrator'),
-    jsonb_build_object('disp_no',p_disp_no,'disp_date',now()), jsonb_build_object('gr_trl_id',lot.id,'disp_qty',lot.qty), 'cw-key-'||p_disp_no));
+    jsonb_build_object('disp_no',p_disp_no,'disp_date',warehouse_security.business_date(now())), jsonb_build_object('gr_trl_id',lot.id,'disp_qty',lot.qty), 'cw-key-'||p_disp_no));
   IF disp->>'success' IS DISTINCT FROM 'true' THEN RETURN disp; END IF;
   rws := public.build_invoice_recalculation_rows(v_gr);
   SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id',r->>'grn_item_id','duration',(r->>'duration')::numeric,

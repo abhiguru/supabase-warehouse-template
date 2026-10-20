@@ -180,7 +180,7 @@ SELECT pg_temp.ir_assert(:'cust_details'::jsonb->>'success'='true' AND :'cust_de
 -- 4. An invoiced GRN
 -- ---------------------------------------------------------------------------
 -- IR-INV: Fig 10 kg, 10 bags, dispatched twice (dm8: 6 bags, dm9: 4 bags -- created in that order, so the
--- earlier date is the later row); Pear 10 kg, never dispatched. The invoice charges 6/1/5 for the dm8
+-- earlier date is the later row); Pear 10 kg, 2 bags, dispatched in full (IRD3, below). The invoice charges 6/1/5 for the dm8
 -- line and 7/2/5 for the dm9 line: the first line by dispatch date is the dm9 one (7/2/5), and the lot varies.
 SELECT pg_temp.ir_save(:'staff_claims'::jsonb,'IR-INV',:'dm12'::date,:'orchard'::uuid,'MONTHLY',
   jsonb_build_array(pg_temp.ir_line('IR Fig',10,10),pg_temp.ir_line('IR Pear',2,10))) AS save_inv \gset
@@ -192,6 +192,13 @@ SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispa
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'ir-d2')$q$,
   :'dispatch_for',jsonb_build_object('disp_no','IRD2','disp_date',:'dm9'),jsonb_build_object('gr_trl_id',:'fig_lot','disp_qty',4))) AS disp2 \gset
 SELECT pg_temp.ir_assert(:'disp1'::jsonb->>'success'='true' AND :'disp2'::jsonb->>'success'='true','fixture dispatches: '||:'disp1'||:'disp2');
+-- Migration 121 D9: an invoice needs a GRN with no stock left. The 2 Pear bags are dispatched too (IRD3); the invoice below leaves that
+-- dispatch line out, so the Pear lot still has no invoice line.
+SELECT t.id AS pear_lot, t.stock AS pear_stock FROM public.goodsreceived_trl t WHERE t.gr_id=pg_temp.ir_grn('IR-INV') AND t.item_name='IR Pear' \gset
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'ir-d3')$q$,
+  :'dispatch_for',jsonb_build_object('disp_no','IRD3','disp_date',:'dm8'),jsonb_build_object('gr_trl_id',:'pear_lot','disp_qty',:pear_stock))) AS disp3 \gset
+SELECT pg_temp.ir_assert(:'disp3'::jsonb->>'success'='true' AND :pear_stock=2 AND (SELECT stock=0 FROM public.goodsreceived_trl WHERE id=:'pear_lot'::uuid),
+  'dispatch of the 2 Pear bags empties the GRN: '||:'disp3');
 -- Before the invoice: the item's rate, not invoiced.
 SELECT pg_temp.ir_get(:'staff_claims'::jsonb,'IR-INV') AS inv_before \gset
 SELECT pg_temp.ir_assert(:'inv_before'::jsonb#>>'{data,invoiced}'='false' AND pg_temp.ir_row(:'inv_before'::jsonb,'IR Fig',10)='item 4/1.5/5 0-50 false',
@@ -199,7 +206,7 @@ SELECT pg_temp.ir_assert(:'inv_before'::jsonb#>>'{data,invoiced}'='false' AND pg
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id',r->>'grn_item_id','duration',(r->>'duration')::numeric,
          'charge',CASE WHEN d.disp_no='IRD2' THEN 7 ELSE 6 END,'tax',5,'labour_rate',CASE WHEN d.disp_no='IRD2' THEN 2 ELSE 1 END)) AS inv_items
   FROM jsonb_array_elements(public.build_invoice_recalculation_rows(pg_temp.ir_grn('IR-INV'))->'rows') r
-  JOIN public.dispatch_trl dt ON dt.id=(r->>'disp_trl_id')::uuid JOIN public.dispatch d ON d.id=dt.disp_id \gset
+  JOIN public.dispatch_trl dt ON dt.id=(r->>'disp_trl_id')::uuid JOIN public.dispatch d ON d.id=dt.disp_id WHERE d.disp_no<>'IRD3' \gset
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb, format($q$SELECT public.save_invoice(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
   jsonb_build_object('inv_no',20269911,'inv_fin_year',2026,'customer_id',:'orchard'::uuid,'customer_name','IR Orchard',
     'inv_date',:'dm6'||'T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',

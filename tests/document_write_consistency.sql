@@ -169,8 +169,8 @@ RESET ROLE;
 SELECT pg_temp.dw_assert((SELECT count(*)=1 AND bool_and(rpc_function='save_grn' AND created_by=:'staff_one_profile'::uuid)
  FROM public.idempotency_keys WHERE idempotency_key='dw-grn-key'),'the receipt key still belongs to its first user');
 SELECT pg_temp.dw_assert((SELECT count(*)=1 AND bool_and(created_by=:'staff_one_profile'::uuid AND response->>'dispatch_id'=:'second'::jsonb->>'dispatch_id'
- AND expires_at > now()+interval '23 hours' AND expires_at <= now()+interval '24 hours')
- FROM public.idempotency_keys WHERE idempotency_key='dw-dispatch-key'),'the dispatch key keeps its owner and lasts the 24 hours it is honoured');
+ AND expires_at > now()+interval '6 days 23 hours' AND expires_at <= now()+interval '7 days')
+ FROM public.idempotency_keys WHERE idempotency_key='dw-dispatch-key'),'the dispatch key keeps its owner and lasts the 7 days it is honoured');
 SELECT pg_temp.dw_assert((SELECT stock=13 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid)
  AND (SELECT stock=17 FROM public.goodsreceived_trl WHERE id=:'lot_2'::uuid),'stock left once per dispatch: 20-4-3 and 20-2-1');
 
@@ -240,10 +240,11 @@ SELECT pg_temp.dw_assert((SELECT bool_and(disp_qty=5) FROM public.dispatch_trl W
  AND (SELECT stock=11 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the valid edit moved two more boxes');
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[]::jsonb[])='saved','an empty list still removes every line');
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',NULL,ARRAY[]::jsonb[])='A dispatch needs at least one line','an empty list is refused (migration 120), it no longer removes every line');
+SELECT pg_temp.dw_assert(pg_temp.dw_edit(:'dispatch_2',jsonb_build_object('note','still five'),NULL)='saved','no list sent keeps the lines and saves the header');
 RESET ROLE;
-SELECT pg_temp.dw_assert((SELECT count(*)=0 FROM public.dispatch_trl WHERE disp_id=:'dispatch_2'::uuid)
- AND (SELECT stock=16 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the emptied dispatch returned its five boxes');
+SELECT pg_temp.dw_assert((SELECT count(*)=1 AND bool_and(disp_qty=5) FROM public.dispatch_trl WHERE disp_id=:'dispatch_2'::uuid)
+ AND (SELECT stock=11 FROM public.goodsreceived_trl WHERE id=:'lot_1'::uuid),'the refused empty list changed no line and no stock');
 
 -- 3 to 5. Receipt edit. DWC3 has no dispatch, invoice or cart line.
 SELECT set_config('request.jwt.claims',:'staff_one_claims',true);

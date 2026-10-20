@@ -78,13 +78,13 @@ SELECT pg_temp.col_login('9888888833') AS staff_claims \gset
 SELECT pg_temp.col_login('9888888834') AS customer_claims \gset
 SELECT pg_temp.col_login('9888888835') AS other_claims \gset
 
--- The six internal columns, and every other column of the table by name (what
+-- The six internal columns plus the version token updated_at (migration 121: not granted, read only through the RPCs), and every other column of the table by name (what
 -- a direct read has to send now that `*` is refused).
-SELECT ARRAY['discount_reason','discount_set_by','discount_set_at','zero_charge_reason','zero_charge_set_by','zero_charge_set_at'] AS internal \gset
+SELECT ARRAY['discount_reason','discount_set_by','discount_set_at','zero_charge_reason','zero_charge_set_by','zero_charge_set_at','updated_at'] AS internal \gset
 SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum) AS open_columns, count(*) AS open_count
  FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attnum>0 AND NOT attisdropped AND attname <> ALL(:'internal'::name[]) \gset
-SELECT pg_temp.col_assert((SELECT count(*)=6 FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attname=ANY(:'internal'::name[]) AND NOT attisdropped)
- AND :open_count>=21,'the table has the six internal columns and the others');
+SELECT pg_temp.col_assert((SELECT count(*)=7 FROM pg_attribute WHERE attrelid='public.invoice'::regclass AND attname=ANY(:'internal'::name[]) AND NOT attisdropped)
+ AND :open_count>=21,'the table has the six internal columns, the version token and the others');
 
 -- Fixture, as the administrator: two customers, each with one login; one
 -- one-time receipt of 20 bags for the first, dispatched in full. Staff invoice

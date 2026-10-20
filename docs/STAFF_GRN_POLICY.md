@@ -84,7 +84,9 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   administrators and supervisors only (migration 41).
 - **Edits may remove lines and images; whole documents cannot be deleted.**
   `update_grn` removes undispatched lines and unlisted images, `update_dispatch_smart`
-  replaces dispatch lines and `update_invoice` replaces invoice lines. That is
+  replaces dispatch lines (migration 120: a list that is sent is never empty, an
+  empty list is refused with `A dispatch needs at least one line`; a line without
+  a lot, old data, is not in the list the app sends and is kept) and `update_invoice` replaces invoice lines. That is
   the accepted meaning of "edit". The explicit `delete_*` RPCs and direct table
   writes stay denied, which the test suite now proves through the real guarded
   RPCs rather than a direct probe that could never fail.
@@ -382,6 +384,8 @@ several customers calls once per customer.
 | Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
 | Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
 | Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
+| What became of a save whose answer was lost (`get_submission_result`, migration 120): the caller's own saved answers only | yes | yes | yes | no |
+| The GRN edit form's version token and locks (`get_grn_edit_state`, migration 121) | yes | yes | yes | **no** (`Staff access required`) |
 | Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
 | `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
 
@@ -446,9 +450,10 @@ These are the rules the app's forms already apply; the server did not.
   sends is ignored; a later rename of the customer still does not rewrite old
   receipts. Sender and supervisor names and the receipt date are stored as sent.
 - An idempotency key answers only the function and the user that stored it.
-  `save_grn` keeps a key for one hour and dispatch creation for 24 hours; the
-  stored row now expires at the same moment, so retention no longer removes a
-  dispatch key that would still be honoured.
+  Every stored request answer (`save_grn`, `update_grn`, dispatch creation and the
+  `request_key` saves) is kept for 7 days (migration 120; `save_grn` was one hour
+  and the others 24 hours); the stored row expires at the same moment, so retention
+  does not remove a key that would still be honoured.
 - The field filters of the receipt lists (`item_name`, `customer_name`,
   `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
   in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
@@ -488,7 +493,7 @@ the photo files staff may remove) and adds one parameter. It opens nothing.
 
 `update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
 NULL`. With a key, a save that is repeated by the same user for the same
-receipt within 24 hours changes nothing and returns the answer of the first
+receipt within 7 days changes nothing and returns the answer of the first
 save with `"idempotent": true` added, as `save_grn` does. The key is stored in
 `idempotency_keys` under the function name `update_grn`; a key that another
 user or another function stored is neither replayed nor overwritten, and the
@@ -654,3 +659,25 @@ app roles), and uses it in both and in three other readers of `grn_images`:
 The roles in the table of migration 45 are unchanged. `tests/grn_image_visibility.sql`
 reads `get_grn_details` as each role and edits as two staff members and an
 administrator.
+
+## Owner decisions on GRN edits, orders and dispatch, 20 October 2026 (migration 121)
+
+Names, fields and the English of every refusal are in [API_CONTRACT.md](API_CONTRACT.md), "Review decisions (migration 121)". What
+changes for each role:
+
+- **A rate set for one GRN is not dropped by a staff edit (D10).** Staff cannot send rates (`RATES_MANAGER_ONLY`). When a staff edit would
+  make `update_grn` remove a rate that was set for this GRN alone (a changed weight or pricing mode leaves its band holding no line, or a
+  line goes), the whole edit is refused with `RATES_NEED_MANAGER` ("Ask a manager to make this change") and nothing is saved. A manager
+  makes the change in the Rates step. Administrators and supervisors are not refused for a rate removed on purpose, a removed line or a
+  service-key call; they are refused with `RATES_WOULD_DROP` (D24) when a changed weight or pricing mode leaves a line without its
+  GRN-only rate and the same save sets no rate for it.
+- **A line is not removed without a reason shown (D11).** Removing a GRN line that has dispatch or stock history, or that is on an order,
+  is refused by name for every role that may edit a GRN: `LINE_DISPATCHED_BEFORE` / `LINE_ON_ORDER` (before: a raw foreign-key text).
+- **After invoicing and dispatch (D2, D23).** An invoiced lot keeps its item, packing and weight, a dispatched lot its item and packing, an
+  invoiced GRN its date, an invoiced dispatch its date and number, and an invoiced GRN takes no new line (D9). A GRN keeps its number (D6).
+  These apply to every role, the service key (`fas-sync`) included: a push that crosses a rule is refused and reported.
+- **A deactivated business (D16, corrected).** It may still order and be dispatched, for every role and for the customer's own login: no
+  order or dispatch function refuses it. Only a new GRN for it is refused (`save_grn`; `update_grn` when it moves the GRN to a deactivated
+  customer), as in migrations 80 to 84.
+- **GRN history (D12).** Edits and deletes of a GRN and of its lines are recorded in `audit_log` for every role (the service key included,
+  with no user).

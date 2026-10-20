@@ -329,10 +329,10 @@ SELECT public.get_orders_list(:'customer_b'::uuid) AS b_orders \gset
 SELECT pg_temp.lot_assert(position('LOTC3' IN :'b_order')>0 AND position('LOTC2' IN :'b_order')=0
  AND position('LOTC3' IN :'b_orders')>0 AND position('LOTC2' IN :'b_orders')=0,
  'with its own dispatch linked again, B''s order detail and list name LOTC3 and not LOTC2: ' || :'b_order');
--- A cart-sourced dispatch cannot be handed to another customer (all lines removed so only this rule can refuse).
+-- A cart-sourced dispatch cannot be handed to another customer: the new line is A's own lot, so only this rule can refuse (migration 120 refuses an empty line list, and the old lines are B's).
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SELECT public.update_dispatch_smart(:'dispatch_c3'::uuid,jsonb_build_object('customer_id',:'customer_a','customer_name','Lot Rule Customer A'),
- ARRAY[]::jsonb[]) AS move_cart \gset
+ ARRAY[jsonb_build_object('gr_trl_id',:'lot_a3','disp_qty',1)]) AS move_cart \gset
 SELECT pg_temp.lot_assert(:'move_cart'::jsonb->>'success'='false' AND :'move_cart'::jsonb->>'error'='The order belongs to another customer',
  'a cart dispatch cannot change customer: ' || :'move_cart');
 RESET ROLE;

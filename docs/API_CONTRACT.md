@@ -36,6 +36,9 @@ Refusals do not have one shape; each family has its own, and the app reads the o
 - **Customer functions** (migrations 112, 116, 117, 118): `{success:false, data:null, message, error:{code, field?, details?}}`.
   Two exceptions: `set_customer_active` and `restore_customer` answer an uncoded `{success:false, message}` (an unknown id, a missing
   argument), except `DUPLICATE_MOBILE`, which carries `error:{code, field, details}`.
+- **Dispatch, GRN, invoice and order writes** (`NUMBER_TAKEN`, migration 120; the refusals of migration 121): `{success:false, error_code:'WH409',
+  reason, error, message, ...fields}`, the fields at the top level, `error` and `message` the same English sentence; the app switches on `reason`
+  ([Review decisions](#review-decisions-migration-121-2026-10-20)). The legacy GRN length refusals keep `{success:false, error, error_code, data:{limit}, message}`.
 - **Users, items, pricing and sensors:** a flat `error_code`. Users put the code in `error` too (`error` = the code, `message` = the text);
   items put the English text in `error` and the code in `error_code`. `delete_item_safe` sets `error_code` only on `NOT_FOUND`.
 
@@ -472,7 +475,9 @@ before anything is written; without `p_rates` a staff call works as before.
   lines are written. A failure rolls the whole call back: the GRN is not saved, an update is undone.
   Entries are
   `{scope:'grn', item_id, weight_min, weight_max, unit_price, labour_rate, tax_percent}` or
-  `{scope:'customer'|'everyone', item_id, weight_min, weight_max, to:'YYYY-MM-DD'|null, unit_price, labour_rate, tax_percent}`.
+  `{scope:'customer'|'everyone', item_id, weight_min, weight_max, to:'YYYY-MM-DD'|null, unit_price, labour_rate, tax_percent}`;
+  a customer / everyone entry may also carry `seen_ids` (migration 120, see
+  [Order, dispatch, GRN and invoice review fixes](#order-dispatch-grn-and-invoice-review-fixes-migration-120-2026-10-20)).
   A monthly GRN needs labour; a ONE_TIME GRN does not read it and stores 0.
   1. Validation: not a list or an entry not an object -> `INVALID_BANDS`; unknown scope ->
      `INVALID_SCOPE`; weights -> `INVALID_BAND` (`data.index`, `data.field`); amounts ->
@@ -622,6 +627,297 @@ rows). `create_item_storage_price` has no window, as before.
 error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing is changed), or `{success:false,
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
+
+## Order, dispatch, GRN and invoice review fixes (migration 120, 2026-10-20)
+
+Same signatures and grants as before (one new RPC, `get_submission_result`). Every new answer field and request option is
+optional: an app that does not read or send it works as before.
+
+### Dispatch create and edit
+
+- **`order_lines_left`.** The success answer of `create_dispatch_with_stock_check` gains `order_lines_left`: an integer, the
+  number of the source order's lines that are still open after this dispatch, counted the way the order queue counts them
+  (only lines with `item_status = 'pending'`); `null` when the dispatch has no source order. `source_order_cleared` is
+  unchanged (true whenever there is a source order, whether or not lines are left).
+- **`source_order_no`.** Only the source order's own `order_no`; a client-sent `source_order_no` is ignored, and a dispatch
+  without a source order has none (`NULL`).
+- **Names.** Create stores `customer_name` and `supervisor_name` from the master tables (`customers.name`,
+  `COALESCE(user_profiles.name, user_profiles.display_name)`), whatever names the client sends, and the supervisor must be an
+  administrator, supervisor or staff member. `update_dispatch_smart` keeps the stored names unless `customer_id` /
+  `supervisor_id` changes; then the stored name is the new customer's or the new supervisor's from the master tables, never the
+  client's and never the old person's.
+- **Edit.** `update_dispatch_smart` locks the dispatch and answers `{success:false, error:'Dispatch not found'}` for a dispatch
+  that is deleted or gone; refuses a line list that is sent but empty (`A dispatch needs at least one line`, `WH409`); never
+  removes a line that has no lot (old data); refuses a new or raised line of a deleted GRN (`Item belongs to a deleted GRN: ...`,
+  `WH409`); and its stock movements reference the dispatch (the line id is in the note). Create refuses a lot deleted meanwhile
+  (`A lot of this dispatch was removed meanwhile; reload and try again`, `WH409`) and the lots of a deleted GRN; `add_item_to_order`
+  answers `GRN item not found` for a lot of a deleted GRN. Only live invoices count in the guards of edit and delete.
+- **Cancelled invoices keep their lines.** `invoice_trl.disp_trl_id` may be empty and its foreign key is `ON DELETE SET NULL`:
+  removing a dispatch line, or the dispatch, keeps the lines and amounts of a soft-deleted invoice with an empty link. A live
+  invoice's line still blocks the removal (`Cannot modify invoiced items` for an edit; `Cannot delete dispatch <no>: <n> invoice items exist` for a delete).
+
+### `NUMBER_TAKEN`
+
+A dispatch or invoice number that another document holds is answered by name, before anything is written, instead of the raw
+unique-key error (SQLSTATE `23505`):
+
+```
+{ "success": false, "error_code": "WH409", "reason": "NUMBER_TAKEN", "number": "<the number>", "error": "<English text>" }
+```
+
+From `create_dispatch_with_stock_check` (`dispatch_disp_no_key`, checked over all rows, deleted ones too), `update_dispatch_smart`
+(a number another dispatch holds), `save_invoice` (both signatures) and `update_invoice` (`unique_inv_no_per_year`, within the
+financial year; an invoice that keeps its own number is not refused). The invoice answers of the three-argument path also carry
+`function_version`. `save_grn` already refuses a duplicate GRN number by name and is unchanged. The answer has no `holder`.
+
+### `seen_ids` and `STALE_RATES` on the GRN rates
+
+Each `customer` / `everyone` entry of `p_rates` (`save_grn`, `update_grn`) MAY carry `seen_ids`: the list of the
+`item_storage_prices` ids of that scope (the item for the GRN's business, or for everyone) that the sheet showed in force on the
+GRN day. When it is present and a row of that scope, price type and band (`weight_min`, `weight_max`) that is in force on the GRN
+day is not in the list, nothing is written and the answer is `{success:false, error_code:'STALE_RATES', reason:'STALE_RATES',
+error, message, data:{index, ids}}`, `data.ids` the unlisted ids (sorted), the same shape family as `replace_item_rates`. A
+`seen_ids` that is not a list of uuids is `INVALID_BANDS` (`data.field:'seen_ids'`). Without `seen_ids` nothing is checked (older
+apps).
+
+### Request codes and `get_submission_result` (owner decision D22: one rule for a lost answer)
+
+- **Request code.** `update_dispatch_smart` reads `p_dispatch_data->>'request_key'`; the three-argument `save_invoice` and
+  `update_invoice` read `p_invoice_data->>'request_key'`. When present, then under the document lock (advisory 71040) and before
+  any other check, a saved success answer of the calling user for that code (same function, and for an edit the same dispatch /
+  invoice, not expired) is returned as it was while the record it saved still exists (dispatch or invoice not deleted); so a resend
+  of a save whose answer was lost is never refused for what its own first try changed. After a successful write the answer is stored
+  in `idempotency_keys` for 7 days (an expired row of the same code is replaced; a code another user or function holds is left
+  alone). Without `request_key` nothing changes. The creates keep their own keys: `p_idempotency_key` of
+  `create_dispatch_with_stock_check` and `save_grn` / `update_grn`; a replayed dispatch create or GRN save is not returned once its
+  dispatch / GRN is deleted (the key is dropped and the call creates normally), `delete_dispatch_with_order_cleanup` and
+  `delete_grn_safe` drop the keys that point at what they delete, and the `save_grn` key lives 7 days (it was 1 hour).
+- **`get_submission_result(p_key text) RETURNS jsonb`.** For the calling user only: `{found:true, response:<the saved answer>}`
+  for a non-expired saved success answer under `p_key` (any of the six keyed writes above) whose record still exists (dispatch or
+  invoice not deleted; GRN not deleted, taken from `data.grn_id` of `save_grn` and `grn.id` of `update_grn`), else
+  `{found:false}`. It never returns another user's answer and never hides a database error as `found:false` (an error is raised, so
+  the caller asks again rather than sending the save again). Allowed for administrators, supervisors and staff (`authorize_rpc`);
+  a customer account is refused (`Staff access required`).
+
+### Invoices
+
+- `update_invoice` keeps the stored `notes` and `duration_mode` when the request has no such key (the app sends neither; before, a
+  missing key stored `NULL` notes and reset the duration mode to `legacy`). A key that is present is stored as sent (`duration_mode` is
+  validated).
+- The financial year (`inv_fin_year`) must be the one of the invoice date (`WH422`): checked by both `save_invoice` signatures on
+  every save and by `update_invoice` only when the edit changes the invoice date or the year. `save_invoice(jsonb)` without a year
+  takes the year of the invoice date (it took today's).
+- `update_invoice` moving an invoice to another GRN clears the old GRN's `invoiced` flag only when no other live invoice holds it.
+- The three-argument `save_invoice` no longer refuses on the phone's estimated header `total`, `labour` and `tax_amount` (the
+  server recomputes them); the discount keeps its range check. `delete_invoice` locks the live invoice, re-checks payments, and
+  clears `goodsreceived.invoiced` only when no other live invoice holds the GRN (also in its trigger).
+
+### Smaller
+
+`confirm_dispatch_image_upload` and `confirm_grn_image_upload` lock the pending row and answer `{success:false, code:'NOT_FOUND'}` when
+it went away; `update_order_item_quantity` and `remove_item_from_order` answer `Order item not found` for a cart line that no
+longer exists (the guard lets a missing line through; a line of another customer is still refused with `Customer access denied`).
+
+## Review decisions (migration 121, 2026-10-20)
+
+Server side of the owner decisions D1 to D18, D23 and D24 on dispatch, GRN, invoice and order writes. Every new request key and
+trailing parameter is optional (absent: no check, the call behaves as before); every new answer field is optional to read. `fas-sync`
+sends no version token, so D1 never refuses it; its date pushes go through D3 (and D23), its weight pushes through D2, and it never
+sends a GRN number on an edit (D6).
+
+### One refusal envelope
+
+Every new refusal has the shape of `NUMBER_TAKEN`, plus `message`; its fields are top-level keys:
+
+```
+{ "success": false, "error_code": "WH409", "reason": "<CONSTANT>", "error": "<English sentence>", "message": "<same sentence>", ...fields }
+```
+
+The app switches on `reason`, not on the English. It is built by `warehouse_security.refuse(reason, text, fields)` (not granted to any
+app role). A refusal is returned before the function's first write. The refusals that can only be known after a write (`RATES_NEED_MANAGER`,
+`RATES_WOULD_DROP`, `TOTAL_CHANGED`) are raised as `rate_fail` with the refusal in `DETAIL`; the handler of `update_grn`, `update_invoice`
+and `save_invoice_internal` rolls the whole block back and answers it (nothing is saved). The three legacy length refusals of the GRN
+(`item_name_too_long`, `packaging_too_long`, and new `registration_too_long`) keep the older shape `{success:false, error, error_code, data:{limit, index?}, message}`.
+
+| `reason` | Returned by | Fields (top level) | English `error` |
+|---|---|---|---|
+| `STALE_RECORD` | `update_dispatch_smart`, `update_grn`, `update_invoice`, `update_order_item_quantity`, `remove_item_from_order` | `what` (`dispatch`, `grn`, `invoice`, `order_line`), `id`, `expected_updated_at`, `current_updated_at` | Someone else changed this {dispatch / GRN / invoice / order line}. Open it again. |
+| `LOT_INVOICED` | `update_grn` | `line_id`, `item_name`, `invoice_no`, `inv_fin_year`, `fields` (list of `item`, `packaging`, `weight`) | {item} is on invoice {no}. Item, packing and weight can't be changed. Delete or edit the invoice first. |
+| `LOT_DISPATCHED` | `update_grn` | `line_id`, `item_name`, `fields` (`item`, `packaging`) | {item} has been dispatched. Its item and packing can't be changed. |
+| `DISPATCH_INVOICED` | `update_dispatch_smart` | `dispatch_no`, `invoice_no`, `inv_fin_year`, `fields` (`disp_date`, `disp_no`) | Dispatch {no} is on invoice {inv}. Its date and number can't be changed. Delete or edit the invoice first. |
+| `DISPATCH_DATE_FUTURE` | dispatch create, `update_dispatch_smart` | `date`, `today` (IST day, `YYYY-MM-DD`) | A dispatch can't be dated in the future. Today is {today}. |
+| `DISPATCH_BEFORE_GRN` | dispatch create, `update_dispatch_smart` | `date`, `gr_no`, `grn_date` (the latest GRN day among the lots) | The dispatch date {date} is before GRN {gr_no} ({grn_date}). |
+| `GRN_DATE_AFTER_DISPATCH` | `update_grn` | `gr_no`, `date`, `first_dispatch_date`, `dispatch_no` | GRN {gr_no} can't be dated {date}: dispatch {no} took goods from it on {first}. |
+| `GRN_DATE_LOCKED` | `update_grn` | `gr_no`, `date`, `invoice_no`, `inv_fin_year` | This GRN is invoiced. Delete or edit the invoice first. |
+| `ORDER_CHANGED` | dispatch create | `source_order_id`, `expected_updated_at`, `current_updated_at` | This order changed after you opened it. |
+| `GRN_NUMBER_LOCKED` | `update_grn` | `gr_no` (stored), `requested` | The GRN number can't be changed. Delete the GRN and enter it again. |
+| `GRN_HAS_STOCK` | `save_invoice` (both signatures), `update_invoice` | `gr_no`, `stock` (sum of the lots' stock), `lots` (lots with stock) | GRN {gr_no} still has {stock} in stock. Dispatch it first, then make the invoice. |
+| `GRN_INVOICED` | `update_grn` | `gr_no`, `invoice_no`, `inv_fin_year` | GRN {gr_no} is on invoice {no}. A line can't be added. Delete the invoice first. |
+| `RATES_NEED_MANAGER` | `update_grn` (staff only) | `gr_no`, `rates` (count dropped), `items` (their item names) | Ask a manager to make this change: it would remove a rate that was set for this GRN. |
+| `RATES_WOULD_DROP` | `update_grn` (administrators and supervisors) | `gr_no`, `rates` (count), `items` | This change removes the rate set for this GRN. Set a new rate in Rates. |
+| `LINE_ON_ORDER` | `update_grn` | `line_id`, `item_name`, `customer_name` | {item} is on {customer}'s order. Remove it from the order first. |
+| `LINE_DISPATCHED_BEFORE` | `update_grn` | `line_id`, `item_name` | {item} was dispatched before, so this line can't be removed. |
+| `TOTAL_CHANGED` | `save_invoice(uuid,jsonb,jsonb[])`, `update_invoice` | `current_total`, `expected_total`, `lines` (`[{disp_trl_id, duration, no_of_days}]` as the server recomputed them) | The total is now {current}, not {expected}. Review the figures and save again. |
+
+`invoice_no` is the integer invoice number of the live invoice (the first by financial year and number); the app writes it in its own
+form. Order RPCs still answer `{success:false, message, error:{code:'ORDER_NOT_OPEN'}}` when the order is not open; the new order
+refusals carry `error` as a string.
+
+### The version token (D1, `STALE_RECORD`)
+
+The token is the row's `updated_at`: `dispatch.updated_at`, `goodsreceived.updated_at`, `order_items.updated_at` (all bumped by their
+existing `BEFORE UPDATE` triggers) and the new `invoice.updated_at` (`NOT NULL DEFAULT now()`, trigger `trigger_invoice_updated_at`;
+every existing invoice has the migration time until it is edited; the app role has no column grant on it, it is read only through the
+RPCs). The caller sends the string it read, unchanged:
+
+- `update_dispatch_smart`: `p_dispatch_data->>'expected_updated_at'`. `update_invoice`: `p_invoice_data->>'expected_updated_at'`.
+- `update_grn`, `update_order_item_quantity`, `remove_item_from_order`: a new last parameter `p_expected_updated_at timestamptz DEFAULT NULL`
+  (the old signatures are dropped; a call without it, by name or by position, still works). A call that names it on a server without
+  migration 121 fails with PGRST202: the app repeats it without the parameter.
+
+Compared to the millisecond (`date_trunc('milliseconds', ...)`), so a JavaScript `Date` round trip survives. An absent or NULL token:
+no check. A token against a NULL stored value is stale. Nothing is written for a refusal. **Where it runs:** after the saved-answer
+replay of a request code (D22), so a resend of one's own lost save is never refused: `update_dispatch_smart` right after the row lock
+and "Dispatch not found"; `update_grn` inside the block after lock 71040, with the GRN row now locked (`FOR UPDATE`) and after its
+idempotency lookup; `update_invoice` on its first read, which now locks the live invoice; `update_order_item_quantity` and
+`remove_item_from_order` after the line's row lock and "Order item not found", before the order-not-open check (they take no
+advisory lock). Every success answer carries the new token: `update_dispatch_smart` top-level `updated_at`; `update_grn`
+`grn.updated_at`; `update_invoice` top-level `updated_at`; `update_order_item_quantity` and `add_item_to_order` `data.updated_at`
+(the line's). `get_dispatch_details` (`data.dispatch.updated_at`) and `get_order_with_items` (`order_data.updated_at`, `items[].updated_at`)
+already returned theirs; `get_invoice_detail` returns it as `invoice.updated_at` and `get_invoice_data` as `data.header.updated_at`.
+
+Known and accepted: any write to the row bumps the token, so a dispatch that empties a lot (it flips `goodsreceived.out_of_stock`)
+makes an open edit of that GRN stale, and after a lost answer the user's own retry reads as stale unless its request code replays first.
+
+### `get_grn_edit_state(p_grn_id uuid)` (new)
+
+For administrators, supervisors and staff (`authorize_rpc`: the staff list; a customer account is refused `Staff access required`). The
+GRN edit form loads its rows by direct table reads, so the token is read here first (a token read after the rows could hide a change):
+
+```
+{ success:true, data:{ grn_id, gr_no, date, updated_at,
+    invoice: null | {id, inv_no, inv_fin_year},            -- the GRN's first live invoice; when only the `invoiced` flag is set: the object with all three null
+    first_dispatch_date: null | 'YYYY-MM-DD',              -- IST day of the earliest live dispatch line of any lot
+    lines:[{ id, dispatched_qty, has_history, on_invoice, invoice_no, inv_fin_year, on_order, order_customer_name }] } }
+```
+
+`has_history`: a `dispatch_trl` or a `stock_movements` row exists for the lot; `on_invoice` / `invoice_no` / `inv_fin_year`: the lot
+is on a line of a live invoice; `on_order`: an `order_items` row of a live order points at it; `order_customer_name`: the GRN's
+customer. Not found (or deleted): `{success:false, error:'GRN not found', message:'GRN not found'}`.
+
+### Locks after dispatch and invoice (D2, D23)
+
+A lot is *dispatched* when `dispatch_trl` rows point at it, *invoiced* when one of those lines is on a live invoice. `update_grn`,
+per listed line that has an `id`, before any write, and only where a value really differs from the stored one (item = `item_id`;
+packaging compared as `COALESCE(x,'')`; weight as `COALESCE(x,0)`): an invoiced lot whose item, packaging or weight changes is
+`LOT_INVOICED` (the first offending line in the order sent, `fields` all its changed fields); else a dispatched lot whose item or
+packaging changes is `LOT_DISPATCHED`. A dispatched lot keeps its stored `item_name` (the edit does not overwrite it); its weight and
+the GRN date stay editable unless it is invoiced. D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
+a day (IST) that differs from the stored one is `GRN_DATE_LOCKED`; the same day sent back, at any time, is not a change.
+`update_dispatch_smart`: when a line of the dispatch is on a live invoice and the request changes the date or the number it answers
+`DISPATCH_INVOICED`. "Changed": `disp_no` differs from the stored text; the day sent (a date) differs from the IST day of the
+stored `disp_date`; the UTC day plays no part (a legacy row with an odd time of day is not changed by the app sending its own day). Other header fields stay editable.
+
+### Date rules (D3, IST days)
+
+Dispatch create, after the deleted-lots check and before the stock check: a day after today is `DISPATCH_DATE_FUTURE`; a day before the
+GRN day of any listed lot is `DISPATCH_BEFORE_GRN` (the latest GRN day and its number are reported). `update_dispatch_smart`, before the
+header update: the same two checks when the day is changed (then against every line after the edit, or the present lines when no list
+is sent), and with an unchanged day only the before-GRN check against the lines the edit adds; a legacy back-dated or future dispatch
+therefore stays editable. A request without `disp_date` is not checked. `update_grn`: a `p_date` whose IST day differs from the stored
+one and is later than the IST day of the earliest live dispatch line of any lot is `GRN_DATE_AFTER_DISPATCH`.
+
+### Dispatch edits and deletes keep the order in step (D4)
+
+A dispatch line records what it took from an order line (`cart_quantity_consumed`, with `source_order_item_id`, migration 67); the rule
+after this change is `cart_quantity_consumed <= disp_qty`. New `warehouse_security.restore_to_order(...)` (not granted to any app role) is
+the give-back of the delete function, moved out unchanged and shared. `update_dispatch_smart`, when a line list is sent: a line lowered
+or removed gives back `GREATEST(consumed - new, 0)` (migration 122; before it `LEAST(consumed, old - new)`) to the order line of its lot:
+only the bags that came from the order and are no longer dispatched, so a line raised past its order and lowered again gives back nothing
+until it drops below what it took from the order (order of 10, dispatch raised to 15: 15 to 12 gives 0 back, 15 to 2 gives 8 back). The
+give-back goes where the delete's goes, whatever the order's status (the dispatch's source order, else the order of the recorded line, else
+the customer's OPEN order, else a new one); a source order that is not OPEN (DISPATCHED or soft-deleted) is opened as the delete opens it
+(`status` OPEN, `deleted_at` and `deleted_by` cleared) instead of the bags being dropped. The line keeps `cart_quantity_consumed =
+LEAST(consumed, new quantity)`. A line raised
+or added takes `LEAST(order line, raise)` from the order line of its lot (the source order if it is OPEN, else the customer's OPEN order;
+no order, no line or an order that is not OPEN: nothing is taken, the dispatch still gets the full quantity from stock), reducing or
+deleting that line as a create does, and records it in `cart_quantity_consumed` / `source_order_item_id`. The answer gains
+`order_sync: {given_back, taken}` (bags, 0 when none) and `updated_at`. A save that sends lines but no `p_dispatch_data` moves the
+dispatch's `updated_at` too (migration 122), so the answered token is always new. `delete_dispatch_with_order_cleanup` gives back
+`LEAST(cart_quantity_consumed, disp_qty)` per line, and writes the `dispatch_deleted` entry of the order's change log for **every** cart
+that got something back (`restored_items` lists the lines actually given back to it, with the amount given back; the source order
+keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`, unchanged)
+also shows what a dispatch took (`order_revisions` action `auto_quantity_reduction`, new format `{action, timestamp, by, dispatch_id,
+dispatch_no, grn_item_id, previous_quantity, new_quantity}`, from create from an order, a direct create that reduces a line and an
+edit that raises) and what an edit gave back (one `UPDATE` entry per order, `changes.source = 'dispatch_edit'`). A dispatch-driven change
+is made whatever the state of the business.
+
+### Generate Dispatch (D5)
+
+`create_dispatch_with_stock_check` (through its wrappers) reads an optional `source_order_updated_at` in `p_dispatch_data` (the
+`order_data.updated_at` of `get_order_with_items`). After the "belongs to another customer" check and before any write, when it is present and
+a LINE of the order changed after that value (an `order_items.updated_at` later than it, or a line-change entry in `order_revisions`
+written more than 2 seconds later: a line removed, or taken by a dispatch): `ORDER_CHANGED`. A changed note, priority or requested date is not a reason. A retry of the user's own committed create is answered from the idempotency
+cache first. Absent: no check.
+
+### GRN number (D6, D8)
+
+`update_grn`: a non-blank `p_gr_no` that differs from the stored number is `GRN_NUMBER_LOCKED` (after the blank-number check, before the
+duplicate check); equal or NULL is fine. `get_next_grn_number` takes the letter from the highest letter in use
+(`max(left(gr_no,1))` among `^[A-Z][0-9]{1,7}$`), not from the last-entered GRN; then as before: the highest number of that letter's
+series, `>= 1000` moves to the next letter (`Z` to `A`): with `0001`, or, when that letter's series exists already, its next number; no GRN: `A0001`.
+
+### Dispatch and invoice numbers (D7)
+
+Unchanged in code. The number of a dispatch or invoice that was deleted is free again and `get_next_dispatch_number` /
+`get_next_invoice_number` offer it again; a saved create answer of a deleted document is not replayed (migration 120), so the same
+document can be entered again; `I1` and `I0001` are different strings. A number another document holds is still refused by name
+(`NUMBER_TAKEN`).
+
+### Unbilled bags (D9)
+
+`save_invoice(uuid,jsonb,jsonb[])` (through `save_invoice_internal`), `save_invoice(jsonb)` and `update_invoice`: before any write, any stock
+in any lot of the GRN the request names is `GRN_HAS_STOCK`. An existing invoice of a GRN that now holds stock is refused on its next edit
+too. `update_grn`: a line without `id` while the GRN is invoiced is `GRN_INVOICED`.
+
+### GRN rates dropped by an edit (D10, D24)
+
+`update_grn`'s clean-up of the GRN's own rates (a rate whose band holds no weight of its item's lines any more, or of another pricing
+kind; an invoiced GRN keeps its rates) now collects what it removes. Staff (`warehouse_security.active_role() = 'staff'`): a removal of a rate that fitted a line before the edit is
+`RATES_NEED_MANAGER` (they cannot send rates; a manager makes the change). Administrators and supervisors: `RATES_WOULD_DROP` when a line
+whose weight, or the GRN's pricing mode, was changed by this save lost its GRN-only rate and is not priced by this save: not by a rate of any
+scope for that item and weight in `p_rates`, and not by a GRN-only rate it still has. A rate removed on purpose in the Rates step, a removed
+line, a changed item, and a service-key call are not this case. Both raise `rate_fail`: the whole edit rolls back.
+
+### Removing a GRN line (D11)
+
+`update_grn`, before writes, for each stored line missing from `p_items`: a lot with a `dispatch_trl` or a `stock_movements` row is
+`LINE_DISPATCHED_BEFORE`; else a lot on an order line of a live order is `LINE_ON_ORDER` (this replaces the raw foreign-key text). The
+in-loop `Cannot delete item "..." - has N existing dispatches` stays as a backstop.
+
+### GRN history (D12), lengths (D13), rack and package mark (D15)
+
+`public.audit_trigger_func()` (the audit of customers, dispatches and orders) is attached to `goodsreceived` and `goodsreceived_trl`:
+every insert and delete, and every update except one that changes only `updated_at`, `updated_by`, `out_of_stock` or `invoiced` of a GRN, or
+only the `stock` of a line (every dispatch moves stock; `stock_movements` records it). `delete_grn_safe` still hard-deletes and the DELETE
+triggers keep a copy of the GRN and of each line; `audit_log.user_id` is the JWT `sub` (null for a service connection). History starts at the
+deploy; nothing purges `audit_log`. `save_grn` and `update_grn` also refuse a registration over 20 characters:
+`{success:false, error:'Registration can have at most 20 characters', error_code:'registration_too_long', data:{limit:20}, message}` (the column is
+`varchar(20)`; before, a database text). `warehouse_security.ascii_digits(text)` turns Gujarati, Devanagari, Arabic-Indic and extended
+Arabic-Indic digits into 0-9; `save_grn` and `update_grn` store `rack` and `package_mark` through it. Rows already stored are not converted.
+
+### Deactivated business (D16, corrected)
+
+A deactivated business may still order and be dispatched: migration 121 adds no refusal to dispatch create, edit or delete, to
+`add_item_to_order`, `update_order_item_quantity` or `remove_item_from_order`. Only a new GRN for it is refused, as before
+(migrations 80 to 84: `save_grn`, and `update_grn` when it moves the GRN to a deactivated customer).
+
+### Invoice total (D18)
+
+`save_invoice(uuid,jsonb,jsonb[])` and `update_invoice` read an optional number `expected_total` (rupees) in the invoice data. After
+`recalculate_invoice_header`, when `abs(invoice.total - expected_total) > 1.00` the save is rolled back and answered `TOTAL_CHANGED` with
+`lines` = each line's `disp_trl_id`, `duration`, `no_of_days` as the server just recomputed them. Absent (older apps): no check; their
+`total` key stays an estimate. `save_invoice(jsonb)` does not check it.
 
 ## List freshness (migration 106, 2026-10-19)
 

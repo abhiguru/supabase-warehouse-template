@@ -119,10 +119,10 @@ SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived
 -- Leaving the dispatched lot out of the list would delete it: refused, and the
 -- note and the other lines of that edit roll back with it.
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.edit_assert(pg_temp.edit_raises(format(
- 'SELECT public.update_grn(p_grn_id=>%L::uuid,p_note=>''Must roll back'',p_items=>%L::jsonb)',
- :'grn_id',jsonb_build_array(:'line_30'::jsonb || '{"qty":1}'::jsonb,:'line_new'::jsonb)::text),
- 'Cannot delete item "Edit Line Potatoes" - has 1 existing dispatches'),'a dispatched lot cannot be removed');
+SELECT public.update_grn(p_grn_id=>:'grn_id'::uuid,p_note=>'Must roll back',
+ p_items=>jsonb_build_array(:'line_30'::jsonb || '{"qty":1}'::jsonb,:'line_new'::jsonb)) AS removal \gset
+SELECT pg_temp.edit_assert(:'removal'::jsonb->>'success'='false' AND :'removal'::jsonb->>'reason'='LINE_DISPATCHED_BEFORE'
+ AND :'removal'::jsonb->>'item_name'='Edit Line Potatoes','a dispatched lot cannot be removed (migration 121 D11 names the line): ' || :'removal');
 RESET ROLE;
 SELECT pg_temp.edit_assert((SELECT count(*)=3 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid),'the refused removal leaves three lines');
 SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid)
@@ -148,11 +148,11 @@ SELECT pg_temp.edit_assert((SELECT sum(t.stock)=75 FROM public.goodsreceived_trl
 -- the line the first one added (the app does not know its id) and adds it
 -- again as a new row; with the key the first row and its id stay.
 SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn')
- AND (SELECT proargnames[cardinality(proargnames)-1]='p_idempotency_key' AND proargnames[cardinality(proargnames)]='p_rates' AND pronargdefaults=17 FROM pg_proc
+ AND (SELECT proargnames[cardinality(proargnames)-2]='p_idempotency_key' AND proargnames[cardinality(proargnames)-1]='p_rates' AND proargnames[cardinality(proargnames)]='p_expected_updated_at' AND pronargdefaults=18 FROM pg_proc
         WHERE pronamespace='public'::regnamespace AND proname='update_grn')
  AND (SELECT has_function_privilege('authenticated',oid,'EXECUTE') AND has_function_privilege('service_role',oid,'EXECUTE')
         AND NOT has_function_privilege('anon',oid,'EXECUTE') FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
- 'one update_grn exists; the key is its last parameter but p_rates (migration 86), optional like every parameter but the receipt id, and the grants are as before');
+ 'one update_grn exists; the key is its last parameter but p_rates (migration 86) and p_expected_updated_at (migration 121), optional like every parameter but the receipt id, and the grants are as before');
 SELECT jsonb_build_array(:'line_50'::jsonb,:'line_30'::jsonb || '{"qty":35}'::jsonb,
  jsonb_build_object('item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',7,'weight',12,'rack','R4','package_mark','RETRY')) AS retry_items \gset
 SET LOCAL ROLE authenticated;
@@ -168,8 +168,8 @@ SELECT pg_temp.edit_assert((SELECT count(*)=3 FROM public.goodsreceived_trl WHER
  AND (SELECT count(*)=1 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid AND package_mark='RETRY'),
  'the repeated save does not add the line again');
 SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(rpc_function='update_grn' AND created_by=:'staff_profile'::uuid
-   AND expires_at BETWEEN now()+interval '23 hours 59 minutes' AND now()+interval '24 hours')
- FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry'),'the key is kept for 24 hours for its function and user');
+   AND expires_at BETWEEN now()+interval '6 days 23 hours 59 minutes' AND now()+interval '7 days')
+ FROM public.idempotency_keys WHERE idempotency_key='edit-line-retry'),'the key is kept for 7 days for its function and user');
 SELECT (:'first_save'::jsonb#>>'{item_mapping,0,grn_trl_item_id}') AS lot_retry \gset
 SELECT pg_temp.edit_assert((SELECT count(*)=1 FROM public.goodsreceived_trl WHERE id=:'lot_retry'::uuid AND package_mark='RETRY'),
  'the line of the first save is still the stored row');
