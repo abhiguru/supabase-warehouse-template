@@ -212,7 +212,7 @@ SELECT pg_temp.bl_assert((jsonb_path_query_first(:'details'::jsonb,'$.**.statist
 SELECT pg_temp.bl_assert((:'aging_before'::jsonb#>>'{data,summary,total_weight_kg}')::numeric=146
  AND (:'aging_before'::jsonb#>>'{data,by_bucket,0-120,total_weight}')::numeric=146,'aging total 146 before a dispatch: '||left(:'aging_before',300));
 -- Dispatch 3 bags of the 12 kg line: stock 7 x 12 + 4 x 5 + 6 = 110; the received weight of BL80A stays 140.
-SELECT jsonb_build_object('disp_no','BL80D','disp_date',now(),'customer_id',:'customer_one','customer_name','Backlog Business One',
+SELECT jsonb_build_object('disp_no','BL80D','disp_date',warehouse_security.business_date(now()),'customer_id',:'customer_one','customer_name','Backlog Business One',
   'supervisor_id',:'admin_id','supervisor_name','Backlog Admin') AS dispatch_data \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
@@ -232,13 +232,13 @@ SELECT pg_temp.bl_assert((jsonb_path_query_first(:'details_after'::jsonb,'$.**.s
 
 -- ---- 1b. The same rule in the dispatch writers (BL80D, 3 bags of the 12 kg line, stands; 7 + 4 bags are left)
 SELECT id AS disp_id FROM public.dispatch WHERE disp_no='BL80D' \gset
-SELECT jsonb_build_object('disp_no','BL80E','disp_date',now(),'customer_id',:'customer_one','customer_name','Backlog Business One',
+SELECT jsonb_build_object('disp_no','BL80E','disp_date',warehouse_security.business_date(now()),'customer_id',:'customer_one','customer_name','Backlog Business One',
   'supervisor_id',:'sync_id','supervisor_name','Backlog Sync Connection') AS data_sa \gset
-SELECT jsonb_build_object('disp_no','BL80F','disp_date',now(),'customer_id',:'customer_one','customer_name','Backlog Business One',
+SELECT jsonb_build_object('disp_no','BL80F','disp_date',warehouse_security.business_date(now()),'customer_id',:'customer_one','customer_name','Backlog Business One',
   'supervisor_id',:'person_id','supervisor_name','Backlog Person Supervisor') AS data_person \gset
-SELECT jsonb_build_object('disp_no','BL80G','disp_date',now(),'customer_id',:'customer_one','customer_name','Backlog Business One',
+SELECT jsonb_build_object('disp_no','BL80G','disp_date',warehouse_security.business_date(now()),'customer_id',:'customer_one','customer_name','Backlog Business One',
   'supervisor_id',:'sync_id','supervisor_name','Backlog Sync Connection') AS data_self \gset
-SELECT jsonb_build_object('disp_no','BL80H','disp_date',now(),'customer_id',:'customer_one','customer_name','Backlog Business One',
+SELECT jsonb_build_object('disp_no','BL80H','disp_date',warehouse_security.business_date(now()),'customer_id',:'customer_one','customer_name','Backlog Business One',
   'supervisor_id',:'other_sync_id','supervisor_name','Backlog Other Connection') AS data_other \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
