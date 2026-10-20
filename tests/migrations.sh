@@ -144,7 +144,7 @@ test_files=(
   "$ROOT/tests/dispatch_invoice_read_figures.sql"
   "$ROOT/tests/grn_image_visibility.sql"
   "$ROOT/tests/stock_summary_item_identity.sql"
-  "$ROOT/tests/sensor_ingest.sql"
+  "$ROOT/tests/sensor_ingest.sql" "$ROOT/tests/sensor_limits.sql"
   "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql"
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
   "$ROOT/tests/list_refresh_removed_106.sql" "$ROOT/tests/invoice_list_live.sql"

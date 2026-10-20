@@ -77,7 +77,12 @@ What the app reads:
   `latest_reading_timestamp`, `is_stale` and `earliest_reading_at` repeat
   `temperature`, `humidity`, `measured_at`, `stale` and `first_reading_at`.
 - `update_sensor_device(p_device_id, p_device_name, p_location,
-  p_staleness_threshold_minutes)` (new; administrator only).
+  p_staleness_threshold_minutes, p_temperature_min, p_temperature_max,
+  p_set_temperature_limits)` (administrator only). The limits (°C, stored in
+  `alert_config`) are written only when `p_set_temperature_limits` is true, both as
+  given (NULL clears one); the first four parameters work as before. `sensor_status`,
+  `get_sensor_device` and `get_sensor_polling_data` carry `temperature_alert`
+  (`HIGH`, `LOW` or null).
 - Table `sensor_latest` (one row per device), readable by administrator,
   supervisor and staff; the app re-reads it on a timer. Customers and `anon` read no sensor table.
 - `capabilities.sensors` in `get-public-config` (from the state's
