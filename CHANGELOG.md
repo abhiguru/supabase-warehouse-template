@@ -35,6 +35,22 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
    No rows: go on.
 
+## Unreleased: Push review (migration 122)
+
+New migration (`push_review`), four corrections found in the review of the whole backend diff, on top of migration 121 (which is
+unchanged). No data is changed; no signature changes. Details: [docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Dispatch edits and
+deletes keep the order in step (D4)".
+
+- **Lower after raise (D4, owner-cautious reading).** An edit that lowers a dispatch line gives back `GREATEST(consumed - new, 0)`
+  bags to the order, the bags that came from the order and are no longer dispatched (before: `LEAST(consumed, old - new)`); the line
+  keeps `LEAST(consumed, new)`. An order of 10 raised to 15 and lowered to 12 gives 0 back, lowered to 2 gives 8 back. Delete is unchanged.
+- **Source order that is not OPEN.** An edit gives back into it as the delete does, and opens it the way the delete does, instead of
+  dropping the bags.
+- **Version token (D1).** A save of lines alone (no `p_dispatch_data`) moves the dispatch's `updated_at`, so the answer carries a new token.
+- **Hygiene.** `warehouse_security.restore_to_order` pins `search_path` with `pg_temp` last.
+- Tests: `tests/push_review_122.sql` (new) and more cases in `tests/review_fixes_120.sql`; the token tests now backdate rows; the
+  fixtures that set a lot's stock to 0 by hand dispatch the rest instead.
+
 ## Unreleased: Review decisions (migration 121)
 
 New migration (`review_decisions`), server side of the owner decisions of 2026-10-20 on dispatch, GRN, invoice and order writes

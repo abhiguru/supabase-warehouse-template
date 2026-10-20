@@ -314,15 +314,20 @@ SELECT id AS plum_lot FROM public.goodsreceived_trl WHERE gr_id=pg_temp.gr_grn('
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'grn-rates-d1')$q$,
   :'dispatch_for',jsonb_build_object('disp_no','GRD1','disp_date',:'dm8'),jsonb_build_object('gr_trl_id',:'plum_lot','disp_qty',5))) AS disp1 \gset
 SELECT pg_temp.gr_assert(:'disp1'::jsonb->>'success'='true','dispatch of the Plum lot: '||:'disp1');
--- Migration 121 D9: an invoice needs a GRN with no stock left. The one Kiwi bag is taken out of stock here (a stand-in for its dispatch).
-UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=pg_temp.gr_grn('GRN-G1') AND item_name='GR Kiwi';
+-- Migration 121 D9: an invoice needs a GRN with no stock left. The Kiwi bags that remain are dispatched too (a real dispatch of the rest).
+SELECT t.id AS kiwi_lot, t.stock AS kiwi_stock FROM public.goodsreceived_trl t WHERE t.gr_id=pg_temp.gr_grn('GRN-G1') AND t.item_name='GR Kiwi' \gset
+SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.create_dispatch_with_stock_check(%L::jsonb||%L::jsonb,ARRAY[%L::jsonb],0,'grn-rates-d1k')$q$,
+  :'dispatch_for',jsonb_build_object('disp_no','GRD1K','disp_date',:'dm8'),jsonb_build_object('gr_trl_id',:'kiwi_lot','disp_qty',:kiwi_stock))) AS disp1k \gset
+SELECT pg_temp.gr_assert(:'disp1k'::jsonb->>'success'='true' AND (SELECT stock=0 FROM public.goodsreceived_trl WHERE id=:'kiwi_lot'::uuid) AND :kiwi_stock>0,
+  'dispatch of the remaining Kiwi bags empties the GRN: '||:'disp1k');
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1')) AS rows1 \gset
-SELECT pg_temp.gr_assert(:'rows1'::jsonb->>'success'='true' AND jsonb_array_length(:'rows1'::jsonb->'rows')=1
- AND (:'rows1'::jsonb#>>'{rows,0,charge}')::numeric=8 AND (:'rows1'::jsonb#>>'{rows,0,labour_rate}')::numeric=2 AND (:'rows1'::jsonb#>>'{rows,0,tax_percent}')::numeric=5
- AND (:'rows1'::jsonb#>>'{rows,0,labour_amount}')::numeric=10
- AND (:'rows1'::jsonb#>>'{rows,0,tax_amount}')::numeric=round(((:'rows1'::jsonb#>>'{rows,0,storage_amount}')::numeric+10)*5/100.0,2)
- AND (:'rows1'::jsonb#>>'{rows,0,storage_amount}')::numeric=round(8*5*(:'rows1'::jsonb#>>'{rows,0,duration}')::numeric,2)
- AND (:'rows1'::jsonb#>>'{rows,0,missing_price}')='false','the invoice rows take rent 8, labour 2 and tax 5 from the GRN rate: '||(:'rows1'::jsonb#>'{rows,0}')::text);
+SELECT r AS plum_row FROM jsonb_array_elements(:'rows1'::jsonb->'rows') r WHERE r->>'item_name'='GR Plum' \gset
+SELECT pg_temp.gr_assert(:'rows1'::jsonb->>'success'='true' AND jsonb_array_length(:'rows1'::jsonb->'rows')=2 AND (SELECT count(*)=1 FROM jsonb_array_elements(:'rows1'::jsonb->'rows') r WHERE r->>'item_name'='GR Kiwi')
+ AND (:'plum_row'::jsonb->>'charge')::numeric=8 AND (:'plum_row'::jsonb->>'labour_rate')::numeric=2 AND (:'plum_row'::jsonb->>'tax_percent')::numeric=5
+ AND (:'plum_row'::jsonb->>'labour_amount')::numeric=10
+ AND (:'plum_row'::jsonb->>'tax_amount')::numeric=round(((:'plum_row'::jsonb->>'storage_amount')::numeric+10)*5/100.0,2)
+ AND (:'plum_row'::jsonb->>'storage_amount')::numeric=round(8*5*(:'plum_row'::jsonb->>'duration')::numeric,2)
+ AND (:'plum_row'::jsonb->>'missing_price')='false','the invoice rows take rent 8, labour 2 and tax 5 from the GRN rate: '||:'plum_row');
 -- Save the invoice (charge 8), then change the GRN rate behind it: the stored charge wins.
 SELECT jsonb_build_object('inv_no',20269901,'inv_fin_year',2026,'customer_id',:'orchard','customer_name','GR Orchard',
  'inv_date',:'dm8'||'T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
@@ -336,8 +341,10 @@ SELECT (:'inv1'::jsonb->>'invoice_id') AS invoice_g1 \gset
 UPDATE public.grn_rates SET unit_price=9 WHERE gr_id=pg_temp.gr_grn('GRN-G1');
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1'),'legacy',:'invoice_g1'::uuid) AS rows_saved \gset
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1')) AS rows_fresh \gset
-SELECT pg_temp.gr_assert((:'rows_saved'::jsonb#>>'{rows,0,charge}')::numeric=8,'the stored invoice charge (8) wins over the GRN rate (now 9): '||(:'rows_saved'::jsonb#>>'{rows,0,charge}'));
-SELECT pg_temp.gr_assert((:'rows_fresh'::jsonb#>>'{rows,0,charge}')::numeric=9,'with no invoice, the GRN rate (9) is used: '||(:'rows_fresh'::jsonb#>>'{rows,0,charge}'));
+SELECT r->>'charge' AS saved_plum_charge FROM jsonb_array_elements(:'rows_saved'::jsonb->'rows') r WHERE r->>'item_name'='GR Plum' \gset
+SELECT r->>'charge' AS fresh_plum_charge FROM jsonb_array_elements(:'rows_fresh'::jsonb->'rows') r WHERE r->>'item_name'='GR Plum' \gset
+SELECT pg_temp.gr_assert(:saved_plum_charge::numeric=8,'the stored invoice charge (8) wins over the GRN rate (now 9): '||:'saved_plum_charge');
+SELECT pg_temp.gr_assert(:fresh_plum_charge::numeric=9,'with no invoice, the GRN rate (9) is used: '||:'fresh_plum_charge');
 -- An invoiced GRN: a differing set is GRN_INVOICED, the equal set is accepted silently; the details say archived.
 SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-G1',jsonb_build_array(pg_temp.gr_rate('grn','GR Plum',0,50,5,2,5))) AS inv_diff \gset
 SELECT pg_temp.gr_assert(:'inv_diff'::jsonb->>'error_code'='GRN_INVOICED' AND :'inv_diff'::jsonb->>'message'='The rates of an invoiced GRN cannot change'
@@ -355,7 +362,8 @@ SELECT pg_temp.gr_assert((SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_element
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.delete_invoice(%L::uuid)$q$,:'invoice_g1')) AS del1 \gset
 SELECT pg_temp.gr_assert(:'del1'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE gr_no='GRN-G1'),'invoice deleted: '||:'del1');
 SELECT public.build_invoice_recalculation_rows(pg_temp.gr_grn('GRN-G1'),'legacy',:'invoice_g1'::uuid) AS rows_after \gset
-SELECT pg_temp.gr_assert((:'rows_after'::jsonb#>>'{rows,0,charge}')::numeric=9,'after delete_invoice the GRN rate applies again: '||(:'rows_after'::jsonb#>>'{rows,0,charge}'));
+SELECT r->>'charge' AS after_plum_charge FROM jsonb_array_elements(:'rows_after'::jsonb->'rows') r WHERE r->>'item_name'='GR Plum' \gset
+SELECT pg_temp.gr_assert(:after_plum_charge::numeric=9,'after delete_invoice the GRN rate applies again: '||:'after_plum_charge');
 
 -- ---------------------------------------------------------------------------
 -- 6a. An invoiced GRN (C2): no rate is demanded of its lines, and its stored set is accepted as it is

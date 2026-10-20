@@ -374,3 +374,167 @@ SELECT pg_temp.rf_assert((:'cust_missing_update'::jsonb)->>'message'='Order item
 SELECT pg_temp.rf_assert(:'cust_foreign_update' LIKE 'raised: 42501%Customer access denied%' AND :'cust_foreign_remove' LIKE 'raised: 42501%Customer access denied%'
  AND (SELECT requested_quantity=4 FROM public.order_items WHERE id=:'open_line'::uuid),
  'twin: a line that exists, of a customer the login does not own, is still refused and unchanged: '||:'cust_foreign_update'||:'cust_foreign_remove');
+
+-- ---------------------------------------------------------------------------
+-- 8. H5: seen_ids on a customer rate entry of save_grn / update_grn p_rates (STALE_RATES). Receipts FXR1 to FXR3 are customer A's,
+--    potatoes of weight 10, dated 2026-04-03, with the customer rate band 0 to 50.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION pg_temp.rf_rate(item uuid, price numeric, seen jsonb DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_build_object('scope','customer','item_id',item,'weight_min',0,'weight_max',50,'unit_price',price,'labour_rate',2,'tax_percent',5,'to',NULL)
+    || CASE WHEN seen IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('seen_ids',seen) END $$;
+CREATE FUNCTION pg_temp.rf_rows(cust uuid, item uuid) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT COALESCE(jsonb_agg(r.id ORDER BY r.id),'[]'::jsonb) FROM public.item_storage_prices r
+   WHERE r.item_id=item AND r.customer_id=cust AND r.price_type='monthly' AND r.weight_min=0 AND r.weight_max=50
+     AND r.effective_from<='2026-04-03' AND COALESCE(r.effective_to,'infinity'::date)>='2026-04-03' $$;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'FXR1',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+ p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR1')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',7))) AS seen_first \gset
+RESET ROLE;
+SELECT pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid) AS rows_1 \gset
+SELECT pg_temp.rf_assert(:'seen_first'::jsonb->>'success'='true' AND jsonb_array_length(:'rows_1'::jsonb)=1,'fixture: FXR1 saved with an entry without seen_ids (not checked); one customer rate row is in force: '||:'seen_first'||:'rows_1');
+-- A sheet that lists no row while one is in force is stale: refused, nothing saved.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+ p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR2')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,'[]'::jsonb))) AS seen_stale \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'seen_stale'::jsonb->>'success'='false' AND :'seen_stale'::jsonb->>'error_code'='STALE_RATES' AND :'seen_stale'::jsonb->>'reason'='STALE_RATES'
+ AND :'seen_stale'::jsonb#>'{data,ids}'=:'rows_1'::jsonb AND (:'seen_stale'::jsonb#>>'{data,index}')::integer=0
+ AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='FXR2') AND pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid)=:'rows_1'::jsonb,
+ 'save_grn with seen_ids [] while a row is in force: STALE_RATES naming that row, no receipt, no rate written: '||:'seen_stale');
+-- The sheet that listed the row is current: saved.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'FXR2',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+ p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR2')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,:'rows_1'::jsonb))) AS seen_ok \gset
+RESET ROLE;
+SELECT pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid) AS rows_2 \gset
+SELECT pg_temp.rf_assert(:'seen_ok'::jsonb->>'success'='true' AND EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='FXR2')
+ AND :'rows_2'::jsonb<>:'rows_1'::jsonb,'twin: seen_ids listing the row in force saves, and the new rate replaced the old row: '||:'seen_ok'||:'rows_2');
+-- A malformed seen_ids is refused by name.
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.save_grn(p_gr_no=>'FXR3',p_date=>'2026-04-03T12:00:00Z',p_customer_id=>:'customer_a'::uuid,p_customer_name=>'Fix Customer A',p_pricing_mode=>'MONTHLY',
+ p_items=>jsonb_build_array(pg_temp.rf_line(:'potatoes','Fix Potatoes',5,'FXR3')),p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',9,'["not-a-uuid"]'::jsonb))) AS seen_bad \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'seen_bad'::jsonb->>'success'='false' AND :'seen_bad'::jsonb->>'error_code'='INVALID_BANDS' AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='FXR3'),
+ 'a seen_ids that is not a list of rate ids is INVALID_BANDS, nothing saved: '||:'seen_bad');
+-- update_grn: an old sheet (the row of rows_1 is gone) is stale; the current rows are accepted.
+SELECT id AS grn_r2 FROM public.goodsreceived WHERE gr_no='FXR2' \gset
+SELECT jsonb_agg(jsonb_build_object('id',t.id,'item_id',t.item_id,'item_name',t.item_name,'packaging',t.packaging,'qty',t.qty,'weight',t.weight,'rack',t.rack,'package_mark',t.package_mark)) AS lines_r2
+ FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_r2'::uuid \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_r2'::uuid,p_items=>:'lines_r2'::jsonb,p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',11,:'rows_1'::jsonb))) AS upd_stale \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'upd_stale'::jsonb->>'error_code'='STALE_RATES' AND :'upd_stale'::jsonb#>'{data,ids}'=:'rows_2'::jsonb
+ AND pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid)=:'rows_2'::jsonb,'update_grn with an old seen_ids: STALE_RATES naming the current row, no rate written: '||:'upd_stale');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_grn(p_grn_id=>:'grn_r2'::uuid,p_items=>:'lines_r2'::jsonb,p_rates=>jsonb_build_array(pg_temp.rf_rate(:'potatoes',11,:'rows_2'::jsonb))) AS upd_ok \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'upd_ok'::jsonb->>'success'='true' AND pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid)<>:'rows_2'::jsonb
+ AND (SELECT unit_price=11 FROM public.item_storage_prices WHERE id=(pg_temp.rf_rows(:'customer_a'::uuid,:'potatoes'::uuid)->>0)::uuid),
+ 'twin: update_grn with the current seen_ids saves and the rate becomes 11: '||:'upd_ok');
+
+-- ---------------------------------------------------------------------------
+-- 9. Names come from the master tables on dispatch create and edit (A14, B12)
+-- ---------------------------------------------------------------------------
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_date','2026-05-02T12:00:00Z','customer_id',:'customer_a','customer_name','Not The Customer',
+ 'supervisor_id',:'admin_profile','supervisor_name','Not The Supervisor','disp_no','FXN1'),ARRAY[jsonb_build_object('gr_trl_id',:'lot_a2','disp_qty',1)],0,'fx-names') AS names_create \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'names_create'::jsonb->>'success'='true'
+ AND (SELECT customer_name='Fix Customer A' AND supervisor_name='Fix Administrator' FROM public.dispatch WHERE id=(:'names_create'::jsonb->>'dispatch_id')::uuid),
+ 'a create stores the master tables'' names, not the names sent: '||(SELECT customer_name||' / '||supervisor_name FROM public.dispatch WHERE id=(:'names_create'::jsonb->>'dispatch_id')::uuid));
+SELECT id AS staff_profile FROM public.user_profiles WHERE mobile='919888888902' \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_dispatch_smart((:'names_create'::jsonb->>'dispatch_id')::uuid,jsonb_build_object('customer_name','Still Not','supervisor_name','Not Either'),NULL) AS names_same \gset
+SELECT public.update_dispatch_smart((:'names_create'::jsonb->>'dispatch_id')::uuid,jsonb_build_object('supervisor_id',:'staff_profile','supervisor_name','Bogus Name'),NULL) AS names_change \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'names_same'::jsonb->>'success'='true' AND :'names_change'::jsonb->>'success'='true'
+ AND (SELECT customer_name='Fix Customer A' AND supervisor_id=:'staff_profile'::uuid AND supervisor_name='Fix Staff' FROM public.dispatch WHERE id=(:'names_create'::jsonb->>'dispatch_id')::uuid),
+ 'an edit ignores the names sent; a changed supervisor takes the master table''s name (Fix Staff, not Bogus Name): '||(SELECT customer_name||' / '||supervisor_name FROM public.dispatch WHERE id=(:'names_create'::jsonb->>'dispatch_id')::uuid));
+
+-- ---------------------------------------------------------------------------
+-- 10. update_invoice keeps the stored notes and duration_mode when the request has no such key (I2)
+-- ---------------------------------------------------------------------------
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_invoice(:'invoice_k'::uuid,:'inv_base'::jsonb||jsonb_build_object('inv_no',91003,'gr_id',:'grn_k','gr_no','FXK','notes','keep these notes','duration_mode','standard'),
+ pg_temp.rf_items(:'lines_k'::jsonb)) AS keep_set \gset
+SELECT public.update_invoice(:'invoice_k'::uuid,(:'inv_base'::jsonb-'duration_mode'-'notes')||jsonb_build_object('inv_no',91003,'gr_id',:'grn_k','gr_no','FXK'),
+ pg_temp.rf_items(:'lines_k'::jsonb)) AS keep_absent \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'keep_set'::jsonb->>'success'='true' AND :'keep_absent'::jsonb->>'success'='true'
+ AND (SELECT notes='keep these notes' AND duration_mode='standard' FROM public.invoice WHERE id=:'invoice_k'::uuid),
+ 'an edit with no notes and no duration_mode keeps both: '||:'keep_absent'||(SELECT notes||' / '||duration_mode FROM public.invoice WHERE id=:'invoice_k'::uuid));
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.update_invoice(:'invoice_k'::uuid,:'inv_base'::jsonb||jsonb_build_object('inv_no',91003,'gr_id',:'grn_k','gr_no','FXK','notes','','duration_mode','legacy'),
+ pg_temp.rf_items(:'lines_k'::jsonb)) AS keep_clear \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'keep_clear'::jsonb->>'success'='true' AND (SELECT COALESCE(notes,'')='' AND duration_mode='legacy' FROM public.invoice WHERE id=:'invoice_k'::uuid),
+ 'twin: sent keys are applied (notes cleared, mode back to legacy): '||:'keep_clear');
+
+-- ---------------------------------------------------------------------------
+-- 11. delete_invoice: a payment is re-checked on the live invoice; the GRN flag is cleared only when no other live invoice holds it (I12)
+-- ---------------------------------------------------------------------------
+INSERT INTO public.payments(payment_no,payment_date,customer_id,customer_name,amount,invoice_id)
+ VALUES ('FXPAY1','2026-06-25T12:00:00Z',:'customer_a'::uuid,'Fix Customer A',5,:'invoice_k'::uuid);
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.delete_invoice(:'invoice_k'::uuid) AS del_paid \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'del_paid'::jsonb->>'success'='false' AND :'del_paid'::jsonb->>'error'='Cannot delete an invoice that has payments'
+ AND EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid AND deleted_at IS NULL) AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid)
+ AND (SELECT count(*)=1 FROM public.invoice_trl WHERE invoice_id=:'invoice_k'::uuid),'a paid invoice is not deleted, keeps its line and the GRN stays invoiced: '||:'del_paid');
+DELETE FROM public.payments WHERE payment_no='FXPAY1';
+-- A second live invoice on the same GRN (a legacy shape, written directly): deleting one leaves the GRN invoiced, deleting the last frees it.
+INSERT INTO public.invoice(inv_no,inv_fin_year,customer_id,customer_name,inv_date,gr_id,gr_no,total,tax_amount,labour,discount,duration_mode)
+ VALUES (91099,2026,:'customer_a'::uuid,'Fix Customer A','2026-06-21T12:00:00Z',:'grn_k'::uuid,'FXK',0,0,0,0,'legacy');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.delete_invoice(:'invoice_k'::uuid) AS del_first \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'del_first'::jsonb->>'success'='true' AND NOT EXISTS (SELECT 1 FROM public.invoice WHERE id=:'invoice_k'::uuid)
+ AND (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid),'deleting one of two live invoices of a GRN leaves the GRN invoiced: '||:'del_first');
+SELECT id AS invoice_k2 FROM public.invoice WHERE inv_no=91099 AND gr_id=:'grn_k'::uuid \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.delete_invoice(:'invoice_k2'::uuid) AS del_last \gset
+SELECT public.delete_invoice(:'invoice_k2'::uuid) AS del_again \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'del_last'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE id=:'grn_k'::uuid)
+ AND :'del_again'::jsonb->>'success'='false' AND :'del_again'::jsonb->>'error'='Invoice not found',
+ 'deleting the last live invoice frees the GRN; deleting it again is "Invoice not found": '||:'del_last'||:'del_again');
+
+-- ---------------------------------------------------------------------------
+-- 12. confirm_grn_image_upload and confirm_dispatch_image_upload: NOT_FOUND for a wrong token, an already confirmed row, a row that went away
+-- ---------------------------------------------------------------------------
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.register_grn_image_upload(:'grn_a'::uuid,'header','fx-header.webp',32,'image/webp') AS reg_g \gset
+SELECT public.register_dispatch_image_upload((:'free_create'::jsonb->>'dispatch_id')::uuid,'fx-truck.webp',32,'image/webp') AS reg_d \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'reg_g'::jsonb->>'success'='true' AND :'reg_d'::jsonb->>'success'='true','fixture: a header photo and a dispatch photo registered: '||:'reg_g'||:'reg_d');
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.confirm_grn_image_upload((:'reg_g'::jsonb->>'image_id')::uuid,gen_random_uuid()) AS wrong_token_g \gset
+SELECT public.confirm_dispatch_image_upload((:'reg_d'::jsonb->>'image_id')::uuid,gen_random_uuid()) AS wrong_token_d \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'wrong_token_g'::jsonb->>'code'='NOT_FOUND' AND :'wrong_token_g'::jsonb->>'success'='false' AND :'wrong_token_d'::jsonb->>'code'='NOT_FOUND'
+ AND :'wrong_token_d'::jsonb->>'success'='false','a wrong upload token is NOT_FOUND for both photo kinds: '||:'wrong_token_g'||:'wrong_token_d');
+-- The pending rows go away (the document edit removed the photo): the right token is NOT_FOUND too, not a success and not an internal error.
+DELETE FROM public.grn_images WHERE id=(:'reg_g'::jsonb->>'image_id')::uuid;
+DELETE FROM public.dispatch_images WHERE id=(:'reg_d'::jsonb->>'image_id')::uuid;
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.confirm_grn_image_upload((:'reg_g'::jsonb->>'image_id')::uuid,(:'reg_g'::jsonb->>'upload_token')::uuid) AS gone_g \gset
+SELECT public.confirm_dispatch_image_upload((:'reg_d'::jsonb->>'image_id')::uuid,(:'reg_d'::jsonb->>'upload_token')::uuid) AS gone_d \gset
+RESET ROLE;
+SELECT pg_temp.rf_assert(:'gone_g'::jsonb->>'code'='NOT_FOUND' AND :'gone_g'::jsonb->>'success'='false' AND :'gone_d'::jsonb->>'code'='NOT_FOUND' AND :'gone_d'::jsonb->>'success'='false',
+ 'a pending photo row that went away with the right token: NOT_FOUND for both kinds: '||:'gone_g'||:'gone_d');

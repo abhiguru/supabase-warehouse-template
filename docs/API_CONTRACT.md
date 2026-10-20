@@ -815,8 +815,8 @@ packaging changes is `LOT_DISPATCHED`. A dispatched lot keeps its stored `item_n
 the GRN date stay editable unless it is invoiced. D23: the GRN date of an invoiced GRN (a live invoice, or `invoiced` set) is locked:
 a day (IST) that differs from the stored one is `GRN_DATE_LOCKED`; the same day sent back, at any time, is not a change.
 `update_dispatch_smart`: when a line of the dispatch is on a live invoice and the request changes the date or the number it answers
-`DISPATCH_INVOICED`. "Changed": `disp_no` differs from the stored text; the day sent differs from both the UTC day and the IST day of the
-stored `disp_date` (a legacy row with an odd time of day is not changed by the app sending its own day). Other header fields stay editable.
+`DISPATCH_INVOICED`. "Changed": `disp_no` differs from the stored text; the day sent (a date) differs from the IST day of the
+stored `disp_date`; the UTC day plays no part (a legacy row with an odd time of day is not changed by the app sending its own day). Other header fields stay editable.
 
 ### Date rules (D3, IST days)
 
@@ -832,12 +832,18 @@ one and is later than the IST day of the earliest live dispatch line of any lot 
 A dispatch line records what it took from an order line (`cart_quantity_consumed`, with `source_order_item_id`, migration 67); the rule
 after this change is `cart_quantity_consumed <= disp_qty`. New `warehouse_security.restore_to_order(...)` (not granted to any app role) is
 the give-back of the delete function, moved out unchanged and shared. `update_dispatch_smart`, when a line list is sent: a line lowered
-or removed gives back `LEAST(consumed, old - new)` to the order line of its lot (the dispatch's source order, else the order of the
-recorded line, else the customer's OPEN order, else a new one) and keeps `cart_quantity_consumed` at most its new quantity; a line raised
+or removed gives back `GREATEST(consumed - new, 0)` (migration 122; before it `LEAST(consumed, old - new)`) to the order line of its lot:
+only the bags that came from the order and are no longer dispatched, so a line raised past its order and lowered again gives back nothing
+until it drops below what it took from the order (order of 10, dispatch raised to 15: 15 to 12 gives 0 back, 15 to 2 gives 8 back). The
+give-back goes where the delete's goes, whatever the order's status (the dispatch's source order, else the order of the recorded line, else
+the customer's OPEN order, else a new one); a source order that is not OPEN (DISPATCHED or soft-deleted) is opened as the delete opens it
+(`status` OPEN, `deleted_at` and `deleted_by` cleared) instead of the bags being dropped. The line keeps `cart_quantity_consumed =
+LEAST(consumed, new quantity)`. A line raised
 or added takes `LEAST(order line, raise)` from the order line of its lot (the source order if it is OPEN, else the customer's OPEN order;
 no order, no line or an order that is not OPEN: nothing is taken, the dispatch still gets the full quantity from stock), reducing or
 deleting that line as a create does, and records it in `cart_quantity_consumed` / `source_order_item_id`. The answer gains
-`order_sync: {given_back, taken}` (bags, 0 when none) and `updated_at`. `delete_dispatch_with_order_cleanup` gives back
+`order_sync: {given_back, taken}` (bags, 0 when none) and `updated_at`. A save that sends lines but no `p_dispatch_data` moves the
+dispatch's `updated_at` too (migration 122), so the answered token is always new. `delete_dispatch_with_order_cleanup` gives back
 `LEAST(cart_quantity_consumed, disp_qty)` per line, and writes the `dispatch_deleted` entry of the order's change log for **every** cart
 that got something back (`restored_items` lists the lines actually given back to it, with the amount given back; the source order
 keeps its entry, empty when nothing went back, and its status reset as before). The order change log (`get_order_change_log`, unchanged)

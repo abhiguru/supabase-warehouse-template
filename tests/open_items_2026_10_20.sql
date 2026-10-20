@@ -170,6 +170,22 @@ RESET ROLE;
 SELECT pg_temp.oi_assert((:'edited'::jsonb)->>'success'='true','dispatch edit: '||:'edited');
 SELECT pg_temp.oi_assert(pg_temp.oi_dispatch_lots(:'lod1'::uuid) = 'L3,L1,L4,L2,M2,M1', 'after the edit: old lines, then M2, M1 as given: ' || pg_temp.oi_dispatch_lots(:'lod1'::uuid));
 
+-- A real dispatch of what is left of a receipt (an invoice needs a GRN with no stock, migration 121 D9): one line per lot with stock.
+CREATE FUNCTION pg_temp.oi_dispatch_rest(p_gr_no text, p_disp_no text, p_date text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE res jsonb; v_lines jsonb[];
+BEGIN
+  SELECT array_agg(jsonb_build_object('gr_trl_id',t.id,'disp_qty',t.stock) ORDER BY t.id) INTO v_lines
+    FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no=p_gr_no AND t.stock>0;
+  PERFORM pg_temp.oi_assert(v_lines IS NOT NULL,'receipt '||p_gr_no||' still has stock to dispatch');
+  PERFORM pg_temp.oi_as_admin();
+  res := public.create_dispatch_with_stock_check(jsonb_build_object('disp_no',p_disp_no,'disp_date',p_date,
+    'customer_id',(SELECT id FROM public.customers WHERE name='Open Items Lines Customer'),'customer_name','Open Items Lines Customer',
+    'supervisor_id',(SELECT id FROM public.user_profiles WHERE name='Open Items Administrator'),'supervisor_name','Open Items Administrator'),
+    v_lines, 0, 'oi-rest-'||p_disp_no);
+  RESET ROLE;
+  PERFORM pg_temp.oi_assert(res->>'success'='true','dispatch of the rest of '||p_gr_no||': '||left(res::text,300));
+  PERFORM pg_temp.oi_assert((SELECT bool_and(t.stock=0) FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no=p_gr_no),'receipt '||p_gr_no||' is empty after '||p_disp_no);
+END $$;
 -- An invoice for the six lines, listed in the order L2, M1, L3, M2, L1, L4 (given, not saved, order).
 CREATE FUNCTION pg_temp.oi_line_of(p_mark text) RETURNS uuid LANGUAGE sql AS $$
   SELECT dt.id FROM public.dispatch_trl dt JOIN public.goodsreceived_trl t ON t.id=dt.gr_trl_id WHERE dt.disp_id=current_setting('oi.lod1')::uuid AND t.package_mark=p_mark $$;
@@ -189,8 +205,8 @@ BEGIN
 END $$;
 -- This one call joins by a merge join instead (on the baseline a hash join happens to keep the input order here, a merge join
 -- hands the lines back in dispatch line id order): either way the saved order has to be the given order.
--- Migration 121 D9: an invoice needs a GRN with no stock left; the lots of LO1 are taken out of stock directly (a stand-in for dispatching the rest).
-UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO1');
+-- Migration 121 D9: an invoice needs a GRN with no stock left; the rest of LO1 is dispatched (LOD1R).
+SELECT pg_temp.oi_dispatch_rest('LO1','LOD1R','2026-06-12');
 SET LOCAL enable_hashjoin = off;
 SET LOCAL enable_mergejoin = on;
 SELECT pg_temp.oi_as_admin();
@@ -217,8 +233,8 @@ SELECT public.update_invoice(:'inv1'::uuid, jsonb_build_object('inv_no', 9801, '
 RESET ROLE;
 SELECT pg_temp.oi_assert((:'updated_invoice'::jsonb)->>'success'='true','update_invoice: '||:'updated_invoice');
 SELECT pg_temp.oi_assert(pg_temp.oi_invoice_lots(:'inv1'::uuid) = 'L4,L1,L3,L2', 'update_invoice: lines in the order given: ' || pg_temp.oi_invoice_lots(:'inv1'::uuid));
--- Migration 121 D9: an invoice needs a GRN with no stock left; the lots of LO2 are taken out of stock directly (a stand-in for dispatching the rest).
-UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO2');
+-- Migration 121 D9: an invoice needs a GRN with no stock left; the rest of LO2 is dispatched (LOD2R).
+SELECT pg_temp.oi_dispatch_rest('LO2','LOD2R','2026-06-12');
 -- save_invoice with an invoice id (save_invoice_internal), on a new invoice of the second receipt.
 SELECT pg_temp.oi_as_admin();
 SELECT public.save_invoice(NULL::uuid, jsonb_build_object('inv_no', 9802, 'inv_fin_year', 2026, 'gr_id', (SELECT id FROM public.goodsreceived WHERE gr_no='LO2'), 'gr_no', 'LO2',
@@ -274,8 +290,8 @@ SELECT pg_temp.oi_assert((SELECT string_agg(i->>'grn_items_package_mark', ',' OR
     FROM jsonb_array_elements((:'printed_dispatch'::jsonb)->'data') AS x, jsonb_array_elements(x->'items') WITH ORDINALITY AS t(i,n)
     WHERE x->>'disp_no' = 'LOD3') = 'W1,W2', 'the dispatch print keeps the older line first across a wrap: ' || left(:'printed_dispatch', 300));
 -- The invoice: its lines are saved W1 then W2, then given the same wrapped ids.
--- Migration 121 D9: the lots of LO3 are taken out of stock directly (a stand-in for dispatching the rest).
-UPDATE public.goodsreceived_trl SET stock=0 WHERE gr_id=(SELECT id FROM public.goodsreceived WHERE gr_no='LO3');
+-- Migration 121 D9: the rest of LO3 is dispatched (LOD3R).
+SELECT pg_temp.oi_dispatch_rest('LO3','LOD3R','2026-06-12');
 SELECT pg_temp.oi_as_admin();
 SELECT public.save_invoice(jsonb_build_object('inv_no', 9803, 'inv_fin_year', 2026, 'gr_id', :'lo3', 'gr_no', 'LO3',
   'customer_id', :'lines_customer', 'customer_name', 'Open Items Lines Customer', 'inv_date', '2026-06-21T06:00:00Z',
