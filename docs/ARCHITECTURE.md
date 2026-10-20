@@ -27,7 +27,7 @@ network table from the rendered configuration).
 
 | Service | Image | Port (inside) | Started |
 |---|---|---|---|
-| kong | Kong 3.9.3, one worker | 8000, published on `127.0.0.1:${KONG_HTTP_PORT}` (default 18000) | always |
+| kong | Kong 3.9.4, one worker | 8000, published on `127.0.0.1:${KONG_HTTP_PORT}` (default 18000) | always |
 | rest | PostgREST v16.4 | 3000 | always |
 | storage | Supabase storage-api 1.80.2 | 5000 | always |
 | functions | Supabase edge-runtime 1.77.4 | 9000 | always |

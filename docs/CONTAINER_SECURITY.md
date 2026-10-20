@@ -9,7 +9,7 @@ on the installation's host.
 
 | Service | Image or recipe | Patch boundary |
 |---|---|---|
-| `kong` (gateway) | `kong:3.9.3-ubuntu`, pulled by digest | none (no recipe of its own) |
+| `kong` (gateway) | `kong:3.9.4-ubuntu`, pulled by digest | none (no recipe of its own) |
 | `rest` | `postgrest/postgrest:v16.4`, pulled by digest | none; static binary, see "Exceptions" |
 | `storage` | `docker/storage`: `supabase/storage-api` v1.80.2 by digest | Locked npm manifest with same-major leaf fixes (`@fastify/busboy` 3.2.3, `fast-copy` 4.1.2, an `undici` override scoped to `undici@^7`), Alpine package upgrade, unused npm CLI removed |
 | `functions` | `docker/edge-runtime`: supabase/edge-runtime v1.77.4 binary on `debian:bookworm-slim` (both by digest) | Full `apt-get upgrade` and a minimum PCRE2 version check |
@@ -17,7 +17,7 @@ on the installation's host.
 | `pdf-renderer` | `docker/pdf-renderer`: Node 24 (by digest), chrome-headless-shell from Chrome for Testing, puppeteer-core | Our own code; see "PDF renderer" |
 | `supavisor` (profile `pooler`) | `docker/supavisor`: 2.9.13 by digest | Debian package upgrade |
 | `cups` (profile `printing`) | `docker/cups`: `ubuntu:22.04` by digest | Ubuntu package upgrade |
-| `sensor-bridge` (profile `sensors`) | `docker/sensor-bridge`: `python:3.14-slim-bookworm` by digest | Hashed `requirements.txt`; pip uninstalled after the install |
+| `sensor-bridge` (profile `sensors`) | `docker/sensor-bridge`: `python:3.15-slim-bookworm` by digest | Hashed `requirements.txt`; pip uninstalled after the install |
 
 Every service image is either built from a Dockerfile whose `FROM` lines carry a digest, or referenced with a digest in
 Compose. `tests/gateway-config.test.mjs` fails on a tag-only image and on a version in `THIRD_PARTY_NOTICES.md` or
@@ -134,7 +134,7 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
 - **Storage.** The storage service redacts `token` and the `X-Amz-*` signature parameters in the URL it logs. It also
   writes two request headers into its log: `cf-connecting-ip` and `x-real-ip`. The gateway no longer passes
   `CF-Connecting-IP` to storage (`request-transformer` on the `storage-v1` service). It cannot do the same for `X-Real-IP`
-  and `X-Forwarded-For`: Kong 3.9.3 sets them itself from the client address after the plugins have run. The client
+  and `X-Forwarded-For`: Kong sets them itself from the client address after the plugins have run (checked on 3.9.3). The client
   address therefore still reaches storage and its log, which rotates like the gateway's. Storage does not use it: its
   image-render rate limit is off (`RATE_LIMITER_ENABLED` is unset).
 - **Residual: the gateway's error log.** nginx quotes the request line, query string included, in an error line (for

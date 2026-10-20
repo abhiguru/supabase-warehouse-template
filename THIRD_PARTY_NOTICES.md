@@ -65,7 +65,7 @@ redistributing them. Versions are the ones pinned in
 
 | Project | Version | Licence | Upstream |
 | --- | --- | --- | --- |
-| Kong Gateway (open source) | 3.9.3 (`kong:3.9.3-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
+| Kong Gateway (open source) | 3.9.4 (`kong:3.9.4-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
 | PostgREST | v16.4 (`postgrest/postgrest:v16.4`, pinned by index digest) | MIT | https://github.com/PostgREST/postgrest |
 | PostgreSQL (official Docker image) | 17.11 (`postgres:17.11-trixie`, pinned by tag and index digest in `docker/postgres/Dockerfile`; the Supabase PostgreSQL image is no longer used) | PostgreSQL License for PostgreSQL; Debian packages under their individual free-software licences | https://hub.docker.com/_/postgres and https://www.postgresql.org/ |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
@@ -73,7 +73,7 @@ redistributing them. Versions are the ones pinned in
 | Chrome for Testing (chrome-headless-shell) | 155.0.8059.84 (`ARG CHS_VERSION` in `docker/pdf-renderer/Dockerfile`, downloaded at build time and checked against `ARG CHS_SHA256`) | BSD-3-Clause (Chromium), plus the bundled third-party notices of the archive | https://googlechromelabs.github.io/chrome-for-testing/ and https://www.chromium.org/ |
 | puppeteer-core | 25.14.0 (`docker/pdf-renderer/package.json`, pinned exactly) | Apache-2.0 | https://github.com/puppeteer/puppeteer |
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
-| Sensor bridge base image: Python | 3.14-slim-bookworm (`python:3.14-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
+| Sensor bridge base image: Python | 3.15-slim-bookworm (`python:3.15-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
 
 ## Maintained container source recipes (2026-09-22)
 

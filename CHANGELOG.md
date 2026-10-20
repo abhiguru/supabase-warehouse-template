@@ -22,6 +22,19 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
 7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
    "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
 
+## Unreleased: Kong 3.9.4 and the sensor bridge on Python 3.15 (2026-10-20)
+
+No migration. The setup rerun pulls the new Kong image and rebuilds the sensor bridge image (profile `sensors` only).
+
+- **Kong 3.9.4-ubuntu** (was 3.9.3), by the multi-architecture index digest `sha256:aa4a4687...` (`docker/docker-compose.yml`);
+  the digest-pin test in `tests/gateway-config.test.mjs`, the notices, the attribution review, the architecture note and the
+  container security note name 3.9.4. This replaces Dependabot pull request 130, whose CI failed because that test still
+  required 3.9.3.
+- **Python 3.15-slim-bookworm** (was 3.14), by digest `sha256:2a41267d...`. `docker/sensor-bridge/requirements.txt` hashes
+  are regenerated for CPython 3.15 and abi3 wheels (same versions); `frozenlist` 1.8.0 has no CPython 3.15 wheel, so its pure
+  Python wheel is used. The CI `bridge` job runs on 3.15. This replaces Dependabot pull request 131. Not run here: the
+  bridge unit tests and an image rebuild on 3.15, and a new image scan (`docker/image-exceptions.json` still records the 3.14 scan).
+
 ## Unreleased: PostgreSQL 17 on the official image and one baseline migration
 
 The database runs on `postgres:17.11-trixie` (pinned by digest in `docker/postgres/Dockerfile`; `scripts/db-image.sh` is the one

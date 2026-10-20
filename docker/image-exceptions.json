@@ -90,7 +90,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the python:3.14-slim-bookworm base with no fixed version (2026-10-18 scan: 61 HIGH, 2 CRITICAL in libsqlite3-0 and zlib1g). The recipe applies every Debian update. The bridge is in the optional sensors profile, on the default network only, with no host port, a read-only root and all capabilities dropped.",
+      "reason": "Debian 12 packages of the python:3.14-slim-bookworm base with no fixed version (2026-10-18 scan: 61 HIGH, 2 CRITICAL in libsqlite3-0 and zlib1g). The recipe applies every Debian update. The bridge is in the optional sensors profile, on the default network only, with no host port, a read-only root and all capabilities dropped. This text records the 3.14 scan: it must be rescanned for the 3.15 base before the next release.",
       "reviewed": "2026-10-17",
       "expires": "2027-01-15"
     },
