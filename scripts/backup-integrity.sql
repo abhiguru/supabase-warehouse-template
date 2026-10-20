@@ -41,8 +41,9 @@ END $$;
 -- integrity.txt before any newer migration is applied, and a backup taken
 -- before migration 48 has none of these lines (nor two of the tables), so they
 -- are printed only when migration 48 is in the restored ledger. Lines for a
--- later migration need a block of their own, for the same reason.
-SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql') AS histories_recorded \gset
+-- later migration need a block of their own, for the same reason. The baseline migration (the squash of migrations 0 to
+-- 110) counts as all of them: a ledger that holds it has every table and grant below.
+SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name IN ('00000000000000_baseline.sql', '00000000000048_owner_decisions.sql')) AS histories_recorded \gset
 \if :histories_recorded
 SELECT 'invoice_discount_history_count=' || count(*) FROM public.invoice_discount_history;
 SELECT 'invoice_zero_charge_history_count=' || count(*) FROM public.invoice_zero_charge_history;
@@ -65,8 +66,9 @@ END $$;
 -- The standard rate tiers (migration 85) and the rates typed on a GRN (migration 86): counted only
 -- when migration 86 is in the restored ledger (and, like the block above, only when 48 is, which
 -- every database with 86 has; the restore drill removes 48 to imitate an earlier backup).
-SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000086_grn_rates.sql')
-   AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql') AS grn_rates_recorded \gset
+SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql')
+   OR (EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000086_grn_rates.sql')
+       AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql')) AS grn_rates_recorded \gset
 \if :grn_rates_recorded
 SELECT 'standard_rate_tiers_count=' || count(*) FROM public.standard_rate_tiers;
 SELECT 'grn_rates_count=' || count(*) FROM public.grn_rates;
@@ -77,8 +79,9 @@ SELECT 'grn_rates_count=' || count(*) FROM public.grn_rates;
 -- does not depend on the file's name. Like the block above it also needs migration 48 (every database
 -- with 95 has it; the restore drill removes 48 to imitate an earlier backup). The orders themselves
 -- are counted above (order_count).
-SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name >= '00000000000095' COLLATE "C")
-   AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql') AS order_detail_recorded \gset
+SELECT EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql')
+   OR (EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name >= '00000000000095' COLLATE "C")
+       AND EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000048_owner_decisions.sql')) AS order_detail_recorded \gset
 \if :order_detail_recorded
 SELECT 'payment_count=' || count(*) FROM public.payments;
 SELECT 'order_item_count=' || count(*) FROM public.order_items;

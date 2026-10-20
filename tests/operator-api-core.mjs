@@ -108,7 +108,7 @@ for (const token of [tokenA, tokenB]) {
 }
 assert.equal((await api(`/rest/v1/goodsreceived?id=eq.${grn}&select=id`, tokenB)).data.length, 0, 'B cannot read A receipt');
 const attachment = `${a}/backend-core.jpg`;
-const attachmentPath = `/storage/v1/object/customer-images/${attachment}`;
+const attachmentPath = `/storage/v1/object/grn-images/${attachment}`;
 async function upload(token, body = Buffer.alloc(256)) {
   return fetch(base + attachmentPath, { method: 'POST', headers: {
     apikey: anon, Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg',
@@ -122,20 +122,18 @@ for (const token of [anon, tokenA, tokenB])
   assert.ok(!(await api(attachmentPath, token)).ok, 'non-staff attachment read denied');
 assert.ok(!(await upload(adminToken)).ok, 'duplicate attachment upload rejected');
 assert.equal((await api(attachmentPath, adminToken)).status, 200, 'failed retry preserves first upload');
-// Image transformation: Storage hands the stored file to imgproxy, which reads
-// the private storage directory itself. A 2x2 PNG must come back as a 1x1 PNG.
-const pngFixture = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
-const picture = `customer-images/${a}/backend-core.png`;
-const stored = await fetch(`${base}/storage/v1/object/${picture}`, { method: 'POST', headers: {
-  apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/png',
-}, body: pngFixture, signal: AbortSignal.timeout(30000) });
-assert.equal(stored.status, 200, 'admin picture upload');
-const resized = await fetch(`${base}/storage/v1/render/image/authenticated/${picture}?width=1&height=1&resize=fill&format=origin`, {
+// Image transformation is off (ENABLE_IMAGE_TRANSFORMATION=false). Upload a real 2x2 PNG, which a working
+// transformer would resize, and ask for it resized: the request must be refused.
+// Storage v1.80.2 does not register the render routes unless the flag is 'true', so the expected status is 404.
+// CI confirmed the 404 on 2026-10-20 (PR 129).
+const pngName = `${a}/backend-core.png`;
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==', 'base64');
+const pngUpload = await fetch(`${base}/storage/v1/object/grn-images/${pngName}`, { method: 'POST', headers: {
+  apikey: anon, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'image/png' }, body: png, signal: AbortSignal.timeout(30000) });
+assert.equal(pngUpload.status, 200, 'admin PNG upload');
+const resized = await fetch(`${base}/storage/v1/render/image/authenticated/grn-images/${pngName}?width=1&height=1&resize=fill&format=origin`, {
   headers: { apikey: anon, Authorization: `Bearer ${adminToken}` }, signal: AbortSignal.timeout(30000) });
-assert.equal(resized.status, 200, 'stored picture is transformed');
-const resizedBytes = Buffer.from(await resized.arrayBuffer());
-assert.ok(resizedBytes.subarray(0, 8).equals(pngFixture.subarray(0, 8)), 'transformed picture is a PNG');
-assert.equal(resizedBytes.readUInt32BE(16), 1, 'transformed width');
+assert.equal(resized.status, 404, `image transformation is refused (status ${resized.status})`);
 const cartA = await rpc('get_or_create_cart', tokenA, { p_customer_id: a });
 assert.ok(cartA.ok && typeof cartA.data === 'string', 'A cart created');
 const foreignCart = await rpc('get_or_create_cart', tokenB, { p_customer_id: a });

@@ -68,7 +68,7 @@ SELECT id AS grn_image FROM public.grn_images WHERE storage_path=:'grn_path' \gs
 SELECT id AS disp_image FROM public.dispatch_images WHERE storage_path=:'disp_path' \gset
 INSERT INTO storage.objects(bucket_id,name) VALUES
  ('grn-images',:'grn_path'),('dispatch-images',:'disp_path'),('grn-images',:'legacy_path'),
- ('grn-images','headers/'||:'grn_1'||'/loose.webp'),('customer-images','customer-a/logo.webp');
+ ('grn-images','headers/'||:'grn_1'||'/loose.webp'),('dispatch-images','customer-a/logo.webp');
 
 -- Administrator: referenced objects stay, unreferenced ones go.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -79,7 +79,7 @@ SELECT pg_temp.sd_assert(pg_temp.sd_delete('dispatch-images',:'disp_path')=0,'ad
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images',:'legacy_path')=0,'admin cannot delete a file that gr_image_url names');
 SELECT pg_temp.sd_assert((SELECT count(*)=5 FROM storage.objects),'admin still reads all five objects');
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images','headers/'||:'grn_1'||'/loose.webp')=1,'admin deletes an unreferenced GRN object');
-SELECT pg_temp.sd_assert(pg_temp.sd_delete('customer-images','customer-a/logo.webp')=1,'admin deletes a customer-images object');
+SELECT pg_temp.sd_assert(pg_temp.sd_delete('dispatch-images','customer-a/logo.webp')=1,'admin deletes an unreferenced dispatch-images object');
 -- Metadata first through the RPC, then the object.
 SELECT pg_temp.sd_assert(public.delete_grn_image(:'grn_image'::uuid)->>'success'='true','admin deletes the GRN image row');
 SELECT pg_temp.sd_assert(public.delete_dispatch_image(:'disp_image'::uuid)->>'success'='true','admin deletes the dispatch image row');
@@ -103,13 +103,13 @@ RESET ROLE;
 -- Staff rule unchanged: no deleting a referenced object; an unreferenced file in a live document's folder goes.
 INSERT INTO public.grn_images(grn_id,image_type,storage_path,original_filename,file_size,mime_type,status,uploaded_by)
  VALUES (:'grn_2'::uuid,'header','headers/'||:'grn_2'||'/ref.webp','ref.webp',32,'image/webp','confirmed',:'admin_profile'::uuid);
-INSERT INTO storage.objects(bucket_id,name) VALUES ('customer-images','customer-a/logo.webp'),('grn-images','headers/'||:'grn_2'||'/ref.webp'),('grn-images','headers/'||:'grn_2'||'/free.webp');
+INSERT INTO storage.objects(bucket_id,name) VALUES ('dispatch-images','customer-a/logo.webp'),('grn-images','headers/'||:'grn_2'||'/ref.webp'),('grn-images','headers/'||:'grn_2'||'/free.webp');
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.sd_assert(warehouse_security.active_role()='staff','actual staff role');
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images','headers/'||:'grn_2'||'/ref.webp')=0,'staff cannot delete a referenced object');
 SELECT pg_temp.sd_assert(pg_temp.sd_delete('grn-images','headers/'||:'grn_2'||'/free.webp')=1,'staff deletes an unreferenced file of a live document');
-SELECT pg_temp.sd_assert(pg_temp.sd_delete('customer-images','customer-a/logo.webp')=0,'staff has no access to customer-images');
+SELECT pg_temp.sd_assert(pg_temp.sd_delete('dispatch-images','customer-a/logo.webp')=0,'staff cannot delete an unreferenced file outside a live dispatch folder');
 RESET ROLE;
 ROLLBACK;
 \echo 'Manager Storage delete rules passed.'

@@ -18,7 +18,7 @@ const serviceBlock = name => {
 test('gateway uses an exact configured browser origin and payload limits', () => {
   assert.ok(kong.includes('origins: [${CORS_ALLOWED_ORIGIN}]'));
   assert.ok(!kong.includes('origins: [*]'));
-  assert.ok(kong.match(/name: request-size-limiting/g).length >= 4);
+  assert.ok(kong.match(/name: request-size-limiting/g).length >= 3);
   assert.ok(compose.includes('request-size-limiting'));
   assert.ok(compose.includes('CORS_ALLOWED_ORIGIN:'));
 });
@@ -38,12 +38,12 @@ test('gateway takes the client address from the tunnel hop only and limits per c
   assert.ok(compose.includes('KONG_REAL_IP_HEADER: CF-Connecting-IP'));
   assert.ok(compose.includes('KONG_REAL_IP_RECURSIVE: "off"'));
   assert.ok(compose.includes('KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"'));
-  assert.equal((kong.match(/name: rate-limiting/g) || []).length, 5);
-  assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 5);
+  assert.equal((kong.match(/name: rate-limiting/g) || []).length, 2);
+  assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 2);
   // Every route that needs only the public key or no key at all is limited per
   // client address, except storage (see docs/CONTAINER_SECURITY.md).
-  // The REST and socket routes have a per-minute limit only (null): see the next two tests.
-  const limits = { 'rest-v1': [1800, null], 'graphql-v1': [300, 6000], 'realtime-v1-ws': [1800, null], 'realtime-v1-rest': [300, 6000], 'functions-v1': [100, 6000] };
+  // The REST route has a per-minute limit only (null): see the next two tests.
+  const limits = { 'rest-v1': [1800, null], 'functions-v1': [100, 6000] };
   for (const [service, [minute, hour]] of Object.entries(limits)) {
     const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
     assert.ok(rateLimit, `${service} has no rate limit`);
@@ -51,7 +51,7 @@ test('gateway takes the client address from the tunnel hop only and limits per c
     assert.match(rateLimit, new RegExp(`minute: ${minute}\\n\\s+${hourLine}policy: local\\n\\s+fault_tolerant: true\\n[\\s\\S]*limit_by: ip\\n`), `${service} rate limit`);
   }
   assert.doesNotMatch(serviceBlock('storage-v1'), /rate-limiting/);
-  for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'graphql-v1': 2, 'realtime-v1-rest': 2, 'storage-v1': 50, 'functions-v1': 10 })) {
+  for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'storage-v1': 50, 'functions-v1': 10 })) {
     assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
   }
 });
@@ -84,7 +84,6 @@ test('the per-minute limits are described as a budget per fixed minute, not as a
   const texts = {
     'docker/kong.yml, rest-v1': restComment,
     'docs/CONTAINER_SECURITY.md, REST request limit': section('### REST request limit', '\n## '),
-    'docs/CONTAINER_SECURITY.md, Realtime socket limit': section('- **The limit now.** 1800 attempts a minute', '- **What this does not cover.**'),
   };
   for (const [where, text] of Object.entries(texts)) {
     const plain = text.replace(/^\s*#\s?/gm, '').replace(/\s+/g, ' ');
@@ -98,57 +97,11 @@ test('the per-minute limits are described as a budget per fixed minute, not as a
   assert.doesNotMatch(kong, /^\s+second: \d+$/m);
 });
 
-test('the Realtime socket limit cannot lock a facility out after a Realtime outage', () => {
-  // Every phone on the facility network reaches the gateway from one public address, and Kong
-  // counts each failed upgrade. The app opens one socket per live order screen (at most two at
-  // once per phone) and realtime-js retries after 1, 2, 5 and 10 s, then every 10 s
-  // (docs/CONTAINER_SECURITY.md, Realtime socket limit).
-  const devices = 100, socketsPerDevice = 2;
-  const retryDelays = [1, 2, 5, 10], steadyDelay = 10;
-  let at = 0, firstMinute = 0;
-  for (let attempt = 0; ; attempt += 1) { at += retryDelays[attempt] ?? steadyDelay; if (at > 60) break; firstMinute += 1; }
-  assert.equal(firstMinute, 8);
-  const rateLimit = serviceBlock('realtime-v1-ws').split('- name: rate-limiting')[1].split('      - name: ')[0];
-  const minute = Number(rateLimit.match(/^\s+minute: (\d+)$/m)[1]);
-  assert.ok(minute >= devices * socketsPerDevice * firstMinute, `a whole facility retrying (${devices * socketsPerDevice * firstMinute} a minute) stays under the limit of ${minute}`);
-  // A window longer than a minute is what turned an outage into a lockout: the retries of the
-  // outage would use it up, and reconnects would be refused until it rolled over.
-  assert.doesNotMatch(rateLimit, /^\s+(hour|day|month|year):/m);
-});
-
-test('gateway exports the request metrics the alert rules query', () => {
-  // Kong 3 exports per-request series only when the plugin is enabled and these switches are on.
-  const global = kong.slice(kong.indexOf('\nplugins:\n'), kong.indexOf('\nservices:\n'));
-  assert.match(global, /\n  - name: prometheus\n    config:\n      status_code_metrics: true\n      latency_metrics: true\n      per_consumer: false\n/);
-  for (const file of ['docker-compose.yml', 'docker-compose.override.yml']) {
-    assert.match(readFileSync(new URL(`../docker/${file}`, import.meta.url), 'utf8'), /KONG_PLUGINS: \S*\bprometheus\b/, `${file} does not load the plugin`);
-  }
-  const rules = readFileSync(new URL('../docker/alert-rules.yml', import.meta.url), 'utf8');
-  const expressions = [...rules.matchAll(/^\s+expr: (.+)$/gm)].map(match => match[1]);
-  assert.doesNotMatch(expressions.join('\n'), /kong_http_status|kong_latency_bucket/, 'Kong 2 metric names are not exported by Kong 3');
-  const expression = alert => new RegExp(`- alert: ${alert}\\n(?:\\s+#.*\\n)*\\s+expr: (.+)\\n`).exec(rules)?.[1];
-  assert.equal(expression('APIHighErrorRate'), 'sum(rate(kong_http_requests_total{code=~"5.."}[5m])) / sum(rate(kong_http_requests_total[5m])) > 0.05');
-  assert.equal(expression('APIHighLatency'), 'histogram_quantile(0.95, sum(rate(kong_request_latency_ms_bucket[5m])) by (le, service)) > 2000');
-  assert.equal(expression('ScrapeTargetDown'), 'up{job!="kong"} == 0');
-  assert.equal(expression('APIDown'), 'up{job="kong"} == 0');
-  // postgres-exporter splits pg_stat_activity_count by database, state, user, application and
-  // backend type: no single series reaches 80 when the connections are spread, so the rule adds
-  // the client connections of each exporter (background workers do not count toward max_connections
-  // in the same way and are left out).
-  assert.equal(expression('DatabaseConnectionsHigh'), 'sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"}) > 80');
-  // Every job Prometheus scrapes is covered by one of the two.
-  const jobs = [...readFileSync(new URL('../docker/prometheus.yml', import.meta.url), 'utf8').matchAll(/job_name: '([a-z-]+)'/g)].map(match => match[1]);
-  assert.deepEqual(jobs.sort(), ['cadvisor', 'kong', 'node', 'postgres', 'prometheus']);
-  const monitoringCheck = readFileSync(new URL('../scripts/monitoring-check.sh', import.meta.url), 'utf8');
-  assert.match(monitoringCheck, /kong_http_requests_total/, 'monitoring check does not require gateway request metrics');
-  // The rule unit tests (docker/alert-rules.test.yml) run with the image's own promtool, and the
-  // live exporter must still label its series with backend_type, or the rule matches nothing.
-  assert.match(monitoringCheck, /--entrypoint promtool prometheus \\\n\s+test rules \/etc\/prometheus\/alert-rules\.test\.yml/, 'monitoring check does not run the alert rule tests');
-  assert.match(monitoringCheck, /"\$ROOT\/docker\/alert-rules\.test\.yml:\/etc\/prometheus\/alert-rules\.test\.yml:ro"/);
-  assert.ok(monitoringCheck.includes("query=sum(pg_stat_activity_count%7Bbackend_type%3D%22client%20backend%22%7D)"), 'monitoring check does not require client-backend connection series');
-  const unit = readFileSync(new URL('../docker/alert-rules.test.yml', import.meta.url), 'utf8');
-  assert.match(unit, /^rule_files:\n  - \/etc\/prometheus\/alert-rules\.yml\n/m);
-  assert.match(unit, /alertname: DatabaseConnectionsHigh/);
+test('gateway has no metrics plugin, status listener or metrics port: the monitoring checker reads Docker and the HTTP answers, not Kong metrics', () => {
+  assert.doesNotMatch(kong, /prometheus|status_code_metrics|latency_metrics/);
+  assert.doesNotMatch(kong, /\nplugins:\n/, 'kong.yml has no global plugin');
+  assert.doesNotMatch(compose, /KONG_STATUS_LISTEN|prometheus/);
+  assert.doesNotMatch(readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8'), /KONG_STATUS_LISTEN|8100/);
 });
 
 test('gateway configuration survives the entrypoint that fills in its variables', () => {
@@ -209,7 +162,7 @@ test('storage is not sent the CF-Connecting-IP header, and the log contract says
   // Kong adds X-Real-IP and X-Forwarded-For itself after the plugins ran, so listing them would promise too much.
   assert.doesNotMatch(storage, /^\s+- (?:X-Real-IP|X-Forwarded-For)$/im);
   const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
-  const start = docs.indexOf('\n## Logs (2026-10-17)\n');
+  const start = docs.indexOf('\n## Logs\n');
   assert.ok(start > 0, 'docs/CONTAINER_SECURITY.md has the Logs section');
   const section = docs.slice(start + 1, docs.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
   for (const needed of ['warehouse_redacted', 'no log line holds a token, a key, an OTP', 'X-Real-IP', 'X-Forwarded-For', 'error log', '3 x 10 MB']) {
@@ -232,10 +185,10 @@ test('the JWT signing secret is not published as a database or PostgREST setting
   // The database code reads warehouse_security.auth_config; PostgREST takes the secret from PGRST_JWT_SECRET.
   assert.doesNotMatch(compose, /APP_SETTINGS_JWT_SECRET/, 'PostgREST must not set the secret as an app setting');
   assert.match(compose, /\n\s+PGRST_JWT_SECRET: \$\{JWT_SECRET\}\n/, 'PostgREST still verifies tokens');
-  assert.match(compose, /\n\s+PGRST_APP_SETTINGS_JWT_EXP: \$\{JWT_EXPIRY\}\n/, 'the expiry setting is not part of this change');
-  const jwtSql = withoutComments('docker/volumes/db/jwt.sql');
-  assert.doesNotMatch(jwtSql, /jwt_secret|JWT_SECRET/i, 'jwt.sql must not set or read the secret');
-  assert.match(jwtSql, /ALTER DATABASE postgres SET "app\.settings\.jwt_exp"/, 'jwt.sql still sets the expiry');
+  // Nothing reads app.settings.jwt_exp (the database code takes the lifetime from warehouse_security.auth_config), so no
+  // database setting and no PostgREST app setting carries it either.
+  assert.doesNotMatch(compose, /APP_SETTINGS_JWT_EXP/, 'PostgREST must not set the expiry as an app setting');
+  assert.ok(!existsSync(new URL('../docker/volumes/db/jwt.sql', import.meta.url)), 'jwt.sql is gone: nothing sets app.settings.jwt_exp');
   assert.doesNotMatch(withoutComments('scripts/rotate-auth.sql'), /app\.settings\.jwt_secret/, 'rotation must not set the secret as a database setting');
   // Every run of the auth configuration removes it again, at database level and for roles.
   const configure = withoutComments('scripts/configure-auth.sql');
@@ -252,20 +205,16 @@ test('the rendered Compose project has no app setting that carries the JWT signi
     const settings = Object.keys(definition.environment ?? {}).filter(key => /APP_SETTINGS_JWT_SECRET/.test(key));
     assert.deepEqual(settings, [], `${name} publishes the signing secret as an app setting`);
   }
-  assert.ok(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, 'the expiry app setting must stay');
+  assert.equal(services.rest.environment.PGRST_APP_SETTINGS_JWT_EXP, undefined, 'the expiry app setting is not set');
 });
 
 test('ingress is Cloudflare Tunnel only', () => {
   assert.ok(!existsSync(deploy('Caddyfile.example')), 'Caddy example must not ship');
   assert.ok(existsSync(deploy('cloudflared-config.example.yml')));
-  assert.ok(existsSync(deploy('warehouse-tunnel.service.example')));
   const tunnel = readFileSync(deploy('cloudflared-config.example.yml'), 'utf8');
   assert.ok(tunnel.includes('service: http://127.0.0.1:18000'));
   assert.ok(tunnel.includes('noTLSVerify: false'));
   assert.ok(tunnel.includes('service: http_status:404'));
-  const unit = readFileSync(deploy('warehouse-tunnel.service.example'), 'utf8');
-  assert.match(unit, /^ExecStart=\/usr\/bin\/cloudflared --no-autoupdate --config \S+ tunnel run$/m);
-  assert.doesNotMatch(unit, /--token(?:\s|=)/, 'tunnel tokens must never appear on the unit command line');
 });
 
 test('publisher images are pinned by digest and the notices name the versions in use', () => {
@@ -281,10 +230,8 @@ test('publisher images are pinned by digest and the notices name the versions in
   const versions = {
     Kong: /image: kong:([0-9.]+)-ubuntu/.exec(compose)[1],
     PostgREST: /image: postgrest\/postgrest:(v[0-9.]+)/.exec(compose)[1],
-    Realtime: base('realtime', 'supabase/realtime'),
     Supavisor: base('supavisor', 'supabase/supavisor'),
     'edge-runtime': base('edge-runtime', 'supabase/edge-runtime'),
-    Studio: base('studio', 'supabase/studio'),
     // The PDF renderer's pins: the chrome-headless-shell build and puppeteer-core (docker/pdf-renderer).
     'Chrome for Testing': /^ARG CHS_VERSION=(\S+)$/m.exec(readFileSync(new URL('../docker/pdf-renderer/Dockerfile', import.meta.url), 'utf8'))?.[1],
     'puppeteer-core': JSON.parse(readFileSync(new URL('../docker/pdf-renderer/package.json', import.meta.url), 'utf8')).dependencies?.['puppeteer-core'],
@@ -296,8 +243,7 @@ test('publisher images are pinned by digest and the notices name the versions in
     assert.ok(version, `${name} version was not read`);
     const row = notices.split('\n').find(line => line.startsWith('|') && line.includes(name) && line.includes(version));
     assert.ok(row, `THIRD_PARTY_NOTICES.md does not name ${name} ${version}`);
-    const short = name === 'Studio' ? version.split('-sha-')[0] : version;
-    assert.ok(new RegExp(`${name} ${short.replaceAll('.', '\\.')}[,) ]`).test(review), `docs/ATTRIBUTION_REVIEW.md does not name ${name} ${short}`);
+    assert.ok(new RegExp(`${name} ${version.replaceAll('.', '\\.')}[,) ]`).test(review), `docs/ATTRIBUTION_REVIEW.md does not name ${name} ${version}`);
   }
   assert.doesNotMatch(`${notices}\n${review}`, /v1\.76\.2|postgrest:v14\.17|PostgREST v14\.17/);
 });
@@ -314,4 +260,31 @@ test('the gateway compresses JSON and text answers only, so a large invoice-form
   }
   // Images, PDFs and other downloads stay as stored; the websocket upgrade is not an answer type.
   assert.ok(!types.some(type => /^(image|video|audio)\//.test(type) || /pdf|octet-stream|zip/.test(type)), 'no binary type is listed');
+});
+
+const FIVE_PLUGINS = ['cors', 'key-auth', 'rate-limiting', 'request-size-limiting', 'request-transformer'];
+const withoutYamlComments = text => text.replace(/^\s*#.*$/gm, '');
+
+test('gateway runs one worker, loads only the plugins its routes use, and has no ACL or unused route', () => {
+  const live = withoutYamlComments(compose);
+  assert.ok(live.includes('KONG_NGINX_WORKER_PROCESSES: "1"'));
+  const plugins = live.match(/KONG_PLUGINS: (\S+)/)[1].split(',');
+  assert.deepEqual([...plugins].sort(), FIVE_PLUGINS);
+  // The plugin list lives in the base file only; the override must not carry a second copy.
+  const override = withoutYamlComments(readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8'));
+  assert.doesNotMatch(override, /KONG_PLUGINS|KONG_NGINX_WORKER_PROCESSES/);
+  assert.doesNotMatch(compose, /DASHBOARD_(?:USERNAME|PASSWORD)/);
+  // Every plugin kong.yml really uses (per route) is loaded, and nothing else is.
+  const liveKong = withoutYamlComments(kong);
+  const used = [...new Set([...liveKong.matchAll(/^\s*- name: ([a-z-]+)\n\s+config:/gm)].map(match => match[1]))].sort();
+  assert.deepEqual(used, [...plugins].sort());
+  assert.doesNotMatch(liveKong, /\bacls?:|name: acl\b/);
+  assert.doesNotMatch(liveKong, /graphql/);
+  assert.doesNotMatch(kong, /realtime/i, 'the Realtime route is removed');
+});
+
+test('the rendered Kong environment has one worker and the five-plugin list', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const environment = renderedCompose().services.kong.environment;
+  assert.equal(environment.KONG_NGINX_WORKER_PROCESSES, '1');
+  assert.deepEqual(environment.KONG_PLUGINS.split(',').sort(), FIVE_PLUGINS);
 });

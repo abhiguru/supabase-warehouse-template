@@ -3,7 +3,7 @@
 # "Rotating the database passwords"; docs/CONTAINER_SECURITY.md, "Database passwords").
 #
 #   npm run db:rotate-passwords -- --yes               every service login
-#   npm run db:rotate-passwords -- --yes --superuser   also POSTGRES_PASSWORD and the Realtime key
+#   npm run db:rotate-passwords -- --yes --superuser   also POSTGRES_PASSWORD
 #
 # New values are staged next to compose.env and set in the database in one
 # transaction (verifiers on standard input, scripts/db-roles.sh); only then is
@@ -22,11 +22,11 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: npm run db:rotate-passwords -- --yes [--superuser]
 Generates a new password for every database login of the services (PostgREST,
-Storage, Auth, the pooler and the Postgres exporter), sets them in the
+Storage and the pooler), sets them in the
 database, and restarts the database and the services that sign in to it
 (about a minute; the API is unavailable for some seconds of it). With
 --superuser, POSTGRES_PASSWORD (the
-postgres and supabase_admin logins) and the Realtime encryption key change too.
+supabase_admin login) changes too.
 Take a db:backup first. Nothing was changed. Rerun with --yes to confirm.
 USAGE
   exit 1
@@ -44,6 +44,8 @@ done
 state="$(operator_state)"
 operator_lock "$state"
 compose config --quiet
+# This recreates db: a PostgreSQL 15 database must go through the baseline reload instead.
+bash "$ROOT/scripts/db-version-preflight.sh"
 live="$state/config/compose.env"
 staged="$state/config/compose.env.rotating-db"
 previous="$state/config/compose.env.before-db-rotation"
@@ -134,7 +136,7 @@ mv -f "$staged" "$live"
 #    script) and every running service that signs in to it. A service that was
 #    stopped on purpose stays stopped; it reads the new value when it starts.
 recreate=()
-for service in db rest storage auth realtime meta studio supavisor postgres-exporter; do
+for service in db rest storage supavisor; do
   id=$(compose --profile '*' ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then recreate+=("$service"); fi
 done
@@ -157,7 +159,7 @@ bash "$ROOT/scripts/db-roles.sh" check || rollback
 node "$ROOT/scripts/doctor.mjs" --local || rollback
 rm -f "$previous"
 if ((${#superuser[@]})); then
-  echo 'Database passwords rotated: every service login, the superuser password and the Realtime key are new.'
+  echo 'Database passwords rotated: every service login and the superuser password are new.'
 else
   echo 'Database passwords rotated: every service login has a new password.'
 fi

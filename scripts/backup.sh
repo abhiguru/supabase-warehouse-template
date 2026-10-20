@@ -11,13 +11,10 @@ state="${WAREHOUSE_STATE_DIR:-}"
   echo 'Set WAREHOUSE_STATE_DIR to the installed operator state.' >&2; exit 1;
 }
 compose config --quiet
-exec 9>"$state/config/operator.lock"
-if ! flock -n 9; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
-# From here on every exit is a backup attempt, and its result goes to Prometheus (docs/MONITORING.md,
-# "Backup alerts"); cleanup() below takes over this trap and records the final status itself.
-# shellcheck source=scripts/backup-metrics.sh
-source "$ROOT/scripts/backup-metrics.sh"
-trap 'backup_metrics_exit "$state" disk $?' EXIT
+# Run alone, this takes the lock; scripts/watch-daily.sh runs it under its own lock and the inherited one is used.
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
+if ! operator_lock_or_inherited "$state" 2>/dev/null; then echo 'Another operator setup, start, or backup is running for this state.' >&2; exit 1; fi
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
 backup_key_ensure "$state"
@@ -36,21 +33,18 @@ if [[ "$(stat -c %d "$parent")" == "$(stat -c %d "$state/data")" ]]; then
   echo "Warning: $parent shares a filesystem with $state/data; a backup there does not survive loss of this disk. Copy it to protected off-host storage." >&2
 fi
 stage="$(mktemp -d "$parent/.warehouse-backup-staging.XXXXXXXX")"
-# shellcheck source=scripts/service-diagnostics.sh
-. "$ROOT/scripts/service-diagnostics.sh"
 restart=()
 cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
     if ! compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
-      show_unhealthy_services || true
+      if command -v node >/dev/null 2>&1; then node "$ROOT/scripts/service-diagnostics.mjs" --unhealthy || true; else echo 'Service diagnostics skipped (node not on PATH): run node scripts/service-diagnostics.mjs --unhealthy' >&2; fi
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
     fi
   fi
   [[ ! -d "$stage" ]] || rm -rf "$stage"
-  backup_metrics_exit "$state" disk "$status"
   exit "$status"
 }
 trap cleanup EXIT
@@ -62,10 +56,23 @@ if ! docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx heal
   exit 1
 fi
 
+# The backup records the database image of this checkout (database_image= in metadata.txt), so the
+# running server must be that release's: an install that pulled this release but still runs the earlier
+# PostgreSQL 15 container would dump the old schema under a PostgreSQL 17 label that every restore accepts.
+# Checked before any service is stopped.
+pin="$(bash "$ROOT/scripts/db-image.sh")"
+pin_major="${pin#postgres:}"; pin_major="${pin_major%%[!0-9]*}"
+server="$(compose exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+  -c "SELECT current_setting('server_version_num')::int / 10000 || '|' || (to_regrole('postgres') IS NULL)" | tr -d '[:space:]')"
+if [[ "$server" != "$pin_major|true" ]]; then
+  echo "Refusing: the running database reports '$server' (major version | has no role postgres), but this release runs PostgreSQL $pin_major with no role postgres. A backup of it would carry the wrong image label. This installation has not been moved to the baseline yet: back it up with the release tagged migrations-pre-baseline, then follow docs/OPERATOR_INSTALL.md, \"Baseline reload\"." >&2
+  exit 1
+fi
+
 # Stop ingress first, then all services that can write the database or object
 # storage. Capture only running services so the cleanup never starts an optional
 # service the operator had intentionally stopped.
-for service in kong functions rest storage realtime studio meta imgproxy auth supavisor; do
+for service in kong functions rest storage supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then restart+=("$service"); fi
 done
@@ -76,8 +83,8 @@ echo 'Creating transaction-consistent logical database dumps.'
 # original ownership; scripts/verify-restore.sh still restores it with --no-owner.
 compose exec -T db pg_dump -U supabase_admin -d postgres \
   --format=custom --compress=6 > "$stage/database.dump"
-# _supabase holds the pooler (_supavisor) and analytics schemas outside the
-# application database; the in-place restore needs it for a complete instance.
+# _supabase holds the pooler (_supavisor) schema outside the application
+# database; the in-place restore needs it for a complete instance.
 compose exec -T db pg_dump -U supabase_admin -d _supabase \
   --format=custom --compress=6 > "$stage/_supabase.dump"
 compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
@@ -125,7 +132,7 @@ cat > "$stage/metadata.txt" <<EOF
 format=warehouse-backup-v5
 created_at_utc=$timestamp
 source_commit=${source_commit:-unknown}
-database_image=supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6
+database_image=$pin
 consistency=write-facing services stopped during database/storage capture
 EOF
 (cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${optional_files[@]}" "${tunnel_files[@]}" > SHA256SUMS)

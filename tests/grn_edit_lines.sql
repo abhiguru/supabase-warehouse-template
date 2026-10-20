@@ -86,10 +86,8 @@ SELECT pg_temp.edit_assert((SELECT note='Line added' AND pricing_mode='MONTHLY' 
  'the header edit is saved with the new line and the pricing mode stays on the header');
 SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived_trl WHERE id=:'lot_50'::uuid)
  AND (SELECT qty=30 AND stock=30 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),'the present lines keep quantity and stock');
--- The worker's refresh, in this transaction (migration 91: the edit only marks the lists).
-SELECT warehouse_security.refresh_dirty_lists();
-SELECT pg_temp.edit_assert((SELECT sum(current_stock)=95 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_id'::uuid),
- 'the customer stock summary counts the new line (40 + 30 + 25)');
+SELECT pg_temp.edit_assert((SELECT sum(t.stock)=95 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.customer_id=:'customer_id'::uuid),
+ 'the customer stock counts the new line (40 + 30 + 25)');
 SELECT jsonb_build_object('id',:'lot_new','item_id',:'item_id','item_name','Edit Line Potatoes','packaging','Bag','qty',25,'weight',12,'rack','R3','package_mark','NEW') AS line_new \gset
 
 -- A dispatched lot keeps its quantity and stock: asking for 5 bags where 10
@@ -131,8 +129,8 @@ SELECT pg_temp.edit_assert((SELECT qty=50 AND stock=40 FROM public.goodsreceived
  AND (SELECT qty=35 AND stock=35 FROM public.goodsreceived_trl WHERE id=:'lot_30'::uuid),'the refused removal changes no quantity');
 SELECT pg_temp.edit_assert((SELECT note='Line added' FROM public.goodsreceived WHERE id=:'grn_id'::uuid),'the refused removal leaves the note');
 SELECT pg_temp.edit_assert((SELECT count(*)=1 AND bool_and(disp_qty=10) FROM public.dispatch_trl WHERE gr_trl_id=:'lot_50'::uuid),'the dispatch line is untouched');
-SELECT pg_temp.edit_assert((SELECT bool_and(tgenabled='O') FROM pg_trigger WHERE tgrelid='public.goodsreceived_trl'::regclass AND tgname='trg_mark_stock_mvs_dirty_grn'),
- 'the refused edit leaves the item triggers enabled');
+SELECT pg_temp.edit_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('public.goodsreceived_trl'::regclass,'public.goodsreceived'::regclass,'public.items'::regclass) AND NOT tgisinternal AND tgenabled<>'O'),
+ 'the refused edit leaves no trigger of the receipt, its lines or the items disabled');
 
 -- A line nothing depends on can still be removed (the line added above).
 SET LOCAL ROLE authenticated;
@@ -142,9 +140,8 @@ SELECT pg_temp.edit_assert(:'removed'::jsonb->>'success'='true' AND :'removed'::
 RESET ROLE;
 SELECT pg_temp.edit_assert((SELECT count(*)=0 FROM public.goodsreceived_trl WHERE id=:'lot_new'::uuid)
  AND (SELECT count(*)=2 FROM public.goodsreceived_trl WHERE gr_id=:'grn_id'::uuid),'two lines remain');
-SELECT warehouse_security.refresh_dirty_lists();
-SELECT pg_temp.edit_assert((SELECT sum(current_stock)=75 FROM public.mv_customer_stock_summary WHERE customer_id=:'customer_id'::uuid),
- 'the customer stock summary follows (40 + 35)');
+SELECT pg_temp.edit_assert((SELECT sum(t.stock)=75 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.customer_id=:'customer_id'::uuid),
+ 'the customer stock follows (40 + 35)');
 
 -- Migration 47: an edit sent with p_idempotency_key is applied once. The app
 -- saves again when the answer was lost. Without a key the second save removes

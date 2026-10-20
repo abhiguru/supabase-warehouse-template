@@ -182,87 +182,33 @@ BEGIN
 END
 $$;
 
--- The monitoring login (migration 94; docs/CONTAINER_SECURITY.md, "Database
--- passwords"): the Postgres exporter signs in as warehouse_monitoring.
--- It is a member of pg_monitor and of nothing else, has no role attribute beyond
--- inheriting that membership, holds no grant on any object, owns nothing, and no
--- role can take its identity. Its LOGIN and password come from
--- scripts/configure-db-roles.sql, never from a migration.
+-- The roles of the earlier image and the removed warehouse roles do not exist, and the auth functions
+-- (auth.uid(), auth.role(), auth.email(), auth.jwt()) belong to supabase_admin. The exact role set is asserted by
+-- tests/baseline_roles.sql, and scripts/backup-image.sh refuses a backup that names one of these roles, so nothing
+-- brings them back.
 DO $$
 DECLARE
-  memberships text;
-  members text;
-  grants text;
-  readable text;
-  monitoring oid := (SELECT oid FROM pg_roles WHERE rolname = 'warehouse_monitoring');
+  present text;
 BEGIN
-  IF monitoring IS NULL THEN
-    RAISE EXCEPTION 'The monitoring login warehouse_monitoring does not exist';
+  SELECT string_agg(rolname, ', ' ORDER BY rolname) INTO present FROM pg_roles
+   WHERE rolname IN ('postgres', 'dashboard_user', 'supabase_auth_admin', 'supabase_realtime_admin', 'supabase_functions_admin',
+                     'supabase_read_only_user', 'supabase_replication_admin', 'supabase_etl_admin', 'warehouse_monitoring', 'warehouse_list_refresher');
+  IF present IS NOT NULL THEN
+    RAISE EXCEPTION 'roles of the earlier image or removed roles exist: %', present;
   END IF;
-  SELECT string_agg(granted.rolname, ', ' ORDER BY granted.rolname) INTO memberships
-  FROM pg_auth_members m JOIN pg_roles granted ON granted.oid = m.roleid
-  WHERE m.member = monitoring;
-  IF memberships IS DISTINCT FROM 'pg_monitor' THEN
-    RAISE EXCEPTION 'warehouse_monitoring must be a member of pg_monitor only, not: %', COALESCE(memberships, 'nothing');
-  END IF;
-  SELECT string_agg(member.rolname, ', ') INTO members
-  FROM pg_auth_members m JOIN pg_roles member ON member.oid = m.member
-  WHERE m.roleid = monitoring;
-  IF members IS NOT NULL THEN
-    RAISE EXCEPTION 'No role may be a member of warehouse_monitoring: %', members;
-  END IF;
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE oid = monitoring
-             AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls OR NOT rolinherit)) THEN
-    RAISE EXCEPTION 'warehouse_monitoring has a superuser, role, database, replication or RLS-bypass right, or does not inherit pg_monitor';
-  END IF;
-  -- Every grant to the role and every object it owns, in this database or shared, is a
-  -- dependency entry: ACL ('a'), owner ('o') or default privileges.
-  SELECT string_agg(COALESCE(pg_describe_object(d.classid, d.objid, d.objsubid), d.classid::regclass::text) || ' (' || d.deptype::text || ')', ', ')
-    INTO grants
-  FROM pg_shdepend d
-  WHERE d.refclassid = 'pg_authid'::regclass AND d.refobjid = monitoring
-    AND d.dbid IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()));
-  IF grants IS NOT NULL THEN
-    RAISE EXCEPTION 'warehouse_monitoring must hold no grant and own nothing: %', grants;
-  END IF;
-  -- Nor can it read a table of the application, the private schemas, Storage or the
-  -- migration ledger by any other path (a grant to PUBLIC included). Reaching a table
-  -- needs USAGE on its schema as well as a table right, so both count. The one exception
-  -- is pg_cron's own: it grants its job tables to PUBLIC and lets each role see only the
-  -- rows of its own jobs through row security (username = current_user); this role owns
-  -- no job, so it reads no row there.
-  SELECT string_agg(format('%I.%I', n.nspname, c.relname), ', ' ORDER BY n.nspname, c.relname) INTO readable
-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-    AND n.nspname IN ('public', 'warehouse_security', 'warehouse_maintenance', 'warehouse_migrations', 'storage', 'auth', 'vault', 'pgsodium', '_realtime', 'realtime', 'cron', 'net', 'supabase_functions')
-    AND has_schema_privilege(monitoring, n.oid, 'USAGE')
-    AND has_table_privilege(monitoring, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
-    AND NOT (n.nspname = 'cron' AND c.relname IN ('job', 'job_run_details') AND c.relrowsecurity
-             AND EXISTS (SELECT 1 FROM pg_policy pol WHERE pol.polrelid = c.oid
-                         AND pg_get_expr(pol.polqual, pol.polrelid) = '(username = CURRENT_USER)'));
-  IF readable IS NOT NULL THEN
-    RAISE EXCEPTION 'warehouse_monitoring can read or write: %', readable;
-  END IF;
-  -- pg_stat_statements keeps utility statements verbatim (track = all), the JWT secret of a
-  -- signing-key rotation among them; its views live in `extensions`, which the role must not use.
-  IF to_regnamespace('extensions') IS NOT NULL AND has_schema_privilege(monitoring, 'extensions', 'USAGE') THEN
-    RAISE EXCEPTION 'warehouse_monitoring may use schema extensions (pg_stat_statements history)';
-  END IF;
-  IF to_regclass('cron.job') IS NOT NULL THEN
-    EXECUTE 'SELECT string_agg(jobname, '', '') FROM cron.job WHERE username = $1' INTO readable USING 'warehouse_monitoring';
-    IF readable IS NOT NULL THEN
-      RAISE EXCEPTION 'warehouse_monitoring owns pg_cron jobs: %', readable;
-    END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'auth'::regnamespace AND pg_get_userbyid(p.proowner) <> 'supabase_admin') THEN
+    RAISE EXCEPTION 'a function in schema auth is not owned by supabase_admin';
   END IF;
 END
 $$;
 
--- supabase_functions_admin owns the webhook functions; nothing signs in as it
--- (migration 94). The role exists only where the Compose init scripts ran.
+-- Migration 104 drops every foreign key into schema auth (the official Postgres image has no GoTrue tables): no constraint
+-- outside schema auth references a table in it.
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_authid WHERE rolname = 'supabase_functions_admin' AND (rolcanlogin OR rolpassword IS NOT NULL)) THEN
-    RAISE EXCEPTION 'supabase_functions_admin must have no login and no password';
+  IF EXISTS (SELECT 1 FROM pg_constraint k JOIN pg_class r ON r.oid = k.conrelid JOIN pg_class t ON t.oid = k.confrelid
+              WHERE k.contype = 'f' AND t.relnamespace = 'auth'::regnamespace AND r.relnamespace <> 'auth'::regnamespace) THEN
+    RAISE EXCEPTION 'a foreign key outside schema auth still points into it';
   END IF;
 END
 $$;

@@ -302,58 +302,26 @@ source are set.
 Set, replace or remove them with `setup.sh`; see
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#central-sign-in). The trusted issuer
 in the database is written by `setup.sh`, so after restoring a database that
-disagrees with `config/compose.env` (it was backed up before central login was
-turned on, off or changed) run `setup.sh` again before relying on central login.
-A lost-host restore (`db:restore-host`) brings back the configuration, the
-database and, for a backup that carries it, the key file from the same moment,
-so nothing needs to be redone; for an older backup `db:restore-host` prints the
-one rerun that puts the key file back.
+disagrees with `config/compose.env` (backed up before central login was turned on, off or changed) run `setup.sh` again.
+A lost-host restore (`db:restore-host`) brings back the configuration, the database and, for a backup that carries it, the
+key file; for an older backup it prints the one rerun that puts the key file back.
 
-## Built (2026-10-12)
+## Built, and not built
 
-- The central identity service (sign-in, token issuing, key set, facility
-  catalogue), in its own repository.
-- The app: central sign-in, My facilities, the calls to this endpoint and the
-  code step for a facility that asks for its own code.
-- Migration 81 (2026-10-15): the association's sign-in opens an existing person
-  profile; a facility's own code only when it asks; service accounts refused.
+Built: the central identity service (its own repository), the app's central sign-in, My facilities and the code step for
+a facility that asks for its own code, and this endpoint with migration 81 (the association's sign-in opens an existing
+person profile; a facility's own code only when it asks; service accounts refused).
 
-Still not built:
+Not built: an administrator screen for `clear_user_central_identity` (call the RPC as a signed-in administrator) and
+binding a token to a device key (DPoP).
 
-- An administrator screen for `clear_user_central_identity`; call the RPC as a
-  signed-in administrator.
-- Binding a token to a device key (DPoP).
+## Tested, and not tested
 
-## Tested, and not tested (2026-10-12)
+Tested: the handler under Node and the database function in a disposable database (`npm test`, `npm run test:migrations`;
+`tests/central_login.sql`, `tests/configure.test.mjs`); `curl` against the endpoint in the real edge runtime of a development
+installation; and the app on an Android phone, by hand and as 18 Maestro flows. The phone and `curl` runs were made before
+migration 64 and migration 81, whose answers are covered by `tests/central_login.sql` only.
 
-Run:
-
-- The handler under Node with its own keys, and the database function in a
-  disposable database (`npm test`, `npm run test:migrations`).
-- `curl` against this endpoint in the real edge runtime of a development
-  installation that reads its keys from a key file: a new person (pending), a
-  replayed token, a wrong audience, issuer and token type (all refused),
-  `link_required`, a wrong and then a correct SMS code, and a conflict (all on
-  the earlier rule, before migration 81).
-- With the app on an Android phone: the central walkthrough (plan D17) by
-  hand (44 of 45 steps, on an earlier commit; the one step not reached was a
-  timing case), and the same walkthrough as 18 Maestro flows (sign-in, request,
-  approval, switching facilities, linking with a wrong and a correct code, an
-  unreachable facility, revocation, sign-out), all passed.
-- Migration 81 is covered by `tests/central_login.sql` (setting off and on),
-  `tests/configure.test.mjs` and `tests/migrations.sh`; it has not yet been run
-  against a development installation or the phone.
-- All of the above ran before migration 64 existed. The link answer of
-  migration 64 (the two link fields in the reply) is covered by
-  `tests/central_login.sql` only.
-
-Not tested:
-
-- Real SMS delivery (MSG91) for the link code.
-- Keys fetched by URL (`CENTRAL_JWKS_URL`); the development installation uses
-  a key file.
-- `setup.sh` with the central options on a fresh installation (only on the
-  existing development installation).
-- Concurrent exchanges, under load. Two exchanges for one phone or one central
-  account are serialized by advisory locks, which is checked by reading the
-  code, not under load.
+Not tested: real SMS delivery (MSG91) for the link code; keys fetched by URL (`CENTRAL_JWKS_URL`); `setup.sh` with the
+central options on a fresh installation; concurrent exchanges under load (two exchanges for one phone or one central
+account are serialized by advisory locks, which is checked by reading the code).

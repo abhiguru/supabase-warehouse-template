@@ -3,7 +3,7 @@
 #   npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP
 # The backup signature is checked first with the backup key
 # (WAREHOUSE_BACKUP_KEY_FILE, else $WAREHOUSE_STATE_DIR/config/backup.key).
-# --allow-unsigned is only for a backup written before format v5, or when the backup key is lost.
+# --allow-unsigned is only for when the backup key is lost.
 # Optional environment:
 #   WAREHOUSE_VERIFY_DATA_MB      size of the disposable data directory (default: from the dump sizes, at least 768)
 #   WAREHOUSE_VERIFY_SIZE_FACTOR  restored size estimate per dump byte (default 10)
@@ -15,8 +15,8 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
-IMAGE='supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6'
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP   (--allow-unsigned: only for a backup written before format v5, or when the backup key is lost)' >&2; exit 1; }
+IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
+usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 allow_unsigned=false
 backup=''
 while (($#)); do
@@ -35,33 +35,19 @@ for file in database.dump storage.tar.gz integrity.txt metadata.txt SHA256SUMS; 
 done
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
+# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
+[[ ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
+format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
+[[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)." >&2; exit 1; }
+# shellcheck source=scripts/backup-image.sh
+source "$ROOT/scripts/backup-image.sh"
+backup_check_database_image "$backup" || exit 1
 # Signature, then checksums: nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
-has_roles=false
-has_supabase=false
-case "$format" in
-  warehouse-backup-v1) ;;
-  warehouse-backup-v2|warehouse-backup-v3|warehouse-backup-v4|warehouse-backup-v5)
-    for file in compose.env instance.json; do
-      [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
-      grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
-    done
-    if [[ "$format" != warehouse-backup-v2 ]]; then
-      has_roles=true
-      [[ -f "$backup/roles.txt" && ! -L "$backup/roles.txt" ]] || { echo 'Incomplete backup: missing roles.txt' >&2; exit 1; }
-      grep -Fq '  roles.txt' "$backup/SHA256SUMS" || { echo 'Backup checksum missing for roles.txt' >&2; exit 1; }
-    fi
-    if [[ "$format" == warehouse-backup-v4 || "$format" == warehouse-backup-v5 ]]; then
-      has_supabase=true
-      for file in _supabase.dump storage_objects.txt; do
-        [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
-        grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
-      done
-    fi
-    ;;
-  *) echo 'Unsupported backup format.' >&2; exit 1 ;;
-esac
+for file in compose.env instance.json roles.txt _supabase.dump storage_objects.txt; do
+  [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
+  grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
+done
 # A v5 backup is always signed: backup_authenticate refused one whose signature file is gone while the
 # backup key is available, and --allow-unsigned does not change that (scripts/backup-key.sh).
 # Optional tunnel credential (scripts/tunnel.sh): only known regular files, each checksummed.
@@ -146,7 +132,7 @@ fi
 natural() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "$1 must be a positive whole number: $2" >&2; exit 1; }; }
 mib() { echo $(( ($1 + 1048575) / 1048576 )); }
 dump_bytes="$(stat -c %s -- "$backup/database.dump")"
-if [[ "$has_supabase" == true ]]; then dump_bytes=$((dump_bytes + $(stat -c %s -- "$backup/_supabase.dump"))); fi
+dump_bytes=$((dump_bytes + $(stat -c %s -- "$backup/_supabase.dump")))
 dump_mb="$(mib "$dump_bytes")"
 factor="${WAREHOUSE_VERIFY_SIZE_FACTOR:-10}"; natural WAREHOUSE_VERIFY_SIZE_FACTOR "$factor"
 estimate_mb=$((dump_mb * factor))
@@ -187,32 +173,30 @@ fi
 if [[ -n "${WAREHOUSE_VERIFY_MEMORY_MB:-}" ]]; then natural WAREHOUSE_VERIFY_MEMORY_MB "$WAREHOUSE_VERIFY_MEMORY_MB"; memory_mb="$WAREHOUSE_VERIFY_MEMORY_MB"; fi
 echo "Restore verification: disposable database of $data_mb MiB ($sized) on $storage, memory limit $memory_mb MiB."
 
-if [[ "$has_supabase" == true ]]; then
-  # Every catalogued object must be present in the archive. Storage keeps files
-  # under a tenant prefix, so a catalog entry is matched as a path suffix.
-  # Archive files without a catalog entry are reported but do not fail.
-  sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
-  awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt" '
-    FILENAME == ARGV[1] { if (length($0)) want[$0] = 1; next }
-    {
-      n = split($0, parts, "/"); suffix = ""; hit = 0
-      for (i = n; i >= 1; i--) {
-        suffix = (i == n) ? parts[i] : parts[i] "/" suffix
-        if (suffix in want) { found[suffix] = 1; hit = 1; break }
-      }
-      if (!hit) print $0 > extra
+# Every catalogued object must be present in the archive. Storage keeps files
+# under a tenant prefix, so a catalog entry is matched as a path suffix.
+# Archive files without a catalog entry are reported but do not fail.
+sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
+awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt" '
+  FILENAME == ARGV[1] { if (length($0)) want[$0] = 1; next }
+  {
+    n = split($0, parts, "/"); suffix = ""; hit = 0
+    for (i = n; i >= 1; i--) {
+      suffix = (i == n) ? parts[i] : parts[i] "/" suffix
+      if (suffix in want) { found[suffix] = 1; hit = 1; break }
     }
-    END { for (entry in want) if (!(entry in found)) print entry > missing }
-  ' "$backup/storage_objects.txt" "$scratch/archive_files.txt"
-  if [[ -s "$scratch/missing_objects.txt" ]]; then
-    echo 'Catalogued storage objects are missing from storage.tar.gz:' >&2
-    sort "$scratch/missing_objects.txt" >&2
-    exit 1
-  fi
-  if [[ -s "$scratch/extra_files.txt" ]]; then
-    echo "Warning: $(wc -l < "$scratch/extra_files.txt") archived storage file(s) have no catalog entry (first 20 shown):" >&2
-    sort "$scratch/extra_files.txt" | head -n 20 >&2
-  fi
+    if (!hit) print $0 > extra
+  }
+  END { for (entry in want) if (!(entry in found)) print entry > missing }
+' "$backup/storage_objects.txt" "$scratch/archive_files.txt"
+if [[ -s "$scratch/missing_objects.txt" ]]; then
+  echo 'Catalogued storage objects are missing from storage.tar.gz:' >&2
+  sort "$scratch/missing_objects.txt" >&2
+  exit 1
+fi
+if [[ -s "$scratch/extra_files.txt" ]]; then
+  echo "Warning: $(wc -l < "$scratch/extra_files.txt") archived storage file(s) have no catalog entry (first 20 shown):" >&2
+  sort "$scratch/extra_files.txt" | head -n 20 >&2
 fi
 rm -f -- "$scratch/archive_names.txt"
 
@@ -226,49 +210,56 @@ docker run -d --pull missing --name "$container" --label purpose=warehouse-resto
   "${data_args[@]}" \
   -e JWT_SECRET=isolated-restore-secret-not-for-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=disabled -e APP_ENV=verification \
-  -e POSTGRES_PASSWORD=disposable-restore-only \
+  -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD=disposable-restore-only \
+  -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
+  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
   "$IMAGE" >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
-  if docker exec "$container" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+  # The image's temporary server answers while the bootstrap still runs: wait for the end of init, then for the real server.
+  init_log="$(docker logs "$container" 2>&1 || true)"
+  if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
+    && docker exec "$container" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
   # A container that has already exited will not become ready.
   [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != false ]] || break
   sleep 2
 done
 [[ "$ready" == true ]] || { echo "Restore database did not start (data directory of $data_mb MiB on $storage, memory limit $memory_mb MiB)." >&2; exit 1; }
-# The logical dump preserves ACLs, while Compose init scripts may add grant
-# targets that the bare pinned image lacks. Recreate absent names in this
-# disposable database so pg_restore verifies the original ACLs.
-if [[ "$has_roles" == true ]]; then
-  docker cp "$backup/roles.txt" "$container:/tmp/roles.txt"
-  docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
-    psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
+# The logical dump preserves ACLs. The bootstrap above made the roles, role settings (the search_path that finds
+# extensions.digest) and schemas the stack needs; a role that a backup names and the bootstrap does not make
+# is recreated here so pg_restore verifies the original ACLs.
+docker cp "$backup/roles.txt" "$container:/tmp/roles.txt"
+docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
+  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<'SQL'
 CREATE TEMP TABLE restore_roles (role_name name NOT NULL);
 \copy restore_roles(role_name) FROM '/tmp/roles.txt'
 DO $$
 DECLARE missing_role name;
 BEGIN
-  FOR missing_role IN SELECT role_name FROM restore_roles LOOP
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = missing_role) THEN
-      EXECUTE format('CREATE ROLE %I NOLOGIN', missing_role);
-    END IF;
-  END LOOP;
+FOR missing_role IN SELECT role_name FROM restore_roles LOOP
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = missing_role) THEN
+    EXECUTE format('CREATE ROLE %I NOLOGIN', missing_role);
+  END IF;
+END LOOP;
 END $$;
 SQL
-fi
 docker cp "$backup/database.dump" "$container:/tmp/database.dump"
 # template0, never template1: the image's own start-up sessions attach to template1
 # and CREATE DATABASE refuses a template that anyone is connected to. template0
 # accepts no connections, and a dump restores completely into a copy of it.
 docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
   -U supabase_admin -T template0 warehouse_restore
-# pg_cron (migration 91: the list refresher) can only be created in the database that
-# cron.database_name names, postgres, and this check restores into warehouse_restore. The
-# extension and its own objects (schema cron: jobs, run history, their sequences and grants)
-# are left out here; an in-place restore (restore.sh) replays them, and configure-list-refresh.sql
-# re-creates the jobs either way.
-docker exec "$container" sh -c "pg_restore -l /tmp/database.dump | grep -Ev '^[0-9]+; [0-9]+ [0-9]+ (EXTENSION - pg_cron|COMMENT - EXTENSION pg_cron|ACL - SCHEMA cron|[A-Z ]+ cron) ' > /tmp/restore.list"
+# Every entry of the dump is replayed: a backup of this version holds no extension that needs preloading.
+docker exec "$container" sh -c "pg_restore -l /tmp/database.dump > /tmp/restore.list"
+# The dump header names the server it came from. A dump of an earlier major version holds the earlier
+# schema and roles (the image label of metadata.txt is not enough: it describes the checkout, not the dumped server).
+dumped_from="$(docker exec "$container" sh -c "sed -n 's/^;[[:space:]]*Dumped from database version: //p' /tmp/restore.list | head -n 1")"
+dumped_major="${dumped_from%%.*}"
+if [[ ! "$dumped_major" =~ ^[0-9]+$ ]] || ((dumped_major < 17)); then
+  echo "Refusing: the database dump was made by PostgreSQL '${dumped_from:-unknown}', before PostgreSQL 17. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, \"Baseline reload\")." >&2
+  exit 1
+fi
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --clean --if-exists \
   --no-acl --section=pre-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
@@ -278,46 +269,30 @@ docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner --no-acl \
   --section=post-data --exit-on-error -L /tmp/restore.list /tmp/database.dump
-# pg_graphql registers this wrapper only when graphql_public exists during
-# extension initialization. Logical replay may create that schema afterward.
-docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
-  psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore <<'SQL'
-CREATE OR REPLACE FUNCTION graphql_public.graphql(
-  "operationName" text DEFAULT NULL, query text DEFAULT NULL,
-  variables jsonb DEFAULT NULL, extensions jsonb DEFAULT NULL
-) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT graphql.resolve(
-    query := query, variables := coalesce(variables, '{}'::jsonb),
-    "operationName" := "operationName", extensions := extensions
-  );
-$$;
-SQL
-# Replay ACLs only after all objects, including extension-owned wrappers, exist.
-docker exec "$container" sh -c "awk '/^[0-9]+; .* ACL / { print }' /tmp/restore.list > /tmp/acl.list"
+# Replay ACLs only after all objects exist.
+acl_awk='$1 ~ /^[0-9]+;$/ && ($4 == "ACL" || ($4 == "DEFAULT" && $5 == "ACL")) { print }'
+docker exec "$container" sh -c 'awk "$1" /tmp/restore.list > /tmp/acl.list && [ -s /tmp/acl.list ]' sh "$acl_awk" \
+  || { echo 'Refusing: the database dump lists no privileges (ACL entries).' >&2; exit 1; }
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner -L /tmp/acl.list \
   --exit-on-error /tmp/database.dump
-if [[ "$has_supabase" == true ]]; then
-  # The pooler/analytics database must replay completely as well.
-  docker cp "$backup/_supabase.dump" "$container:/tmp/_supabase.dump"
-  docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
-    -U supabase_admin -T template0 _supabase_restore
-  docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
-    -U supabase_admin -d _supabase_restore --no-owner --no-acl \
-    --exit-on-error /tmp/_supabase.dump
-fi
+# The _supabase database (the pooler's _supavisor schema) must replay completely as well.
+docker cp "$backup/_supabase.dump" "$container:/tmp/_supabase.dump"
+docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
+  -U supabase_admin -T template0 _supabase_restore
+docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
+  -U supabase_admin -d _supabase_restore --no-owner --no-acl \
+  --exit-on-error /tmp/_supabase.dump
 docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
   psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
   < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
 diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
-if [[ "$has_supabase" == true ]]; then
-  # The restored catalog must list exactly what the backup catalogued, and the
-  # archive listing above already proved every entry has a file.
-  docker exec -e PGPASSWORD=disposable-restore-only "$container" \
-    psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
-    -c "$catalog_query" > "$scratch/storage_objects.txt"
-  diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
-fi
+# The restored catalog must list exactly what the backup catalogued, and the
+# archive listing above already proved every entry has a file.
+docker exec -e PGPASSWORD=disposable-restore-only "$container" \
+  psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
+  -c "$catalog_query" > "$scratch/storage_objects.txt"
+diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
 if [[ "$BACKUP_SIGNED" == true ]]; then
   echo 'Backup signature, checksums, storage archive safety, database restore, and integrity comparison passed.'
 else

@@ -1,4 +1,4 @@
-import { createClient } from '../vendor/supabase-js.mjs'
+import { restClient } from '../_shared/supabase-rest.ts'
 import { monitorPrintJobStatus } from '../_shared/print-status-monitor.ts'
 import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-rule.ts'
 import { submittedJob } from '../_shared/ipp-validate.ts'
@@ -506,7 +506,7 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get('Authorization');
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = restClient(supabaseUrl, supabaseServiceKey);
 
     // Validate user has print access (admin/supervisor only)
     const userProfile = await validatePrintAccess(req, supabase);

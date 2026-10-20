@@ -101,15 +101,13 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('cancel_dispatch_image_upload',true,'no'),
  ('create_dispatch_with_stock_check',true,'no'),('update_dispatch_smart',true,'no'),
  ('check_dispatch_exists',true,'no'),('get_next_dispatch_number',true,'no'),('get_dispatch_autocomplete',true,'no'),
- ('get_dispatch_list',true,'no'),('get_dispatch_list_with_items',true,'no'),
+ ('get_dispatch_list_with_items',true,'no'),
  ('get_all_dispatch_items',true,'no'),('get_all_dispatch_activity',true,'no'),('get_recent_dispatched_orders',true,'no'),
  ('save_invoice',true,'no'),('update_invoice',true,'no'),('get_next_invoice_number',true,'no'),
  ('get_invoiceable_grns',true,'no'),('get_invoices_list',true,'no'),
  ('generate_invoice_data_for_grn_with_pricing',true,'no'),
  -- warehouse-wide: admitted for staff by migration 45
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
- -- migration 91: how current the materialized lists are
- ('get_list_freshness',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
  ('get_item_storage_prices',false,'no'),
  -- migration 76: no app code calls it; administrators and supervisors only
@@ -556,7 +554,7 @@ SELECT pg_temp.ra_assert((SELECT count(*)=1 FROM public.item_storage_prices WHER
  'the refused staff price calls changed nothing and left no history');
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM public.item_storage_prices),'the price table itself stays closed to staff; prices are read through the RPC');
--- The order queue: staff read every order row (what Realtime checks), still
+-- The order queue: staff read every order row (the order queue screen), still
 -- without a direct write.
 SELECT pg_temp.ra_assert((SELECT count(*)=:orders_total AND count(*)>=2 FROM public.orders),'staff read every order');
 SELECT pg_temp.ra_assert(pg_temp.ra_call(format('WITH changed AS (UPDATE public.orders SET note=''x'' WHERE id=%L RETURNING id) SELECT to_jsonb(count(*)) FROM changed',:'cart_a'))->>'state'='42501',
@@ -649,7 +647,7 @@ SELECT pg_temp.ra_assert(warehouse_security.staff_may_remove_image_file('grn-ima
  AND NOT warehouse_security.staff_may_remove_image_file('grn-images','other/'||:'grn_a'||'/never-uploaded.webp')
  AND NOT warehouse_security.staff_may_remove_image_file('dispatch-images','headers/'||:'grn_a'||'/never-uploaded.webp')
  AND NOT warehouse_security.staff_may_remove_image_file('grn-images',:'img_a2'::jsonb->>'storage_path')
- AND NOT warehouse_security.staff_may_remove_image_file('customer-images',:'grn_a'||'/never-uploaded.webp'),
+ AND NOT warehouse_security.staff_may_remove_image_file('documents',:'grn_a'||'/never-uploaded.webp'),
  'for staff a free path counts only inside the folder of a live receipt or dispatch');
 RESET ROLE;
 

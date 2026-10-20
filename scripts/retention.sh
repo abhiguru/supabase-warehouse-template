@@ -10,7 +10,8 @@ case "${1:-preview}" in
 esac
 . "$ROOT/scripts/operator-lock.sh"
 state="$(operator_state)"
-operator_lock "$state"
+# scripts/watch-daily.sh runs this under its own lock; run alone, it takes the lock.
+operator_lock_or_inherited "$state"
 compose exec -T db psql -X -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   -c "SELECT jsonb_pretty(warehouse_maintenance.run_database_retention(now(), $apply));"
 

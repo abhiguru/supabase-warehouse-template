@@ -16,10 +16,14 @@ env:
   # `check-mobile-contract.mjs --live` against a running stack, which is a step
   # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
   # CONTRIBUTING.md "Mobile companion pin".
-  MOBILE_REF: d8af37849feedda2a2b6a5d529788b5f7c3cac6b
+  MOBILE_REF: e6a513b2294c07dcc5ea05b4cb4e90162ddafab7
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,33 +34,33 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - name: Alert rules and Alertmanager files (promtool and amtool, no network)
-        run: npm run test:alert-rules
       - name: Container source dependency audit
         run: npm run check:container-dependencies
-      - name: Shell syntax
-        run: |
-          # Every tracked script, including the ones that run inside images.
-          for script in $(git ls-files '*.sh'); do
-            case "$(head -n 1 "$script")" in
-              '#!/bin/sh'*) sh -n "$script" ;;
-              *) bash -n "$script" ;;
-            esac
-          done
   migrations:
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
       - run: bash tests/migrations.sh
   bridge:
     name: Sensor bridge unit tests
     # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
     # with the pinned requirements, without Docker or hubs. The image itself is
     # built and checked by `npm run test:sensors` in operator-install.
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,7 +77,11 @@ jobs:
     # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
     # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap), then checks
     # health, a real render, blocked network access and the 400/413 cases.
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     timeout-minutes: 30
     steps:
@@ -83,8 +91,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-      - name: Install poppler-utils (integration.sh reads the PDF text; a skipped check fails in CI)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
       - run: npm ci --omit=dev --ignore-scripts
         working-directory: docker/pdf-renderer
       - run: node --test test/*.test.mjs
@@ -96,13 +102,20 @@ jobs:
     # 150 dpi in a poppler container built from a fixed Debian snapshot (tests/golden-pdf/Dockerfile) and compares
     # each page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact. Required on every change to the Chrome for Testing
     # pin, puppeteer-core or the fonts; regenerate with `run.sh --update` and review what moved.
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
       - name: Build the renderer image and start it with the hardening flags
         run: |
           docker build -t pdf-renderer:golden docker/pdf-renderer
@@ -124,7 +137,11 @@ jobs:
         if: always()
         run: docker rm -f pdf-renderer-golden
   contract:
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -151,7 +168,11 @@ jobs:
 
   secrets:
     name: Redacted source and history scan
-    runs-on: ubuntu-latest
+    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
+    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
+    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
+    # code from a fork never runs on the project's own machine.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,13 +184,13 @@ jobs:
     name: Isolated operator installation
     # Where this job runs is the repository variable OPERATOR_INSTALL_RUNNER: a
     # JSON value for runs-on, for example ["self-hosted","linux","x64","my-label"].
-    # Without the variable (a fork, for instance) it runs on a GitHub-hosted
-    # runner. A runner that keeps Docker's build cache between runs saves about
+    # Without the variable, and always for a pull request from a fork, it runs on
+    # a GitHub-hosted runner. A runner that keeps Docker's build cache between runs saves about
     # half the time: on a hosted runner 18 of this job's 30 minutes are image
     # builds from scratch. What such a runner must provide, and why it has to be
     # an isolated machine, is in docs/DEVELOPER_HANDOFF.md, "A self-hosted runner
     # for operator-install". This job is not a required check.
-    runs-on: ${{ fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     needs: validate
     steps:
@@ -233,14 +254,10 @@ jobs:
           npm run db:rotate-passwords -- --yes --superuser
           npm run test:db-roles
         working-directory: backend
-      - name: Operator backend HTTP, documents, Realtime and account lifecycle
+      - name: Operator backend HTTP, documents and account lifecycle
         run: |
           node tests/operator-api-core.mjs
-          node tests/operator-realtime-core.mjs
           node tests/operator-api-final.mjs
-        working-directory: backend
-      - name: Studio and metadata compatibility
-        run: npm run test:studio
         working-directory: backend
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
@@ -254,8 +271,25 @@ jobs:
       - name: API and database load smoke
         run: npm run test:load
         working-directory: backend
-      - name: Monitoring targets and local alert delivery
-        run: npm run test:monitoring
+      - name: Monitoring checker (one pass and its status, no systemd timer)
+        # The CI install has no Slack webhook (--alert-webhook-file off), so the pass records its state and posts
+        # nothing. The daily backup time is moved out of the 6-hour window that contains now, so this pass makes no
+        # backup of its own (the backup steps below do). The deleted state file also blocks a daily pass: a new state
+        # waits for the next window (watch.mjs, runDaily), the same as the +7 hours shift does.
+        # The pass must find the installation healthy: any check error or any down alert of the database, a service
+        # or the gateway fails the step (host alerts such as disk, cpu and memory depend on the runner and do not).
+        run: |
+          export WAREHOUSE_WATCH_DAILY_AT="$(date -d '+7 hours' +%H:%M)"
+          rm -f "$WAREHOUSE_STATE_DIR/config/watch-state.json"
+          node scripts/watch.mjs run
+          test -s "$WAREHOUSE_STATE_DIR/config/watch-state.json"
+          node -e '
+            const state = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const alerts = state.alerts || {};
+            const bad = Object.entries(alerts).filter(([id, a]) => a.failingRuns > 0 && (id.startsWith("check_error:") || id.startsWith("service_down:") || id === "postgres_down" || id === "api_down"));
+            if (bad.length) { console.error("Failing checks: " + bad.map(([id, a]) => id + " (" + a.summary + ": " + a.detail + ")").join("; ") + ". Alert ids in the state: " + (Object.keys(alerts).join(", ") || "none")); process.exit(1); }
+          ' "$WAREHOUSE_STATE_DIR/config/watch-state.json"
+          node scripts/watch.mjs status
         working-directory: backend
       - name: Backup and isolated restore drill
         run: |
@@ -311,13 +345,9 @@ jobs:
           # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
           install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
-          project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")"
-          # Lose the host: no containers and no database volume of this installation remain;
-          # only the backup is carried over. The old state stays where it is, unused, and so
-          # does the Prometheus volume the monitoring step created: it holds no restored
-          # state, and restore-host must not be stopped by it.
+          # Lose the host: no containers of this installation remain;
+          # only the backup is carried over. The old state stays where it is, unused.
           bash scripts/compose.sh --profile '*' down
-          docker volume rm "${project}_db-config"
           restored="$RUNNER_TEMP/core-backend-test-20260930"
           if npm run db:restore-host -- --state-dir "$restored" --yes /tmp/warehouse-ci-lost-host-backup; then
             echo 'restore-host accepted a backup without the backup key' >&2; exit 1
@@ -333,6 +363,12 @@ jobs:
           bash scripts/tunnel.sh status > /tmp/warehouse-ci-tunnel-status.txt
           grep -q "locally managed tunnel $tunnel_id" /tmp/warehouse-ci-tunnel-status.txt
           bash scripts/data-fingerprint.sh | diff -u /tmp/warehouse-ci-fingerprint.txt -
+          # --all must succeed on the restored stack and print more lines than the default.
+          default_lines=$(wc -l < /tmp/warehouse-ci-fingerprint.txt)
+          bash scripts/data-fingerprint.sh --all > /tmp/warehouse-ci-fingerprint-all.txt
+          all_lines=$(wc -l < /tmp/warehouse-ci-fingerprint-all.txt)
+          test "$all_lines" -gt "$default_lines"
+          grep -q '^table storage.buckets rows=' /tmp/warehouse-ci-fingerprint-all.txt
           bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
             < scripts/backup-integrity.sql | diff -u /tmp/warehouse-ci-lost-host-backup/integrity.txt -
           # The restore is proven above. This backup was taken minutes after the earlier

@@ -232,8 +232,6 @@ SELECT pg_temp.oi_assert(position('Open Items D with data' IN :'pick_staff')=0,'
 -- staff and administrators still see the deactivated D (stock 10 bags in two GRNs) in the readers
 INSERT INTO public.invoice(inv_fin_year,inv_no,gr_id,gr_no,customer_id,customer_name,inv_date,labour,tax_amount,total)
  VALUES (2026,8201,:'grn_d'::uuid,'OI82A',:'cust_d'::uuid,'Open Items D with data',current_date,0,0,0);
--- get_invoices_list reads mv_invoice_list: the worker's refresh, in this transaction (migration 91).
-SELECT warehouse_security.refresh_dirty_lists();
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.get_all_stock_summary()::text AS rd_a_stock, public.get_item_wise_stock_list()::text AS rd_a_wise,

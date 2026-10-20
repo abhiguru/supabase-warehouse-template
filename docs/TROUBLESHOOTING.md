@@ -1,5 +1,7 @@
 # Troubleshooting
 
+This is the one place for fixing problems. Other guides link here.
+
 Every command below acts on **one installation**: the one whose state directory
 you export. Run them from the installed backend checkout:
 
@@ -12,7 +14,7 @@ bash scripts/compose.sh ps
 `scripts/compose.sh` selects this installation's Compose project
 (`warehouse-<instance>`, containers `warehouse-<instance>-<service>-1`) from
 `WAREHOUSE_STATE_DIR` and refuses a running project that another checkout owns.
-Name services (`db`, `kong`, `rest`, `functions`, `pdf-renderer`, `cups`), never
+Name services (`db`, `kong`, `rest`, `storage`, `functions`, `pdf-renderer`, `cups`), never
 containers: do not run `docker logs`, `docker exec` or `docker restart` with a
 fixed container name such as `supabase-kong`. On a host that also runs a
 separate Supabase deployment or a second installation, such a name belongs to
@@ -22,7 +24,9 @@ that other project, and the command changes it instead of this one.
 `node scripts/doctor.mjs` adds the external checks through the tunnel
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation)).
 
-## Services won't start
+## Services
+
+### Services won't start
 
 ```bash
 bash scripts/compose.sh ps
@@ -35,7 +39,7 @@ and shows plain `Up`. A service that keeps restarting shows `Restarting`; its
 last log lines say why. `bash start.sh` starts the core services again and
 replaces the running optional ones.
 
-## The API answers 502 or 503
+### The API answers 502 or 503
 
 ```bash
 bash scripts/compose.sh logs --tail 50 kong
@@ -50,40 +54,15 @@ A 502 from the gateway usually means the service behind it (`rest`,
 for this operator instance" **by design** (`functions/main/index.ts`): that 503
 is not a fault ([PRINTING.md](PRINTING.md)).
 
-## Realtime is slow to connect after a start
+Public-configuration reads that take seconds, with `rest.localdomain` SERVFAIL in
+the gateway log, mean the host's DHCP search domain leaked into the gateway's
+resolver. `docker/docker-compose.yml` pins `dns_search: "."` for Kong; keep it,
+and do not change host DNS or extend client timeouts.
 
-Symptom: the first live-update connection after a start or restart times out
-(the app retries and then works), while later ones answer in milliseconds.
-Cause: Realtime connects to the database for each tenant on the first join and
-asks for an IPv6 address of `db` first. If the host's DHCP gave the machine a
-search domain (`search lan` in the host's `/etc/resolv.conf`) and the router
-is slow to refuse the extra question, that one lookup took about 8 seconds and
-the connection check ran past its 15 second window.
-
-The compose file now gives Realtime `dns_search: "."`, so the host's search
-domain is not asked, which is what keeps every first join fast. `setup.sh` and
-`start.sh` also join one channel once the services are up
-(`scripts/realtime-warmup.mjs`); that proves after each start that the tenant
-connection opens and shows how long it took. It does not keep the connection
-open: Realtime closes an idle tenant connection after a few minutes, and the
-next person to open the app opens it again, in tens of milliseconds. To check by hand:
+### Database connection issues
 
 ```bash
-bash scripts/compose.sh exec -T realtime /app/bin/realtime eval \
-  ':timer.tc(:inet, :gethostbyname, [~c"db", :inet6]) |> IO.inspect()'
-```
-
-The first number is microseconds; it should be well under 100 000 (100 ms).
-`bash scripts/compose.sh exec -T realtime cat /etc/resolv.conf` must show no
-`search` line. If it still does, recreate the service after an update:
-`bash scripts/compose.sh up -d --force-recreate realtime`. Run
-`node scripts/realtime-warmup.mjs` to repeat the warm-up by hand; it only
-joins one channel and prints how long that took.
-
-## Database connection issues
-
-```bash
-bash scripts/compose.sh exec -T db pg_isready -U postgres
+bash scripts/compose.sh exec -T db pg_isready -U supabase_admin -d postgres
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres \
   -c "SELECT backend_type, state, count(*) FROM pg_stat_activity GROUP BY 1, 2 ORDER BY 3 DESC;"
 bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "
@@ -94,10 +73,10 @@ bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "
   LIMIT 5;"
 ```
 
-The `DatabaseConnectionsHigh` alert counts client connections (not background
+The `db_connections_high` alert counts client connections (not background
 workers) against the configured ceiling of 100 ([MONITORING.md](MONITORING.md)).
 
-## Edge functions not working
+### Edge functions not working
 
 ```bash
 bash scripts/compose.sh logs --tail 50 functions
@@ -111,7 +90,7 @@ unchanged and is not recreated, so restart `functions` after the upgrade
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)) for the workers
 to load the new code.
 
-## Slow API responses
+### Slow API responses
 
 ```bash
 ids=$(bash scripts/compose.sh ps -q); [ -n "$ids" ] && docker stats --no-stream $ids
@@ -124,26 +103,14 @@ skipped when none is running: given no IDs it would list every container on
 the host. A service shown as `Restarting` in `ps` is in a crash loop; read its
 logs.
 
-## A new receipt, dispatch or invoice is missing from a list
+### A new receipt, dispatch or invoice is missing from a list
 
-The invoice list, `get_dispatch_list` and the legacy GRN list are refreshed by
-a background job within 15 seconds of a write (migration 91); the document
-itself was saved when the app said so. If a list stays behind:
+The lists read the tables, so a document that the app said was saved is in the next list read.
+If a list does not show it, check the filter and sort on the screen (a date range, a customer, a search word) and
+pull to refresh. A document missing from every list and from its own detail screen was not saved: look at the
+app's last error.
 
-```bash
-bash scripts/compose.sh exec -T db psql -X -A -t -U supabase_admin -d postgres \
-  -c "SELECT warehouse_security.list_refresh_status()"
-```
-
-`problems` names what is wrong. A session holding the refresh lock 71046 (pid,
-user and application are shown; for example a worker `CALL` left open in psql):
-end that session. A missing or paused job, or a role that cannot
-log in: rerun `setup.sh` (or run `scripts/configure-list-refresh.sql`, see
-[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lists-refresh-after-the-commit)). A
-failing refresh: the SQLSTATE is shown; `cron.job_run_details` and the db log
-(`List refresh of ... failed`) have the run's detail.
-
-## Printer not responding
+### Printer not responding
 
 Printing is an optional profile (`printing`):
 
@@ -157,10 +124,10 @@ bash scripts/compose.sh --profile printing exec -T cups curl -f http://localhost
 Setup, the printer queue and the 503 answer of the print routes are described
 in [PRINTING.md](PRINTING.md).
 
-## Sensors show no data
+### Sensors show no data
 
 Sensors are an optional profile (`sensors`); the bridge polls the Tapo hubs
-and posts to the `ingest-sensor-readings` function:
+and posts to the `ingest-sensor-readings` function ([SENSORS.md](SENSORS.md)):
 
 ```bash
 bash scripts/compose.sh --profile sensors ps sensor-bridge
@@ -170,13 +137,25 @@ bash scripts/compose.sh --profile sensors run --rm sensor-bridge --once --dump
 ```
 
 The log has one line per event (`event=config_error`, `auth_refused`,
-`hub_offline`, `post_failed`, ...) and never the password or the key. Exit
-code 78 means a missing or invalid variable; a 401 means the ingest key is
-wrong or revoked. When the app has no Sensors screen at all, the `sensors`
+`hub_offline`, `post_failed`, ...) and never the password or the key. When the app has no Sensors screen at all, the `sensors`
 capability is off or the `functions` service was not restarted after
-`set-capability`. Details: [SENSORS.md](SENSORS.md#troubleshooting).
+`set-capability`. More:
 
-## PDF generation fails
+- **`event=config_error`, exit code 78:** a variable is missing or invalid; the line
+  names it, never its value. `--check-config` prints the settings with the secrets left out.
+- **`event=auth_refused` (401 from the function):** the key is wrong, revoked, or was minted on
+  another installation. Mint a new one ([SENSORS.md](SENSORS.md#ingest-keys)). While refused, the bridge
+  keeps its queue and tries again every 5 minutes.
+- **`event=post_failed` with 503:** migration 74 is not applied, or the function runtime or the database
+  is down (`node scripts/doctor.mjs --local`). The queue keeps the readings.
+- **`event=hub_error` or `hub_offline` for a hub:** check from the host that its address answers (`ping`,
+  and that it has a DHCP reservation); a Docker network whose subnet overlaps the LAN (`docker network
+  inspect`) hides it from containers. A wrong Tapo password shows as a login failure for that hub only.
+- **The app shows "no recent data" while the bridge is healthy:** the sensor's battery, its distance to
+  the hub, or a hub that is offline (`sensor_hubs`). `--once --dump` shows what the hub itself reports.
+- The health file: `bash scripts/compose.sh --profile sensors exec -T sensor-bridge cat /data/health.json`.
+
+### PDF generation fails
 
 ```bash
 bash scripts/compose.sh exec -T pdf-renderer node -e "fetch('http://localhost:3000/health').then(async r=>{console.log(r.status,await r.text());process.exit(r.ok?0:1)})"
@@ -193,6 +172,182 @@ one JSON line per render with `outcome` and `code` (400 invalid input, 413 body
 too large, 503 queue full or browser restarting, 504 deadline). The renderer
 sits on the internal `renderer` network, so `storage` and `kong` cannot reach
 it; only `functions` can.
+
+## Monitoring and Slack alerts
+
+- **No "Monitoring is alive" message today, or `npm run doctor` warns about the checker.** The checker is a systemd timer
+  that setup cannot install for you. Check `bash scripts/watch-timer.sh status`; if it is not installed, run
+  `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`. If it is installed, read
+  `journalctl -u <unit>.service`, where `<unit>` is the name `bash scripts/watch-timer.sh status` prints before
+  `.timer` (`warehouse-<instance>-watch`, from `WAREHOUSE_PROJECT_NAME` in `config/compose.env`), and `node scripts/watch.mjs status` (the last Slack failure is
+  shown there); `node scripts/watch.mjs test-message` posts a test message to the stored webhook.
+- **Alerts for services you stopped on purpose.** Mute before a planned stop: `node scripts/watch.mjs mute 60`
+  ([MONITORING.md](MONITORING.md#mute-and-unmute)).
+- **Nothing reaches Slack, but the checker runs.** `status` says `Slack webhook: none` when the install was made with
+  `--alert-webhook-file off`; rerun `setup.sh --operator` with your usual inputs and the webhook.
+
+## Installation and setup
+
+- **`Another operator command ... is running for this state`**: a previous
+  setup, start, backup or restore is still running, or was interrupted while
+  holding `config/operator.lock`. Wait or inspect `ps`; never delete the lock
+  file.
+- **`... is group- or world-writable` from `backup-usb.sh setup`**: the checkout was updated (`git pull`, `git checkout`)
+  under a umask other than `022`; Ubuntu's default `0002` does this. As the
+  installation user run `bash scripts/checkout-permissions.sh` (or rerun
+  `setup.sh`), then repeat the command. Update with `(umask 022; git pull
+  --ff-only)` from then on.
+- **PostgreSQL restarts with `Permission denied` on first start**: the
+  checkout was cloned under `umask 077`. Re-clone with `umask 022` into a new
+  directory and use a fresh empty state; keep the failed state for diagnosis.
+- **`Operator installation requires Linux x86-64` or `Missing prerequisite`**:
+  `scripts/check-readiness.sh` refuses other architectures and missing
+  `docker`, `node`, `npm`, `openssl` or `flock`; `doctor` additionally requires
+  Node 22.18+, a Compose plugin that accepts `up --wait-timeout` and a reachable Docker daemon.
+- **`This Docker Compose plugin does not accept up --wait-timeout`**: the
+  Compose plugin is too old for the flag the scripts use. Install a current
+  plugin from Docker's repository (any build listed under the host
+  prerequisites works); a newer major version is not a problem by itself.
+- **`node: command not found` in a new terminal or a service**: the user-owned
+  Node is only on `PATH` where it was exported; repeat the export and keep it
+  in `~/.profile`.
+- **`State directory must be mode 0700` / `must not use a symlink` / `outside
+  this checkout`**: the doctor's path rules; create the directory as shown in
+  [private inputs](OPERATOR_INSTALL.md#private-inputs).
+- **`EACCES: permission denied, mkdir '…/<name>.installing-…'` during setup**:
+  the parent of the state directory (for example `/srv/warehouse`) is not owned
+  by the installation user, typically because `sudo install -d` created it with
+  the leaf. Run `sudo chown "$(id -un):$(id -gn)" /srv/warehouse`, keep it mode
+  0755, and rerun the same setup command.
+- **`An admin already exists with a different phone`**: an active
+  administrator with another phone exists: the state directory belongs to
+  another installation (use an empty one), or you gave the wrong
+  `--admin-phone`. An administrator who was deleted or disabled does not cause
+  this; see [the last administrator](OPERATOR_INSTALL.md#authentication-and-otp-limits).
+- **`sudo: a terminal is required` or `a password is required` running setup**:
+  the command was started from a shell without a terminal. Run it in a
+  terminal window on the host or an SSH session.
+- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 17 and cannot start on that data.`**: the
+  full text is `Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path>
+  holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 17 and cannot start on that data. No database,
+  container or image was changed. Back the installation up with the release tagged migrations-pre-baseline, then reload the data into a new
+  PostgreSQL 17 database: docs/OPERATOR_INSTALL.md, "Baseline reload".` The installation still runs the earlier PostgreSQL 15
+  database. Nothing was built or started. Follow [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
+- **`scripts/migrate.sh` stops with `This database recorded migrations that are not in this release (...)`**: the full text is
+  `This database recorded migrations that are not in this release (<names>). Either it was built by an earlier migration chain
+  and cannot be migrated in place (reload it: docs/OPERATOR_INSTALL.md, "Baseline reload"), or it is newer than this checkout
+  (check out the release that recorded those migrations).` Nothing was changed. Usually the database was built before the
+  PostgreSQL 17 release: follow [Baseline reload](OPERATOR_INSTALL.md#baseline-reload). The message also appears when the
+  checkout is older than the database (check out the release that recorded those migrations) and when a migration file that
+  was applied has been deleted from the checkout (restore the file).
+- **Setup stops in a migration with a message about a pg_cron job, a database
+  webhook or a vault secret** (migrations 103 and 106, which only the release
+  tagged `migrations-pre-baseline` runs, in step 1 of the
+  [Baseline reload](OPERATOR_INSTALL.md#baseline-reload), on a database that
+  still carries them): the message names the object. Remove or change it as the
+  message says (for a pg_cron job of your own,
+  `SELECT jobid, jobname, command FROM cron.job`, run as `supabase_admin` in the SQL prompt of
+  [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation) (not the read-only one), then `SELECT cron.unschedule(<jobid>)`
+  for each job that is not `warehouse-list-refresh` or `warehouse-list-refresh-history`),
+  then run setup again. Nothing was changed.
+- **Setup stops in migration 105 with a dependency on the schemas `realtime` or `_realtime`** (only on the release tagged
+  `migrations-pre-baseline`): something of yours depends on them. Remove that dependency and run setup again.
+
+## Tunnel and public address
+
+- **External doctor fails while `--local` passes**: the tunnel service is
+  inactive, the DNS record does not point to `<tunnel-uuid>.cfargotunnel.com`,
+  the route targets the wrong loopback port, the origin redirects, or the host
+  cached an NXDOMAIN from a lookup made before the route existed (compare
+  `dig +short <hostname> @1.1.1.1` with `dig +short <hostname>`; wait for the
+  negative TTL, up to 30 minutes on a Cloudflare zone, or flush the resolver
+  cache with `resolvectl flush-caches`). Check `systemctl status` of the
+  unit and `cloudflared ... tunnel ingress validate`. Right after a key rotation
+  one failure is normal; rerun after about thirty seconds.
+- **`tunnel.sh adopt` refuses**: `certificate or key block` / `origincert`: you
+  pointed it at `cert.pem` or at a config naming it; adopt only the tunnel's
+  `config.yml` with its credentials JSON (remove the `origincert:` line) or the
+  token file. `does not route <host>`: the config belongs to another installation
+  or its `hostname:` differs from this installation's `--api-url`.
+  `not the credentials JSON of tunnel`: the `credentials-file:` is another
+  tunnel's. `already exists`: a credential is already adopted; move
+  `config/tunnel` aside to replace it.
+- **`tunnel.sh install-service`: `did not start`**: read
+  `journalctl -u warehouse-<state name>-tunnel.service -n 50`; a dated copy of the
+  previous unit is next to it in `/etc/systemd/system/` if you need to go back.
+
+## Sign-in codes
+
+- **OTP accepted by the API but not received**: verify the Flow ID (not the
+  DLT template ID), the `OTP` variable name and the sender/entity approval in
+  the MSG91 console. The per-phone, per-source and warehouse-wide caps
+  ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)) return an explicit
+  refusal, not silence.
+- **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters
+  with `warehouse_security.reset_otp_limits` (same section).
+
+## Backup, USB drive and restore
+
+- **`db:restore`, `db:restore-host` or `db:verify-restore` prints `Refusing: the backup was made on the database image
+  'supabase/postgres...'`**: the full text is `Refusing: the backup was made on the database image '<image>', which this
+  version no longer runs. Restore it with the release tagged migrations-pre-baseline, then reload the data into this
+  version (docs/OPERATOR_INSTALL.md, "Baseline reload").` The backup was made before the PostgreSQL 17 release. Nothing
+  was touched. A backup without a `database_image=` line in `metadata.txt` gets `Refusing: the backup records no
+  database_image= line in metadata.txt, so it was made before the move to PostgreSQL 17. Restore it with the release
+  tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, "Baseline reload").`
+  A backup whose `roles.txt` lists `postgres`, `supabase_auth_admin` or `dashboard_user` gets `Refusing: the backup lists
+  the role '<role>', which this version does not have: it was dumped from the earlier image, whatever its database_image=
+  line says. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version
+  (docs/OPERATOR_INSTALL.md, "Baseline reload").`
+  Follow [Restoring a pre-baseline backup](OPERATOR_INSTALL.md#restoring-a-pre-baseline-backup) and the
+  [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
+- **Nothing happens when the USB drive is attached**: check that it is
+  enrolled and visible to the host: `bash scripts/backup-usb.sh status` (on
+  VMware the drive must be connected to the VM, not the Windows host), then
+  `journalctl -u 'warehouse-usb-backup@*' -n 50`. Only exFAT partitions on USB
+  drives whose UUID is enrolled start a run; reformatting a drive changes its
+  UUID, so enroll it again.
+- **Setup succeeded but no backup was copied**: setup does not start a run for
+  a drive that is already attached. Unplug the drive (on VMware: Removable
+  Devices, Disconnect) and attach it again, then follow the run with
+  `journalctl -f -u 'warehouse-usb-backup@*'`.
+- **`backup-usb.sh`: `Could not unmount …`**: a file manager window or terminal
+  is using the drive; close it and run
+  `sudo /usr/local/libexec/warehouse-usb-backup unmount sdb1` (your partition).
+- **USB run failed: `matches its checksum but was not signed with the current
+  backup key`**: the archive is intact but its signature is from another key.
+  After you replaced the backup key this is expected for the older archives:
+  move them into another folder on the drive ([Backup key](OPERATOR_INSTALL.md#backup-key)).
+  If you did not replace the key, someone rewrote the archive and its checksum
+  on the drive: do not use it, delete it, and the next run writes it again.
+- **USB run failed: `carries no valid signature of this installation's backup
+  key; it was not opened`**: the drive holds an archive newer than every
+  archive this installation signed. Somebody put the file there:
+  remove it. The run still verifies the newest archive it signed itself.
+- **USB run failed: `does not match its checksum; it was not overwritten`**: an
+  archive on the drive is damaged. Copy the drive's other files elsewhere, run
+  `sha256sum -c` on each `.tar.sha256` to see which, and replace the drive if
+  errors recur; delete a damaged archive yourself and the next run writes it
+  again.
+- **`db:restore`: `the backup instance.json differs from this state`**: the
+  backup belongs to another installation, typically because `setup.sh` was run
+  on the new host before restoring. In-place restore only replaces the instance
+  that produced the backup. Do not edit `instance.json` to get past the check:
+  move the new state aside and follow
+  [Recover a lost host from the USB drive](OPERATOR_INSTALL.md#recover-a-lost-host-from-the-usb-drive),
+  which recreates the state from the backup instead of running setup.
+- **`db:restore-host` refuses**: every refusal happens before anything is
+  created. `backup has N migrations and this checkout only M` or `migrations this
+  backup applied differ`: check out the commit the message names
+  (`source_commit`) or a later release. `containers of … already exist`: this
+  host still runs (or ran) that installation; restore-host is for a new host,
+  use `db:restore` on the existing state instead. `already exists and is not
+  empty`: choose a new state path; restore-host never overwrites an
+  installation. `Missing checksum file` or `does not match`: use another
+  archive from the drive.
+- **A backup is refused as `no longer supported`**: only format v5 is accepted. Take a new backup with this version.
+- **`db:rotate-passwords` stopped half-way**: run it again; it works out which values the database has
+  ([Rotating the database passwords](OPERATOR_INSTALL.md#rotating-the-database-passwords)).
 
 ## Restore or recover (there is no reset)
 

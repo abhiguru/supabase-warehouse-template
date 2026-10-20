@@ -4,11 +4,11 @@ import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { isMain } from './is-main.mjs';
-import { generateSigningKeys, replaceEnvLines } from './keys.mjs';
+import { generateSigningKeys, replaceEnvLines, retireGraphqlSchema } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
-import { placeMonitoringConfig, readAlertWebhook } from './monitoring-config.mjs';
+import { LEGACY_WEBHOOK_FILE, WEBHOOK_FILE, placeWebhook, readAlertWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
   let url;
@@ -197,7 +197,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   // What the result says about it: true (an address was stored), null (removed), undefined (not given). Never the address.
   const state = resolve(stateDir);
   // `off` reports a removal only when a stored URL was there to remove.
-  const hadWebhook = Boolean(lstatSync(join(state, 'config/monitoring/alertmanager/webhook-url'), { throwIfNoEntry: false }));
+  const hadWebhook = [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE].some(file => lstatSync(join(state, file), { throwIfNoEntry: false }));
   const webhookReport = typeof webhook === 'string' ? true : webhook === null && hadWebhook ? null : undefined;
   if (state === checkout || state.startsWith(checkout + sep)) throw new Error('State directory must be outside the checkout.');
   const parent = realpathSync(resolve(state, '..'));
@@ -225,8 +225,8 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
       // A rerun may replace only the SMS provider lines, the central sign-in lines (with the key file) and
-      // KONG_HTTP_PORT, add generated values that are missing (database passwords, backup key) and render the
-      // monitoring files and the alert webhook; identity, paths and signing keys are preserved.
+      // KONG_HTTP_PORT, add generated values that are missing (database passwords, backup key) and place the
+      // alert webhook; identity, paths and signing keys are preserved.
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;
@@ -269,20 +269,31 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before the database starts, because an older backup carries none.
       const withDbValues = addMissingDbValues(readFileSync(envPath, 'utf8'));
       if (withDbValues.added.length) replaceFileAtomically(envPath, withDbValues.text);
+      // An installation made before migration 103 lists the GraphQL schema for PostgREST; the old default
+      // loses it (a list the operator changed is kept). setup.sh then recreates rest with the new value.
+      const withoutGraphql = retireGraphqlSchema(readFileSync(envPath, 'utf8'));
+      const restSchemasUpdated = withoutGraphql !== readFileSync(envPath, 'utf8');
+      if (restSchemasUpdated) replaceFileAtomically(envPath, withoutGraphql);
+      // Database logins of removed components (the Auth service, the monitoring login) left a password line in
+      // older states. Nothing reads them, so a rerun of setup (every facility reload runs it) removes them.
+      const retiredKeys = ['DB_PASSWORD_AUTH', 'DB_PASSWORD_MONITORING'];
+      const beforeRetire = readFileSync(envPath, 'utf8');
+      const retiredKeysRemoved = retiredKeys.filter(key => new RegExp(`^${key}=`, 'm').test(beforeRetire));
+      if (retiredKeysRemoved.length) replaceFileAtomically(envPath, beforeRetire.split('\n').filter(line => !retiredKeys.some(key => line.startsWith(`${key}=`))).join('\n'));
+      // A list the operator changed by hand is kept, but one that still names the removed schema breaks PostgREST.
+      const graphqlSchemaKept = /^PGRST_DB_SCHEMAS=.*\bgraphql_public\b/m.test(readFileSync(envPath, 'utf8'));
       // An installation made before signed backups gets its backup key here;
       // an existing key is never replaced.
       const backupKeyCreated = createBackupKey(join(state, 'config'));
-      // The per-installation monitoring files and the textfile directory (docs/MONITORING.md). A state made
-      // before they existed gets them here; unchanged files are left alone.
-      const project = readFileSync(envPath, 'utf8').match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1];
-      const monitoringUpdated = placeMonitoringConfig(state, { project, webhook });
-      // The gateway port is written last: a refusal above (state faults, the monitoring render) leaves it unchanged,
+      // The Slack webhook (docs/MONITORING.md). One stored at the old path under config/monitoring moves to config/slack-webhook-url.
+      const placed = placeWebhook(state, webhook);
+      // The gateway port is written last: a refusal above (state faults, the webhook) leaves it unchanged,
       // so the rerun after the fix still reports the change and prints the tunnel reminder.
       if (newPortText !== null) {
         replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated, webhook: webhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -297,13 +308,13 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     capabilities: { sensors: false, printing: false } };
   const values = { AUTH_MODE: 'operator', APP_ENV: 'production', BIND_ADDRESS: '127.0.0.1',
     SMS_PRODUCTION_MODE: 'true', SUPABASE_PUBLIC_URL: canonical, API_EXTERNAL_URL: canonical,
-    SITE_URL: application, ADDITIONAL_REDIRECT_URLS: application, CORS_ALLOWED_ORIGIN: application,
+    SITE_URL: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { KONG_HTTP_PORT: port }),
     SECRET_KEY_BASE: randomBytes(64).toString('hex'), VAULT_ENC_KEY: randomBytes(16).toString('hex'), ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
-  for (const key of ['DASHBOARD_PASSWORD', 'CUPS_ADMIN_PASSWORD']) values[key] = randomBytes(32).toString('hex');
+  values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
   mkdirSync(stage, { mode: 0o700 });
@@ -315,7 +326,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     if (central?.keyFile) placeCentralKeyFile(join(stage, 'public'), central.keyFile);
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
     createBackupKey(join(stage, 'config'));
-    placeMonitoringConfig(stage, { project: values.WAREHOUSE_PROJECT_NAME, webhook });
+    placeWebhook(stage, webhook);
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
   return { created: true, state, manifest, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
@@ -340,13 +351,21 @@ if (isMain(import.meta.url)) {
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
-            : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
-              : 'Preserved existing operator state unchanged.');
+            : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).'
+              : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
+                : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
+                  : 'Preserved existing operator state unchanged.');
+    // The first message above names only one change; the schema list is always reported, even beside another change.
+    if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
+      console.log('Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).');
+    }
+    if (result.graphqlSchemaKept) console.log('Warning: PGRST_DB_SCHEMAS in config/compose.env still names graphql_public, which migration 103 removes. PostgREST will fail to find that schema; remove it from the list.');
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');
     if (result.dbValuesAdded?.length) console.log(`Added ${result.dbValuesAdded.join(', ')} to the existing operator state: every database login now gets its own password (setup applies them to the database).`);
-    if (result.monitoringUpdated && !result.created) console.log('Updated the monitoring files in the state (docs/MONITORING.md).');
-    if (result.webhook) console.log('Stored the Slack webhook for Alertmanager (mode 0600, in the state).');
-    else if (result.webhook === null) console.log('Removed the Slack webhook: Alertmanager keeps alerts on this host only.');
+    if (result.monitoringUpdated && !result.created && result.webhook === undefined) console.log('Updated the monitoring files in the state: the Slack webhook is now config/slack-webhook-url (docs/MONITORING.md).');
+    if (result.monitoringCleaned && !result.created) console.log('Removed the old Prometheus and Alertmanager files under config/monitoring, metrics and data/alertmanager.');
+    if (result.webhook) console.log('Stored the Slack webhook for the monitoring checker (mode 0600, in the state).');
+    else if (result.webhook === null) console.log('Removed the Slack webhook: the monitoring checker keeps alerts on this host only.');
     if (result.gatewayPortChanged) {
       const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^KONG_HTTP_PORT=(.*)$/m)?.[1];
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);

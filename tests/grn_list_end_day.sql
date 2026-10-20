@@ -153,8 +153,8 @@ FROM (SELECT public.get_grn_list(:'end_day', :'end_day', 'date', 'desc', 50, 0,
 RESET ROLE;
 SELECT id AS admin_profile FROM public.user_profiles WHERE mobile = '919888888561' \gset
 SELECT id AS huge_lot FROM public.goodsreceived_trl WHERE gr_id = (SELECT id FROM public.goodsreceived WHERE gr_no = 'GLEW1') \gset
--- (A dispatch this size cannot be made through create_dispatch_with_stock_check: the refresh of
--- mv_dispatch_list stops with "integer out of range". The rows are written directly with the triggers off,
+-- (A dispatch this size cannot be made through create_dispatch_with_stock_check: its figures stop with
+-- "integer out of range". The rows are written directly with the triggers off,
 -- because the point here is get_dispatch_list_with_items.)
 SET LOCAL session_replication_role = replica;
 INSERT INTO public.dispatch(disp_no, disp_date, customer_id, customer_name)

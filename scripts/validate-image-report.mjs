@@ -7,9 +7,9 @@
 //     The same checks, but a row (or a missing inventory) may be covered by a
 //     valid entry of the exception ledger (docker/image-exceptions.json) for
 //     RECIPE: the Dockerfile path of a built image (docker/<name>/Dockerfile) or
-//     the pinned reference of a pulled one. scripts/scan-images.sh runs it twice
-//     per image: on the --ignore-unfixed report (rows with a listed fix) and on
-//     the full report (rows with no fix as well).
+//     the pinned reference of a pulled one. scripts/scan-images.sh runs it once
+//     per image, on the full report (rows with a listed fix and rows with no
+//     fix): the no-fix rule below keeps a fixable row from being covered.
 //
 // Ledger rules (an invalid entry rejects the whole ledger, used or not):
 // - every entry names a recipe, a class, an owner, a reason, the date the owner

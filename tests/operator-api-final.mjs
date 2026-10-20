@@ -71,6 +71,9 @@ const customers = await api('/rest/v1/customers?select=id,name', admin);
 assert.ok(customers.ok);
 const a = customers.data.find(row => row.name === 'Backend Test Customer A').id;
 const b = customers.data.find(row => row.name === 'Backend Test Customer B').id;
+// Customer B's own cart: the Realtime test used to create it between the core test and this one.
+const cartB = await rpc('get_or_create_cart', tokenB, { p_customer_id: b });
+assert.ok(cartB.ok && typeof cartB.data === 'string', 'B cart created');
 const orders = await api('/rest/v1/orders?select=id,customer_id', admin);
 assert.ok(orders.ok && orders.data.some(row => row.customer_id === a) && orders.data.some(row => row.customer_id === b),
   'staff queue sees both fictional customers');

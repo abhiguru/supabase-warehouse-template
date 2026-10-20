@@ -3,7 +3,6 @@
 
 import { corsHeaders, handleCors } from '../_shared/cors.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
-import { createClient } from '../vendor/supabase-js.mjs'
 import { submittedJob } from '../_shared/ipp-validate.ts'
 import { Buffer } from 'node:buffer'
 
@@ -12,14 +11,7 @@ Deno.serve(async (req) => {
   if (corsResponse) return corsResponse;
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-    const authHeader = req.headers.get('Authorization');
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
-
-    const userProfile = await validatePrintAccess(req, supabase);
+    const userProfile = await validatePrintAccess(req);
 
     const { content, printer_name = 'default', title = 'Print Job' } = await req.json();
 

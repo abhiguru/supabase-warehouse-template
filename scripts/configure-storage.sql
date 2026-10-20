@@ -3,11 +3,31 @@ BEGIN;
 INSERT INTO storage.buckets(id,name,public,file_size_limit,allowed_mime_types) VALUES
   ('documents','documents',false,52428800,ARRAY['application/pdf']),
   ('grn-images','grn-images',false,10485760,ARRAY['image/jpeg','image/png','image/webp']),
-  ('dispatch-images','dispatch-images',false,10485760,ARRAY['image/jpeg','image/png','image/webp']),
-  ('customer-images','customer-images',false,10485760,ARRAY['image/jpeg','image/png','image/webp'])
+  ('dispatch-images','dispatch-images',false,10485760,ARRAY['image/jpeg','image/png','image/webp'])
 ON CONFLICT(id) DO NOTHING;
+-- Earlier versions also created the bucket customer-images. Nothing uses it (GRN and dispatch
+-- photos live in grn-images and dispatch-images). An existing install loses it here, but only
+-- while it is empty: a file in it is never deleted by this script.
+DO $$ DECLARE has_uploads boolean := false; BEGIN
+  IF EXISTS (SELECT 1 FROM storage.buckets WHERE id='customer-images') THEN
+    IF EXISTS (SELECT 1 FROM storage.objects WHERE bucket_id='customer-images') THEN
+      RAISE EXCEPTION 'The bucket customer-images still holds files; move or delete them, then run setup again';
+    END IF;
+    IF to_regclass('storage.s3_multipart_uploads') IS NOT NULL THEN
+      EXECUTE 'SELECT EXISTS (SELECT 1 FROM storage.s3_multipart_uploads WHERE bucket_id = $1)' INTO has_uploads USING 'customer-images';
+      IF has_uploads THEN
+        RAISE EXCEPTION 'The bucket customer-images still holds unfinished uploads; finish or delete them, then run setup again';
+      END IF;
+    END IF;
+    -- Storage guards storage.buckets with a statement trigger (protect_buckets_delete) that refuses
+    -- every DELETE unless this setting is on. It is on for this transaction only, for this one delete.
+    PERFORM set_config('storage.allow_delete_query','true',true);
+    DELETE FROM storage.buckets WHERE id='customer-images';
+    PERFORM set_config('storage.allow_delete_query','false',true);
+  END IF;
+END $$;
 DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM storage.buckets WHERE id IN ('documents','grn-images','dispatch-images','customer-images') AND public) THEN
+  IF EXISTS (SELECT 1 FROM storage.buckets WHERE id IN ('documents','grn-images','dispatch-images') AND public) THEN
     RAISE EXCEPTION 'A starter bucket is public; review it before continuing';
   END IF;
 END $$;
@@ -21,17 +41,17 @@ ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS starter_staff_images ON storage.objects;
 DROP POLICY IF EXISTS starter_manager_images_select ON storage.objects;
 CREATE POLICY starter_manager_images_select ON storage.objects FOR SELECT TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_insert ON storage.objects;
 CREATE POLICY starter_manager_images_insert ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_update ON storage.objects;
 CREATE POLICY starter_manager_images_update ON storage.objects FOR UPDATE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'))
-WITH CHECK (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'))
+WITH CHECK (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor'));
 DROP POLICY IF EXISTS starter_manager_images_delete ON storage.objects;
 CREATE POLICY starter_manager_images_delete ON storage.objects FOR DELETE TO authenticated
-USING (bucket_id IN ('grn-images','dispatch-images','customer-images') AND warehouse_security.active_role() IN ('admin','supervisor')
+USING (bucket_id IN ('grn-images','dispatch-images') AND warehouse_security.active_role() IN ('admin','supervisor')
   AND NOT EXISTS (SELECT 1 FROM public.grn_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.dispatch_images i WHERE i.storage_path=name)
   AND NOT EXISTS (SELECT 1 FROM public.goodsreceived g WHERE g.gr_image_url IS NOT NULL AND position(name IN g.gr_image_url) > 0)

@@ -1,11 +1,10 @@
-# Demo invoice rules
+# Invoice rules
 
-This describes the existing database contract in `calculate_invoice_duration`,
+This describes the database contract in `calculate_invoice_duration`,
 `build_invoice_recalculation_rows` and `save_invoice(jsonb)`. The invoice form's preview
-(`generate_invoice_data_for_grn`) is built by `build_invoice_form_lines` (migration 102): it follows the same rules and calls `calculate_invoice_duration` for the duration, but never reads stored invoice lines (`invoice_trl`). It is a compatibility
-reference for the demo, not a new pricing policy. The API fixtures in
-`tests/review-core.mjs` and boundary fixtures in `tests/invoice_duration.sql`
-assert explicit expected values.
+(`generate_invoice_data_for_grn`) is built by `build_invoice_form_lines` (migration 102): it follows the same rules and
+calls `calculate_invoice_duration` for the duration, but never reads stored invoice lines (`invoice_trl`). The boundary
+fixtures in `tests/invoice_duration.sql` assert explicit expected values.
 
 ## Duration and monthly charges
 
@@ -13,8 +12,7 @@ The receipt date and the dispatch date are read as calendar dates in India
 (`Asia/Kolkata`), whatever time zone the database session uses (migration 41,
 `warehouse_security.business_date`; there is no per-facility time-zone setting
 yet). A receipt recorded at 02:00 on 1 April in India is stored as 20:30 UTC on
-31 March and counts as 1 April. Before migration 41 the dates were taken in the
-session time zone (UTC), which added a day to such a receipt. Legacy mode counts
+31 March and counts as 1 April. Legacy mode counts
 dispatch date minus GRN date; standard mode includes both dates by adding one.
 Billable days have a minimum of one. Duration is half-month increments of 15
 days, with a minimum of one whole monthly period:
@@ -198,11 +196,7 @@ header's single tax ceiling.
 
 Six columns of `invoice` are internal to the warehouse: `discount_reason`,
 `discount_set_by`, `discount_set_at`, `zero_charge_reason`,
-`zero_charge_set_by` and `zero_charge_set_at`. Until migration 48 a customer
-account could read them for its own invoices with a direct table call
-(`GET /rest/v1/invoice?select=discount_reason`), although `get_invoice_detail`
-hid them, because every app role is the one database role `authenticated` and
-that role could select the whole table.
+`zero_charge_set_by` and `zero_charge_set_at`.
 
 Since migration 48 the app role's SELECT on `invoice` is a grant on the other
 columns only:
@@ -241,8 +235,7 @@ a year that has none, so numbering starts again each April. Numbers below 1 in
 the data do not count. Without a year (or with NULL)
 it uses the financial year of today's date in India (`Asia/Kolkata`), which
 turns at 18:30 UTC on 31 March. The app passes the financial year of the
-invoice date. Before migration 48 the function took no argument and returned
-the highest number over all years plus 1.
+invoice date.
 
 **Range (migration 73).** An invoice number runs from 1 to 99999999
 (`INVOICE_NUMBER_MAX`, eight digits so that year-prefixed numbers such as
@@ -302,4 +295,4 @@ mobile client does. The legacy overload accepting `p_unit_price_monthly` and
 `p_unit_price_one_time` fails the existing required `price_type` constraint and
 is unsupported. No combined-rate semantics or additional grants are introduced.
 Tax jurisdiction, discount application, payments and production billing approval
-remain maintainer/business-owner decisions outside this developer demo.
+remain business-owner decisions.

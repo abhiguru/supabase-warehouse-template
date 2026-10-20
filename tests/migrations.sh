@@ -1,54 +1,122 @@
 #!/usr/bin/env bash
 # Tests ONLY a newly created, network-isolated, disposable database. No host ports.
+#
+# The database is the shipped one: the official Postgres image of scripts/db-image.sh, started as production starts it
+# (POSTGRES_USER=supabase_admin, en_US.UTF-8, the `-c` flags of docker/docker-compose.override.yml, the init scripts
+# 00-bootstrap.sql and roles.sql). The order is setup.sh's: database, migrations (the baseline, run twice), then the real
+# Storage 1.80.2 on a throwaway --internal network (DB_SUPER_USER=supabase_storage_admin, DB_INSTALL_ROLES=false), then
+# scripts/configure-storage.sql, then the SQL suites. No schema fixture stands in for Storage.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# new_name, create_net, run_storage and storage_image (throwaway containers named slim-tool-*, removed by their own code).
+source "$ROOT/scripts/baseline/lib.sh"
 suffix=$(openssl rand -hex 6)
 container="warehouse-migrations-$suffix"
+net=''
 created=false
 cleanup() {
-  if [[ "$created" == true ]]; then docker rm -f "$container" >/dev/null; fi
+  if [[ "$created" == true ]]; then docker rm -fv "$container" >/dev/null 2>&1 || true; fi
+  remove_storage_containers
+  if [[ -n "$net" ]]; then docker network rm "$net" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
+# The library settings the shipped database runs with (docker/docker-compose.override.yml): the same `-c` flags are passed here,
+# so the harness tests what ships.
+shipped_flags=()
+while IFS= read -r flag; do
+  shipped_flags+=(-c "${flag#-c }")
+done < <(
+  sed -n 's/^ *\(-c \(shared_preload_libraries\|wal_level\|timezone\|log_timezone\|extra_float_digits\|pg_stat_statements\.[a-z_]*\)=.*\)$/\1/p' "$ROOT/docker/docker-compose.override.yml")
+[[ " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements\ * || " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements ]] || { echo 'shared_preload_libraries is not exactly pg_stat_statements in docker-compose.override.yml' >&2; exit 1; }
+[[ " ${shipped_flags[*]} " == *wal_level=replica* ]] || { echo 'No wal_level=replica in docker-compose.override.yml' >&2; exit 1; }
+db_image="$(bash "$ROOT/scripts/db-image.sh")"
+# Random service passwords for the init script roles.sql (it needs 32 to 128 distinct characters of [A-Za-z0-9_-]).
+net=$(create_net)
 docker run -d --name "$container" --label purpose=warehouse-migration-test \
-  --network none --memory 1g --cpus 1 \
+  --network "$net" --memory 1g --cpus 1 \
   --tmpfs /var/lib/postgresql/data:rw,size=768m \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
-  -e POSTGRES_PASSWORD=disposable-test-database-only \
-  supabase/postgres:15.8.1.135@sha256:ee680a0afebe1a5e95614fdea671c01a264e58f52de6c429c17a394f46dec2c6 >/dev/null
+  -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \
+  -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" -e DB_PASSWORD_POOLER="$(openssl rand -hex 32)" \
+  -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
+  -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
+  -v "$ROOT/docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro" \
+  "$db_image" \
+  postgres "${shipped_flags[@]}" >/dev/null
 created=true
 ready=false
 for ((i=0; i<60; i++)); do
-  if docker exec "$container" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
+  # The image's temporary server answers while the init scripts still run: wait for the end of init, then for the real server.
+  init_log=$(docker logs "$container" 2>&1 || true)
+  if [[ "$init_log" == *'PostgreSQL init process complete; ready for start up'* ]] \
+    && docker exec "$container" pg_isready -U supabase_admin -d postgres -h 127.0.0.1 >/dev/null 2>&1; then ready=true; break; fi
   sleep 2
 done
 [[ "$ready" == true ]] || { echo 'Test database did not start' >&2; exit 1; }
-# docker/volumes/db/webhooks.sql is an init script of the real database container (pg_net, the schema
-# supabase_functions, the event trigger that grants on net). This plain publisher image has none of it, so it
-# is applied here, before the migrations, to give migration 93 and tests/pg_net_grants.sql what an install holds.
-# In a real container the image's own migrations run after the init scripts and change what webhooks.sql set up
-# for pg_net: they make net.http_get and net.http_post SECURITY INVOKER and executable by PUBLIC, and give USAGE on
-# net to anon and authenticated again. The two that concern pg_net are run here too, in the same order, from the
-# image's own directory, so that the grants are the ones an installation really starts from.
-pg_net_image_migration() {
-  docker exec -e PGPASSWORD=disposable-test-database-only "$container" \
-    psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -f "/docker-entrypoint-initdb.d/migrations/$1"
-}
-docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
-  psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/docker/volumes/db/webhooks.sql"
-pg_net_image_migration 20220713082019_pg_cron-pg_net-temp-perms-fix.sql
-pg_net_image_migration 20250220051611_pg_net_perms_fix.sql
-for pass in 1 2; do
-  echo "Migration ledger pass $pass (second pass must skip unchanged files)"
-  node "$ROOT/scripts/migration-plan.mjs" |
-    docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1
-done
+mig_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+# The migration plan of a directory that holds a `migrations/` folder.
+plan_of() { PLAN_MODULE="$ROOT/scripts/migration-plan.mjs" PLAN_ROOT="$1" node -e "import(process.env.PLAN_MODULE).then(m => process.stdout.write(m.migrationPlan(process.env.PLAN_ROOT)))"; }
+
+# The ledger, run twice: the first pass applies the baseline, the second must skip it.
+first=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$first" | tail -20 >&2; echo 'The first ledger pass failed.' >&2; exit 1; }
+[[ "$first" == *'Applying: 00000000000000_baseline.sql'* ]] || { echo "The first ledger pass did not apply the baseline: $first" >&2; exit 1; }
+second=$(plan_of "$ROOT" | mig_psql 2>&1) || { echo "$second" | tail -20 >&2; echo 'The second ledger pass failed.' >&2; exit 1; }
+[[ "$second" == *'Already applied: 00000000000000_baseline.sql'* && "$second" != *'Applying:'* ]] || { echo "The second ledger pass must skip the baseline: $second" >&2; exit 1; }
+# The ledger holds exactly the files of migrations/ (the baseline today, more once a migration follows it).
+[[ "$(mig_psql -At -c 'SELECT string_agg(name, $$,$$ ORDER BY name) FROM warehouse_migrations.applied')" == "$(cd "$ROOT/migrations" && ls -1 *.sql | LC_ALL=C sort | paste -sd,)" ]] || { echo 'The ledger does not hold exactly the migration files.' >&2; exit 1; }
+migration_count=$(ls -1 "$ROOT"/migrations/*.sql | wc -l)
+
+# A changed baseline must fail closed: a space appended to a temporary copy.
+changed=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-changed.XXXXXX")
+mkdir "$changed/migrations"
+cp "$ROOT/migrations/00000000000000_baseline.sql" "$changed/migrations/"
+printf ' ' >> "$changed/migrations/00000000000000_baseline.sql"
+if err=$(plan_of "$changed" | mig_psql 2>&1 >/dev/null); then echo 'A changed baseline was accepted.' >&2; exit 1; fi
+[[ "$err" == *'Applied migration changed: 00000000000000_baseline.sql'* ]] || { echo "A changed baseline was refused, but not with the checksum message: $err" >&2; exit 1; }
+rm -rf "$changed"
+
+# A database that recorded a migration this release does not contain (the old chain, or a deleted file) is refused, with the
+# pointer to the reload section, and nothing is changed.
+mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
+if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'A ledger with an unknown migration was accepted.' >&2; exit 1; fi
+[[ "$err" == *'recorded migrations that are not in this release (00000000000107_gone.sql)'* && "$err" == *'docs/OPERATOR_INSTALL.md, "Baseline reload"'* && "$err" == *'newer than this checkout'* ]] || { echo "The unknown-migration refusal is not the expected one: $err" >&2; exit 1; }
+mig_psql -c "DELETE FROM warehouse_migrations.applied WHERE name = '00000000000107_gone.sql'"
+plan_of "$ROOT" | mig_psql >/dev/null
+
+# The refusal happens before any file runs: a checkout that holds the baseline and a further migration, against a ledger with
+# an unknown name, creates nothing from that further migration.
+probe=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-probe.XXXXXX")
+mkdir "$probe/migrations"
+cp "$ROOT/migrations/00000000000000_baseline.sql" "$probe/migrations/"
+printf 'CREATE TABLE public.ledger_guard_probe (id int);\n' > "$probe/migrations/00000000000111_probe.sql"
+mig_psql -c "INSERT INTO warehouse_migrations.applied(name, checksum) VALUES ('00000000000107_gone.sql', 'x')"
+if plan_of "$probe" | mig_psql >/dev/null 2>&1; then echo 'A ledger with an unknown migration was accepted next to a new migration.' >&2; exit 1; fi
+[[ "$(mig_psql -At -c "SELECT to_regclass('public.ledger_guard_probe') IS NULL")" == t ]] || { echo 'The refusal ran a migration file before it stopped.' >&2; exit 1; }
+mig_psql -c "DELETE FROM warehouse_migrations.applied WHERE name = '00000000000107_gone.sql'"
+rm -rf "$probe"
+
+# A database with application tables and an empty ledger (untracked) is refused too, and the ledger stays empty.
+mig_psql -c "CREATE TABLE warehouse_migrations.applied_saved AS SELECT * FROM warehouse_migrations.applied; DELETE FROM warehouse_migrations.applied;"
+if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'An untracked database was accepted.' >&2; exit 1; fi
+[[ "$err" == *'Refusing to initialize an existing, untracked warehouse database'* ]] || { echo "The untracked-database refusal is not the expected one: $err" >&2; exit 1; }
+[[ "$(mig_psql -At -c 'SELECT count(*) FROM warehouse_migrations.applied')" == 0 ]] || { echo 'The untracked-database refusal wrote to the ledger.' >&2; exit 1; }
+mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_migrations.applied_saved; DROP TABLE warehouse_migrations.applied_saved;"
+
+# Storage, as setup.sh does after the migrations: the real Storage 1.80.2 builds its own tables in the schema the bootstrap made.
+run_storage "$container" "$net" "$(storage_image)" >/dev/null
+[[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
+# The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
+[[ "$(mig_psql -At -c "SELECT bool_and(has_schema_privilege(r, 'storage', 'USAGE')) FROM unnest(ARRAY['anon','authenticated','service_role']) r")" == t ]] || { echo 'An API role cannot use the storage schema.' >&2; exit 1; }
+# Storage 1.80.2 guards storage.objects and storage.buckets with a statement trigger that refuses every DELETE unless
+# storage.allow_delete_query is 'true', also a DELETE that row-level security would leave with 0 rows. The SQL suites below delete
+# as staff to prove that the policies hide the rows, so the setting is on for them (database level of this disposable database
+# only); it is reset before the customer-images block, which must see the guard as it is.
+mig_psql -c "ALTER DATABASE postgres SET storage.allow_delete_query = 'true'"
 test_files=(
-  "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
+  "$ROOT/tests/baseline_roles.sql" "$ROOT/tests/baseline_owners.sql" "$ROOT/tests/security_baseline.sql" "$ROOT/tests/operator_auth.sql"
   "$ROOT/tests/invoice_duration.sql" "$ROOT/tests/core_pilot.sql"
-  "$ROOT/tests/storage_policy_fixture.sql"
   "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql"
-  "$ROOT/scripts/configure-list-refresh.sql" "$ROOT/scripts/configure-list-refresh.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
   "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql"
@@ -79,8 +147,9 @@ test_files=(
   "$ROOT/tests/sensor_ingest.sql"
   "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql"
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql"
-  "$ROOT/tests/list_refresh_worker.sql"
-  "$ROOT/tests/pg_net_grants.sql"
+  "$ROOT/tests/list_refresh_removed_106.sql" "$ROOT/tests/invoice_list_live.sql"
+  "$ROOT/tests/realtime_removed_105.sql"
+  "$ROOT/tests/unused_extensions_absent.sql" "$ROOT/tests/fingerprint_collation.sql" "$ROOT/tests/jwt_sign_108.sql"
   "$ROOT/tests/catalog_receipt_width.sql" "$ROOT/tests/central_refusal_no_write.sql"
   "$ROOT/tests/grn_receipt_pages_98.sql" "$ROOT/tests/customer_dispatch_items_order_99.sql"
   "$ROOT/tests/grn_heavy_dispatch.sql"
@@ -91,31 +160,31 @@ for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 
-# Migration 93 (TW-BE-004) on an install that still holds the grants of the template and the image: anon and
-# authenticated have USAGE on net, and net.http_get / net.http_post are executable by PUBLIC (so by them), PUBLIC
-# has USAGE too (pg_net grants it), and the event trigger function is the image's own, which grants anon and
-# authenticated again. That state is rebuilt here from the image's migration, shown to be open, and then the
-# migration and tests/pg_net_grants.sql must close it. The first command also proves the migration does nothing
-# and does not fail where the schema net does not exist.
-pg_net_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
-no_net=$({ echo 'BEGIN; DROP EXTENSION pg_net;'
-  cat "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
-  echo "SELECT CASE WHEN to_regnamespace('net') IS NULL THEN 'no-op' ELSE 'net came back' END;"
-  echo 'ROLLBACK;'; } | pg_net_psql)
-[[ "${no_net##*$'\n'}" = no-op ]] || { echo 'Migration 93 must do nothing, without failing, where the schema net does not exist.' >&2; exit 1; }
-pg_net_image_migration 20250220051611_pg_net_perms_fix.sql
-pg_net_psql -c 'DROP EXTENSION pg_net' -c 'CREATE EXTENSION pg_net SCHEMA extensions'
-pg_net_psql -c 'GRANT EXECUTE ON FUNCTION supabase_functions.http_request() TO anon, authenticated'
-[[ "$(pg_net_psql -c "SELECT has_function_privilege('anon','net.http_get(text,jsonb,jsonb,integer)','EXECUTE')
-    AND has_function_privilege('authenticated','net.http_post(text,jsonb,jsonb,jsonb,integer)','EXECUTE')
-    AND has_schema_privilege('anon','net','USAGE') AND has_schema_privilege('authenticated','net','USAGE')
-    AND has_function_privilege('anon','supabase_functions.http_request()','EXECUTE')")" = t ]] || {
-  echo 'The test could not rebuild the grants of the template and the image.' >&2; exit 1; }
-pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
-docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
-# A second run of the migration, where it has nothing left to do, changes nothing.
-pg_net_psql < "$ROOT/migrations/00000000000093_pg_net_least_privilege.sql"
-docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/pg_net_grants.sql"
+
+mig_psql -c "ALTER DATABASE postgres RESET storage.allow_delete_query"
+
+# The bucket customer-images (no longer created) is removed by configure-storage.sql while it is empty,
+# and configure stops, deleting nothing, while it holds a file.
+legacy_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+# No customer-images bucket: configure must be a no-op, not a refused DELETE.
+legacy_psql < "$ROOT/scripts/configure-storage.sql" >/dev/null
+legacy_psql -c "INSERT INTO storage.buckets(id,name,public) VALUES ('customer-images','customer-images',false)" >/dev/null
+legacy_psql < "$ROOT/scripts/configure-storage.sql" >/dev/null
+[[ "$(legacy_psql -c "SELECT count(*) FROM storage.buckets WHERE id='customer-images'")" = 0 ]] \
+  || { echo 'configure-storage.sql must delete an empty customer-images bucket.' >&2; exit 1; }
+[[ "$(legacy_psql -c "SELECT count(*) FROM storage.buckets WHERE id IN ('documents','grn-images','dispatch-images')")" = 3 ]] \
+  || { echo 'configure-storage.sql must keep the three real buckets.' >&2; exit 1; }
+legacy_psql -c "INSERT INTO storage.buckets(id,name,public) VALUES ('customer-images','customer-images',false); INSERT INTO storage.objects(bucket_id,name) VALUES ('customer-images','c1/photo.jpg')" >/dev/null
+if refused=$(legacy_psql < "$ROOT/scripts/configure-storage.sql" 2>&1); then
+  echo 'configure-storage.sql must refuse while customer-images holds a file.' >&2; exit 1
+fi
+[[ "$refused" == *'customer-images still holds files'* ]] || { echo "Wrong refusal from configure-storage.sql: $refused" >&2; exit 1; }
+[[ "$(legacy_psql -c "SELECT count(*) FROM storage.buckets WHERE id='customer-images'")" = 1 \
+  && "$(legacy_psql -c "SELECT count(*) FROM storage.objects WHERE bucket_id='customer-images'")" = 1 ]] \
+  || { echo 'A refused configure must delete nothing.' >&2; exit 1; }
+legacy_psql -c "SELECT set_config('storage.allow_delete_query','true',false); DELETE FROM storage.objects WHERE bucket_id='customer-images'; DELETE FROM storage.buckets WHERE id='customer-images'" >/dev/null
+
+
 for pass in 1 2; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only \
     -e SMS_PROVIDER=msg91 -e SMS_PRODUCTION_MODE=true \
@@ -150,11 +219,6 @@ SQL
   echo 'The signing secret is held as a database or role setting after the migrations.' >&2; exit 1; }
 [[ "$(printf '%s\n' "SELECT count(*) FROM pg_proc WHERE prosrc LIKE '%app.settings.jwt_secret%'" | jwt_sql)" = 0 ]] || {
   echo 'A database function reads the signing secret setting.' >&2; exit 1; }
-# Migration 92 on a database that holds the setting at database level and for three kinds of role setting.
-plant_secret_settings
-jwt_sql < "$ROOT/migrations/00000000000092_jwt_secret_guc.sql"
-[[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
-  echo 'Migration 92 must remove the signing secret setting from the database and from every role.' >&2; exit 1; }
 # The auth configuration below must remove it as well, in case it came back (a restored or hand-edited database).
 plant_secret_settings
 for pass in 1 2; do
@@ -234,11 +298,16 @@ configure_central -v central_issuer=
 # The database container needs no CENTRAL_ISSUER of its own.
 if docker exec "$container" printenv CENTRAL_ISSUER >/dev/null 2>&1; then echo 'The test database must not carry CENTRAL_ISSUER.' >&2; exit 1; fi
 
+
+# None of the roles of the earlier image exists (tests/baseline_roles.sql holds the exact set): a state assertion that
+# configure-db-roles.sql below must not change either.
+removed_roles_state="SELECT count(*) FROM pg_roles WHERE rolname IN ('postgres','dashboard_user','supabase_read_only_user','supabase_replication_admin','supabase_realtime_admin','supabase_auth_admin','supabase_functions_admin','supabase_etl_admin','warehouse_list_refresher','warehouse_monitoring')"
+[[ "$(mig_psql -At -c "$removed_roles_state")" == '0' ]] || { echo 'The baseline has a role of the earlier image.' >&2; exit 1; }
+
 # scripts/configure-db-roles.sql (TW-BE-002, migration 94): through the prelude of
 # scripts/db-roles.mjs, as scripts/db-roles.sh sends it. Each login stores exactly the
 # SCRAM verifier it was given (never a password); a rerun applies again; a missing or
-# plaintext value changes nothing; a monitoring role that lost its membership (what a
-# restore replays) gets it back. Logins themselves are proven over the network by
+# plaintext value changes nothing; no role of the earlier image is created or needed. Logins themselves are proven over the network by
 # `npm run test:db-roles` in the operator-install job: this container has none.
 roles_sql() {
   docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "$1"
@@ -251,16 +320,16 @@ roles_env=$(mktemp "${TMPDIR:-/tmp}/warehouse-db-roles.XXXXXX")
 {
   printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   for name in $(node "$ROOT/scripts/db-roles.mjs" names); do
-    if [[ "$name" == REALTIME_DB_ENC_KEY ]]; then printf '%s=%s\n' "$name" "$(openssl rand -hex 8)"; else printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"; fi
+    printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
   done
 } > "$roles_env"
-stored_verifiers="SELECT string_agg(rolname || ' ' || rolcanlogin || ' ' || rolpassword, E'\n' ORDER BY rolname) FROM pg_authid WHERE rolname IN ('authenticator','supabase_storage_admin','supabase_auth_admin','pgbouncer','warehouse_monitoring')"
+stored_verifiers="SELECT string_agg(rolname || ' ' || rolcanlogin || ' ' || rolpassword, E'\n' ORDER BY rolname) FROM pg_authid WHERE rolname IN ('authenticator','supabase_storage_admin','pgbouncer')"
 for pass in 1 2; do
   prelude=$(node "$ROOT/scripts/db-roles.mjs" prelude "$roles_env")
   apply_db_roles <<< "$prelude"
   expected=$(printf '%s\n' "$prelude" | sed -n "s/^\\\\set \\([a-z_]*\\)_verifier '\\(.*\\)'$/\\1 \\2/p" |
-    sed -e 's/^authenticator /authenticator true /' -e 's/^storage /supabase_storage_admin true /' -e 's/^auth /supabase_auth_admin true /' \
-        -e 's/^pooler /pgbouncer true /' -e 's/^monitoring /warehouse_monitoring true /' | LC_ALL=C sort)
+    sed -e 's/^authenticator /authenticator true /' -e 's/^storage /supabase_storage_admin true /' \
+        -e 's/^pooler /pgbouncer true /' | LC_ALL=C sort)
   [[ "$(roles_sql "$stored_verifiers" | LC_ALL=C sort)" == "$expected" ]] || {
     echo "configure-db-roles.sql pass $pass did not store each login's own verifier with LOGIN." >&2; exit 1; }
 done
@@ -272,10 +341,9 @@ if apply_db_roles <<< "$(grep -v '^\\set pooler_verifier' <<< "$prelude")" >/dev
 if apply_db_roles <<< "$(sed "s/^\\\\set storage_verifier .*/\\\\set storage_verifier 'plaintext-password-not-a-verifier'/" <<< "$prelude")" >/dev/null 2>&1; then
   echo 'configure-db-roles.sql accepted a plaintext password.' >&2; exit 1; fi
 [[ "$(roles_sql "$stored_verifiers")" == "$before_refusals" ]] || { echo 'A refused configure-db-roles.sql run changed a password.' >&2; exit 1; }
-roles_sql 'REVOKE pg_monitor FROM warehouse_monitoring; ALTER ROLE warehouse_monitoring NOLOGIN PASSWORD NULL' >/dev/null
 apply_db_roles <<< "$prelude"
-[[ "$(roles_sql "SELECT pg_has_role('warehouse_monitoring', 'pg_monitor', 'USAGE') AND rolcanlogin FROM pg_roles WHERE rolname = 'warehouse_monitoring'")" == t ]] || {
-  echo 'configure-db-roles.sql did not give warehouse_monitoring back its pg_monitor membership and login.' >&2; exit 1; }
+[[ "$(roles_sql "$removed_roles_state")" == '0' ]] || {
+  echo 'configure-db-roles.sql created a role of the earlier image.' >&2; exit 1; }
 rm -f "$roles_env"
 unset prelude expected before_refusals
 # The baseline holds after the logins were configured too.
@@ -324,33 +392,12 @@ bash "$ROOT/tests/grn_edit_lock_order.sh" "$container"
 # receipt rule under two users acting at the same moment.
 bash "$ROOT/tests/concurrent_rules.sh" "$container"
 
-# Migration 42: its closing check stays strict for the nineteen business tables
-# and lets an operator's own table in `public` through.
-bash "$ROOT/tests/direct_write_guard_scope.sh" "$container"
-
-# Migration 48: the author-name backfill of invoice_discount_history, on rows
-# as an installation that had discounts before the upgrade holds them.
-bash "$ROOT/tests/history_author_backfill.sh" "$container"
-
 # scripts/retention.sh: every statement it sends is one this database accepts.
 bash "$ROOT/tests/retention_queries.sh" "$container"
 
-# Migration 91: the list refresh worker on committed data (races, parallel writers, the pg_cron runner).
-bash "$ROOT/tests/list_refresh_worker.sh" "$container"
-
-# Applied migration history is immutable: changing an old file must fail closed.
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/warehouse-mismatch.XXXXXX")
-trap 'rm -rf "$scratch"; cleanup' EXIT
-cp -a "$ROOT/migrations" "$ROOT/scripts" "$scratch/"
-printf '\n-- deliberate checksum mismatch for test\n' >> "$scratch/migrations/00000000000001_seed_data.sql"
-if node "$scratch/scripts/migration-plan.mjs" | docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" \
-  psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
-  echo 'Changed applied migration was incorrectly accepted.' >&2
-  exit 1
-fi
-migration_files=("$ROOT"/migrations/*.sql)
-[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "${#migration_files[@]}" ]] || {
-  echo 'Migration mismatch changed the ledger.' >&2; exit 1;
+# The ledger after a rejected, changed copy (above) still holds exactly the baseline.
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c 'SELECT count(*) FROM warehouse_migrations.applied')" = "$migration_count" ]] || {
+  echo 'A rejected migration run changed the ledger.' >&2; exit 1;
 }
 
 # Backup verification on real containers: this database is dumped into a signed

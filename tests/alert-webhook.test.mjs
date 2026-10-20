@@ -10,8 +10,7 @@ import { PassThrough } from 'node:stream';
 import { configure } from '../scripts/configure.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decideWebhookSource, MAX_ATTEMPTS, obtainWebhook, OFF_WARNING, postSlackMessage, PROMPT, readLine, REFUSAL, storedWebhook, testMessage, writeWebhookFile } from '../scripts/alert-webhook.mjs';
-import { readAlertWebhook } from '../scripts/monitoring-config.mjs';
+import { decideWebhookSource, LEGACY_WEBHOOK_FILE, MAX_ATTEMPTS, obtainWebhook, OFF_WARNING, placeWebhook, postSlackMessage, PROMPT, readAlertWebhook, readLine, REFUSAL, storedWebhook, testMessage, WEBHOOK_FILE, writeWebhookFile } from '../scripts/alert-webhook.mjs';
 
 const script = new URL('../scripts/alert-webhook.mjs', import.meta.url).pathname;
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -24,8 +23,8 @@ function scratch() {
 }
 function stateWith(dir, url) {
   const state = join(dir, 'state');
-  mkdirSync(join(state, 'config/monitoring/alertmanager'), { recursive: true });
-  if (url) writeFileSync(join(state, 'config/monitoring/alertmanager/webhook-url'), `${url}\n`, { mode: 0o600 });
+  mkdirSync(join(state, 'config'), { recursive: true });
+  if (url) writeFileSync(join(state, WEBHOOK_FILE), `${url}\n`, { mode: 0o600 });
   return state;
 }
 const typed = (...answers) => { const prompts = []; return { prompts, read: async text => { prompts.push(text); return answers.shift() ?? ''; } }; };
@@ -332,11 +331,11 @@ test('gate, then configure.mjs, then the receiver: the answered URL ends up in t
     assert.equal(existsSync(state), false, 'nothing is stored by the prompt itself');
     const result = configure(root, { stateDir: state, apiUrl: 'https://gate.example.test', company: 'Fictional Cold Storage', providerEnv, alertWebhookFile: tmp });
     assert.equal(result.webhook, true);
-    const stored = join(state, 'config/monitoring/alertmanager/webhook-url');
+    const stored = join(state, 'config/slack-webhook-url');
     assert.equal(readFileSync(stored, 'utf8'), `${URL_A}\n`);
     assert.equal(statSync(stored).mode & 0o777, 0o600);
     assert.equal(storedWebhook(state), URL_A);
-    assert.match(readFileSync(join(state, 'config/monitoring/alertmanager/alertmanager.yml'), 'utf8'), /Fictional Cold Storage \(warehouse-/);
+    assert.equal(existsSync(join(state, 'config/monitoring')), false, 'no Prometheus or Alertmanager files are rendered any more');
   } finally { await slack.close(); s.cleanup(); }
 });
 
@@ -352,7 +351,7 @@ test('the test message is posted to a receiver and names the facility; an unreac
   } finally { await slack.close().catch(() => {}); }
 });
 
-test('setup.sh asks after the host checks and the lock, hands the URL over through a temporary file, never an argument, and starts monitoring', () => {
+test('setup.sh asks after the host checks and the lock, hands the URL over through a temporary file, never an argument, and installs no monitoring services', () => {
   const setup = read('setup.sh');
   const gate = setup.indexOf('alert-webhook.mjs" gate');
   assert.ok(gate > setup.indexOf('doctor.mjs" --host-preflight'), 'the question comes after the host checks');
@@ -364,7 +363,85 @@ test('setup.sh asks after the host checks and the lock, hands the URL over throu
   assert.match(setup, /CONFIG_ARGS\+=\(--alert-webhook-file "\$WEBHOOK_TMP"\)/);
   assert.match(setup, /\[\[ "\$2" != ask \]\]/, '`ask` is for the gate; configure.mjs never sees it');
   assert.doesNotMatch(setup, /curl|wget/, 'no URL on a shell command line');
-  assert.match(setup, /start-monitoring\.sh" --build/);
-  assert.match(read('start.sh'), /start-monitoring\.sh"\n/);
+  assert.doesNotMatch(setup, /start-monitoring/);
+  assert.doesNotMatch(read('start.sh'), /start-monitoring/);
+  // The timer needs sudo, which setup never runs: it prints the exact command (and start.sh a hint when the timer is missing).
+  assert.match(setup, /watch-timer\.sh" hint/);
+  assert.match(setup, /WAREHOUSE_STATE_DIR="\$STATE" bash "\$ROOT\/scripts\/watch-timer\.sh" hint/);
+  assert.doesNotMatch(setup, /^\s*sudo /m);
+  assert.match(read('start.sh'), /watch-timer\.sh" hint/);
   assert.match(read('.github/workflows/ci.yml'), /--admin-name 'Core Demo Administrator' \\\n\s+--alert-webhook-file off\n/, 'CI installs with off');
+});
+
+// An installation made before the Slack checker kept the URL for Alertmanager; a rerun moves it (docs/MONITORING.md).
+function legacyState(dir, url = URL_A) {
+  const state = join(dir, 'legacy-state');
+  mkdirSync(join(state, 'config/monitoring/alertmanager'), { recursive: true });
+  writeFileSync(join(state, LEGACY_WEBHOOK_FILE), `${url}\n`, { mode: 0o600 });
+  writeFileSync(join(state, 'config/monitoring/prometheus.yml'), 'global: {}\n');
+  writeFileSync(join(state, 'config/monitoring/alertmanager/alertmanager.yml'), 'route: {}\n');
+  return state;
+}
+
+test('a rerun moves a URL stored for Alertmanager to config/slack-webhook-url at 0600 and removes the rendered monitoring files', () => {
+  const s = scratch();
+  try {
+    const state = legacyState(s.dir);
+    assert.equal(storedWebhook(state), URL_A, 'the old path is still read until the rerun');
+    mkdirSync(join(state, 'metrics'), { recursive: true }); writeFileSync(join(state, 'metrics/warehouse_backup.prom'), '# old\n');
+    mkdirSync(join(state, 'data/alertmanager'), { recursive: true });
+    assert.deepEqual(placeWebhook(state, undefined), { moved: true, cleaned: true });
+    assert.equal(existsSync(join(state, 'metrics')), false); assert.equal(existsSync(join(state, 'data/alertmanager')), false);
+    assert.equal(readFileSync(join(state, WEBHOOK_FILE), 'utf8'), `${URL_A}\n`);
+    assert.equal(statSync(join(state, WEBHOOK_FILE)).mode & 0o777, 0o600);
+    assert.equal(existsSync(join(state, 'config/monitoring')), false);
+    assert.equal(storedWebhook(state), URL_A);
+    assert.deepEqual(placeWebhook(state, undefined), { moved: false, cleaned: false }, 'a second rerun changes nothing');
+  } finally { s.cleanup(); }
+});
+
+test('a new URL, or off, replaces or removes the stored one at both paths', () => {
+  const s = scratch();
+  try {
+    const other = 'https://hooks.slack.com/services/T0000000/B0000000/replacementreplacement';
+    const state = legacyState(s.dir);
+    placeWebhook(state, other);
+    assert.equal(storedWebhook(state), other);
+    assert.equal(existsSync(join(state, LEGACY_WEBHOOK_FILE)), false);
+    const old = legacyState(mkdtempSync(join(s.dir, 'o-')));
+    placeWebhook(old, null);
+    assert.equal(storedWebhook(old), null);
+    assert.equal(existsSync(join(old, 'config/monitoring')), false);
+    assert.deepEqual(placeWebhook(old, null), { moved: false, cleaned: false });
+    // Off also removes an address that is only at the old path (no new file yet): it can never keep posting.
+    const legacyOnly = legacyState(mkdtempSync(join(s.dir, 'l-')));
+    assert.deepEqual(placeWebhook(legacyOnly, null), { moved: true, cleaned: true });
+    assert.equal(storedWebhook(legacyOnly), null);
+    assert.equal(existsSync(join(legacyOnly, LEGACY_WEBHOOK_FILE)), false);
+  } finally { s.cleanup(); }
+});
+
+test('configure.mjs on an existing state with a URL at the old path moves it and says so', () => {
+  const s = scratch();
+  try {
+    const root = join(s.dir, 'checkout');
+    mkdirSync(root);
+    writeFileSync(join(root, '.env.example'), read('.env.example'));
+    const providerEnv = join(s.dir, 'provider.env');
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=isolated-no-delivery-key\nMSG91_TEMPLATE_ID=000000000000000000000001\nMSG91_PE_ID=0000000000000000001\nMSG91_SENDER_ID=CITEST\n', { mode: 0o600 });
+    const state = join(s.dir, 'install');
+    configure(root, { stateDir: state, apiUrl: 'https://move.example.test', company: 'Fictional Cold Storage', providerEnv });
+    assert.equal(storedWebhook(state), null);
+    mkdirSync(join(state, 'config/monitoring/alertmanager'), { recursive: true });
+    writeFileSync(join(state, LEGACY_WEBHOOK_FILE), `${URL_A}\n`, { mode: 0o600 });
+    const rerun = configure(root, { stateDir: state });
+    assert.equal(rerun.monitoringUpdated, true);
+    assert.equal(rerun.monitoringCleaned, true);
+    assert.equal(rerun.webhook, undefined, 'the rerun was not given a URL');
+    assert.equal(readFileSync(join(state, WEBHOOK_FILE), 'utf8'), `${URL_A}\n`);
+    assert.equal(existsSync(join(state, 'config/monitoring')), false);
+    const off = configure(root, { stateDir: state, alertWebhookFile: 'off' });
+    assert.equal(off.webhook, null);
+    assert.equal(storedWebhook(state), null);
+  } finally { s.cleanup(); }
 });

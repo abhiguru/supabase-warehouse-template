@@ -10,12 +10,20 @@
 // The URL is a secret. It is never an argument, never in an environment variable and never printed: the
 // prompt reads it from the terminal, the test reads it from the state file, and every message says only
 // "stored", "removed" or an HTTP status.
-import { chmodSync, closeSync, constants, lstatSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { isMain } from './is-main.mjs';
-import { SLACK_WEBHOOK_PATTERN } from './monitoring-config.mjs';
+
+// A Slack incoming-webhook URL, and nothing else: the only receiver this repository supports.
+export const SLACK_WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/[A-Z0-9]+\/[A-Z0-9]+\/[A-Za-z0-9]+$/;
+export const WEBHOOK_MAX_BYTES = 2048;
+// Where the state keeps the URL (mode 0600). Installations made before the Slack checker (scripts/watch.mjs) kept it
+// for Alertmanager under config/monitoring/alertmanager/; a setup rerun moves it (placeWebhook).
+export const WEBHOOK_FILE = 'config/slack-webhook-url';
+export const LEGACY_WEBHOOK_FILE = 'config/monitoring/alertmanager/webhook-url';
 
 export const MAX_ATTEMPTS = 3;
 export const PROMPT = company => `Slack incoming-webhook URL for ${company} alerts (create one in Slack: Apps → Incoming Webhooks):`;
@@ -126,10 +134,79 @@ export function postSlackMessage(url, text, { origin = testOrigin(), timeoutMs =
 export const testMessage = company => `Test message from the ${company} warehouse server: Slack alerts are connected. You will get a "Monitoring is alive" message here once a day.`;
 
 export function storedWebhook(state) {
-  const path = join(state, 'config/monitoring/alertmanager/webhook-url');
-  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return null;
-  const value = readFileSync(path, 'utf8').trim();
-  return SLACK_WEBHOOK_PATTERN.test(value) ? value : null;
+  for (const file of [WEBHOOK_FILE, LEGACY_WEBHOOK_FILE]) {
+    const path = join(state, file);
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) continue;
+    const value = readFileSync(path, 'utf8').trim();
+    return SLACK_WEBHOOK_PATTERN.test(value) ? value : null;
+  }
+  return null;
+}
+
+// The address in an --alert-webhook-file: one Slack incoming-webhook URL. The file is the operator's
+// secret (the address carries a token), so no message here quotes its contents.
+export function alertWebhookAddress(text) {
+  const value = text.replace(/^\uFEFF/, '').trim();
+  if (!SLACK_WEBHOOK_PATTERN.test(value)) throw new Error('--alert-webhook-file must hold one Slack incoming-webhook URL (https://hooks.slack.com/services/...).');
+  return value;
+}
+
+// --alert-webhook-file PATH | off. Returns undefined (leave the state alone), null (remove the stored
+// address) or the address. Everything is checked before anything is written.
+export function readAlertWebhook(path, checkout) {
+  if (path === undefined) return undefined;
+  if (path === 'off') return null;
+  if (!isAbsolute(path)) throw new Error('--alert-webhook-file must be an absolute path (or off).');
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (!st?.isFile()) throw new Error('--alert-webhook-file must be a regular file.');
+  if (resolve(path).startsWith(checkout + sep) || realpathSync(path).startsWith(checkout + sep)) throw new Error('--alert-webhook-file must be outside the checkout.');
+  if (st.uid !== process.getuid() || (st.mode & 0o077)) throw new Error('--alert-webhook-file must be owned by this user and mode 0600 (it holds a secret address).');
+  if (st.size > WEBHOOK_MAX_BYTES) throw new Error('--alert-webhook-file is larger than 2 KB.');
+  return alertWebhookAddress(readFileSync(path, 'utf8'));
+}
+
+// Replaces a file through a same-directory temporary, so a reader sees the old or the new content.
+function place(path, bytes, mode) {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (st && !st.isFile()) throw new Error(`${path} must be a regular file.`);
+  if (st && (st.mode & 0o777) === mode && readFileSync(path).equals(bytes)) return false;
+  const stage = `${path}.${randomBytes(8).toString('hex')}`;
+  writeFileSync(stage, bytes, { mode, flag: 'wx' });
+  try { chmodSync(stage, mode); renameSync(stage, path); } catch (error) { rmSync(stage, { force: true }); throw error; }
+  return true;
+}
+
+// Writes the webhook into `state` (an installed state, or the staging directory of a fresh one). `webhook` is what
+// readAlertWebhook returned: undefined keeps the stored address, null removes it, a string stores it. An address
+// stored at the old Alertmanager path is moved to WEBHOOK_FILE (unless the new file exists), and the rendered
+// Prometheus and Alertmanager files, which nothing reads any more, are removed.
+// The old directories nothing reads any more (config/monitoring, metrics/, data/alertmanager/) are removed when they
+// are real directories owned by this user; one owned by another user (a container wrote it) is left for the operator.
+// Returns { moved, cleaned }: moved when the webhook file was written or removed, cleaned when old files were removed.
+export const OLD_MONITORING_DIRS = ['config/monitoring', 'metrics', 'data/alertmanager'];
+export function placeWebhook(state, webhook) {
+  const path = join(state, WEBHOOK_FILE);
+  const legacy = join(state, LEGACY_WEBHOOK_FILE);
+  const hasLegacy = Boolean(lstatSync(legacy, { throwIfNoEntry: false })?.isFile());
+  let moved = false;
+  let cleaned = false;
+  if (webhook === undefined && hasLegacy && !lstatSync(path, { throwIfNoEntry: false })) {
+    const st = lstatSync(legacy);
+    if (st.size > WEBHOOK_MAX_BYTES) throw new Error(`${legacy} is larger than 2 KB.`);
+    moved = place(path, Buffer.from(`${alertWebhookAddress(readFileSync(legacy, 'utf8'))}\n`), 0o600);
+  }
+  if (typeof webhook === 'string') moved = place(path, Buffer.from(`${webhook}\n`), 0o600) || moved;
+  if (webhook === null) {
+    // Off removes the address at both paths: an old URL must never keep posting.
+    if (lstatSync(path, { throwIfNoEntry: false })) { rmSync(path); moved = true; }
+    if (hasLegacy) { rmSync(legacy, { force: true }); moved = true; }
+    if (lstatSync(legacy, { throwIfNoEntry: false })) throw new Error(`${legacy} could not be removed; delete it so the old Slack webhook stops posting.`);
+  }
+  for (const old of OLD_MONITORING_DIRS) {
+    const dir = lstatSync(join(state, old), { throwIfNoEntry: false });
+    if (dir?.isDirectory() && dir.uid === process.getuid()) { rmSync(join(state, old), { recursive: true }); cleaned = true; }
+  }
+  return { moved, cleaned };
 }
 
 // What to do about the webhook: 'off' (given as off), 'file' (a path was given), 'stored' (the state has one),

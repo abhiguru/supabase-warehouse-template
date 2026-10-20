@@ -15,40 +15,29 @@ database.) The checker parses the app's TypeScript calls to `.rpc()` and
 `executeRPC()`, direct table calls, `functions.invoke()` and literal Edge URLs.
 Comments and tests are excluded.
 
-Counts at backend `3c32394` and app `MOBILE_REF` `d8af378`, re-run on
-2026-10-13:
+What it reports, for the pinned pair: the app's RPC names (none missing), its typed RPC calls with argument names
+compared (no mismatches), its direct table names and its literal Edge Function names (none missing). Five dynamic RPC
+calls (the name is in a variable: `src/config/supabaseConfig.ts`, `src/utils/serviceErrorHandler.ts`,
+`src/services/stock-service.ts`, `src/services/sensor-service.ts`, and the template `delete_${kind}_image` in
+`src/services/imageDeletion.ts`) are not checked. The pin in `.github/workflows/ci.yml` is app commit `e6a513b`: the
+older pin `d8af378` still called `get_dispatch_list`, which this release drops, so it must not be used.
+`get-config` still publishes `urls.realtime` although the `/realtime/v1` route is gone; the app ignores it, and it can be
+dropped once `minimumClientVersion` is past the builds that read it. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
+`print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design
+(`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal
+count. `manage-print-jobs` is absent; the app does not call it.
 
-| Surface | Static result |
-| --- | --- |
-| Mobile RPC names | 94 found, 0 missing |
-| Typed RPC calls (argument names compared) | 133, 0 mismatches |
-| Dynamic RPC calls (name in a variable; not checked) | 2: `src/config/supabaseConfig.ts`, `src/utils/serviceErrorHandler.ts` |
-| Direct mobile table names | 6 found, 0 missing |
-| Literal Edge Function names | 8 found, 0 missing |
-| Printing functions | `print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted` (and `print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design (`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal count |
-| `manage-print-jobs` | absent; the app does not call it |
-
-The checker exits 1 only for a missing name or, with `--live`, a mismatch; the
-pinned pair above exits 0. Name presence is not signature, security or
-behaviour validation, and a missing endpoint is never replaced with a success
-stub to make the check pass.
+The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
+behaviour validation, and a missing endpoint is never replaced with a success stub to make the check pass.
 
 ## Tested runtime behaviour
 
-The runtime behaviour is tested by the five operator fixture drivers that CI's
-install job runs against a fresh installation, all through
-`tests/operator-fixture.mjs`: `operator-api-core.mjs`,
-`operator-realtime-core.mjs`, `operator-api-final.mjs`,
-`operator-api-rotation.mjs` (`npm run test:rotation`) and
-`operator-api-restore.mjs` ([DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)).
-`npm run test:migrations` tests the database itself: real roles, active and
-inactive profiles, effective grants and the role policy of every granted
-function. `tests/api-demo.mjs` and `tests/review-core.mjs` are the historical
-fixed-OTP demos and are not run.
+CI's install job runs four operator fixture drivers against a fresh installation (`operator-api-core.mjs`,
+`operator-api-final.mjs`, `operator-api-rotation.mjs` and `operator-api-restore.mjs`; see
+[DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md)). `npm run test:migrations` tests the database itself: real roles, effective
+grants and the role policy of every granted function.
 
-The duplicate five-argument customer-item selector was removed; the remaining
-six-argument RPC returns `{ success, data: [], pagination }`. The mobile adapter
-now reads this envelope.
+The customer-item selector has one six-argument RPC; it returns `{ success, data: [], pagination }`.
 
 The four PDF functions return the mobile contract:
 `{ success, pdf_url, expires_in, document }`. Their layouts are generic starter
@@ -90,8 +79,7 @@ What the app reads:
 - `update_sensor_device(p_device_id, p_device_name, p_location,
   p_staleness_threshold_minutes)` (new; administrator only).
 - Table `sensor_latest` (one row per device), readable by administrator,
-  supervisor and staff, published to Realtime; the app subscribes to it and
-  refetches on a change. Customers and `anon` read no sensor table.
+  supervisor and staff; the app re-reads it on a timer. Customers and `anon` read no sensor table.
 - `capabilities.sensors` in `get-public-config` (from the state's
   `instance.json`, set with `node scripts/set-capability.mjs`); the app shows
   the Sensors screen only when it is true.
@@ -109,23 +97,10 @@ the service role only and nothing called them.
 
 ## Legacy and dormant functions
 
-Migration 71 (2026-10-13) removed the unused Tally accounting integration: the
-invoice sync trigger on `invoice` and its never-read queue, the customer-rename
-trigger that kept a ledger map, receipt and contra vouchers, bank statement
-reconciliation and the company configuration, with 46 functions and 14 tables.
-It also dropped 24 dead functions of the baseline that nothing called and that
-did not work against the final schema (review 2026-10-13, L1-L10; among them
-`create_order`, `cancel_order`, `get_order_queue`, `ignore_order`,
-`reactivate_order`, `delete_dispatch_with_stock_restore`, `safe_delete_invoice`,
-`auto_generate_invoice_for_dispatch`, `get_customers_with_stock` and the older
-sensor and credential functions). None was granted to the app; the app called
-none of them.
-
-Recorded payments remain: the `payments` table and its policies are unchanged
-and drive Paid and Pending in `get_customer_invoice_summary` and
-`get_customer_activity_detail`. The app does not write payments; after
-migration 71 only the service role or the database owner does. A future
-accounting integration starts from a new design, not from the removed code.
+There is no accounting integration (migration 71 removed the unused Tally one, with the dead baseline functions that
+nothing called). Recorded payments remain: the `payments` table and its policies drive Paid and Pending in
+`get_customer_invoice_summary` and `get_customer_activity_detail`. The app does not write payments; only the service role
+or the database owner does. A future accounting integration starts from a new design.
 
 The baseline still holds other functions that are not granted to `anon` or
 `authenticated`. They are not API: do not grant one to make a call work; add a
@@ -513,51 +488,15 @@ error:'Upload already confirmed', image_id, storage_path}` (confirmed; nothing i
 code:'NOT_FOUND', error:'Pending upload not found'}` (no such row, or not the caller's to see). The app removes
 the stored file only after `success:true`.
 
-## List freshness (migration 91, 2026-10-17)
+## List freshness (migration 106, 2026-10-19)
 
-Writes no longer refresh materialized views. A write marks the lists it changes and returns; the
-pg_cron job `warehouse-list-refresh` refreshes the marked lists every 5 seconds, after the commit
-(TW-BE-016; the database side is in [ARCHITECTURE.md](ARCHITECTURE.md), "List refresh").
-
-**Contract.** A committed write reaches the lists below within **15 seconds** (owner decision D2,
-2026-10-17); in practice within one interval of the job plus one refresh of the marked lists: at most about 7 s
-and typically 3 to 4 s with 12,000 GRNs and 120,000 lines (measured for the review batch of 2026-10-17;
-`tests/list_refresh_worker.sh` checks the bound). The answer of a write RPC
-(`save_grn`, `update_grn`, `create_dispatch_with_stock_check`, `update_dispatch_smart`, `save_invoice`,
-`update_invoice`, ...) is authoritative at once: a screen that made the change uses that answer, not a
-list.
-
-| List RPC | Materialized view | Eventually consistent |
-| --- | --- | --- |
-| `get_invoices_list` | `mv_invoice_list` | yes |
-| `get_dispatch_list` | `mv_dispatch_list` | yes |
-| `get_all_grn_items(p_catalog_id, p_grn_id, p_in_stock_only, p_search_query, p_limit, p_offset)` (legacy overload) | `mv_grn_list` | yes |
-| `get_all_grn_items(p_date_from, p_date_to, p_filters, ...)`, `get_grn_list`, `get_dispatch_list_with_items`, `get_customer_*`, `get_orders_list` and every other RPC | none | no: they read the tables |
-
-The other four views (`mv_customer_stock_summary`, `mv_grn_daily_summary`,
-`mv_dispatch_daily_summary`, `mv_orders_list`) are refreshed the same way and read by no RPC.
-
-### `get_list_freshness()`
-
-Administrators, supervisors and staff (`authorize_rpc`; a customer account is refused with
-`Staff access required`, `anon` may not call it). No arguments.
-
-```json
-{ "success": true, "data": {
-    "bound_seconds": 15, "refresh_interval_seconds": 5, "checked_at": "2026-10-17T10:00:00.123+00:00",
-    "lists": [
-      { "view": "mv_invoice_list", "rpcs": ["get_invoices_list"], "needs_refresh": true,
-        "dirty_since": "2026-10-17T09:59:58.002+00:00", "last_refresh": "2026-10-17T09:59:53.410+00:00",
-        "refresh_failing": false }
-    ] } }
-```
-
-`lists` has the seven views in name order. `needs_refresh`: a committed write has changed what the
-view shows since its last refresh (a mark is invisible until its writer commits). `dirty_since`: the start of that wait (null when current), so
-`checked_at - dirty_since` is how far behind the list may be. `last_refresh`: the view holds every
-write committed before this time. `refresh_failing`: the last refresh of the view failed (the view
-stays marked; the doctor names it). A list screen that wants to say "updating" asks this RPC after a
-list read; one that does not simply reads the list again after the bound.
+Every list RPC reads the tables, so a write that has committed is in the next list read: there is no
+refresh job and no delay. `get_list_freshness()`, the legacy `get_dispatch_list` and the `get_all_grn_items(p_catalog_id, ...)`
+overload no longer exist (migration 106). `get_invoices_list`
+keeps its arguments, sorts, filters and answer; rows that tie on every sort key now come back in a fixed order
+(by invoice id). The answer of a write RPC (`save_grn`, `update_grn`, `create_dispatch_with_stock_check`,
+`update_dispatch_smart`, `save_invoice`, `update_invoice`, ...) is still the authoritative result of that
+write.
 
 ## GRN lists by receipt, and low stock (migration 98, 2026-10-18)
 

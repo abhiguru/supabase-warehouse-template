@@ -1,5 +1,5 @@
 import { documentRequestBody } from './request-body.ts';
-import { createClient } from '../vendor/supabase-js.mjs';
+import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
 import { corsHeaders, handleCors } from './cors.ts';
 import { htmlToPdf } from './pdf-renderer-client.ts';
@@ -21,10 +21,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     const internal = Deno.env.get('SUPABASE_URL')!;
     const publicUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     // Every business-data read uses the caller's token and row-level security.
-    const reader = createClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, {
-      global: { headers: { Authorization: req.headers.get('Authorization')! } },
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const reader = restClient(internal, Deno.env.get('SUPABASE_ANON_KEY')!, { authorization: req.headers.get('Authorization')! });
     let header; let details; let number; let date; let columns; let rows;
     if (kind === 'stock') {
       if (typeof body.customer_id !== 'string' || !uuid.test(body.customer_id)) throw { status: 400, message: 'customer_id must be a UUID' };
@@ -76,7 +73,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     if (kind === 'invoice') Object.assign(metadata, { 'Financial year': header.inv_fin_year, Labour: header.labour, Tax: header.tax_amount, Discount: header.discount, Total: header.total });
     // Installation and supported administration use the same company setting.
     // Keep warehouse record reads on the caller's RLS-protected client above.
-    const writer = createClient(internal,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { autoRefreshToken:false,persistSession:false } });
+    const writer = restClient(internal,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const company = await writer.from('system_settings').select('value').eq('key','app_name').single();
     if (company.error || typeof company.data?.value !== 'string' || !company.data.value.trim()) {
       throw { status:503,message:'Warehouse branding unavailable' };

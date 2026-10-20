@@ -52,12 +52,12 @@ const [first, second, third] = counts;
 if (second !== first - 1 || third !== first) throw new Error(`Rate limit is not keyed by client IP (remaining-minute ${first}, ${second}, ${third}).`);
 
 // The access log keeps the path, not the query string (docs/CONTAINER_SECURITY.md, "Logs"): a signed
-// storage link carries ?token= and the Realtime socket address carries ?apikey=. Send both with
-// fictional values the log can be searched for, then read the gateway container's log. The path line
+// storage link carries ?token=. Send one with a
+// fictional value the log can be searched for, then read the gateway container's log. The path line
 // must be found, or an empty read would pass.
 const marker = randomBytes(6).toString('hex');
 const startedAt = new Date(Date.now() - 2000).toISOString();
-for (const path of [`/storage/v1/object/sign/documents/smoke-${marker}.pdf?token=smoke-token-${marker}`, `/realtime/v1/websocket?apikey=smoke-apikey-${marker}&vsn=1.0.0`]) {
+for (const path of [`/storage/v1/object/sign/documents/smoke-${marker}.pdf?token=smoke-token-${marker}`]) {
   const response = await fetch(`${httpBase}${path}`, { headers: { 'CF-Connecting-IP': '198.51.100.12' }, redirect: 'error', signal: AbortSignal.timeout(15000) });
   await response.body?.cancel();
 }
@@ -71,8 +71,8 @@ for (let attempt = 0; attempt < 10 && !log.includes(`smoke-${marker}.pdf`); atte
   await new Promise(done => setTimeout(done, 500));
   log = gatewayLog();
 }
-if (/token=|apikey=|smoke-token-|smoke-apikey-/.test(log)) throw new Error('The gateway log keeps a query-string credential (token= or apikey=).');
-if (!log.includes(`"GET /storage/v1/object/sign/documents/smoke-${marker}.pdf HTTP/`) || !log.includes('"GET /realtime/v1/websocket HTTP/')) {
+if (/token=|apikey=|smoke-token-/.test(log)) throw new Error('The gateway log keeps a query-string credential (token= or apikey=).');
+if (!log.includes(`"GET /storage/v1/object/sign/documents/smoke-${marker}.pdf HTTP/`)) {
   throw new Error('The gateway access log has no line for the smoke requests (or it is not in the redacted format).');
 }
 

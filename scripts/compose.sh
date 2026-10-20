@@ -48,7 +48,7 @@ for id in $ids; do
   service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")
   case "$service" in
     db) expected="$DB_PATH"; destination='/var/lib/postgresql/data' ;;
-    storage|imgproxy) expected="$STORAGE_PATH"; destination='/var/lib/storage' ;;
+    storage) expected="$STORAGE_PATH"; destination='/var/lib/storage' ;;
     *) continue ;;
   esac
   actual=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "'"$destination"'"}}{{.Source}}{{end}}{{end}}' "$id")
@@ -61,19 +61,8 @@ unset_args=()
 while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then unset_args+=(-u "${BASH_REMATCH[1]}"); fi
 done < "$ENV_FILE"
-# Monitoring (docs/MONITORING.md): setup.sh renders the per-installation Prometheus and Alertmanager files
-# into config/monitoring and creates metrics/, the textfile directory the backup scripts write and node
-# exporter reads. The two sha256 values are labels of the prometheus and alertmanager services: when a
-# rendered file or the alert rules change, `compose up` sees a changed service and replaces the running
-# container, which does not reload its files by itself (Prometheus runs without --web.enable-lifecycle).
-export WAREHOUSE_MONITORING_PATH="$STATE/config/monitoring" WAREHOUSE_METRICS_PATH="$STATE/metrics" WAREHOUSE_ALERTMANAGER_PATH="$STATE/data/alertmanager"
-config_sha256() { cat -- "$@" 2>/dev/null | sha256sum | cut -d' ' -f1; }
-export WAREHOUSE_PROMETHEUS_CONFIG_SHA256="$(config_sha256 "$WAREHOUSE_MONITORING_PATH/prometheus.yml" "$ROOT/docker/alert-rules.yml")"
-export WAREHOUSE_ALERTMANAGER_CONFIG_SHA256="$(config_sha256 "$WAREHOUSE_MONITORING_PATH/alertmanager/alertmanager.yml")"
 # WAREHOUSE_PUBLIC_PATH: the functions service reads the optional central
 # sign-in key file from the state's public directory (next to instance.json).
-# imgproxy reads the private storage directory (mode 0700, owned by this user)
-# and so runs as this user; see the imgproxy service in docker-compose.yml.
-exec env "${unset_args[@]}" WAREHOUSE_HOST_UID="$(id -u)" WAREHOUSE_HOST_GID="$(id -g)" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+exec env "${unset_args[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" \
   -f "$ROOT/docker/docker-compose.override.yml" "$@"

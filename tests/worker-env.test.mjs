@@ -102,14 +102,14 @@ test('public workers get no signing secret, and no worker gets a database addres
     assert.ok(!pairs.some(([key]) => ['SUPABASE_DB_URL', 'PATH', 'HOME', 'HOSTNAME', 'VERIFY_JWT', 'INSTANCE_MANIFEST_PATH'].includes(key)), name);
   }
   // Functions that verify a user token need the secret (get-config, the PDFs).
-  for (const name of ['get-config', 'generate-grn-pdf', 'generate-sample-pdf']) {
+  for (const name of ['get-config', 'generate-grn-pdf']) {
     assert.ok(workerEnv(name, container).some(([key]) => key === 'JWT_SECRET'), `${name} cannot verify tokens`);
   }
   // The manifest text reaches get-public-config only.
   assert.ok(workerEnv('get-public-config', container, { INSTANCE_MANIFEST_JSON: '{"a":1}' }).some(([key, value]) => key === 'INSTANCE_MANIFEST_JSON' && value === '{"a":1}'));
   assert.ok(!workerEnv('get-config', container, { INSTANCE_MANIFEST_JSON: '{"a":1}' }).some(([key]) => key === 'INSTANCE_MANIFEST_JSON'));
   // An unset variable is left out rather than passed as the text "undefined".
-  assert.deepEqual(workerEnv('generate-sample-pdf', { JWT_SECRET: 'x' }), [['JWT_SECRET', 'x']]);
+  assert.deepEqual(workerEnv('get-config', { JWT_SECRET: 'x' }), [['JWT_SECRET', 'x']]);
 });
 
 test('the functions container holds no database address', () => {

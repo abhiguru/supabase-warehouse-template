@@ -14,8 +14,7 @@
 #       POSTGRES_PASSWORD is refused and its own value accepted, over a network
 #       connection that PostgreSQL authenticates with SCRAM (connections from
 #       127.0.0.1 inside the database container are trusted by the image, so they
-#       would prove nothing), that the monitoring login has pg_monitor and no
-#       superuser rights, and that supabase_functions_admin cannot log in at all.
+#       would prove nothing). The roles of the earlier image do not exist and are not checked.
 #   bash scripts/db-roles.sh matches FILE
 #       Whether the database takes FILE's values (authenticator and supabase_admin
 #       sign in with them over the same network connection): exit 0 yes, 1 no,
@@ -91,23 +90,7 @@ case "$command" in
         else
           echo "FAIL $role does not accept its own password over the network (${answer:-refused})"; failed=1
         fi
-        if [ "$role" = warehouse_monitoring ]; then
-          rights="$(login "$role" "$password" "SELECT pg_has_role(current_user, '\''pg_monitor'\'', '\''USAGE'\'')::text || '\'' '\'' || rolsuper::text || rolcreaterole::text || rolcreatedb::text || rolreplication::text || rolbypassrls::text FROM pg_roles WHERE rolname = current_user" || true)"
-          if [ "$rights" = "true falsefalsefalsefalsefalse" ]; then
-            echo "ok   warehouse_monitoring has pg_monitor and no superuser, role, database, replication or RLS bypass right"
-          else
-            echo "FAIL warehouse_monitoring rights: ${rights:-unreadable}"; failed=1
-          fi
-        fi
       done
-      # One row always ("absent" when the role does not exist): no answer is a failure.
-      functions_login="$(PGPASSWORD="$superuser_password" psql -X -qAt -h /var/run/postgresql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "SELECT coalesce((SELECT rolcanlogin::text || '\'' '\'' || (rolpassword IS NULL)::text FROM pg_authid WHERE rolname = '\''supabase_functions_admin'\''), '\''absent'\'')" 2>/dev/null || true)"
-      case "$functions_login" in
-        "false true") echo "ok   supabase_functions_admin cannot log in and has no password" ;;
-        absent) echo "ok   supabase_functions_admin does not exist" ;;
-        "") echo "FAIL supabase_functions_admin: its login state could not be read (pg_authid as supabase_admin)"; failed=1 ;;
-        *) echo "FAIL supabase_functions_admin login state: $functions_login"; failed=1 ;;
-      esac
       exit "$failed"' sh "$remote_query"
     echo 'Every database login refuses the superuser password and accepts only its own.'
     ;;

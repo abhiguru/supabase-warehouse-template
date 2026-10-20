@@ -3,6 +3,15 @@
 Review date: **2026-10-08** (refreshing the 2026-09-18 and 2026-09-22 reviews
 below). Release scope: **`v0.3.0` public template, fresh repository history**.
 
+## 2026-10-20: removals and PostgreSQL 17
+
+The database now runs the official `postgres:17` image (PostgreSQL licence); the Supabase PostgreSQL image, its extensions
+(`pg_cron`, `pg_net`, `pgjwt`, `pg_graphql`, `supabase_vault`, `http`) and the Supabase-derived Realtime, GoTrue, Studio,
+postgres-meta, Prometheus stack and wal-g sources and their `LICENSES/` directories are no longer shipped
+(`THIRD_PARTY_NOTICES.md` lists what is). The baseline migration is a dump of the repository's own schema; the
+Supabase-shaped roles and functions it carries are listed in `tests/baseline_roles.sql`. The earlier files are in the git tag
+`migrations-pre-baseline`.
+
 ## Maintainer attestation
 
 The repository maintainer, `abhiguru`, confirms that they hold the rights needed
@@ -21,14 +30,12 @@ not a blanket legal certification and does not replace third-party license terms
 | --- | --- | --- | --- |
 | Warehouse functions, migrations, scripts, tests, and documentation (everything outside `docker/sensor-bridge/`) | Original project work confirmed by the maintainer | MIT | `LICENSE` |
 | Sensor bridge (`docker/sensor-bridge/`) | Original project work confirmed by the maintainer; installs python-kasa 0.11.0.1 (GPL-3.0) and its pinned dependencies from PyPI at image build time, not vendored; base image Python 3.14-slim-bookworm (PSF-2.0, Debian packages) | GPL-3.0-or-later (bridge code); GPL-3.0 (python-kasa) | `docker/sensor-bridge/LICENSE`; "Sensor bridge" section of `THIRD_PARTY_NOTICES.md` |
-| Supabase Docker/database bootstrap and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material | Apache-2.0 | `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES.md`; upstream copyright notices retained in copied files where present |
-| Deno standard-library imports at `0.192.0` | Runtime URL imports; not vendored in the source archive | MIT | Upstream module license; recorded in `THIRD_PARTY_NOTICES.md` |
-| Supabase JS 2.39.0 import from esm.sh | Runtime URL imports; not vendored in the source archive | MIT | Upstream package license; recorded in `THIRD_PARTY_NOTICES.md` |
-| `jose` 5.10.0 | Runtime URL import from esm.sh and, at the same version, locked npm development dependency; not vendored in the source archive | MIT, Filip Skokan | Installed `node_modules/jose/LICENSE.md`; package identity locked in `package-lock.json` |
+| Supabase database initialization scripts (`docker/volumes/db/_supabase.sql`, `pooler.sql`, `roles.sql`) and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material; `docker/volumes/db/00-bootstrap.sql` is original project work | Apache-2.0 | `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES.md`; upstream copyright notices retained in copied files where present |
+| `jose` 5.10.0 | Vendored as one built file, `functions/vendor/jose.mjs` (bundled with esbuild from the locked npm package, checksummed in `functions/vendor/SHA256SUMS`); also the locked npm development dependency of the unit tests | MIT, Filip Skokan | `functions/vendor/LICENSES.txt`; `scripts/edge-vendor/package-lock.json` |
 | `ipp` 2.0.1 | Optional runtime npm import used only by unsupported printing paths; not vendored | MIT | Upstream npm package license; identity pinned in source imports |
-| Source-built service recipes (`docker/{alertmanager,node-exporter,postgres-exporter,cadvisor,prometheus,auth,storage,imgproxy,postgres,postgres-meta}`) | Copied upstream manifests plus security patches; archives fetched by checksum at build time | Apache-2.0 or MIT per project (see notices) | `LICENSES/<project>/` and `THIRD_PARTY_NOTICES.md` |
+| Source-built service recipes (`docker/storage`; `docker/postgres` builds only `gosu`) | Copied upstream manifests plus security patches; archives fetched by checksum at build time. The database image is the official `postgres:17` image, not redistributed | Apache-2.0 | `LICENSES/<project>/` and `THIRD_PARTY_NOTICES.md` |
 | PDF renderer (`docker/pdf-renderer/`) | Original project work for this repository; downloads Chrome for Testing 155.0.8059.84 (chrome-headless-shell) at image build time (checksum pinned) and installs puppeteer-core 25.14.0 and its locked dependencies with `npm ci`; fonts are Debian packages; nothing third-party is committed | MIT (renderer code); BSD-3-Clause plus bundled notices (Chrome for Testing); Apache-2.0 (puppeteer-core); font and library packages under their own licences | `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/`, `THIRD_PARTY_NOTICES.md`; the archive's own `LICENSE.headless_shell` stays in the image at `/opt/chs` |
-| Referenced publisher images (Kong 3.9.3, PostgREST v16.4, Realtime v2.144.0, Supavisor 2.9.13, edge-runtime v1.77.4, Studio 2026.10.12, CUPS on `ubuntu:22.04`, the sensor bridge on Python 3.14-slim-bookworm) | Pulled at setup time; image contents are not redistributed in the source archive | Apache-2.0 / MIT / PSF-2.0 / Ubuntu and Debian package terms, per the table in `THIRD_PARTY_NOTICES.md` | `THIRD_PARTY_NOTICES.md` "Referenced publisher images"; exact tags and digests in `docker/docker-compose*.yml` and `docker/*/Dockerfile`; downstream operators must review image licences before distribution |
+| Referenced publisher images (Kong 3.9.3, PostgREST v16.4, PostgreSQL 17, Supavisor 2.9.13, edge-runtime v1.77.4, CUPS on `ubuntu:22.04`, the sensor bridge on Python 3.14-slim-bookworm) | Pulled at setup time; image contents are not redistributed in the source archive | Apache-2.0 / MIT / PSF-2.0 / PostgreSQL License / Ubuntu and Debian package terms, per the table in `THIRD_PARTY_NOTICES.md` | `THIRD_PARTY_NOTICES.md` "Referenced publisher images"; exact tags and digests in `docker/docker-compose*.yml` and `docker/*/Dockerfile`; downstream operators must review image licences before distribution |
 
 No image, font, audio, video, or native binary asset is tracked in the backend
 source tree. Placeholder webhook URLs are configuration examples, not copied
@@ -54,12 +61,6 @@ identified in [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md). This follow-up
 covers the recipe/manifests source changes, not distribution of built images,
 container dependency relicensing, or a new ownership attestation.
 
-
-The postgres-meta v0.99.0 follow-up adds copied manifests and a source patch.
-Its repository license was read directly from the checksum-verified archive and
-retained under `LICENSES/postgres-meta/`; the upstream package metadata's differing
-MIT label is explicitly recorded in `THIRD_PARTY_NOTICES.md`. Studio adds only a
-recipe referencing its publisher image; no frontend assets are vendored.
 
 ## Public template refresh — 2026-10-08
 

@@ -1,4 +1,3 @@
-import { createClient } from '../vendor/supabase-js.mjs'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { printerStatusFromReply } from '../_shared/ipp-validate.ts'
 import { validPrinterName, printerStatusFailure } from '../_shared/printer-name.ts'
@@ -14,14 +13,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const authHeader = req.headers.get('Authorization');
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
-
-    const userProfile = await validatePrintAccess(req, supabase);
+    const userProfile = await validatePrintAccess(req);
 
     const { printer_name = 'default' } = await req.json().catch(() => ({}));
     if (!validPrinterName(printer_name)) {

@@ -30,7 +30,7 @@ CREATE FUNCTION pg_temp.dw_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $
  END $$;
 
 -- 1. Lock order, by definition. Every function an API role may call that
--- writes one of the five tables with a list-refresh trigger takes the lock
+-- writes one of the five document tables (goodsreceived, goodsreceived_trl, dispatch, dispatch_trl, customers) takes the lock
 -- itself; in the two that lock rows explicitly the lock comes first.
 SELECT pg_temp.dw_assert(count(*)=0,'granted writers without the refresh lock: ' || COALESCE(string_agg(p.oid::regprocedure::text,', '),''))
 FROM pg_proc p

@@ -2,7 +2,7 @@
 
 Self-hosted backend for a cold-storage warehouse: goods receipts, dispatches,
 invoices, customer orders and phone-OTP login on PostgreSQL, PostgREST,
-Realtime, Storage, Deno edge functions and a PDF renderer, one installation
+Storage, Deno edge functions and a PDF renderer, one installation
 per warehouse. It is used from the companion
 [React Native app](https://github.com/abhiguru/rn-warehouse-template).
 
@@ -39,13 +39,14 @@ Then install the app, select the HTTPS origin and sign in as the administrator
 with a real SMS code.
 
 - Full guide (host setup, tunnel, backup and restore, key rotation, upgrades): [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
+- Something went wrong: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - What staff and customers may do: [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md)
 - What is still open before production use: [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)
 
 ## Isolation and migration safety
 
 Operator scripts use a unique Compose project and a state directory outside the
-checkout. The database, Studio and PDF service are private to the project; the
+checkout. The database and PDF service are private to the project; the
 gateway binds to loopback for the tunnel connector.
 
 Startup brings up only the database first, then applies the complete schema,
@@ -53,15 +54,15 @@ permissions and custom-auth configuration before starting the APIs. Migrations
 use checksums, a database advisory lock and a transactional ledger. Changed
 applied files and untracked existing warehouse databases are refused. Add new
 migrations for later changes; do not transplant this baseline into an existing
-installation.
+installation. The schema is one baseline migration (`migrations/00000000000000_baseline.sql`); a database built before
+it cannot be upgraded in place ([Baseline reload](docs/OPERATOR_INSTALL.md#baseline-reload)). "Migration N" in the
+documentation, for N up to 110, names a file of the old chain; those files are kept in the git tag
+`migrations-pre-baseline`. New migrations continue at 111.
 
 Setup never revokes or rotates another installation's credentials, and a rerun
-preserves this installation's identity and signing keys (it may replace only the
-MSG91 provider lines when given a new `--provider-env` file). Rotating this
-installation's JWT secret and anon/service keys is a separate explicit command,
-`bash rotate-keys.sh --yes`, which updates the database, revokes every session
-and recreates the key consumers; see
-[docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#rotate-signing-keys).
+preserves this installation's identity and signing keys. Rotating them is a
+separate explicit command, `bash rotate-keys.sh --yes`
+([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#rotate-signing-keys)).
 
 ## Features and limits
 
@@ -73,25 +74,17 @@ and invoice totals are computed server-side ([docs/INVOICE_RULES.md](docs/INVOIC
 Generated PDFs use a generic, escaped starter layout, private storage and
 one-hour signed links. Configure business details and document terms before use.
 
-Realtime supports order/cart live updates. Tapo temperature and humidity
-sensors reach the backend through an optional bridge container (Compose profile
-`sensors`, GPL-3.0-or-later code in `docker/sensor-bridge/`; see
-[docs/SENSORS.md](docs/SENSORS.md)); the app sees them where the `sensors`
-capability is turned on. Printing and sensors still require hardware
-acceptance; monitoring is optional. The three preprinted document
-functions (`print-dispatch-preprinted`, `print-grn-preprinted`,
-`print-invoice-preprinted`) and print status monitoring are exported for
-contract parity, but physical printing hardware remains unverified. See
-[docs/API_CONTRACT.md](docs/API_CONTRACT.md) for the exported surface and
-[docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for the exact
-boundary of what has been accepted.
+The app re-reads order and cart screens every 15 seconds (there is no live push). Tapo temperature and humidity
+sensors reach the backend through an optional bridge container (Compose profile `sensors`, GPL-3.0-or-later code in
+`docker/sensor-bridge/`; [docs/SENSORS.md](docs/SENSORS.md)); the app sees them where the `sensors` capability is turned on.
+Printing and sensors still require hardware acceptance; monitoring is one small checker program with a Slack webhook
+([docs/MONITORING.md](docs/MONITORING.md)). The three preprinted document functions and print status monitoring are exported
+for contract parity, but physical printing hardware remains unverified. See [docs/API_CONTRACT.md](docs/API_CONTRACT.md) for
+the exported surface and [docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md) for what has been accepted.
 
-The unused Tally accounting integration (invoice sync queue and trigger, receipt
-and contra vouchers, bank statement reconciliation, ledger map) and the dead
-legacy functions of the baseline were removed by migration 71 (2026-10-13).
-Recorded payments remain and drive the Paid and Pending figures of the invoice
-reports; the app does not write them. A future accounting integration starts
-from a new design. The remaining ungranted baseline functions are not API
+There is no accounting integration. Recorded payments drive the Paid and Pending
+figures of the invoice reports; the app does not write them. The ungranted
+baseline functions are not API
 ([docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Legacy and dormant functions").
 
 ## Contributing, CI and history

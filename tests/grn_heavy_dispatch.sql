@@ -178,15 +178,6 @@ SET LOCAL ROLE authenticated;
 SELECT set_config('hv.admin',:'admin_profile',true);
 SELECT pg_temp.hv_build(:'admin_profile'::uuid,'Heavy Dispatch Administrator');
 RESET ROLE;
--- TEST HARNESS ONLY (not part of the fixture): one transaction holds all 7,885 dispatches here, and every write
--- statement marks the list queue rows dirty (warehouse_security.mark_lists_dirty, migration 91) by updating the
--- same few rows again. Inside ONE transaction each update lengthens a row version chain that the next update must
--- walk, so the n-th dispatch costs about n times the first (measured: 250 dispatches in 1.3 s, 5,000 in 6.5 min).
--- A facility commits each dispatch on its own and never sees this. The marker is therefore replaced by a no-op
--- for the loop and the original definition is put back and compared afterwards.
-SELECT pg_get_functiondef('warehouse_security.mark_lists_dirty(text[])'::regprocedure) AS mark_original \gset
-CREATE OR REPLACE FUNCTION warehouse_security.mark_lists_dirty(p_views text[]) RETURNS void
- LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ BEGIN NULL; END $$;
 DO $$
 DECLARE t0 timestamptz := clock_timestamp(); made int; lo int;
 BEGIN
@@ -201,12 +192,6 @@ BEGIN
   PERFORM pg_temp.hv_assert(made=7885,'7885 dispatches built');
   RAISE NOTICE 'heavy dispatch fixture: % dispatches in %', made, clock_timestamp()-t0;
 END $$;
-SELECT :'mark_original' AS restore_sql \gset
-SELECT :'restore_sql' \gexec
-SELECT pg_temp.hv_assert(pg_get_functiondef('warehouse_security.mark_lists_dirty(text[])'::regprocedure)=:'mark_original','mark_lists_dirty is back as it was');
--- The list screens read materialized views that a worker refreshes after commit; refresh them now, as that worker does.
-SELECT warehouse_security.mark_lists_dirty(warehouse_security.list_refresh_views());
-SELECT warehouse_security.refresh_dirty_lists();
 
 
 -- ===========================================================================
@@ -347,17 +332,18 @@ BEGIN
     PERFORM pg_temp.hv_assert(jsonb_array_length(pg#>'{data,items}')=100 AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(pg#>'{data,items}') x LEFT JOIN pg_temp.hv_lot() hl ON hl.rcpt=r AND hl.mark=x->>'package_mark'
         WHERE hl.packaging IS DISTINCT FROM x->>'packaging'),'page of HVD'||r||': packaging of every row equals the plan');
-    -- list screens (after the refresh): dispatch list pages of 1000, then the stock summary
-    total := NULL; seen := 0; qsum := 0; ids := '{}'; off := 0;
+    -- list screens: the Dispatches list (get_dispatch_list_with_items, which reads the tables) in pages of 1000,
+    -- then the stock summary
+    total := NULL; seen := 0; qsum := 0; ids := '{}'; off := 1;
     LOOP
-      pg := public.get_dispatch_list(NULL, NULL, jsonb_build_object('customer_name','Heavy Dispatch Customer '||r), 'disp_no', 'asc', 1000, off);
-      PERFORM pg_temp.hv_assert(pg->>'success'='true','dispatch list HVD'||r||' offset '||off||': '||left(pg::text,200));
-      total := (pg#>>'{pagination,total_count}')::int;
-      EXIT WHEN jsonb_array_length(pg->'data')=0;
+      pg := public.get_dispatch_list_with_items(p_customer_id => cust, p_sort_by => 'disp_no', p_sort_order => 'asc', p_page => off, p_limit => 1000);
+      PERFORM pg_temp.hv_assert(pg->>'success'='true','dispatch list HVD'||r||' page '||off||': '||left(pg::text,200));
+      total := (pg#>>'{data,total_count}')::int;
+      EXIT WHEN jsonb_array_length(pg#>'{data,dispatches}')=0;
       SELECT seen + count(*), qsum + sum((x->>'total_qty')::int), ids || array_agg(x->>'disp_no')
-        INTO seen, qsum, ids FROM jsonb_array_elements(pg->'data') x;
-      off := off + 1000;
-      EXIT WHEN off > 5000;
+        INTO seen, qsum, ids FROM jsonb_array_elements(pg#>'{data,dispatches}') x;
+      off := off + 1;
+      EXIT WHEN off > 6;
     END LOOP;
     PERFORM pg_temp.hv_assert(total=plan_n AND seen=plan_n AND (SELECT count(DISTINCT i) FROM unnest(ids) i)=plan_n AND qsum=plan_q,
       'dispatch list HVD'||r||': count '||seen||' of '||plan_n||', quantity '||qsum||' of '||plan_q);

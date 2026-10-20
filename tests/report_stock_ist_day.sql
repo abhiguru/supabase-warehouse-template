@@ -330,7 +330,7 @@ SELECT pg_temp.sd_assert((length(def) - length(replace(def, m, ''))) / length(m)
   'the 360-day window is written twice as an uncorrelated scalar subquery on India days')
 FROM (SELECT pg_get_functiondef('public.get_customer_stock_summary(uuid)'::regprocedure) AS def,
   $m$sm.created_at >= (SELECT warehouse_security.business_day_start(warehouse_security.business_date(now()) - 360))$m$ AS m) w;
-SELECT pg_temp.sd_assert(plan ~ 'InitPlan' AND plan ~ 'created_at >= \$[0-9]',
+SELECT pg_temp.sd_assert(plan ~ 'InitPlan' AND plan ~ 'created_at >= (\$[0-9]|\(InitPlan [0-9]+\)\.col[0-9]+)',
   'the 360-day value is evaluated once (an InitPlan), not for every movement: ' || plan)
 FROM (SELECT pg_temp.sd_plan($q$SELECT 1 FROM public.goodsreceived_trl gt WHERE gt.stock = 0 AND EXISTS (SELECT 1 FROM public.stock_movements sm
   WHERE sm.gr_trl_id = gt.id AND sm.balance_after = 0

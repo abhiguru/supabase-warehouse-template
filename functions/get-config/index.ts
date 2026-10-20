@@ -1,4 +1,4 @@
-import { createClient } from '../vendor/supabase-js.mjs';
+import { restClient } from '../_shared/supabase-rest.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { validateUserAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
@@ -8,13 +8,11 @@ Deno.serve(async (req: Request) => {
   if (cors) return cors;
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
   try {
-    // Custom OTP tokens are verified locally, not through the disabled GoTrue service.
+    // Session tokens are verified locally (validateUserAccess); there is no GoTrue service.
     const profile = await validateUserAccess(req);
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     const environment = Deno.env.get('APP_ENV') || 'development';
-    const client = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const client = restClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const [configResult, flagsResult, smsResult, settingsResult] = await Promise.all([
       client.from('api_configurations').select('app_version,build_date,maintenance_mode').eq('environment', environment).eq('is_active', true).single(),
       client.from('feature_flags').select('name,enabled,user_roles').eq('enabled', true),

@@ -2,55 +2,82 @@
 
 ## Containers and networks
 
-The Compose project has four networks. A container resolves and reaches
+The Compose project has three networks. A container resolves and reaches
 another only on a network both are attached to
-(`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts this
-table from the rendered configuration).
+(`docker/docker-compose.yml`; `tests/compose-networks.test.mjs` asserts the
+network table from the rendered configuration).
 
 ```
  cloudflared ──▶ 127.0.0.1:18000
                       │
               ┌───────▼────────────────── default ──────────────────────────┐
-              │  Kong :8000 ──▶ REST :3000   Realtime :4000   Storage :5000 │
+              │  Kong :8000 ──▶ REST :3000   Storage :5000                  │
               │            └──▶ Functions :9000                             │
-              │  imgproxy :5001 (from Storage)      CUPS :631 (profile)     │
+              │  CUPS :631 (profile)                                        │
               │  sensor-bridge ──▶ Kong (profile; polls hubs on the LAN)    │
-              │  Prometheus, Alertmanager, exporters (profile)              │
               └────────────────────┬────────────────────────────────────────┘
-                 REST, Realtime, Storage, Postgres exporter
+                          REST, Storage
               ┌────────────────────▼────── database ────────────────────────┐
               │  PostgreSQL :5432            Supavisor (profile)            │
               └────────────────────┬────────────────────────────────────────┘
-              ┌────────────────────▼────── admin ───────────────────────────┐
-              │  PostgreSQL        postgres-meta :8080        Studio :3000  │
-              └─────────────────────────────────────────────────────────────┘
               ┌─────────────────────────── renderer (internal) ─────────────┐
               │  Functions ──▶ pdf-renderer :3000   (no route out)          │
               └─────────────────────────────────────────────────────────────┘
 ```
 
+| Service | Image | Port (inside) | Started |
+|---|---|---|---|
+| kong | Kong 3.9.3, one worker | 8000, published on `127.0.0.1:${KONG_HTTP_PORT}` (default 18000) | always |
+| rest | PostgREST v16.4 | 3000 | always |
+| storage | Supabase storage-api 1.80.2 | 5000 | always |
+| functions | Supabase edge-runtime 1.77.4 | 9000 | always |
+| db | PostgreSQL 17 (official `postgres:17.11-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
+| pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
+| supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler` |
+| cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |
+| sensor-bridge | own recipe (GPL-3.0-or-later) | none | profile `sensors` |
+
+Only Kong publishes a host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed container address.
+
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | kong, rest, realtime, storage, imgproxy, functions, cups, sensor-bridge, auth (disabled), prometheus, alertmanager, postgres-exporter, node-exporter, cadvisor | The gateway and everything it or a function calls; monitoring scrapes; the sensor bridge's calls to the gateway |
-| `database` | db, rest, realtime, storage, auth (disabled), supavisor, postgres-exporter | Connections to PostgreSQL |
-| `admin` | db, meta, studio | postgres-meta and Studio, which run SQL without a login |
-| `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database, Kong or Studio, and only the function runtime can reach it |
+| `default` | kong, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
+| `database` | db, rest, storage, supavisor | Connections to PostgreSQL |
+| `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database or Kong, and only the function runtime can reach it |
 
-Kong, imgproxy, CUPS, the sensor bridge and Prometheus are on `default` only;
-the function runtime is on `default` and `renderer`; the PDF renderer is on
-`renderer` only. None of them can open a connection to PostgreSQL,
-postgres-meta or Studio: Studio is on `admin` only, so its panels that call the API gateway do
-not work; it is kept for the metadata acceptance check. Only Kong publishes a
-host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed
-container address.
+Kong, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF
+renderer is on `renderer` only. None of them can open a connection to PostgreSQL. There is no web dashboard for the
+database; operators use `psql` (see [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation)). Rules for each image
+and network: [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md).
 
-## Request Flow
+The monitoring checker (`scripts/watch.mjs`, run every 5 minutes by a systemd timer on the host) is not a container and
+is on no network: it asks Docker and the database container what they see, and posts to Slack
+([MONITORING.md](MONITORING.md)).
 
-### API Request (PostgREST)
+## Request flow
+
+### API request (PostgREST)
 ```
 Client → Kong :8000 → PostgREST :3000 → PostgreSQL :5432
-         (key-auth)   (JWT verify)       (RLS enforced)
+         (key-auth,   (JWT verify,       (RLS and guarded
+          rate limit)  check_session)     RPCs)
 ```
+
+### Edge function request
+```
+Client → Kong :8000 → Edge Runtime :9000 → worker (Deno isolate)
+         (CORS,       (main router)        → Kong :8000 → PostgREST / Storage   (REST over HTTP)
+          rate limit)                      → pdf-renderer :3000                  (PDF)
+                                           → CUPS                                (print, when enabled)
+```
+
+The main router checks the caller's JWT for every function except the public ones (`hello`, `get-public-config`,
+`operator-otp`, `central-exchange`, `ingest-sensor-readings`).
+
+A function never opens a connection to PostgreSQL: the `functions` container is not on the `database` network. It reaches
+the data only through Kong (`SUPABASE_URL=http://kong:8000`), with plain `fetch` calls (`functions/_shared/supabase-rest.ts`,
+or a direct `fetch` of `/rest/v1/rpc/<name>`) that carry either the caller's own token (document functions, so the RPC
+guard and row policies decide) or the service key (sign-in, configuration, sensor ingest and PDF upload).
 
 Kong compresses JSON and text answers with gzip (nginx `gzip`, set by the
 `KONG_NGINX_PROXY_GZIP*` variables of the `kong` service in
@@ -60,80 +87,43 @@ or more whose type is `application/json`, the PostgREST variants
 (`application/vnd.pgrst.object+json`, `application/vnd.pgrst.array+json`),
 `application/openapi+json`, `application/geo+json`, `text/plain` or `text/csv`
 are compressed, and only for a client that sends `Accept-Encoding: gzip`. Images and
-other storage downloads, PDFs, range answers, the Realtime websocket upgrade and
+other storage downloads, PDFs, range answers, websocket upgrades and
 answers that already carry a `Content-Encoding` (`get-public-config`) pass
 through unchanged. The reason is the tunnel's upload speed: a 3,055-line invoice
 preview is about 2.2 MB of JSON (after migration 101) and compresses to a small
 fraction of that. A change to these variables needs
 `bash scripts/compose.sh up -d --force-recreate --wait kong`.
 
-### Edge Function Request
+### Sign-in with an SMS code
 ```
-Client → Kong :8000 → Edge Runtime :9000 → Worker (Deno V8 isolate)
-         (CORS)       (JWT verify)          → PostgreSQL (direct)
-                                            → pdf-renderer (PDF)
-                                            → CUPS (print)
+App → Kong → operator-otp /request → operator_prepare_otp (limits, stores the keyed hash of a new code)
+                                   → MSG91 (sends the code) → operator_finish_otp (records the outcome)
+App → Kong → operator-otp /verify  → operator_verify_otp
+              → warehouse_security.issue_session(user) → access token (HS256, one hour) + refresh token
+App → Kong (Authorization: Bearer access token) → PostgREST → public.check_session → RPCs / RLS
 ```
+`operator-otp` calls the `operator_*` RPCs with the service key. A pending customer gets an enrollment token instead of a
+session until an administrator approves them. `refresh_jwt_token` (a PostgREST call, no function) renews the access token and replaces the refresh token each time.
 
-### OTP Authentication
+### Sign-in with the association's central login (optional)
 ```
-Client → Kong → PostgREST → send_otp() → Twilio/MSG91
-Client → Kong → PostgREST → verify_otp_or_register() → JWT token
-Client → Kong (with JWT) → PostgREST → Data (RLS enforced)
+App → Kong → central-exchange → verifies the identity token (ES256, issuer, audience = this facility, lifetime, type)
+                              → operator_central_exchange (accepts the token once)
+                              → warehouse_security.issue_session(user) → the same session as above
 ```
+Described in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md).
 
 ### Sensor readings
 ```
 Tapo hubs (LAN) ◀── sensor-bridge ──▶ Kong :8000 ──▶ ingest-sensor-readings ──▶ record_sensor_batch
    (poll 5 min)     (queue in volume)  (no user JWT;   (service key, ingest       → sensor_readings, sensor_latest,
-                                        ingest key)     key checked in SQL)          sensor_hubs → Realtime → app
+                                        ingest key)     key checked in SQL)          sensor_hubs ◀── app re-reads
 ```
 The bridge is the optional `sensors` profile, or the same image as its own
 Compose project posting through the tunnel ([SENSORS.md](SENSORS.md)).
 
-## List refresh
+## Lists
 
-Three list RPCs read materialized views (`get_invoices_list`, `get_dispatch_list` and the legacy
-`get_all_grn_items` overload; the contract and the full list are in
-[API_CONTRACT.md](API_CONTRACT.md), "List freshness"). Since migration 91 (TW-BE-016) they are refreshed
-after the commit, never inside a write:
-
-```
-write RPC ──▶ statement trigger ──▶ mark_lists_dirty()      pg_cron (in the db container, every 5 s)
-  (lock 71040,   (per table: every     mv_refresh_queue:         │  CALL warehouse_security.
-   rows, commit)  list that reads it)   needs_refresh, mark_seq, │       refresh_dirty_lists_worker()
-                                        dirty_since              ▼  as warehouse_list_refresher
-                                                     claim (FOR UPDATE) ─ COMMIT
-                                                     per list: REFRESH ... CONCURRENTLY ─ COMMIT
-                                                               record (clean only if mark_seq unchanged) ─ COMMIT
-```
-
-- **Marking.** Every table that a list reads carries a statement trigger that marks that list
-  (`warehouse_security.mark_lists_dirty`). A mark always raises the list's `mark_seq`, locks the queue
-  rows in one order, and keeps `last_marked_dirty` as the start of the current wait.
-- **The worker** takes the session advisory lock 71046 (a run already in progress makes the next one
-  return), never the document lock 71040, so a writer never waits for a refresh. 71040 therefore no
-  longer keeps anything away from a view refresh: a migration that refreshes or replaces a list, or locks
-  a table one reads, must not rely on it (migrations 19 and 68 took 71040 for that). Instead the migration
-  run itself holds 71046 from before the first migration to its end (`scripts/migration-plan.mjs`, with a
-  120 s lock timeout naming the holder), so no refresh overlaps a migration. It claims the dirty
-  lists with their `mark_seq` after any writer still marking one has committed, then refreshes each
-  list (`CONCURRENTLY`; whole only when a view cannot be refreshed concurrently) and commits per list.
-  A list becomes clean only if no mark arrived since the claim; a refresh that fails or is stopped
-  leaves it marked, with the SQLSTATE in `last_error_code`.
-- **The runner** is pg_cron, which the pinned image preloads (`docker-compose.override.yml`:
-  `shared_preload_libraries`, `cron.database_name=postgres`). Job `warehouse-list-refresh` runs as the
-  LOGIN role `warehouse_list_refresher`, which has no password: pg_cron connects over 127.0.0.1 inside
-  the db container, which the image's `pg_hba.conf` trusts, and every network address needs a password.
-  The role may execute the worker and its four helpers and nothing else. Job
-  `warehouse-list-refresh-history` keeps one day of run history.
-- `warehouse_security.ensure_list_refresher()` creates the role, its settings
-  (`statement_timeout` 120 s, `lock_timeout` 30 s) and both jobs; migration 91 and
-  `scripts/configure-list-refresh.sql` (setup and restore) call it.
-- `health-check.sh` (doctor) reads `warehouse_security.list_refresh_status()`: the job active and run
-  by the role, the role able to log in, no failing refresh, the last run succeeded, no list waiting
-  more than 15 s, and no session other than the runner holding 71046 (a worker `CALL` that stops on an
-  error keeps the lock for the rest of its session; the procedure cannot release it on an error). `public.get_list_freshness()` gives the app the same per list.
-- SQL tests run in one transaction and cannot call a procedure that commits; they call
-  `warehouse_security.refresh_dirty_lists()`, the same claim, refresh and record steps in the caller's
-  transaction.
+Every list RPC reads the tables directly, so a committed write is in the next list read; there is no refresh job
+(see [API_CONTRACT.md](API_CONTRACT.md#list-freshness-migration-106-2026-10-19)). The app re-reads open order and
+sensor screens on a timer; there is no live push.

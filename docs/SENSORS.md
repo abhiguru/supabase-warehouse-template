@@ -3,14 +3,14 @@
 Sensor readings reach this backend through a small bridge container that polls
 the facility's Tapo hubs on the local network and posts what it sees to the
 `ingest-sensor-readings` function. The app reads the result from the database
-(`sensor_status`, history RPCs) and is told about changes by Realtime
-(`sensor_latest`). The `sensors` capability in the public manifest is off by
+(`sensor_status`, history RPCs) and re-reads it on a timer
+(`sensor_latest`; there is no live push). The `sensors` capability in the public manifest is off by
 default; the app shows the Sensors screen only where it is on.
 
 Built and tested without hardware so far: the bridge's unit tests, the image
 check (`npm run test:sensors`), the function's handler tests and the database
 tests (`tests/sensor_ingest.sql`). A run against real hubs, the heartbeat
-interval against real T310 reporting and Realtime delivery to a staff phone are
+interval against real T310 reporting and the app's timed re-read on a staff phone are
 recorded separately before anyone is told the screen works.
 
 ## The hardware
@@ -36,7 +36,7 @@ recorded separately before anyone is told the screen works.
  T310 ──▶ H200 hub ◀── poll every 5 min ─ sensor-bridge ── post every 60 s ──▶ Kong ──▶ ingest-sensor-readings
                                           (queue in /data)                          │ service key
                                                                                     ▼
-                         sensor_readings (history) ◀── record_sensor_batch ──▶ sensor_latest ──▶ Realtime ──▶ app
+                         sensor_readings (history) ◀── record_sensor_batch ──▶ sensor_latest ◀── app re-reads
                                                                           └──▶ sensor_hubs
 ```
 
@@ -146,7 +146,7 @@ The bridge is the optional Compose service `sensor-bridge` (profile `sensors`,
 image `<project>-sensor-bridge` built from `docker/sensor-bridge/`). It is on
 the `default` network only: it calls Kong at
 `http://kong:8000/functions/v1/ingest-sensor-readings` and cannot reach the
-database, postgres-meta or Studio. It needs the hubs' LAN addresses to be
+database. It needs the hubs' LAN addresses to be
 reachable from the host. `setup.sh` and `start.sh` start the core services
 only; once a bridge container exists they replace it when its image or
 configuration changed, and `stop.sh` stops it with everything else.
@@ -257,30 +257,7 @@ volume when one is left (it holds no database state).
 
 ## Troubleshooting
 
-```bash
-bash scripts/compose.sh --profile sensors ps sensor-bridge
-bash scripts/compose.sh --profile sensors logs --tail 100 sensor-bridge
-bash scripts/compose.sh --profile sensors exec -T sensor-bridge cat /data/health.json
-```
-
-- **Exits at once, code 78, `event=config_error`:** a variable is missing or
-  invalid; the line names it, never its value. `--check-config` prints the
-  settings with the secrets left out.
-- **`event=auth_refused` (401 from the function):** the key is wrong, revoked, or was minted on
-  another installation. Mint a new one. While refused, the bridge keeps its
-  queue and tries again every 5 minutes.
-- **`event=post_failed` with 503:** migration 74 is not applied, or the function
-  runtime or the database is down (`node scripts/doctor.mjs --local`). The
-  queue keeps the readings.
-- **`event=hub_error` or `hub_offline` for a hub:** check from the host that its address answers
-  (`ping`, and that it has a DHCP reservation); a Docker network whose subnet
-  overlaps the LAN (`docker network inspect`) hides it from containers. A
-  wrong Tapo password shows as a login failure for that hub only.
-- **The app shows "no recent data" while the bridge is healthy:** the sensor's
-  battery, its distance to the hub, or a hub that is offline (`sensor_hubs`).
-  `--once --dump` shows what the hub itself reports.
-- **The Sensors screen is missing in the app:** the capability is off, or the
-  function runtime was not restarted after `set-capability`.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data).
 
 ## Licence
 

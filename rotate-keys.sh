@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rotate this instance's JWT secret and the anon/service keys derived from it.
-# Database signing configuration, every session and pending challenge, the
-# Realtime tenant and each key consumer are updated together; devices sign in again.
+# Database signing configuration, every session and pending challenge and each
+# key consumer are updated together; devices sign in again.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,8 @@ fi
 state="$(operator_state)"
 operator_lock "$state"
 compose config --quiet
+# This recreates db: a PostgreSQL 15 database must go through the baseline reload instead.
+bash "$ROOT/scripts/db-version-preflight.sh"
 db_id=$(compose ps -q db)
 [[ -n "$db_id" ]] || { echo 'Database service is not running; start the instance first.' >&2; exit 1; }
 if ! docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx healthy; then
@@ -52,7 +54,7 @@ mv -f "$staged" "$live"
 # Recreate only the running key consumers so an intentionally stopped optional
 # service is not started. db is included so its environment matches on reruns.
 recreate=()
-for service in db kong rest realtime storage functions studio supavisor; do
+for service in db kong rest storage functions supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then recreate+=("$service"); fi
 done

@@ -1,0 +1,123 @@
+# Expected differences between the chain-built database (A) and the baseline-built database (B).
+# Format: "<A|B>[@supabase|@pg17] <regex>" (see catalog-diff.mjs). A = the line exists only in A, B = only in B.
+# @supabase / @pg17 limit an entry to a run whose B database is on that image. An entry that applies to a run and matches
+# nothing FAILS the run. Every entry has a comment that says why the difference is expected (design item18-design.md
+# sections 13 and 14). A regex cannot end in a space (it is trimmed): end it with a class such as [A-Z].
+# The owner change of auth.email(), auth.role() and auth.uid() is NOT listed: catalog-diff.mjs rewrites side A for those
+# three functions only (normaliseOwnerFacts), so a changed body or a lost grant still shows.
+
+# Roles the new bootstrap does not create (design 13, 14d: "no postgres entries"; M3: no dashboard_user grants).
+# The chain-built database still carries the image's grants to them; the baseline carries none.
+A ^acl\|[a-z -]+\|[^|]+\|[a-z_]+ -> postgres [A-Z]
+A@pg17 ^acl\|[a-z -]+\|[^|]+\|[a-z_]+ -> (dashboard_user|supabase_auth_admin) [A-Z]
+# The image's default privileges FOR those roles, and default privileges that grant to them.
+A ^defacl\|role postgres schema
+A@pg17 ^defacl\|role supabase_auth_admin schema
+A ^defacl\|role [a-z_]+ schema [a-z_]+ type [a-zA-Z]\|[a-z_]+ -> postgres [A-Z]
+
+# Members of extensions (kind ext-member: only their ACLs are compared). The baseline replays the chain's explicit ACLs of
+# extension members right after its CREATE EXTENSION lines (dump-baseline.sh, part 2b), so the pg_trgm functions end up with
+# the same owner/service_role entries as in the chain and need no entry here (grants to postgres are covered above).
+
+# Migration 104 drops EVERY foreign key into a table of schema auth, which on the old image includes the two that the image's own
+# Storage tables carry (storage.buckets.owner and storage.objects.owner); the baseline database on the old image keeps them
+# because the baseline never touches Storage's tables. They point at an empty table on every facility.
+B@supabase ^constraint\|storage\.buckets\|buckets_owner_fkey FOREIGN KEY \(owner\) REFERENCES auth\.users\(id\)
+B@supabase ^constraint\|storage\.objects\|objects_owner_fkey FOREIGN KEY \(owner\) REFERENCES auth\.users\(id\)
+
+# Role attributes are the bootstrap's job, not the baseline's: migration 104 makes supabase_auth_admin NOLOGIN on the
+# old image (the chain side), the image's own setup leaves it with a login (the baseline side on the old image); the new
+# bootstrap has no such role at all.
+A ^role\|supabase_auth_admin\|rolcanlogin false$
+B@supabase ^role\|supabase_auth_admin\|rolcanlogin true$
+A@pg17 ^role\|supabase_auth_admin\|
+
+# Objects of the OLD IMAGE that the chain removes (migrations 103, 105, 106: pg_graphql, supabase_vault, pg_cron,
+# Realtime). The baseline never creates them, so the baseline database, which starts from the same old image, still holds
+# them; the new image (postgres:17 plus bootstrap) never has them. Old image only: on postgres:17 a line like these means the
+# baseline creates something it must not (design 4.7), and it is reported. (pg_net itself is not listed: the image never creates the extension, only its helper function and event trigger.)
+# The extensions themselves, their owner, and their comments:
+B@supabase ^extension\|(pg_graphql|supabase_vault)\|
+B@supabase ^comment\|extension (pg_graphql|supabase_vault)\|
+# The image's helper functions that react to those extensions, and the graphql schemas' functions:
+B@supabase ^function\|extensions\.(grant_pg_cron_access|grant_pg_graphql_access|grant_pg_net_access|set_graphql_placeholder)\(
+B@supabase ^acl\|function\|extensions\.(grant_pg_cron_access|grant_pg_graphql_access|grant_pg_net_access|set_graphql_placeholder)\(
+B@supabase ^comment\|function extensions\.(grant_pg_cron_access|grant_pg_graphql_access|grant_pg_net_access|set_graphql_placeholder)\(\)\|
+# The event triggers of the image's setup:
+B@supabase ^eventtrigger\|(graphql_watch_ddl|graphql_watch_drop|issue_graphql_placeholder|issue_pg_cron_access|issue_pg_graphql_access|issue_pg_net_access)\|
+# The schemas those extensions and Realtime own, and the default privileges the image gives in them:
+B@supabase ^schema\|(graphql|graphql_public|realtime|vault)\|
+B@supabase ^acl\|schema\|(graphql|graphql_public|realtime|vault)\|
+B@supabase ^defacl\|role [a-z_]+ schema (graphql|graphql_public|realtime) type
+# The ACLs of the members of those extensions only (keyed by extension name; the kept extensions pgcrypto, uuid-ossp and
+# pg_stat_statements are NOT absorbed): vault.secrets, graphql sequences, ...
+B@supabase ^acl\|ext-member\|(pg_graphql|supabase_vault):
+# The Realtime publication of the image:
+B@supabase ^publication(-table)?\|supabase_realtime\|
+
+# Expected when B is built on postgres:17 (design 14d).
+# PG17 adds the MAINTAIN privilege to table-like ACLs (relations, extension views, default privileges); only for the
+# named roles, never for PUBLIC.
+B@pg17 ^acl\|relation\|[^|]+\|[a-z_]+ -> (service_role|supabase_admin|supabase_storage_admin) MAINTAIN( WITH GRANT OPTION)?$
+B@pg17 ^acl\|ext-member\|[^|]+\|[a-z_]+ -> supabase_admin MAINTAIN( WITH GRANT OPTION)?$
+B@pg17 ^defacl\|role [a-z_]+ schema [a-z_]+ type r\|[a-z_]+ -> service_role MAINTAIN$
+
+# --- the rest of the old-image-versus-postgres:17 differences found by the first trial (item18-trial.md section 15) -------
+# Each is a property of the image or of the PostgreSQL version, not of the baseline. The B entries name the exact line the
+# bootstrap must produce, so a missing grant (say USAGE on schema storage for authenticated) is reported.
+# The database postgres: created by the old image's initdb as owner postgres; by the bootstrap's initdb as supabase_admin
+# (encoding, collation and ctype are separate facts and are NOT absorbed). Its ACL: the bootstrap owner's own entries.
+A@pg17 ^database\|postgres\|owner postgres$
+B@pg17 ^database\|postgres\|owner supabase_admin$
+A@pg17 ^acl\|database\|postgres\|postgres -> (PUBLIC CONNECT|PUBLIC TEMPORARY|supabase_etl_admin CREATE)$
+B@pg17 ^acl\|database\|postgres\|supabase_admin -> (PUBLIC CONNECT|PUBLIC TEMPORARY|supabase_admin CONNECT|supabase_admin CREATE|supabase_admin TEMPORARY)$
+# Schemas extensions and storage: owner and grants come from the old image (postgres, supabase_admin) or from the bootstrap
+# (supabase_admin, supabase_storage_admin). The bootstrap grants USAGE to the three API roles on both.
+A@pg17 ^schema\|extensions\|owner postgres$
+A@pg17 ^schema\|storage\|owner supabase_admin$
+B@pg17 ^schema\|extensions\|owner supabase_admin$
+B@pg17 ^schema\|storage\|owner supabase_storage_admin$
+A@pg17 ^acl\|schema\|extensions\|postgres -> (anon|authenticated|service_role) USAGE$
+A@pg17 ^acl\|schema\|storage\|supabase_admin -> (anon|authenticated|service_role) USAGE$
+A@pg17 ^acl\|schema\|storage\|supabase_admin -> (supabase_admin|supabase_storage_admin) (CREATE|USAGE)$
+B@pg17 ^acl\|schema\|extensions\|supabase_admin -> (anon|authenticated|service_role) USAGE$
+B@pg17 ^acl\|schema\|extensions\|supabase_admin -> supabase_admin (CREATE|USAGE)$
+B@pg17 ^acl\|schema\|storage\|supabase_storage_admin -> (anon|authenticated|service_role) USAGE$
+B@pg17 ^acl\|schema\|storage\|supabase_storage_admin -> supabase_storage_admin (CREATE|USAGE)$
+# Storage 1.80.2 on the old image kept explicit EXECUTE grants for the API roles on three helper functions (PUBLIC keeps
+# EXECUTE on both sides, so the effective access is the same).
+A@pg17 ^acl\|function\|storage\.(extension|filename|foldername)\(name text\)\|supabase_storage_admin -> (anon|authenticated|service_role) EXECUTE$
+# GoTrue's tables in the old image (the new image has no auth tables).
+A@pg17 ^(column|constraint|index|relation|sequence|seqstate|seed)\|auth\.
+A@pg17 ^comment\|table auth\.
+# PostgREST's DDL watch of the old image (event triggers and their functions in extensions); the baseline strips the triggers.
+A@pg17 ^eventtrigger\|pgrst_(ddl|drop)_watch\|
+A@pg17 ^function\|extensions\.pgrst_(ddl|drop)_watch\(\)\|
+A@pg17 ^acl\|function\|extensions\.pgrst_(ddl|drop)_watch\(\)\|
+# pg_stat_statements: version 1.10 (PG15) versus 1.11 (PG17) and the changed signature of its reset function.
+A@pg17 ^extension\|pg_stat_statements\|version 1\.10 schema extensions relocatable t owner supabase_admin$
+B@pg17 ^extension\|pg_stat_statements\|version 1\.11 schema extensions relocatable t owner supabase_admin$
+A@pg17 ^acl\|ext-member\|pg_stat_statements:function extensions\.pg_stat_statements_reset\(oid,oid,bigint\)\|supabase_admin -> supabase_admin EXECUTE$
+B@pg17 ^acl\|ext-member\|pg_stat_statements:function extensions\.pg_stat_statements_reset\(oid,oid,bigint,boolean\)\|supabase_admin -> supabase_admin EXECUTE$
+# The bootstrap's pgbouncer.get_auth never returns a superuser's verifier and pins its search_path (design 14b): the B line
+# must carry both, so a get_auth without `NOT usesuper` is reported.
+A@pg17 ^function\|pgbouncer\.get_auth\(p_usename text\)\|
+B@pg17 ^function\|pgbouncer\.get_auth\(p_usename text\)\|kind f owner supabase_admin secdef t .* config \{search_path=pg_catalog\} language plpgsql def .*WHERE usename = p_usename AND NOT usesuper
+# PG17 prints the columns of single-table views without the table qualifier (same view, different deparse).
+A@pg17 ^viewdef\|public\.(customers_with_priority_contact|high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
+B@pg17 ^viewdef\|public\.(customers_with_priority_contact|high_cpu_analysis|low_stock_alerts|rls_policies_summary|sensor_status)\|
+# Roles of the old image that the bootstrap does not create, their memberships, and their settings.
+A@pg17 ^role\|(postgres|dashboard_user|supabase_etl_admin|supabase_read_only_user|supabase_replication_admin)\|
+A@pg17 ^member\|(postgres|supabase_etl_admin|supabase_read_only_user) in 
+A@pg17 ^setting\|role (postgres|supabase_auth_admin|supabase_read_only_user) db 
+# Role differences by design: pg-safeupdate is not loaded (design 12.3); supabase_storage_admin has NOINHERIT (as on the old
+# image) and no CREATEROLE; the old image's search_path setting of supabase_admin has a stray backslash in "\$user"; the grantor
+# of authenticator's three memberships is postgres in the old image and supabase_admin in the bootstrap. Only these exact
+# facts: any other attribute of authenticator, supabase_storage_admin or supabase_admin is reported.
+A@pg17 ^setting\|role authenticator db \*\|session_preload_libraries=safeupdate$
+A@pg17 ^role\|supabase_storage_admin\|rolcreaterole true$
+B@pg17 ^role\|supabase_storage_admin\|rolcreaterole false$
+A@pg17 ^setting\|role supabase_admin db \*\|search_path="\\\$user", public, auth, extensions$
+B@pg17 ^setting\|role supabase_admin db \*\|search_path="\$user", public, auth, extensions$
+A@pg17 ^member\|authenticator in (anon|authenticated|service_role)\|admin f inherit f set t grantor postgres$
+B@pg17 ^member\|authenticator in (anon|authenticated|service_role)\|admin f inherit f set t grantor supabase_admin$

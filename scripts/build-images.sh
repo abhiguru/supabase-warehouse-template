@@ -10,7 +10,7 @@ umask 077
 #   --no-cache   the same, without Docker's build cache (current OS packages)
 #   --replace-optional
 #                build nothing: replace the running optional services
-#                (monitoring, printing, pooler) whose image or configuration
+#                (printing, sensors, pooler) whose image or configuration
 #                changed. setup.sh and start.sh start only the core services,
 #                so they run this after their own start. A running service
 #                whose image does not match this checkout (missing, recipe

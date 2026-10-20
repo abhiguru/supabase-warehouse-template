@@ -2,7 +2,7 @@
 # Builds the image, runs it with the production hardening flags and checks the real service.
 #   test/integration.sh                           build, run, check, clean up
 #   IMAGE=pdf-renderer:dev test/integration.sh    use an existing image (skip the build)
-# Needs docker, curl and node on the host; pdftotext (poppler-utils) is used when present. Test data is fictional.
+# Needs docker, curl and node on the host; pdftotext (poppler-utils) is used when present, otherwise from the pinned poppler container of tests/golden-pdf. Test data is fictional.
 # Nothing is printed to a printer. All containers and the network are named pdfr-it-<pid> and removed at the end.
 set -uo pipefail
 
@@ -62,11 +62,23 @@ post() { # post <container> <out> <code-file> [curl args...]
 doc() { echo "-Ffiles=@$1;filename=index.html;type=text/html"; }
 is_pdf() { [ "$(head -c 5 "$1")" = "%PDF-" ] && tail -c 64 "$1" | grep -aq '%%EOF'; }
 pages() { node -e 'const s=require("fs").readFileSync(process.argv[1]).toString("latin1");console.log((s.match(/\/Type\s*\/Page(?![A-Za-z])/g)||[]).length)' "$1"; }
+# Without pdftotext on the host (a self-hosted runner without sudo), a wrapper runs it in the pinned poppler container of
+# tests/golden-pdf (fixed Debian snapshot; no network, read-only root, only $TMP mounted read-only).
+if ! command -v pdftotext >/dev/null 2>&1 && [ -f "$ROOT/../../tests/golden-pdf/Dockerfile" ]; then
+  POPPLER_IMAGE="pdf-golden-tools:it-$SUF"
+  if ${LOCK:+flock "$LOCK"} docker build -q -t "$POPPLER_IMAGE" "$ROOT/../../tests/golden-pdf" >/dev/null 2>&1; then
+    mkdir -p "$TMP/bin"
+    printf '#!/bin/sh\nexec docker run --rm -i --network none --read-only -u "$(id -u):$(id -g)" -v "%s:%s:ro" --entrypoint pdftotext "%s" "$@"\n' "$TMP" "$TMP" "$POPPLER_IMAGE" >"$TMP/bin/pdftotext"
+    chmod +x "$TMP/bin/pdftotext"
+    export PATH="$TMP/bin:$PATH"
+    trap 'docker rmi -f "$POPPLER_IMAGE" >/dev/null 2>&1; cleanup' EXIT
+  fi
+fi
 HAVE_PDFTOTEXT=0; command -v pdftotext >/dev/null 2>&1 && HAVE_PDFTOTEXT=1
 ptext() { pdftotext "$1" - 2>/dev/null; }
 # A skipped check proves nothing: in CI (CI=true) it is a failure, so a runner without poppler-utils cannot pass silently.
 skip() {
-  if [ "${CI:-}" = true ]; then fail "$1 (pdftotext not installed; CI must install poppler-utils)"; else echo "SKIP  $1 (pdftotext not installed)"; fi
+  if [ "${CI:-}" = true ]; then fail "$1 (pdftotext not installed; the pinned poppler container could not be built)"; else echo "SKIP  $1 (pdftotext not installed)"; fi
 }
 
 # ---- the listener the renderer must never reach (an IP literal bypasses the host-resolver rule, so it tests interception)

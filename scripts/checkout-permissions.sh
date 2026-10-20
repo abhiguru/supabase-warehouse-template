@@ -3,7 +3,7 @@
 #
 # `git pull` and `git checkout` write files with the caller's umask. Under
 # Ubuntu's default umask 0002 they become group-writable, and the root-run
-# helpers (scripts/backup-usb.sh setup, scripts/backup-disk.sh) then refuse to
+# helpers (scripts/backup-usb.sh setup) then refuse to
 # run. Under umask 077 they become owner-only, and the containers can no longer
 # read the bootstrap SQL. This script removes group/world write and restores
 # world read (and execute where the owner has it) on tracked files and their

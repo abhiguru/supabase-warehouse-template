@@ -52,27 +52,25 @@ accepted_log="$report_dir/accepted.log"
 while IFS=$'\t' read -r image recipe; do
   [[ -n "$image" ]] || continue
   base="$report_dir/$(printf '%s' "$image" | tr '/:@' '___')"
-  # Pass "fixed" (--ignore-unfixed): rows with a listed fix; only an advisory
-  # exception covers one. Pass "all": every row, the ones with no fix included.
-  for pass in fixed all; do
-    unfixed=(--ignore-unfixed)
-    [[ "$pass" == all ]] && unfixed=()
-    report="$base.$pass.json"
-    echo "Scanning $image ($pass)"
-    if ! trivy image --quiet --scanners vuln --severity HIGH,CRITICAL "${unfixed[@]}" --list-all-pkgs \
-      --exit-code 0 --format json --output "$report" "$image"; then
-      echo "Image scan failed for $image ($pass); no usable report was produced." >&2
-      failed=1
-    fi
-    # Only the validator's acceptance line counts as a pass, never a bare exit 0.
-    if verdict=$(node "$ROOT/scripts/validate-image-report.mjs" "$report" "$image" --exceptions "$ledger" --recipe "$recipe" 2>&1) &&
-      [[ "$verdict" == "Image scan evidence accepted for $image: "* && "$verdict" != *$'\n'* ]]; then
-      printf '%s\n' "$verdict" | tee -a "$accepted_log"
-    else
-      printf '%s\n' "${verdict:-Image scan evidence for $image: the validator printed no verdict.}" >&2
-      failed=1
-    fi
-  done
+  # One full pass: every HIGH/CRITICAL row, the ones with no fix included. The
+  # validator tells the two apart by the row itself (a row with a listed fix is
+  # covered only by an advisory exception, never by a no-fix one), so an
+  # --ignore-unfixed pass would add nothing.
+  report="$base.json"
+  echo "Scanning $image"
+  if ! trivy image --quiet --scanners vuln --severity HIGH,CRITICAL --list-all-pkgs \
+    --exit-code 0 --format json --output "$report" "$image"; then
+    echo "Image scan failed for $image; no usable report was produced." >&2
+    failed=1
+  fi
+  # Only the validator's acceptance line counts as a pass, never a bare exit 0.
+  if verdict=$(node "$ROOT/scripts/validate-image-report.mjs" "$report" "$image" --exceptions "$ledger" --recipe "$recipe" 2>&1) &&
+    [[ "$verdict" == "Image scan evidence accepted for $image: "* && "$verdict" != *$'\n'* ]]; then
+    printf '%s\n' "$verdict" | tee -a "$accepted_log"
+  else
+    printf '%s\n' "${verdict:-Image scan evidence for $image: the validator printed no verdict.}" >&2
+    failed=1
+  fi
 done <<< "$images"
 [[ "$failed" == 0 ]] || exit 1
 # An entry that covered nothing in a complete scan is stale (a fixed tag, a

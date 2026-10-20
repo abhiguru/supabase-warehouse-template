@@ -62,7 +62,7 @@ test('image scan fails closed on missing inventory and isolates each report run'
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('the scan builds without cache, runs a second pass without --ignore-unfixed and names each recipe', () => {
+test('the scan builds without cache, scans each image once, in full, and names each recipe', () => {
   const root = mkdtempSync(join(tmpdir(), 'warehouse-scan-passes-'));
   try {
     mkdirSync(join(root, 'scripts'));
@@ -81,13 +81,17 @@ test('the scan builds without cache, runs a second pass without --ignore-unfixed
     const reportFor = (image, rows) => ({ SchemaVersion: 2, ArtifactName: image, ArtifactType: 'container_image', Results: [{ Target: 'test OS', Class: 'os-pkgs', Packages: [{ Name: 'libexample', Version: '1.0' }], Vulnerabilities: rows }] });
     const unfixed = { VulnerabilityID: 'CVE-2026-0001', PkgName: 'libexample', InstalledVersion: '1.0', Severity: 'HIGH', Status: 'affected' };
     const reports = {
-      'warehouse-scan-test-app': { fixed: reportFor('warehouse-scan-test-app', []), all: reportFor('warehouse-scan-test-app', [unfixed]) },
-      ['example.test/rest:1@sha256:' + 'a'.repeat(64)]: { fixed: reportFor('example.test/rest:1@sha256:' + 'a'.repeat(64), []), all: reportFor('example.test/rest:1@sha256:' + 'a'.repeat(64), []) },
+      'warehouse-scan-test-app': reportFor('warehouse-scan-test-app', [unfixed]),
+      ['example.test/rest:1@sha256:' + 'a'.repeat(64)]: reportFor('example.test/rest:1@sha256:' + 'a'.repeat(64), []),
     };
-    for (const [image, byPass] of Object.entries(reports)) {
-      for (const [pass, value] of Object.entries(byPass)) writeFileSync(join(root, `${image.replace(/[/:@]/g, '_')}.${pass}.json`), JSON.stringify(value));
+    const fileOf = image => image.replace(/[/:@]/g, '_');
+    for (const [image, value] of Object.entries(reports)) {
+      writeFileSync(join(root, `${fileOf(image)}.json`), JSON.stringify(value));
+      // What a fixed-only (--ignore-unfixed) pass would return: no unfixed rows. A slip back to such a pass then also fails the report check.
+      const fixedOnly = { ...value, Results: value.Results.map(result => ({ ...result, Vulnerabilities: result.Vulnerabilities.filter(r => r.FixedVersion) })) };
+      writeFileSync(join(root, `${fileOf(image)}.fixedonly.json`), JSON.stringify(fixedOnly));
     }
-    writeFileSync(join(root, 'bin/trivy'), `#!/bin/sh\necho "trivy $*" >> '${log}'\npass=all\nfor arg in "$@"; do [ "$arg" = --ignore-unfixed ] && pass=fixed; done\nfor arg in "$@"; do image="$arg"; done\nout=\nwhile [ "$1" != "--output" ]; do shift; done\nout="$2"\ncp "${root}/$(printf '%s' "$image" | tr '/:@' '___').$pass.json" "$out"\n`, { mode: 0o700 });
+    writeFileSync(join(root, 'bin/trivy'), `#!/bin/sh\necho "trivy $*" >> '${log}'\nfor arg in "$@"; do image="$arg"; done\nsuffix=\nfor arg in \"$@\"; do [ \"$arg\" = --ignore-unfixed ] && suffix=.fixedonly; done\nout=\nwhile [ "$1" != "--output" ]; do shift; done\nout="$2"\ncp "${root}/$(printf '%s' "$image" | tr '/:@' '___')$suffix.json" "$out"\n`, { mode: 0o700 });
     const ledger = entries => writeFileSync(join(root, 'docker/image-exceptions.json'), JSON.stringify({ schemaVersion: 1, exceptions: entries }));
     const run = () => spawnSync('bash', [join(root, 'scripts/scan-images.sh')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, WAREHOUSE_SCAN_REPORT_DIR: join(root, 'reports') },
@@ -110,8 +114,8 @@ test('the scan builds without cache, runs a second pass without --ignore-unfixed
     const calls = readFileSync(log, 'utf8').trim().split('\n');
     assert.ok(calls.some(line => /^compose .*build --no-cache$/.test(line)), 'images are built without the build cache');
     const scans = calls.filter(line => line.startsWith('trivy '));
-    assert.equal(scans.length, 4, 'two passes per image');
-    assert.equal(scans.filter(line => line.includes('--ignore-unfixed')).length, 2, 'one pass per image without --ignore-unfixed');
+    assert.equal(scans.length, 2, 'one pass per image');
+    assert.equal(scans.filter(line => line.includes('--ignore-unfixed')).length, 0, 'no pass uses --ignore-unfixed');
     for (const line of scans) assert.match(line, /--severity HIGH,CRITICAL .*--list-all-pkgs --exit-code 0 --format json --output /);
 
     // A state whose project has containers is an installation: its images are
@@ -140,6 +144,7 @@ function check(report, image, { entries, recipe = 'docker/app/Dockerfile', raw }
 }
 const image = 'warehouse-test-app';
 const row = { VulnerabilityID: 'CVE-2026-0001', PkgName: 'libexample', InstalledVersion: '1.0', Severity: 'HIGH', Status: 'affected' };
+// A row whose status says no fix yet but which lists one: only the validator's hasFix() refuses it for a no-fix entry.
 const fixedRow = { ...row, VulnerabilityID: 'CVE-2026-0002', Status: 'fixed', FixedVersion: '1.1' };
 const report = rows => ({ SchemaVersion: 2, ArtifactName: image, ArtifactType: 'container_image', Results: [{ Target: 'test OS', Class: 'os-pkgs', Packages: [{ Name: 'libexample', Version: '1.0' }], Vulnerabilities: rows }] });
 const noFix = { id: 'app-os-no-fix', recipe: 'docker/app/Dockerfile', class: 'no-fix', statuses: ['affected'], severities: ['HIGH'], owner: 'abhiguru', reason: 'Debian has no fixed package for these rows yet.', reviewed: date(0), expires: date(MAX_EXCEPTION_DAYS) };
@@ -160,7 +165,10 @@ test('TW-BE-009: a HIGH row passes only with a valid exception for its recipe', 
   };
   assert.match(refused([row], [], 'a row with no exception'), /1 row\(s\) without a valid exception, e\.g\. CVE-2026-0001 libexample 1\.0 \(affected\)/);
   refused([row], [noFix], 'an exception of another recipe', 'docker/other/Dockerfile');
-  refused([fixedRow], [{ ...noFix, statuses: ['affected', 'unknown'] }], 'a no-fix entry never covers a row with a listed fix');
+  const fixListedAffected = { ...row, VulnerabilityID: 'CVE-2026-0002', FixedVersion: '1.1' };
+  const fixListedNoStatus = { VulnerabilityID: 'CVE-2026-0004', PkgName: 'libexample', InstalledVersion: '1.0', Severity: 'HIGH', FixedVersion: '1.1' };
+  refused([fixListedAffected], [noFix], 'a no-fix entry never covers a row with a listed fix, whatever its status');
+  refused([fixListedNoStatus], [{ ...noFix, statuses: ['affected', 'unknown'] }], 'a row with no status and a listed fix');
   refused([{ ...row, Severity: 'CRITICAL' }], [noFix], 'a severity the entry does not list');
   refused([{ ...row, Status: 'will_not_fix' }], [noFix], 'a status the entry does not list');
   refused([{ ...fixedRow, VulnerabilityID: 'CVE-2026-0003' }], [advisory], 'an advisory the entry does not name');
@@ -192,6 +200,16 @@ test('TW-BE-009: a HIGH row passes only with a valid exception for its recipe', 
   refused([row], [{ ...noFix, expires: '2026-02-30' }], 'an impossible date');
   assert.notEqual(check(report([row]), image, { raw: '{"schemaVersion":1}' }).status, 0, 'a ledger without its list');
   assert.notEqual(check(report([row]), image, { raw: 'not json' }).status, 0, 'an unreadable ledger');
+});
+
+test('one full report with a fixable HIGH row fails even when a no-fix entry names the image', () => {
+  // The rule the --ignore-unfixed pass used to enforce, now by the full report alone.
+  const result = check(report([row, fixedRow]), image, { entries: [noFix] });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /1 row\(s\) without a valid exception, e\.g\. CVE-2026-0002 libexample 1\.0 \(fixed in 1\.1\)/);
+  assert.notEqual(check(report([{ ...row, VulnerabilityID: 'CVE-2026-0002', FixedVersion: '1.1' }]), image, { entries: [noFix] }).status, 0, 'a no-fix entry never covers a fixable row with a no-fix status');
+  const noStatus = { VulnerabilityID: 'CVE-2026-0004', PkgName: 'libexample', InstalledVersion: '1.0', Severity: 'HIGH', FixedVersion: '1.1' };
+  assert.notEqual(check(report([noStatus]), image, { entries: [{ ...noFix, statuses: ['affected', 'unknown'] }] }).status, 0, 'a fixable row with no status is not covered either');
 });
 
 test('TW-BE-010: a report with no package results fails unless its exact digest has a no-package-inventory exception', () => {

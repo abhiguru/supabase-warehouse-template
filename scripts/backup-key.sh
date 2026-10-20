@@ -9,9 +9,9 @@
 #   backup_key_load FILE              read and validate a key into BACKUP_KEY
 #   backup_hmac KEY LABEL < data      HMAC-SHA256 as hexadecimal
 #   backup_sign_dir DIR KEY           write SHA256SUMS.hmac for a backup directory
-#   backup_authenticate DIR ALLOW     verify signature, then checksums; ALLOW=true accepts an unsigned backup
-#                                     written before v5, or any backup when the backup key is lost, but never
-#                                     a v5 backup whose signature file is missing while the key is available
+#   backup_authenticate DIR ALLOW     verify signature, then checksums; ALLOW=true accepts a backup only when
+#                                     the backup key is lost; never a v5 backup whose signature file is
+#                                     missing while the key is available
 #   backup_sign_archive FILE KEY      write FILE.hmac over FILE.sha256
 #   backup_check_archive FILE KEY     verify FILE.hmac
 #   backup_encrypt KEY / backup_decrypt KEY   stdin to stdout, AES-256-CTR
@@ -97,14 +97,6 @@ Continue only if the medium never left your custody.
 MSG
 }
 
-# Backups of format v5 and later are always signed (scripts/backup.sh). The format is read from
-# metadata.txt, which is not covered by anything until the signature has been checked, so an
-# unsigned copy can be relabelled v4 and passes as an old backup: an accepted residual (owner
-# decision of 2026-10-17); --allow-unsigned and its banner stay required for it.
-backup_format_is_signed() {
-  grep -Eqx 'format=warehouse-backup-v([5-9]|[1-9][0-9]+)' "$1/metadata.txt" 2>/dev/null
-}
-
 # Runs SHA256SUMS over a backup directory. The list is made to name only files
 # inside the backup first: `sha256sum -c` opens whatever path a line gives it.
 backup_checksums() {
@@ -123,8 +115,7 @@ backup_checksums() {
 # signature comes first: SHA256SUMS is not used, and nothing in the backup is
 # parsed, loaded or executed by the callers, before it passes. Only a backup
 # accepted without a signature (ALLOW=true) has its checksums run unauthenticated.
-# ALLOW=true is for a backup written before v5 (it never had a signature) and for a lost
-# key (the signature cannot be checked). It does not accept a v5 backup whose signature
+# ALLOW=true is for a lost key (the signature cannot be checked). It does not accept a v5 backup whose signature
 # file is gone while the key is available: that signature was taken away.
 backup_authenticate() {
   local dir="$1" allow="${2:-false}" keyfile recorded expected listed present
@@ -132,25 +123,24 @@ backup_authenticate() {
   [[ -f "$dir/SHA256SUMS" && ! -L "$dir/SHA256SUMS" ]] || { echo 'Incomplete backup: missing SHA256SUMS' >&2; return 1; }
   if [[ ! -e "$dir/$BACKUP_SIGNATURE_FILE" && ! -L "$dir/$BACKUP_SIGNATURE_FILE" ]]; then
     # Before any checksum is run: the answer does not depend on the contents, and a large backup takes long to hash.
-    if backup_format_is_signed "$dir" && keyfile="$(backup_key_path)" && [[ -e "$keyfile" ]]; then
+    if keyfile="$(backup_key_path)" && [[ -e "$keyfile" ]]; then
       cat >&2 <<MSG
 Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE), and a v5 backup must be signed; its signature file was removed.
---allow-unsigned is only for a backup written before format v5, or when the backup key is lost.
+--allow-unsigned is only for when the backup key is lost.
 The backup key $keyfile is available here. Use another copy of this backup.
 MSG
       return 1
     fi
     if [[ "$allow" == true ]]; then
       backup_checksums "$dir" || return 1
-      local note="this backup carries no signature ($BACKUP_SIGNATURE_FILE)."
-      if backup_format_is_signed "$dir"; then note+=" It is a signed format and the backup key was missing, so the signature could not be required."; fi
+      local note="this backup carries no signature ($BACKUP_SIGNATURE_FILE). It is a signed format and the backup key was missing, so the signature could not be required."
       backup_unsigned_warning "$note"; return 0
     fi
     cat >&2 <<MSG
 Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE).
-Backups written before format warehouse-backup-v5 are unsigned. If this one never left your
-custody, repeat the command with --allow-unsigned; otherwise use a signed backup.
-(--allow-unsigned is only for a backup written before format v5, or when the backup key is lost.)
+Every accepted backup is signed, so this one lost its signature file. If it never left your
+custody and the backup key is lost, repeat the command with --allow-unsigned; otherwise use a signed backup.
+(--allow-unsigned is only for when the backup key is lost.)
 MSG
     return 1
   fi

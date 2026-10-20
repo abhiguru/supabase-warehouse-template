@@ -16,7 +16,8 @@ commands, migration conventions, CI jobs and the mobile companion pin).
 Set `WAREHOUSE_STATE_DIR` to the instance's private state path for doctor, start,
 stop and Compose commands. The installer generates a unique project name, and
 `bash stop.sh` preserves data. Never target a generic database container. Add
-new migrations instead of editing applied files.
+new migrations instead of editing applied files; migrations 000 to 110 are one baseline file and the next
+migration is number 111 ([docs/DEVELOPER_HANDOFF.md](docs/DEVELOPER_HANDOFF.md#migration-conventions)).
 
 ## Guidelines
 

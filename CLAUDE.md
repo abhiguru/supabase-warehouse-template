@@ -71,26 +71,33 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 - Operator install and upgrades: [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
   (`setup.sh --operator`, one Cloudflare Tunnel per installation, MSG91 SMS).
 - Every business RPC is guarded by `warehouse_security.authorize_rpc` (latest version in
-  the newest migration that redefines it), and business data is written only through
+  the baseline until a migration after it redefines it, then in the newest such migration), and business data is written only through
   those RPCs: no app role, administrator included, can insert, update or delete a
   business table directly (migration 42). Direct table reads remain, limited by the row
   policies; on `invoice` the six internal columns (discount and zero-charge reason,
   author and time) are not readable from the table, so a read names its columns
   (migration 48; [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Internal columns").
   What supervisors, staff and customers may do is in
-  [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table in its last
-  section; `tests/role_allowlist.sql` classifies every granted function);
+  [docs/STAFF_GRN_POLICY.md](docs/STAFF_GRN_POLICY.md) (role table under "Roles after
+  migration 45", current through migration 90; `tests/role_allowlist.sql` classifies every granted function);
   invoice amounts in
   [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md).
 
 ## Working rules
 
 - Schema changes are **new, append-only migrations** in `migrations/`; applied files are
-  checksum-locked and must never be edited. Patch large baseline functions with the
+  checksum-locked and must never be edited. Migrations 000-110 are the one file `00000000000000_baseline.sql`
+  (the old files: tag `migrations-pre-baseline`); the next migration is `00000000000111_<topic>.sql`. Patch large baseline functions with the
   `DO $patch$` + marker-count pattern used by earlier migrations.
+- Roles are never created, altered or dropped in a migration (`tests/migration-roles.test.mjs`): they live in
+  `docker/volumes/db/00-bootstrap.sql`, and a database-level bootstrap fix also ships as a migration
+  ([docs/CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md), "Roles and migrations").
 - Every new RPC calls `warehouse_security.authorize_rpc` first, sets
   `search_path`, and is granted explicitly; new tables enable RLS and revoke default grants.
 - Checks before a pull request: `npm test` and `npm run test:migrations` (Docker); add a SQL
   test under `tests/` for each policy or RPC change and register it in `tests/migrations.sh`.
+  CI's `contract` job checks the backend against the app commit in `MOBILE_REF` (`.github/workflows/ci.yml`): bump it with
+  every change that needs the app, and run `npm run check:contract -- <app checkout>` first. `npm run baseline:verify` is
+  needed only when the baseline file is regenerated, never for an ordinary migration.
 - Use fictional names and phone numbers in tests and fixtures; never commit secrets.
 - Security-relevant findings go to a private GitHub security advisory, not a public issue.
