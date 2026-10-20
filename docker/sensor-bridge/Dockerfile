@@ -1,6 +1,6 @@
 # Tapo sensor bridge (README.md). GPL-3.0-or-later, see LICENSE in this folder.
 # python:3.14-slim-bookworm (Python 3.14.x), multi-architecture index digest, resolved 2026-10-13.
-FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
