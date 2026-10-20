@@ -212,7 +212,7 @@ SELECT pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid
        pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444403',gen_random_uuid())) AS as_nocust \gset
 RESET ROLE;
 UPDATE public.user_profiles SET active=true,enrollment_status='approved' WHERE id=:'sync_id'::uuid;
-UPDATE public.user_profiles SET is_service_account=false WHERE id=:'sync_id'::uuid;
+UPDATE public.user_profiles SET is_service_account=false, role='customer' WHERE id=:'sync_id'::uuid; -- assignments apply only to the Customer role
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ur_call(format('SELECT public.assign_customer_to_user(%L,%L::uuid)','919444444406',:'cust_off')) AS as_off2 \gset
 RESET ROLE;

@@ -785,8 +785,9 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert(public.update_user_role(:'managed_profile'::uuid,'admin')->>'success'='true'
  AND public.update_user_role(:'managed_profile'::uuid,'customer')->>'success'='true',
  'administrator grants and takes back the administrator role');
-SELECT pg_temp.ra_assert(public.assign_customer_to_user('919888888933',:'gamma'::uuid)
- AND public.remove_customer_assignment('919888888933',:'gamma'::uuid),'administrator changes a supervisor''s customer assignments');
+-- Owner decision 2026-10-20: customer assignments apply only to the Customer role; removing a stale one still works.
+SELECT pg_temp.ra_assert(pg_temp.ra_call(format('SELECT to_jsonb(public.assign_customer_to_user(''919888888933'',%L::uuid))',:'gamma'))->>'raised' LIKE 'ROLE_NOT_CUSTOMER: %'
+ AND public.remove_customer_assignment('919888888933',:'gamma'::uuid),'administrator cannot assign a customer to a supervisor (ROLE_NOT_CUSTOMER); removal still works');
 SELECT pg_temp.ra_assert(public.update_user_status(:'admin2_profile'::uuid,false)->>'success'='true',
  'administrator deactivates the other administrator');
 RESET ROLE;

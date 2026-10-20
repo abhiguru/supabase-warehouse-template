@@ -290,7 +290,10 @@ earlier value, `error_code` is the stable code the app reads). The user row carr
   **`remove_customer_assignment(target_user_mobile, target_customer_id)`** still return a boolean and raise on refusal; the
   exception message now starts with a stable code and a colon (`CODE: text`): `PERMISSION_DENIED`, `NOT_FOUND` (person not found or
   inactive, or the customer does not exist or is deleted), `SELF_EDIT_FORBIDDEN` and `CANNOT_MODIFY_ADMIN` (supervisor, SQLSTATE
-  42501), `SERVICE_ACCOUNT_READ_ONLY`, and for assign only `CUSTOMER_INACTIVE` (a deactivated business).
+  42501), `SERVICE_ACCOUNT_READ_ONLY`, and for assign only `CUSTOMER_INACTIVE` (a deactivated business) and `ROLE_NOT_CUSTOMER`
+  (owner decision 2026-10-20: the person's role is not Customer; message `ROLE_NOT_CUSTOMER: Customer assignments apply only to the
+  Customer role.`, checked after the administrator and service-account rules, before the customer is looked up). Removing an
+  assignment is allowed for any role, so a stale assignment of a person who is no longer a Customer can still be removed.
 - **`delete_user_account()`**: a caller whose account is already deleted gets `{ success: true, message: 'Account deleted',
   already_deleted: true }` (the retry of a timed-out delete). Other answers unchanged; `LAST_ADMIN` now also carries `error_code`.
 - **`warehouse_security.other_active_admin_exists`** leaves out deleted accounts.
@@ -299,7 +302,7 @@ earlier value, `error_code` is the stable code the app reads). The user row carr
 
 A deactivated business (`active = false`) is offered by no staff customer picker (`search_customers`: new GRN, dispatch, order, and the list-filter
 customer search) and not by the all-customers branch of `search_customer_items_for_order`, and
-`assign_customer_to_user` cannot give it a new customer login. Everything else keeps working for it: its
+`assign_customer_to_user` cannot give it a new customer login (and refuses any person whose role is not Customer: `ROLE_NOT_CUSTOMER`). Everything else keeps working for it: its
 customer logins read all past records and order their goods out,
 staff and administrators still see its stock, invoices and activity, and dispatch creation accepts it
 (`update_grn` too, so an existing GRN can still be edited). Since migration 83 `save_grn` (a NEW GRN) refuses
@@ -311,7 +314,8 @@ ever deleted.
   customers get 42501). `false` sets `active = false` only (no stock check, never `deleted_at`); `true` sets
   `active = true` and clears `deleted_at` / `deleted_by`. Answer `{success:true, message, data:{id, active}}`
   (message `... is already inactive` / `... is already active` when nothing changes); `{success:false,
-  message}` for an unknown id (`Customer not found`) or a missing argument.
+  message}` for an unknown id (`Customer not found`) or a missing argument. `true` is refused with `DUPLICATE_MOBILE` when another
+  active customer uses the same mobile (owner decision 2026-10-20; details in "Customers: duplicates, stale edit, deactivated search").
 - `update_customer(..., p_active)` (migration 83): `p_active = true` also clears `deleted_at` / `deleted_by`, so a
   business is never active and deleted at once; `false` and NULL leave `deleted_at` untouched.
 - `safe_delete_customer(p_customer_id uuid, p_permanent boolean DEFAULT false)`. "Data" means any GRN,
@@ -326,7 +330,7 @@ ever deleted.
   permanent (`delete_type:'permanent'`) also removes its empty OPEN carts and switched-off assignments.
 - `restore_customer(p_customer_id uuid)`: takes a business that is deleted OR inactive and makes it active
   with `deleted_at` / `deleted_by` cleared (same as `set_customer_active(id, true)`); an active, undeleted
-  business answers `{success:false, message:'Customer not found or not deleted'}`.
+  business answers `{success:false, message:'Customer not found or not deleted'}`; it is refused with `DUPLICATE_MOBILE` like Activate (see "Customers: duplicates, stale edit, deactivated search") when another active customer uses the number.
 - `get_orders_list` leaves out orders of a deleted business.
 - Five readers that no longer hide a deactivated business from staff and administrators (filter is
   `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
@@ -419,6 +423,9 @@ SQLSTATE 42501 first.
   Sending true or false sets it as before. `p_packaging` and `p_description` are different: not sent or NULL
   CLEARS them (as before), so the app must always send the current values. `create_item` with `p_active` NULL
   creates an active item. Codes: `NOT_FOUND`, `DUPLICATE_NAME`, `INVALID_INPUT`, `PERMISSION_DENIED`.
+  The name is compared with the stored name after trimming both, so an item stored as `Garlic ` saved as `Garlic` is not re-checked for a duplicate.
+  When the save switches an item from inactive to active and that gave it the standard rate tiers, `data` also carries `rate_source: 'standard'`; otherwise `data` has no `rate_source`.
+- `delete_item_safe(p_item_id)`: for an item that does not exist the refusal also carries `error_code: 'NOT_FOUND'` (still `{ success: false, message: 'Item not found' }`); its other refusals and texts are unchanged.
 - `get_items`: the search text also matches `packaging` (case-insensitive substring, like name and description).
   Order, paging and the answer are unchanged.
 - `get_item_usage(p_item_id uuid)`, read-only, administrators and supervisors: answer
@@ -666,8 +673,13 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   changes nothing. Send `updated_at` back exactly as the string read from `customers` (microseconds): a JavaScript `Date`
   round-trip truncates to milliseconds and would always answer `STALE_CUSTOMER`. A blank `p_name` is `VALIDATION_FAILED`;
   a name is trimmed. Other codes: `PERMISSION_DENIED`, `CUSTOMER_NOT_FOUND` (unknown id), `DATABASE_ERROR`.
-  `set_customer_active` has no `error.code` (it answers `{success:false, message}`); Activate does not re-check the
-  mobile, so re-activating a customer can recreate a number shared with another active customer.
+  `set_customer_active` has no `error.code` for an unknown id or a missing argument (it answers `{success:false, message}`).
+  **Activate re-checks the mobile (owner decision 2026-10-20).** `set_customer_active(id, true)`, `update_customer(..., p_active => true)`
+  on a deactivated or deleted customer (the number checked is the one sent in the same call, else the stored one) and the legacy
+  `restore_customer` answer `{success:false, data:null, message:'<other name> already uses this mobile number. Change one of the numbers
+  first.', error:{code:'DUPLICATE_MOBILE', field:'mobile', details:{customer_id, name, active:true}}}` when another ACTIVE, undeleted
+  customer has the same mobile key; `details` is the OTHER customer, and nothing changes. A customer with no mobile is never refused,
+  and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).
 - `search_customers(p_search_query text, p_limit integer DEFAULT 20, p_include_inactive boolean DEFAULT false)`: rows
   now also carry `active` and `deleted` (booleans). `p_include_inactive = true` is honoured for administrators and
   supervisors only and then also returns deactivated customers; for staff and customers it is ignored (active customers

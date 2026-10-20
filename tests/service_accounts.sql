@@ -175,6 +175,8 @@ SET LOCAL ROLE authenticated;
 SELECT public.create_customer('Service Test Orchard','9555555590')->>'success' AS customer_made \gset
 RESET ROLE;
 SELECT id AS orchard FROM public.customers WHERE name='Service Test Orchard' \gset
+-- Customer assignments apply only to the Customer role (owner decision 2026-10-20): the person is a Customer for the assignment and staff again after.
+UPDATE public.user_profiles SET role='customer' WHERE id=:'person_id'::uuid;
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.sa_call(format('SELECT to_jsonb(public.assign_customer_to_user(%L,%L::uuid))','919555555505',:'orchard')) AS assign_try,
@@ -191,6 +193,7 @@ SELECT pg_temp.sa_assert(:'assign_try'::jsonb->>'raised' LIKE 'SERVICE_ACCOUNT_R
  'assignment, removal, central link and review refuse a service account and change nothing: '||:'assign_try'||:'remove_try'||:'clear_try'||:'review_try');
 SELECT pg_temp.sa_assert(:'assign_person'::jsonb#>>'{}'='true' AND :'clear_person'::jsonb->>'success'='true'
  AND (SELECT count(*)=1 FROM public.users_customers_new WHERE user_profile_id=:'person_id'::uuid AND active),'a person is still assignable and unlinkable: '||:'assign_person'||:'clear_person');
+UPDATE public.user_profiles SET role='staff' WHERE id=:'person_id'::uuid;
 
 -- F41: the facility can always cut a connection off: switching a service account OFF works, and
 -- deletes its refresh sessions; switching it back ON stays refused (read-only).

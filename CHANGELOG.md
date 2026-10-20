@@ -22,6 +22,10 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
 7. The daily pass of the checker (`scripts/watch.mjs`) now also applies the retention described in `docs/OPERATOR_INSTALL.md`,
    "Retention" (see the entry on the checker below); do not install the timer if that is not wanted.
 
+## Unreleased: Activate refuses a shared mobile; customer assignments only for the Customer role
+
+New migration (`owner_followups`): `set_customer_active(id, true)`, `update_customer(..., p_active => true)` on a deactivated or deleted customer and `restore_customer` answer `DUPLICATE_MOBILE` (with the other customer in `error.details`) while another active customer has the same mobile; `assign_customer_to_user` raises `ROLE_NOT_CUSTOMER` for a person whose role is not Customer. Details: `docs/API_CONTRACT.md`.
+
 ## Unreleased: Users screens review (server half)
 
 New migration (`users_review`): `user_profiles.deleted_at`; access-request tags, deleted flag and assigned-customer state in
