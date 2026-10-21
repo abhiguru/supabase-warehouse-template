@@ -13,8 +13,8 @@ compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
 state="$(operator_state)"
 operator_lock "$state"
 if [[ ! -f "$ROOT/docker/sensor-bridge/Dockerfile" ]]; then
-  echo 'Skipped: docker/sensor-bridge/Dockerfile is absent in this checkout, so there is no sensor bridge to check.'
-  exit 0
+  echo 'docker/sensor-bridge/Dockerfile is absent in this checkout, so there is no sensor bridge to check.' >&2
+  exit 1
 fi
 compose --profile sensors build sensor-bridge
 image=$(compose --profile sensors images -q sensor-bridge)

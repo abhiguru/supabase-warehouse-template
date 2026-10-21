@@ -37,7 +37,9 @@ node scripts/doctor.mjs --local
 `ps` shows every service `Up (healthy)` except `rest`, which has no healthcheck
 and shows plain `Up`. A service that keeps restarting shows `Restarting`; its
 last log lines say why. `bash start.sh` starts the core services again and
-replaces the running optional ones.
+replaces the running optional ones. `bash health-check.sh` (a thin wrapper over
+`node scripts/watch.mjs health`) fails only for the default services; an optional
+one that is not running (sensors, printing, pooler) shows as a `warn` line.
 
 ### The API answers 502 or 503
 
@@ -200,10 +202,11 @@ it; only `functions` can.
 - **PostgreSQL restarts with `Permission denied` on first start**: the
   checkout was cloned under `umask 077`. Re-clone with `umask 022` into a new
   directory and use a fresh empty state; keep the failed state for diagnosis.
-- **`Operator installation requires Linux x86-64` or `Missing prerequisite`**:
-  `scripts/check-readiness.sh` refuses other architectures and missing
-  `docker`, `node`, `npm`, `openssl` or `flock`; `doctor` additionally requires
-  Node 22.18+, a Compose plugin that accepts `up --wait-timeout` and a reachable Docker daemon.
+- **`Linux x86-64 required.`, `Missing prerequisite: node` or `Missing or unavailable prerequisite: <tool>`**:
+  `setup.sh` runs `node scripts/doctor.mjs --host-preflight` first. `Missing prerequisite: node` comes from
+  `scripts/require-node.sh`, before the first Node call (Node 22.18+ is required). The doctor refuses other
+  architectures and a missing or unusable `npm`, `openssl`, `flock`, `docker` or Docker Compose, an unreachable Docker
+  daemon and a Compose plugin that does not accept `up --wait-timeout`. Install the named tool and run `setup.sh` again.
 - **`This Docker Compose plugin does not accept up --wait-timeout`**: the
   Compose plugin is too old for the flag the scripts use. Install a current
   plugin from Docker's repository (any build listed under the host
@@ -380,7 +383,8 @@ setup never deletes them. Use the documented paths in
 - the configuration or images look wrong after an upgrade:
   [Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade) (the same
   `setup.sh --operator ...` command with the same inputs; it regenerates nothing
-  that exists);
+  that exists, rebuilds the `db`, `storage` and `pdf-renderer` images when their recipes changed, and
+  rewrites an old `PGRST_DB_SCHEMAS` default to `public`; a restore does the same);
 - a new, empty installation: a new state directory and
   [Setup](OPERATOR_INSTALL.md#setup), not a deletion of an existing one.
 

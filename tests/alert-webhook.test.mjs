@@ -149,7 +149,37 @@ test('gate with `off` passes and warns that alerts stay on this host; with a sto
 
 // A real pseudo-terminal: python3's pty module runs the script with a terminal as stdin and types into it, one line
 // at a time, after the text it waits for has appeared. The fake Slack runs in this process, so the child is async.
-const python = spawnSync('python3', ['-c', 'import pty'], { stdio: 'ignore' }).status === 0;
+// "Usable" is proved, not assumed: the probe forks a child on a pty, puts the terminal in raw mode there (as the gate does) and
+// checks that a typed word is not echoed back. A runner with python3 but no working pty (or no raw mode) skips these tests.
+const PROBE = `
+import os, pty, sys, time, select
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], [sys.argv[1], '-e', "process.stdin.setRawMode(true); process.stdin.resume(); console.log('READY'); setTimeout(() => process.exit(0), 3000)"])
+seen = b''
+end = time.time() + 10
+while time.time() < end and b'READY' not in seen:
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try:
+            seen += os.read(fd, 4096)
+        except OSError:
+            sys.exit(3)
+if b'READY' not in seen:
+    sys.exit(4)
+os.write(fd, b'probeword')
+seen = b''
+end = time.time() + 0.6
+while time.time() < end:
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try:
+            seen += os.read(fd, 4096)
+        except OSError:
+            break
+sys.exit(5 if b'probeword' in seen else 0)
+`;
+const python = spawnSync('python3', ['-I', '-c', PROBE, process.execPath], { stdio: 'ignore', timeout: 20000 }).status === 0;
 const DRIVER = `
 import os, pty, sys, time, select, json
 node, script, state, out = sys.argv[1:5]
@@ -227,7 +257,7 @@ async function fakeSlack(statusFor = () => 200) {
   return { received, origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => server.close(resolve)) };
 }
 
-test('on a terminal: the URL is not echoed, a wrong one is refused, the test message is posted before anything is stored, and the file is 0600', { skip: !python && 'python3 pty is not available' }, async () => {
+test('on a terminal: the URL is not echoed, a wrong one is refused, the test message is posted before anything is stored, and the file is 0600', { skip: !python && 'no usable pty (python3 pty with raw mode)' }, async () => {
   const s = scratch();
   const slack = await fakeSlack();
   try {
@@ -252,7 +282,7 @@ test('on a terminal: the URL is not echoed, a wrong one is refused, the test mes
   } finally { await slack.close(); s.cleanup(); }
 });
 
-test('on a terminal: a URL typed ahead, right after the refusal text and before the next prompt, is not echoed', { skip: !python && 'python3 pty is not available' }, async () => {
+test('on a terminal: a URL typed ahead, right after the refusal text and before the next prompt, is not echoed', { skip: !python && 'no usable pty (python3 pty with raw mode)' }, async () => {
   const s = scratch();
   const slack = await fakeSlack();
   try {
@@ -270,7 +300,7 @@ test('on a terminal: a URL typed ahead, right after the refusal text and before 
   } finally { await slack.close(); s.cleanup(); }
 });
 
-test('on a terminal: a refused test message stores nothing until the operator says to store it anyway; `ask` replaces a stored URL', { skip: !python && 'python3 pty is not available' }, async () => {
+test('on a terminal: a refused test message stores nothing until the operator says to store it anyway; `ask` replaces a stored URL', { skip: !python && 'no usable pty (python3 pty with raw mode)' }, async () => {
   const s = scratch();
   const slack = await fakeSlack(url => (url.endsWith('/fictionalfictionalfictional') ? 404 : 200));
   try {
@@ -310,7 +340,7 @@ test('on a terminal: a refused test message stores nothing until the operator sa
   } finally { await slack.close(); s.cleanup(); }
 });
 
-test('gate, then configure.mjs, then the receiver: the answered URL ends up in the state at 0600 and the test message reached the fake Slack', { skip: !python && 'python3 pty is not available' }, async () => {
+test('gate, then configure.mjs, then the receiver: the answered URL ends up in the state at 0600 and the test message reached the fake Slack', { skip: !python && 'no usable pty (python3 pty with raw mode)' }, async () => {
   const s = scratch();
   const slack = await fakeSlack();
   try {

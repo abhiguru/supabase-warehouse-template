@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,21 +37,17 @@ test('every RPC an edge function calls is in the list of rpc_callers_exist.sql',
   assert.deepEqual([...called].filter(name => !edgeListed.has(name)), []);
 });
 
-// Set MOBILE_CHECKOUT to an app checkout to compare the app's literal RPC names too.
-test('every RPC the app calls is in the list of rpc_callers_exist.sql', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, async () => {
-  const { details } = await import('../scripts/contract-details.mjs');
-  const mobile = process.env.MOBILE_CHECKOUT;
-  const files = ['src', 'app'].flatMap(dir => existsSync(join(mobile, dir)) ? sources2(join(mobile, dir)) : []);
-  const inventory = details(mobile, files, root, false);
-  const names = new Set(inventory.calls.map(call => call.name).filter(Boolean));
-  assert.deepEqual([...names].filter(name => !appListed.has(name)), []);
+// Set MOBILE_CHECKOUT to an app checkout (with its node_modules: the scanner uses the app's TypeScript) to compare the app's literal
+// RPC names too. The contract job of ci.yml sets it.
+test('every RPC the app calls is in the list of rpc_callers_exist.sql', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'rpc-callers-'));
+  try {
+    const report = join(scratch, 'report.json');
+    // The scanner exits 1 when a name is missing from the migrations; the report is written either way.
+    const run = spawnSync(process.execPath, [join(root, 'scripts/check-mobile-contract.mjs'), process.env.MOBILE_CHECKOUT, '--output', report], { encoding: 'utf8' });
+    assert.ok(existsSync(report), `the contract scanner wrote no report: ${run.stderr}`);
+    const names = new Set(JSON.parse(readFileSync(report, 'utf8')).calls.map(call => call.name).filter(Boolean));
+    assert.ok(names.size > 50, 'the scanner found the app\'s calls');
+    assert.deepEqual([...names].filter(name => !appListed.has(name)), []);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
-
-function sources2(dir) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-    const path = join(dir, entry.name);
-    if (entry.name === '__tests__' || /\.(test|spec)\./.test(entry.name)) return [];
-    if (entry.isDirectory()) return sources2(path);
-    return /\.tsx?$/.test(entry.name) ? [path] : [];
-  });
-}

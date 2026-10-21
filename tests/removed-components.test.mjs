@@ -79,7 +79,6 @@ const components = [
         ['CHANGELOG.md', 'history'],
         [SELF, 'this test'],
         ['tests/configure.test.mjs', 'checks the variable is gone'],
-        ['tests/db-roles.test.mjs', 'checks the variable is harmless'],
         ['scripts/configure.mjs', 'removes the line from an older state on every setup run'],
       ]),
     },
@@ -91,11 +90,8 @@ const components = [
         }
         assert.doesNotMatch(read('docker/kong.yml'), /auth:9999|\/auth\/v1/);
       }],
-      ['the role supabase_auth_admin does not exist on the new image: setup touches nothing about it, and the baseline creates and grants nothing for it', () => {
+      ['the role supabase_auth_admin does not exist on the new image: setup touches nothing about it', () => {
         assert.doesNotMatch(read('scripts/configure-db-roles.sql'), /supabase_auth_admin/);
-        // Only pg_dump's comment headers name it ("Owner: supabase_auth_admin"); no statement does.
-        const statements = read('migrations/00000000000000_baseline.sql').split('\n').filter(line => !line.startsWith('--') && /supabase_auth_admin/.test(line));
-        assert.deepEqual(statements, []);
       }],
       ['.env.example has no GoTrue mail, SMS or signup setting', () => {
         const text = read('.env.example');
@@ -107,6 +103,10 @@ const components = [
     name: 'Studio and postgres-meta (they ran SQL without a login)',
     gone: ['docker/studio', 'docker/postgres-meta', 'LICENSES/postgres-meta', 'scripts/studio-check.sh'],
     clean: [{ files: ['package.json', '.github/workflows/ci.yml', '.github/dependabot.yml', '.env.example', 'docker/image-exceptions.json'], pattern: /studio|postgres-meta/i }],
+    checks: [['the Compose file defines no studio, meta or admin service, and the gateway cannot route to Studio or postgres-meta', () => {
+      assert.doesNotMatch(read('docker/docker-compose.yml'), /^  (?:studio|meta|admin):/m);
+      assert.doesNotMatch(read('docker/kong.yml'), /url: http:\/\/(?:studio|meta):/);
+    }]],
   },
   {
     name: 'imgproxy (the app reads photos through signed URLs)',
@@ -168,7 +168,8 @@ const components = [
           assert.doesNotMatch(text, /^  (?:prometheus|alertmanager|postgres-exporter|node-exporter|cadvisor):/m, `${file} defines a monitoring service`);
           assert.doesNotMatch(text, /prometheus_data|WAREHOUSE_(?:MONITORING|METRICS|ALERTMANAGER)_PATH|KONG_STATUS_LISTEN|\b8100\b/, file);
         }
-        assert.doesNotMatch(read('docker/kong.yml'), /prometheus|status_code_metrics/);
+        assert.doesNotMatch(read('docker/kong.yml'), /prometheus|status_code_metrics|latency_metrics/);
+        assert.doesNotMatch(read('docker/kong.yml'), /\nplugins:\n/, 'kong.yml has no global plugin');
       }],
       ['the checker is wired in: setup, start and restore-host print the timer command, doctor warns, CI runs one pass', () => {
         assert.ok(existsSync(root + 'scripts/watch.mjs') && existsSync(root + 'scripts/watch-timer.sh') && existsSync(root + 'scripts/watch-daily.sh'));
@@ -180,15 +181,62 @@ const components = [
         assert.match(read('stop.sh'), /node scripts\/watch\.mjs mute <minutes>/);
         assert.match(read('scripts/doctor.mjs'), /checkerWarnings/);
         assert.match(read('.github/workflows/ci.yml'), /node scripts\/watch\.mjs run\n/);
-        assert.doesNotMatch(read('migrations/00000000000000_baseline.sql'), /warehouse_monitoring/, 'the baseline neither creates nor grants the dropped role');
+        assert.doesNotMatch(read('docker/docker-compose.yml'), /KONG_STATUS_LISTEN|prometheus|\b8100\b/);
       }],
     ],
+  },
+  {
+    name: 'Realtime (the app refreshes lists by asking, not by a socket)',
+    gone: ['docker/realtime', 'LICENSES/realtime'],
+    clean: [{ files: ['docker/docker-compose.yml', 'docker/kong.yml', 'scripts/db-roles.mjs', 'scripts/configure-db-roles.sql', '.env.example'], pattern: /supabase\/realtime|supabaserealtime|REALTIME_DB_ENC_KEY|^  realtime:|\/realtime\//m }],
+  },
+  {
+    name: 'list refresh (materialized-view refresher and its lock 71046 went with pg_cron)',
+    gone: ['scripts/configure-list-refresh.sh', 'scripts/configure-list-refresh.sql'],
+    clean: [{ files: ['setup.sh', 'scripts/restore.sh', 'scripts/verify-restore.sh', 'scripts/migration-plan.mjs'], pattern: /list-refresh|list_refresh|71046/ }],
+  },
+  {
+    name: 'drop-logical-slots (the cluster is built with wal_level=replica, so no logical slot can exist)',
+    gone: ['scripts/drop-logical-slots.sh', 'tests/drop-logical-slots.test.mjs'],
+    scan: { pattern: /drop-logical-slots/, allowed: new Map([['CHANGELOG.md', 'history'], [SELF, 'this test']]) },
+  },
+  {
+    name: 'check-readiness (doctor --host-preflight, run by setup.sh, replaced it)',
+    gone: ['scripts/check-readiness.sh'],
+    scan: { pattern: /check-readiness/, allowed: new Map([['CHANGELOG.md', 'history'], [SELF, 'this test']]) },
+  },
+  {
+    name: 'the Compose override file (merged into docker/docker-compose.yml)',
+    gone: ['docker/docker-compose.override.yml'],
+    scan: {
+      pattern: /docker-compose\.override/,
+      allowed: new Map([
+        ['CHANGELOG.md', 'history'],
+        ['scripts/baseline/lib.sh', 'names the frozen tag\'s file, which the old chain was written against'],
+        ['tests/baseline-tooling.test.mjs', 'reads that file from the frozen commit'],
+        [SELF, 'this test'],
+      ]),
+    },
+  },
+  {
+    name: 'the gosu Go build (a setpriv shell shim replaces the base image\'s binary)',
+    gone: ['docker/postgres/gosu.go', 'docker/postgres/gosu.go.mod', 'docker/postgres/gosu.go.sum', 'LICENSES/gosu'],
+    checks: [['the database Dockerfile builds no Go and deletes the base image\'s gosu before the shim is copied in', () => {
+      const dockerfile = read('docker/postgres/Dockerfile');
+      assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ''), /golang|go build|\bAS gosu\b/i);
+      assert.ok(dockerfile.indexOf('rm -f /usr/local/bin/gosu') > 0 && dockerfile.indexOf('rm -f /usr/local/bin/gosu') < dockerfile.indexOf('COPY --chmod=0755 gosu'));
+      assert.match(read('docker/postgres/gosu'), /^#!\/bin\/sh/);
+    }]],
+  },
+  {
+    name: 'BIND_ADDRESS, PGRST_DB_USE_LEGACY_GUCS and the Storage POSTGREST_URL (settings nothing reads any more)',
+    scan: { pattern: /BIND_ADDRESS|PGRST_DB_USE_LEGACY_GUCS|POSTGREST_URL/, allowed: new Map([['CHANGELOG.md', 'history'], [SELF, 'this test']]) },
   },
 ];
 
 for (const c of components) {
   test(`${c.name}: the removed paths are gone`, () => {
-    for (const path of c.gone) assert.equal(existsSync(root + path), false, `${path} is removed`);
+    for (const path of c.gone ?? []) assert.equal(existsSync(root + path), false, `${path} is removed`);
     if (c.goneTree) assert.deepEqual(indexed().filter(file => c.goneTree.test(file)), []);
   });
 

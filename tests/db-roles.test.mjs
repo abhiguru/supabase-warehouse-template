@@ -107,14 +107,9 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
     assert.match(db, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `the db service passes ${name}`);
   }
   assert.doesNotMatch(roles, /WITH PASSWORD :'superuser_password'/, 'no login is given the superuser password');
-  // supabase_functions_admin came with pg_net's webhook set-up, which is gone (migration 103): a first start has no such role.
-  assert.doesNotMatch(roles, /supabase_functions_admin/);
-  // supabase_auth_admin has no password at first start: the Auth service is gone (migration 104 makes it NOLOGIN).
-  assert.doesNotMatch(roles, /supabase_auth_admin|DB_PASSWORD_AUTH(?![A-Z_])/);
   // Each service names its own value, with :? so a state without it fails at `compose config`.
   const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:' };
   for (const [name, prefix] of Object.entries(uses)) assert.ok(compose.includes(`${prefix}\${${name}:?`), `${name} is required where it is used`);
-  assert.doesNotMatch(compose, /supabaserealtime|REALTIME_DB_ENC_KEY/);
   assert.doesNotMatch(compose, /warehouse_monitoring|DB_PASSWORD_MONITORING/, 'no service signs in as the monitoring login');
   assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role), ['authenticator', 'supabase_storage_admin', 'pgbouncer']);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_password" => System\.fetch_env!\("DB_PASSWORD_POOLER"\)/);

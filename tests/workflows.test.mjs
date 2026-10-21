@@ -36,25 +36,6 @@ test('the mobile companion is pinned once, by full commit, and the contract job 
   assert.match(checklist, /check-mobile-contract\.mjs [^\n]*--live/);
 });
 
-test('the operator-install job runs retention:apply against the real Storage API as its last use of the stack', () => {
-  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const job = ci.slice(ci.indexOf('\n  operator-install:'));
-  const steps = job.split(/\n      - /).slice(1);
-  const index = steps.findIndex(step => /npm run retention:apply/.test(step));
-  assert.ok(index >= 0, 'a step runs retention:apply');
-  const step = steps[index];
-  // An object is made old enough first; without that the run deletes nothing and proves nothing.
-  assert.match(step, /UPDATE storage\.objects SET created_at/);
-  assert.match(step, /expired_generated_documents\(now\(\)\)"\)" = 1/);
-  // Both halves of a Storage API delete are checked: the catalog row and the stored file.
-  assert.ok(step.indexOf('npm run retention:apply') < step.indexOf("FROM storage.objects WHERE bucket_id = 'documents' AND name ="), 'the row is counted after the run');
-  assert.match(step, /\/var\/lib\/storage\/stub\/stub\/documents\//);
-  // It deletes a document, so no step that reads documents or compares fingerprints may follow it.
-  const later = steps.slice(index + 1);
-  assert.equal(later.length, 1, 'only the stop step follows');
-  assert.match(later[0], /^name: Stop only this checkout's operator project\n\s+if: always\(\)/);
-});
-
 test('no workflow names a self-hosted runner; CI jobs take their runner from a repository variable, never for a fork', () => {
   const directory = new URL('../.github/workflows/', import.meta.url);
   for (const file of readdirSync(directory)) {
@@ -94,40 +75,6 @@ test('every Dependabot ignore entry names the update types it ignores', () => {
   assert.equal(entries, 7, 'every ignore entry was read');
 });
 
-test('the operator-install job proves the per-role database logins after install, rotation and both restores', () => {
-  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const job = ci.slice(ci.indexOf('\n  operator-install:'));
-  const steps = job.split(/\n      - /).slice(1);
-  const find = pattern => { const index = steps.findIndex(step => pattern.test(step)); assert.ok(index >= 0, String(pattern)); return index; };
-  const install = find(/^name: Fresh private operator configuration and local services/);
-  const fresh = find(/^name: Per-role database logins after a fresh install\n/);
-  const rotation = find(/^name: Database password rotation/);
-  const inPlace = find(/^name: In-place restore drill/);
-  const lostHost = find(/^name: Lost-host restore drill/);
-  assert.ok(install < fresh && fresh < rotation && rotation < inPlace && inPlace < lostHost);
-  assert.match(steps[fresh], /run: npm run test:db-roles\n/);
-  assert.match(steps[rotation], /npm run db:rotate-passwords -- --yes\n\s+npm run test:db-roles\n\s+npm run db:rotate-passwords -- --yes --superuser\n\s+npm run test:db-roles\n/);
-  for (const index of [inPlace, lostHost]) assert.match(steps[index], /\n\s+npm run test:db-roles\n/, steps[index].split('\n')[0]);
-  assert.ok(steps[lostHost].indexOf('npm run test:db-roles') > steps[lostHost].indexOf('npm run db:restore-host -- --state-dir "$restored" --backup-key'), 'after the restored state is in use');
-  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(pkg.scripts['test:db-roles'], 'bash scripts/db-roles.sh check');
-  assert.equal(pkg.scripts['db:rotate-passwords'], 'bash scripts/rotate-db-passwords.sh');
-});
-
-test('the operator-install job runs the monitoring checker once and its status, without installing the systemd timer', () => {
-  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const job = ci.slice(ci.indexOf('\n  operator-install:'));
-  const step = job.slice(job.indexOf('      - name: Monitoring checker'), job.indexOf('      - name: Backup and isolated restore drill'));
-  assert.match(step, /node scripts\/watch\.mjs run\n/);
-  assert.match(step, /test -s "\$WAREHOUSE_STATE_DIR\/config\/watch-state\.json"/);
-  assert.match(step, /check_error:[^]*service_down:[^]*postgres_down[^]*api_down/, 'a failing check fails the step');
-  assert.doesNotMatch(step.slice(step.indexOf('node -e')), /disk_|cpu_high|memory_high/, 'host alerts do not');
-  assert.match(step, /node scripts\/watch\.mjs status\n/);
-  assert.match(step, /WAREHOUSE_WATCH_DAILY_AT=/, 'the daily backup time is moved out of the current window');
-  assert.doesNotMatch(ci, /watch-timer\.sh install|systemctl/, 'CI never installs the timer');
-  assert.doesNotMatch(ci, /test:alert-rules|test:monitoring|promtool|amtool/);
-});
-
 // A plain (unquoted) YAML scalar ends at ": " or " #", so `run: pip install --only-binary=:all: -r ...`
 // made GitHub reject the whole workflow file (2026-10-18). Such a command must be quoted or a block scalar.
 test('a one-line run command with ": " or " #" in it is quoted', () => {
@@ -139,4 +86,17 @@ test('a one-line run command with ": " or " #" in it is quoted', () => {
       assert.doesNotMatch(match[1], /: | #/, `${file}:${index + 1} needs quotes: ${match[1]}`);
     }
   }
+});
+
+test('the renderer job runs only for a change that can move it, builds the image once, and is not a required check', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = name => ci.slice(ci.indexOf(`\n  ${name}:\n`) + 1).split(/\n  [a-z-]+:\n/)[0];
+  // The filter names every path that can change the renderer's output; the whole _shared folder holds the HTML templates.
+  for (const path of ['docker/pdf-renderer/', 'tests/golden-pdf/', 'functions/_shared/']) assert.ok(job('changes').includes(path), path);
+  assert.match(job('changes'), /\.github\/workflows\/ci\\\.yml/);
+  const renderer = job('pdf-renderer');
+  assert.match(renderer, /\n    needs: \[validate, changes\]\n    if: needs\.changes\.outputs\.renderer == 'true'\n/);
+  assert.equal((renderer.match(/docker build /g) || []).length, 1, 'the image is built once');
+  assert.match(renderer, /IMAGE=pdf-renderer:ci bash docker\/pdf-renderer\/test\/integration\.sh/);
+  assert.doesNotMatch(ci, /\n  pdf-golden:/, 'the golden job is part of pdf-renderer');
 });

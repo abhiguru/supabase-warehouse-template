@@ -1,8 +1,10 @@
 # Storage image recipe
 
-The recipe takes the publisher's `supabase/storage-api` image, with its
+The recipe has two stages. Stage 1 takes the publisher's `supabase/storage-api` image, with its
 precompiled application and native modules, and installs this directory's
-`package.json` and `package-lock.json` over it. The manifest is the
+`package.json` and `package-lock.json` over it. Stage 2 (the image that runs) is a clean
+`node:<x>-alpine<y>` image onto which only the patched `/app` is copied, so the compilers and
+Python of stage 1 are not shipped. The manifest is the
 publisher's own (without `scripts` and `devDependencies`) plus the dependency
 versions raised for security fixes.
 
@@ -18,7 +20,10 @@ old tag's dependency set under the new application.
    carry over the raised versions and the `overrides` block from the current
    `package.json`, leaving out any the new tag already meets.
 3. `npx -y npm@11.12.1 install --package-lock-only --ignore-scripts` in this directory.
-4. Set the tag and digest in `Dockerfile`, build with `--no-cache`, and scan
+4. Set the tag and digest in `Dockerfile` (`FROM ... AS patched`), keep stage 2's Node image (`node:<x>-alpine<y>`)
+   equal in major, minor and Alpine to the publisher image's (`docker run --rm --entrypoint node
+   supabase/storage-api:<tag> -v`; `cat /etc/alpine-release` in the same image) and set `ENV VERSION` to the tag's
+   version. Build with `--no-cache`, and scan
    the result (`trivy image --severity HIGH,CRITICAL`). Raise or override what
    the scan still names and repeat from step 3. The build fails if the image's npm
    rewrites `package-lock.json` (sha256 compared before and after `npm install`) or if

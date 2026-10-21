@@ -28,8 +28,8 @@ time, and the router refuses those functions.
 
 The Compose files reference pinned upstream container images but do not
 redistribute their contents. Operators who redistribute images must review each
-image's upstream terms. See `docs/ATTRIBUTION_REVIEW.md` for the reviewed
-inventory, provenance boundary, and maintainer attestation.
+image's upstream terms. The reviewed inventory, provenance boundary and maintainer
+attestation are in "Ownership review" at the end of this file.
 
 ## Sensor bridge (GPL-3.0-or-later)
 
@@ -75,12 +75,13 @@ redistributing them. Versions are the ones pinned in
 | CUPS container base image: Ubuntu | 22.04 (`ubuntu:22.04`, `docker/cups/Dockerfile`) | Ubuntu packages under their individual free-software licences; CUPS itself Apache-2.0 with upstream's stated exceptions | https://hub.docker.com/_/ubuntu and https://github.com/OpenPrinting/cups |
 | Sensor bridge base image: Python | 3.15-slim-bookworm (`python:3.15-slim-bookworm`, `docker/sensor-bridge/Dockerfile`) | Python under PSF-2.0; Debian packages under their individual free-software licences | https://hub.docker.com/_/python and https://github.com/python/cpython |
 
-## Maintained container source recipes (2026-09-22)
+## Maintained container source recipes
 
 The dependency manifest under `docker/storage` is copied from the upstream version listed in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) and modified to resolve
-security updates. `docker/postgres` is the official PostgreSQL 18 image plus one component built from source: `gosu`
-1.19, rebuilt with a patched Go toolchain (Apache-2.0; text in `LICENSES/gosu/LICENSE`, also copied into the image).
+security updates. `docker/postgres` is the official PostgreSQL 18 image plus one small shell script of this repository
+(`docker/postgres/gosu`, MIT, a `setpriv` shim that replaces the base image's `gosu` binary, which the recipe deletes: no
+`gosu` source or binary is shipped, so there is no `gosu` licence to carry).
 (The Alertmanager, node exporter, Postgres exporter, cAdvisor and Prometheus recipes were removed on 2026-10-19.) Recipe URLs and SHA-256 checksums identify the source archives.
 No third-party executable or source archive is committed or published here.
 
@@ -89,9 +90,53 @@ identity check and the unresolved component inventory recorded in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) were made for the earlier
 v14.17 image and have not been repeated for v16.4.
 
-Upstream license files were read from those source archives (Storage's license
-from its matching release tag). Their complete texts and available NOTICE files
-are retained under `LICENSES/{storage,gosu}/` (and `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/` for the PDF renderer's downloaded and installed components). The projects in the braces use Apache-2.0.
+Upstream license files were read from the Storage source archive (its license
+from the matching release tag). The complete text and available NOTICE file
+are retained under `LICENSES/storage/` (and `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/` for the PDF renderer's downloaded and installed components). Storage uses Apache-2.0.
 Each source-built runtime image also retains the corresponding upstream license
 and available NOTICE. Dependencies keep their own upstream terms; this inventory
 does not authorize redistribution of the resulting images or native binaries.
+
+Pinned versions are required here and only here: `tests/gateway-config.test.mjs` fails when a version in Compose or a
+Dockerfile is missing from the table above.
+
+## Ownership review
+
+Reviewed 2026-10-08 for the `v0.3.0` public template (fresh repository history), refreshed 2026-10-20 and 2026-10-21 for
+the removal of the Supabase-derived components and the move to the official PostgreSQL image. Review dates before that are
+in git history.
+
+**Maintainer attestation.** The repository maintainer, `abhiguru`, confirms that they hold the rights needed to
+redistribute the original backend source, SQL migrations, scripts, tests and documentation in this repository under its MIT
+license, and the original sensor bridge code under `docker/sensor-bridge/` under GPL-3.0-or-later. This does not claim
+ownership of Supabase-derived configuration, external modules, container images, trademarks or any other third-party
+material. It is the maintainer's scoped factual confirmation for release review, not a blanket legal certification, and it
+does not replace third-party license terms.
+
+**What is no longer shipped.** The database runs the official `postgres:18` image (PostgreSQL licence). The Supabase
+PostgreSQL image, its extensions (`pg_cron`, `pg_net`, `pgjwt`, `pg_graphql`, `supabase_vault`, `http`) and the
+Supabase-derived Realtime, GoTrue, Studio, postgres-meta, Prometheus stack and wal-g sources and their `LICENSES/`
+directories are gone. The baseline migration is a dump of the repository's own schema; the Supabase-shaped roles and
+functions it carries are listed in `tests/baseline_roles.sql`. The earlier files are in the git tag `migrations-pre-baseline`.
+
+**Inventory.**
+
+| Material | Provenance | License / permission | Notice location |
+| --- | --- | --- | --- |
+| Warehouse functions, migrations, scripts, tests and documentation (everything outside `docker/sensor-bridge/`) | Original project work confirmed by the maintainer | MIT | `LICENSE` |
+| Sensor bridge (`docker/sensor-bridge/`) | Original project work; installs python-kasa and its pinned dependencies from PyPI at image build time, not vendored | GPL-3.0-or-later (bridge code); GPL-3.0 (python-kasa) | `docker/sensor-bridge/LICENSE`; "Sensor bridge" section above |
+| Supabase database initialization scripts (`docker/volumes/db/_supabase.sql`, `pooler.sql`, `roles.sql`) and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material; `docker/volumes/db/00-bootstrap.sql` is original | Apache-2.0 | `LICENSES/Apache-2.0.txt`; upstream copyright notices retained in copied files where present |
+| `jose` | Vendored as one built file, `functions/vendor/jose.mjs` (esbuild from the locked npm package, checksummed in `functions/vendor/SHA256SUMS`); also the unit tests' locked development dependency | MIT, Filip Skokan | `functions/vendor/LICENSES.txt`; `scripts/edge-vendor/package-lock.json` |
+| `ipp` | Optional runtime npm import used only by unsupported printing paths; not vendored | MIT | Upstream npm package license |
+| Source-built recipe (`docker/storage`) | Copied upstream manifest plus security patches; archives fetched by checksum at build time | Apache-2.0 | `LICENSES/storage/` and the section above |
+| PDF renderer (`docker/pdf-renderer/`) | Original project work; downloads Chrome for Testing (chrome-headless-shell) at image build time (checksum pinned) and installs puppeteer-core with `npm ci`; fonts are Debian packages; nothing third-party is committed | MIT (renderer code); BSD-3-Clause plus bundled notices (Chrome for Testing); Apache-2.0 (puppeteer-core) | `LICENSES/chrome-headless-shell/`, `LICENSES/puppeteer-core/`; the archive's `LICENSE.headless_shell` stays in the image at `/opt/chs` |
+| Referenced publisher images | Pulled at setup time; contents are not redistributed in the source archive | Per the table in "Referenced publisher images" | Exact tags and digests in `docker/docker-compose.yml` and `docker/*/Dockerfile`; downstream operators must review image licences before distribution |
+
+No image, font, audio, video or native binary asset is tracked in the backend source tree. Placeholder webhook URLs are
+configuration examples, not copied credentials or protected assets. The sensor bridge is a separate program that reaches the
+backend over HTTP only; the licences of its other pinned packages were not reviewed one by one.
+
+**Conclusion.** The Apache-2.0 text required for the adapted Supabase configuration is included, every referenced publisher
+image has a name, version, licence and upstream entry, and the original repository MIT license remains separate. No
+unresolved provenance item blocks this public template release. Future vendored code, container redistribution, assets or
+binaries need a new review; this record is not blanket approval.

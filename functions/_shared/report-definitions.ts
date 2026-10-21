@@ -22,12 +22,10 @@
 // one customer, the other rows are dropped and the summary is worked out from the
 // rows listed. The search of the item stock summary (`search`) goes to its RPC,
 // whose summary already covers the rows it finds. An invoice's amount is its
-// total; the RPC's net_total and net_amount (total + labour + tax - discount
-// until migration 61, when they became the total) are not printed from it.
+// total; the RPC's net_total and net_amount are that total too, so no net figure is printed.
 // Paid and Pending follow the money (the owner's rule, migration 62): see
 // `invoiceMoney`; every invoice is in Paid or in Pending, whatever its status word, so Paid + Pending
-// = Amount. An invoice is one row: a database without migration 61 answers it once per payment row,
-// and `oneRowPerInvoice` merges those rows first.
+// = Amount.
 import { label, withUnit, type LabelKey, type ReportLang } from './report-labels.ts';
 import type { AgingBucket, ReportName, ReportRequest } from './report-request.ts';
 
@@ -92,15 +90,15 @@ const paidWithinPaise = 50;
  * Pending is what is still owed. An invoice counts as Paid only when nothing is owed; a part-paid invoice stays
  * Pending with the balance." This is the app's own calculation (rn-warehouse-template invoicePayment.ts), so the PDF
  * and the screen agree for every invoice:
- *   recorded = the sum of the invoice's payments (payment_status.amount since migration 61), when the answer carries
- *              an amount that can be read; otherwise the whole total when the status word is 'paid' (a database from
- *              before migration 61 answers the one row's amount; any answer may leave it out), otherwise 0;
+ *   recorded = the sum of the invoice's payments (payment_status.amount), when the answer carries
+ *              an amount that can be read; otherwise the whole total when the status word is 'paid' (any answer may
+ *              leave the amount out), otherwise 0;
  *   balance  = the larger of (total - the larger of recorded and 0) and 0, so never below 0 and never above the total
  *              of an invoice of 0 or more;
  *   received = total - balance;
  *   status   = 'paid' when the balance is 0.50 or less (get_open_invoices_for_customer: owed > 0.50 is open),
  *              otherwise 'pending'.
- * The answer's own status is not the rule on a database without migration 62 (it is 'paid' as soon as any payment row
+ * The answer's own status is not the rule (it is 'paid' as soon as any payment row
  * names the invoice), so it is read only for the word 'paid' with no amount. Any other word (and a missing
  * payment_status) is no payment: an invoice of 89.00 with such a word and no amount is Pending for 89.00. An amount
  * that can be read is the money received whatever the word is. Every invoice therefore has a status, received and
@@ -116,37 +114,6 @@ function invoiceMoney(invoice: Row): { status: 'paid' | 'pending'; received: num
   return { status: balance <= paidWithinPaise ? 'paid' : 'pending', received: (total - balance) / 100, balance: balance / 100 };
 }
 
-/**
- * One row per invoice. A database without migration 61 answers an invoice once per payment row: the same invoice_id and
- * the same fields, each row's payment_status.amount being one payment. The rows of one invoice are merged into one, which
- * is the first row's fields at the first row's position, with payment_status.amount = the sum of the rows' amounts that can
- * be read, added in whole paise (left as it was when none can be read), status 'paid' when any row says paid, and the
- * other keys of payment_status (paid_date, payment_ref, payment_mode) those of the row with the latest paid_date (the
- * earlier row of two with the same date; a date that cannot be read is the oldest). A row with no invoice_id is never merged,
- * and an invoice answered once is returned as it came, so an answer without duplicates prints exactly what it printed.
- */
-export function oneRowPerInvoice(invoices: Row[]): Row[] {
-  const groups: Row[][] = [];
-  const known = new Map<string, Row[]>();
-  for (const invoice of invoices) {
-    const id = typeof invoice.invoice_id === 'string' && invoice.invoice_id !== '' ? invoice.invoice_id : null;
-    const group = id === null ? undefined : known.get(id);
-    if (group) { group.push(invoice); continue; }
-    const created = [invoice];
-    groups.push(created);
-    if (id !== null) known.set(id, created);
-  }
-  return groups.map(group => {
-    if (group.length === 1) return group[0];
-    const payments = group.map(invoice => (invoice.payment_status && typeof invoice.payment_status === 'object' ? invoice.payment_status : {}) as Row);
-    const moment = (payment: Row) => { const time = Date.parse(String(payment.paid_date)); return Number.isNaN(time) ? -Infinity : time; };
-    const latest = payments.reduce((best, payment) => moment(payment) > moment(best) ? payment : best);
-    const amounts = payments.map(payment => num(payment.amount)).filter((value): value is number => value !== null);
-    const merged: Row = { ...payments[0], ...latest, status: payments.some(payment => payment.status === 'paid') ? 'paid' : payments[0].status };
-    if (amounts.length > 0) merged.amount = amounts.reduce((total, value) => total + paise(value), 0) / 100;
-    return { ...group[0], payment_status: merged };
-  });
-}
 const period = (request: ReportRequest) => ({ p_from_date: request.from, p_to_date: request.to });
 /**
  * The oldest stock of the stock aging report, as the app's screen shows it (app/reports/stock-aging.tsx): the count of the
@@ -296,11 +263,9 @@ export const reportDefinitions: Record<ReportName, Definition> = {
       rpc: request => ({ name: 'get_customer_invoice_summary', args: { p_customer_uuid: request.customerId, ...period(request) } }),
       // With a Paid / Pending choice only the invoices of that status are listed, the status being the one of
       // the rule of `invoiceMoney` (a part-paid invoice is Pending). An invoice's amount is its total (the amount
-      // that is paid or owed); the RPC's net_total was total + labour + tax - discount, which counts the labour,
-      // the tax and the discount twice, until migration 61 made it the total. The PDF therefore prints no net
-      // column, and its summary is worked out below from the totals and the payments it lists, so it is right on
-      // a database with or without migrations 61 and 62.
-      rows: (body, request) => oneRowPerInvoice(list(body.invoices)).map(invoice => ({
+      // that is paid or owed); the RPC's net_total is that total too, so the PDF prints no net column. Its summary is
+      // worked out below from the totals and the payments it lists.
+      rows: (body, request) => list(body.invoices).map(invoice => ({
         invoice_no: invoice.invoice_number,
         date: invoice.invoice_date,
         grn: invoice.grn_ref,
@@ -325,13 +290,12 @@ export const reportDefinitions: Record<ReportName, Definition> = {
           } },
       ],
       summary: [
-        // The count is the RPC's own without a choice, unless rows of one invoice were merged (a database without
-        // migration 61 counts an invoice once per payment row): then it is the number of invoices listed. The amount,
+        // The count is the RPC's own without a choice, and the number of invoices listed with one. The amount,
         // paid and pending are always added up from the listed invoices: the amount of every one, Paid the money
         // received on them and Pending the balances still owed, so Paid + Pending = Amount for every invoice, whatever
         // its status word is.
         { label: 'invoices', kind: 'number',
-          value: (body, rows, request) => request.status || rows.length < list(body.invoices).length ? rows.length : body.summary?.total_invoices },
+          value: (body, rows, request) => request.status ? rows.length : body.summary?.total_invoices },
         { label: 'amount', kind: 'money', value: (_, rows) => sumMoney(rows, 'amount') },
         { label: 'paid', kind: 'money', value: (_, rows) => sumMoney(rows, 'received') },
         { label: 'pending', kind: 'money', value: (_, rows) => sumMoney(rows, 'balance') },
@@ -345,9 +309,8 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     all: {
       // The app asks the same function with no customer for the all-customers view.
       rpc: request => ({ name: 'get_customer_invoice_summary', args: { p_customer_uuid: null, ...period(request) } }),
-      // total_amount is the sum of the invoices' totals on every database, and it is the only amount printed. net_amount
-      // was the sum of total + labour + tax - discount (the labour, the tax and the discount counted twice) until
-      // migration 61 made it total_amount, so the PDF prints no net column or figure, which would repeat the amount.
+      // total_amount is the sum of the invoices' totals, and it is the only amount printed. net_amount is the same
+      // figure, so the PDF prints no net column or figure, which would repeat the amount.
       rows: body => list(body.by_customer).map(row => ({
         customer: row.customer_name, invoices: row.invoice_count, amount: row.total_amount, latest: row.latest_invoice_date,
       })),
@@ -503,10 +466,8 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     customer: {
       rpc: request => ({ name: 'get_customer_activity_detail', args: { p_customer_uuid: request.customerId, ...period(request) } }),
       // The customer's month-by-month movement over the period. The amounts (invoice_amount, and the summary's
-      // total_invoice_amount, total_paid_amount and total_pending_amount) are the RPC's own: the invoice amounts
-      // were total + labour + tax - discount, which counts the labour, the tax and the discount twice, until
-      // migration 61 made them the invoices' total. This answer holds no invoice total to work them out from, so
-      // they are right from migration 61 on.
+      // total_invoice_amount, total_paid_amount and total_pending_amount) are the RPC's own: this answer holds no
+      // invoice total to work them out from.
       rows: body => list(body.monthly_trends).map(month => ({
         month: month.month,
         grns: month.grn_count,
@@ -538,7 +499,7 @@ export const reportDefinitions: Record<ReportName, Definition> = {
     },
     all: {
       rpc: request => ({ name: 'get_all_customer_activity_summary', args: period(request) }),
-      // total_invoice_amount is the RPC's own, right from migration 61 on (see the one-customer level above).
+      // total_invoice_amount is the RPC's own.
       rows: body => list(body.customers).map(row => ({
         customer: row.customer_name,
         city: row.customer_city,

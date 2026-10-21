@@ -18,7 +18,7 @@ build from the live mirrors, rescan before every release, no snapshot mirrors) d
 from this image ships and its whole purpose is that the same PDF always gives the same pixels. To move to a newer
 poppler, change `SNAPSHOT` in the Dockerfile, run `run.sh`, review every page that moved, and regenerate with `--update`.
 
-The `pdf-golden` job in `.github/workflows/ci.yml` runs it on every change. A moved pixel is either a regression or an
+The `pdf-renderer` job in `.github/workflows/ci.yml` runs it on every change to the renderer, these files or `functions/_shared/`. A moved pixel is either a regression or an
 intended change (Chrome for Testing pin, puppeteer-core or fonts); in the second case regenerate with
 `RENDERER_URL=... bash tests/golden-pdf/run.sh --update`, review the changed pages and commit them. Cases use
 fictional data only.

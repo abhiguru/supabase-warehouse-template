@@ -273,5 +273,4 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#sensors-show-no-data).
 rest of this repository stays MIT: the bridge is a separate program that talks
 to the backend over HTTP only. Distributing a built bridge image means offering
 its complete source under the GPL; running it on your own premises does not.
-See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and
-[ATTRIBUTION_REVIEW.md](ATTRIBUTION_REVIEW.md).
+See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

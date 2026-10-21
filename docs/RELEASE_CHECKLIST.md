@@ -14,12 +14,10 @@ Open-source availability does not imply safe production deployment: what is stil
 
 ## Mobile contract before a release
 
-The `contract` CI job checks this backend against one commit of the app,
-`MOBILE_REF` in `.github/workflows/ci.yml`. The pin does not move by itself and
-the job compares names only, so before every release of either repository:
+The `contract` CI job compares names only against the pinned app commit
+([CONTRIBUTING.md](../CONTRIBUTING.md#mobile-companion-pin-mobile_ref)), so before every release of either repository:
 
-- [ ] Set `MOBILE_REF` to the full 40-character SHA of the app commit being
-      released (a pushed commit of `abhiguru/rn-warehouse-template`), in the same
+- [ ] Move the pin (`MOBILE_REF`) to the app commit being released, in the same
       pull request as any backend change that commit needs.
 - [ ] With that app commit checked out and its `node_modules` installed, run the
       live comparison against a running stack of this backend commit:

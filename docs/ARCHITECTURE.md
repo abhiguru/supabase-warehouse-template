@@ -66,8 +66,9 @@ Client → Kong :8000 → PostgREST :3000 → PostgreSQL :5432
 ### Edge function request
 ```
 Client → Kong :8000 → Edge Runtime :9000 → worker (Deno isolate)
-         (CORS,       (main router)        → Kong :8000 → PostgREST / Storage   (REST over HTTP)
-          rate limit)                      → pdf-renderer :3000                  (PDF)
+         (CORS,       (main router)        → PostgREST :3000 / Storage :5000     (REST over HTTP, direct)
+          rate limit)                      → Kong :8000 → PostgREST              (sign-in, ingest; see below)
+                                           → pdf-renderer :3000                  (PDF)
                                            → CUPS                                (print, when enabled)
 ```
 
@@ -75,8 +76,10 @@ The main router checks the caller's JWT for every function except the public one
 `operator-otp`, `central-exchange`, `ingest-sensor-readings`).
 
 A function never opens a connection to PostgreSQL: the `functions` container is not on the `database` network. It reaches
-the data only through Kong (`SUPABASE_URL=http://kong:8000`), with plain `fetch` calls (`functions/_shared/supabase-rest.ts`,
-or a direct `fetch` of `/rest/v1/rpc/<name>`) that carry either the caller's own token (document functions, so the RPC
+the data over HTTP, with plain `fetch` calls. Reports, PDFs and configuration go straight to PostgREST and Storage
+(`SUPABASE_REST_URL=http://rest:3000`, `SUPABASE_STORAGE_URL=http://storage:5000`, `functions/_shared/supabase-rest.ts`), so they are not under
+Kong's per-client limits; `operator-otp`, `central-exchange`, `ingest-sensor-readings` and the profile read of
+`_shared/auth-helpers.ts` still use the gateway (`SUPABASE_URL=http://kong:8000`, a direct `fetch` of `/rest/v1/rpc/<name>`). The calls carry either the caller's own token (document functions, so the RPC
 guard and row policies decide) or the service key (sign-in, configuration, sensor ingest and PDF upload).
 
 Kong compresses JSON and text answers with gzip (nginx `gzip`, set by the
