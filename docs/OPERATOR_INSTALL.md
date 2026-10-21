@@ -1645,7 +1645,9 @@ lock themselves, so the lock is released before them (step 4 and step 6). `verif
 **Step 1. Take the operator lock, record the old commit and stop every writer.** Stop what writes from outside the stack: a sensor bridge on
 another host, a script that posts readings or uploads. Mute the checker for the window (`node scripts/watch.mjs mute 240`). Then stop the
 stack's own writers; the database and Storage stay up for the backup and the fingerprints. With the writers already stopped, `backup.sh`
-finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself; it brings services back with `up --no-deps`, so it starts only the services it stopped, never `rest` or anything else Storage depends on), so no write can sneak in between the backup and the restore.
+finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself), so no write can sneak in between the backup and the restore.
+Steps 1 to 3 run on the OLD checkout, so a `backup.sh` older than this release brings Storage back with `compose up` without `--no-deps`, and that also starts `rest`
+again (Storage depends on it). Step 2 therefore stops `rest` again right after the backup. From this release on, `backup.sh` restarts with `--no-deps` and does not do this.
 
 ```bash
 exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
@@ -1657,17 +1659,22 @@ bash scripts/compose.sh --profile '*' ps --status running --services     # only 
 
 **Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** Right after the backup, the configuration directory is copied whole
 for the rollback (`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup). It sits before the checks so that
-a failing check cannot skip it, and `mkdir` (without `-p`) refuses a rerun instead of nesting a second copy inside the first. The row counts come from
-`scripts/data-fingerprint.sh --counts`, the same text in step 2 and step 8.
+a failing check cannot skip it, and `mkdir` (without `-p`) refuses a rerun instead of nesting a second copy inside the first. The row counts come from the query file `$B/counts.sql`,
+written here and run again unchanged in step 8, because the old checkout has no `data-fingerprint.sh --counts` (that mode exists from this release on and
+runs the same query, for later moves).
 
 ```bash
 bash scripts/db-image.sh                         # must print postgres:17.…: this is still the old checkout
 bash scripts/backup.sh "$B/backup"
+bash scripts/compose.sh stop rest                # a backup.sh older than this release starts rest again with Storage; stop it (a no-op when it is already stopped)
 mkdir "$B/config" && cp -a "$WAREHOUSE_STATE_DIR/config/." "$B/config/"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
 (cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass
 bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
 bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-bash scripts/data-fingerprint.sh --counts > "$B/counts-before.txt"
+cat > "$B/counts.sql" <<'SQL'
+SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY (n.nspname || '.' || c.relname) COLLATE "C"
+SQL
+bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" > "$B/counts-before.txt"
 ```
 
 **Step 3. Tag the current images** (of stopped containers too: `ps -a`, because step 1 stopped most of them) so that a rollback uses them instead of building them again (the db image is the one that matters):
@@ -1728,7 +1735,7 @@ bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 
 bash scripts/compose.sh exec -T db cat /var/lib/postgresql/data/PG_VERSION                          # 18 (read inside the container, no sudo)
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
 bash scripts/data-fingerprint.sh --all | diff "$B/fingerprint-all-before.txt" - && echo IDENTICAL   # run on a quiet system (the file says which tables move on their own)
-bash scripts/data-fingerprint.sh --counts | diff "$B/counts-before.txt" - && echo 'counts equal'
+bash scripts/compose.sh exec -T db psql -X -At -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$B/counts.sql" | diff "$B/counts-before.txt" - && echo 'counts equal'
 ORIGIN=$(sed -n 's/.*"canonicalOrigin": *"\([^"]*\)".*/\1/p' "$WAREHOUSE_STATE_DIR/public/instance.json")
 curl -s -o /dev/null -w '%{url_effective} %{http_code}\n' "$ORIGIN/functions/v1/get-public-config"     # prints the URL it hit, then 200
 bash scripts/compose.sh ps                                  # every service Up (healthy); rest has no healthcheck and shows plain Up
