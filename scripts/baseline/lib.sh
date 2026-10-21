@@ -141,7 +141,7 @@ run_storage() {
   db_psql "$db" -c "ALTER ROLE supabase_storage_admin PASSWORD '$DB_PASSWORD'" >/dev/null
   docker run -d --rm --name "$name" --label purpose=slim-tool --network "$net" --memory 512m --cpus 1 \
     --tmpfs /var/lib/storage:rw,size=64m \
-    -e ANON_KEY=disposable-anon-key -e SERVICE_KEY=disposable-service-key -e POSTGREST_URL=http://rest:3000 \
+    -e ANON_KEY=disposable-anon-key -e SERVICE_KEY=disposable-service-key \
     -e PGRST_JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 \
     -e "DATABASE_URL=postgres://supabase_storage_admin:$DB_PASSWORD@$db:5432/postgres" \
     -e FILE_SIZE_LIMIT=52428800 -e STORAGE_BACKEND=file -e FILE_STORAGE_BACKEND_PATH=/var/lib/storage \

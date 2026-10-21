@@ -25,7 +25,8 @@ probe_from() {
 }
 probe_from storage <<'JS' || failed=1
 for (const [name,url,headers] of [
-  ['REST','http://kong:8000/rest/v1/',{apikey:process.env.ANON_KEY}],
+  // A table read through the gateway: PostgREST's OpenAPI document at /rest/v1/ is off (PGRST_OPENAPI_MODE=disabled).
+  ['REST','http://kong:8000/rest/v1/feature_flags?select=id&limit=1',{apikey:process.env.ANON_KEY}],
   ['configuration','http://kong:8000/functions/v1/get-public-config',{}],
 ]) {
   await waitForHttp(name,url,headers);

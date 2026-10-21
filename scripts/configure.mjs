@@ -4,7 +4,7 @@ import { resolve, isAbsolute, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { isMain } from './is-main.mjs';
-import { generateSigningKeys, replaceEnvLines, retireGraphqlSchema } from './keys.mjs';
+import { generateSigningKeys, replaceEnvLines, updateRestSchemas } from './keys.mjs';
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -269,11 +269,12 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // before the database starts, because an older backup carries none.
       const withDbValues = addMissingDbValues(readFileSync(envPath, 'utf8'));
       if (withDbValues.added.length) replaceFileAtomically(envPath, withDbValues.text);
-      // An installation made before migration 103 lists the GraphQL schema for PostgREST; the old default
-      // loses it (a list the operator changed is kept). setup.sh then recreates rest with the new value.
-      const withoutGraphql = retireGraphqlSchema(readFileSync(envPath, 'utf8'));
-      const restSchemasUpdated = withoutGraphql !== readFileSync(envPath, 'utf8');
-      if (restSchemasUpdated) replaceFileAtomically(envPath, withoutGraphql);
+      // An installation made before this release lists the storage schema (and, before migration 103, the GraphQL
+      // schema) for PostgREST; the old default becomes `public` (a list the operator changed is kept). setup.sh
+      // then recreates rest with the new value.
+      const updatedSchemas = updateRestSchemas(readFileSync(envPath, 'utf8'));
+      const restSchemasUpdated = updatedSchemas !== readFileSync(envPath, 'utf8');
+      if (restSchemasUpdated) replaceFileAtomically(envPath, updatedSchemas);
       // Database logins of removed components (the Auth service, the monitoring login) left a password line in
       // older states. Nothing reads them, so a rerun of setup (every facility reload runs it) removes them.
       const retiredKeys = ['DB_PASSWORD_AUTH', 'DB_PASSWORD_MONITORING'];
@@ -351,13 +352,13 @@ if (isMain(import.meta.url)) {
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
-            : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).'
+            : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (now `public` only).'
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
                 : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
                   : 'Preserved existing operator state unchanged.');
     // The first message above names only one change; the schema list is always reported, even beside another change.
     if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
-      console.log('Updated PostgREST\'s schema list in existing operator state (the GraphQL schema is gone).');
+      console.log('Updated PostgREST\'s schema list in existing operator state (now `public` only).');
     }
     if (result.graphqlSchemaKept) console.log('Warning: PGRST_DB_SCHEMAS in config/compose.env still names graphql_public, which migration 103 removes. PostgREST will fail to find that schema; remove it from the list.');
     if (result.centralUpdated && result.providerUpdated) console.log('Updated central sign-in settings in existing operator state.');

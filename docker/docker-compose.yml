@@ -108,7 +108,9 @@ services:
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
       PGRST_JWT_SECRET: ${JWT_SECRET}
-      PGRST_DB_USE_LEGACY_GUCS: "false"
+      # No OpenAPI document at /rest/v1/: it would list every table and function each role can see.
+      # health-check.sh probes a table read instead.
+      PGRST_OPENAPI_MODE: disabled
       PGRST_DB_PRE_REQUEST: public.check_session
     command: ["postgrest"]
 
@@ -127,12 +129,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      rest:
-        condition: service_started
     environment:
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      POSTGREST_URL: http://rest:3000
       PGRST_JWT_SECRET: ${JWT_SECRET}
       # Storage's migrator reads these two itself (dist/config.js). Its default superuser is "postgres";
       # name the role that really exists so a cluster without "postgres" works.

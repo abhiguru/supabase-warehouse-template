@@ -33,9 +33,10 @@ export function replaceEnvLines(text, values) {
   return result;
 }
 
-// Migration 103 removes the GraphQL schema. A compose.env written before it still lists graphql_public in
-// PGRST_DB_SCHEMAS, and PostgREST would look for a schema that no longer exists. Only the old default is
-// rewritten (public,storage,graphql_public -> public,storage); a list an operator changed is left alone.
-export function retireGraphqlSchema(text) {
-  return text.replace(/^PGRST_DB_SCHEMAS=public,storage,graphql_public$/m, 'PGRST_DB_SCHEMAS=public,storage');
+// PostgREST exposes the `public` schema only. The earlier defaults also listed storage (no client reads it through
+// /rest/v1, and it let roles with storage policies write storage.objects rows directly) and, before migration 103,
+// graphql_public (a schema that no longer exists). A compose.env still holding one of the two old defaults is
+// rewritten to `public`; a list an operator changed is left alone.
+export function updateRestSchemas(text) {
+  return text.replace(/^PGRST_DB_SCHEMAS=public,storage(?:,graphql_public)?$/m, 'PGRST_DB_SCHEMAS=public');
 }

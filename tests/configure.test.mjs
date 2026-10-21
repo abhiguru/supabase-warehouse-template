@@ -799,7 +799,7 @@ test('the real port test refuses a loopback port that is in use and accepts a fr
   } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('a rerun drops the GraphQL schema from PGRST_DB_SCHEMAS (migration 103) when it still holds the old default', () => {
+test('a rerun rewrites PGRST_DB_SCHEMAS to public when it still holds an old default (public,storage or public,storage,graphql_public)', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-schemas-'));
   const root = join(scratch, 'checkout');
   const providerEnv = join(scratch, 'provider.env');
@@ -810,26 +810,29 @@ test('a rerun drops the GraphQL schema from PGRST_DB_SCHEMAS (migration 103) whe
     const stateDir = join(scratch, 'state');
     const envPath = join(stateDir, 'config/compose.env');
     const base = { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
-    // A new setup starts from the template, which no longer names the GraphQL schema.
+    // A new setup starts from the template, which names the public schema only.
     assert.equal(configure(root, base).created, true);
-    assert.equal(readEnv(envPath).PGRST_DB_SCHEMAS, 'public,storage');
+    assert.equal(readEnv(envPath).PGRST_DB_SCHEMAS, 'public');
     assert.equal(configure(root, { stateDir }).restSchemasUpdated, false);
 
-    // A state made before migration 103 holds the old default: only that line changes, once.
+    // A state made before this release holds an old default (before migration 103 with graphql_public too): only
+    // that line changes, once.
     const fresh = readFileSync(envPath, 'utf8');
-    const old = fresh.replace('PGRST_DB_SCHEMAS=public,storage\n', 'PGRST_DB_SCHEMAS=public,storage,graphql_public\n');
-    assert.notEqual(old, fresh);
-    writeFileSync(envPath, old, { mode: 0o600 });
-    const first = configure(root, { stateDir });
-    assert.equal(first.restSchemasUpdated, true);
-    assert.equal(readFileSync(envPath, 'utf8'), fresh);
-    assert.equal(statSync(envPath).mode & 0o777, 0o600);
-    assert.equal(configure(root, { stateDir }).restSchemasUpdated, false);
-    assert.equal(readFileSync(envPath, 'utf8'), fresh);
+    for (const oldDefault of ['public,storage,graphql_public', 'public,storage']) {
+      const old = fresh.replace('PGRST_DB_SCHEMAS=public\n', `PGRST_DB_SCHEMAS=${oldDefault}\n`);
+      assert.notEqual(old, fresh);
+      writeFileSync(envPath, old, { mode: 0o600 });
+      const first = configure(root, { stateDir });
+      assert.equal(first.restSchemasUpdated, true, oldDefault);
+      assert.equal(readFileSync(envPath, 'utf8'), fresh, oldDefault);
+      assert.equal(statSync(envPath).mode & 0o777, 0o600);
+      assert.equal(configure(root, { stateDir }).restSchemasUpdated, false, oldDefault);
+      assert.equal(readFileSync(envPath, 'utf8'), fresh, oldDefault);
+    }
 
     // A list the operator changed is theirs: it is not touched, even where it names graphql_public.
-    for (const custom of ['public,storage,graphql_public,extra', 'public,graphql_public,storage', 'public,storage,extra']) {
-      const changed = fresh.replace('PGRST_DB_SCHEMAS=public,storage\n', `PGRST_DB_SCHEMAS=${custom}\n`);
+    for (const custom of ['public,storage,graphql_public,extra', 'public,graphql_public,storage', 'public,storage,extra', 'public,extra']) {
+      const changed = fresh.replace('PGRST_DB_SCHEMAS=public\n', `PGRST_DB_SCHEMAS=${custom}\n`);
       writeFileSync(envPath, changed, { mode: 0o600 });
       const kept = configure(root, { stateDir });
       assert.equal(kept.restSchemasUpdated, false, custom);
