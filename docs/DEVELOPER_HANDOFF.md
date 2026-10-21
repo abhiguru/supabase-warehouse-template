@@ -13,7 +13,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 ## Running checks
 
 - `npm ci && npm test` — node unit tests; no Docker, no network.
-- `bash tests/migrations.sh` — applies every migration twice to a disposable, network-isolated container of the database image (`postgres:17`, the pin printed by `scripts/db-image.sh`) (the second pass must skip unchanged files) and runs the SQL tests. Needs Docker.
+- `bash tests/migrations.sh` — applies every migration twice to a disposable, network-isolated container of the database image (`postgres:18`, the pin printed by `scripts/db-image.sh`) (the second pass must skip unchanged files) and runs the SQL tests. Needs Docker.
 - `for f in *.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done` — shell syntax, as in CI.
 - `node scripts/check-mobile-contract.mjs <mobile checkout>` — static name inventory against the app (needs the app's `node_modules`).
 - Sensor bridge: `cd docker/sensor-bridge && python3 -m unittest discover -s tests -t .` (Python 3.15 with `requirements.txt` installed; CI job `bridge`), and `npm run test:sensors` on an installed state (builds the image; `--check-config` must exit 0 with fictional values and 78 without; the unit tests run inside the image). Without `docker/sensor-bridge/Dockerfile` it prints "Skipped" and exits 0.

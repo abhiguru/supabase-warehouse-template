@@ -13,7 +13,7 @@ on the installation's host.
 | `rest` | `postgrest/postgrest:v16.4`, pulled by digest | none; static binary, see "Exceptions" |
 | `storage` | `docker/storage`: `supabase/storage-api` v1.80.2 by digest | Locked npm manifest with same-major leaf fixes (`@fastify/busboy` 3.2.3, `fast-copy` 4.1.2, an `undici` override scoped to `undici@^7`), Alpine package upgrade, unused npm CLI removed |
 | `functions` | `docker/edge-runtime`: supabase/edge-runtime v1.77.4 binary on `debian:bookworm-slim` (both by digest) | Full `apt-get upgrade` and a minimum PCRE2 version check |
-| `db` | `docker/postgres`: the official `postgres:17.11-trixie` image (Debian 13), pinned by tag and index digest in the `FROM` line (`scripts/db-image.sh` prints it) | The recipe adds only a `gosu` 1.19 rebuilt with a patched Go (`golang:1.27.2-bookworm`, by digest); the base image ships a `gosu` built with an old Go toolchain. Operating-system rows with no fix are covered by the ledger entry `db-os-no-fix`. The earlier Supabase database image is no longer used |
+| `db` | `docker/postgres`: the official `postgres:18.6-trixie` image (Debian 13), pinned by tag and index digest in the `FROM` line (`scripts/db-image.sh` prints it) | The recipe adds only a `gosu` 1.19 rebuilt with a patched Go (`golang:1.27.3-bookworm`, by digest); the base image ships a `gosu` built with an old Go toolchain. Operating-system rows with no fix are covered by the ledger entry `db-os-no-fix`. The earlier Supabase database image is no longer used |
 | `pdf-renderer` | `docker/pdf-renderer`: Node 24 (by digest), chrome-headless-shell from Chrome for Testing, puppeteer-core | Our own code; see "PDF renderer" |
 | `supavisor` (profile `pooler`) | `docker/supavisor`: 2.9.13 by digest | Debian package upgrade |
 | `cups` (profile `printing`) | `docker/cups`: `ubuntu:22.04` by digest | Ubuntu package upgrade |
@@ -204,8 +204,8 @@ reading scan numbers, record the build date with the scan, and cut no release fr
   runs `npm ls --omit=dev --all`, which fails on an invalid, missing or extraneous package.
 
 **Database image rule.** The database image is the official PostgreSQL image, pinned by digest in `docker/postgres/Dockerfile`
-and bumped by Dependabot within major 17 (a new major needs a planned dump and reload of every installation; the PostgreSQL 15 to 17 move is in
-[Baseline reload](OPERATOR_INSTALL.md#baseline-reload)). The cluster uses the `en_US.UTF-8` collation of the image's
+and bumped by Dependabot within major 18 (a new major needs a planned dump and restore on every installation; the PostgreSQL 17 to 18 move is in
+[Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), the 15 to 17 move in [Baseline reload](OPERATOR_INSTALL.md#baseline-reload)). The data directory is set explicitly (`PGDATA=/var/lib/postgresql/data`, the mount of the `db` service): the official 18 image defaults elsewhere. The cluster uses the `en_US.UTF-8` collation of the image's
 glibc, so a base-image bump that changes glibc or its locale data can change index order. Check the base image's changes
 before moving the digest, and plan a reindex if the collation changed.
 
@@ -354,7 +354,7 @@ right after `CREATE EXTENSION` (section "Privileges of extension members" at the
 `migrations/00000000000000_baseline.sql`). Without them `PUBLIC` could execute `pg_trgm` functions such as `similarity`.
 
 **The old chain is refused.** `setup.sh` and `start.sh` stop before they rebuild or start anything when the database is below
-PostgreSQL 17 (`scripts/db-version-preflight.sh`); a database whose ledger names a migration this release does not contain
+PostgreSQL 18 (`scripts/db-version-preflight.sh`; a PostgreSQL 17 database is pointed to the [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), an earlier one to the reload); a database whose ledger names a migration this release does not contain
 stops `scripts/migrate.sh` with `This database recorded migrations that are not in this release (...)` (full text in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#baseline-reload)) and changes nothing. `db:restore`, `db:restore-host` and `db:verify-restore` call
 `scripts/backup-image.sh` first and refuse a backup whose `database_image=` line is missing or names `supabase/postgres...`, or

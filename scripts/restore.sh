@@ -117,6 +117,25 @@ verify_args=()
 if [[ "$allow_unsigned" == true ]]; then verify_args+=(--allow-unsigned); fi
 bash "$ROOT/scripts/verify-restore.sh" "${verify_args[@]}" "$backup"
 
+# The fresh cluster below is initialised by the db image of this checkout. `compose up` builds only an image that is
+# missing, so a stale image (the previous PostgreSQL major, left from before a checkout of a new release) would start
+# there and initialise the new cluster on the old server. The images whose recipe changed are rebuilt now, before
+# anything is moved; if the db image is still not current afterwards, the restore stops with the data untouched.
+db_image_stale() {
+  local plan
+  plan="$(compose --profile '*' config --format json | node "$ROOT/scripts/image-recipes.mjs" plan "$state/config/image-recipes.sha256")" \
+    || { echo 'Refusing: could not check whether the db image matches this checkout. Nothing was moved.' >&2; exit 1; }
+  printf '%s\n' "$plan" | cut -f1 | grep -qx db
+}
+if db_image_stale; then
+  echo 'The db image does not match this checkout (the database version changed): rebuilding the images first (scripts/build-images.sh).'
+  bash "$ROOT/scripts/build-images.sh" || { echo 'Refusing: the db image could not be rebuilt, so the restore would start the new cluster on the old PostgreSQL. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2; exit 1; }
+  if db_image_stale; then
+    echo 'Refusing: the db image still does not match this checkout after the rebuild. Nothing was moved. Run bash scripts/build-images.sh, then retry.' >&2
+    exit 1
+  fi
+fi
+
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 old_db="$state/data/db.pre-restore-$ts"
 old_storage="$state/data/storage.pre-restore-$ts"

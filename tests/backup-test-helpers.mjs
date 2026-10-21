@@ -97,6 +97,7 @@ case "$1" in
   ps) exit 0 ;;
   run) printf 'deadbeefcafe\\n' ;;
   cp|rm|volume) exit 0 ;;
+  image) if [ -n "$FAKE_BUILT_MARK" ] && [ -f "$FAKE_BUILT_MARK" ]; then printf 'sha256:%064d\\n' 7; else exit 1; fi ;;
   logs) printf 'fake container log line\\nPostgreSQL init process complete; ready for start up.\\n'; if [ "$FAKE_LOG_NO_SPACE" = yes ]; then printf 'ERROR:  could not extend file "base/1/2": No space left on device\\n'; fi ;;
   inspect)
     case "$3" in
@@ -106,7 +107,7 @@ case "$1" in
   exec)
     case "$*" in
       *' pg_isready '*) exit 0 ;;
-      *'Dumped from database version'*) printf '%s\\n' "\${FAKE_DUMP_VERSION:-17.11}" ;;
+      *'Dumped from database version'*) printf '%s\\n' "\${FAKE_DUMP_VERSION:-18.6}" ;;
       *pg_stat_activity*) printf '41|client backend|template1|idle\\n' ;;
       *' createdb '*) if [ "$FAKE_FAIL_CREATEDB" = yes ]; then echo 'createdb: error: database creation failed: ERROR:  source database is being accessed by other users' >&2; exit 1; fi ;;
       *'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
@@ -114,6 +115,8 @@ case "$1" in
     esac ;;
   compose)
     case "$*" in
+      *' config --format json') if [ -n "$FAKE_COMPOSE_CONFIG" ]; then cat "$FAKE_COMPOSE_CONFIG"; else printf '{"name":"warehouse-backup-test","services":{}}\\n'; fi ;;
+      *' build '*) if [ -n "$FAKE_BUILT_MARK" ] && [ "$FAKE_BUILD_FAILS" != yes ]; then : > "$FAKE_BUILT_MARK"; if [ "$FAKE_BUILD_NOOP" = yes ]; then echo drift >> "$FAKE_BUILD_CONTEXT/drift"; fi; fi; [ "$FAKE_BUILD_FAILS" != yes ] ;;
       *' exec -T db sh -c IFS= read -r pw;'*) cat >> "\${FAKE_STDIN_LOG:-/dev/null}" ;;
       *' ps -q') if [ "$FAKE_RUNNING" = yes ]; then printf 'abcdef123456\\n'; fi ;;
       *' ps --all --format '*) printf 'db running healthy\\nrest running \\nstorage running unhealthy\\nfunctions exited \\n' ;;

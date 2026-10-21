@@ -142,7 +142,7 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     const sections = calls.split('\n').filter(line => line.includes('pg_restore') && line.includes('-d postgres') && line.includes('--section='));
     assert.equal(sections.length, 3);
     assert.ok(sections.every(line => line.includes('--exit-on-error') && !line.includes('--no-owner')), 'in-place replay keeps owners');
-    const removed = calls.search(/^rm -f warehouse-restore-[0-9a-f]{12}$/m);
+    const removed = calls.search(/^rm -f -v warehouse-restore-[0-9a-f]{12}$/m);
     assert.ok(removed >= 0 && removed < at('up -d --wait --wait-timeout 180 db'), 'verification container removed before initialization');
     assert.ok(calls.split('\n').filter(line => line.endsWith('up -d --wait --wait-timeout 180')).length <= 1);
     // Both databases are recreated from template0: a session on template1 right after start-up must not fail the restore.
@@ -150,6 +150,63 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     assert.equal(recreated.length, 2);
     for (const line of recreated) assert.match(line, /CREATE DATABASE (postgres|_supabase) OWNER supabase_admin TEMPLATE template0$/, line);
     assert.doesNotMatch(calls, /template1/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// restore.sh initialises the new cluster with the db image of this checkout: a stale image (the previous PostgreSQL major)
+// is rebuilt before anything is moved, and the restore stops with the data untouched when it cannot be.
+function staleDbImage(scratch) {
+  const config = join(scratch, 'compose-config.json');
+  writeFileSync(config, JSON.stringify({ name: 'warehouse-backup-test', services: { db: { build: { context: join(scratch, 'root/docker/postgres') } } } }));
+  return { FAKE_COMPOSE_CONFIG: config, FAKE_BUILT_MARK: join(scratch, 'db-built.mark'), FAKE_FAIL_START: 'yes' };
+}
+
+test('restore rebuilds a stale db image before moving any data, then initialises the new cluster', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stale-build-');
+  try {
+    const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.match(result.stdout, /db image does not match this checkout/);
+    const calls = result.calls.split('\n');
+    const build = calls.findIndex(line => / build /.test(line) && /\bdb$/.test(line));
+    const init = calls.findIndex(line => line.endsWith('up -d --wait --wait-timeout 180 db'));
+    assert.ok(build >= 0, `the db image was built: ${result.calls}`);
+    assert.ok(init > build, 'the cluster is initialised after the build');
+    assert.ok(readdirSync(join(state, 'data')).some(name => /^db\.pre-restore-/.test(name)), 'the data was moved only after the build');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore refuses with the data untouched when the stale db image cannot be rebuilt', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stale-refuse-');
+  try {
+    const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_BUILD_FAILS: 'yes', FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing: the db image could not be rebuilt.*Nothing was moved/s);
+    assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/, 'no cluster was initialised');
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore refuses with the data untouched when the db image is still stale after a build that reported success', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stale-after-');
+  try {
+    const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_BUILD_NOOP: 'yes', FAKE_BUILD_CONTEXT: join(scratch, 'root/docker/postgres'), FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing: the db image still does not match this checkout after the rebuild.*Nothing was moved/s);
+    assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/);
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore refuses with the data untouched when the db image check itself fails', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-plan-fails-');
+  try {
+    const broken = join(scratch, 'broken-config.json');
+    writeFileSync(broken, 'not json');
+    const result = restore(scratch, ['--yes', backup], { FAKE_COMPOSE_CONFIG: broken, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing: could not check whether the db image matches this checkout\. Nothing was moved\./);
+    assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/);
+    untouched(state);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

@@ -31,7 +31,7 @@ printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 config="$WAREHOUSE_STATE_DIR/config"
 case "$1" in
   ps) exit 0 ;;
-  run) printf '17\\n' ;;   # the version preflight reads PG_VERSION of the data directory
+  run) printf '18\\n' ;;   # the version preflight reads PG_VERSION of the data directory
   info) printf '28.0.0\\n' ;;
   inspect)
     case "$3" in

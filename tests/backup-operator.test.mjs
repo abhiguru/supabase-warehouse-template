@@ -57,7 +57,7 @@ case "$1" in
       *' ps -q '*) : ;;
       *'exec -T db pg_dump'*' -d _supabase '*) printf 'fake supabase dump\\n' ;;
       *'exec -T db pg_dump'*) if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
-      *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-17|true}" ;;
+      *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-18|true}" ;;
       *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
       *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
       *'exec -T db psql'*) printf 'fake integrity\\n' ;;
@@ -74,7 +74,7 @@ esac
     assert.equal(readFileSync(join(destination, 'compose.env'), 'utf8').includes('WAREHOUSE_PROJECT_NAME='), true);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v5/);
     assert.equal(readFileSync(join(destination, 'metadata.txt'), 'utf8').match(/^database_image=(.*)$/m)?.[1], currentDatabaseImage(), 'the image line is the Dockerfile pin');
-    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^database_image=postgres:17\.\S+@sha256:[0-9a-f]{64}$/m);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^database_image=postgres:18\.\S+@sha256:[0-9a-f]{64}$/m);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^source_commit=([0-9a-f]{40}|unknown)$/m);
     // The installation had no backup key: the first backup creates it, private, and signs with it.
     const keyPath = join(state, 'config/backup.key');
@@ -331,7 +331,7 @@ test('a failed verification saves the container log and database sessions before
     assert.match(result.stderr, new RegExp(`were saved in ${join(scratch, 'diagnostics', dir)}`));
     assert.match(result.stderr, /41\|client backend\|template1\|idle/, 'the session list is printed for a CI log');
     const lines = result.calls.split('\n');
-    const removed = lines.findIndex(line => /^rm -f warehouse-restore-/.test(line));
+    const removed = lines.findIndex(line => /^rm -f -v warehouse-restore-/.test(line));
     assert.ok(lines.findIndex(line => line.startsWith('logs ')) < removed && lines.findIndex(line => line.includes('pg_stat_activity')) < removed, 'evidence is collected first');
     assert.ok(removed >= 0, 'the container is still removed');
     assert.doesNotMatch(result.stderr, /ran out of space/);
@@ -496,7 +496,7 @@ test('restore verifier falls back to a disk-backed data directory and removes it
     const mount = run.match(/ -v (\S+)\/data:\/var\/lib\/postgresql\/data /);
     assert.ok(mount && mount[1].startsWith(`${parent}/.verify-restore.`), run);
     assert.match(run, /--network none --memory 1024m /);
-    const removed = lines.findIndex(line => /^rm -f warehouse-restore-/.test(line));
+    const removed = lines.findIndex(line => /^rm -f -v warehouse-restore-/.test(line));
     const emptied = lines.findIndex(line => line.startsWith(`run --rm --network none --user 0:0 --entrypoint /bin/rm -v ${mount[1]}:/scratch `) && line.endsWith(' -rf /scratch/data'));
     assert.ok(removed >= 0 && emptied > removed, 'the image removes the files its postgres user owns, after the container is gone');
     assert.deepEqual(readdirSync(parent), [], 'nothing is left in the scratch directory');
@@ -616,7 +616,8 @@ test('restore verifier lists the storage archive and never unpacks it', () => {
 test('backup refuses a database that is not this release\'s (an earlier major version or a role postgres), before any service is stopped', () => {
   for (const [label, server, reason] of [
     ['PostgreSQL 15', '15|true', /reports '15\|true'.*migrations-pre-baseline.*Baseline reload/s],
-    ['a role postgres', '17|false', /reports '17\|false'/],
+    ['PostgreSQL 17, this release runs 18', '17|true', /reports '17\|true'.*Major PostgreSQL upgrade/s],
+    ['a role postgres', '18|false', /reports '18\|false'/],
   ]) {
     const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-server-'));
     const state = join(scratch, 'state');
@@ -652,21 +653,30 @@ esac
 
 const imageCheck = backup => spawnSync('bash', ['-c', 'source "$1"; backup_check_database_image "$2"', 'x', new URL('../scripts/backup-image.sh', import.meta.url).pathname, backup], { encoding: 'utf8' });
 
-test('the image check: a repeated image line is damaged metadata, an older postgres 17 pin is accepted, a listed earlier-image role refuses', () => {
+test('the image check: a repeated image line is damaged metadata, an older pin and a backup of the previous major are accepted, a newer major is refused, a listed earlier-image role refuses', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-imagecheck-'));
   try {
     const twice = imageCheck(makeBackup(join(scratch, 'twice'), { imageLines: 2 }));
     assert.equal(twice.status, 1);
     assert.match(twice.stderr, /records 2 database_image= lines instead of one; the backup metadata is damaged/);
     assert.doesNotMatch(twice.stderr, /before the move to PostgreSQL 17/);
-    const older = imageCheck(makeBackup(join(scratch, 'older'), { databaseImage: `postgres:17.4-trixie@sha256:${'a'.repeat(64)}` }));
-    assert.equal(older.status, 0, 'a Dependabot bump of the pin does not strand earlier PostgreSQL 17 backups');
+    const older = imageCheck(makeBackup(join(scratch, 'older'), { databaseImage: `postgres:18.1-trixie@sha256:${'a'.repeat(64)}` }));
+    assert.equal(older.status, 0, 'a Dependabot bump of the pin does not strand earlier PostgreSQL 18 backups');
     for (const role of ['postgres', 'supabase_auth_admin', 'dashboard_user']) {
       const named = imageCheck(makeBackup(join(scratch, role), { roles: `anon\n${role}\nsupabase_admin\n` }));
       assert.equal(named.status, 1, role);
       assert.match(named.stderr, new RegExp(`lists the role '${role}'.*migrations-pre-baseline.*Baseline reload`, 's'), role);
     }
     assert.equal(imageCheck(makeBackup(join(scratch, 'plain'))).status, 0);
+    // The pin is PostgreSQL 18: a backup of 17 (the previous major) restores, one of a newer major is refused by the upper bound.
+    const previous = imageCheck(makeBackup(join(scratch, 'previous'), { databaseImage: `postgres:17.11-trixie@sha256:${'b'.repeat(64)}` }));
+    assert.equal(previous.status, 0, previous.stderr);
+    const odd = imageCheck(makeBackup(join(scratch, 'odd'), { databaseImage: `postgres:12345-trixie@sha256:${'d'.repeat(64)}` }));
+    assert.equal(odd.status, 1);
+    assert.match(odd.stderr, /whose PostgreSQL major version cannot be read/);
+    const newer = imageCheck(makeBackup(join(scratch, 'newer'), { databaseImage: `postgres:19.1-trixie@sha256:${'c'.repeat(64)}` }));
+    assert.equal(newer.status, 1);
+    assert.match(newer.stderr, /Refusing: the backup was made on 'postgres:19\.1-trixie@sha256:[0-9a-f]{64}', a newer PostgreSQL major than the 18 this checkout runs/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -679,7 +689,7 @@ test('the ACL filter keeps ACL and DEFAULT ACL entries of a real table of conten
   const listing = [
     ';',
     '; Archive created at 2026-10-20 10:00:00 UTC',
-    ';     Dumped from database version: 17.11 (Debian 17.11-1.pgdg13+1)',
+    ';     Dumped from database version: 18.6 (Debian 18.6-1.pgdg13+2)',
     ';',
     '3411; 1259 16400 TABLE public items supabase_admin',
     '3412; 1259 16410 TABLE public ACL supabase_admin',
@@ -696,7 +706,7 @@ test('the ACL filter keeps ACL and DEFAULT ACL entries of a real table of conten
   assert.deepEqual(kept.stdout.trim().split('\n').map(line => line.split(';')[0]), ['4001', '4002', '4003', '4004', '4006']);
 });
 
-test('restore verifier refuses a dump made by a server older than PostgreSQL 17, and an archive without privileges', () => {
+test('restore verifier refuses a dump made by a server older than PostgreSQL 17 or newer than the pin, and an archive without privileges', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-dumped-from-'));
   try {
     const backup = makeBackup(join(scratch, 'backup'));
@@ -704,6 +714,11 @@ test('restore verifier refuses a dump made by a server older than PostgreSQL 17,
     assert.notEqual(old.status, 0);
     assert.match(old.stderr, /made by PostgreSQL '15\.8', before PostgreSQL 17.*migrations-pre-baseline.*Baseline reload/s);
     assert.doesNotMatch(old.calls, /--section=pre-data/, 'nothing was restored');
-    assert.equal(verify(backup, scratch, { FAKE_DUMP_VERSION: '17.11' }).status, 0);
+    assert.equal(verify(backup, scratch, { FAKE_DUMP_VERSION: '17.11' }).status, 0, 'a dump of the previous major restores');
+    assert.equal(verify(backup, scratch, { FAKE_DUMP_VERSION: '18.6' }).status, 0);
+    const newer = verify(backup, scratch, { FAKE_DUMP_VERSION: '19.1' });
+    assert.notEqual(newer.status, 0);
+    assert.match(newer.stderr, /made by PostgreSQL '19\.1', a newer major than the 18 this checkout runs/);
+    assert.doesNotMatch(newer.calls, /--section=pre-data/, 'nothing was restored');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

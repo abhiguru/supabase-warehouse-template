@@ -35,6 +35,32 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of it. In 
    Any row is a pair (or more) to **rename first**: rename one of each pair in the app (Customers, Edit), then run the setup rerun.
    No rows: go on.
 
+## Unreleased: PostgreSQL 18
+
+The database image moves from `postgres:17.11-trixie` to `postgres:18.6-trixie` (pinned by index digest in `docker/postgres/Dockerfile`;
+`scripts/db-image.sh` still prints the pin, and every version guard now reads the major from it). No migration changes. The schema
+of the baseline plus the migrations after it is identical on 17.11 and 18.6 (`pg_dump --schema-only` and `scripts/backup-integrity.sql`
+compared on both), and `tests/migrations.sh` passes on 18. **Every installation that runs PostgreSQL 17 needs the one-time
+[Major PostgreSQL upgrade](docs/OPERATOR_INSTALL.md#major-postgresql-upgrade)** (backup with the old checkout, restore on the new one); PostgreSQL 17
+data files do not open in 18.
+
+- **Data directory.** The official 18 image defaults `PGDATA` to `/var/lib/postgresql/18/docker` and declares `/var/lib/postgresql` as
+  its volume. The stack, `tests/migrations.sh`, `scripts/verify-restore.sh` and `scripts/baseline/lib.sh` now set
+  `PGDATA=/var/lib/postgresql/data` next to the mount, so a new image can never start an empty cluster somewhere else. The host
+  directory (`data/db`) is unchanged.
+- **Guards from one source.** `scripts/db-version-preflight.sh` refuses a data directory or running server whose major differs from the
+  pin: PostgreSQL 17 is sent to the new upgrade section, an earlier one still to the Baseline reload, a newer one to a newer release.
+  `scripts/backup.sh` points to the same section. `scripts/backup-image.sh` and `scripts/verify-restore.sh` refuse a backup made by a
+  newer major than the checkout runs; backups from 17 and 18 restore.
+- **`restore.sh` and the db image.** Before it moves any data, `restore.sh` rebuilds the db image when it does not match the checkout
+  (`scripts/build-images.sh`) and refuses if it cannot, so a cross-major restore initialises the new cluster on 18, never on a stale 17 image.
+- **Containers removed with their volumes.** `verify-restore.sh` removes its container with `docker rm -f -v`: the image's `VOLUME` leaves no anonymous volume.
+- **Pooler.** `docker/volumes/pooler/pooler.exs` also updates the `server_version` of an existing tenant to the running server's.
+- **Docs and ledger.** New section "Major PostgreSQL upgrade" in `docs/OPERATOR_INSTALL.md`; the `db-os-no-fix` exception in
+  `docker/image-exceptions.json` is re-reviewed for the 18.6 image (same 62 HIGH/CRITICAL rows without a fix).
+- **gosu builder.** The `gosu` in the db image is rebuilt with `golang:1.27.3-bookworm` (was 1.27.2, by digest), which fixes
+  CVE-2026-111943 in the Go standard library.
+
 ## Unreleased: Push review (migration 122)
 
 New migration (`push_review`), four corrections found in the review of the whole backend diff, on top of migration 121 (which is

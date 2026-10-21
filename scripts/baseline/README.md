@@ -1,5 +1,7 @@
 # Baseline tooling (item 18)
 
+> History: this describes the PostgreSQL 15 to 17 squash and its `@pg17` labels, which stay as they were. The scripts still run, against the pin in `docker/postgres/Dockerfile` (now PostgreSQL 18); `lib.sh` sets `PGDATA` like the stack does.
+
 Replaces the chain of append-only migrations with ONE baseline migration that is an exact squash of the chain, and proves
 that it is. The baseline is `migrations/00000000000000_baseline.sql`; these scripts generated it and check it again whenever it is regenerated.
 Everything runs in throwaway containers named `slim-tool-*` (no network except the internal one of the postgres:17 run, removed on exit); no stack is touched.

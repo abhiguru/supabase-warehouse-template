@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Sourced by scripts/restore.sh, scripts/restore-host.sh and scripts/verify-restore.sh.
 # A backup (format v5) records the database image it was dumped from on a database_image= line in
-# metadata.txt (scripts/backup.sh). The database now runs the official PostgreSQL 17 image with one
-# baseline migration. A backup made on the earlier supabase/postgres image holds the old schema, the
+# metadata.txt (scripts/backup.sh). The database runs the official PostgreSQL image of the pin in
+# docker/postgres/Dockerfile (scripts/db-image.sh) with one baseline migration. A backup from the same major or
+# from PostgreSQL 17 restores; one from a newer major than the pin does not (a dump cannot go back to an older server). A backup made on the earlier supabase/postgres image holds the old schema, the
 # old roles and the old migration chain, so it cannot be replayed here: it restores only with the
 # release tagged migrations-pre-baseline, and its data is then reloaded (docs/OPERATOR_INSTALL.md,
 # "Baseline reload"). A refusal needs no trust in metadata.txt, so callers run it before the signature check.
@@ -28,6 +29,19 @@ backup_check_database_image() {
   fi
   if [[ ! "$image" =~ ^postgres:[0-9][^[:space:]]*$ ]]; then
     echo "Refusing: the backup records an unknown database image '$image' (expected the official postgres image from docker/postgres/Dockerfile)." >&2
+    return 1
+  fi
+  # The upper bound: a backup from a newer PostgreSQL major than this checkout runs cannot be restored by it.
+  local pin pin_major image_major
+  pin="$(bash "$(dirname "${BASH_SOURCE[0]}")/db-image.sh")" || return 1
+  pin_major="${pin#postgres:}"; pin_major="${pin_major%%[!0-9]*}"
+  image_major="${image#postgres:}"; image_major="${image_major%%[!0-9]*}"
+  if [[ ! "$image_major" =~ ^[0-9]{1,3}$ ]]; then
+    echo "Refusing: the backup records a database image '$image' whose PostgreSQL major version cannot be read." >&2
+    return 1
+  fi
+  if ((image_major > pin_major)); then
+    echo "Refusing: the backup was made on '$image', a newer PostgreSQL major than the $pin_major this checkout runs ($pin). A dump cannot be restored on an older server. Check out the release the backup was made with, or a newer one." >&2
     return 1
   fi
   # roles.txt lists every role of the dumped server. The roles of the earlier image and the removed warehouse roles (the list of tests/baseline_roles.sql) never exist on this version, so a

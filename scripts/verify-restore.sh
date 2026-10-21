@@ -99,7 +99,7 @@ cleanup() {
   trap - EXIT
   if [[ "$created" == true ]]; then
     if ((status != 0)); then save_diagnostics || true; fi
-    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker rm -f -v "$container" >/dev/null 2>&1 || true
   fi
   if [[ -n "$disk_dir" && -d "$disk_dir" ]]; then
     # PostgreSQL files belong to the container's postgres user, so the image removes them.
@@ -156,7 +156,7 @@ elif [[ "$storage" == tmpfs ]] && ((tmpfs_memory_mb > available_mb)); then
 fi
 if [[ "$storage" == tmpfs ]]; then
   memory_mb="$tmpfs_memory_mb"
-  data_args=(--tmpfs "/var/lib/postgresql/data:rw,size=${data_mb}m")
+  data_args=(--tmpfs "/var/lib/postgresql/data:rw,size=${data_mb}m" -e PGDATA=/var/lib/postgresql/data)
 else
   memory_mb=1024
   if [[ -z "$scratch_parent" ]]; then
@@ -203,7 +203,7 @@ rm -f -- "$scratch/archive_names.txt"
 if [[ "$storage" == disk ]]; then
   disk_dir="$(mktemp -d "$scratch_parent/.verify-restore.XXXXXX")"
   mkdir -m 700 "$disk_dir/data"
-  data_args=(-v "$disk_dir/data:/var/lib/postgresql/data")
+  data_args=(-v "$disk_dir/data:/var/lib/postgresql/data" -e PGDATA=/var/lib/postgresql/data)
 fi
 docker run -d --pull missing --name "$container" --label purpose=warehouse-restore-test \
   --network none --memory "${memory_mb}m" --cpus 1 \
@@ -254,10 +254,16 @@ docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
 docker exec "$container" sh -c "pg_restore -l /tmp/database.dump > /tmp/restore.list"
 # The dump header names the server it came from. A dump of an earlier major version holds the earlier
 # schema and roles (the image label of metadata.txt is not enough: it describes the checkout, not the dumped server).
+# Below 17 needs the baseline reload; above the major of the pin cannot be restored by this checkout.
 dumped_from="$(docker exec "$container" sh -c "sed -n 's/^;[[:space:]]*Dumped from database version: //p' /tmp/restore.list | head -n 1")"
 dumped_major="${dumped_from%%.*}"
 if [[ ! "$dumped_major" =~ ^[0-9]+$ ]] || ((dumped_major < 17)); then
   echo "Refusing: the database dump was made by PostgreSQL '${dumped_from:-unknown}', before PostgreSQL 17. Restore it with the release tagged migrations-pre-baseline, then reload the data into this version (docs/OPERATOR_INSTALL.md, \"Baseline reload\")." >&2
+  exit 1
+fi
+pin_major="${IMAGE#postgres:}"; pin_major="${pin_major%%[!0-9]*}"
+if ((dumped_major > pin_major)); then
+  echo "Refusing: the database dump was made by PostgreSQL '$dumped_from', a newer major than the $pin_major this checkout runs. A dump cannot be restored on an older server: check out the release the backup was made with, or a newer one." >&2
   exit 1
 fi
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \

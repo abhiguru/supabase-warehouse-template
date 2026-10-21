@@ -20,7 +20,7 @@ test('every tracked shell script passes a syntax check with its own interpreter'
 });
 
 test('the disposable databases use the image digest the production database is built from', () => {
-  const pinned = readFileSync(join(root, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (postgres:17\.\d+-trixie@sha256:[0-9a-f]{64})$/m)[1];
+  const pinned = readFileSync(join(root, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (postgres:18\.\d+-trixie@sha256:[0-9a-f]{64})$/m)[1];
   const printed = spawnSync('bash', [join(root, 'scripts/db-image.sh')], { encoding: 'utf8' });
   assert.equal(printed.status, 0, printed.stderr);
   assert.equal(printed.stdout.trim(), pinned, 'scripts/db-image.sh prints the Dockerfile pin');

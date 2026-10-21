@@ -1,5 +1,5 @@
 \set ON_ERROR_STOP on
--- First-start bootstrap on the official PostgreSQL 17 image (docker/postgres/Dockerfile). Runs once, as
+-- First-start bootstrap on the official PostgreSQL image (docker/postgres/Dockerfile). Runs once, as
 -- supabase_admin (POSTGRES_USER, the bootstrap superuser), in database postgres, before roles.sql sets
 -- the passwords. There is no role named postgres. No passwords here.
 --

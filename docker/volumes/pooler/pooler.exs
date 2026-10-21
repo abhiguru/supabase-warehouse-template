@@ -33,7 +33,10 @@ params = %{
 }
 
 # The tenant is stored (encrypted with VAULT_ENC_KEY) in the _supabase database.
-# An existing one keeps its settings, but the pool user's password is written
+# An existing one keeps its settings, except the server_version it reports to
+# clients (default_parameter_status), which is set to the running server's at
+# every start: it stays on the old major after a major upgrade (docs/OPERATOR_INSTALL.md,
+# "Major PostgreSQL upgrade") otherwise. The pool user's password is written
 # again at every start: it changes on the upgrade to per-role passwords, on
 # `npm run db:rotate-passwords`, and when a restore brings back an older
 # _supabase database.
@@ -42,5 +45,6 @@ case Supavisor.Tenants.get_tenant_by_external_id(params["external_id"]) do
     {:ok, _} = Supavisor.Tenants.create_tenant(params)
 
   tenant ->
+    {:ok, _} = Supavisor.Tenants.update_tenant(tenant, %{"default_parameter_status" => params["default_parameter_status"]})
     :ok = Supavisor.Tenants.update_manager_user_credentials(tenant, Map.take(pool_user, ["db_user", "db_password"]))
 end
