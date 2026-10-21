@@ -22,7 +22,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: npm run db:rotate-passwords -- --yes [--superuser]
 Generates a new password for every database login of the services (PostgREST,
-Storage and the pooler), sets them in the
+Storage, and the pooler when it is on), sets them in the
 database, and restarts the database and the services that sign in to it
 (about a minute; the API is unavailable for some seconds of it). With
 --superuser, POSTGRES_PASSWORD (the

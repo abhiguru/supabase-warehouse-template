@@ -39,7 +39,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_long_transaction` | The oldest open transaction is older than 300 s |
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
-| `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists |
+| `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
 | `container_restarts:<name>` | More than 3 restarts in the last hour |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |

@@ -1,6 +1,6 @@
 # Staff GRN permissions
 
-This document is a dated record of role decisions. The role table under
+This document records role decisions, grouped by topic; inside a topic the sections are dated. The role table under
 [Roles after migration 45](#roles-after-migration-45) is current; later sections add migrations 46–90 and 69.
 Where an earlier section says otherwise, a note marks it as superseded.
 
@@ -45,7 +45,61 @@ RPC signature changed.
 Administrators and supervisors can delete an image object only when no image row or document header column still
 names it (`scripts/configure-storage.sql`, run by every setup).
 
-## Staff dispatch and invoice access, 5 October 2026
+**Topics:** [Roles: who may do what](#roles-who-may-do-what); [Orders and dispatches](#orders-and-dispatches); [Invoices, zero charge and item pricing](#invoices-zero-charge-and-item-pricing); [Documents: lock order, input rules and retries](#documents-lock-order-input-rules-and-retries); [Direct table access, images and storage](#direct-table-access-images-and-storage).
+
+Each topic's sections keep their original headings (and anchors); a section's migration number and date say when its rule arrived, and the rule itself is current unless a note says superseded.
+
+## Roles: who may do what
+
+The current role table comes first; the sections after it record how each role's access was decided and widened. History: 3 to 20 October 2026, migrations 18, 21, 23 to 25, 45, 47 and 90.
+
+### Roles after migration 45
+
+| Capability | Administrator | Supervisor | Staff | Customer account |
+|---|---|---|---|---|
+| Receipts, dispatches, invoices: create, read, edit | yes | yes | yes | read own |
+| Delete a receipt, dispatch or invoice | yes | yes | no | no |
+| Remove a photo in the edit forms | yes | yes | **yes** (confirmed or own, live document) | no |
+| Orders and queue through the RPCs | yes | yes | yes | own carts |
+| Live order queue (row read on `orders`; the direct read was removed in 123, the queue is read through the order RPCs) | yes | yes | **yes** | own |
+| Reports: all customers | yes | yes | **yes** | no |
+| Reports: one customer | yes | yes | **yes** | assigned customers (**now also stock aging and item-wise stock**) |
+| Operations dashboard | yes | yes | no | no |
+| Item pricing: read | yes | yes | **no** (migration 90) | no |
+| Item pricing: add, change, delete (`replace_item_rates`, `undo_rate_change`) | yes | yes | **no** (migration 90) | no |
+| Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | **no / no** (refused by the guard, migration 90) | no |
+| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, migration 86; `get_item_grn_rates` was removed in 123): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **no** (migration 90): a staff call with `p_rates`, `[]` included, is answered `RATES_MANAGER_ONLY`; `get_item_grn_rates` is refused; `get_grn_details` answers `rates` = `[]` | no |
+| The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
+| Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
+| Sensors | yes | yes | **yes** | no |
+| Customers and items: create, edit, delete (items also `get_item_usage`) | yes | yes | no | no |
+| User list and details | yes | yes, without administrators | no | no |
+| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47). Customer assignments are for the Customer role only (`ROLE_NOT_CUSTOMER`, migration 116) | no | no |
+| Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
+| Change a rejected profile (any change, by anyone) | **no one** until an administrator uses "Review again" (`review_enrollment_again`); the call answers `ENROLLMENT_REJECTED` | no | no | no |
+| Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
+| Review enrollment requests | yes | no | no | no |
+| Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
+| Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
+| Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
+| What became of a save whose answer was lost (`get_submission_result`, migration 120): the caller's own saved answers only | yes | yes | yes | no |
+| The GRN edit form's version token and locks (`get_grn_edit_state`, migration 121) | yes | yes | yes | **no** (`Staff access required`) |
+| Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
+| `printer_status` (direct read removed in 123: the edge function reads it with the service key) | yes | yes | yes | **no** (and no longer without sign-in) |
+
+Bold marks what migration 45 changed. Migration 49 added the unlink row; it is
+the one function the guard names that a supervisor may not call
+([CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)).
+
+`tests/role_allowlist.sql` classifies every function the app role may execute
+(staff yes/no; customer any/own/no). It calls each one that a customer account
+or staff may not use and expects the guard's refusal, also with another
+customer's id, so a function granted later fails the test until it is
+classified. `tests/staff_dispatch_invoice_access.sql` and
+`tests/staff_grn_access.sql` were changed where they asserted the old pricing
+and photo refusals.
+
+### Staff dispatch and invoice access, 5 October 2026
 
 The operator explicitly authorized staff dispatch and invoice work. Migration 21 permits the existing
 create/read/update document RPCs for active staff and adjusts only the dispatch implementations' legacy role checks and
@@ -63,7 +117,7 @@ metadata or their own pending metadata. No direct pricing read, write, delete, s
 added. Private PDFs keep caller-RLS authorization and server-only expiring document links. Assigned customers keep access
 to their own documents only, and a disabled staff account or a revoked session reads nothing.
 
-## Second-pass corrections, 8 October 2026
+### Second-pass corrections, 8 October 2026
 
 An independent review found the earlier description wider than the code in two
 places and narrower in one. The operator decided the following; migrations 23
@@ -88,7 +142,7 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   by deleting its invoice; an invoice with payments cannot be deleted.
 - **Discount changes are kept.** Besides the last reason and author on the
   invoice, every change is appended to `invoice_discount_history`, readable by
-  administrators and supervisors only (migration 41).
+  administrators and supervisors only (migration 41; since migration 123 no app role reads this table directly (it has no grant and no policy)).
 - **Edits may remove lines and images; whole documents cannot be deleted.**
   `update_grn` removes undispatched lines and unlisted images, `update_dispatch_smart`
   replaces dispatch lines (migration 120: a list that is sent is never empty, an
@@ -123,7 +177,126 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
   `operator_review_enrollment`) and a rejected one ENROLLMENT_REJECTED
   ("Review again", `review_enrollment_again`, puts it back in Access requests).
 
-## Orders and queue, 9 October 2026
+### The server admits what the app offers, 11 October 2026
+
+The 10 October review found screens that the app shows to a role and whose RPCs
+the server refused, so the screen opened and then failed. The owner decided:
+**where the app offers a screen to a role, the server allowlist is widened so
+the screen works**, instead of hiding the screen. Migration 45 implements it and
+`tests/role_allowlist.sql` proves it. This supersedes the staff pricing refusal
+of 8 October (migration 23) and the administrator-only user management that
+held since migration 3; the notes in the sections above say where.
+
+The list below was taken from the app (the RPCs each screen calls and the role
+it is shown to), not from the review text.
+
+#### What was opened, and to whom
+
+**Staff — reports.** Reports tab and the report screens, both the all-customers
+list and one customer:
+`get_all_stock_summary`, `get_customer_stock_summary`,
+`get_all_customer_activity_summary`, `get_customer_activity_detail`,
+`get_customer_dispatch_activity`, `get_stock_aging_report`,
+`get_item_wise_stock_list`. (`get_all_dispatch_activity`, `get_all_grn_activity`,
+`get_customer_grn_activity` and `get_customer_invoice_summary` were open
+already.) The operations dashboard is not shown to staff by the app and
+`get_operations_dashboard` stays with administrators and supervisors.
+
+**Staff — item pricing.** Opened by migration 45 (`get_item_storage_prices` and the four price writers) and taken away
+again by migration 90; see "Staff lose item pricing, 16 October 2026".
+
+**Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
+sensor tables stay closed to staff.
+
+**Staff — photo removal in the receipt and dispatch edit forms.**
+`delete_grn_image` and `delete_dispatch_image`, for a photo of a receipt or
+dispatch that is not deleted (the documents staff can already edit), when the
+photo is confirmed or the caller registered it. Another person's unconfirmed
+upload is refused, as for `cancel_*_image_upload`. After the row is removed the
+app deletes the file; staff may read and delete a file in the `grn-images` and
+`dispatch-images` buckets only when it lies in the folder of a receipt or
+dispatch that is not deleted and no image row names it
+(`scripts/configure-storage.sql`; narrowed by migration 47, which before
+covered every unnamed file, the photos of deleted documents included). A file a
+document still shows, and any file of a deleted document, cannot be read,
+deleted or overwritten by staff.
+
+**Staff — live order queue.** A read policy on `orders`
+(`starter_order_staff_read`), matching what staff already read through the
+order RPCs. Orders are still written through the cart RPCs only. (Superseded in migration 123: the read grant and `starter_order_staff_read` are gone; staff read orders through the order RPCs.)
+
+**Supervisors — user management.** `update_user_role`, `update_user_status`,
+`assign_customer_to_user` and `remove_customer_assignment` (the list and detail
+RPCs were open already). A supervisor:
+
+- cannot change an administrator's role, status or customer assignments, and
+  does not see administrators in the list;
+- cannot give anyone the administrator role;
+- cannot change the own role, status or customer assignments;
+- cannot review enrollment requests (`operator_review_enrollment` stays with
+  administrators).
+
+A supervisor can make another user a supervisor and can deactivate any user who
+is not an administrator. Since migration 47 a supervisor acts only on a profile
+whose access request is approved: a deactivated, rejected or pending profile is
+answered with `ENROLLMENT_NOT_APPROVED` ("Only an administrator can change a
+user whose access is not approved"), for the status and for the role. Giving
+access back is therefore an administrator's action, also for a user the
+supervisor deactivated. For every caller, the role
+of a pending request cannot be changed before the review (`ENROLLMENT_PENDING`,
+"Review the access request before changing the role"); a role other than
+customer made the request unreviewable. The last-administrator rule of
+migration 44 is unchanged.
+
+#### What was not opened
+
+**Customer accounts are not widened to other customers' data.** A customer
+account, also one assigned to several customers, is refused every
+all-customers RPC (`get_all_stock_summary`, `get_all_customer_activity_summary`,
+`get_all_dispatch_activity`, `get_all_grn_activity`,
+`get_customer_invoice_summary` without a customer, `get_stock_aging_report` and
+`get_item_wise_stock_list` without a customer), pricing and sensors.
+
+The two stock reports that the app offers to customers and that take a
+customer id are admitted for a customer account **only with the id of an
+assigned customer**: `get_stock_aging_report(p_customer_uuid)` and
+`get_item_wise_stock_list(p_customer_id)`. Each call names one customer and the
+guard checks that id against the account's active assignments; an account with
+several customers calls once per customer.
+
+#### Other changes of migration 45
+
+- **Supervisor contact details.** `get_grn_details` and `get_dispatch_details`
+  return `supervisor_details` to a customer account with `id`, `name` and
+  `display_name` only. `mobile` (which is also that person's sign-in
+  identifier) and `role` go to administrators, supervisors and staff. There was
+  no owner decision on this; it is the privacy-safe default and the owner can
+  reverse it (the app then shows the Call action to customers again).
+- **Supervisor picker.** `get_supervisors` lists active profiles only. Since
+  migration 47 each row is `id`, `name`, `display_name` and `role`; `phone` is
+  added for administrators and supervisors only. Staff, who pick a colleague by
+  name, no longer receive every colleague's mobile number.
+- **Role from the database.** `get_customer_dispatch_activity`,
+  `get_customer_stock_summary`, `get_operations_dashboard` and
+  `get_recent_dispatched_orders` took the caller's role from the token, where
+  it outlives a role change. They now read it from the profile, like the guard.
+  A role change still takes effect on the next request without signing the
+  user out.
+- **`printer_status`** is readable by signed-in administrators, supervisors and
+  staff only; it was readable with the public key. `feature_flags` stays
+  public. (Superseded in migration 123: no app role reads `printer_status` directly any more; `get-printer-status` reads it with the service key.)
+- **`find_or_create_item_storage_price`** (removed in migration 123) refused every role (it looked the
+  caller up in a table that operator sign-in does not fill); it now works for
+  the roles that may write prices.
+- `is_admin_or_supervisor()` is true for staff as well, despite its name; it is
+  not what keeps staff out of anything, the guard is.
+  `tests/role_allowlist.sql` lists the granted functions that call it.
+
+## Orders and dispatches
+
+History: migrations 28, 39 and 121.
+
+### Orders and queue, 9 October 2026
 
 The operator decided that staff have the same order access as supervisors.
 Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
@@ -135,7 +308,7 @@ orders and order items stay denied for staff. Customers keep access to their
 own carts only, and can now read their own order history.
 `tests/order_screen.sql` proves both.
 
-## One customer per dispatch, 10 October 2026
+### One customer per dispatch, 10 October 2026
 
 Staff, supervisors and administrators may dispatch any customer's goods, but one
 dispatch carries one customer's lots. Migration 39 enforces this for every role:
@@ -152,7 +325,267 @@ Records saved before migration 39 are not checked or repaired.
 `tests/dispatch_lot_ownership.sql` proves the rule and the dispatch-edit
 refusals of migration 25 (invoiced lines, insufficient stock).
 
-## No direct table writes for any role, 10 October 2026
+### Owner decisions on GRN edits, orders and dispatch, 20 October 2026 (migration 121)
+
+Names, fields and the English of every refusal are in [API_CONTRACT.md](API_CONTRACT.md), "Review decisions (migration 121)". What
+changes for each role:
+
+- **A rate set for one GRN is not dropped by a staff edit (D10).** Staff cannot send rates (`RATES_MANAGER_ONLY`). When a staff edit would
+  make `update_grn` remove a rate that was set for this GRN alone (a changed weight or pricing mode leaves its band holding no line, or a
+  line goes), the whole edit is refused with `RATES_NEED_MANAGER` ("Ask a manager to make this change") and nothing is saved. A manager
+  makes the change in the Rates step. Administrators and supervisors are not refused for a rate removed on purpose, a removed line or a
+  service-key call; they are refused with `RATES_WOULD_DROP` (D24) when a changed weight or pricing mode leaves a line without its
+  GRN-only rate and the same save sets no rate for it.
+- **A line is not removed without a reason shown (D11).** Removing a GRN line that has dispatch or stock history, or that is on an order,
+  is refused by name for every role that may edit a GRN: `LINE_DISPATCHED_BEFORE` / `LINE_ON_ORDER` (before: a raw foreign-key text).
+- **After invoicing and dispatch (D2, D23).** An invoiced lot keeps its item, packing and weight, a dispatched lot its item and packing, an
+  invoiced GRN its date, an invoiced dispatch its date and number, and an invoiced GRN takes no new line (D9). A GRN keeps its number (D6).
+  These apply to every role, the service key (`fas-sync`) included: a push that crosses a rule is refused and reported.
+- **A deactivated business (D16, corrected).** It may still order and be dispatched, for every role and for the customer's own login: no
+  order or dispatch function refuses it. Only a new GRN for it is refused (`save_grn`; `update_grn` when it moves the GRN to a deactivated
+  customer), as in migrations 80 to 84.
+- **GRN history (D12).** Edits and deletes of a GRN and of its lines are recorded in `audit_log` for every role (the service key included,
+  with no user).
+
+## Invoices, zero charge and item pricing
+
+History: migrations 48, 90 and the invoice number per financial year.
+
+### Owner decisions, 11 October 2026 (migration 48)
+
+The owner took nine decisions on 11 October 2026; these are the ones that
+change what a role may do on this server. Migration 48 implements them. No
+role is added and no RPC is opened to a role that did not have it.
+
+#### Zero charge needs a reason from staff
+
+An invoice line may have a storage charge of 0. **Staff must give a reason** (`zero_charge_reason`) on every save of an
+invoice that has such a line, on all three save paths; administrators and supervisors may leave it empty. Without it staff
+are refused with `Enter a reason for the zero charge`. Every change of the reason is appended to
+`invoice_zero_charge_history`, which administrators and supervisors read and nobody can change (since migration 123 not by a direct table read: the table has no app-role grant). Details, and what happens to
+invoices saved before the rule, are in [INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql` covers each path
+and role. The discount reason of migration 30 is a separate rule and unchanged.
+
+#### The discount and zero-charge records are not read from the table
+
+All app roles share one database role, so a table grant cannot tell a customer account from staff. Migration 48 therefore
+grants the app role SELECT on every column of `invoice` except `discount_reason`, `discount_set_by`, `discount_set_at`,
+`zero_charge_reason`, `zero_charge_set_by` and `zero_charge_set_at`. **For every role, administrator included, those six are
+read through `get_invoice_detail` only**, which gives them to administrators, supervisors and staff and not to a customer
+account. A direct read of `invoice` must name its columns (`select=*` is refused with HTTP 403), and a column added later is
+closed until a migration grants it. See [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
+`tests/invoice_column_grants.sql`, `tests/security_baseline.sql`.
+
+### Staff lose item pricing, 16 October 2026
+
+The owner decided that item pricing is for administrators and supervisors only
+(migration 90). This supersedes the staff access of 11 October 2026 (migration
+45, widened by migrations 76, 85 and 86), which the sections above describe.
+
+- **Refused to staff by the guard** (SQLSTATE `42501`, "Staff access required"):
+  `get_item_storage_prices`, `create_item_storage_price`,
+  `update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`,
+  `undo_rate_change`, `get_standard_rate`, `set_standard_rate` and
+  `get_item_grn_rates`. (`find_or_create_item_storage_price` was already refused,
+  migration 76.) The staff branches inside those function bodies (the rate in force
+  rule of migration 76, `STANDARD_RATE_MANAGER_ONLY` of migration 85) are left in
+  place and can no longer be reached by staff.
+- **Rates typed on the GRN sheet.** A staff call of `save_grn` or `update_grn`
+  that carries `p_rates` (any value that is not NULL, `[]` included) is answered
+  `{success: false, error_code: 'RATES_MANAGER_ONLY'}` before anything is written.
+  The same calls without `p_rates` work for staff as before.
+- **`get_grn_details`** answers `grn.rates` = `[]` to staff, as it does to customers;
+  administrators, supervisors and the service role get the rates as before.
+- **What staff keep:** `get_grn_item_rates` (the rate each line of a GRN is
+  invoiced at, with its source and band; migration 88, answer unchanged) and
+  `generate_invoice_data_for_grn_with_pricing`, so staff still see applicable
+  rates on a GRN and still invoice.
+- The rate tables were already readable by administrators and supervisors only;
+  no row policy changes. The app release that hides the pricing screens and the
+  rate fields of the GRN sheet from staff must go first or together with this
+  migration. `tests/staff_pricing_90.sql` proves it.
+
+#### Every price change is recorded
+
+**Every insert, update and delete of `item_storage_prices`
+writes one row to `item_price_history`**: when, the profile with its name and
+role as they were, the
+price, its item and customer (ids and names as they were), the action
+(`insert`, `update` or `delete`; `truncate` is described below) and the price
+before and after. A trigger on
+the table writes it, so `create_item_storage_price`,
+`update_item_storage_price`, `delete_item_storage_price` and
+`find_or_create_item_storage_price` are all covered, as is a write with the
+service key or by an operator in the database (recorded without a profile). A
+save that changes no value is still a row: it records who saved. A refused
+write leaves none.
+
+`TRUNCATE` of the price table, which no app role may run but the service key
+and the database owner may, does not go through the row trigger. A statement
+trigger records it as one row with the action `truncate`, no price, item or
+customer, and `old_values` = `{"rows": n}`, the number of prices removed; the
+prices themselves are not copied into the row. `get_item_price_history` lists
+a truncate under every customer and item filter, since it removed their
+prices with all the others.
+
+The history is append-only (no role is granted a write, and a trigger refuses
+changes and deletes even for the database owner) and has no foreign keys, so a
+price, an item or a profile can still be deleted afterwards.
+
+**The author stays named.** Every signed-in user may delete the own account
+(`delete_user_account`), which renames the profile to "Deleted User". The
+price history, the zero-charge history and the discount history therefore
+store the author's name and role with each row (`changed_by_name`,
+`changed_by_role`), and `get_item_price_history` and `get_invoice_detail`
+return that stored name. Deleting an account no longer removes the person's
+name from the record of the prices, discounts and zero charges that person
+entered; it still removes the name everywhere else.
+
+**Administrators and supervisors read it**, with
+`get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest
+first; all four arguments optional; `{success, data, pagination}`; a page is 1
+to 200 rows, and an offset past the end, up to the largest integer, is an
+empty page) or from the table. **Staff and customer accounts cannot**: the guard refuses the RPC
+(`Staff access required`) and the table's row policy shows them no row. The
+app has no screen for the history yet. The record starts with migration 48;
+prices created before it have no insert row. `tests/item_price_history.sql`.
+
+#### Invoice number per financial year
+
+`get_next_invoice_number` takes the financial year and counts within it
+([INVOICE_RULES.md](INVOICE_RULES.md), "Invoice numbers"). The roles are the
+same as before: administrators, supervisors and staff; a customer account is
+refused. `tests/invoice_number_per_year.sql`.
+
+## Documents: lock order, input rules and retries
+
+History: migrations 46 and 47.
+
+### One lock order and stricter document input, 11 October 2026
+
+Migration 46 changes how the document RPCs take their locks and what they
+accept. It adds no role and opens nothing.
+
+#### Lock order
+
+Writes to `customers`, `goodsreceived`, `goodsreceived_trl`, `dispatch` and
+`dispatch_trl` are serialized by advisory lock 71040. Before migration 46 some
+functions took it after they had locked rows and others before, so a receipt edit
+and a dispatch of the same lot could wait for each other and PostgreSQL ended that
+by failing one of the two with "deadlock detected".
+
+The rule now: **every function an API role may call that writes one of those
+five tables takes lock 71040 before it locks any row.** That is `save_grn`,
+`update_grn`, `delete_grn_safe`, both `create_dispatch_with_stock_check`
+wrappers (in the body they share), `update_dispatch_smart`,
+`delete_dispatch_with_order_cleanup`, both `save_invoice` functions,
+`update_invoice`, `delete_invoice`, `create_customer`, `update_customer`,
+`restore_customer` and `safe_delete_customer`. Document writes were already
+serialized by that lock from their first write to their commit; they are now
+serialized from their start. `tests/document_write_consistency.sql` fails for a
+granted function that writes one of the tables without taking the lock, and
+`tests/grn_edit_lock_order.sh` runs three two-session cases on real rows (a
+receipt edit against a lock holder, a dispatch being created against a receipt
+edit of the same lot, a dispatch edit against a lock holder). The cart RPCs
+write `orders` and `order_items` only and do not take the lock.
+
+#### Input rules
+
+These are the rules the app's forms already apply; the server did not.
+
+- A receipt line needs a quantity above zero and a weight that is not negative
+  (`save_grn`, `update_grn`). A weight of 0 still means "not recorded".
+- A dispatch edit needs, for every line, a lot that exists and a whole quantity
+  above zero. `update_dispatch_smart` stored a line of quantity 0 and silently
+  dropped a line whose lot did not exist. An empty list still removes every
+  line.
+- A receipt or dispatch number made only of white space or invisible characters
+  (tab, no-break space, zero-width space and the like) is blank: refused by
+  `save_grn`, `update_grn`, dispatch creation (as the validation error
+  `disp_no is required`), `update_dispatch_smart` and by the two table checks,
+  which stay `NOT VALID` so that an installation holding such a number still
+  migrates.
+- A receipt's `customer_name` is taken from the customer record when the
+  receipt is created and when it moves to another customer. The name the client
+  sends is ignored; a later rename of the customer still does not rewrite old
+  receipts. Sender and supervisor names and the receipt date are stored as sent.
+- An idempotency key answers only the function and the user that stored it.
+  Every stored request answer (`save_grn`, `update_grn`, dispatch creation and the
+  `request_key` saves) is kept for 7 days (migration 120; `save_grn` was one hour
+  and the others 24 hours); the stored row expires at the same moment, so retention
+  does not remove a key that would still be honoured.
+- The field filters of the receipt lists (`item_name`, `customer_name`,
+  `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
+  in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
+  search.
+
+#### Other changes of migration 46
+
+- `delete_grn_safe` removes the cart lines of the receipt's lots, as before, and
+  now records them in the order history: one `order_revisions` entry with the
+  action `grn_deleted` per order, the removed lines at quantity 0.
+- `delete_dispatch_with_order_cleanup` asks `is_admin_or_supervisor_strict()` in
+  its body. It used the helper that also admits staff and, failing that, let
+  through anyone assigned to the dispatch's customer; only the guard in front
+  refused them.
+- Four internal dispatch functions that nothing called and no role could
+  execute are dropped: `create_dispatch_with_stock_check_2arg_internal(jsonb,
+  jsonb[])`, `..._internal_3param(jsonb,jsonb[],integer)`,
+  `..._internal_4param(jsonb,jsonb[],boolean,integer)` and
+  `..._internal(jsonb,jsonb[],boolean)`. The first was the only code that
+  soft-deleted an order, which `get_or_create_cart` cannot recover from (the
+  one-cart-per-customer index is unconditional). No RPC sets
+  `orders.deleted_at` now, and no app role can write the table directly
+  (migration 42).
+
+Not changed: document numbers are still suggested by `get_next_*_number` and
+chosen by the client, so two people saving at once can still collide on a
+number and the second gets the duplicate-number refusal; and the RPCs still
+return PostgreSQL's own message text for an unexpected error.
+
+### Review follow-ups, 11 October 2026 (migration 47)
+
+Migration 47 narrows three things migration 45 opened (described where they
+are listed above: the supervisor picker, user management by supervisors, and
+the photo files staff may remove) and adds one parameter. It opens nothing.
+
+#### `update_grn` takes an idempotency key
+
+`update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
+NULL`. With a key, a save that is repeated by the same user for the same
+receipt within 7 days changes nothing and returns the answer of the first
+save with `"idempotent": true` added, as `save_grn` does. The key is stored in
+`idempotency_keys` under the function name `update_grn`; a key that another
+user or another function stored is neither replayed nor overwritten, and the
+same key for another receipt is treated as a new save. Only successful saves
+are stored. Without the key the function behaves as before, so an app build
+that does not send it keeps working; there is still exactly one `update_grn`.
+
+What the key changes: without it, a second save after a lost answer removes the
+line the first save added (the app does not know its id yet) and adds it again
+as a new row. That is one line, not two, but under a new id, and it fails with
+"Cannot delete item" if the first row was dispatched in between.
+
+#### Still open from the first review
+
+- **Names and dates on a receipt.** Migration 46 takes `customer_name` from the
+  customer record. `sender_name` and `supervisor_name` are still stored as the
+  client sends them, and any date is accepted, past or future. Binding the two
+  names needs a decision on which name of the record to store (`name` or
+  `display_name`), and a limit on dates needs one on how far back a receipt may
+  be entered.
+- **A role change and the token.** The server takes the caller's role from the
+  profile on every request (migration 45), so a changed role applies at once.
+  `update_user_role` does not end the user's sessions: the `user_role` claim
+  inside the access token keeps the old role until the token is renewed (at
+  most `JWT_EXP`, one hour by default). Nothing on the server reads that
+  claim; an app that reads it shows the old role until then.
+
+## Direct table access, images and storage
+
+History: migrations 42, 43 and 69.
+
+### No direct table writes for any role, 10 October 2026
 
 Until migration 42 administrators and supervisors could write the nineteen business tables with a plain table call, which
 went around the server-computed invoice totals, the rate and discount rules, the stock checks and the dependency checks of
@@ -190,7 +623,7 @@ that the RPC paths still apply their rules (a changed line rate recomputes the
 header, an out-of-range rate and a dispatch above the stock are refused, the
 delete RPCs keep their dependency checks).
 
-## An image belongs to its own document's folder, 10 October 2026
+### An image belongs to its own document's folder, 10 October 2026
 
 A customer can download a stored photo when a confirmed `grn_images` or
 `dispatch_images` row of one of that customer's documents names the file
@@ -247,394 +680,7 @@ ones that should not be there with `delete_grn_image` / `delete_dispatch_image`.
 unchanged register/upload/confirm flow and `update_grn` answer, and what each
 customer can read.
 
-## The server admits what the app offers, 11 October 2026
-
-The 10 October review found screens that the app shows to a role and whose RPCs
-the server refused, so the screen opened and then failed. The owner decided:
-**where the app offers a screen to a role, the server allowlist is widened so
-the screen works**, instead of hiding the screen. Migration 45 implements it and
-`tests/role_allowlist.sql` proves it. This supersedes the staff pricing refusal
-of 8 October (migration 23) and the administrator-only user management that
-held since migration 3; the notes in the sections above say where.
-
-The list below was taken from the app (the RPCs each screen calls and the role
-it is shown to), not from the review text.
-
-### What was opened, and to whom
-
-**Staff — reports.** Reports tab and the report screens, both the all-customers
-list and one customer:
-`get_all_stock_summary`, `get_customer_stock_summary`,
-`get_all_customer_activity_summary`, `get_customer_activity_detail`,
-`get_customer_dispatch_activity`, `get_stock_aging_report`,
-`get_item_wise_stock_list`. (`get_all_dispatch_activity`, `get_all_grn_activity`,
-`get_customer_grn_activity` and `get_customer_invoice_summary` were open
-already.) The operations dashboard is not shown to staff by the app and
-`get_operations_dashboard` stays with administrators and supervisors.
-
-**Staff — item pricing.** Opened by migration 45 (`get_item_storage_prices` and the four price writers) and taken away
-again by migration 90; see "Staff lose item pricing, 16 October 2026".
-
-**Staff — sensors.** `get_sensor_polling_data` and `get_sensor_history`. The
-sensor tables stay closed to staff.
-
-**Staff — photo removal in the receipt and dispatch edit forms.**
-`delete_grn_image` and `delete_dispatch_image`, for a photo of a receipt or
-dispatch that is not deleted (the documents staff can already edit), when the
-photo is confirmed or the caller registered it. Another person's unconfirmed
-upload is refused, as for `cancel_*_image_upload`. After the row is removed the
-app deletes the file; staff may read and delete a file in the `grn-images` and
-`dispatch-images` buckets only when it lies in the folder of a receipt or
-dispatch that is not deleted and no image row names it
-(`scripts/configure-storage.sql`; narrowed by migration 47, which before
-covered every unnamed file, the photos of deleted documents included). A file a
-document still shows, and any file of a deleted document, cannot be read,
-deleted or overwritten by staff.
-
-**Staff — live order queue.** A read policy on `orders`
-(`starter_order_staff_read`), matching what staff already read through the
-order RPCs. Orders are still written through the cart RPCs only.
-
-**Supervisors — user management.** `update_user_role`, `update_user_status`,
-`assign_customer_to_user` and `remove_customer_assignment` (the list and detail
-RPCs were open already). A supervisor:
-
-- cannot change an administrator's role, status or customer assignments, and
-  does not see administrators in the list;
-- cannot give anyone the administrator role;
-- cannot change the own role, status or customer assignments;
-- cannot review enrollment requests (`operator_review_enrollment` stays with
-  administrators).
-
-A supervisor can make another user a supervisor and can deactivate any user who
-is not an administrator. Since migration 47 a supervisor acts only on a profile
-whose access request is approved: a deactivated, rejected or pending profile is
-answered with `ENROLLMENT_NOT_APPROVED` ("Only an administrator can change a
-user whose access is not approved"), for the status and for the role. Giving
-access back is therefore an administrator's action, also for a user the
-supervisor deactivated. For every caller, the role
-of a pending request cannot be changed before the review (`ENROLLMENT_PENDING`,
-"Review the access request before changing the role"); a role other than
-customer made the request unreviewable. The last-administrator rule of
-migration 44 is unchanged.
-
-### What was not opened
-
-**Customer accounts are not widened to other customers' data.** A customer
-account, also one assigned to several customers, is refused every
-all-customers RPC (`get_all_stock_summary`, `get_all_customer_activity_summary`,
-`get_all_dispatch_activity`, `get_all_grn_activity`,
-`get_customer_invoice_summary` without a customer, `get_stock_aging_report` and
-`get_item_wise_stock_list` without a customer), pricing and sensors.
-
-The two stock reports that the app offers to customers and that take a
-customer id are admitted for a customer account **only with the id of an
-assigned customer**: `get_stock_aging_report(p_customer_uuid)` and
-`get_item_wise_stock_list(p_customer_id)`. Each call names one customer and the
-guard checks that id against the account's active assignments; an account with
-several customers calls once per customer.
-
-### Other changes of migration 45
-
-- **Supervisor contact details.** `get_grn_details` and `get_dispatch_details`
-  return `supervisor_details` to a customer account with `id`, `name` and
-  `display_name` only. `mobile` (which is also that person's sign-in
-  identifier) and `role` go to administrators, supervisors and staff. There was
-  no owner decision on this; it is the privacy-safe default and the owner can
-  reverse it (the app then shows the Call action to customers again).
-- **Supervisor picker.** `get_supervisors` lists active profiles only. Since
-  migration 47 each row is `id`, `name`, `display_name` and `role`; `phone` is
-  added for administrators and supervisors only. Staff, who pick a colleague by
-  name, no longer receive every colleague's mobile number.
-- **Role from the database.** `get_customer_dispatch_activity`,
-  `get_customer_stock_summary`, `get_operations_dashboard` and
-  `get_recent_dispatched_orders` took the caller's role from the token, where
-  it outlives a role change. They now read it from the profile, like the guard.
-  A role change still takes effect on the next request without signing the
-  user out.
-- **`printer_status`** is readable by signed-in administrators, supervisors and
-  staff only; it was readable with the public key. `feature_flags` stays
-  public.
-- **`find_or_create_item_storage_price`** (removed in migration 123) refused every role (it looked the
-  caller up in a table that operator sign-in does not fill); it now works for
-  the roles that may write prices.
-- `is_admin_or_supervisor()` is true for staff as well, despite its name; it is
-  not what keeps staff out of anything, the guard is.
-  `tests/role_allowlist.sql` lists the granted functions that call it.
-
-### Roles after migration 45
-
-| Capability | Administrator | Supervisor | Staff | Customer account |
-|---|---|---|---|---|
-| Receipts, dispatches, invoices: create, read, edit | yes | yes | yes | read own |
-| Delete a receipt, dispatch or invoice | yes | yes | no | no |
-| Remove a photo in the edit forms | yes | yes | **yes** (confirmed or own, live document) | no |
-| Orders and queue through the RPCs | yes | yes | yes | own carts |
-| Live order queue (row read on `orders`) | yes | yes | **yes** | own |
-| Reports: all customers | yes | yes | **yes** | no |
-| Reports: one customer | yes | yes | **yes** | assigned customers (**now also stock aging and item-wise stock**) |
-| Operations dashboard | yes | yes | no | no |
-| Item pricing: read | yes | yes | **no** (migration 90) | no |
-| Item pricing: add, change, delete (`replace_item_rates`, `undo_rate_change`) | yes | yes | **no** (migration 90) | no |
-| Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | **no / no** (refused by the guard, migration 90) | no |
-| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, migration 86; `get_item_grn_rates` was removed in 123): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **no** (migration 90): a staff call with `p_rates`, `[]` included, is answered `RATES_MANAGER_ONLY`; `get_item_grn_rates` is refused; `get_grn_details` answers `rates` = `[]` | no |
-| The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
-| Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
-| Sensors | yes | yes | **yes** | no |
-| Customers and items: create, edit, delete (items also `get_item_usage`) | yes | yes | no | no |
-| User list and details | yes | yes, without administrators | no | no |
-| Change role, status, customer assignments | yes | **yes**, not of an administrator or the own profile, never to administrator; only for a profile whose access request is approved (migration 47). Customer assignments are for the Customer role only (`ROLE_NOT_CUSTOMER`, migration 116) | no | no |
-| Reactivate a user; change a rejected or disabled profile | yes | no (migration 47) | no | no |
-| Change a rejected profile (any change, by anyone) | **no one** until an administrator uses "Review again" (`review_enrollment_again`); the call answers `ENROLLMENT_REJECTED` | no | no | no |
-| Colleagues' mobile numbers in the supervisor picker | yes | yes | no (migration 47) | no |
-| Review enrollment requests | yes | no | no | no |
-| Put a rejected access request back to pending (`review_enrollment_again`, migration 113) | yes | no (`PERMISSION_DENIED`) | no | no |
-| Disconnect a service account (`update_user_status(false)` on a service account) | yes | **no** (`PERMISSION_DENIED`, migration 113) | no | no |
-| Unlink a profile from its central sign-in (`clear_user_central_identity`, migration 49) | yes | no | no | no |
-| What became of a save whose answer was lost (`get_submission_result`, migration 120): the caller's own saved answers only | yes | yes | yes | no |
-| The GRN edit form's version token and locks (`get_grn_edit_state`, migration 121) | yes | yes | yes | **no** (`Staff access required`) |
-| Supervisor's mobile number on a receipt or dispatch | yes | yes | yes | **no** (name only) |
-| `printer_status` | yes | yes | yes | **no** (and no longer without sign-in) |
-
-Bold marks what migration 45 changed. Migration 49 added the unlink row; it is
-the one function the guard names that a supervisor may not call
-([CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)).
-
-`tests/role_allowlist.sql` classifies every function the app role may execute
-(staff yes/no; customer any/own/no). It calls each one that a customer account
-or staff may not use and expects the guard's refusal, also with another
-customer's id, so a function granted later fails the test until it is
-classified. `tests/staff_dispatch_invoice_access.sql` and
-`tests/staff_grn_access.sql` were changed where they asserted the old pricing
-and photo refusals.
-
-## One lock order and stricter document input, 11 October 2026
-
-Migration 46 changes how the document RPCs take their locks and what they
-accept. It adds no role and opens nothing.
-
-### Lock order
-
-Writes to `customers`, `goodsreceived`, `goodsreceived_trl`, `dispatch` and
-`dispatch_trl` are serialized by advisory lock 71040. Before migration 46 some
-functions took it after they had locked rows and others before, so a receipt edit
-and a dispatch of the same lot could wait for each other and PostgreSQL ended that
-by failing one of the two with "deadlock detected".
-
-The rule now: **every function an API role may call that writes one of those
-five tables takes lock 71040 before it locks any row.** That is `save_grn`,
-`update_grn`, `delete_grn_safe`, both `create_dispatch_with_stock_check`
-wrappers (in the body they share), `update_dispatch_smart`,
-`delete_dispatch_with_order_cleanup`, both `save_invoice` functions,
-`update_invoice`, `delete_invoice`, `create_customer`, `update_customer`,
-`restore_customer` and `safe_delete_customer`. Document writes were already
-serialized by that lock from their first write to their commit; they are now
-serialized from their start. `tests/document_write_consistency.sql` fails for a
-granted function that writes one of the tables without taking the lock, and
-`tests/grn_edit_lock_order.sh` runs three two-session cases on real rows (a
-receipt edit against a lock holder, a dispatch being created against a receipt
-edit of the same lot, a dispatch edit against a lock holder). The cart RPCs
-write `orders` and `order_items` only and do not take the lock.
-
-### Input rules
-
-These are the rules the app's forms already apply; the server did not.
-
-- A receipt line needs a quantity above zero and a weight that is not negative
-  (`save_grn`, `update_grn`). A weight of 0 still means "not recorded".
-- A dispatch edit needs, for every line, a lot that exists and a whole quantity
-  above zero. `update_dispatch_smart` stored a line of quantity 0 and silently
-  dropped a line whose lot did not exist. An empty list still removes every
-  line.
-- A receipt or dispatch number made only of white space or invisible characters
-  (tab, no-break space, zero-width space and the like) is blank: refused by
-  `save_grn`, `update_grn`, dispatch creation (as the validation error
-  `disp_no is required`), `update_dispatch_smart` and by the two table checks,
-  which stay `NOT VALID` so that an installation holding such a number still
-  migrates.
-- A receipt's `customer_name` is taken from the customer record when the
-  receipt is created and when it moves to another customer. The name the client
-  sends is ignored; a later rename of the customer still does not rewrite old
-  receipts. Sender and supervisor names and the receipt date are stored as sent.
-- An idempotency key answers only the function and the user that stored it.
-  Every stored request answer (`save_grn`, `update_grn`, dispatch creation and the
-  `request_key` saves) is kept for 7 days (migration 120; `save_grn` was one hour
-  and the others 24 hours); the stored row expires at the same moment, so retention
-  does not remove a key that would still be honoured.
-- The field filters of the receipt lists (`item_name`, `customer_name`,
-  `gr_no`, `package_mark`, `rack` in `get_customer_grn_items`; `package_mark`
-  in `get_all_grn_items`) take `%`, `_` and `\` literally, like the quick
-  search.
-
-### Other changes of migration 46
-
-- `delete_grn_safe` removes the cart lines of the receipt's lots, as before, and
-  now records them in the order history: one `order_revisions` entry with the
-  action `grn_deleted` per order, the removed lines at quantity 0.
-- `delete_dispatch_with_order_cleanup` asks `is_admin_or_supervisor_strict()` in
-  its body. It used the helper that also admits staff and, failing that, let
-  through anyone assigned to the dispatch's customer; only the guard in front
-  refused them.
-- Four internal dispatch functions that nothing called and no role could
-  execute are dropped: `create_dispatch_with_stock_check_2arg_internal(jsonb,
-  jsonb[])`, `..._internal_3param(jsonb,jsonb[],integer)`,
-  `..._internal_4param(jsonb,jsonb[],boolean,integer)` and
-  `..._internal(jsonb,jsonb[],boolean)`. The first was the only code that
-  soft-deleted an order, which `get_or_create_cart` cannot recover from (the
-  one-cart-per-customer index is unconditional). No RPC sets
-  `orders.deleted_at` now, and no app role can write the table directly
-  (migration 42).
-
-Not changed: document numbers are still suggested by `get_next_*_number` and
-chosen by the client, so two people saving at once can still collide on a
-number and the second gets the duplicate-number refusal; and the RPCs still
-return PostgreSQL's own message text for an unexpected error.
-
-## Review follow-ups, 11 October 2026 (migration 47)
-
-Migration 47 narrows three things migration 45 opened (described where they
-are listed above: the supervisor picker, user management by supervisors, and
-the photo files staff may remove) and adds one parameter. It opens nothing.
-
-### `update_grn` takes an idempotency key
-
-`update_grn` has a last, optional parameter `p_idempotency_key text DEFAULT
-NULL`. With a key, a save that is repeated by the same user for the same
-receipt within 7 days changes nothing and returns the answer of the first
-save with `"idempotent": true` added, as `save_grn` does. The key is stored in
-`idempotency_keys` under the function name `update_grn`; a key that another
-user or another function stored is neither replayed nor overwritten, and the
-same key for another receipt is treated as a new save. Only successful saves
-are stored. Without the key the function behaves as before, so an app build
-that does not send it keeps working; there is still exactly one `update_grn`.
-
-What the key changes: without it, a second save after a lost answer removes the
-line the first save added (the app does not know its id yet) and adds it again
-as a new row. That is one line, not two, but under a new id, and it fails with
-"Cannot delete item" if the first row was dispatched in between.
-
-### Still open from the first review
-
-- **Names and dates on a receipt.** Migration 46 takes `customer_name` from the
-  customer record. `sender_name` and `supervisor_name` are still stored as the
-  client sends them, and any date is accepted, past or future. Binding the two
-  names needs a decision on which name of the record to store (`name` or
-  `display_name`), and a limit on dates needs one on how far back a receipt may
-  be entered.
-- **A role change and the token.** The server takes the caller's role from the
-  profile on every request (migration 45), so a changed role applies at once.
-  `update_user_role` does not end the user's sessions: the `user_role` claim
-  inside the access token keeps the old role until the token is renewed (at
-  most `JWT_EXP`, one hour by default). Nothing on the server reads that
-  claim; an app that reads it shows the old role until then.
-
-## Owner decisions, 11 October 2026 (migration 48)
-
-The owner took nine decisions on 11 October 2026; these are the ones that
-change what a role may do on this server. Migration 48 implements them. No
-role is added and no RPC is opened to a role that did not have it.
-
-### Zero charge needs a reason from staff
-
-An invoice line may have a storage charge of 0. **Staff must give a reason** (`zero_charge_reason`) on every save of an
-invoice that has such a line, on all three save paths; administrators and supervisors may leave it empty. Without it staff
-are refused with `Enter a reason for the zero charge`. Every change of the reason is appended to
-`invoice_zero_charge_history`, which administrators and supervisors read and nobody can change. Details, and what happens to
-invoices saved before the rule, are in [INVOICE_RULES.md](INVOICE_RULES.md). `tests/zero_charge_reason.sql` covers each path
-and role. The discount reason of migration 30 is a separate rule and unchanged.
-
-### The discount and zero-charge records are not read from the table
-
-All app roles share one database role, so a table grant cannot tell a customer account from staff. Migration 48 therefore
-grants the app role SELECT on every column of `invoice` except `discount_reason`, `discount_set_by`, `discount_set_at`,
-`zero_charge_reason`, `zero_charge_set_by` and `zero_charge_set_at`. **For every role, administrator included, those six are
-read through `get_invoice_detail` only**, which gives them to administrators, supervisors and staff and not to a customer
-account. A direct read of `invoice` must name its columns (`select=*` is refused with HTTP 403), and a column added later is
-closed until a migration grants it. See [INVOICE_RULES.md](INVOICE_RULES.md), "Internal columns";
-`tests/invoice_column_grants.sql`, `tests/security_baseline.sql`.
-
-## Staff lose item pricing, 16 October 2026
-
-The owner decided that item pricing is for administrators and supervisors only
-(migration 90). This supersedes the staff access of 11 October 2026 (migration
-45, widened by migrations 76, 85 and 86), which the sections above describe.
-
-- **Refused to staff by the guard** (SQLSTATE `42501`, "Staff access required"):
-  `get_item_storage_prices`, `create_item_storage_price`,
-  `update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`,
-  `undo_rate_change`, `get_standard_rate`, `set_standard_rate` and
-  `get_item_grn_rates`. (`find_or_create_item_storage_price` was already refused,
-  migration 76.) The staff branches inside those function bodies (the rate in force
-  rule of migration 76, `STANDARD_RATE_MANAGER_ONLY` of migration 85) are left in
-  place and can no longer be reached by staff.
-- **Rates typed on the GRN sheet.** A staff call of `save_grn` or `update_grn`
-  that carries `p_rates` (any value that is not NULL, `[]` included) is answered
-  `{success: false, error_code: 'RATES_MANAGER_ONLY'}` before anything is written.
-  The same calls without `p_rates` work for staff as before.
-- **`get_grn_details`** answers `grn.rates` = `[]` to staff, as it does to customers;
-  administrators, supervisors and the service role get the rates as before.
-- **What staff keep:** `get_grn_item_rates` (the rate each line of a GRN is
-  invoiced at, with its source and band; migration 88, answer unchanged) and
-  `generate_invoice_data_for_grn_with_pricing`, so staff still see applicable
-  rates on a GRN and still invoice.
-- The rate tables were already readable by administrators and supervisors only;
-  no row policy changes. The app release that hides the pricing screens and the
-  rate fields of the GRN sheet from staff must go first or together with this
-  migration. `tests/staff_pricing_90.sql` proves it.
-
-### Every price change is recorded
-
-**Every insert, update and delete of `item_storage_prices`
-writes one row to `item_price_history`**: when, the profile with its name and
-role as they were, the
-price, its item and customer (ids and names as they were), the action
-(`insert`, `update` or `delete`; `truncate` is described below) and the price
-before and after. A trigger on
-the table writes it, so `create_item_storage_price`,
-`update_item_storage_price`, `delete_item_storage_price` and
-`find_or_create_item_storage_price` are all covered, as is a write with the
-service key or by an operator in the database (recorded without a profile). A
-save that changes no value is still a row: it records who saved. A refused
-write leaves none.
-
-`TRUNCATE` of the price table, which no app role may run but the service key
-and the database owner may, does not go through the row trigger. A statement
-trigger records it as one row with the action `truncate`, no price, item or
-customer, and `old_values` = `{"rows": n}`, the number of prices removed; the
-prices themselves are not copied into the row. `get_item_price_history` lists
-a truncate under every customer and item filter, since it removed their
-prices with all the others.
-
-The history is append-only (no role is granted a write, and a trigger refuses
-changes and deletes even for the database owner) and has no foreign keys, so a
-price, an item or a profile can still be deleted afterwards.
-
-**The author stays named.** Every signed-in user may delete the own account
-(`delete_user_account`), which renames the profile to "Deleted User". The
-price history, the zero-charge history and the discount history therefore
-store the author's name and role with each row (`changed_by_name`,
-`changed_by_role`), and `get_item_price_history` and `get_invoice_detail`
-return that stored name. Deleting an account no longer removes the person's
-name from the record of the prices, discounts and zero charges that person
-entered; it still removes the name everywhere else.
-
-**Administrators and supervisors read it**, with
-`get_item_price_history(p_customer_id, p_item_id, p_limit, p_offset)` (newest
-first; all four arguments optional; `{success, data, pagination}`; a page is 1
-to 200 rows, and an offset past the end, up to the largest integer, is an
-empty page) or from the table. **Staff and customer accounts cannot**: the guard refuses the RPC
-(`Staff access required`) and the table's row policy shows them no row. The
-app has no screen for the history yet. The record starts with migration 48;
-prices created before it have no insert row. `tests/item_price_history.sql`.
-
-### Invoice number per financial year
-
-`get_next_invoice_number` takes the financial year and counts within it
-([INVOICE_RULES.md](INVOICE_RULES.md), "Invoice numbers"). The roles are the
-same as before: administrators, supervisors and staff; a customer account is
-refused. `tests/invoice_number_per_year.sql`.
-
-## Unfinished photos in the receipt RPCs, 13 October 2026 (migration 69)
+### Unfinished photos in the receipt RPCs, 13 October 2026 (migration 69)
 
 The external review of 13 October (SEC-1, SEC-2) found two SECURITY DEFINER
 functions that did not apply the `grn_images` row rules: administrators and
@@ -666,25 +712,3 @@ app roles), and uses it in both and in three other readers of `grn_images`:
 The roles in the table of migration 45 are unchanged. `tests/grn_image_visibility.sql`
 reads `get_grn_details` as each role and edits as two staff members and an
 administrator.
-
-## Owner decisions on GRN edits, orders and dispatch, 20 October 2026 (migration 121)
-
-Names, fields and the English of every refusal are in [API_CONTRACT.md](API_CONTRACT.md), "Review decisions (migration 121)". What
-changes for each role:
-
-- **A rate set for one GRN is not dropped by a staff edit (D10).** Staff cannot send rates (`RATES_MANAGER_ONLY`). When a staff edit would
-  make `update_grn` remove a rate that was set for this GRN alone (a changed weight or pricing mode leaves its band holding no line, or a
-  line goes), the whole edit is refused with `RATES_NEED_MANAGER` ("Ask a manager to make this change") and nothing is saved. A manager
-  makes the change in the Rates step. Administrators and supervisors are not refused for a rate removed on purpose, a removed line or a
-  service-key call; they are refused with `RATES_WOULD_DROP` (D24) when a changed weight or pricing mode leaves a line without its
-  GRN-only rate and the same save sets no rate for it.
-- **A line is not removed without a reason shown (D11).** Removing a GRN line that has dispatch or stock history, or that is on an order,
-  is refused by name for every role that may edit a GRN: `LINE_DISPATCHED_BEFORE` / `LINE_ON_ORDER` (before: a raw foreign-key text).
-- **After invoicing and dispatch (D2, D23).** An invoiced lot keeps its item, packing and weight, a dispatched lot its item and packing, an
-  invoiced GRN its date, an invoiced dispatch its date and number, and an invoiced GRN takes no new line (D9). A GRN keeps its number (D6).
-  These apply to every role, the service key (`fas-sync`) included: a push that crosses a rule is refused and reported.
-- **A deactivated business (D16, corrected).** It may still order and be dispatched, for every role and for the customer's own login: no
-  order or dispatch function refuses it. Only a new GRN for it is refused (`save_grn`; `update_grn` when it moves the GRN to a deactivated
-  customer), as in migrations 80 to 84.
-- **GRN history (D12).** Edits and deletes of a GRN and of its lines are recorded in `audit_log` for every role (the service key included,
-  with no user).

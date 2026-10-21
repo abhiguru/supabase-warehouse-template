@@ -28,7 +28,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - The verifier sizes its data directory from the dumps (factor 10, WAL allowance, floor 768 MiB), uses tmpfs when `MemAvailable` covers it and otherwise a directory under the state that the image itself empties afterwards (PostgreSQL's files belong to the container's user). On failure it saves `docker logs`, the container state and `pg_stat_activity` under `<state>/diagnostics/` before removing the container.
 - Real-container coverage without an installed stack: `tests/verify-restore-drill.sh`, run at the end of `tests/migrations.sh`, dumps the migration test database into a signed v5 fixture and runs the verifier twice, once with a session held on template1 and once disk-backed. `WAREHOUSE_DRILL_KEEP=1` keeps the fixture.
 - **Not verified on real containers:** any restore from an encrypted archive.
-- Database passwords are one per login since 2026-10-18 (TW-BE-002; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)). The list of service logins is `DB_ROLE_LOGINS` in `scripts/db-roles.mjs`. `SECRET_KEY_BASE` and `VAULT_ENC_KEY` still have no rotation script; the operator guide says so.
+- Database passwords are one per login since 2026-10-18 (TW-BE-002; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)). The list of service logins is `DB_ROLE_LOGINS` in `scripts/db-roles.mjs`. `SECRET_KEY_BASE` and `VAULT_ENC_KEY` exist only after `bash scripts/pooler.sh on` and have no rotation script; the operator guide says so.
 
 ## USB backup drive
 

@@ -48,7 +48,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   `docker/image-exceptions.json`; the PostgREST image still has no package inventory
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#exception-ledger-and-the-image-scan)). Findings are not waived to make a
   scan green.
-- **Secrets without a procedure.** `SECRET_KEY_BASE` and `VAULT_ENC_KEY` (pooler profile) have no rotation procedure
+- **Secrets without a procedure.** `SECRET_KEY_BASE` and `VAULT_ENC_KEY` (generated only by `pooler.sh on`) have no rotation procedure
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
 - **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#edge-function-modules-and-image)).

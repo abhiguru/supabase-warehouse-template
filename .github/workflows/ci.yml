@@ -369,7 +369,8 @@ jobs:
             -c "DELETE FROM public.otp_rate_limits WHERE phone_number = '919888888872'"
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-lost-host-backup
           npm run test:db-roles
-          # The restored _supabase database carries the pooler tenant: its pool user is rewritten at start.
+          # The pooler is off after a restore (the restore starts core services only) and _supabase is not in backups:
+          # test:pooler turns it on itself (pooler.sh on) and checks it again.
           npm run test:pooler
         working-directory: backend
       - name: Retention removes an expired document through the Storage API

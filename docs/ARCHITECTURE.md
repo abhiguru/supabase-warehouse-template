@@ -18,7 +18,7 @@ network table from the rendered configuration).
               └────────────────────┬────────────────────────────────────────┘
                           REST, Storage
               ┌────────────────────▼────── database ────────────────────────┐
-              │  PostgreSQL :5432            Supavisor (profile)            │
+              │  PostgreSQL :5432            Supavisor (only while on)      │
               └────────────────────┬────────────────────────────────────────┘
               ┌─────────────────────────── renderer (internal) ─────────────┐
               │  Functions ──▶ pdf-renderer :3000   (no route out)          │
@@ -33,7 +33,7 @@ network table from the rendered configuration).
 | functions | Supabase edge-runtime 1.77.4 | 9000 | always |
 | db | PostgreSQL 18 (official `postgres:18.6-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
 | pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
-| supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler` |
+| supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler`; off by default, switched with `bash scripts/pooler.sh on\|off` |
 | cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |
 | sensor-bridge | own recipe (GPL-3.0-or-later) | none | profile `sensors` |
 
@@ -42,7 +42,7 @@ Only Kong publishes a host port, on loopback. Addresses are assigned by Docker; 
 | Network | Attached services | Purpose |
 |---|---|---|
 | `default` | kong, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
-| `database` | db, rest, storage, supavisor | Connections to PostgreSQL |
+| `database` | db, rest, storage, supavisor (only while the pooler is on) | Connections to PostgreSQL |
 | `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database or Kong, and only the function runtime can reach it |
 
 Kong, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF

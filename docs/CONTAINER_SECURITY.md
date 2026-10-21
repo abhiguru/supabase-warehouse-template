@@ -346,7 +346,7 @@ and `tests/baseline_roles.sql` asserts exactly this set after the baseline is ap
 | `supabase_admin` | yes | yes | yes | owns the database and every object outside the schemas `storage` and `pgbouncer`; used by operator scripts, the migrations and `SECURITY DEFINER` functions |
 | `authenticator` | yes | no | **no** (NOINHERIT) | PostgREST's login; member of `anon`, `authenticated`, `service_role`, which it takes with `SET ROLE` |
 | `supabase_storage_admin` | yes | no | **no** (NOINHERIT) | Storage's login; member of `authenticator`; owns the schema `storage`; no `CREATEROLE` |
-| `pgbouncer` | yes | no | yes | Supavisor's pool user (profile `pooler`) |
+| `pgbouncer` | yes | no | yes | Supavisor's pool user; exists only while the pooler is on (`pooler.sh on`), not created by the bootstrap |
 | `anon`, `authenticated` | no | no | yes | API roles; statement timeouts 3 s and 8 s |
 | `service_role` | no | no | yes | `BYPASSRLS`; the edge functions' role |
 
@@ -374,7 +374,7 @@ installation is changed.
 ### Roles and migrations
 
 A restore takes the roles from `docker/volumes/db/00-bootstrap.sql` and the objects from the backup, so a migration is never
-the place for a role. A migration after the baseline must not `CREATE`, `ALTER` or `DROP` a role or grant membership in one
+the place for a role. The pooler's role, schema and database are the one exception to "roles come from the bootstrap": they exist only while the pooler is on (`bash scripts/pooler.sh on`) and come from `scripts/configure-pooler.sql`, which `scripts/db-roles.sh apply` runs while `POOLER_ENABLED=true` and undoes (`scripts/drop-pooler.sql`) while it is `false`; they are not in a migration or in the bootstrap. A migration after the baseline must not `CREATE`, `ALTER` or `DROP` a role or grant membership in one
 (`tests/migration-roles.test.mjs` fails on it). A role change goes into the bootstrap (and into
 `scripts/configure-db-roles.sql` for installations that already exist). A database-level fix made in the bootstrap (a schema, a
 grant, a setting of the database) also ships as a migration, so that an existing facility gets it and a restored one keeps it.
@@ -385,25 +385,25 @@ Each database login has its own password in `config/compose.env`, so the credent
 
 | Login | Password (`config/compose.env`) | Used by | Set by |
 |---|---|---|---|
-| `supabase_admin` (the only superuser) | `POSTGRES_PASSWORD` | operator scripts (`compose exec db psql -U supabase_admin`), Supavisor's metadata database (`_supabase`) | the image's entrypoint at the first start; `npm run db:rotate-passwords -- --yes --superuser` |
+| `supabase_admin` (the only superuser) | `POSTGRES_PASSWORD` | operator scripts (`compose exec db psql -U supabase_admin`), Supavisor's metadata database (`_supabase`, only while the pooler is on) | the image's entrypoint at the first start; `npm run db:rotate-passwords -- --yes --superuser` |
 | `authenticator` | `DB_PASSWORD_AUTHENTICATOR` | PostgREST | `docker/volumes/db/roles.sql` at the first start; `scripts/configure-db-roles.sql` on every setup run, after both restores and on rotation |
 | `supabase_storage_admin` | `DB_PASSWORD_STORAGE` | Storage | the same |
-| `pgbouncer` | `DB_PASSWORD_POOLER` | Supavisor's pool user (pooler profile) | the same; `docker/volumes/pooler/pooler.exs` writes it into the stored tenant at every pooler start |
+| `pgbouncer` | `DB_PASSWORD_POOLER` (exists only after `pooler.sh on`) | Supavisor's pool user (pooler profile) | `scripts/db-roles.sh apply` while the pooler is on; `docker/volumes/pooler/pooler.exs` writes it into the stored tenant at every pooler start |
 
 `scripts/configure.mjs` generates the three service values (64 hexadecimal characters each) with every fresh state, and its
 existing-state branch appends any that a state lacks; it never replaces a value that exists. The doctor refuses a state
 where one is missing, malformed, or repeats `POSTGRES_PASSWORD` or another one. The Compose files name each value with
 `${NAME:?…}`, so a state without it fails at `compose config` with "Run setup.sh to generate the per-role database
-passwords". In the rendered configuration `POSTGRES_PASSWORD` appears only in db and supavisor; each service value only in
+passwords". In the rendered configuration `POSTGRES_PASSWORD` appears only in db and (when the pooler profile is rendered) supavisor; each service value only in
 its own service and in db, whose first-start init script reads them (`tests/compose-networks.test.mjs`).
 
 `scripts/db-roles.sh apply` turns each value into a SCRAM-SHA-256 verifier (`scripts/db-roles.mjs`, the format PostgreSQL
 stores; `tests/db-roles.test.mjs` compares it with one PostgreSQL made) and sends the verifiers, with the superuser password
 to sign in, on standard input of `compose exec`. `ALTER ROLE … PASSWORD` stores a verifier as it is, so no password can
 appear in a log, in `pg_stat_activity` or in `pg_stat_statements`, and no value is a command-line argument or an
-environment variable of a docker command. Supavisor stores its tenant, with the pool user's password, in `_supabase`,
+environment variable of a docker command. While the pooler is on, Supavisor stores its tenant, with the pool user's password, in `_supabase`,
 encrypted with `VAULT_ENC_KEY`; `pooler.exs` rewrites the pool user's credentials of an existing tenant at every start,
-which covers a rotation and a restore of an older `_supabase` database.
+which covers a rotation. `_supabase` is not in backups; setup recreates it while `POOLER_ENABLED=true`.
 
 Still the same: `SECRET_KEY_BASE` and `VAULT_ENC_KEY` have no rotation procedure
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)). Inside the database
@@ -466,4 +466,4 @@ then generate the value, existing ones gain it on the next setup, restores add i
   point-in-time recovery. The supported backup path is `db:backup` and `db:verify-restore`; PITR, external object storage
   and RTO/RPO need a separate recovery drill with approved storage and policies.
 
-> Pooler note (2026-10-21): a new install has six database roles (`anon`, `authenticated`, `service_role`, `authenticator`, `supabase_storage_admin`, `supabase_admin`). The role and schema `pgbouncer`, the database `_supabase` and the secrets `DB_PASSWORD_POOLER`, `SECRET_KEY_BASE`, `VAULT_ENC_KEY` exist only after `bash scripts/pooler.sh on` (objects from `scripts/configure-pooler.sql`, not a migration); `_supabase` is not in backups, so the remark about restoring an older `_supabase` database no longer applies. Where the sections above name the pooler role or `_supabase` as always present, read them with this note.
+> The role and schema `pgbouncer`, the database `_supabase` and the secrets `DB_PASSWORD_POOLER`, `SECRET_KEY_BASE`, `VAULT_ENC_KEY` exist only after `bash scripts/pooler.sh on`; a new install has six database roles (`anon`, `authenticated`, `service_role`, `authenticator`, `supabase_storage_admin`, `supabase_admin`).

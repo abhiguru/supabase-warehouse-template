@@ -7,8 +7,8 @@ from the Supabase project:
 - Source: https://github.com/supabase/supabase
 - License: Apache License 2.0
 
-The affected material includes `docker/volumes/db/_supabase.sql`, `pooler.sql` and `roles.sql`, and the Supavisor
-configuration. (`docker/volumes/db/00-bootstrap.sql` is original to this repository.) Those files remain subject to their
+The affected material includes `docker/volumes/db/roles.sql` (earlier releases also carried `_supabase.sql` and `pooler.sql`, now removed;
+the pooler's objects come from `scripts/configure-pooler.sql`) and the Supavisor configuration (`docker/volumes/pooler/pooler.exs`). (`docker/volumes/db/00-bootstrap.sql` is original to this repository.) Those files remain subject to their
 upstream Apache-2.0 terms and notices. The repository's MIT license applies to
 the original warehouse-template code and does not replace third-party licenses.
 
@@ -125,7 +125,7 @@ functions it carries are listed in `tests/baseline_roles.sql`. The earlier files
 | --- | --- | --- | --- |
 | Warehouse functions, migrations, scripts, tests and documentation (everything outside `docker/sensor-bridge/`) | Original project work confirmed by the maintainer | MIT | `LICENSE` |
 | Sensor bridge (`docker/sensor-bridge/`) | Original project work; installs python-kasa and its pinned dependencies from PyPI at image build time, not vendored | GPL-3.0-or-later (bridge code); GPL-3.0 (python-kasa) | `docker/sensor-bridge/LICENSE`; "Sensor bridge" section above |
-| Supabase database initialization scripts (`docker/volumes/db/_supabase.sql`, `pooler.sql`, `roles.sql`) and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material; `docker/volumes/db/00-bootstrap.sql` is original | Apache-2.0 | `LICENSES/Apache-2.0.txt`; upstream copyright notices retained in copied files where present |
+| Supabase database initialization scripts (`docker/volumes/db/roles.sql`; `_supabase.sql` and `pooler.sql` no longer exist) and Supavisor configuration | Adapted from `supabase/supabase` self-hosting material; `docker/volumes/db/00-bootstrap.sql` is original | Apache-2.0 | `LICENSES/Apache-2.0.txt`; upstream copyright notices retained in copied files where present |
 | `jose` | Vendored as one built file, `functions/vendor/jose.mjs` (esbuild from the locked npm package, checksummed in `functions/vendor/SHA256SUMS`); also the unit tests' locked development dependency | MIT, Filip Skokan | `functions/vendor/LICENSES.txt`; `scripts/edge-vendor/package-lock.json` |
 | `ipp` | Optional runtime npm import used only by unsupported printing paths; not vendored | MIT | Upstream npm package license |
 | Source-built recipe (`docker/storage`) | Copied upstream manifest plus security patches; archives fetched by checksum at build time | Apache-2.0 | `LICENSES/storage/` and the section above |
