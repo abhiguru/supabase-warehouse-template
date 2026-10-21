@@ -63,3 +63,12 @@ test('a request init (method and body) is passed on to every attempt', async () 
   await waitForHttp('REST', 'http://owned/rpc', { apikey: 'test' }, { ...options, init: { method: 'POST', body: '{}' } });
   assert.deepEqual(calls.map(call => [call.options.method, call.options.body]), [['POST', '{}'], ['POST', '{}']]);
 });
+
+test('with --wait 0 the one attempt is not aborted at once: a slow real response still passes', async () => {
+  // A fetch that honours the abort signal and answers after 40 ms, like a request through the gateway.
+  const slowFetch = (url, { signal }) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ ok: true, status: 200, body: null }), 40);
+    signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); });
+  });
+  await waitForHttp('configuration', 'http://owned/config', {}, { timeoutMs: 0, fetchImpl: slowFetch });
+});
