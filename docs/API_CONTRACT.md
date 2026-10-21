@@ -460,7 +460,7 @@ catalog (`items.name`, `items.packaging`). `save_grn` and `update_grn` check eve
 when one is longer: `{ success: false, error_code: 'item_name_too_long' | 'packaging_too_long', error, message,
 data: { limit: 80 | 40, index } }`, `index` being the line's position in `p_items`, counted from 0.
 
-### `save_grn(..., p_rates jsonb DEFAULT NULL)` and `update_grn(..., p_rates jsonb DEFAULT NULL)`
+### `save_grn(..., p_rates jsonb DEFAULT NULL, p_warn_duplicate boolean DEFAULT false)` and `update_grn(..., p_rates jsonb DEFAULT NULL)`
 
 `p_rates` is the last parameter of each (one overload each; every call that does not name it, the
 app's before this migration and fas-sync's, works unchanged). Roles as before: admin, supervisor, staff.
@@ -922,15 +922,17 @@ A deactivated business may still order and be dispatched: migration 121 adds no 
 ## Possible duplicate (migration 124, 2026-10-21)
 
 A WARNING on GRN create and on direct dispatch create, never a block, and **opt-in**: only a call that asks for it is checked
-(`save_grn`: `p_warn_duplicate => true`; the dispatch: `warn_duplicate: true` in `p_dispatch_data`). A call that does not ask (an older app
-build, `fas-sync`'s bulk push) behaves exactly as before and never gets `POSSIBLE_DUPLICATE`. A call that asked is answered
-`POSSIBLE_DUPLICATE` and writes nothing; the same call sent again with the flag false (or absent) saves. Owner decision of 2026-10-21.
+(`save_grn`: `p_warn_duplicate => true`; the dispatch: `warn_duplicate: true` in `p_dispatch_data`) and that sends a request key
+(`p_idempotency_key`; the app always does). A call that does not ask (an older app build, `fas-sync`'s bulk push) behaves exactly as before
+and never gets `POSSIBLE_DUPLICATE`; a call without a request key is not checked either, so an unkeyed resend cannot be warned about its own
+first try. A call that asked is answered `POSSIBLE_DUPLICATE` and writes nothing; the same call sent again with the flag false (or absent)
+saves. Owner decision of 2026-10-21.
 
 **What counts as a duplicate.**
 - **GRN** (`save_grn`): a live GRN (`deleted_at IS NULL`) of the same customer, created in the last 30 minutes by anyone, with the same
   GRN day (the Asia/Kolkata calendar day of `p_date`) and the same SET of (item, packaging) lines. The item is the item id; the
-  packaging is compared trimmed, in one case, with runs of white space as one space. Quantity, weight, rack and package mark are
-  ignored; line order and a repeated line do not matter.
+  packaging is compared trimmed, in one case, with runs of white space (tabs and new lines too) as one space. Quantity, weight, rack and
+  package mark are ignored; line order and a repeated line do not matter.
 - **Direct dispatch** (`create_dispatch_with_stock_check`, both signatures): only when `source_order_id` is absent. A live dispatch (from an order
   or not) of the same customer, created in the last 30 minutes, with the same SET of lots (`goodsreceived_trl` ids) and the same vehicle
   registration, compared upper-cased with spaces and hyphens removed (two blank registrations are the same vehicle). Quantity is ignored.
@@ -938,9 +940,13 @@ build, `fas-sync`'s bulk push) behaves exactly as before and never gets `POSSIBL
 - With several matches the newest is reported.
 
 **Where it runs.** After the saved-answer lookup (a resend of a request that was saved returns its stored answer, not the warning) and
-after every other validation and refusal (`NUMBER_TAKEN`, a deactivated customer, stock, dates, order checks), right before the first
-write. The answer is not stored under the request key. A line that a later step of `save_grn` rejects (a bad rate, an image path) is
-still found after the warning: the person sees the warning first and that refusal after "Save anyway".
+after every other validation and refusal, so a person who confirms "Save anyway" is not refused for another reason afterwards: it is the
+**last step** of the write block. For `save_grn` that is after the lines, images and rates are written, so every refusal of the block
+(a quantity or weight, an image path, `RATE_MISSING`, `RATE_PLANNED`, the rate start floor, a foreign-key or unique violation) is answered
+instead of the warning; for the dispatch it is after the dispatch, its lines, the stock, the movements and the customer's cart are written, so
+a stock, cart or trigger error comes first. A match raises `dup_warn` with the answer in `DETAIL`, the handler that already answers
+`rate_fail` (`save_grn`) or the function's own handler (dispatch) returns it, and the rollback of the block leaves nothing behind (no GRN, no line, no
+rate, no stock movement, no cart change). The answer is never stored under the request key.
 
 **Answer** (HTTP 200), built by `warehouse_security.refuse('POSSIBLE_DUPLICATE', ...)` like `ORDER_CHANGED`:
 
@@ -973,8 +979,11 @@ vehicle."; the app words its own text from the fields. The dispatch wrappers add
 checked and never get this answer.
 
 **Implementation.** The lookups are `warehouse_security.possible_duplicate_grn` and `possible_duplicate_dispatch` (not granted to any API
-role; fail-open: an error inside one means no warning, so a malformed line is answered by the save as before). They start from the
-existing `customer_id` indexes of `goodsreceived` and `dispatch`; no index is added. Tests: `tests/duplicate_warning_124.sql`.
+role; they take the id of the record being written and skip it; fail-open: an error inside one is logged as a `WARNING` and means no warning, so
+a malformed line is answered by the save as before). The GRN lookup is bounded by customer and by the business day, as a range of `date`
+(served by `idx_goodsreceived_customer_deleted_active`); the dispatch lookup starts from `idx_dispatch_customer_id` and filters by `created_at`.
+No index is added (measured: 0.16 ms and 0.5 ms for a customer with 3,000 rows). Tests: `tests/duplicate_warning_124.sql`, and two-session cases
+in `tests/concurrent_rules.sh` (case 12).
 
 ## List freshness (migration 106, 2026-10-19)
 

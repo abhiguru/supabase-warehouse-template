@@ -8,6 +8,10 @@
 --   G3  the day is the business day (Asia/Kolkata): another time of the same day warns, 00:30 of the next day does not
 --   G4  a subset, a superset and another customer do not warn
 --   G5  opt-in: no flag, NULL and false save the same set, true warns; one save_grn overload with the same argument names and grants
+--   G9  the warning is the LAST step: a flagged duplicate that another rule refuses (a quantity of 0, RATE_MISSING) is answered by that
+--       rule; a flagged duplicate that wrote rates is rolled back whole (no GRN, no line, no rate), and the same request with the flag false saves
+--   G12 a flagged call without a request key is not checked (an unkeyed resend cannot be warned about its own first try); with a key it is
+--   G13 packaging with leading or trailing tabs, new lines and runs of white space matches, on the request side and on the stored side
 --   G6  the GRN number refusal and a resend of a saved request come before the warning; the warning is not stored under the key
 --   G7  the 30 minute window (29 warns, 31 does not), the newest of several matches is reported, a deleted GRN does not warn
 --   G8  a creator without a name gives existing_created_by null; a malformed line is not turned into a warning or an exception
@@ -16,6 +20,8 @@
 --   D3  NUMBER_TAKEN and insufficient stock come before the warning; both signatures; a resend of a saved request is not warned
 --   D4  a dispatch from an order never warns, and is itself the match of a later direct dispatch (the newest is reported)
 --   D5  the 30 minute window and a deleted dispatch
+--   D6  the warning is the last step of the dispatch: a flagged duplicate rolls back the dispatch, the stock, the movements and the
+--       customer's cart (quantity and change log); the same request with the flag false takes them; no key, no check
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database. Everything rolls back at the end.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -37,13 +43,14 @@ CREATE FUNCTION pg_temp.dw_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $
 -- One GRN line.
 CREATE FUNCTION pg_temp.dw_line(item uuid, name text, pack text, qty integer, weight integer) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('item_id',item,'item_name',name,'packaging',pack,'qty',qty,'weight',weight) $$;
--- save_grn as the person of the claims, asking for the warning (p_warn_duplicate = true), as the app does on a normal create.
+-- save_grn as the person of the claims, asking for the warning (p_warn_duplicate = true) with a request key (the one given, else a new
+-- one), as the app does on a normal create. The check runs only for a call with the flag AND a key.
 CREATE FUNCTION pg_temp.dw_save(claims jsonb, no text, cust uuid, cname text, day text, items jsonb, key text DEFAULT NULL) RETURNS jsonb LANGUAGE plpgsql AS $$
  DECLARE r jsonb;
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>key,p_warn_duplicate=>true);
+  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>true);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -63,7 +70,28 @@ CREATE FUNCTION pg_temp.dw_save_warn(claims jsonb, no text, cust uuid, cname tex
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>key,p_warn_duplicate=>warn);
+  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_idempotency_key=>COALESCE(key,'dw-auto-'||gen_random_uuid()::text),p_warn_duplicate=>warn);
+  RESET ROLE;
+  RETURN r;
+ END $$;
+-- The same asking for the warning but sending NO request key (p_idempotency_key NULL).
+CREATE FUNCTION pg_temp.dw_save_nokey(claims jsonb, no text, cust uuid, cname text, day text, items jsonb) RETURNS jsonb LANGUAGE plpgsql AS $$
+ DECLARE r jsonb;
+ BEGIN
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+  SET LOCAL ROLE authenticated;
+  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_warn_duplicate=>true);
+  RESET ROLE;
+  RETURN r;
+ END $$;
+-- The same with p_rates (a list, or [] for "check only") and the flag as given.
+CREATE FUNCTION pg_temp.dw_save_rates(claims jsonb, no text, cust uuid, cname text, day text, items jsonb, rates jsonb, warn boolean) RETURNS jsonb LANGUAGE plpgsql AS $$
+ DECLARE r jsonb;
+ BEGIN
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+  SET LOCAL ROLE authenticated;
+  r:=public.save_grn(p_gr_no=>no,p_date=>day::timestamptz,p_customer_id=>cust,p_customer_name=>cname,p_pricing_mode=>'MONTHLY',p_items=>items,p_rates=>rates,
+    p_idempotency_key=>'dw-auto-'||gen_random_uuid()::text,p_warn_duplicate=>warn);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -79,7 +107,7 @@ CREATE FUNCTION pg_temp.dw_disp(claims jsonb, data jsonb, items jsonb[], key tex
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.create_dispatch_with_stock_check(CASE WHEN data ? 'warn_duplicate' THEN data ELSE data||'{"warn_duplicate":true}'::jsonb END,items,0,key);
+  r:=public.create_dispatch_with_stock_check(CASE WHEN data ? 'warn_duplicate' THEN data ELSE data||'{"warn_duplicate":true}'::jsonb END,items,0,COALESCE(key,'dw-auto-'||gen_random_uuid()::text));
   RESET ROLE;
   RETURN r;
  END $$;
@@ -99,7 +127,17 @@ CREATE FUNCTION pg_temp.dw_disp5(claims jsonb, data jsonb, items jsonb[], key te
  BEGIN
   PERFORM set_config('request.jwt.claims',claims::text,true);
   SET LOCAL ROLE authenticated;
-  r:=public.create_dispatch_with_stock_check(data||'{"warn_duplicate":true}'::jsonb,items,false,0,key);
+  r:=public.create_dispatch_with_stock_check(data||'{"warn_duplicate":true}'::jsonb,items,false,0,COALESCE(key,'dw-auto-'||gen_random_uuid()::text));
+  RESET ROLE;
+  RETURN r;
+ END $$;
+-- The same asking for the warning but sending NO request key.
+CREATE FUNCTION pg_temp.dw_disp_nokey(claims jsonb, data jsonb, items jsonb[]) RETURNS jsonb LANGUAGE plpgsql AS $$
+ DECLARE r jsonb;
+ BEGIN
+  PERFORM set_config('request.jwt.claims',claims::text,true);
+  SET LOCAL ROLE authenticated;
+  r:=public.create_dispatch_with_stock_check(data||'{"warn_duplicate":true}'::jsonb,items,0,NULL);
   RESET ROLE;
   RETURN r;
  END $$;
@@ -125,7 +163,8 @@ SELECT id AS staff_profile FROM public.user_profiles WHERE name='Dup Staff' \gse
 INSERT INTO public.customers(name,mobile) VALUES
  ('Dup Customer A','9888888951'),('Dup Customer B','9888888952'),('Dup Customer C','9888888953'),('Dup Customer D','9888888954'),
  ('Dup Customer E','9888888955'),('Dup Customer F','9888888956'),('Dup Customer G','9888888957'),
- ('Dup Customer P','9888888961'),('Dup Customer Q','9888888962'),('Dup Customer R','9888888963'),('Dup Customer S','9888888964');
+ ('Dup Customer H','9888888958'),
+ ('Dup Customer P','9888888961'),('Dup Customer Q','9888888962'),('Dup Customer R','9888888963'),('Dup Customer S','9888888964'),('Dup Customer T','9888888965');
 SELECT id AS ca FROM public.customers WHERE name='Dup Customer A' \gset
 SELECT id AS cb FROM public.customers WHERE name='Dup Customer B' \gset
 SELECT id AS cc FROM public.customers WHERE name='Dup Customer C' \gset
@@ -133,10 +172,12 @@ SELECT id AS cd FROM public.customers WHERE name='Dup Customer D' \gset
 SELECT id AS ce FROM public.customers WHERE name='Dup Customer E' \gset
 SELECT id AS cf FROM public.customers WHERE name='Dup Customer F' \gset
 SELECT id AS cg FROM public.customers WHERE name='Dup Customer G' \gset
+SELECT id AS ch FROM public.customers WHERE name='Dup Customer H' \gset
 SELECT id AS cp FROM public.customers WHERE name='Dup Customer P' \gset
 SELECT id AS cq FROM public.customers WHERE name='Dup Customer Q' \gset
 SELECT id AS cr FROM public.customers WHERE name='Dup Customer R' \gset
 SELECT id AS cs FROM public.customers WHERE name='Dup Customer S' \gset
+SELECT id AS ct FROM public.customers WHERE name='Dup Customer T' \gset
 INSERT INTO public.items(name,packaging) VALUES ('Dup Potatoes','Bag'),('Dup Onions','Bag'),('Dup Garlic','Bag');
 SELECT id AS potatoes FROM public.items WHERE name='Dup Potatoes' \gset
 SELECT id AS onions FROM public.items WHERE name='Dup Onions' \gset
@@ -229,6 +270,58 @@ SELECT pg_temp.dw_assert((SELECT NOT has_function_privilege('authenticated',oid,
     AND pronamespace='warehouse_security'::regnamespace)
   AND (SELECT NOT has_function_privilege('authenticated',oid,'EXECUTE') AND NOT has_function_privilege('anon',oid,'EXECUTE') FROM pg_proc WHERE proname='possible_duplicate_dispatch'
     AND pronamespace='warehouse_security'::regnamespace),'G5 the two lookups are not granted to any API role');
+
+SELECT pg_temp.dw_assert((SELECT bool_and(prosrc LIKE '%RAISE WARNING ''possible_duplicate_%failed: % %''%') FROM pg_proc
+    WHERE proname IN ('possible_duplicate_grn','possible_duplicate_dispatch') AND pronamespace='warehouse_security'::regnamespace),
+  'G5 the fail-open handler of each lookup reports the error as a WARNING');
+
+-- G9. The warning is the LAST step. Customer A has DUPA1 {potatoes, onions} live and new. A flagged request for the same set that another rule
+-- refuses is answered by that rule, and writes nothing. (a) a quantity of 0; (b) check-only rates ([]) with no rate set up: RATE_MISSING.
+SELECT pg_temp.dw_counts() AS counts9 \gset
+SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',0,50),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,30))) AS g9a \gset
+SELECT pg_temp.dw_assert(:'g9a'::jsonb->>'success'='false' AND :'g9a'::jsonb->>'message' LIKE 'Error creating GRN: Quantity must be greater than 0 for item at index 0%'
+  AND NOT :'g9a'::jsonb ? 'reason' AND pg_temp.dw_counts()=:'counts9','G9 a flagged duplicate with a quantity of 0 is refused for the quantity, not warned about: '||:'g9a');
+SELECT pg_temp.dw_save_rates(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,50),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,30)),'[]'::jsonb,true) AS g9b \gset
+SELECT pg_temp.dw_assert(:'g9b'::jsonb->>'success'='false' AND :'g9b'::jsonb->>'error_code'='RATE_MISSING' AND :'g9b'::jsonb->>'reason' IS DISTINCT FROM 'POSSIBLE_DUPLICATE'
+  AND pg_temp.dw_counts()=:'counts9','G9 a flagged duplicate with a missing rate is refused RATE_MISSING, not warned about: '||:'g9b');
+-- A flagged duplicate that wrote its rates: the warning rolls the whole block back. The same request with the flag false saves (control: the rates are valid).
+SELECT count(*) AS rates0 FROM public.grn_rates \gset
+SELECT pg_temp.dw_save_rates(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,10),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,10)),
+  jsonb_build_array(jsonb_build_object('scope','grn','item_id',:'potatoes','weight_min',0,'weight_max',100,'unit_price',6,'labour_rate',2,'tax_percent',5),
+                    jsonb_build_object('scope','grn','item_id',:'onions','weight_min',0,'weight_max',100,'unit_price',7,'labour_rate',2,'tax_percent',5)),true) AS g9c \gset
+SELECT pg_temp.dw_assert(:'g9c'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND (SELECT count(*) FROM public.grn_rates)=:'rates0'::bigint AND pg_temp.dw_counts()=:'counts9'
+  AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DUPA10'),'G9 a flagged duplicate that wrote rates is rolled back whole: no GRN, no line, no rate: '||:'g9c');
+SELECT pg_temp.dw_save_rates(:'admin_claims'::jsonb,'DUPA10',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',10,10),pg_temp.dw_line(:'onions','Dup Onions','Bag',5,10)),
+  jsonb_build_array(jsonb_build_object('scope','grn','item_id',:'potatoes','weight_min',0,'weight_max',100,'unit_price',6,'labour_rate',2,'tax_percent',5),
+                    jsonb_build_object('scope','grn','item_id',:'onions','weight_min',0,'weight_max',100,'unit_price',7,'labour_rate',2,'tax_percent',5)),false) AS g9d \gset
+SELECT pg_temp.dw_assert(:'g9d'::jsonb->>'success'='true' AND (SELECT count(*)=2 FROM public.grn_rates r JOIN public.goodsreceived g ON g.id=r.gr_id WHERE g.gr_no='DUPA10')
+  AND (SELECT count(*)=:'rates0'::bigint+2 FROM public.grn_rates),'G9 the same request with the flag false saves with its two rates: '||:'g9d');
+
+-- G12. No request key, no check: a flagged call without p_idempotency_key saves although the set matches; with a key it warns.
+SELECT pg_temp.dw_save_nokey(:'staff_claims'::jsonb,'DUPA11',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1),pg_temp.dw_line(:'onions','Dup Onions','Bag',1,1))) AS g12a \gset
+SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPA12',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1),pg_temp.dw_line(:'onions','Dup Onions','Bag',1,1))) AS g12b \gset
+SELECT pg_temp.dw_assert(:'g12a'::jsonb->>'success'='true' AND EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DUPA11' AND deleted_at IS NULL)
+  AND :'g12b'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND NOT EXISTS (SELECT 1 FROM public.goodsreceived WHERE gr_no='DUPA12'),
+  'G12 flagged without a key saves, flagged with a key warns (same set, same minute): '||:'g12a'||:'g12b');
+
+-- G13. White space in the packaging. Customer B has DUPB1 {potatoes Bag, onions Bag}: a request whose packaging has leading and trailing tabs,
+-- new lines and spaces matches it (request side). Customer H: H1 is stored with a tab, spaces and a new line around "bag"; a request with
+-- the plain packaging matches it (stored side), and the answer shows the packaging as stored.
+SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPB2',:'cb'::uuid,'Dup Customer B','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes',E'\n\tBAG \t',1,1),pg_temp.dw_line(:'onions','Dup Onions',E' bag\r\n',1,1))) AS g13a \gset
+SELECT pg_temp.dw_assert(:'g13a'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND :'g13a'::jsonb->>'existing_number'='DUPB1','G13 leading and trailing tabs and new lines in the request packaging match: '||:'g13a');
+SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPH1',:'ch'::uuid,'Dup Customer H','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes',E'\tbag \n',1,1))) AS g13b \gset
+SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPH2',:'ch'::uuid,'Dup Customer H','2026-04-01T12:00:00Z',
+  jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',1,1))) AS g13c \gset
+SELECT pg_temp.dw_assert(:'g13b'::jsonb->>'success'='true' AND :'g13c'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND :'g13c'::jsonb->>'existing_number'='DUPH1'
+  AND (:'g13c'::jsonb->'items'->0->>'packaging')=E'\tbag \n','G13 a stored packaging with tabs and new lines matches the plain one, and is shown as stored: '||:'g13c');
 
 -- G6. The number refusal and the saved answer come before the warning.
 SELECT pg_temp.dw_save(:'staff_claims'::jsonb,'DUPA1',:'ca'::uuid,'Dup Customer A','2026-04-01T12:00:00Z',
@@ -382,6 +475,9 @@ SELECT pg_temp.dw_assert(:'dq1'::jsonb->>'success'='true' AND :'dq1_again'::json
 SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'cq'::uuid,'Dup Customer Q','DQ2','GJ 04 QQ 0004'),ARRAY[pg_temp.dw_dline(:'lot_q'::uuid,10)],'dw-q2') AS dq2 \gset
 SELECT pg_temp.dw_assert(:'dq2'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND :'dq2'::jsonb->>'existing_number'='DQ1' AND NOT EXISTS (SELECT 1 FROM public.idempotency_keys WHERE idempotency_key='dw-q2'),
   'D3 the same body under another key warns, and the warning is not stored under the key: '||:'dq2');
+SELECT pg_temp.dw_disp_nokey(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'cq'::uuid,'Dup Customer Q','DQ3','GJ 04 QQ 0004'),ARRAY[pg_temp.dw_dline(:'lot_q'::uuid,10)]) AS dq3 \gset
+SELECT pg_temp.dw_assert(:'dq3'::jsonb->>'success'='true' AND EXISTS (SELECT 1 FROM public.dispatch WHERE disp_no='DQ3' AND deleted_at IS NULL),
+  'D3 a flagged dispatch without a request key is not checked and saves: '||:'dq3');
 
 -- D4. From an order. Customer R: DR1 direct (10 bags of each lot, vehicle V), then an order for both lots (20 each) and a dispatch from it, same lots and vehicle.
 SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPR1',:'cr'::uuid,'Dup Customer R','2026-04-01T12:00:00Z',
@@ -441,3 +537,43 @@ SELECT pg_temp.dw_assert(:'ds3'::jsonb->>'success'='true','D5 a deleted dispatch
 UPDATE public.dispatch SET deleted_at=now(), deleted_by=:'admin_profile'::uuid WHERE disp_no='DS3';
 SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'cs'::uuid,'Dup Customer S','DS4','GJ 05 SS 0005'),ARRAY[pg_temp.dw_dline(:'lot_s'::uuid,10)]) AS ds4 \gset
 SELECT pg_temp.dw_assert(:'ds4'::jsonb->>'success'='true','D5 a soft-deleted dispatch does not warn: '||:'ds4');
+
+-- D6. The warning is the last step of the dispatch. Customer T: DUPT1 (potatoes 100), an open cart with a line of 30 bags of that lot, and
+-- DT1 (10 bags, flagged, no match) takes 10 from the cart line (20 left, one change-log entry). A flagged DT2 (5 bags, same lot and
+-- vehicle) is answered POSSIBLE_DUPLICATE and everything it wrote is rolled back: no dispatch, no line, stock still 90, no stock
+-- movement, the cart line still 20, no new change-log entry. The same request with the flag false takes its 5 (control).
+SELECT pg_temp.dw_save(:'admin_claims'::jsonb,'DUPT1',:'ct'::uuid,'Dup Customer T','2026-04-01T12:00:00Z',jsonb_build_array(pg_temp.dw_line(:'potatoes','Dup Potatoes','Bag',100,50))) AS t1 \gset
+SELECT t.id AS lot_t FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='DUPT1' \gset
+SELECT set_config('request.jwt.claims',:'admin_claims',true);
+SET LOCAL ROLE authenticated;
+SELECT public.get_or_create_cart(:'ct'::uuid) AS cart_t \gset
+SELECT pg_temp.dw_assert(public.add_item_to_order(:'cart_t'::uuid,:'lot_t'::uuid,30)->>'success'='true','fixture: a cart line of 30 for T');
+RESET ROLE;
+SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'ct'::uuid,'Dup Customer T','DT1','GJ 06 TT 0006'),ARRAY[pg_temp.dw_dline(:'lot_t'::uuid,10)]) AS dt1 \gset
+SELECT pg_temp.dw_assert(:'dt1'::jsonb->>'success'='true' AND (SELECT requested_quantity=20 FROM public.order_items WHERE order_id=:'cart_t'::uuid AND grn_items_id=:'lot_t'::uuid)
+  AND (SELECT stock=90 FROM public.goodsreceived_trl WHERE id=:'lot_t'::uuid),'fixture: DT1 took 10 from the cart line (20 left) and the stock (90): '||:'dt1');
+SELECT count(*) AS revs0 FROM public.order_revisions WHERE order_id=:'cart_t'::uuid \gset
+SELECT pg_temp.dw_counts() AS tcounts0 \gset
+SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'ct'::uuid,'Dup Customer T','DT2','gj06tt0006'),ARRAY[pg_temp.dw_dline(:'lot_t'::uuid,5)],'dw-dt2') AS dt2 \gset
+SELECT pg_temp.dw_assert(:'dt2'::jsonb->>'reason'='POSSIBLE_DUPLICATE' AND :'dt2'::jsonb->>'existing_number'='DT1','D6 the flagged duplicate dispatch is warned about: '||:'dt2');
+SELECT pg_temp.dw_assert(pg_temp.dw_counts()=:'tcounts0' AND NOT EXISTS (SELECT 1 FROM public.dispatch WHERE disp_no='DT2')
+  AND (SELECT stock=90 FROM public.goodsreceived_trl WHERE id=:'lot_t'::uuid)
+  AND (SELECT requested_quantity=20 FROM public.order_items WHERE order_id=:'cart_t'::uuid AND grn_items_id=:'lot_t'::uuid)
+  AND (SELECT count(*)=:'revs0'::bigint FROM public.order_revisions WHERE order_id=:'cart_t'::uuid)
+  AND NOT EXISTS (SELECT 1 FROM public.idempotency_keys WHERE idempotency_key='dw-dt2'),
+  'D6 the warning rolled everything back: no dispatch, no line, no movement, stock 90, cart line 20, no change-log entry, no saved answer ('||:'tcounts0'||' then '||pg_temp.dw_counts()||')');
+SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'ct'::uuid,'Dup Customer T','DT2','gj06tt0006','{"warn_duplicate":false}'::jsonb),ARRAY[pg_temp.dw_dline(:'lot_t'::uuid,5)],'dw-dt2') AS dt2_ok \gset
+SELECT pg_temp.dw_assert(:'dt2_ok'::jsonb->>'success'='true' AND (SELECT stock=85 FROM public.goodsreceived_trl WHERE id=:'lot_t'::uuid)
+  AND (SELECT requested_quantity=15 FROM public.order_items WHERE order_id=:'cart_t'::uuid AND grn_items_id=:'lot_t'::uuid)
+  AND (SELECT count(*)=:'revs0'::bigint+1 FROM public.order_revisions WHERE order_id=:'cart_t'::uuid),
+  'D6 control: the same request with the flag false takes 5 from the stock (85) and the cart line (15), one change-log entry: '||:'dt2_ok');
+-- A step that fails after the dispatch is written (here a trigger on the lines raises for a line of 7 bags) is reported before the warning:
+-- a flagged duplicate of DT1 with a line of 7 bags is answered with that error, not POSSIBLE_DUPLICATE, and nothing is left behind.
+CREATE FUNCTION pg_temp.dw_force_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'dw forced failure'; END $$;
+CREATE TRIGGER dw_force BEFORE INSERT ON public.dispatch_trl FOR EACH ROW WHEN (NEW.disp_qty = 7) EXECUTE FUNCTION pg_temp.dw_force_fail();
+SELECT pg_temp.dw_counts() AS tcounts1 \gset
+SELECT pg_temp.dw_disp(:'admin_claims'::jsonb,pg_temp.dw_ddata(:'ct'::uuid,'Dup Customer T','DT3','GJ 06 TT 0006'),ARRAY[pg_temp.dw_dline(:'lot_t'::uuid,7)]) AS dt3 \gset
+DROP TRIGGER dw_force ON public.dispatch_trl;
+SELECT pg_temp.dw_assert(:'dt3'::jsonb->>'success'='false' AND :'dt3'::jsonb->>'error'='dw forced failure' AND NOT :'dt3'::jsonb ? 'reason'
+  AND pg_temp.dw_counts()=:'tcounts1' AND NOT EXISTS (SELECT 1 FROM public.dispatch WHERE disp_no='DT3'),
+  'D6 a failure after the dispatch is written comes before the warning, and nothing is left behind: '||:'dt3');

@@ -1,21 +1,27 @@
 -- Migration 124: a "possible duplicate" WARNING on GRN create and on direct dispatch create (owner decision of 2026-10-21).
 --
 -- A warning, never a block, and OPT-IN: the check runs only when the caller asks for it (save_grn: p_warn_duplicate = true; the
--- dispatch: warn_duplicate = true in p_dispatch_data). A call that does not ask, such as an older app build or fas-sync's bulk push,
--- behaves exactly as before and never gets POSSIBLE_DUPLICATE. When the caller asked, the call answers POSSIBLE_DUPLICATE and writes
--- nothing, and the same call sent again with the flag false (or absent) saves. The rules:
+-- dispatch: warn_duplicate = true in p_dispatch_data) AND sends a request key (p_idempotency_key). A call that does not ask, such
+-- as an older app build or fas-sync's bulk push, behaves exactly as before and never gets POSSIBLE_DUPLICATE; a call without a key
+-- is not checked either, so a resend that has no key cannot be warned about its own first try. When the caller asked, the call
+-- answers POSSIBLE_DUPLICATE and writes nothing, and the same call sent again with the flag false (or absent) saves. The rules:
 --   * GRN (save_grn): a LIVE GRN of the same customer, with the same GRN day (the business day, Asia/Kolkata), created in the last
 --     30 minutes by anyone, whose lines are the same SET of (item, packaging). Quantity, weight, rack and mark are ignored; line
 --     order and repeated lines do not matter. The item is the item id; the packaging is compared trimmed, in one case, with runs of
---     white space as one space.
+--     white space (tabs and new lines too) as one space.
 --   * Direct dispatch (create_dispatch_with_stock_check, both signatures, through create_dispatch_with_stock_check_internal): only
 --     when the dispatch has NO source order. A LIVE dispatch of the same customer, created in the last 30 minutes (from an order or
 --     not), with the same SET of lots (goodsreceived_trl ids) and the same vehicle registration (upper-cased, spaces and hyphens
 --     removed). Quantity is ignored. A dispatch made from an order is never warned about: its order line is used up.
 --   * With several matches the newest is reported.
 --
--- Where the check runs: after the saved-answer lookup (a resend of a saved request still gets its stored answer) and after every other
--- validation and refusal, right before the first write. The answer is not stored under the idempotency key: a refusal writes nothing.
+-- Where the check runs: after the saved-answer lookup (a resend of a saved request still gets its stored answer) and AFTER every other
+-- validation and refusal of the function, so a person who confirms "Save anyway" is not refused for another reason afterwards. The
+-- refusals that can only be known while writing (a quantity or weight, an image path, every rate refusal of apply_grn_rates, a
+-- foreign-key or unique violation; for the dispatch the stock, cart and trigger errors) come first, so the check is the LAST step of
+-- the write block, after the writes: it RAISEs 'dup_warn' with the answer in DETAIL, the handler that already answers 'rate_fail'
+-- returns it, and the rollback of the block leaves nothing written (no GRN, no line, no rate, no stock movement, no cart change).
+-- The check runs before the saved answer is stored, so the warning is never stored under the request key.
 -- The answer is warehouse_security.refuse('POSSIBLE_DUPLICATE', <sentence>, <fields>) (migration 121): success:false,
 -- error_code:'WH409', reason, error, message, and kind ('grn' | 'dispatch'), existing_id, existing_number, existing_created_at,
 -- existing_created_by (the person's name, or null), customer_name, items (GRN: [{item_name, packaging}]; dispatch: [{gr_no,
@@ -26,18 +32,24 @@
 -- send it, an older app or fas-sync, keeps working unchanged). The dispatch takes warn_duplicate = true in p_dispatch_data (no
 -- signature change). The app sends true on a normal create and false when the person confirms "Save anyway".
 --
--- The check is a fail-open helper: any error inside it (a malformed line, say) means "no warning", so the save then fails or
--- succeeds exactly as it did before this migration.
+-- The lookups are fail-open helpers: any error inside one (a malformed line, say) is reported as a WARNING in the log and means "no
+-- warning", so the save then fails or succeeds exactly as it did before this migration. They take the id of the record being
+-- written and skip it.
 --
 -- Both functions are the latest definition (save_grn: the baseline with the patches of migrations 120 and 121; the dispatch
 -- internal: migration 121) with only the changes above, patched with the marker-count pattern of migration 111. The new helpers are
--- in warehouse_security and are not granted to any API role. No data and no index is changed: the lookup starts from the
--- customer_id indexes that goodsreceived and dispatch already have and filters on a handful of rows.
+-- in warehouse_security and are not granted to any API role. No data and no index is changed. The GRN lookup is bounded by customer and
+-- by the business day of p_date, written as a range of goodsreceived.date, and the planner serves it from
+-- idx_goodsreceived_customer_deleted_active (customer_id, ..., date); the created_at filter then looks at the few rows of that day. The
+-- dispatch lookup starts from idx_dispatch_customer_id and filters by created_at: no existing index leads with it, and the dispatch
+-- date cannot bound it (a dispatch can be dated any day). Measured on 30,000 GRNs and 30,000 dispatches with 3,000 of each for one
+-- customer: 0.16 ms for the GRN rows, 0.5 ms for the dispatch rows, about 1 ms for a whole helper call.
 
 -- Section 1: the two lookups
 
--- The GRN lookup: returns the POSSIBLE_DUPLICATE answer for the newest matching GRN, or NULL.
-CREATE FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb)
+-- The GRN lookup: returns the POSSIBLE_DUPLICATE answer for the newest matching GRN, or NULL. p_exclude_id is the GRN being written
+-- (it is already in the table when the check runs) and is skipped.
+CREATE FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb, p_exclude_id uuid DEFAULT NULL)
     RETURNS jsonb
     LANGUAGE plpgsql STABLE
     SET search_path TO 'pg_catalog', 'public', 'pg_temp'
@@ -53,10 +65,10 @@ BEGIN
     END IF;
 
     -- The request's set of (item, packaging) as sorted distinct keys: the item id, then the packaging compared trimmed, in one case,
-    -- with runs of white space as one space.
+    -- with runs of white space (tabs and new lines too) as one space.
     SELECT array_agg(DISTINCT k ORDER BY k) INTO v_keys
     FROM (
-        SELECT ((e->>'item_id')::uuid)::text || '|' || regexp_replace(lower(btrim(COALESCE(e->>'packaging', ''))), '\s+', ' ', 'g') AS k
+        SELECT ((e->>'item_id')::uuid)::text || '|' || btrim(regexp_replace(lower(COALESCE(e->>'packaging', '')), '\s+', ' ', 'g')) AS k
         FROM jsonb_array_elements(p_items) AS e
     ) AS request_lines;
 
@@ -69,9 +81,12 @@ BEGIN
     WHERE g.customer_id = p_customer_id
       AND g.deleted_at IS NULL
       AND g.created_at >= now() - interval '30 minutes'
-      AND warehouse_security.business_date(g.date) = warehouse_security.business_date(p_date)
-      AND (SELECT array_agg(DISTINCT t.item_id::text || '|' || regexp_replace(lower(btrim(COALESCE(t.packaging, ''))), '\s+', ' ', 'g')
-                            ORDER BY t.item_id::text || '|' || regexp_replace(lower(btrim(COALESCE(t.packaging, ''))), '\s+', ' ', 'g'))
+      -- The same business day, written as a range of the date column so that idx_goodsreceived_date_active can serve it.
+      AND g.date >= warehouse_security.business_day_start(warehouse_security.business_date(p_date))
+      AND g.date < warehouse_security.business_day_start(warehouse_security.business_date(p_date) + 1)
+      AND (p_exclude_id IS NULL OR g.id <> p_exclude_id)
+      AND (SELECT array_agg(DISTINCT t.item_id::text || '|' || btrim(regexp_replace(lower(COALESCE(t.packaging, '')), '\s+', ' ', 'g'))
+                            ORDER BY t.item_id::text || '|' || btrim(regexp_replace(lower(COALESCE(t.packaging, '')), '\s+', ' ', 'g')))
            FROM goodsreceived_trl t WHERE t.gr_id = g.id) = v_keys
     ORDER BY g.created_at DESC, g.id DESC
     LIMIT 1;
@@ -84,12 +99,12 @@ BEGIN
                               ORDER BY s.item_name, s.packaging), '[]'::jsonb)
     INTO v_items
     FROM (
-        SELECT DISTINCT ON (t.item_id, regexp_replace(lower(btrim(COALESCE(t.packaging, ''))), '\s+', ' ', 'g'))
+        SELECT DISTINCT ON (t.item_id, btrim(regexp_replace(lower(COALESCE(t.packaging, '')), '\s+', ' ', 'g')))
                COALESCE(i.name, t.item_name) AS item_name, t.packaging
         FROM goodsreceived_trl t
         LEFT JOIN items i ON i.id = t.item_id
         WHERE t.gr_id = v_found.id
-        ORDER BY t.item_id, regexp_replace(lower(btrim(COALESCE(t.packaging, ''))), '\s+', ' ', 'g'), t.id
+        ORDER BY t.item_id, btrim(regexp_replace(lower(COALESCE(t.packaging, '')), '\s+', ' ', 'g')), t.id
     ) AS s;
 
     v_minutes := GREATEST(0, floor(extract(epoch FROM (now() - v_found.created_at)) / 60))::integer;
@@ -109,16 +124,17 @@ BEGIN
                            'window_minutes', 30));
 EXCEPTION
     WHEN OTHERS THEN
-        -- A warning is never worth a failed save: on any error there is no warning.
+        -- A warning is never worth a failed save: on any error there is no warning (the log keeps the reason).
+        RAISE WARNING 'possible_duplicate_grn failed: % %', SQLSTATE, SQLERRM;
         RETURN NULL;
 END
 $$;
-ALTER FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb) OWNER TO supabase_admin;
-REVOKE ALL ON FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb) FROM PUBLIC;
+ALTER FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb, p_exclude_id uuid) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.possible_duplicate_grn(p_customer_id uuid, p_date timestamp with time zone, p_items jsonb, p_exclude_id uuid) FROM PUBLIC;
 
 -- The dispatch lookup: returns the POSSIBLE_DUPLICATE answer for the newest matching dispatch, or NULL. p_lot_ids are the lots of
--- the request (goodsreceived_trl ids), p_registration the vehicle as sent.
-CREATE FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[])
+-- the request (goodsreceived_trl ids), p_registration the vehicle as sent, p_exclude_id the dispatch being written (skipped).
+CREATE FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[], p_exclude_id uuid DEFAULT NULL)
     RETURNS jsonb
     LANGUAGE plpgsql STABLE
     SET search_path TO 'pg_catalog', 'public', 'pg_temp'
@@ -146,6 +162,7 @@ BEGIN
     WHERE d.customer_id = p_customer_id
       AND d.deleted_at IS NULL
       AND d.created_at >= now() - interval '30 minutes'
+      AND (p_exclude_id IS NULL OR d.id <> p_exclude_id)
       AND upper(regexp_replace(COALESCE(d.registration, ''), '[\s-]+', '', 'g')) = v_vehicle
       AND (SELECT array_agg(DISTINCT dt.gr_trl_id ORDER BY dt.gr_trl_id) FROM dispatch_trl dt WHERE dt.disp_id = d.id) = v_lots
     ORDER BY d.created_at DESC, d.id DESC
@@ -185,14 +202,17 @@ BEGIN
                            'window_minutes', 30));
 EXCEPTION
     WHEN OTHERS THEN
-        -- A warning is never worth a failed save: on any error there is no warning.
+        -- A warning is never worth a failed save: on any error there is no warning (the log keeps the reason).
+        RAISE WARNING 'possible_duplicate_dispatch failed: % %', SQLSTATE, SQLERRM;
         RETURN NULL;
 END
 $$;
-ALTER FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[]) OWNER TO supabase_admin;
-REVOKE ALL ON FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[]) FROM PUBLIC;
+ALTER FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[], p_exclude_id uuid) OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.possible_duplicate_dispatch(p_customer_id uuid, p_registration text, p_lot_ids uuid[], p_exclude_id uuid) FROM PUBLIC;
 
--- Section 2: save_grn gains p_warn_duplicate and, when it is true, asks the lookup right before its first write.
+-- Section 2: save_grn gains p_warn_duplicate and, when it is true and a request key is sent, asks the lookup as the last step of its
+-- write block, after the lines, images and rates are written; a match raises 'dup_warn' with the answer in DETAIL, which the handler
+-- that answers 'rate_fail' returns, and the rollback of the block leaves nothing behind.
 -- The new trailing parameter changes the signature, so the old 17-argument function is dropped and the patched definition is
 -- created under the new one (an overload would make a call by name ambiguous). Owner, search_path, jit and the grants are the old
 -- function's: the definition carries the first two, the statements below the grants.
@@ -207,9 +227,10 @@ $m$,
       v_detail text;
 BEGIN
 $m$,
-    $m$      BEGIN
-          INSERT INTO goodsreceived (
-              gr_no,$m$
+    $m$          v_result := jsonb_build_object(
+              'success', true,
+              'message', 'GRN created successfully',$m$,
+    $m$IF SQLERRM = 'rate_fail' THEN$m$
   ];
   v_new constant text[] := ARRAY[
     $m$p_rates jsonb DEFAULT NULL::jsonb, p_warn_duplicate boolean DEFAULT false)
@@ -220,20 +241,21 @@ $m$,
       v_duplicate jsonb;
 BEGIN
 $m$,
-    $m$      -- Migration 124 (opt-in): when the caller asks (p_warn_duplicate), the same customer, GRN day and set of items as a live GRN
-      -- made in the last 30 minutes (by anyone) is a possible duplicate: POSSIBLE_DUPLICATE is answered and nothing is written.
-      -- The check comes after the saved-answer lookup and after every refusal above, right before the first write; the answer
-      -- is not stored.
-      IF COALESCE(p_warn_duplicate, false) THEN
-          v_duplicate := warehouse_security.possible_duplicate_grn(p_customer_id, p_date, p_items);
-          IF v_duplicate IS NOT NULL THEN
-              RETURN v_duplicate;
+    $m$          -- Migration 124 (opt-in): when the caller asks (p_warn_duplicate) and sends a request key, the same customer, GRN day and
+          -- set of items as another live GRN made in the last 30 minutes (by anyone) is a possible duplicate. This is the last step
+          -- of the block, after every write and every refusal above: the answer is raised as 'dup_warn' (the handler returns the
+          -- DETAIL), the block is rolled back, and the answer is never stored under the key.
+          IF COALESCE(p_warn_duplicate, false) AND p_idempotency_key IS NOT NULL THEN
+              v_duplicate := warehouse_security.possible_duplicate_grn(p_customer_id, p_date, p_items, v_grn_id);
+              IF v_duplicate IS NOT NULL THEN
+                  RAISE EXCEPTION 'dup_warn' USING ERRCODE = 'P0001', DETAIL = v_duplicate::text;
+              END IF;
           END IF;
-      END IF;
 
-      BEGIN
-          INSERT INTO goodsreceived (
-              gr_no,$m$
+          v_result := jsonb_build_object(
+              'success', true,
+              'message', 'GRN created successfully',$m$,
+    $m$IF SQLERRM IN ('rate_fail', 'dup_warn') THEN$m$
   ];
   v_count integer;
   i integer;
@@ -256,8 +278,10 @@ REVOKE ALL ON FUNCTION public.save_grn(character varying, timestamp with time zo
 GRANT ALL ON FUNCTION public.save_grn(character varying, timestamp with time zone, uuid, character varying, uuid, character varying, uuid, character varying, character varying, character varying, boolean, character varying, jsonb, jsonb, text, character varying, jsonb, boolean) TO service_role;
 GRANT ALL ON FUNCTION public.save_grn(character varying, timestamp with time zone, uuid, character varying, uuid, character varying, uuid, character varying, character varying, character varying, boolean, character varying, jsonb, jsonb, text, character varying, jsonb, boolean) TO authenticated;
 
--- Section 3: the dispatch create asks the lookup for a direct dispatch, when the data says warn_duplicate, right before its first
--- write (no signature change).
+-- Section 3: the dispatch create asks the lookup for a direct dispatch, when the data says warn_duplicate and a request key is sent, as
+-- the last step before it builds its answer, after the dispatch, its lines, the stock, the movements and the cart handling are
+-- written; a match raises 'dup_warn' with the answer in DETAIL, the handler of the function returns it, and the rollback of the
+-- function's block leaves nothing behind (no signature change).
 DO $patch$
 DECLARE
   v_def text;
@@ -265,30 +289,47 @@ DECLARE
     $m$    v_late_grn_day date;
 BEGIN
 $m$,
-    $m$    -- CREATE DISPATCH RECORD
-    INSERT INTO dispatch ($m$
+    $m$    -- Build result
+    v_cached_response := jsonb_build_object($m$,
+    $m$    WHEN OTHERS THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', SQLERRM,
+$m$
   ];
   v_new constant text[] := ARRAY[
     $m$    v_late_grn_day date;
     v_duplicate jsonb;
+    v_detail text;
 BEGIN
 $m$,
-    $m$    -- Migration 124 (opt-in): when the data carries warn_duplicate = true, a direct dispatch (no source order) with the same
-    -- customer, set of lots and vehicle as a live dispatch made in the last 30 minutes is a possible duplicate: POSSIBLE_DUPLICATE
-    -- is answered and nothing is written. A dispatch from an order is never warned about (its order line is used up). The check
-    -- comes after the saved-answer lookup and after every refusal above, right before the first write; the answer is not stored.
-    IF v_source_order_id IS NULL AND COALESCE(p_dispatch_data->>'warn_duplicate', '') = 'true' THEN
+    $m$    -- Migration 124 (opt-in): when the data carries warn_duplicate = true and a request key is sent, a direct dispatch (no source
+    -- order) with the same customer, set of lots and vehicle as another live dispatch made in the last 30 minutes is a possible
+    -- duplicate. A dispatch from an order is never warned about (its order line is used up). This is the last step before the
+    -- answer is built, after every write and every refusal above: the answer is raised as 'dup_warn' (the handler returns the
+    -- DETAIL), the function's block is rolled back, and the answer is never stored under the key.
+    IF v_source_order_id IS NULL AND COALESCE(p_dispatch_data->>'warn_duplicate', '') = 'true' AND p_idempotency_key IS NOT NULL THEN
         v_duplicate := warehouse_security.possible_duplicate_dispatch(
             (p_dispatch_data->>'customer_id')::uuid,
             p_dispatch_data->>'registration',
-            ARRAY(SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item));
+            ARRAY(SELECT (item->>'gr_trl_id')::uuid FROM unnest(p_dispatch_items) AS item),
+            v_dispatch_id);
         IF v_duplicate IS NOT NULL THEN
-            RETURN v_duplicate;
+            RAISE EXCEPTION 'dup_warn' USING ERRCODE = 'P0001', DETAIL = v_duplicate::text;
         END IF;
     END IF;
 
-    -- CREATE DISPATCH RECORD
-    INSERT INTO dispatch ($m$
+    -- Build result
+    v_cached_response := jsonb_build_object($m$,
+    $m$    WHEN OTHERS THEN
+        IF SQLERRM = 'dup_warn' THEN
+            GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
+            RETURN v_detail::jsonb;
+        END IF;
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', SQLERRM,
+$m$
   ];
   v_count integer;
   i integer;
