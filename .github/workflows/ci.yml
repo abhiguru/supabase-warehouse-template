@@ -17,12 +17,12 @@ env:
   # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
   # CONTRIBUTING.md "Mobile companion pin".
   MOBILE_REF: f82df63e025629ae6e94754fc304b9f7e08cb6fa
+# Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
+# ["self-hosted","linux","x64","my-label"]); operator-install takes OPERATOR_INSTALL_RUNNER instead. Without the
+# variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
+# runs on the project's own machine.
 jobs:
   validate:
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,16 +31,11 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-          cache: npm
       - run: npm ci
       - run: npm test
       - name: Container source dependency audit
         run: npm run check:container-dependencies
   migrations:
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     steps:
@@ -56,10 +51,6 @@ jobs:
     # docker/sensor-bridge (GPL-3.0-or-later): the Python package and its tests
     # with the pinned requirements, without Docker or hubs. The image itself is
     # built and checked by `npm run test:sensors` in operator-install.
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,10 +68,6 @@ jobs:
     # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
     # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap), then checks
     # health, a real render, blocked network access and the 400/413 cases.
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     timeout-minutes: 30
@@ -102,10 +89,6 @@ jobs:
     # 150 dpi in a poppler container built from a fixed Debian snapshot (tests/golden-pdf/Dockerfile) and compares
     # each page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact. Required on every change to the Chrome for Testing
     # pin, puppeteer-core or the fonts; regenerate with `run.sh --update` and review what moved.
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate
     timeout-minutes: 30
@@ -137,10 +120,6 @@ jobs:
         if: always()
         run: docker rm -f pdf-renderer-golden
   contract:
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,13 +144,14 @@ jobs:
         working-directory: mobile
       - run: node scripts/check-mobile-contract.mjs ../mobile
         working-directory: backend
+      # With MOBILE_CHECKOUT set, tests/rpc-callers.test.mjs also compares the app's RPC names with tests/rpc_callers_exist.sql.
+      - run: node --test tests/rpc-callers.test.mjs
+        working-directory: backend
+        env:
+          MOBILE_CHECKOUT: ${{ github.workspace }}/mobile
 
   secrets:
     name: Redacted source and history scan
-    # Where this job runs is the repository variable CI_RUNNER (a JSON value for
-    # runs-on, for example ["self-hosted","linux","x64","my-label"]). Without it,
-    # and always for a pull request from a fork, it runs on a GitHub-hosted runner:
-    # code from a fork never runs on the project's own machine.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,12 +162,9 @@ jobs:
 
   operator-install:
     name: Isolated operator installation
-    # Where this job runs is the repository variable OPERATOR_INSTALL_RUNNER: a
-    # JSON value for runs-on, for example ["self-hosted","linux","x64","my-label"].
-    # Without the variable, and always for a pull request from a fork, it runs on
-    # a GitHub-hosted runner. A runner that keeps Docker's build cache between runs saves about
-    # half the time: on a hosted runner 18 of this job's 30 minutes are image
-    # builds from scratch. What such a runner must provide, and why it has to be
+    # A runner that keeps Docker's build cache between runs saves about
+    # half the time: on a hosted runner about half of this job's time is image
+    # builds from scratch (about 9.5 minutes with a warm cache). What such a runner must provide, and why it has to be
     # an isolated machine, is in docs/DEVELOPER_HANDOFF.md, "A self-hosted runner
     # for operator-install". This job is not a required check.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
@@ -292,11 +269,10 @@ jobs:
           ' "$WAREHOUSE_STATE_DIR/config/watch-state.json"
           node scripts/watch.mjs status
         working-directory: backend
-      - name: Backup and isolated restore drill
-        run: |
-          npm run db:backup -- /tmp/warehouse-ci-backup
-          npm run db:verify-restore -- /tmp/warehouse-ci-backup
+      - name: Backup
+        run: npm run db:backup -- /tmp/warehouse-ci-backup
         working-directory: backend
+      # restore.sh verifies the backup in an isolated database before it touches the instance.
       - name: In-place restore drill
         run: |
           bash stop.sh
