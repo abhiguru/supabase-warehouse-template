@@ -43,3 +43,19 @@ test('profile lookup requires signed user token; inactive/customer roles cannot 
     assert.equal((await validatePrintAccess(await request())).role, 'supervisor');
   } finally { globalThis.fetch = oldFetch; globalThis.Deno = oldDeno; }
 });
+
+test('a network error or timeout reaching PostgREST is a 503, not a 500', async () => {
+  const { createAuthErrorResponse } = await import('../functions/_shared/auth-helpers.ts');
+  const oldDeno = globalThis.Deno, oldFetch = globalThis.fetch;
+  globalThis.Deno = { env: { get: key => ({ JWT_SECRET: secret, SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-test-only', SUPABASE_REST_URL: 'http://rest:3000' })[key] } };
+  try {
+    for (const failure of [new TypeError('fetch failed'), Object.assign(new Error('timed out'), { name: 'TimeoutError' })]) {
+      globalThis.fetch = async () => { throw failure; };
+      await assert.rejects(validateUserAccess(await request()), { status: 503, message: 'Profile lookup unavailable' });
+      const caught = await validateUserAccess(await request()).catch(error => error);
+      const response = createAuthErrorResponse(caught, {});
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { success: false, error: 'Server unavailable' });
+    }
+  } finally { globalThis.fetch = oldFetch; globalThis.Deno = oldDeno; }
+});
