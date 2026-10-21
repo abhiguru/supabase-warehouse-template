@@ -118,9 +118,9 @@ SELECT (:'today'::date-100) AS d100, (:'today'::date-13) AS dm13, (:'today'::dat
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.gr_assert((SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn')
  AND (SELECT count(*)=1 FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn')
- AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_duration_mode character varying, p_rates jsonb' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn')
+ AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_duration_mode character varying, p_rates jsonb, p_warn_duplicate boolean' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='save_grn')
  AND (SELECT pg_get_function_identity_arguments(oid) LIKE '%, p_idempotency_key text, p_rates jsonb, p_expected_updated_at timestamp with time zone' FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='update_grn'),
- 'save_grn and update_grn have one overload each, p_rates last on save_grn and before p_expected_updated_at (migration 121) on update_grn');
+ 'save_grn and update_grn have one overload each, p_warn_duplicate (migration 124) after p_rates last on save_grn, p_rates before p_expected_updated_at (migration 121) on update_grn');
 -- Owner, options and grants as before the re-create (the migration compares them with what it dropped);
 -- here: the same as a sibling that was never re-created, and the options the two had.
 SELECT pg_temp.gr_assert((SELECT bool_and(p.prosecdef AND p.proacl::text=(SELECT proacl::text FROM pg_proc WHERE proname='replace_item_rates' AND pronamespace='public'::regnamespace)
