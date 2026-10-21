@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly, and on demand: docker/pdf-renderer/Dockerfile installs fonts and Chrome libraries from the live Debian mirrors, so the
+  # golden pages can move with no change in the repository. A scheduled run executes every job, the renderer job always.
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
 permissions:
   contents: read
 env:
@@ -89,7 +94,7 @@ jobs:
     # Regenerate with `run.sh --update` and review what moved. Skipped (not required, so never pending) when `changes` says
     # the change cannot move the renderer.
     needs: [validate, changes]
-    if: needs.changes.outputs.renderer == 'true'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.renderer == 'true'
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     steps:

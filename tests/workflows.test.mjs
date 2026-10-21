@@ -95,7 +95,10 @@ test('the renderer job runs only for a change that can move it, builds the image
   for (const path of ['docker/pdf-renderer/', 'tests/golden-pdf/', 'functions/_shared/']) assert.ok(job('changes').includes(path), path);
   assert.match(job('changes'), /\.github\/workflows\/ci\\\.yml/);
   const renderer = job('pdf-renderer');
-  assert.match(renderer, /\n    needs: \[validate, changes\]\n    if: needs\.changes\.outputs\.renderer == 'true'\n/);
+  assert.match(renderer, /\n    needs: \[validate, changes\]\n    if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| needs\.changes\.outputs\.renderer == 'true'\n/);
+  // Image drift (live Debian mirrors) is found weekly, not only by the next renderer change; the other jobs are unconditional.
+  assert.match(ci.slice(0, ci.indexOf('\npermissions:')), /\n  schedule:\n    - cron: '[0-9*/, -]+ \* \* [0-7]'\n  workflow_dispatch:$/);
+  assert.doesNotMatch(job('validate') + job('migrations') + job('contract'), /\n    if:/);
   assert.equal((renderer.match(/docker build /g) || []).length, 1, 'the image is built once');
   assert.match(renderer, /IMAGE=pdf-renderer:ci bash docker\/pdf-renderer\/test\/integration\.sh/);
   assert.doesNotMatch(ci, /\n  pdf-golden:/, 'the golden job is part of pdf-renderer');
