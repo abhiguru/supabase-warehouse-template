@@ -29,7 +29,7 @@ function harness(overrides = {}, env = environment) {
       if (answer instanceof Error) throw answer;
       return answer.clone();
     }
-    const match = /^http:\/\/rest\.test\/rest\/v1\/rpc\/([a-z_0-9]+)$/.exec(target);
+    const match = (env.SUPABASE_REST_URL ? /^http:\/\/rest:3000\/rpc\/([a-z_0-9]+)$/ : /^http:\/\/rest\.test\/rest\/v1\/rpc\/([a-z_0-9]+)$/).exec(target);
     assert.ok(match, `unexpected outbound request: ${target}`);
     calls.push({ name: match[1], body: JSON.parse(init.body), headers: init.headers, method: init.method, redirect: init.redirect });
     const answer = answers[match[1]];
@@ -47,6 +47,15 @@ function harness(overrides = {}, env = environment) {
 const bodyOf = async response => ({ status: response.status, body: await response.json() });
 const phone = { phone_number: '9888888801' };
 const token = 'a'.repeat(64);
+
+test('with SUPABASE_REST_URL set the RPC goes to PostgREST directly, with only apikey, Authorization and Content-Type', async () => {
+  const { calls, call } = harness({}, { ...environment, SUPABASE_REST_URL: 'http://rest:3000/' });
+  const answered = await bodyOf(await call('status', { enrollment_token: token }, { 'CF-Connecting-IP': '203.0.113.9' }));
+  assert.equal(answered.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'operator_enrollment_status');
+  assert.deepEqual(Object.keys(calls[0].headers).sort(), ['Authorization', 'Content-Type', 'apikey']);
+});
 
 test('is unavailable unless AUTH_MODE is operator and APP_ENV is production', async () => {
   for (const env of [{ ...environment, AUTH_MODE: undefined }, { ...environment, AUTH_MODE: 'demo' },

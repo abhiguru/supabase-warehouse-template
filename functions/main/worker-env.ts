@@ -4,28 +4,29 @@
 // it does not read. tests/worker-env.test.mjs compares every list with the
 // Deno.env.get() calls the function and its _shared imports actually make;
 // add a name here when a function starts reading one.
-const signedIn = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+const signedIn = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'];
 // Where _shared/supabase-rest.ts sends its calls: PostgREST and Storage directly (docker-compose.yml), not through the gateway.
-const directApi = ['SUPABASE_REST_URL', 'SUPABASE_STORAGE_URL'];
-const documentPdf = [...signedIn, ...directApi, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'PDF_RENDERER_URL'];
+// _shared/auth-helpers.ts (the profile lookup of every signed-in function) and the sign-in and sensor functions use only the REST address, so it is in `signedIn`.
+const storageApi = ['SUPABASE_STORAGE_URL'];
+const documentPdf = [...signedIn, ...storageApi, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'PDF_RENDERER_URL'];
 
 export const workerEnvNames: Record<string, readonly string[]> = {
   'hello': [],
   // INSTANCE_MANIFEST_JSON is not in the container environment: the router
   // reads the manifest file and passes its text.
   'get-public-config': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON',
-    'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE', 'CENTRAL_LOCAL_CODE', ...directApi],
-  'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
+    'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE', 'CENTRAL_LOCAL_CODE', 'SUPABASE_REST_URL', ...storageApi],
+  'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
   // Central sign-in: the trusted issuer, its public keys (an address, or a
   // file whose text the router passes as CENTRAL_JWKS_JSON, which is not in
   // the container environment), and this facility's origin (the audience a
   // token must name).
   'central-exchange': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PUBLIC_URL', 'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL',
-    'CENTRAL_JWKS_FILE', 'CENTRAL_JWKS_JSON'],
+    'CENTRAL_JWKS_FILE', 'CENTRAL_JWKS_JSON', 'SUPABASE_REST_URL'],
   // Sensor bridge batches: the RPC is called with the server key; the bridge's
   // ingest key is checked by the database, not here.
-  'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
-  'get-config': [...signedIn, ...directApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
+  'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
+  'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
   'generate-grn-pdf': documentPdf,
   'generate-dispatch-pdf': documentPdf,
   'generate-invoice-pdf': documentPdf,

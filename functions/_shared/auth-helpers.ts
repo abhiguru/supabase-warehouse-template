@@ -1,4 +1,5 @@
 import { verifyRequest } from './jwt.ts';
+import { restBaseUrl } from './rest-url.ts';
 
 export interface UserProfile {
   id: string;
@@ -22,7 +23,7 @@ export async function validateUserAccess(req: Request): Promise<UserProfile> {
   const url = Deno.env.get('SUPABASE_URL');
   const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!url || !key) throw { status: 500, message: 'Server configuration missing' };
-  const response = await fetch(`${url}/rest/v1/user_profiles?auth_user_id=eq.${encodeURIComponent(payload.sub)}&select=id,auth_user_id,name,display_name,mobile,role,active`, {
+  const response = await fetch(`${restBaseUrl(url, Deno.env.get('SUPABASE_REST_URL'))}/user_profiles?auth_user_id=eq.${encodeURIComponent(payload.sub)}&select=id,auth_user_id,name,display_name,mobile,role,active`, {
     // Preserve the caller JWT so PostgREST's session hook checks revocation too.
     headers: { apikey: key, Authorization: req.headers.get('Authorization')! },
     signal: AbortSignal.timeout(15000),

@@ -1,3 +1,4 @@
+import { restBaseUrl } from '../_shared/rest-url.ts';
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from '../vendor/jose.mjs';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { httpsAddress } from '../_shared/https-address.ts';
@@ -84,7 +85,7 @@ async function rpc(deps: HandlerDeps, name: string, params: Record<string, unkno
   const url = deps.env('SUPABASE_URL');
   const key = deps.env('SUPABASE_SERVICE_ROLE_KEY');
   if (!url || !key) throw new Error('Backend credentials missing');
-  const response = await deps.fetch(`${url}/rest/v1/rpc/${name}`, {
+  const response = await deps.fetch(`${restBaseUrl(url, deps.env('SUPABASE_REST_URL'))}/rpc/${name}`, {
     method: 'POST',
     headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(params),

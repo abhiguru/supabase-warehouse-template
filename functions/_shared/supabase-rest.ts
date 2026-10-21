@@ -16,6 +16,8 @@
 // root). Nothing a caller sends is forwarded (no CF-Connecting-IP), so Storage still never sees the client
 // address. A signed URL keeps the /storage/v1 path of the public gateway, which is where it is used.
 
+import { withoutSlash } from './rest-url.ts';
+
 export interface RestError { message: string; code: string; details: string; hint: string }
 export interface RestResult<T = any> { data: T | null; error: RestError | null; count: number | null }
 export interface RestOptions {
@@ -26,8 +28,6 @@ export interface RestOptions {
 
 const DEFAULT_TIMEOUT_MS = 60000;
 
-/** A direct service address from the environment (no trailing slash), or '' when it is not set. */
-const withoutSlash = (value: string | undefined): string => (value ? value.replace(/\/+$/, '') : '');
 
 const failure = (message: string, code = '', details = '', hint = ''): RestError => ({ message, code, details, hint });
 

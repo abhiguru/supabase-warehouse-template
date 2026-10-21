@@ -53,7 +53,7 @@ function harness({ env = environment, rpcAnswer = loginAnswer, keySet = { keys: 
       if (answer instanceof Error) throw answer;
       return answer instanceof Response ? answer.clone() : Response.json(answer);
     }
-    assert.equal(target, 'http://rest.test/rest/v1/rpc/operator_central_exchange', `unexpected outbound request: ${target}`);
+    assert.equal(target, env.SUPABASE_REST_URL ? 'http://rest:3000/rpc/operator_central_exchange' : 'http://rest.test/rest/v1/rpc/operator_central_exchange', `unexpected outbound request: ${target}`);
     state.rpcCalls.push({ body: JSON.parse(init.body), headers: init.headers, method: init.method, redirect: init.redirect });
     if (state.rpcAnswer instanceof Error) throw state.rpcAnswer;
     return state.rpcAnswer instanceof Response ? state.rpcAnswer.clone() : Response.json(state.rpcAnswer);
@@ -102,6 +102,15 @@ test('a good token reaches the RPC with the verified identity and its login answ
   assert.equal(h.jwksFetches.length, 1);
   assert.equal(h.jwksFetches[0].redirect, 'error');
   assert.ok(h.jwksFetches[0].signal instanceof AbortSignal);
+});
+
+test('with SUPABASE_REST_URL set the RPC goes to PostgREST directly, with the same two headers and no client address header', async () => {
+  const h = harness({ env: { ...environment, SUPABASE_REST_URL: 'http://rest:3000/' } });
+  const answered = await h.call({ identity_token: await sign(claims(START)) }, { 'CF-Connecting-IP': '203.0.113.9' });
+  assert.equal(answered.status, 200);
+  assert.equal(h.rpcCalls.length, 1);
+  assert.deepEqual(Object.keys(h.rpcCalls[0].headers).sort(), ['Authorization', 'Content-Type', 'apikey']);
+  assert.equal(h.rpcCalls[0].body.p_ip_address, '203.0.113.9');
 });
 
 test('names: the body wins over the token, and a missing or malformed address is not passed on', async () => {

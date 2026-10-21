@@ -1,3 +1,4 @@
+import { restBaseUrl } from '../_shared/rest-url.ts';
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { readBoundedJson } from '../operator-otp/body.ts';
 
@@ -53,7 +54,7 @@ async function recordBatch(deps: HandlerDeps, params: Record<string, unknown>): 
   if (!url || !key) throw new Unavailable('env_missing');
   let response: Response;
   try {
-    response = await deps.fetch(`${url}/rest/v1/rpc/record_sensor_batch`, {
+    response = await deps.fetch(`${restBaseUrl(url, deps.env('SUPABASE_REST_URL'))}/rpc/record_sensor_batch`, {
       method: 'POST',
       headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(params),

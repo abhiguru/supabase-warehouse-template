@@ -49,6 +49,15 @@ function holdsKeyPart(text) {
   return false;
 }
 
+test('with SUPABASE_REST_URL set the RPC goes to PostgREST directly, with only apikey, Authorization and Content-Type', async () => {
+  const h = harness({ env: { ...environment, SUPABASE_REST_URL: 'http://rest:3000' } });
+  const response = await h.call(batch());
+  assert.equal(response.status, 200);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].url, 'http://rest:3000/rpc/record_sensor_batch');
+  assert.deepEqual(Object.keys(h.calls[0].headers).sort(), ['Authorization', 'Content-Type', 'apikey']);
+});
+
 test('answers preflight and refuses other methods without a database call', async () => {
   const h = harness();
   const preflight = await h.call(undefined, {}, 'OPTIONS');
