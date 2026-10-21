@@ -24,6 +24,7 @@
 --       anon key instead of holding the service-role key.
 --  * 8. The print "View jobs" sheet (get_print_jobs, cancel_print_job) works for administrators, supervisors and staff.
 --  * 9. 18 tables the app never reads directly lose the authenticated SELECT grant and their 23 starter policies (row security stays on).
+--  * 10. audit_log keeps 24 months: a retention_policy row and run_database_retention creates partitions ahead and drops old ones.
 -- trg_restore_stock_on_dispatch_delete stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 
 -- 0. Guard: refuse to drop anything that holds data. Dev held none; a database with real data (the production box) must be decided
@@ -1121,3 +1122,144 @@ DROP POLICY IF EXISTS starter_staff ON public.sensor_readings;
 DROP POLICY IF EXISTS starter_staff ON public.standard_rate_tiers;
 DROP POLICY IF EXISTS starter_staff ON public.stock_movements;
 DROP POLICY IF EXISTS starter_assignments ON public.users_customers_new;
+
+
+-- ===== 10. audit_log keeps 24 months (owner decision, 2026-10-21) =====
+-- audit_log is written by 8 triggers and read by nothing; its monthly partitions ended at audit_log_2026_12 and nothing created the next
+-- ones, so from January 2027 every row would fall into audit_log_default, and nothing ever removed an old row. Now:
+--  * retention_policy gets the row audit_log, 730 days (24 months; the table counts days).
+--  * run_database_retention (CREATE OR REPLACE of the definition in section 1, answer shape kept, keys added) does, when applying:
+--    (a) creates the monthly partitions of the current month (UTC) and the next 3 months if missing; rows that audit_log_default
+--        already holds for a month about to get its partition are moved into it in the same transaction (PostgreSQL refuses to create a
+--        partition that overlaps rows of the default, so they are taken out first and put back);
+--    (b) drops whole monthly partitions whose month ended on or before p_now minus the policy's days;
+--    (c) deletes rows of audit_log_default older than that cutoff.
+--    In preview mode (p_apply false) it reports the same four numbers and names and changes nothing.
+--  * New answer keys: rows.audit_log (rows removed: those of the dropped partitions and the old rows of the default partition) and, at the
+--    top level, audit_log: {partitions_created, partitions_dropped, default_rows_moved, default_rows_deleted}. With the audit_log policy row
+--    removed by an operator, none of this runs (nothing is created, nothing is dropped) and the keys are absent.
+-- scripts/watch.mjs (daily pass) -> scripts/watch-daily.sh -> scripts/retention.sh apply -> run_database_retention(now(), true).
+
+INSERT INTO warehouse_maintenance.retention_policy(key, days, description)
+VALUES ('audit_log', 730, 'Audit trail (audit_log): whole monthly partitions that ended more than 24 months ago are dropped; new partitions are made 3 months ahead')
+ON CONFLICT (key) DO UPDATE SET days = EXCLUDED.days, description = EXCLUDED.description;
+
+CREATE OR REPLACE FUNCTION warehouse_maintenance.run_database_retention(p_now timestamp with time zone DEFAULT now(), p_apply boolean DEFAULT false)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'warehouse_security', 'warehouse_maintenance'
+AS $function$
+DECLARE
+  auth_cutoff timestamptz;
+  sensor_cutoff timestamptz;
+  audit_cutoff timestamptz;
+  audit_days integer;
+  result jsonb := '{}'::jsonb;
+  affected bigint;
+  audit_info jsonb;
+  v_month timestamp;
+  v_from timestamptz;
+  v_to timestamptz;
+  v_name text;
+  v_part record;
+  v_created text[] := '{}';
+  v_dropped text[] := '{}';
+  v_moved bigint := 0;
+  v_deleted bigint := 0;
+  v_gone bigint := 0;
+  v_n bigint;
+BEGIN
+  SELECT p_now - make_interval(days => days) INTO auth_cutoff
+    FROM warehouse_maintenance.retention_policy WHERE key = 'ephemeral_auth';
+  SELECT p_now - make_interval(days => days) INTO sensor_cutoff
+    FROM warehouse_maintenance.retention_policy WHERE key = 'sensor_readings';
+  SELECT days INTO audit_days FROM warehouse_maintenance.retention_policy WHERE key = 'audit_log';
+  IF audit_days IS NOT NULL THEN audit_cutoff := p_now - make_interval(days => audit_days); END IF;
+
+  -- audit_log: the partitions to create (current month and the next 3, UTC) and to drop (ended on or before the cutoff), the rows of
+  -- audit_log_default to move into a new partition and the rows older than the cutoff to delete. Applied below, counted in preview.
+  IF audit_days IS NOT NULL THEN
+    -- (c) rows of the default partition older than the cutoff go first, so they are not moved into a partition and dropped again
+    SELECT count(*) INTO v_n FROM public.audit_log_default WHERE created_at < audit_cutoff;
+    v_deleted := v_n;
+    IF p_apply AND v_n > 0 THEN DELETE FROM public.audit_log_default WHERE created_at < audit_cutoff; END IF;
+
+    -- (b) whole partitions that ended on or before the cutoff
+    FOR v_part IN
+      SELECT c.relname::text AS part_name,
+             (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS part_to
+        FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+       WHERE i.inhparent = 'public.audit_log'::regclass AND c.relname <> 'audit_log_default'
+       ORDER BY 1
+    LOOP
+      CONTINUE WHEN v_part.part_to IS NULL OR v_part.part_to > audit_cutoff;
+      EXECUTE format('SELECT count(*) FROM public.%I', v_part.part_name) INTO v_n;
+      v_gone := v_gone + v_n;
+      v_dropped := v_dropped || v_part.part_name;
+      IF p_apply THEN EXECUTE format('DROP TABLE public.%I', v_part.part_name); END IF;
+    END LOOP;
+
+    -- (a) the current month and the next 3
+    FOR i IN 0..3 LOOP
+      v_month := date_trunc('month', p_now AT TIME ZONE 'UTC') + make_interval(months => i);
+      v_from := v_month AT TIME ZONE 'UTC';
+      v_to := (v_month + interval '1 month') AT TIME ZONE 'UTC';
+      v_name := 'audit_log_' || to_char(v_month, 'YYYY_MM');
+      -- a month that is itself older than the cutoff is never made again (a short policy would otherwise recreate what it just dropped)
+      CONTINUE WHEN v_to <= audit_cutoff;
+      CONTINUE WHEN to_regclass(format('public.%I', v_name)) IS NOT NULL;
+      v_created := v_created || v_name;
+      SELECT count(*) INTO v_n FROM public.audit_log_default WHERE created_at >= v_from AND created_at < v_to;
+      v_moved := v_moved + v_n;
+      IF p_apply THEN
+        CREATE TEMP TABLE IF NOT EXISTS audit_log_move ON COMMIT DROP AS SELECT * FROM public.audit_log WITH NO DATA;
+        TRUNCATE pg_temp.audit_log_move;
+        WITH taken AS (DELETE FROM public.audit_log_default WHERE created_at >= v_from AND created_at < v_to RETURNING *)
+          INSERT INTO pg_temp.audit_log_move SELECT * FROM taken;
+        EXECUTE format('CREATE TABLE public.%I PARTITION OF public.audit_log FOR VALUES FROM (%L) TO (%L)', v_name, v_from, v_to);
+        EXECUTE format('GRANT ALL ON public.%I TO service_role', v_name);
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_name);
+        INSERT INTO public.audit_log SELECT * FROM pg_temp.audit_log_move;
+        TRUNCATE pg_temp.audit_log_move;
+      END IF;
+    END LOOP;
+    audit_info := jsonb_build_object('partitions_created', to_jsonb(v_created), 'partitions_dropped', to_jsonb(v_dropped),
+                                     'default_rows_moved', v_moved, 'default_rows_deleted', v_deleted);
+  END IF;
+
+  IF p_apply THEN
+    DELETE FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('consumed_refresh_tokens', affected);
+    DELETE FROM warehouse_security.refresh_sessions WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('refresh_sessions', affected);
+    DELETE FROM warehouse_security.central_token_use WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('central_token_use', affected);
+    DELETE FROM public.otp_verifications WHERE expires_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_verifications', affected);
+    DELETE FROM public.otp_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_rate_limits', affected);
+    DELETE FROM public.ip_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('ip_rate_limits', affected);
+    DELETE FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('idempotency_keys', affected);
+    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_readings', affected);
+  ELSE
+    SELECT result || jsonb_build_object(
+      'consumed_refresh_tokens', (SELECT count(*) FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now),
+      'refresh_sessions', (SELECT count(*) FROM warehouse_security.refresh_sessions WHERE expires_at < p_now),
+      'central_token_use', (SELECT count(*) FROM warehouse_security.central_token_use WHERE expires_at < p_now),
+      'otp_verifications', (SELECT count(*) FROM public.otp_verifications WHERE expires_at < auth_cutoff),
+      'otp_rate_limits', (SELECT count(*) FROM public.otp_rate_limits WHERE updated_at < auth_cutoff),
+      'ip_rate_limits', (SELECT count(*) FROM public.ip_rate_limits WHERE updated_at < auth_cutoff),
+      'idempotency_keys', (SELECT count(*) FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now),
+      'sensor_readings', (SELECT count(*) FROM public.sensor_readings WHERE measured_at < sensor_cutoff)
+    ) INTO result;
+  END IF;
+  IF audit_days IS NOT NULL THEN
+    result := result || jsonb_build_object('audit_log', v_gone + v_deleted);
+    RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result, 'audit_log', audit_info);
+  END IF;
+  RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result);
+END $function$;

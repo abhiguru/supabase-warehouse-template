@@ -123,7 +123,7 @@ test_files=(
   "$ROOT/scripts/configure-storage.sql" "$ROOT/scripts/configure-storage.sql"
   "$ROOT/tests/staff_grn_access.sql" "$ROOT/tests/staff_dispatch_invoice_access.sql"
   "$ROOT/tests/storage_delete_rules.sql"
-  "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql"
+  "$ROOT/tests/user_status_enrollment.sql" "$ROOT/tests/retention.sql" "$ROOT/tests/audit_log_retention.sql"
   "$ROOT/tests/order_screen.sql" "$ROOT/tests/document_number_sort.sql" "$ROOT/tests/list_search.sql"
   "$ROOT/tests/preferred_language.sql" "$ROOT/tests/dispatch_lot_ownership.sql"
   "$ROOT/tests/grn_edit_lines.sql" "$ROOT/tests/invoice_line_rules.sql"
