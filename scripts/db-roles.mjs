@@ -1,7 +1,7 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { replaceEnvLines } from './keys.mjs';
+import { replaceEnvLines, updateRestSchemas } from './keys.mjs';
 import { readEnv } from './doctor-common.mjs';
 import { isMain } from './is-main.mjs';
 
@@ -120,17 +120,32 @@ export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {
   return { staged: resolve(stagedPath), replaced: Object.keys(values) };
 }
 
+function replaceEnvFile(envPath, text) {
+  const stage = `${envPath}.${randomBytes(8).toString('hex')}`;
+  writeFileSync(stage, text, { mode: 0o600, flag: 'wx' });
+  try { renameSync(stage, envPath); } catch (error) { rmSync(stage, { force: true }); throw error; }
+}
+
 // Adds the missing values to a compose.env in place (through a same-directory
 // temporary). Returns the names added.
 export function addMissingDbValuesToFile(envPath) {
   privateFile(envPath);
   const current = readFileSync(envPath, 'utf8');
   const { text, added } = addMissingDbValues(current);
-  if (text === current) return added;
-  const stage = `${envPath}.${randomBytes(8).toString('hex')}`;
-  writeFileSync(stage, text, { mode: 0o600, flag: 'wx' });
-  try { renameSync(stage, envPath); } catch (error) { rmSync(stage, { force: true }); throw error; }
+  if (text !== current) replaceEnvFile(envPath, text);
   return added;
+}
+
+// What the restore paths do to a compose.env that comes back from a backup: the missing database passwords are added and
+// an old default PGRST_DB_SCHEMAS (public,storage[,graphql_public], keys.mjs updateRestSchemas, the rule setup.sh applies) becomes
+// `public`, so a restored facility does not expose the storage schema over /rest/v1 again. An operator-edited list is kept.
+export function normalizeRestoredEnvFile(envPath) {
+  privateFile(envPath);
+  const current = readFileSync(envPath, 'utf8');
+  const { text, added } = addMissingDbValues(current);
+  const final = updateRestSchemas(text);
+  if (final !== current) replaceEnvFile(envPath, final);
+  return { added, schemasRewritten: final !== text };
 }
 
 const USAGE = `Usage: node scripts/db-roles.mjs prelude ENV_FILE [--superuser]
@@ -155,8 +170,9 @@ if (isMain(import.meta.url)) {
       // configure.mjs's existing-state step on its own, for the restore paths:
       // a backup taken before per-role passwords carries none.
       if (!isAbsolute(rest[0])) throw new Error(USAGE);
-      const added = addMissingDbValuesToFile(rest[0]);
+      const { added, schemasRewritten } = normalizeRestoredEnvFile(rest[0]);
       if (added.length) console.log(`Added ${added.join(', ')}: the backup was taken before every database login had its own password.`);
+      if (schemasRewritten) console.log('PGRST_DB_SCHEMAS is now public: the backup was taken before the storage schema left the REST API.');
     } else if (command === 'names' && rest.length === 0 && !superuser) console.log(GENERATED_DB_NAMES.join('\n'));
     else throw new Error(USAGE);
   } catch (error) { console.error(`Database roles: ${error.message}`); process.exitCode = 1; }

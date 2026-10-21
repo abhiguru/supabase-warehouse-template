@@ -4,9 +4,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DB_ROLE_LOGINS, GENERATED_DB_NAMES, SUPERUSER_ROLES, addMissingDbValues, checkInput,
-  addMissingDbValuesToFile, generatedDbValues, psqlPrelude, scramVerifier, stageRotatedDbEnv, validateDbValues,
+  addMissingDbValuesToFile, normalizeRestoredEnvFile, generatedDbValues, psqlPrelude, scramVerifier, stageRotatedDbEnv, validateDbValues,
 } from '../scripts/db-roles.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -169,5 +170,46 @@ test('add-missing adds missing values only and leaves PGRST_DB_SCHEMAS and an un
     const added = addMissingDbValuesToFile(file);
     assert.deepEqual(added, GENERATED_DB_NAMES);
     assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public,storage$/m);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('a restored compose.env gets the old PGRST_DB_SCHEMAS defaults rewritten to public; an operator-edited list and an unchanged file are left alone', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-restore-'));
+  try {
+    const file = join(scratch, 'compose.env');
+    const complete = Object.entries(env()).map(([name, value]) => `${name}=${value}\n`).join('');
+    const write = text => writeFileSync(file, text, { mode: 0o600 });
+    for (const list of ['public,storage', 'public,storage,graphql_public']) {
+      write(`A=1\nPGRST_DB_SCHEMAS=${list}\n${complete}B=2\n`);
+      assert.deepEqual(normalizeRestoredEnvFile(file), { added: [], schemasRewritten: true }, list);
+      assert.equal(readFileSync(file, 'utf8'), `A=1\nPGRST_DB_SCHEMAS=public\n${complete}B=2\n`);
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+    }
+    for (const list of ['public,storage,extra', 'public', 'public,reports']) {
+      const text = `PGRST_DB_SCHEMAS=${list}\n${complete}`;
+      write(text);
+      const inode = statSync(file).ino;
+      assert.deepEqual(normalizeRestoredEnvFile(file), { added: [], schemasRewritten: false });
+      assert.equal(readFileSync(file, 'utf8'), text, list);
+      assert.equal(statSync(file).ino, inode, 'not rewritten');
+    }
+    write('PGRST_DB_SCHEMAS=public,storage\nPOSTGRES_PASSWORD=' + superuser + '\n');
+    const result = normalizeRestoredEnvFile(file);
+    assert.deepEqual(result.added, GENERATED_DB_NAMES);
+    assert.equal(result.schemasRewritten, true);
+    assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public$/m);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the add-missing command (run by restore.sh and restore-host.sh) rewrites the old PGRST_DB_SCHEMAS default and says so', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-cli-'));
+  try {
+    const file = join(scratch, 'compose.env');
+    const complete = Object.entries(env()).map(([name, value]) => `${name}=${value}\n`).join('');
+    writeFileSync(file, `PGRST_DB_SCHEMAS=public,storage,graphql_public\n${complete}`, { mode: 0o600 });
+    const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/db-roles.mjs', import.meta.url)), 'add-missing', file], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /PGRST_DB_SCHEMAS is now public/);
+    assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public$/m);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
