@@ -71,7 +71,7 @@ of it.
 | `/functions/v1/` | `functions:9000` | 100 a minute, 6000 an hour | 10 MB body limit; the functions check tokens themselves |
 | `/storage/v1/` | `storage:5000` | none | 50 MB body limit; `CF-Connecting-IP` is not passed on |
 
-CORS allows the one configured origin. The gateway has no metrics plugin, status listener or GraphQL route. The ingest
+CORS is answered only by Kong, for the one configured origin; the edge functions add no CORS headers of their own (the former `cors.ts` is `security-headers.ts`). The gateway has no metrics plugin, status listener or GraphQL route. The ingest
 function `ingest-sensor-readings` is public at the router: it checks only the shape of the bridge's ingest key (64 hex);
 the key itself is checked inside `record_sensor_batch` against a SHA-256 in `warehouse_security.sensor_ingest_keys`.
 
@@ -276,13 +276,18 @@ as a Debian package, so a scan covers only Node, the Debian libraries and fonts,
 above and the pinned SHA-256 are the control for Chrome itself. No Chrome findings in a scan is not a clean bill.
 
 **Fonts.** The image installs these font packages by name, without versions: `fonts-liberation`, `fonts-liberation2`,
-`fonts-dejavu`, `fonts-noto-core` (Gujarati), `fonts-noto-cjk`, `fonts-noto-color-emoji`, `fonts-crosextra-carlito`,
-`fonts-crosextra-caladea` and `fonts-opensymbol`, with a fontconfig file, so documents paginate and look the same from
+`fonts-dejavu-core`, `fonts-noto-core` (Gujarati) and `fonts-noto-mono`, with a fontconfig file, so documents paginate and look the same from
 build to build. The build fails unless the sorted `fc-list` file list hashes to the value in `ARG FONT_FILELIST_SHA256`,
-which proves the font set did not change; a font package that Debian drops or updates therefore stops the build instead of
+which proves the font set did not change (since 2026-10-21 the hash starts `9ebf7b69` and the image is 826 MB instead of 941 MB: CJK, colour emoji, Carlito, Caladea, OpenSymbol and the extra DejaVu fonts were dropped; the golden PDFs match at fuzz 0); a font package that Debian drops or updates therefore stops the build instead of
 changing the output silently. Exact version pins are deliberately not used: the `+debNuM` security revisions vanish from the
 archive within weeks and would break every build. Drift is caught by the file-list hash at build time and by the
 golden-PDF job on every change.
+
+## audit_log retention
+
+`audit_log` keeps 730 days (2 years). Its monthly partitions are created ahead (3 months), and partitions older than the cutoff are dropped by
+the daily chain (`watch.mjs`, `watch-daily.sh`, `retention.sh apply`, `run_database_retention`); see "Retention" in
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#retention).
 
 ## Sensor bridge
 
@@ -460,3 +465,5 @@ then generate the value, existing ones gain it on the next setup, restores add i
 - **No recovery from WAL.** WAL archiving is off (`archive_mode=off`) and the image has no WAL archiving tool, so there is no
   point-in-time recovery. The supported backup path is `db:backup` and `db:verify-restore`; PITR, external object storage
   and RTO/RPO need a separate recovery drill with approved storage and policies.
+
+> Pooler note (2026-10-21): a new install has six database roles (`anon`, `authenticated`, `service_role`, `authenticator`, `supabase_storage_admin`, `supabase_admin`). The role and schema `pgbouncer`, the database `_supabase` and the secrets `DB_PASSWORD_POOLER`, `SECRET_KEY_BASE`, `VAULT_ENC_KEY` exist only after `bash scripts/pooler.sh on` (objects from `scripts/configure-pooler.sql`, not a migration); `_supabase` is not in backups, so the remark about restoring an older `_supabase` database no longer applies. Where the sections above name the pooler role or `_supabase` as always present, read them with this note.

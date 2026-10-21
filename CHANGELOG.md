@@ -45,9 +45,23 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    backup (a backup from before the reload restores only with the tag `migrations-pre-baseline`); remove the network
    `<project>_admin`, the volumes `<project>_db-config` and `<project>_prometheus_data` and the images of removed services.
 8. The daily pass of the checker (`scripts/watch.mjs`) applies the retention in `docs/OPERATOR_INSTALL.md`, "Retention".
+9. **The pooler is off unless you turn it on.** On an existing installation `setup.sh` runs a one-time clean-up of the unused pooler
+   objects (role and schema `pgbouncer`, database `_supabase`, three secrets) and records `POOLER_ENABLED=false`; an installation that
+   ran supavisor is recorded as on. If `_supabase` holds data the clean-up is refused with a warning and asked again at the next setup.
+   To use the pooler: `bash scripts/pooler.sh on` (`off`, `status`); see "Pooler (optional)" in `docs/OPERATOR_INSTALL.md`.
 
 ### Changed
 
+- **Pooler on/off.** The pooler is only on when turned on (`bash scripts/pooler.sh on|off|status`); a new install has no pgbouncer
+  objects, no `_supabase` database and no pooler secrets, and backups no longer contain `_supabase.dump` (old backups still restore;
+  the file is skipped with a note). Existing installs: setup cleans up the unused pooler objects once (Operator actions, item 9).
+- **View jobs** works for administrator, supervisor and staff (`get_print_jobs`, `cancel_print_job`).
+- **Direct table reads removed on 18 tables** (migration 123); 12 stay readable (list in `CLAUDE.md`, `tests/role_allowlist.sql`).
+- **`audit_log` keeps 2 years (730 days)**; monthly partitions are created 3 months ahead and older ones are dropped by the daily retention.
+- **Three RPCs dropped** in migration 123: `restore_customer`, `safe_delete_customer`, `get_open_invoices_for_customer`.
+- **Edge CORS removed.** Only Kong answers CORS; the edge functions no longer add `*` headers.
+- **Renderer image fonts trimmed** (941 to 826 MB); the golden PDFs are unchanged at fuzz 0.
+- **`scripts/migrate.sh --through <file>`** applies pending migrations up to the named file (an unknown name is refused); the Baseline reload uses it.
 - **Slimming round 2, database (migration 123).** About 110 functions that nothing calls (90 in `public`, 2 in `auth`, 19 that only
   tests called, among them the second invoice-save path `save_invoice(jsonb)` and the `*_item_storage_price` helpers the app never
   uses), 8 views, 16 tables, 12 columns and 13 duplicate indexes are dropped; five live functions lose a dead reference

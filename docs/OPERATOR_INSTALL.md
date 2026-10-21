@@ -170,7 +170,7 @@ anything when no address pool is free), starts only the database, applies the mi
 storage, bootstraps the administrator, starts every service with `--wait` and runs the local doctor. The gateway listens
 on `127.0.0.1:18000` only; the database, CUPS and the sensor bridge are never published.
 
-Optional services are Compose profiles that setup does not start: `printing`, `pooler` and `sensors` (the Tapo sensor
+Optional services are Compose profiles that setup does not start: `printing`, `pooler` and `sensors`. The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
 bridge; set up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
 `node scripts/set-capability.mjs sensors on` and a new `db:backup`).
 
@@ -696,7 +696,7 @@ This signs in as the database superuser, so read first and change data only
 through the app or a reviewed script. There is no web dashboard.
 
 Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`, `db:backup`, `db:restore`,
-`backup-usb.sh run`, `test:recovery`, `retention:*`, `test:gateway-dns`, `test:pooler`, `test:cups`, `test:sensors`, and
+`backup-usb.sh run`, `test:recovery`, `retention:*`, `test:gateway-dns`, `test:pooler` (runs `pooler.sh on` itself), `test:cups`, `test:sensors`, and
 `scripts/migrate.sh` when run by itself) takes an exclusive per-state lock on `config/operator.lock` before touching Docker.
 A second command for the same state fails immediately with "Another operator command ... is running for this state."; wait
 for the first to finish and never delete the lock file. The automatic USB backup is the one exception that waits: it
@@ -745,7 +745,7 @@ operator lock, requires a healthy database, and then:
    deletes every refresh session and voids pending OTP challenges. The secret reaches `psql` only on standard input,
    never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
-4. recreates the running key consumers (`db kong rest storage functions`, plus `supavisor` when the pooler profile is
+4. recreates the running key consumers (`db kong rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
    running) with `--force-recreate --wait`, and runs `node scripts/doctor.mjs --local`.
 
 Consequences: every signed-in device is logged out and must complete OTP login again; any copied anon key is invalid and
@@ -769,7 +769,6 @@ only the services that were running. The directory contains:
 | File | Content |
 | --- | --- |
 | `database.dump` | `pg_dump --format=custom` of the `postgres` database **with owners** (needed by the in-place restore). |
-| `_supabase.dump` | `pg_dump --format=custom` of the `_supabase` database (the pooler's `_supavisor` schema). |
 | `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
 | `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
@@ -995,7 +994,7 @@ same project and state paths; and `db:verify-restore` passes for the backup.
 It then moves `data/db` and `data/storage` to `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>`, recreates
 both with mode 0700, extracts the storage archive, optionally replaces `config/compose.env` (keeping
 `config/compose.env.pre-restore-<utc>`), starts a fresh cluster, recreates missing roles from `roles.txt` as `NOLOGIN`,
-recreates the `postgres` and `_supabase` databases from `template0` and replays both dumps with `--exit-on-error` and the
+recreates the `postgres` database from `template0` (connected to `template1`) and replays its dump with `--exit-on-error` and the
 archived owners and ACLs (as the verifier does), diffs `scripts/backup-integrity.sql` against the backup's `integrity.txt`,
 runs `scripts/migrate.sh --operator` (a no-op unless this checkout added migrations after the backup), starts every service
 with `--wait` and runs `doctor --local`. Role passwords always come from the active `compose.env`; the backup never
@@ -1184,8 +1183,8 @@ from the internet through the tunnel: they matter to someone who also reaches th
 | `TAPO_PASSWORD` (with `TAPO_USERNAME`) | The Tapo account of the hubs: the hubs on the LAN, and the account in the Tapo app and cloud (sensors profile). | Change it in the Tapo app, set the new value in `compose.env`, then `bash scripts/compose.sh --profile sensors up -d --force-recreate sensor-bridge`. |
 | `SENSOR_INGEST_KEY` | Posting sensor readings to this installation's ingest function, from anywhere the gateway is reachable (sensors profile). | Mint a new key with a new label (`bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -v label=<new label> < scripts/sensor-ingest-key.sql`, which prints it once), set it, recreate the bridge, then revoke the old one (`bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = '<old label>' AND revoked_at IS NULL"`); [SENSORS.md](SENSORS.md#ingest-keys). |
 | `POSTGRES_PASSWORD` | The superuser login (`supabase_admin`), from inside the Compose network or the host. | `npm run db:rotate-passwords -- --yes --superuser`; see [Rotating the database passwords](#rotating-the-database-passwords). |
-| `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE`, `DB_PASSWORD_POOLER` | Each one database login of one service (PostgREST, Storage, the pooler's pool user), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
-| `SECRET_KEY_BASE`, `VAULT_ENC_KEY` | Pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
+| `DB_PASSWORD_AUTHENTICATOR`, `DB_PASSWORD_STORAGE` (every install), `DB_PASSWORD_POOLER` (only after `pooler.sh on`) | Each one database login of one service (PostgREST, Storage, the pooler's pool user), from inside the Compose network. | `npm run db:rotate-passwords -- --yes`; see [Rotating the database passwords](#rotating-the-database-passwords). |
+| `SECRET_KEY_BASE`, `VAULT_ENC_KEY` (only after `pooler.sh on`) | Pooler session signing; encryption of the pooler's stored tenant credentials. | No supported procedure yet; see below. |
 
 These procedures are **not exercised by CI**. Take a `db:backup` first and check with `node scripts/doctor.mjs --local`
 afterwards. The command for `CUPS_ADMIN_PASSWORD` (the rows above say how to set the others):
@@ -1201,7 +1200,7 @@ bash scripts/compose.sh --profile printing up -d --force-recreate cups
 node scripts/doctor.mjs --local
 ```
 
-`SECRET_KEY_BASE` signs the pooler's sessions and `VAULT_ENC_KEY` encrypts the pooler's stored tenant (which holds the pool
+`SECRET_KEY_BASE` (present only once the pooler has been turned on) signs the pooler's sessions and `VAULT_ENC_KEY` encrypts the pooler's stored tenant (which holds the pool
 user's password). Changing them is not scripted and has not been rehearsed, so this guide gives no procedure that could
 leave the pooler unable to read its tenant. They cannot be used from outside the host and its Docker network (the database
 publishes no port and the gateway listens on loopback only); keep the host's logins and network closed. If you must replace
@@ -1213,7 +1212,7 @@ there, and only then repeat it on the real host.
 Every database login has its own password in `compose.env`
 ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-passwords-one-per-login)):
 `POSTGRES_PASSWORD` is the superuser's (`supabase_admin`), and
-PostgREST, Storage and the pooler's pool user
+PostgREST, Storage and the pooler's pool user (when it is on)
 each sign in with their own. One command
 replaces them:
 
@@ -1263,6 +1262,31 @@ nothing and says so; keep every file and ask for help, quoting the message.
 A restore of a backup taken before a rotation brings that backup's values
 back together with its data (`db:restore -- --restore-config`, or
 `db:restore-host`); the restored database gets them at start.
+
+## Pooler (optional)
+
+The pooler (supavisor) is off by default; a new installation has no pgbouncer role, schema or `get_auth`, no `_supabase` database and no
+`DB_PASSWORD_POOLER`, `SECRET_KEY_BASE` or `VAULT_ENC_KEY` (`compose.env` has `POOLER_ENABLED=false`). It needs a running, healthy
+database and takes the operator lock.
+
+```bash
+bash scripts/pooler.sh on       # generates the three secrets where missing, creates role pgbouncer, schema pgbouncer (get_auth) and
+                                # database _supabase (scripts/configure-pooler.sql), records POOLER_ENABLED=true, starts supavisor
+                                # with --profile pooler up -d --no-deps (db is not recreated); idempotent
+bash scripts/pooler.sh off      # stops and removes the container, records POOLER_ENABLED=false; deletes nothing (role, schema,
+                                # database and secrets stay, the pgbouncer password is not rotated while off; `on` reuses them)
+bash scripts/pooler.sh status   # prints on, off or unset
+```
+
+**One-time clean-up on upgrade.** `setup.sh` runs `bash scripts/pooler.sh cleanup` (after migrations, before the roles are applied) for an
+installation whose `compose.env` has no `POOLER_ENABLED` line. If a supavisor container exists, it records `on`. Otherwise, if `_supabase`
+holds no relation and no schema besides `_supavisor` and `public`, it drops the schema `pgbouncer`, the role `pgbouncer` and the database
+`_supabase`, removes the three secrets from `compose.env`, records `off` and prints what it removed. If `_supabase` holds relations or other
+schemas it prints `Pooler clean-up refused ...`, changes nothing and exits 1; `setup.sh` warns and goes on, and asks again at the next setup.
+
+After an in-place or lost-host restore the pooler is not started (the restore starts the core services only); while `POOLER_ENABLED=true`
+the restore recreates its role, schema and `_supabase` database, and `bash scripts/pooler.sh on` starts it again. Backups made before
+2026-10-21 also hold `_supabase.dump`; restore and verify-restore skip it with a note. Test: `npm run test:pooler`.
 
 ## Rerun and upgrade
 
@@ -1323,6 +1347,7 @@ start then replaces only the containers whose image changed. What to expect:
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather
   than leaving the installation half way.
+- The pooler's objects follow `POOLER_ENABLED` (see [Pooler (optional)](#pooler-optional)).
 - Optional services (`printing`, `pooler`, `sensors`) are rebuilt only if
   this installation has a container of them, and setup replaces the running
   ones whose image or configuration changed. A failure there is printed as a
@@ -1475,7 +1500,7 @@ If the two records differ, something wrote during the dump: start again at step 
 a partition that the baseline lacks must make the load fail, not re-route rows. The dump keeps the sequence positions
 (`SEQUENCE SET` entries). The schemas left out belong to the old image's extensions and services (the baseline has none of
 them), `warehouse_migrations` is the ledger (the baseline run writes it), and `auth` holds GoTrue tables that nothing uses.
-The `_supabase` database (the pooler's tenant) is not reloaded: the pooler writes its tenant again when it starts.
+The `_supabase` database (the pooler's tenant) is no longer in backups at all; while `POOLER_ENABLED=true`, setup recreates it with the pooler's role and schema.
 
 **Step 4. Move the old data directory aside. Never delete it.**
 
@@ -1504,8 +1529,7 @@ the files after the baseline (111 onward) must not run yet: migration 123 drops 
 so the dump of step 6 would no longer load, and its guard (which refuses to drop objects that hold rows) would only look at
 the new, empty database. Step 8 applies 111 onward on the loaded data. An unknown name is refused before the database is touched.
 
-The first start of the empty data directory runs `docker/volumes/db/00-bootstrap.sql`, `roles.sql`, `_supabase.sql` and
-`pooler.sql` ([roles](CONTAINER_SECURITY.md#database-roles)). Storage builds its own tables in the schema `storage`. It is
+The first start of the empty data directory runs only `docker/volumes/db/00-bootstrap.sql` and `roles.sql` (no `_supabase.sql`, no `pooler.sql`, no pgbouncer role; [roles](CONTAINER_SECURITY.md#database-roles)). Storage builds its own tables in the schema `storage`. It is
 stopped again so that nothing writes during the load.
 
 **Step 6. Empty the tables the dump fills, then load.** The baseline seeded rows that the dump holds too, and
@@ -1740,8 +1764,8 @@ npm run db:restore -- --yes "$B/backup"
 ```
 
 **Step 7. Run setup.** With the arguments of the installation (the same `setup.sh --operator ...` command as the last rerun). It is idempotent,
-sets the role passwords and the configuration, and starts the core services. The pooler, if the installation uses it, writes its tenant again
-and now reports the running server's version. Then start the optional services that ran before:
+sets the role passwords and the configuration, and starts the core services. While `POOLER_ENABLED=true`, setup recreates the pooler's role, schema and `_supabase` database, and it
+now reports the running server's version. Then start the optional services that ran before:
 
 ```bash
 bash setup.sh --operator ...

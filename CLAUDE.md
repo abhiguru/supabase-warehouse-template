@@ -73,7 +73,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 - Every business RPC is guarded by `warehouse_security.authorize_rpc` (latest version in
   the baseline until a migration after it redefines it, then in the newest such migration), and business data is written only through
   those RPCs: no app role, administrator included, can insert, update or delete a
-  business table directly (migration 42). Direct table reads remain, limited by the row
+  business table directly (migration 42). Direct table reads remain on only 12 tables (`customers`, `dispatch`, `dispatch_images`, `dispatch_trl`, `feature_flags`, `goodsreceived`, `goodsreceived_trl`, `grn_images`, `invoice`, `invoice_trl`, `items`, `user_profiles`; the other 18 were revoked in migration 123, see `tests/role_allowlist.sql` and `tests/table_reads_removed.sql`), limited by the row
   policies; on `invoice` the six internal columns (discount and zero-charge reason,
   author and time) are not readable from the table, so a read names its columns
   (migration 48; [docs/INVOICE_RULES.md](docs/INVOICE_RULES.md), "Internal columns").

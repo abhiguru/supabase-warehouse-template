@@ -4,6 +4,8 @@ This document is a dated record of role decisions. The role table under
 [Roles after migration 45](#roles-after-migration-45) is current; later sections add migrations 46–90 and 69.
 Where an earlier section says otherwise, a note marks it as superseded.
 
+**Direct reads (migration 123):** app roles can read directly only 12 tables (`customers`, `dispatch`, `dispatch_images`, `dispatch_trl`, `feature_flags`, `goodsreceived`, `goodsreceived_trl`, `grn_images`, `invoice`, `invoice_trl`, `items`, `user_profiles`); `orders`, `order_items`, `order_revisions`, `payments`, `print_jobs`, `printer_status`, `stock_movements` and 11 more have no app-role read, so where a section below says staff or customers "read" such a table (for example `order_revisions`), they now read it through the RPCs only. Also dropped: `restore_customer`, `safe_delete_customer`, `get_open_invoices_for_customer`. View jobs (`get_print_jobs`, `cancel_print_job`) is open to administrator, supervisor and staff. `tests/role_allowlist.sql` is the list.
+
 **Removed in migration 123 (2026-10-21):** `create_item_storage_price`, `update_item_storage_price`, `delete_item_storage_price`,
 `find_or_create_item_storage_price`, `get_item_grn_rates(p_item_id)`, `get_cart_dispatches`, `update_order_metadata`, `save_invoice(jsonb)`
 and the table `sensor_health_events` no longer exist; where a section below names them, it is history. Rates are written by
@@ -128,7 +130,7 @@ Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
 `get_order_with_items`, `get_or_create_cart`, `add_item_to_order`,
 `update_order_item_quantity`, `remove_item_from_order`, `get_cart_dispatches` (removed in 123),
 `search_customer_items_for_order`, `get_customer_items_for_order_selection` and
-`get_order_change_log`. Staff can read `order_revisions`. Direct table writes to
+`get_order_change_log`. Staff read the order history through `get_order_change_log` (the direct read of `order_revisions` was removed in 123). Direct table writes to
 orders and order items stay denied for staff. Customers keep access to their
 own carts only, and can now read their own order history.
 `tests/order_screen.sql` proves both.

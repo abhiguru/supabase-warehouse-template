@@ -208,6 +208,9 @@ columns only:
   included. Administrators, supervisors and staff get them from
   `get_invoice_detail`; a customer account does not get them at all. The
   service key and the database owner read the table as before.
+- **Direct reads are limited to `invoice` and `invoice_trl` (migration 123).** The other invoice tables (`invoice_discount_history`,
+  `invoice_zero_charge_history`) have no app-role read; `get_invoice_detail` and the other invoice RPCs are the way to them. The RPCs
+  `get_open_invoices_for_customer`, `recalculate_invoice_items` and `save_invoice(jsonb)` no longer exist.
 - **A direct read of `invoice` has to name its columns.** `select=*` (also the
   default when `select` is missing, and an embedded `invoice(*)`) is answered
   HTTP 403, `permission denied for table invoice`, for every role. Filtering or
