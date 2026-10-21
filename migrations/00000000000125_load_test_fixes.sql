@@ -255,9 +255,9 @@ BEGIN
         -- WITH TIES keeps every row that can reach the page, so the page is the same.
         v_cut := CASE
             WHEN v_disp_no_filter <> '' OR p_sort_by = 'disp_no' THEN ''
-            WHEN p_sort_by = 'customer_name' THEN format(' ORDER BY customer_name %s NULLS LAST, disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset + p_limit, 0))
-            WHEN p_sort_by = 'dispatch_date' THEN format(' ORDER BY disp_date %s NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset + p_limit, 0))
-            ELSE format(' ORDER BY disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', GREATEST(v_offset + p_limit, 0)) END;
+            WHEN p_sort_by = 'customer_name' THEN format(' ORDER BY customer_name %s NULLS LAST, disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset::bigint + p_limit, 0))
+            WHEN p_sort_by = 'dispatch_date' THEN format(' ORDER BY disp_date %s NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset::bigint + p_limit, 0))
+            ELSE format(' ORDER BY disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', GREATEST(v_offset::bigint + p_limit, 0)) END;
         v_ctes := format($c$f AS MATERIALIZED (SELECT d.id, d.disp_no, d.disp_date, d.customer_name FROM dispatch d WHERE 1=1 %s),
             total AS (SELECT COUNT(*) AS n FROM f),
             page_ids AS (SELECT pre.id FROM (SELECT * FROM f%s) pre ORDER BY %s LIMIT %s OFFSET %s),
