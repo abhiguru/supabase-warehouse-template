@@ -184,6 +184,11 @@ services:
     environment:
       JWT_SECRET: ${JWT_SECRET}
       SUPABASE_URL: http://kong:8000
+      # PostgREST and Storage are called directly, not through Kong (functions/_shared/supabase-rest.ts): no key
+      # check, rate limit or body limit of the gateway on this path. Both are on `default`, as functions is. Storage
+      # never receives CF-Connecting-IP from here: the client sends only apikey and Authorization.
+      SUPABASE_REST_URL: http://rest:3000
+      SUPABASE_STORAGE_URL: http://storage:5000
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       PDF_RENDERER_URL: http://pdf-renderer:3000

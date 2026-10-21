@@ -114,6 +114,40 @@ test('rpc posts the arguments and returns the JSON answer or the error code', as
   } finally { mock.restore(); }
 });
 
+test('with the direct service addresses set, calls skip the gateway prefixes and send only the key headers', async () => {
+  const environment = { SUPABASE_REST_URL: 'http://rest:3000/', SUPABASE_STORAGE_URL: 'http://storage:5000' };
+  globalThis.Deno = { env: { get: name => environment[name] } };
+  const mock = mockFetch({ body: [{ id: 'c1' }] }, { body: { ok: true } }, { body: { Key: 'k' } }, { body: { signedURL: '/object/sign/documents/a.pdf?token=t' } });
+  try {
+    const client = restClient('http://kong:8000', 'anon', { authorization: 'Bearer caller' });
+    await client.from('customers').select('id').eq('id', 'c1');
+    await client.rpc('get_report', { a: 1 });
+    const bucket = client.storage.from('documents');
+    await bucket.upload('a.pdf', new Uint8Array([1]));
+    const signed = await bucket.createSignedUrl('a.pdf', 60);
+    assert.deepEqual(mock.calls.map(call => call.url), [
+      'http://rest:3000/customers?select=id&id=eq.c1',
+      'http://rest:3000/rpc/get_report',
+      'http://storage:5000/object/documents/a.pdf',
+      'http://storage:5000/object/sign/documents/a.pdf',
+    ]);
+    // Nothing but the key headers is sent: no client address header reaches Storage.
+    for (const call of mock.calls) {
+      assert.deepEqual(Object.keys(call.init.headers).map(name => name.toLowerCase()).filter(name => /ip|forwarded/.test(name)), []);
+      assert.equal(call.init.headers.apikey, 'anon');
+    }
+    // The signed URL keeps the public gateway path, which is where the app uses it.
+    assert.equal(signed.data.signedUrl, 'http://kong:8000/storage/v1/object/sign/documents/a.pdf?token=t');
+    // One address without the other: everything keeps going through the gateway.
+  } finally { mock.restore(); delete globalThis.Deno; }
+  const half = mockFetch({ body: [] });
+  globalThis.Deno = { env: { get: name => ({ SUPABASE_REST_URL: 'http://rest:3000' })[name] } };
+  try {
+    await restClient('http://kong:8000', 'k').from('t').select('id');
+    assert.equal(half.calls[0].url, 'http://kong:8000/rest/v1/t?select=id');
+  } finally { half.restore(); delete globalThis.Deno; }
+});
+
 test('storage upload and signed url use the object endpoints', async () => {
   const mock = mockFetch({ body: { Key: 'documents/grn/1/a.pdf' } }, { body: { signedURL: '/object/sign/documents/grn/1/a.pdf?token=abc' } }, { status: 400, body: { message: 'Duplicate', error: 'Duplicate' } });
   try {

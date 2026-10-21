@@ -8,6 +8,13 @@
 // Like supabase-js, calls do not throw on a failed request: they resolve to
 // { data, error, count } with `error` set ({ message, code, details, hint }).
 // A timeout (default 60 s) is added; supabase-js had none.
+//
+// Where the calls go: `url` is the gateway address (SUPABASE_URL, Kong), whose paths are /rest/v1/... and
+// /storage/v1/.... When SUPABASE_REST_URL and SUPABASE_STORAGE_URL are set (docker-compose.yml sets them to
+// http://rest:3000 and http://storage:5000) the calls go to those services directly, without the gateway's
+// key check, rate limit and body limits, and without its path prefix (PostgREST and Storage serve at their own
+// root). Nothing a caller sends is forwarded (no CF-Connecting-IP), so Storage still never sees the client
+// address. A signed URL keeps the /storage/v1 path of the public gateway, which is where it is used.
 
 export interface RestError { message: string; code: string; details: string; hint: string }
 export interface RestResult<T = any> { data: T | null; error: RestError | null; count: number | null }
@@ -18,6 +25,9 @@ export interface RestOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 60000;
+
+/** A direct service address from the environment (no trailing slash), or '' when it is not set. */
+const withoutSlash = (value: string | undefined): string => (value ? value.replace(/\/+$/, '') : '');
 
 const failure = (message: string, code = '', details = '', hint = ''): RestError => ({ message, code, details, hint });
 
@@ -86,7 +96,7 @@ export class Builder implements PromiseLike<RestResult> {
     if (this.prefer.length) headers.Prefer = this.prefer.join(',');
     headers.Accept = this.mode === 'single' ? 'application/vnd.pgrst.object+json' : 'application/json';
     const query = new URLSearchParams(this.params).toString();
-    const response = await fetch(`${this.client.url}/rest/v1/${this.table}${query ? `?${query}` : ''}`, {
+    const response = await fetch(this.client.restUrl(`${this.table}${query ? `?${query}` : ''}`), {
       method: this.method, headers, body: this.body, redirect: 'error', signal: AbortSignal.timeout(this.client.timeoutMs),
     });
     if (!response.ok) return { data: null, error: await readError(response), count: null };
@@ -125,7 +135,7 @@ export class StorageBucket {
 
   async upload(path: string, body: Uint8Array | ArrayBuffer | Blob | string, options: { contentType?: string; upsert?: boolean } = {}): Promise<RestResult<{ path: string }>> {
     try {
-      const response = await fetch(`${this.client.url}/storage/v1/object/${this.objectPath(path)}`, {
+      const response = await fetch(this.client.storageUrl(`object/${this.objectPath(path)}`), {
         method: 'POST',
         headers: {
           ...this.client.baseHeaders(),
@@ -142,7 +152,7 @@ export class StorageBucket {
 
   async createSignedUrl(path: string, expiresIn: number): Promise<RestResult<{ signedUrl: string }>> {
     try {
-      const response = await fetch(`${this.client.url}/storage/v1/object/sign/${this.objectPath(path)}`, {
+      const response = await fetch(this.client.storageUrl(`object/sign/${this.objectPath(path)}`), {
         method: 'POST',
         headers: { ...this.client.baseHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ expiresIn }), redirect: 'error', signal: AbortSignal.timeout(this.client.timeoutMs),
@@ -158,6 +168,8 @@ export class StorageBucket {
 export class RestClient {
   readonly url: string;
   readonly timeoutMs: number;
+  private readonly restBase: string;
+  private readonly storageBase: string;
   private readonly key: string;
   private readonly options: RestOptions;
   constructor(url: string, key: string, options: RestOptions = {}) {
@@ -165,14 +177,25 @@ export class RestClient {
     this.options = options;
     this.url = url.replace(/\/+$/, '');
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // Both direct addresses or neither: one without the other would send half the calls through the gateway.
+    // (`Deno` is absent under the Node unit tests: the gateway paths then apply.)
+    const rest = typeof Deno === 'undefined' ? '' : withoutSlash(Deno.env.get('SUPABASE_REST_URL'));
+    const storage = typeof Deno === 'undefined' ? '' : withoutSlash(Deno.env.get('SUPABASE_STORAGE_URL'));
+    const direct = rest !== '' && storage !== '';
+    this.restBase = direct ? rest : `${this.url}/rest/v1`;
+    this.storageBase = direct ? storage : `${this.url}/storage/v1`;
   }
+  /** The address of a PostgREST path (`customers?select=id`, `rpc/name`). */
+  restUrl(path: string): string { return `${this.restBase}/${path}`; }
+  /** The address of a Storage path (`object/bucket/file`). */
+  storageUrl(path: string): string { return `${this.storageBase}/${path}`; }
   baseHeaders(): Record<string, string> {
     return { apikey: this.key, Authorization: this.options.authorization ?? `Bearer ${this.key}` };
   }
   from(table: string): Builder { return new Builder(this, table); }
   async rpc(name: string, args: Record<string, unknown> = {}): Promise<RestResult> {
     try {
-      const response = await fetch(`${this.url}/rest/v1/rpc/${encodeURIComponent(name)}`, {
+      const response = await fetch(this.restUrl(`rpc/${encodeURIComponent(name)}`), {
         method: 'POST', headers: { ...this.baseHeaders(), 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(args), redirect: 'error', signal: AbortSignal.timeout(this.timeoutMs),
       });

@@ -60,8 +60,14 @@ test('every service still shares a network with each host it is configured to ca
   wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
 
   assert.deepEqual([...wanted.kong].sort(), ['functions', 'rest', 'storage']);
-  assert.deepEqual([...wanted.storage].sort(), ['db', 'rest']);
-  assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer']);
+  // Storage does not use PostgREST (no POSTGREST_URL, no depends_on rest); the function runtime calls PostgREST and Storage
+  // directly (SUPABASE_REST_URL, SUPABASE_STORAGE_URL, functions/_shared/supabase-rest.ts) and keeps SUPABASE_URL for the gateway.
+  assert.deepEqual([...wanted.storage].sort(), ['db']);
+  assert.equal(services.storage.environment.POSTGREST_URL, undefined);
+  assert.deepEqual(Object.keys(services.storage.depends_on ?? {}), ['db']);
+  assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer', 'rest', 'storage']);
+  assert.equal(services.functions.environment.SUPABASE_REST_URL, 'http://rest:3000');
+  assert.equal(services.functions.environment.SUPABASE_STORAGE_URL, 'http://storage:5000');
   // The sensor bridge posts to the ingest function through the gateway and calls nothing else here.
   assert.deepEqual([...wanted['sensor-bridge']].sort(), ['kong']);
   for (const service of ['rest', 'supavisor']) assert.ok(wanted[service].has('db'), `${service} names the database`);
