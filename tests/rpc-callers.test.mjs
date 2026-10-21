@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,11 +39,15 @@ test('every RPC an edge function calls is in the list of rpc_callers_exist.sql',
 
 // Set MOBILE_CHECKOUT to an app checkout to compare the app's literal RPC names too.
 test('every RPC the app calls is in the list of rpc_callers_exist.sql', { skip: !process.env.MOBILE_CHECKOUT || !existsSync(process.env.MOBILE_CHECKOUT || '') }, async () => {
-  const { details } = await import('../scripts/contract-details.mjs');
-  const mobile = process.env.MOBILE_CHECKOUT;
-  const files = ['src', 'app'].flatMap(dir => existsSync(join(mobile, dir)) ? sources2(join(mobile, dir)) : []);
-  const inventory = details(mobile, files, root, false);
+  // scripts/contract-details.mjs was folded into scripts/check-mobile-contract.mjs, which writes the typed call inventory with --output.
+  const dir = mkdtempSync(join(tmpdir(), 'rpc-callers-'));
+  const reportPath = join(dir, 'report.json');
+  try {
+    spawnSync(process.execPath, [join(root, 'scripts/check-mobile-contract.mjs'), process.env.MOBILE_CHECKOUT, '--output', reportPath], { encoding: 'utf8' });
+    var inventory = JSON.parse(readFileSync(reportPath, 'utf8'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
   const names = new Set(inventory.calls.map(call => call.name).filter(Boolean));
+  assert.ok(names.size >= 10, 'the app calls were found: ' + [...names]);
   assert.deepEqual([...names].filter(name => !appListed.has(name)), []);
 });
 
