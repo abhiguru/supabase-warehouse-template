@@ -45,6 +45,8 @@ if [[ "$(realpath -m "$STATE")" != "$(realpath -ms "$STATE")" ]]; then
 fi
 STATE="$(realpath -ms "$STATE")"
 export WAREHOUSE_STATE_DIR="$STATE"
+# shellcheck source=scripts/require-node.sh
+. "$ROOT/scripts/require-node.sh"
 node "$ROOT/scripts/doctor.mjs" --host-preflight
 # A rerun may rewrite compose.env (provider replacement), so hold the operator
 # lock before configure.mjs whenever the state already exists; a first install
