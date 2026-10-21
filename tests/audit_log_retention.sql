@@ -131,3 +131,24 @@ SELECT warehouse_maintenance.run_database_retention('2029-03-15T10:00:00Z', true
 SELECT pg_temp.ar_assert(NOT (:'no_policy'::jsonb ? 'audit_log') AND NOT ((:'no_policy'::jsonb->'rows') ? 'audit_log') AND to_regclass('public.audit_log_2029_03') IS NULL
   AND to_regclass('public.audit_log_2025_12') IS NOT NULL, 'without the policy row nothing is created or dropped: ' || :'no_policy');
 ROLLBACK;
+
+-- 5. Busy table: when the lock on audit_log cannot be had within the timeout, the audit part reports skipped "busy" and changes nothing, while
+-- the rest of the run still applies. The harness has one session (no dblink), so the timeout is simulated by replacing the lock helper with
+-- one that raises lock_not_available (SQLSTATE 55P03), exactly what LOCK TABLE raises after lock_timeout. The helper's real body is checked by text.
+BEGIN;
+CREATE FUNCTION pg_temp.ar_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'audit_log retention: %', label; END IF; END $$;
+SELECT pg_temp.ar_assert((SELECT prosrc ~ 'SET LOCAL lock_timeout = ''5s''' AND prosrc ~ 'LOCK TABLE public\.audit_log IN ACCESS EXCLUSIVE MODE'
+  FROM pg_proc WHERE oid = 'warehouse_maintenance.lock_audit_log()'::regprocedure), 'the helper sets a 5s lock_timeout and takes ACCESS EXCLUSIVE on audit_log');
+INSERT INTO public.ip_rate_limits(ip_address, updated_at) VALUES ('203.0.113.77', '2020-01-01T00:00:00Z');
+INSERT INTO public.audit_log(id, table_name, action, created_at) VALUES ('00000000-0000-4000-8000-0000000000b1', 'ar_test', 'INSERT', '2025-05-10T00:00:00Z');
+CREATE OR REPLACE FUNCTION warehouse_maintenance.lock_audit_log() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'canceling statement due to lock timeout' USING ERRCODE = 'lock_not_available'; END $$;
+SELECT warehouse_maintenance.run_database_retention('2029-03-15T10:00:00Z', true) AS busy \gset
+SELECT pg_temp.ar_assert(:'busy'::jsonb#>'{audit_log}' = '{"skipped": "busy", "partitions_created": [], "partitions_dropped": [], "default_rows_moved": 0, "default_rows_deleted": 0}'::jsonb
+  AND (:'busy'::jsonb#>>'{rows,audit_log}')::int = 0, 'busy: the audit part is skipped: ' || :'busy');
+SELECT pg_temp.ar_assert(to_regclass('public.audit_log_2029_03') IS NULL AND to_regclass('public.audit_log_2025_12') IS NOT NULL
+  AND (SELECT count(*) = 1 FROM public.audit_log_default WHERE id = '00000000-0000-4000-8000-0000000000b1'), 'busy: no partition created or dropped, no default row deleted');
+SELECT pg_temp.ar_assert((:'busy'::jsonb#>>'{rows,ip_rate_limits}')::int = 1 AND NOT EXISTS (SELECT 1 FROM public.ip_rate_limits WHERE ip_address = '203.0.113.77'),
+  'busy: the rest of the run still applied (the old ip_rate_limits row is gone)');
+ROLLBACK;

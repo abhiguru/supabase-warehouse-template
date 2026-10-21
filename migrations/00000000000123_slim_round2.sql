@@ -976,12 +976,15 @@ BEGIN
         ) ORDER BY pj.submitted_at DESC), '[]'::jsonb),
         'message', null
     ) INTO v_result
-    FROM public.print_jobs pj
-    WHERE
-        (v_user_role IN ('admin', 'supervisor', 'staff') OR pj.user_id = v_auth_uid)
-        AND (p_job_type IS NULL OR pj.job_type = p_job_type)
-        AND (p_status IS NULL OR pj.status = p_status)
-    LIMIT p_limit;
+    FROM (
+        SELECT * FROM public.print_jobs pj
+        WHERE
+            (v_user_role IN ('admin', 'supervisor', 'staff') OR pj.user_id = v_auth_uid)
+            AND (p_job_type IS NULL OR pj.job_type = p_job_type)
+            AND (p_status IS NULL OR pj.status = p_status)
+        ORDER BY pj.submitted_at DESC
+        LIMIT LEAST(GREATEST(COALESCE(p_limit, 50), 1), 200)
+    ) pj;
 
     RETURN v_result;
 END;
@@ -1145,6 +1148,16 @@ INSERT INTO warehouse_maintenance.retention_policy(key, days, description)
 VALUES ('audit_log', 730, 'Audit trail (audit_log): whole monthly partitions that ended more than 24 months ago are dropped; new partitions are made 3 months ahead')
 ON CONFLICT (key) DO UPDATE SET days = EXCLUDED.days, description = EXCLUDED.description;
 
+CREATE FUNCTION warehouse_maintenance.lock_audit_log() RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog'
+AS $$
+BEGIN
+  SET LOCAL lock_timeout = '5s';
+  LOCK TABLE public.audit_log IN ACCESS EXCLUSIVE MODE;
+END $$;
+REVOKE ALL ON FUNCTION warehouse_maintenance.lock_audit_log() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION warehouse_maintenance.run_database_retention(p_now timestamp with time zone DEFAULT now(), p_apply boolean DEFAULT false)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -1178,9 +1191,42 @@ BEGIN
   SELECT days INTO audit_days FROM warehouse_maintenance.retention_policy WHERE key = 'audit_log';
   IF audit_days IS NOT NULL THEN audit_cutoff := p_now - make_interval(days => audit_days); END IF;
 
+  IF p_apply THEN
+    DELETE FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('consumed_refresh_tokens', affected);
+    DELETE FROM warehouse_security.refresh_sessions WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('refresh_sessions', affected);
+    DELETE FROM warehouse_security.central_token_use WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('central_token_use', affected);
+    DELETE FROM public.otp_verifications WHERE expires_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_verifications', affected);
+    DELETE FROM public.otp_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_rate_limits', affected);
+    DELETE FROM public.ip_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('ip_rate_limits', affected);
+    DELETE FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('idempotency_keys', affected);
+    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_readings', affected);
+  ELSE
+    SELECT result || jsonb_build_object(
+      'consumed_refresh_tokens', (SELECT count(*) FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now),
+      'refresh_sessions', (SELECT count(*) FROM warehouse_security.refresh_sessions WHERE expires_at < p_now),
+      'central_token_use', (SELECT count(*) FROM warehouse_security.central_token_use WHERE expires_at < p_now),
+      'otp_verifications', (SELECT count(*) FROM public.otp_verifications WHERE expires_at < auth_cutoff),
+      'otp_rate_limits', (SELECT count(*) FROM public.otp_rate_limits WHERE updated_at < auth_cutoff),
+      'ip_rate_limits', (SELECT count(*) FROM public.ip_rate_limits WHERE updated_at < auth_cutoff),
+      'idempotency_keys', (SELECT count(*) FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now),
+      'sensor_readings', (SELECT count(*) FROM public.sensor_readings WHERE measured_at < sensor_cutoff)
+    ) INTO result;
+  END IF;
   -- audit_log: the partitions to create (current month and the next 3, UTC) and to drop (ended on or before the cutoff), the rows of
   -- audit_log_default to move into a new partition and the rows older than the cutoff to delete. Applied below, counted in preview.
   IF audit_days IS NOT NULL THEN
+   BEGIN
+    -- Partition changes need ACCESS EXCLUSIVE on audit_log: take it first, wait at most 5 seconds, and skip the audit part when busy
+    -- (the rest of the run is already done; tomorrow retries). It also stops writers adding rows to the default partition meanwhile.
+    IF p_apply THEN PERFORM warehouse_maintenance.lock_audit_log(); END IF;
     -- (c) rows of the default partition older than the cutoff go first, so they are not moved into a partition and dropped again
     SELECT count(*) INTO v_n FROM public.audit_log_default WHERE created_at < audit_cutoff;
     v_deleted := v_n;
@@ -1227,37 +1273,13 @@ BEGIN
     END LOOP;
     audit_info := jsonb_build_object('partitions_created', to_jsonb(v_created), 'partitions_dropped', to_jsonb(v_dropped),
                                      'default_rows_moved', v_moved, 'default_rows_deleted', v_deleted);
+   EXCEPTION WHEN lock_not_available THEN
+    v_gone := 0; v_deleted := 0;
+    audit_info := jsonb_build_object('partitions_created', '[]'::jsonb, 'partitions_dropped', '[]'::jsonb,
+                                     'default_rows_moved', 0, 'default_rows_deleted', 0, 'skipped', 'busy');
+   END;
   END IF;
 
-  IF p_apply THEN
-    DELETE FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('consumed_refresh_tokens', affected);
-    DELETE FROM warehouse_security.refresh_sessions WHERE expires_at < p_now;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('refresh_sessions', affected);
-    DELETE FROM warehouse_security.central_token_use WHERE expires_at < p_now;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('central_token_use', affected);
-    DELETE FROM public.otp_verifications WHERE expires_at < auth_cutoff;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_verifications', affected);
-    DELETE FROM public.otp_rate_limits WHERE updated_at < auth_cutoff;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_rate_limits', affected);
-    DELETE FROM public.ip_rate_limits WHERE updated_at < auth_cutoff;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('ip_rate_limits', affected);
-    DELETE FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('idempotency_keys', affected);
-    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;
-    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_readings', affected);
-  ELSE
-    SELECT result || jsonb_build_object(
-      'consumed_refresh_tokens', (SELECT count(*) FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now),
-      'refresh_sessions', (SELECT count(*) FROM warehouse_security.refresh_sessions WHERE expires_at < p_now),
-      'central_token_use', (SELECT count(*) FROM warehouse_security.central_token_use WHERE expires_at < p_now),
-      'otp_verifications', (SELECT count(*) FROM public.otp_verifications WHERE expires_at < auth_cutoff),
-      'otp_rate_limits', (SELECT count(*) FROM public.otp_rate_limits WHERE updated_at < auth_cutoff),
-      'ip_rate_limits', (SELECT count(*) FROM public.ip_rate_limits WHERE updated_at < auth_cutoff),
-      'idempotency_keys', (SELECT count(*) FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now),
-      'sensor_readings', (SELECT count(*) FROM public.sensor_readings WHERE measured_at < sensor_cutoff)
-    ) INTO result;
-  END IF;
   IF audit_days IS NOT NULL THEN
     result := result || jsonb_build_object('audit_log', v_gone + v_deleted);
     RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result, 'audit_log', audit_info);

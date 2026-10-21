@@ -75,6 +75,18 @@ SELECT pg_temp.pj_call('SELECT public.get_print_jobs(50,''Invoice'',NULL)') AS a
 SELECT pg_temp.pj_assert(jsonb_array_length(:'answer'::jsonb->'data')=1 AND :'answer'::jsonb#>>'{data,0,document_range_start}'='PJ0005','job type filter');
 SELECT pg_temp.pj_call('SELECT public.get_print_jobs(50,NULL,''queued'')') AS answer \gset
 SELECT pg_temp.pj_assert(jsonb_array_length(:'answer'::jsonb->'data')=3,'status filter: 3 queued');
+-- p_limit limits the jobs, not the answer: 2 of the 5 come back, the newest by submitted_at; 0 and a negative number give 1; null gives all 5.
+RESET ROLE;
+UPDATE public.print_jobs SET submitted_at = timestamptz '2026-01-01T00:00:00Z' + (substr(document_range_start,3)::int) * interval '1 hour';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.pj_call('SELECT public.get_print_jobs(2)') AS answer \gset
+SELECT pg_temp.pj_assert(jsonb_array_length(:'answer'::jsonb->'data')=2 AND :'answer'::jsonb#>>'{data,0,document_range_start}'='PJ0009'
+  AND :'answer'::jsonb#>>'{data,1,document_range_start}'='PJ0007','limit 2 returns the two newest (PJ0009, PJ0007): '||:'answer');
+SELECT pg_temp.pj_call('SELECT public.get_print_jobs(0)') AS answer \gset
+SELECT pg_temp.pj_assert(jsonb_array_length(:'answer'::jsonb->'data')=1,'limit 0 gives 1 job');
+SELECT pg_temp.pj_call('SELECT public.get_print_jobs(1000)') AS answer \gset
+SELECT pg_temp.pj_assert(jsonb_array_length(:'answer'::jsonb->'data')=5,'a large limit gives all 5 (cap 200)');
+SELECT pg_temp.pj_assert(pg_get_functiondef('public.get_print_jobs(integer,text,text)'::regprocedure) ~ 'LEAST\(GREATEST\(COALESCE\(p_limit, 50\), 1\), 200\)','the limit is capped at 200');
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;
