@@ -14,7 +14,7 @@
 # before a backup and one after restoring it elsewhere; `diff` of the two must be empty.
 # The default output holds no secrets (counts and hashes only), so it may be kept with the evidence.
 # The --all output hashes whole tables such as warehouse_security.auth_config, refresh_sessions,
-# enrollment_tokens, sensor_ingest_keys, secrets_vault and sms_config: the values are hashes, but keep
+# enrollment_tokens, sensor_ingest_keys and sms_config: the values are hashes, but keep
 # the --all output private.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

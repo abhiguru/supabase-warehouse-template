@@ -5,8 +5,7 @@
 -- invoice records the reason, the profile and the time whenever the reason or
 -- the set of zero-charge lines changes, each change is appended to
 -- invoice_zero_charge_history, and get_invoice_detail returns the record to
--- the warehouse roles. Checked on save_invoice(jsonb),
--- save_invoice(uuid,jsonb,jsonb[]) and update_invoice. Fictional data; runs
+-- the warehouse roles. Checked on save_invoice(uuid,jsonb,jsonb[]) and update_invoice. Fictional data; runs
 -- only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -23,9 +22,9 @@ CREATE FUNCTION pg_temp.zc_rates(items jsonb, rates jsonb) RETURNS jsonb LANGUAG
   SELECT jsonb_agg(item || rates) FROM jsonb_array_elements(items) AS item $$;
 CREATE FUNCTION pg_temp.zc_line(items jsonb, line integer, rates jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_set(items, ARRAY[line::text], (items->line) || rates) $$;
--- The three save paths with one argument shape.
+-- Since migration 123 there is one save path: zc_save1 is the call the one-argument save_invoice(jsonb) used to take, now made the app's way.
 CREATE FUNCTION pg_temp.zc_save1(header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.save_invoice(header || jsonb_build_object('items',items)) $$;
+  SELECT public.save_invoice(NULL::uuid, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
 CREATE FUNCTION pg_temp.zc_save3(header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT public.save_invoice(NULL::uuid, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
 CREATE FUNCTION pg_temp.zc_update(invoice uuid, header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
@@ -85,9 +84,7 @@ SELECT pg_temp.zc_assert(public.create_customer('Zero Charge Customer','98888888
 SELECT pg_temp.zc_assert(public.create_item('Zero Charge Onions','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Zero Charge Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Zero Charge Onions' \gset
-SELECT pg_temp.zc_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'customer_id'::uuid,p_tax_percent=>5)->>'success'='true','monthly price');
+SELECT pg_temp.zc_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','monthly price');
 SELECT pg_temp.zc_assert(public.save_grn(p_gr_no=>'ZC'||r.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Zero Charge Customer',p_pricing_mode=>r.mode,p_idempotency_key=>'zero-charge-'||r.code,
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Zero Charge Onions',
@@ -153,11 +150,6 @@ FROM (SELECT substring(pg_get_functiondef('warehouse_security.invoice_discount_a
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.zc_assert(warehouse_security.active_role()='staff','actual staff role');
--- One-argument path: the function wraps the reason in "Database error: ...".
-SELECT pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused1 \gset
-SELECT pg_temp.zc_assert(:'refused1'::jsonb->>'success'='false'
- AND :'refused1'::jsonb->>'error'='Database error: Enter a reason for the zero charge (SQLState: 22023)',
- 'one-argument save: zero charge without a reason refused: '||:'refused1');
 -- Three-argument path (the one the app uses): the text and the code as they are.
 SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused3 \gset
 SELECT pg_temp.zc_assert(:'refused3'::jsonb->>'success'='false' AND :'refused3'::jsonb->>'error'='Enter a reason for the zero charge'
@@ -172,15 +164,8 @@ SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || jsonb_build_obje
  pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb))->>'error'='Enter a reason for the zero charge','blank reason refused for staff: '||blank.label)
  FROM (VALUES ('empty',''),('spaces','   '),('tab and newline',E'\t\n\r'),('no-break space',U&'\00A0'),('zero-width space',U&'\200B'),
   ('ideographic space',U&'\3000'),('a mix',U&' \00A0\2003\200B\FEFF\2060 ')) AS blank(label,reason);
--- A line without a charge is billed as zero, so it is a zero charge too. (The
--- three-argument save refuses a missing charge before that.)
-SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb,
- (SELECT jsonb_agg(item - 'charge') FROM jsonb_array_elements(:'a_items'::jsonb) AS item))->>'error' LIKE '%Enter a reason for the zero charge%',
- 'one-argument save: a line without a charge counts as a zero charge');
 -- A charge outside the range is still refused, with or without a reason.
-SELECT pg_temp.zc_assert(pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
-  pg_temp.zc_line(pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb),1,rate.bad))->>'error' LIKE '%Invoice line charge must be between 0 and 999999%'
- AND pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
+SELECT pg_temp.zc_assert(pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101,"zero_charge_reason":"Goodwill"}'::jsonb,
   pg_temp.zc_line(pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb),1,rate.bad))->>'success'='false',
  'a charge out of range is still refused beside a zero charge with a reason: '||rate.bad::text)
  FROM (VALUES ('{"charge":-0.01}'::jsonb),('{"charge":-5}'::jsonb),('{"charge":1000000}'::jsonb)) AS rate(bad);
@@ -439,27 +424,26 @@ SELECT pg_temp.zc_assert(outcome.without_reason=expected.without_reason AND outc
   path.name||', charge '||spelling.label||': without a reason '||outcome.without_reason||' (expected '||expected.without_reason
   ||'), with a reason '||outcome.with_reason||' (expected '||replace(expected.without_reason,'reason','saved')||')')
 FROM (VALUES
-  ('0',                          '{"charge":0}'::jsonb,                  'reason','reason', 'reason'),
-  ('"0"',                        '{"charge":"0"}',                       'reason','reason', 'reason'),
-  ('"0.00"',                     '{"charge":"0.00"}',                    'reason','reason', 'reason'),
-  ('-0',                         '{"charge":-0}',                        'reason','reason', 'reason'),
-  ('0.004',                      '{"charge":0.004}',                     'reason','reason', 'reason'),
-  ('0.0049',                     '{"charge":0.0049}',                    'reason','reason', 'reason'),
-  ('-0.004',                     '{"charge":-0.004}',                    'reason','invalid','reason'),
-  ('null',                       '{"charge":null}',                      'reason','invalid','reason'),
-  ('absent',                     '{}',                                   'reason','invalid','reason'),
-  ('""',                         '{"charge":""}',                        'reason','invalid','reason'),
-  ('absent, unit_price 0',       '{"unit_price":0}',                     'reason','invalid','reason'),
-  ('absent, unit_price "0.00"',  '{"unit_price":"0.00"}',                'reason','invalid','reason'),
-  ('null, unit_price 0',         '{"charge":null,"unit_price":0}',       'reason','invalid','reason'),
-  ('"", unit_price 0.004',       '{"charge":"","unit_price":0.004}',     'reason','invalid','reason'),
-  ('0.005',                      '{"charge":0.005}',                     'saved', 'saved',  'saved'),
-  ('0.01',                       '{"charge":0.01}',                      'saved', 'saved',  'saved'),
-  ('absent, unit_price 0.01',    '{"unit_price":0.01}',                  'saved', 'invalid','saved'),
-  ('absent, unit_price 5',       '{"unit_price":5}',                     'saved', 'invalid','saved')
- ) AS spelling(label,rates,save1,save3,update)
+  ('0',                          '{"charge":0}'::jsonb,                  'reason','reason'),
+  ('"0"',                        '{"charge":"0"}',                       'reason','reason'),
+  ('"0.00"',                     '{"charge":"0.00"}',                    'reason','reason'),
+  ('-0',                         '{"charge":-0}',                        'reason','reason'),
+  ('0.004',                      '{"charge":0.004}',                     'reason','reason'),
+  ('0.0049',                     '{"charge":0.0049}',                    'reason','reason'),
+  ('-0.004',                     '{"charge":-0.004}',                    'invalid','reason'),
+  ('null',                       '{"charge":null}',                      'invalid','reason'),
+  ('absent',                     '{}',                                   'invalid','reason'),
+  ('""',                         '{"charge":""}',                        'invalid','reason'),
+  ('absent, unit_price 0',       '{"unit_price":0}',                     'invalid','reason'),
+  ('absent, unit_price "0.00"',  '{"unit_price":"0.00"}',                'invalid','reason'),
+  ('null, unit_price 0',         '{"charge":null,"unit_price":0}',       'invalid','reason'),
+  ('"", unit_price 0.004',       '{"charge":"","unit_price":0.004}',     'invalid','reason'),
+  ('0.005',                      '{"charge":0.005}',                     'saved','saved'),
+  ('0.01',                       '{"charge":0.01}',                      'saved','saved'),
+  ('absent, unit_price 0.01',    '{"unit_price":0.01}',                  'invalid','saved'),
+  ('absent, unit_price 5',       '{"unit_price":5}',                     'invalid','saved')
+ ) AS spelling(label,rates,save3,update)
 CROSS JOIN LATERAL (VALUES
-  ('one-argument save',  spelling.save1, 'SELECT pg_temp.zc_save1(%1$L::jsonb,%2$L::jsonb)'),
   ('three-argument save',spelling.save3, 'SELECT pg_temp.zc_save3(%1$L::jsonb,%2$L::jsonb)'),
   ('edit',               spelling.update,'SELECT pg_temp.zc_update(%5$L::uuid,%3$L::jsonb,%4$L::jsonb)')
  ) AS path(name,expected,call)

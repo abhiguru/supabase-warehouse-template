@@ -2,6 +2,12 @@
 -- network-disabled database. Uses the existing operator test-session lifecycle.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.core_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'staff dispatch/invoice: %',label; END IF; END $$;
 -- A privileged RPC must refuse through the real guard: either a raw 42501 or
@@ -52,9 +58,7 @@ SELECT public.create_item('Core Demo Potatoes','Bag') AS item \gset
 SELECT pg_temp.core_assert(:'item'::jsonb->>'success'='true','catalog creation');
 SELECT id AS customer_id FROM public.customers WHERE name='Core Demo Customer A' \gset
 SELECT id AS item_id FROM public.items WHERE name='Core Demo Potatoes' \gset
-SELECT public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'customer_id'::uuid,p_tax_percent=>5) AS price \gset
+SELECT public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5))) AS price \gset
 SELECT pg_temp.core_assert(:'price'::jsonb->>'success'='true','fictional price creation');
 SELECT public.save_grn(p_gr_no=>'COREA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Core Demo Customer A',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'core-receipt',
@@ -102,12 +106,12 @@ SET LOCAL ROLE authenticated;
 SELECT jsonb_build_object('inv_no',20260929,'inv_fin_year',2026,'gr_id',:'grn_id','gr_no','COREA',
  'customer_id',:'customer_id','customer_name','Core Demo Customer A','inv_date','2026-05-02T12:00:00Z',
  'total',998,'tax_amount',48,'discount',0,'duration_mode','legacy','items',:'invoice_items'::jsonb) AS invoice_data \gset
-SELECT public.save_invoice(:'invoice_data'::jsonb) AS saved \gset
+SELECT pg_temp.save_invoice_doc(:'invoice_data'::jsonb) AS saved \gset
 SELECT pg_temp.core_assert(:'saved'::jsonb->>'success'='true','save invoice');
 RESET ROLE;
 SELECT pg_temp.core_assert((SELECT total=998 AND tax_amount=48 AND discount=0 FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'saved header matches preview');
 SET LOCAL ROLE authenticated;
-SELECT public.save_invoice(:'invoice_data'::jsonb || '{"inv_no":20260930,"items":[{"disp_trl_id":"00000000-0000-4000-8000-000000000000","charge":1}]}'::jsonb) AS invalid \gset
+SELECT pg_temp.save_invoice_doc(:'invoice_data'::jsonb || '{"inv_no":20260930,"items":[{"disp_trl_id":"00000000-0000-4000-8000-000000000000","charge":1}]}'::jsonb) AS invalid \gset
 SELECT pg_temp.core_assert(:'invalid'::jsonb->>'success'='false','invalid dispatch invoice denied');
 RESET ROLE;
 SELECT pg_temp.core_assert(NOT EXISTS(SELECT 1 FROM public.invoice WHERE inv_no=20260930),'invalid invoice rolls back header');
@@ -131,7 +135,7 @@ SELECT pg_temp.core_assert((SELECT discount=235 AND total=763 AND discount_reaso
    AND discount_set_by=(SELECT id FROM public.user_profiles WHERE auth_user_id=(:'staff_claims'::jsonb->>'sub')::uuid)
  FROM public.invoice WHERE id=(:'saved'::jsonb->>'invoice_id')::uuid),'discount reason, author and total recorded');
 SELECT pg_temp.core_assert((SELECT bool_and(pg_get_functiondef(f) LIKE '%warehouse.discount_reason%') FROM unnest(ARRAY[
- 'public.save_invoice(jsonb)','public.save_invoice(uuid,jsonb,jsonb[])','public.update_invoice(uuid,jsonb,jsonb[])']::regprocedure[]) f),
+ 'public.save_invoice(uuid,jsonb,jsonb[])','public.update_invoice(uuid,jsonb,jsonb[])']::regprocedure[]) f),
  'every invoice save path forwards the discount reason');
 SET LOCAL ROLE authenticated;
 

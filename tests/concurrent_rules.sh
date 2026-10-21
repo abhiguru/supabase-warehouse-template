@@ -386,7 +386,7 @@ SQL
 [[ "$stored" = t ]] || { echo 'Concurrent retry: not exactly one dispatch, one line, one movement and stock 45.' >&2; exit 1; }
 echo 'Concurrent retry: an overlapping retry waited, was answered from the cache; one dispatch, one movement, stock reduced once.'
 
-# Case 10. Migration 87 (BR-04): rate writers of one scope (item, everyone, monthly) take turns.
+# Case 10. Migration 87 (BR-04): rate writers of one scope (item, everyone, monthly) take turns (replace_item_rates; the item_storage_price helpers were dropped by migration 123).
 call_as "$claims_one" "public.create_item('Concurrent Rate Writer A','Bag')" > "$scratch/rw-item"
 call_as "$claims_one" "public.create_item('Concurrent Rate Writer B','Bag')" > "$scratch/rw-item"
 rw_item_a=$(psql_exec -At <<'SQL'
@@ -399,42 +399,43 @@ SQL
 )
 [[ "$rw_item_a" =~ ^[0-9a-f-]{36}$ && "$rw_item_b" =~ ^[0-9a-f-]{36}$ ]] || { echo 'Concurrent rate writers: the items were not created.' >&2; exit 1; }
 create_price_call() { # item, weight min, weight max, unit price
-  echo "public.create_item_storage_price(p_item_id=>'$1'::uuid,p_price_type=>'monthly',p_unit_price=>$4,p_weight_min=>$2,p_weight_max=>$3,p_labour_rate=>2,p_effective_from=>CURRENT_DATE + 10,p_tax_percent=>5)"
+  echo "public.replace_item_rates('$1'::uuid,NULL,'monthly',CURRENT_DATE + 10,'[{\"weight_min\":$2,\"weight_max\":$3,\"unit_price\":$4,\"labour_rate\":2,\"tax_percent\":5}]'::jsonb)"
 }
+# Two rate changes of the same scope from the same day: the second waits for the first (the scope lock), then finds the first's rate planned
+# on that day and is refused LATER_RATES_EXIST; it does not overwrite it or leave two sets of bands.
 call_as "$claims_one" "$(create_price_call "$rw_item_a" 0 100 5)" 4 > "$scratch/rw-first" &
 holder=$!
 sleep 1
-call_as "$claims_two" "$(create_price_call "$rw_item_a" 50 150 9)" > "$scratch/rw-second"
-wait "$holder" || { echo 'Concurrent rate writers: the first create failed.' >&2; exit 1; }
+call_as "$claims_two" "$(create_price_call "$rw_item_a" 0 100 9)" > "$scratch/rw-second"
+wait "$holder" || { echo 'Concurrent rate writers: the first change failed.' >&2; exit 1; }
 first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
-[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the first create did not succeed: $first" >&2; exit 1; }
-[[ "$second" == *'"success": false'* && "$second" == *'BANDS_OVERLAP'* ]] ||
-  { echo "Concurrent rate writers: the second create was not refused as BANDS_OVERLAP: $second" >&2; exit 1; }
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the first change did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": false'* && "$second" == *'LATER_RATES_EXIST'* ]] ||
+  { echo "Concurrent rate writers: the second change was not refused as LATER_RATES_EXIST: $second" >&2; exit 1; }
 [[ "$(psql_exec -At <<SQL
 SELECT count(*)=1 AND bool_and(weight_min=0 AND weight_max=100 AND unit_price=5) FROM public.item_storage_prices WHERE item_id='$rw_item_a'::uuid
 SQL
 )" = t ]] || { echo 'Concurrent rate writers: the item does not have exactly the first row.' >&2; exit 1; }
-# An update and a create of the same scope: the update widens the one row to 0..100 while a create of 50..150 waits.
+# A base rate exists; one change widens it to 0..100 (replacing what is planned on that day) while another change waits and is then refused.
 call_as "$claims_one" "$(create_price_call "$rw_item_b" 0 49 5)" > "$scratch/rw-base"
-rw_row=$(psql_exec -At <<SQL
-SELECT id FROM public.item_storage_prices WHERE item_id='$rw_item_b'::uuid
+[[ "$(psql_exec -At <<SQL
+SELECT count(*) FROM public.item_storage_prices WHERE item_id='$rw_item_b'::uuid
 SQL
-)
-[[ "$rw_row" =~ ^[0-9a-f-]{36}$ ]] || { echo "Concurrent rate writers: the base row was not created: $(answer "$scratch/rw-base")" >&2; exit 1; }
-call_as "$claims_one" "public.update_item_storage_price(p_id=>'$rw_row'::uuid,p_unit_price=>5,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>CURRENT_DATE + 10)" 4 > "$scratch/rw-first"  &
+)" = 1 ]] || { echo "Concurrent rate writers: the base row was not created: $(answer "$scratch/rw-base")" >&2; exit 1; }
+call_as "$claims_one" "public.replace_item_rates('$rw_item_b'::uuid,NULL,'monthly',CURRENT_DATE + 10,'[{\"weight_min\":0,\"weight_max\":100,\"unit_price\":5,\"labour_rate\":2,\"tax_percent\":5}]'::jsonb,true)" 4 > "$scratch/rw-first"  &
 holder=$!
 sleep 1
-call_as "$claims_two" "$(create_price_call "$rw_item_b" 50 150 9)" > "$scratch/rw-second"
-wait "$holder" || { echo 'Concurrent rate writers: the update failed.' >&2; exit 1; }
+call_as "$claims_two" "$(create_price_call "$rw_item_b" 0 100 9)" > "$scratch/rw-second"
+wait "$holder" || { echo 'Concurrent rate writers: the widening failed.' >&2; exit 1; }
 first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
-[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the update did not succeed: $first" >&2; exit 1; }
-[[ "$second" == *'"success": false'* && "$second" == *'BANDS_OVERLAP'* ]] ||
-  { echo "Concurrent rate writers: the create after the update was not refused as BANDS_OVERLAP: $second" >&2; exit 1; }
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the widening did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"success": false'* && "$second" == *'LATER_RATES_EXIST'* ]] ||
+  { echo "Concurrent rate writers: the change after the widening was not refused as LATER_RATES_EXIST: $second" >&2; exit 1; }
 [[ "$(psql_exec -At <<SQL
 SELECT count(*)=1 AND bool_and(weight_min=0 AND weight_max=100) FROM public.item_storage_prices WHERE item_id='$rw_item_b'::uuid
 SQL
 )" = t ]] || { echo 'Concurrent rate writers: the item does not have exactly the widened row.' >&2; exit 1; }
-echo 'Concurrent rate writers: a create and an update of one scope took turns; the later one was refused as BANDS_OVERLAP and no bands overlap.'
+echo 'Concurrent rate writers: two changes of one scope took turns; the later one was refused as LATER_RATES_EXIST and no bands overlap.'
 
 # Case 11. Migration 87 (D1): a cancel waits for a confirm in flight and then answers ALREADY_CONFIRMED.
 psql_exec -v admin="$admin_one" <<'SQL'

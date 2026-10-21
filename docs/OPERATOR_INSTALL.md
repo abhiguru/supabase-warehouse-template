@@ -251,9 +251,8 @@ for it. Limits enforced by the database:
   verifying and the user asks for a new one.
 - A resend does not void the earlier code: every delivered code stays valid
   until its own expiry, and a successful verification consumes all of them.
-- Expired OTP rows are not removed on a database timer. Every 100th new code removes the rows that expired more than an
-  hour ago or were verified more than a day ago, and the retention pass removes expired OTP rows older than 7 days (the
-  `ephemeral_auth` retention policy; see [Retention](#retention)). That pass runs once a day from the checker's daily run
+- Expired OTP rows are not removed on a database timer, and not when a new code is issued. The 7-day `ephemeral_auth` retention
+  rule deletes expired OTP rows older than 7 days (see [Retention](#retention)). That pass runs once a day from the checker's daily run
   when the checker timer is installed; without the timer, run `npm run retention:apply` yourself. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
 
 Anyone can ask for a code for any number. The limits therefore have a fixed

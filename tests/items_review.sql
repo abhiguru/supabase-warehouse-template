@@ -112,11 +112,9 @@ SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.save_grn(p_g
   p_customer_name=>'x',p_pricing_mode=>'MONTHLY',p_items=>%L::jsonb)$q$,(current_date-3)::text||'T12:00:00Z',:'orchard',
   jsonb_build_array(jsonb_build_object('item_id',:'guava','item_name','IR Guava','packaging','Bag','qty',2,'weight',10,'rack','R1')))) AS sg \gset
 SELECT pg_temp.ir_assert(:'sg'::jsonb->>'success'='true','GRN with one line of the item: '||:'sg');
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>7,
-  p_weight_min=>0,p_weight_max=>50,p_labour_rate=>1,p_effective_from=>%L,p_tax_percent=>5)$q$,:'guava',current_date::text)) AS pr1 \gset
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>8,
-  p_weight_min=>51,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>%L,p_tax_percent=>5)$q$,:'guava',current_date::text)) AS pr2 \gset
-SELECT pg_temp.ir_assert(:'pr1'::jsonb->>'success'='true' AND :'pr2'::jsonb->>'success'='true','two price rows: '||:'pr1'||' '||:'pr2');
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format($q$SELECT public.replace_item_rates(%L::uuid,NULL,'monthly',%L::date,
+  '[{"weight_min":0,"weight_max":50,"unit_price":7,"labour_rate":1,"tax_percent":5},{"weight_min":51,"weight_max":100,"unit_price":8,"labour_rate":1,"tax_percent":5}]'::jsonb)$q$,:'guava',current_date::text)) AS pr1 \gset
+SELECT pg_temp.ir_assert(:'pr1'::jsonb->>'success'='true' AND jsonb_array_length(:'pr1'::jsonb#>'{data,added}')=2,'two price rows: '||:'pr1');
 SELECT pg_temp.ir_as(:'admin_claims'::jsonb,format('SELECT public.get_item_usage(%L)',:'guava')) AS s4 \gset
 SELECT pg_temp.ir_assert((:'s4'::jsonb#>>'{data,grn_lines}')='1' AND (:'s4'::jsonb#>>'{data,in_use}')='true'
   AND (:'s4'::jsonb#>>'{data,can_delete}')='false' AND (:'s4'::jsonb#>>'{data,price_rows}')='2'

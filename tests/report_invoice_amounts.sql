@@ -39,6 +39,12 @@
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.ria_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok, false) THEN RAISE EXCEPTION 'report invoice amounts: %', label; END IF; END $$;
 CREATE FUNCTION pg_temp.ria_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -72,7 +78,7 @@ BEGIN
     ARRAY[jsonb_build_object('gr_trl_id', trl_id, 'disp_qty', p_bags)], 0, 'report-invoice-amounts-d' || p_no)->>'success' = 'true',
     'fixture dispatch RIAD' || p_no);
   SELECT dt.id INTO line_id FROM public.dispatch_trl dt JOIN public.dispatch d ON d.id = dt.disp_id WHERE d.disp_no = 'RIAD' || p_no;
-  saved := public.save_invoice(jsonb_build_object('inv_no', p_no, 'inv_fin_year', 2026, 'gr_id', grn_id, 'gr_no', 'RIAG' || p_no,
+  saved := pg_temp.save_invoice_doc(jsonb_build_object('inv_no', p_no, 'inv_fin_year', 2026, 'gr_id', grn_id, 'gr_no', 'RIAG' || p_no,
     'customer_id', p_customer, 'customer_name', p_customer_name, 'inv_date', p_inv_day || 'T12:00:00Z',
     'discount', p_discount, 'duration_mode', 'legacy',
     'items', jsonb_build_array(jsonb_build_object('disp_trl_id', line_id, 'charge', p_charge, 'tax', p_tax, 'labour_rate', p_labour))));

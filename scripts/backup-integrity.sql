@@ -19,7 +19,8 @@ SELECT 'acl_anon_orders_select=' || has_table_privilege('anon','public.orders','
 SELECT 'acl_authenticated_orders_select=' || has_table_privilege('authenticated','public.orders','SELECT');
 SELECT 'acl_service_operator_prepare=' || has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE');
 SELECT 'acl_anon_operator_prepare=' || has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE');
-SELECT 'acl_anon_legacy_send_otp=' || has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE');
+-- send_otp was dropped by migration 123; by name, so a backup from before it still verifies (false when the function is absent).
+SELECT 'acl_anon_legacy_send_otp=' || COALESCE((SELECT bool_or(has_function_privilege('anon',p.oid,'EXECUTE')) FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='send_otp'),false);
 -- By name, not signature: migration 77 added a fourth argument, and a backup from before it still verifies.
 SELECT 'acl_authenticated_enrollment_review=' || COALESCE((SELECT bool_and(has_function_privilege('authenticated',p.oid,'EXECUTE'))
   FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='operator_review_enrollment'),false);
@@ -29,7 +30,7 @@ DO $$ BEGIN
     OR NOT has_table_privilege('authenticated','public.orders','SELECT')
     OR NOT has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE')
     OR has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
-    OR has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE')
+    OR COALESCE((SELECT bool_or(has_function_privilege('anon',p.oid,'EXECUTE')) FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='send_otp'),false)
     OR NOT COALESCE((SELECT bool_and(has_function_privilege('authenticated',p.oid,'EXECUTE'))
          FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='operator_review_enrollment'),false)
   THEN RAISE EXCEPTION 'Representative operator access grants are missing or too broad';

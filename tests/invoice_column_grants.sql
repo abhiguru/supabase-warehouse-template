@@ -99,9 +99,7 @@ SELECT id AS south FROM public.customers WHERE name='Internal Column South' \gse
 SELECT id AS item_id FROM public.items WHERE name='Internal Column Garlic' \gset
 SELECT pg_temp.col_assert(public.assign_customer_to_user('919888888834',:'north'::uuid,'Internal column fixture')
  AND public.assign_customer_to_user('919888888835',:'south'::uuid,'Internal column fixture'),'customer logins assigned');
-SELECT pg_temp.col_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'north'::uuid,p_tax_percent=>5)->>'success'='true','price');
+SELECT pg_temp.col_assert(public.replace_item_rates(:'item_id'::uuid,:'north'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','price');
 SELECT pg_temp.col_assert(public.save_grn(p_gr_no=>'ICN1',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'north'::uuid,
  p_customer_name=>'Internal Column North',p_pricing_mode=>'ONE_TIME',p_idempotency_key=>'internal-column-grn',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Internal Column Garlic',

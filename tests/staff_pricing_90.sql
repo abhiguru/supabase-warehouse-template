@@ -1,6 +1,7 @@
 -- Migration 90 (2026-10-16, owner decision): staff accounts lose item pricing. The guard refuses
--- them (SQLSTATE 42501, 'Staff access required') on get_item_storage_prices, create/update/delete_item_storage_price,
--- replace_item_rates, undo_rate_change, get_standard_rate, set_standard_rate and get_item_grn_rates; save_grn
+-- them (SQLSTATE 42501, 'Staff access required') on get_item_storage_prices, replace_item_rates, undo_rate_change,
+-- get_standard_rate and set_standard_rate (create/update/delete_item_storage_price, find_or_create_item_storage_price and
+-- get_item_grn_rates were dropped by migration 123; their names stay in the list below that must not name them); save_grn
 -- and update_grn answer RATES_MANAGER_ONLY to a staff call that carries p_rates (a list or []); get_grn_details
 -- answers grn.rates = [] to staff. Staff keep get_grn_item_rates (the rate each lot is invoiced at) and the
 -- invoice preview; administrators and supervisors keep everything.
@@ -116,29 +117,16 @@ SELECT pg_temp.sp_save(:'supervisor_claims'::jsonb,'SP-A',:'orchard'::uuid,jsonb
 SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'save_a'::jsonb),'fixture GRN SP-A by a supervisor, with a rate: '||:'save_a');
 SELECT pg_temp.sp_state() AS state0 \gset
 SELECT pg_temp.sp_as(:'staff_claims'::jsonb,'SELECT public.get_item_storage_prices()') AS s_list \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>7,p_weight_min=>0,p_weight_max=>100,
-  p_labour_rate=>1,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,pg_temp.sp_item('SP Apple'),:'d30',:'orchard')) AS s_create \gset
-SELECT id AS apple_default FROM public.item_storage_prices WHERE item_id=pg_temp.sp_item('SP Apple') \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>50,p_labour_rate=>1,
-  p_tax_percent=>5,p_effective_from=>%L,p_effective_to=>NULL)$q$,:'apple_default',:'d100')) AS s_update \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.delete_item_storage_price(%L::uuid)$q$,:'apple_default')) AS s_delete \gset
 SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.replace_item_rates(%L::uuid,NULL,'monthly',%L::date,
   jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',7,'labour_rate',2,'tax_percent',5)),false,'change',NULL)$q$,pg_temp.sp_item('SP Lime'),:'d30')) AS s_replace \gset
 SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.undo_rate_change(%L::uuid,NULL,'monthly',%L::date)$q$,pg_temp.sp_item('SP Lime'),:'d30')) AS s_undo \gset
 SELECT pg_temp.sp_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()') AS s_get_std \gset
 SELECT pg_temp.sp_as(:'staff_claims'::jsonb,$q$SELECT public.set_standard_rate(jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',50,'unit_price',3,'labour_rate',1,'tax_percent',5)))$q$) AS s_set_std \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.sp_item('SP Pear'))) AS s_item_grn \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,format($q$SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,'monthly',9,1,5)$q$,pg_temp.sp_item('SP Apple'),:'orchard')) AS s_find \gset
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_list'::jsonb),'get_item_storage_prices refused for staff: '||:'s_list');
-SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_create'::jsonb),'create_item_storage_price refused for staff: '||:'s_create');
-SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_update'::jsonb),'update_item_storage_price refused for staff: '||:'s_update');
-SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_delete'::jsonb),'delete_item_storage_price refused for staff: '||:'s_delete');
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_replace'::jsonb) AND :'s_replace'::jsonb->>'state'='42501','replace_item_rates refused for staff with 42501: '||:'s_replace');
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_undo'::jsonb) AND :'s_undo'::jsonb->>'state'='42501','undo_rate_change refused for staff with 42501: '||:'s_undo');
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_get_std'::jsonb) AND :'s_get_std'::jsonb->>'state'='42501','get_standard_rate refused for staff with 42501: '||:'s_get_std');
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_set_std'::jsonb) AND :'s_set_std'::jsonb->>'state'='42501','set_standard_rate refused for staff with 42501 (not STANDARD_RATE_MANAGER_ONLY): '||:'s_set_std');
-SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_item_grn'::jsonb) AND :'s_item_grn'::jsonb->>'state'='42501','get_item_grn_rates refused for staff with 42501: '||:'s_item_grn');
-SELECT pg_temp.sp_assert(pg_temp.sp_refused(:'s_find'::jsonb),'find_or_create_item_storage_price refused for staff: '||:'s_find');
 SELECT pg_temp.sp_assert(pg_temp.sp_state()=:'state0','the refused staff calls changed nothing (prices/history/tiers/grn rates/GRNs '||:'state0'||' -> '||pg_temp.sp_state()||')');
 -- A customer account is refused the same functions (unchanged since migration 76/85/86).
 SELECT pg_temp.sp_as(:'customer_claims'::jsonb,'SELECT public.get_item_storage_prices()') AS c_list \gset
@@ -149,25 +137,11 @@ SELECT pg_temp.sp_assert(COALESCE(:'c_list'::jsonb->>'success','false')<>'true' 
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.sp_assert(pg_temp.sp_ok(pg_temp.sp_as(c,'SELECT public.get_item_storage_prices()')),'get_item_storage_prices for '||n)
  FROM (VALUES ('administrator',:'admin_claims'::jsonb),('supervisor',:'supervisor_claims'::jsonb)) v(n,c);
-SELECT pg_temp.sp_as(:'supervisor_claims'::jsonb,format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>7,p_weight_min=>0,p_weight_max=>100,
-  p_labour_rate=>1,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,pg_temp.sp_item('SP Apple'),:'d30',:'orchard')) AS m_create \gset
-SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_create'::jsonb),'a supervisor creates a price: '||:'m_create');
-SELECT (:'m_create'::jsonb#>>'{data,id}') AS new_price \gset
-SELECT pg_temp.sp_as(:'supervisor_claims'::jsonb,format($q$SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>8,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,
-  p_tax_percent=>5,p_effective_from=>%L,p_effective_to=>NULL)$q$,:'new_price',:'d30')) AS m_update \gset
-SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_update'::jsonb) AND (SELECT unit_price=8 FROM public.item_storage_prices WHERE id=:'new_price'::uuid),'a supervisor updates it: '||:'m_update');
-SELECT pg_temp.sp_as(:'admin_claims'::jsonb,format($q$SELECT public.delete_item_storage_price(%L::uuid)$q$,:'new_price')) AS m_delete \gset
-SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_delete'::jsonb) AND NOT EXISTS (SELECT 1 FROM public.item_storage_prices WHERE id=:'new_price'::uuid),'an administrator deletes it: '||:'m_delete');
 SELECT pg_temp.sp_as(:'supervisor_claims'::jsonb,format($q$SELECT public.replace_item_rates(%L::uuid,NULL,'monthly',%L::date,
   jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',7,'labour_rate',2,'tax_percent',5)),false,'change',NULL)$q$,pg_temp.sp_item('SP Lime'),:'d30')) AS m_replace \gset
 SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_replace'::jsonb) AND (SELECT count(*)=1 FROM public.item_storage_prices WHERE item_id=pg_temp.sp_item('SP Lime')),'a supervisor changes a rate from a date: '||:'m_replace');
 SELECT pg_temp.sp_as(:'admin_claims'::jsonb,format($q$SELECT public.undo_rate_change(%L::uuid,NULL,'monthly',%L::date)$q$,pg_temp.sp_item('SP Lime'),:'d30')) AS m_undo \gset
 SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_undo'::jsonb) AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE item_id=pg_temp.sp_item('SP Lime')),'an administrator undoes it: '||:'m_undo');
-SELECT pg_temp.sp_as(:'supervisor_claims'::jsonb,'SELECT public.get_item_grn_rates('''||pg_temp.sp_item('SP Pear')||'''::uuid)') AS m_item_grn \gset
-SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_item_grn'::jsonb) AND jsonb_array_length(:'m_item_grn'::jsonb#>'{data,rates}')=1 AND :'m_item_grn'::jsonb#>>'{data,rates,0,gr_no}'='SP-A',
- 'a supervisor lists the GRN-only rates of an item: '||:'m_item_grn');
-SELECT pg_temp.sp_as(:'admin_claims'::jsonb,'SELECT public.get_item_grn_rates('''||pg_temp.sp_item('SP Pear')||'''::uuid)')->>'success' AS adm_item_grn \gset
-SELECT pg_temp.sp_assert(:'adm_item_grn'='true','an administrator lists them too');
 SELECT pg_temp.sp_as(:'supervisor_claims'::jsonb,$q$SELECT public.set_standard_rate(jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',50,'unit_price',3,'labour_rate',1,'tax_percent',5)))$q$) AS m_set_std \gset
 SELECT pg_temp.sp_assert(pg_temp.sp_ok(:'m_set_std'::jsonb) AND (SELECT count(*)=1 FROM public.standard_rate_tiers),'a supervisor sets the standard rate: '||:'m_set_std');
 SELECT pg_temp.sp_as(:'admin_claims'::jsonb,'SELECT public.get_standard_rate()') AS m_get_std \gset

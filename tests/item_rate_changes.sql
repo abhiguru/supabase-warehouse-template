@@ -1,6 +1,6 @@
--- Migration 76 (2026-10-14): replace_item_rates, the overlap check and one-day rates in
--- create/update_item_storage_price, the staff rule for rates in force, labour 0 for one-time
--- rates, search_customers by any word, and the id tie-breaker of get_item_storage_prices.
+-- Migration 76 (2026-10-14): replace_item_rates, the overlap check and one-day rates, the staff rule for rates in force, labour 0
+-- for one-time rates, search_customers by any word, and the id tie-breaker of get_item_storage_prices. (The first version of this test also
+-- covered create/update/delete_item_storage_price and find_or_create_item_storage_price, which migration 123 dropped.)
 -- Migration 90 (2026-10-16): staff are refused all of it by the guard; the staff blocks below assert the
 -- refusal and run the same change as a supervisor.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
@@ -106,8 +106,7 @@ SELECT pg_temp.rc_assert(has_function_privilege('authenticated','public.replace_
 -- Onion starts with a default 0-100 kg rate, 6.00, since 200 days ago (by the administrator).
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rc_assert(public.create_item_storage_price(p_item_id=>:'onion'::uuid,p_price_type=>'monthly',p_unit_price=>6,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2.5,p_effective_from=>:'old_start',p_tax_percent=>5)->>'success'='true','onion default rate');
+SELECT pg_temp.rc_assert(pg_temp.rc_replace(:'onion'::uuid,NULL,'monthly',:'old_start',jsonb_build_array(pg_temp.rc_band(0,100,6)))->>'success'='true','onion default rate');
 RESET ROLE;
 SELECT pg_temp.rc_assert(pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..open',:'old_start'),'the rate before the tests: '||pg_temp.rc_rows(:'onion'::uuid,NULL,'monthly'));
 
@@ -355,103 +354,8 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'cumin'::uuid,NULL,'monthly',:'yesterday',jsonb_build_array(pg_temp.rc_band(0,100,5)),true) AS sup_past \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'sup_past'::jsonb->>'success'='true','a supervisor may start a rate yesterday ("correct" path)');
--- 2. Staff and the price writers (migration 90: refused by the guard); a supervisor creates, edits and deletes.
-SELECT id AS cumin_row FROM public.item_storage_prices WHERE item_id=:'cumin'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_from=:'yesterday'::date \gset
-SELECT pg_temp.rc_hist() AS hist_st, pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly') AS rows_st, pg_temp.rc_rows(:'cumin'::uuid,:'north'::uuid,'monthly') AS rows_st_north \gset
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT pg_temp.rc_call(format($q$SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>%L,p_effective_to=>NULL)$q$,:'cumin_row',:'yesterday')) AS st_update,
-       pg_temp.rc_call(format($q$SELECT public.delete_item_storage_price(%L::uuid)$q$,:'cumin_row')) AS st_delete,
-       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'cumin',:'yesterday',:'north')) AS st_create_past,
-       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>%L,p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'cumin',:'d30',:'north')) AS st_create_future,
-       pg_temp.rc_call(format($q$SELECT public.update_item_storage_price(%L::uuid,0,100,9,0,2,5,%L::date,NULL)$q$,:'cumin_row',:'yesterday')) AS st_legacy_update \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert((SELECT bool_and(COALESCE(a->>'success','false')<>'true' AND a::text LIKE '%Staff access required%')
-   FROM (VALUES (:'st_update'::jsonb),(:'st_delete'::jsonb),(:'st_create_past'::jsonb),(:'st_create_future'::jsonb),(:'st_legacy_update'::jsonb)) v(a))
- AND pg_temp.rc_hist()=:hist_st AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'monthly')=:'rows_st' AND pg_temp.rc_rows(:'cumin'::uuid,:'north'::uuid,'monthly')=:'rows_st_north',
- 'staff refused on update, delete, create (past and upcoming) and the legacy update overload; nothing changed: '||:'st_update'||:'st_delete'||:'st_create_past'||:'st_create_future'||:'st_legacy_update');
--- A supervisor creates an upcoming rate, edits and deletes it, and may move it into the past.
-SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS sup_create_future \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'sup_create_future'::jsonb->>'success'='true','a supervisor may create an upcoming rate: '||:'sup_create_future');
-SELECT (:'sup_create_future'::jsonb#>>'{data,id}') AS north_future \gset
-SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>:'north_future'::uuid,p_unit_price=>10,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2.5,p_tax_percent=>5,p_effective_from=>:'d30',p_effective_to=>NULL) AS st_upd_future,
-       public.update_item_storage_price(p_id=>:'north_future'::uuid,p_unit_price=>10,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2.5,p_tax_percent=>5,p_effective_from=>:'yesterday',p_effective_to=>NULL) AS st_upd_to_past,
-       public.delete_item_storage_price(:'north_future'::uuid) AS st_del_future \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'st_upd_future'::jsonb->>'success'='true' AND :'st_upd_to_past'::jsonb->>'success'='true' AND :'st_del_future'::jsonb->>'success'='true',
- 'a supervisor edits an upcoming row, moves it into the past and deletes it: '||:'st_upd_future'||:'st_upd_to_past'||:'st_del_future');
--- Managers still may.
-SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>:'cumin_row'::uuid,p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>:'yesterday',p_effective_to=>NULL) AS sup_update \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'sup_update'::jsonb->>'success'='true','a supervisor may update a rate in force');
--- 3. One-time labour stays 0 through create and update.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'one_time',p_unit_price=>30,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>4,p_effective_from=>:'today',p_tax_percent=>5) AS ot_create \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'ot_create'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'one_time')=format('0-100@30.00/0.00/5 %s..open',:'today'),'create stores labour 0 for one-time: '||pg_temp.rc_rows(:'cumin'::uuid,NULL,'one_time'));
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>(:'ot_create'::jsonb#>>'{data,id}')::uuid,p_unit_price=>31,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>6,p_tax_percent=>5,p_effective_from=>:'today',p_effective_to=>NULL) AS ot_update \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'ot_update'::jsonb->>'success'='true' AND pg_temp.rc_rows(:'cumin'::uuid,NULL,'one_time')=format('0-100@31.00/0.00/5 %s..open',:'today'),'update stores labour 0 for one-time: '||pg_temp.rc_rows(:'cumin'::uuid,NULL,'one_time'));
--- 13. Create and update refuse an overlap and accept a one-day rate.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>50,p_weight_max=>150,p_labour_rate=>2,p_effective_from=>:'today',p_tax_percent=>5) AS overlap_create,
-       public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'one_time',p_unit_price=>9,p_weight_min=>0,p_weight_max=>10,p_labour_rate=>2,p_effective_from=>:'today',p_tax_percent=>5) AS overlap_one_time,
-       public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>101,p_weight_max=>150,p_labour_rate=>2,p_effective_from=>:'today',p_tax_percent=>5) AS no_overlap_weight,
-       public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'old_start',p_effective_to=>:'old_start',p_customer_id=>:'north'::uuid,p_tax_percent=>5) AS one_day_same \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'overlap_create'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'overlap_one_time'::jsonb->>'error_code'='BANDS_OVERLAP'
- AND :'no_overlap_weight'::jsonb->>'success'='true' AND :'one_day_same'::jsonb->>'success'='true',
- 'create refuses an overlap in the same price type (even one-time), accepts a different weight and a one-day rate: '||:'overlap_create'||:'overlap_one_time'||:'one_day_same');
-SELECT public.create_item_storage_price(p_item_id=>:'cumin'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'today',p_effective_to=>:'yesterday',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS end_before_start \gset
-SELECT pg_temp.rc_assert(:'end_before_start'::jsonb->>'success'='false' AND :'end_before_start'::jsonb->>'error'='effective_to must not be before effective_from','a rate that ends before it starts is refused');
--- update into an overlap is refused; an update leaving the row alone is fine.
-SELECT id AS other_row FROM public.item_storage_prices WHERE item_id=:'cumin'::uuid AND customer_id IS NULL AND price_type='monthly' AND weight_min=101 \gset
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(p_id=>:'other_row'::uuid,p_unit_price=>9,p_weight_min=>90,p_weight_max=>150,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>:'today',p_effective_to=>NULL) AS overlap_update,
-       public.update_item_storage_price(p_id=>:'other_row'::uuid,p_unit_price=>9.25,p_weight_min=>101,p_weight_max=>150,p_labour_rate=>2,p_tax_percent=>5,p_effective_from=>:'today',p_effective_to=>:'today') AS one_day_update \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'overlap_update'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'one_day_update'::jsonb->>'success'='true','update refuses an overlap, accepts a one-day rate: '||:'overlap_update'||:'one_day_update');
--- The nine-argument legacy update still works for a manager (it never overlaps its own row).
--- Migration 87: the nine-argument overload answers BANDS_OVERLAP for a partial overlap in its own price type
--- and ignores a row of the other price type. A new item for South: monthly 0-49 and 50-100, one-time 0-49.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.create_item('Rate Changes Legacy Overload','Bag')->>'success' AS lg_item \gset
-RESET ROLE;
-SELECT id AS lgitem FROM public.items WHERE name='Rate Changes Legacy Overload' \gset
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>0,p_weight_max=>49,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_a,
-       public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>50,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_b,
-       public.create_item_storage_price(p_item_id=>:'lgitem'::uuid,p_price_type=>'one_time',p_unit_price=>9,p_weight_min=>0,p_weight_max=>49,p_labour_rate=>0,p_effective_from=>:'d30',p_customer_id=>:'south'::uuid,p_tax_percent=>5) AS lg_c \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'lg_a'::jsonb->>'success'='true' AND :'lg_b'::jsonb->>'success'='true' AND :'lg_c'::jsonb->>'success'='true','legacy overload fixture rows: '||:'lg_a'||:'lg_b'||:'lg_c');
-SELECT id AS lg_row FROM public.item_storage_prices WHERE item_id=:'lgitem'::uuid AND customer_id=:'south'::uuid AND price_type='monthly' AND weight_min=0 \gset
-SELECT pg_temp.rc_rows(:'lgitem'::uuid,:'south'::uuid,'monthly') AS lg_before \gset
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.update_item_storage_price(:'lg_row'::uuid,0,70,0,9,2,5,:'d30'::date,NULL) AS lg_partial,
-       public.update_item_storage_price(:'lg_row'::uuid,0,49,0,9.5,2,5,:'d30'::date,NULL) AS lg_other_type \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'lg_partial'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'lg_partial'::jsonb->>'success'='false',
- 'the legacy overload refuses a partial overlap (0-70 against 50-100): '||:'lg_partial');
-SELECT pg_temp.rc_assert(:'lg_other_type'::jsonb->>'success'='true',
- 'the legacy overload ignores a one-time row with the same band: '||:'lg_other_type');
-SELECT pg_temp.rc_assert((SELECT weight_max=49 FROM public.item_storage_prices WHERE id=:'lg_row'::uuid)
- AND (SELECT count(*)=2 FROM public.item_storage_prices WHERE item_id=:'lgitem'::uuid AND customer_id=:'south'::uuid AND price_type='monthly'),
- 'the refused overlap changed nothing; rows: '||pg_temp.rc_rows(:'lgitem'::uuid,:'south'::uuid,'monthly'));
+-- (The price writers create_item_storage_price, update_item_storage_price, delete_item_storage_price and find_or_create_item_storage_price,
+-- and their staff, overlap, one-day and one-time labour checks, were dropped with migration 123: replace_item_rates is the writer.)
 
 -- ---------------------------------------------------------------------------
 -- 14. search_customers: every typed word anywhere in the name; order starts-with first
@@ -874,30 +778,6 @@ RESET ROLE;
 SELECT pg_temp.rc_assert(:'sup_correct_plan'::jsonb->>'success'='true'
  AND pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly')=format('0-100@6.00/2.50/5 %s..%s | 0-100@7.50/2.50/5 %s..open',:'old_start',:'d29',:'d30'),'a supervisor corrects a planned rate: '||pg_temp.rc_rows(:'mp'::uuid,NULL,'monthly'));
 
--- CR-33: find_or_create_item_storage_price is for administrators and supervisors.
-SELECT pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) NOT LIKE '%''find_or_create_item_storage_price''%' AS guard_dropped \gset
-SELECT pg_temp.rc_assert(:'guard_dropped'::boolean,'the staff list no longer names find_or_create_item_storage_price');
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT pg_temp.rc_replace(:'mf'::uuid,:'north'::uuid,'monthly',:'today',jsonb_build_array(pg_temp.rc_band(0,40,5))) AS f_seed \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'f_seed'::jsonb->>'success'='true','seed');
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT pg_temp.rc_call(format('SELECT public.find_or_create_item_storage_price(%L,%L,70,''monthly'',9,1,5)',:'mf',:'north')) AS f_staff \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(COALESCE(:'f_staff'::jsonb->>'success','false')<>'true' AND (SELECT count(*)=1 FROM public.item_storage_prices WHERE item_id=:'mf'::uuid),'staff are refused and nothing is created: '||:'f_staff');
-SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.find_or_create_item_storage_price(:'mf'::uuid,:'north'::uuid,50,'monthly',9,1,5) AS f_overlap,
-       public.find_or_create_item_storage_price(:'mf'::uuid,:'south'::uuid,10,'one_time',12,3,5) AS f_onetime \gset
-RESET ROLE;
-SELECT pg_temp.rc_assert(:'f_overlap'::jsonb->>'error_code'='BANDS_OVERLAP' AND :'f_overlap'::jsonb->>'success'='false'
- AND (SELECT count(*)=1 FROM public.item_storage_prices WHERE item_id=:'mf'::uuid AND customer_id=:'north'::uuid),'an overlapping row is refused: '||:'f_overlap');
-SELECT pg_temp.rc_assert(:'f_onetime'::jsonb->>'success'='true' AND (:'f_onetime'::jsonb#>>'{data,labour_rate}')::numeric=0
- AND :'f_onetime'::jsonb#>>'{data,effective_from}'=:'today'
- AND (SELECT labour_rate=0 AND effective_from=:'today'::date FROM public.item_storage_prices WHERE id=(:'f_onetime'::jsonb#>>'{data,id}')::uuid),'a one-time row has labour 0 and starts on the India day: '||:'f_onetime');
-
 -- CR-34: the expired filter uses the India day. The clock is emulated one day ahead of the server's day.
 CREATE OR REPLACE FUNCTION warehouse_security.business_date(moment timestamptz) RETURNS date
 LANGUAGE sql STABLE SET search_path = pg_catalog AS $$ SELECT CURRENT_DATE + 1 $$;
@@ -1036,13 +916,11 @@ SELECT pg_temp.rc_rows(:'clockitem'::uuid,NULL,'monthly') AS clock_before \gset
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-04-01',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_today,
-       pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-03-31',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_yesterday,
-       pg_temp.rc_call(format($q$SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>'monthly',p_unit_price=>9,p_weight_min=>101,p_weight_max=>150,p_labour_rate=>2,p_effective_from=>'2026-04-01',p_customer_id=>%L::uuid,p_tax_percent=>5)$q$,:'garlic',:'north')) AS ist_create_today \gset
+       pg_temp.rc_replace(:'clockitem'::uuid,NULL,'monthly','2026-03-31',jsonb_build_array(pg_temp.rc_band(0,100,13))) AS ist_yesterday \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'ist_today'::jsonb->>'state'='42501' AND :'ist_yesterday'::jsonb->>'state'='42501'
- AND :'ist_create_today'::jsonb::text LIKE '%Staff access required%' AND COALESCE(:'ist_create_today'::jsonb->>'success','false')<>'true'
  AND pg_temp.rc_rows(:'clockitem'::uuid,NULL,'monthly')=:'clock_before',
- 'at 00:30 India time staff are refused on 1 April and on 31 March alike: '||:'ist_today'||:'ist_yesterday'||:'ist_create_today');
+ 'at 00:30 India time staff are refused on 1 April and on 31 March alike: '||:'ist_today'||:'ist_yesterday');
 -- A supervisor starts a rate on 1 April (the India day) as before.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SET LOCAL ROLE authenticated;

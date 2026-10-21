@@ -3,6 +3,12 @@
 -- operator OTP prepare/mock-provider finish/verify. All fixture rows roll back.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.grn_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'staff GRN policy: %',label; END IF; END $$;
 CREATE FUNCTION pg_temp.grn_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -135,8 +141,8 @@ END $$;
 
 SELECT pg_temp.grn_denied(format('SELECT public.delete_grn_safe(%L::uuid)',:'grn_b'));
 SELECT pg_temp.grn_denied('SELECT public.get_users_list()');
-SELECT pg_temp.grn_assert(public.save_invoice('{}'::jsonb)->>'success'='false' AND
- public.save_invoice('{}'::jsonb)::text LIKE '%Invoice requires at least one dispatch line%',
+SELECT pg_temp.grn_assert(pg_temp.save_invoice_doc('{}'::jsonb)->>'success'='false' AND
+ pg_temp.save_invoice_doc('{}'::jsonb)->>'error'='Invalid invoice data',
  'authorized staff malformed invoice rejected by business validation');
 SELECT pg_temp.grn_denied('SELECT public.create_customer(''Forbidden New Customer'',''9888888859'')');
 -- Migration 45 (owner decision, 2026-10-11): staff may remove a confirmed

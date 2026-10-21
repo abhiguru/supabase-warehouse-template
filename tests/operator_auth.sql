@@ -8,10 +8,6 @@ INSERT INTO warehouse_security.auth_config(key,value) VALUES
   ('auth_mode','operator'),('demo_auth_enabled','false')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 
-SELECT pg_temp.assert_true(NOT (public.send_otp('919888888801')->>'success')::boolean,'demo send is unavailable');
-SELECT pg_temp.assert_true(NOT (public.verify_otp_or_register('919888888801','123456')->>'success')::boolean,'fixed demo OTP is unavailable');
-SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.send_otp(varchar,varchar,text,inet,text)','EXECUTE'),'anon cannot call historical demo send');
-SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.verify_otp_or_register(varchar,varchar,varchar,varchar)','EXECUTE'),'anon cannot call historical demo verify');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE'),'anon cannot prepare OTP');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_sms_config()','EXECUTE'),'anon cannot read provider credentials');
 SELECT pg_temp.assert_true(NOT has_function_privilege('authenticated','public.operator_sms_config()','EXECUTE'),'users cannot read provider credentials');
@@ -42,7 +38,7 @@ SELECT pg_temp.assert_true((public.operator_prepare_otp('9888888801')->>'code')=
   'in-flight delivery blocks a second SMS challenge');
 SELECT public.operator_finish_otp((:'challenge'::jsonb#>>'{data,request_id}')::uuid,true,'provider-accepted');
 SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='success'
-  AND msg91_request_id='provider-accepted' AND otp_code IS NULL AND otp_hash IS NULL
+  AND msg91_request_id='provider-accepted' AND otp_code IS NULL
   AND otp_code_hash ~ '^[0-9a-f]{64}$' FROM public.otp_verifications
   WHERE id=(:'challenge'::jsonb#>>'{data,request_id}')::uuid),
   'accepted delivery stores a provider ID and hash only');
@@ -85,8 +81,8 @@ SELECT pg_temp.assert_true((SELECT delivery_status='accepted' AND msg91_status='
   'a success without an ID is accepted and recorded as success_no_id, the code kept');
 SELECT pg_temp.assert_true((SELECT attempts=1 AND status='success_no_id' FROM warehouse_security.otp_provider_attempts
   WHERE request_id=(:'no_id_delivery'::jsonb#>>'{data,request_id}')::uuid),'the attempt log carries the same status');
-SELECT pg_temp.assert_true((public.get_otp_stats('919888888831')#>>'{data,0,successful_sent}')::integer=1,
-  'the OTP statistics count a send without an ID as sent');
+SELECT pg_temp.assert_true((SELECT count(*) FROM public.otp_verifications WHERE phone_number=warehouse_security.normalize_phone('9888888831')
+  AND delivery_status='accepted')=1, 'a send without an ID counts as one accepted send');
 SELECT pg_temp.assert_true((public.operator_verify_otp('9888888831',:'no_id_delivery'::jsonb#>>'{data,otp_code}','No Id Customer')#>>'{data,action}')='pending',
   'the code of a send without an ID still verifies');
 SELECT public.operator_prepare_otp('9888888832') AS empty_id_delivery \gset

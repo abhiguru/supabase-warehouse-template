@@ -4,6 +4,12 @@
 -- data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.lot_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'dispatch lot ownership: %',label; END IF; END $$;
 -- True when the statement raises an error whose text matches the pattern.
@@ -55,9 +61,7 @@ SELECT pg_temp.lot_assert(public.create_item('Lot Rule Potatoes','Bag')->>'succe
 SELECT id AS customer_a FROM public.customers WHERE name='Lot Rule Customer A' \gset
 SELECT id AS customer_b FROM public.customers WHERE name='Lot Rule Customer B' \gset
 SELECT id AS item_id FROM public.items WHERE name='Lot Rule Potatoes' \gset
-SELECT pg_temp.lot_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'customer_a'::uuid,p_tax_percent=>5)->>'success'='true','price for A');
+SELECT pg_temp.lot_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_a'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','price for A');
 SELECT pg_temp.lot_assert(public.save_grn(p_gr_no=>'LOTA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_a'::uuid,
  p_customer_name=>'Lot Rule Customer A',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'lot-rule-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Lot Rule Potatoes',
@@ -139,7 +143,7 @@ SELECT pg_temp.lot_assert((SELECT stock=0 FROM public.goodsreceived_trl WHERE id
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'charge',5,'tax',5,'labour_rate',2)) AS invoice_items
  FROM public.dispatch_trl t WHERE t.gr_trl_id=:'lot_a'::uuid \gset
 SET LOCAL ROLE authenticated;
-SELECT public.save_invoice(jsonb_build_object('inv_no',20261039,'inv_fin_year',2026,'gr_id',:'grn_a','gr_no','LOTA',
+SELECT pg_temp.save_invoice_doc(jsonb_build_object('inv_no',20261039,'inv_fin_year',2026,'gr_id',:'grn_a','gr_no','LOTA',
  'customer_id',:'customer_a','customer_name','Lot Rule Customer A','inv_date','2026-05-02T12:00:00Z',
  'total',998,'tax_amount',48,'discount',0,'duration_mode','legacy','items',:'invoice_items'::jsonb)) AS saved \gset
 SELECT pg_temp.lot_assert(:'saved'::jsonb->>'success'='true','invoice for LOTA: ' || :'saved');
@@ -297,16 +301,11 @@ SELECT public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','LOT
 SELECT pg_temp.lot_assert(:'own_cart'::jsonb->>'success'='true','a dispatch from the customer''s own cart is made: ' || :'own_cart');
 SELECT (:'own_cart'::jsonb->>'dispatch_id') AS dispatch_c3 \gset
 RESET ROLE;
--- A record that links A's dispatch to B's cart (made before this rule) is not listed in B's cart.
+-- A record that links A's dispatch to B's cart (made before this rule) is not named in B's order list or order detail.
 INSERT INTO public.dispatch(disp_no,disp_date,customer_id,customer_name,source_order_id)
  VALUES ('LOTC2','2026-05-02',:'customer_a'::uuid,'Lot Rule Customer A',:'cart_b'::uuid);
 SELECT set_config('request.jwt.claims',:'reader_b_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT public.get_cart_dispatches(:'cart_b'::uuid) AS cart_list \gset
-SELECT pg_temp.lot_assert(:'cart_list'::jsonb->>'success'='true'
- AND jsonb_array_length(:'cart_list'::jsonb->'data')=1
- AND :'cart_list'::jsonb#>>'{data,0,dispatch_no}'='LOTC3',
- 'B''s cart lists its own dispatch LOTC3 and not A''s LOTC2: ' || :'cart_list');
 -- The order list and the order detail do not name A's LOTC2 either (migration 87). B's own LOTC3 is
 -- unlinked for the first reading so that LOTC2 is the only dispatch that follows the cart.
 RESET ROLE;

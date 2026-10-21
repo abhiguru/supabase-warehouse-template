@@ -93,10 +93,6 @@ SELECT pg_temp.num_assert(has_function_privilege('authenticated','public.get_nex
 SELECT pg_temp.num_assert(pg_get_functiondef('public.get_next_invoice_number(integer)'::regprocedure)
   ~ 'BEGIN\s+PERFORM warehouse_security\.authorize_rpc\(''get_next_invoice_number''',
  'the guard is the first statement');
--- get_next_invoice_number_with_year is left as it is: no app role can call it.
-SELECT pg_temp.num_assert(NOT has_function_privilege('authenticated','public.get_next_invoice_number_with_year()','EXECUTE')
- AND NOT has_function_privilege('anon','public.get_next_invoice_number_with_year()','EXECUTE'),
- 'the older with-year variant is not part of the API');
 
 -- The answers, as staff (the role that creates most invoices).
 SELECT set_config('request.jwt.claims',:'staff_claims',true);

@@ -143,7 +143,7 @@ test_files=(
   "$ROOT/tests/grn_edit_integrity.sql"
   "$ROOT/tests/stock_history_cutoff.sql"
   "$ROOT/tests/dispatch_cart_and_movements.sql"
-  "$ROOT/tests/legacy_functions.sql"
+  "$ROOT/tests/removed_objects.sql" "$ROOT/tests/dispatch_delete_trigger.sql" "$ROOT/tests/public_config.sql" "$ROOT/tests/rpc_callers_exist.sql"
   "$ROOT/tests/print_invoice_range.sql"
   "$ROOT/tests/dispatch_invoice_read_figures.sql"
   "$ROOT/tests/grn_image_visibility.sql"
@@ -151,9 +151,8 @@ test_files=(
   "$ROOT/tests/sensor_ingest.sql" "$ROOT/tests/sensor_limits.sql"
   "$ROOT/tests/item_rate_changes.sql" "$ROOT/tests/enrollment_approve_role.sql" "$ROOT/tests/service_accounts.sql" "$ROOT/tests/users_review.sql"
   "$ROOT/tests/backlog_80.sql" "$ROOT/tests/open_items_82.sql" "$ROOT/tests/grn_deactivated_83.sql" "$ROOT/tests/grn_move_deactivated_84.sql" "$ROOT/tests/standard_rate.sql" "$ROOT/tests/grn_rates.sql" "$ROOT/tests/grn_item_rates_88.sql" "$ROOT/tests/staff_pricing_90.sql" "$ROOT/tests/items_review.sql"
-  "$ROOT/tests/list_refresh_removed_106.sql" "$ROOT/tests/invoice_list_live.sql"
-  "$ROOT/tests/realtime_removed_105.sql"
-  "$ROOT/tests/unused_extensions_absent.sql" "$ROOT/tests/fingerprint_collation.sql" "$ROOT/tests/jwt_sign_108.sql"
+  "$ROOT/tests/invoice_list_live.sql"
+  "$ROOT/tests/fingerprint_collation.sql"
   "$ROOT/tests/catalog_receipt_width.sql" "$ROOT/tests/central_refusal_no_write.sql"
   "$ROOT/tests/grn_receipt_pages_98.sql" "$ROOT/tests/customer_dispatch_items_order_99.sql"
   "$ROOT/tests/customers_review.sql" "$ROOT/tests/owner_followups.sql" "$ROOT/tests/customer_name_rule.sql" "$ROOT/tests/push_review.sql" "$ROOT/tests/grn_heavy_dispatch.sql"
@@ -166,6 +165,28 @@ for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
 done
 
+
+# Migration 123's guard (the block between the GUARD-BEGIN and GUARD-END lines of its file) refuses while a table to be dropped holds a
+# row or a column to be dropped holds a value, and names each with its count. Run here against the migrated database, in
+# transactions that are rolled back: the objects are absent (passes silently), then a stand-in table with a row, then a column
+# with values on a table that has rows.
+guard_sql=$(sed -n '/^-- GUARD-BEGIN$/,/^-- GUARD-END$/p' "$ROOT/migrations/00000000000123_slim_round2.sql")
+[[ "$guard_sql" == *'DO $guard$'* && "$guard_sql" == *'$guard$;'* ]] || { echo 'The guard block of migration 123 was not found.' >&2; exit 1; }
+printf 'BEGIN;\n%s\nROLLBACK;\n' "$guard_sql" | mig_psql >/dev/null \
+  || { echo 'The migration 123 guard refused an empty database.' >&2; exit 1; }
+if err=$(printf 'BEGIN;\nCREATE TABLE public.auth_logs (id int);\nINSERT INTO public.auth_logs VALUES (1), (2);\n%s\nROLLBACK;\n' "$guard_sql" | mig_psql 2>&1 >/dev/null); then
+  echo 'The migration 123 guard accepted a table that holds rows.' >&2; exit 1
+fi
+[[ "$err" == *'table public.auth_logs: 2 rows'* && "$err" == *'Nothing was changed'* ]] || { echo "The guard refusal for a table is not the expected one: $err" >&2; exit 1; }
+rows_api=$(mig_psql -At -c 'SELECT count(*) FROM public.api_configurations')
+[[ "$rows_api" -ge 1 ]] || { echo 'api_configurations has no row for the guard test.' >&2; exit 1; }
+if err=$(printf "BEGIN;\nALTER TABLE public.api_configurations ADD COLUMN sentry_dsn text DEFAULT 'x';\n%s\nROLLBACK;\n" "$guard_sql" | mig_psql 2>&1 >/dev/null); then
+  echo 'The migration 123 guard accepted a column that holds values.' >&2; exit 1
+fi
+[[ "$err" == *"column public.api_configurations.sentry_dsn: $rows_api non-NULL values"* ]] || { echo "The guard refusal for a column is not the expected one: $err" >&2; exit 1; }
+# A column that exists but is all NULL passes.
+printf 'BEGIN;\nALTER TABLE public.api_configurations ADD COLUMN sentry_dsn text;\nCREATE TABLE public.auth_logs (id int);\n%s\nROLLBACK;\n' "$guard_sql" | mig_psql >/dev/null \
+  || { echo 'The migration 123 guard refused an empty table and a NULL column.' >&2; exit 1; }
 
 mig_psql -c "ALTER DATABASE postgres RESET storage.allow_delete_query"
 

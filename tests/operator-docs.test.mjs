@@ -58,8 +58,8 @@ const otpSection = () => {
 };
 
 test('the OTP cleanup is described as it runs, and pg_cron is named only where a migration creates it', () => {
-  // TW-BE-014: the installation does not install pg_cron; cleanup is opportunistic (every 100th insert,
-  // trigger_auto_cleanup_otps) and the rest is the manual retention command.
+  // TW-BE-014: the installation does not install pg_cron; the only OTP clean-up is the 7-day ephemeral_auth retention rule
+  // (migration 123 removed the every-100th-insert trigger), run by the daily checker or the manual retention command.
   const createsPgCron = readdirSync(new URL('../migrations/', import.meta.url))
     .some(name => /CREATE\s+EXTENSION[^;]*pg_cron/i.test(read(`migrations/${name}`)));
   // The baseline does not create it; the guide may name it only in the upgrade note about migration 106 (the removal).
@@ -71,9 +71,10 @@ test('the OTP cleanup is described as it runs, and pg_cron is named only where a
   assert.match(section, /OTPs expire after 5 minutes/);
   assert.match(section, /not removed on a database timer/);
   assert.match(section, /checker's daily run/);
-  assert.match(section, /Every 100th new code/);
+  assert.match(section, /7-day `ephemeral_auth` retention\s+rule deletes expired OTP rows older than 7 days/);
+  assert.doesNotMatch(section, /100th/);
   assert.match(section, /retention:apply/);
-  assert.match(read('migrations/00000000000000_baseline.sql'), /Run cleanup every 100 OTP insertions/);
+  assert.doesNotMatch(read('migrations/00000000000123_slim_round2.sql').replace(/^--.*$/gm, ''), /CREATE\s+TRIGGER\s+trigger_auto_cleanup_otps/i);
   assert.match(read('docs/OPERATOR_INSTALL.md'), /## Retention\n\nRetention is the owner-approved clean-up/);
 });
 

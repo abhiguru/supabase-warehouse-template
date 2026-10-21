@@ -48,12 +48,10 @@ Deno.serve(async (req: Request) => {
     });
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     if (!anonKey) throw new Error('Missing anon key');
-    const client = restClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: config, error } = await client.from('api_configurations')
-      .select('app_version,maintenance_mode').eq('environment', environment).eq('is_active', true).single();
+    // The anon key only: get_public_config (migration 123) reads the two tables as its owner and returns just these fields.
+    const client = restClient(Deno.env.get('SUPABASE_URL')!, anonKey);
+    const { data: config, error } = await client.rpc('get_public_config', { p_environment: environment });
     if (error || !config) throw new Error('Configuration not seeded');
-    const flags = await client.from('feature_flags').select('name,enabled');
-    if (flags.error) throw new Error('Features unavailable');
     return new Response(JSON.stringify({ success: true, data: {
       supabaseUrl: baseUrl, anonKey, environment, version: config.app_version,
       instanceId: instance.instanceId, displayName: instance.displayName,
@@ -63,7 +61,7 @@ Deno.serve(async (req: Request) => {
       maintenanceMode: config.maintenance_mode,
       centralLogin,
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
-      featureFlags: Object.fromEntries((flags.data || []).map(flag => [flag.name, flag.enabled])),
+      featureFlags: config.feature_flags ?? {},
     }, timestamp: new Date().toISOString() }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });

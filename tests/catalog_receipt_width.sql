@@ -1,10 +1,16 @@
 -- Migration 95 (TW-BE-012, TW-BE-013): the receipt snapshot is as wide as the catalog. An item of 80 characters with a
 -- packaging of 40 can be received, listed, dispatched and invoiced; 81 / 41 characters are refused up front by
 -- save_grn and update_grn with item_name_too_long / packaging_too_long, writing nothing; the four views that block the
--- column change were recreated with the same owner, privileges and indexes, and the list refresher still sees them.
+-- column change were recreated (the views stock_summary and low_stock_alerts were dropped again by migration 123).
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database; every fixture row rolls back.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.cw_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'catalog receipt width: %',label; END IF; END $$;
 CREATE FUNCTION pg_temp.cw_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -52,7 +58,7 @@ BEGIN
   rws := public.build_invoice_recalculation_rows(v_gr);
   SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id',r->>'grn_item_id','duration',(r->>'duration')::numeric,
            'charge',5,'tax',5,'labour_rate',1)) INTO its FROM jsonb_array_elements(rws->'rows') r;
-  RETURN pg_temp.cw_as(claims, format($q$SELECT public.save_invoice(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
+  RETURN pg_temp.cw_as(claims, format($q$SELECT pg_temp.save_invoice_doc(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
     jsonb_build_object('inv_no',p_inv_no,'inv_fin_year',2026,'customer_id',p_customer,'customer_name','CW Orchard',
       'inv_date',now(),'total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
       'gr_id',v_gr,'gr_no',p_gr_no), its));
@@ -78,15 +84,6 @@ SELECT pg_temp.cw_login('9888889602') AS staff_claims \gset
 SELECT pg_temp.cw_assert((SELECT count(*)=2 FROM pg_attribute WHERE attrelid='public.goodsreceived_trl'::regclass AND NOT attisdropped
    AND ((attname='item_name' AND atttypmod=84) OR (attname='packaging' AND atttypmod=44))),
  'goodsreceived_trl.item_name is varchar(80) and packaging varchar(40)');
-SELECT pg_temp.cw_assert((SELECT count(*)=4 FROM information_schema.columns WHERE table_schema='public'
-   AND table_name IN ('stock_summary','low_stock_alerts')
-   AND ((column_name='item_name' AND character_maximum_length=80) OR (column_name='packaging' AND character_maximum_length=40))),
- 'stock_summary and low_stock_alerts show item_name 80 and packaging 40');
--- The two views that stay keep the owner and privileges they had.
-SELECT pg_temp.cw_assert((SELECT count(*)=2 AND bool_and(pg_get_userbyid(c.relowner)='supabase_admin'
-     AND c.relacl::text ~ '^\{supabase_admin=arwdDxtm?/supabase_admin,service_role=arwdDxtm?/supabase_admin\}$')  -- m (MAINTAIN) exists from PostgreSQL 17; the role postgres is not in this database
-   FROM pg_class c WHERE c.oid IN ('public.stock_summary'::regclass,'public.low_stock_alerts'::regclass)),
- 'the two recreated views keep the owner and privileges they had');
 -- Migration 106 removed the materialized lists: the list screens read the tables, so there is nothing to refresh.
 SELECT pg_temp.cw_assert(NOT EXISTS (SELECT 1 FROM pg_matviews) AND to_regclass('public.mv_refresh_queue') IS NULL,
  'no materialized list and no refresh queue remain (migration 106)');
@@ -116,16 +113,11 @@ SELECT pg_temp.cw_assert((SELECT t.item_name=:'name80' AND t.packaging=:'pack40'
 SELECT pg_temp.cw_assert(pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_all_grn_items(p_filters=>'{"search":"CWW1"}'::jsonb)$q$)::text LIKE '%'||:'name80'||'%'
  AND pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_all_grn_items(p_filters=>'{"search":"CWW1"}'::jsonb)$q$)::text LIKE '%'||:'pack40'||'%',
  'the GRN list shows the full name and packaging');
-SELECT pg_temp.cw_assert((SELECT count(*)=1 AND bool_and(item_name=:'name80' AND packaging=:'pack40') FROM public.stock_summary WHERE gr_no='CWW1')
- AND (SELECT count(*)=0 FROM public.low_stock_alerts WHERE gr_no='CWW1'),
- 'stock_summary shows the full strings (a full lot is not a low-stock alert)');
 
 SELECT pg_temp.cw_invoice(:'admin_claims'::jsonb,'CWW1','CWD1',20269601,:'orchard'::uuid,:'admin_profile'::uuid) AS wide_invoice \gset
 SELECT pg_temp.cw_assert(:'wide_invoice'::jsonb->>'success'='true','the 80 / 40 character line is dispatched and invoiced: '||:'wide_invoice');
 SELECT pg_temp.cw_assert(pg_temp.cw_as(:'admin_claims'::jsonb,$q$SELECT public.get_dispatch_list_with_items(p_filters=>'{"disp_no":"CWD1"}'::jsonb,p_include_items=>true)$q$)::text LIKE '%'||:'name80'||'%',
  'the Dispatches list names the full item of the dispatch');
-SELECT pg_temp.cw_assert((SELECT count(*)=0 FROM public.stock_summary WHERE gr_no='CWW1' AND current_stock>0),
- 'the dispatched lot leaves stock_summary');
 
 -- ---------------------------------------------------------------------------
 -- 4. One character more is refused up front, with the code and the limit, and writes nothing
