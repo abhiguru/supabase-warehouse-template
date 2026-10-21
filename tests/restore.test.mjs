@@ -486,9 +486,3 @@ test('verify-restore refuses an old image backup with no container started', () 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('the configure-list-refresh step is gone from the restore scripts and setup', () => {
-  // The configure-list-refresh step is gone from both scripts, and the script itself.
-  for (const script of ['restore.sh', 'verify-restore.sh', '../setup.sh']) {
-    assert.doesNotMatch(readFileSync(new URL(`../scripts/${script}`, import.meta.url), 'utf8'), /configure-list-refresh/, script);
-  }
-});

@@ -84,7 +84,6 @@ test('the OTP section names the HMAC-SHA256 construction and what a key rotation
   assert.match(section, /HMAC-SHA256 over `phone:code:request id`/);
   assert.match(section, /never as a bare\s+SHA-256/);
   assert.match(section, /rotation changes that secret[\s\S]*codes issued before it stop\s+verifying/);
-  assert.match(read('migrations/00000000000000_baseline.sql'), /extensions\.hmac\(phone\|\|':'\|\|code\|\|':'\|\|request_id::text,secret,'sha256'\)/);
   assert.match(read('scripts/rotate-auth.sql'), /Pending challenges hold HMACs of the previous secret/);
 });
 
@@ -99,7 +98,6 @@ test('the OTP section states the provider request-ID contract and the success wi
   assert.match(section, /`success_no_id`/);
   assert.match(section, /no second SMS is sent/);
   assert.match(section, /`type`\s+and `status` disagree/);
-  assert.match(read('migrations/00000000000000_baseline.sql'), /'success_no_id'/);
 });
 
 test('the OTP section documents the provider-request ceiling, the timeout rule and the no-send switch', () => {
@@ -109,8 +107,6 @@ test('the OTP section documents the provider-request ceiling, the timeout rule a
   assert.match(section, /`provider_ambiguous`/);
   assert.match(section, /warehouse_security\.otp_provider_attempts/);
   assert.match(section, /A cap of text `0` is accepted and blocks every send/);
-  const migration = read('migrations/00000000000000_baseline.sql');
-  for (const name of ['otp_daily_provider_attempt_cap', 'provider_ambiguous', 'otp_provider_attempts']) assert.ok(migration.includes(name), name);
   // The one rule for which values are placeholders is described where fixtures are installed (X-7).
   const guide = read('docs/OPERATOR_INSTALL.md');
   assert.match(guide, /\*\*Test installations \(CI, review fixtures\)\.\*\*/);

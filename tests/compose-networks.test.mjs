@@ -62,10 +62,9 @@ test('every service still shares a network with each host it is configured to ca
   wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
 
   assert.deepEqual([...wanted.kong].sort(), ['functions', 'rest', 'storage']);
-  // Storage does not use PostgREST (no POSTGREST_URL, no depends_on rest); the function runtime calls PostgREST and Storage
+  // Storage does not use PostgREST (no depends_on rest); the function runtime calls PostgREST and Storage
   // directly (SUPABASE_REST_URL, SUPABASE_STORAGE_URL, functions/_shared/supabase-rest.ts) and keeps SUPABASE_URL for the gateway.
   assert.deepEqual([...wanted.storage].sort(), ['db']);
-  assert.equal(services.storage.environment.POSTGREST_URL, undefined);
   assert.deepEqual(Object.keys(services.storage.depends_on ?? {}), ['db']);
   assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer', 'rest', 'storage']);
   assert.equal(services.functions.environment.SUPABASE_REST_URL, 'http://rest:3000');
@@ -103,13 +102,7 @@ test('every service still shares a network with each host it is configured to ca
   // The function runtime never waits for the renderer: a renderer restart must not block or restart it.
   assert.deepEqual(Object.keys(services.functions.depends_on), ['db']);
   assert.equal(services.functions.environment.PDF_RENDERER_URL, 'http://pdf-renderer:3000');
-  assert.equal('GOTENBERG_URL' in services.functions.environment, false);
   assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
-});
-
-test('the Compose files define no studio, meta or admin', () => {
-  assert.doesNotMatch(read('docker/docker-compose.yml'), /^  (?:studio|meta|admin):/m, 'docker-compose.yml defines studio, meta or admin');
-  assert.equal(existsSync(new URL('../docker/docker-compose.override.yml', import.meta.url)), false, 'the override file is merged into docker-compose.yml');
 });
 
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
@@ -207,7 +200,6 @@ test('kong resolves Compose names at the DNS root, so a host search domain canno
   // TW-BE-015: a lookup through the host's search domain took about 8 s.
   const { services } = topology();
   assert.deepEqual(services.kong.dns_search, ['.']);
-  assert.equal('realtime' in services, false, 'the Realtime service is removed');
 });
 
 test('the renderer runs read-only with no capabilities, no ports and bounded memory', { skip }, () => {

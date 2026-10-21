@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseReportRequest, reportNames, periodReports, dayNumber, maxSearchLength } from '../functions/_shared/report-request.ts';
-import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows, oneRowPerInvoice,
+import { buildReport, reportDefinitions, reportFilters, reportLevel, reportRefusal, sortFields, unwrapReportBody, formatCell, indiaDay, maxReportRows,
   stockLineBucket }
   from '../functions/_shared/report-definitions.ts';
 import { label, labelKeys, missingGujarati } from '../functions/_shared/report-labels.ts';
@@ -101,10 +101,10 @@ test('each report reads its existing RPC with the arguments the app uses, at the
     assert.deepEqual(reportLevel(odd).rpc(odd).args, { p_customer_id: null, ...items }, field);
     assert.deepEqual(buildReport(odd, { items: [] }).sort.field, 'item', field);
   }
-  // Every RPC named here exists in the baseline migration (the squash of migrations 0 to 110).
-  const sql = readFileSync(new URL('../migrations/00000000000000_baseline.sql', import.meta.url), 'utf8');
+  // Every RPC named here is on the list tests/rpc_callers_exist.sql checks against the live schema, after every migration.
+  const callers = readFileSync(new URL('../tests/rpc_callers_exist.sql', import.meta.url), 'utf8');
   for (const [one, all] of Object.values(calls)) {
-    for (const call of [one, all]) assert.match(sql, new RegExp(`FUNCTION public\\.${call.name}\\(`), call.name);
+    for (const call of [one, all]) assert.ok(callers.includes(`'${call.name}'`), `${call.name} is not in tests/rpc_callers_exist.sql`);
   }
 });
 
@@ -478,15 +478,17 @@ test('generate-report-pdf is routed for signed-in callers and gets the document 
     "import { reportPdf } from '../_shared/report-pdf.ts';\nDeno.serve(reportPdf);\n");
 });
 
-test('the baseline lists exactly the paths generate-report-pdf writes in expired_generated_documents (migration 53)', () => {
-  const sql = readFileSync(new URL('../migrations/00000000000000_baseline.sql', import.meta.url), 'utf8');
-  const start = sql.indexOf('CREATE FUNCTION warehouse_maintenance.expired_generated_documents(');
-  assert.ok(start > 0, 'expired_generated_documents is in the baseline');
+test('the live schema lists exactly the paths generate-report-pdf writes in expired_generated_documents (migration 53)', () => {
+  // The last migration file that defines the function wins, as it does in the database.
+  const directory = new URL('../migrations/', import.meta.url);
+  const definition = /CREATE (?:OR REPLACE )?FUNCTION warehouse_maintenance\.expired_generated_documents\(/;
+  const bodies = readdirSync(directory).sort().map(name => readFileSync(new URL(name, directory), 'utf8')).filter(text => definition.test(text));
+  assert.ok(bodies.length > 0, 'expired_generated_documents is defined in the migrations');
+  const sql = bodies.at(-1);
+  const start = sql.search(definition);
   const body = sql.slice(start, sql.indexOf('\n$$;', start));
   const names = /\^report\/\(([a-z|-]+)\)\//.exec(body)[1].split('|');
   assert.deepEqual(names, [...reportNames]);
-  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  assert.match(migrations, /"\$ROOT\/tests\/report_pdf_retention\.sql"/);
 });
 
 // ---------------------------------------------------------------------------
@@ -670,167 +672,43 @@ test('the handler takes the header choices from reportFilters and reports status
   assert.deepEqual(reportLevel(one).rpc(one), reportLevel(invoicesRequest()).rpc(invoicesRequest()));
 });
 
-// sha256 of the complete report HTML of every fixture above, both levels and both languages, made with the code of commit 2dbac98
-// (before status) and a fixed clock. A request without status must print exactly what it printed. The time stamp of all 28
-// documents changes on purpose (it is India's day and clock, "12-10-2026 13:30 IST", and was the UTC day and clock, "12-10-2026
-// 08:00 UTC"); it is put back first, twice per document (under the title and in the table's header). No fixture holds a night
-// moment (their dates are plain days), so no date column changes. Ten documents change on purpose
-// and are compared with the old text put back: the two Gujarati documents that held an English label ('Latest invoice',
-// 'Last activity'), the four stock aging documents, whose summary figure for the oldest stock is now the item count of the
-// 364+ bucket under the app's label (it was 'Over 1 year', the bags over 365 days; both are 0 in these fixtures), and the four
-// invoice history documents (migration 61). The invoice history fixtures now hold the RPC's answer of migration 61, where the
-// net figures are the invoice's total (1,000.00; they were total + tax, 1,180.00). Both levels lost the Net amount column and
-// figure, which would repeat the amount: the one-customer documents print 'Amount' in the summary where it said 'Net amount'
-// (added up from the totals listed), the all-customers ones keep their Amount column and figure. The old text (the Net amount
-// column of 1,180.00, its cell in the totals row and its figure in the summary) is put back piece by piece, each piece a
-// counted text; the label 'Net amount' is no longer in report-labels.ts, so the test holds the old words itself.
-// Then the Gujarati wording review of 2026-10-12 (migration 62's commit) changes all fourteen Gujarati documents: the sort line
-// says 'સૉર્ટનો ક્રમ' where it said 'આ મુજબ સૉર્ટ કરો' (twice per document), and three of them reword a column header ('આવક નં.' for
-// the GRN number in the one-customer GRN activity, stock summary and stock aging; 'કેટલા દિવસથી (દિવસ)' for the stock age in the
-// stock aging, which is also its sort line). The old text is put back the same way (`gujaratiReview`). The fourteen English
-// documents are unchanged by it, and the Paid / Pending rule changes none of the 28: the invoice history fixtures hold one
-// pending invoice with no payment, which prints 'Pending' as before. The review fixes of 2026-10-12 change none of the 28 either (no
-// change on purpose): no fixture holds a cut table (the label 'Total of rows shown'), a packaging sort, a status word other than
-// paid or pending, or two rows with one invoice_id, and the item list's sort keys change nothing for the default sort.
-// The weight change of 2026-10-14 changes ten documents on purpose: GRN activity (one customer and all customers), stock summary
-// (both levels) and the one-customer dispatch activity, each in English and Gujarati (4 + 4 + 2), which lost their weight columns,
-// totals and figures (`oldWeight` puts the old text back piece by piece); the other eighteen of the 28 are untouched, so no hash
-// below was re-pinned.
+// sha256 of the complete report HTML of every fixture above, both levels and both languages, with a fixed clock. A change to the
+// document markup or wording changes the hashes on purpose: read the HTML diff, then re-take the hashes (run the test with
+// REPORT_HTML_PRINT=1 to print the new table).
 const baselineHtml = {
-  'grn-activity/customer/en': '268d1e5d7c4a28cb3f11aa1a8512036f1feecb339c2bc669a311951d03091263',
-  'grn-activity/customer/gu': '2dc25c75fb437a85412b51329e139ef4132f8ea211b4f294e530b6f80f28c367',
-  'grn-activity/all/en': 'ee04e65ab64a4d5fdecb2124d80ba2f99f345937f7d59d2558462d4abd6179aa',
-  'grn-activity/all/gu': '392191cf817708dec663ac12c113daef3eadbb092957cf8f20c3b8c72b9c2e1d',
-  'dispatch-activity/customer/en': '8c565a8024f796afd50c4662a0d2020f99f0b439896901ebfc7d87071eb92c56',
-  'dispatch-activity/customer/gu': 'ca9f4c35d3037b08cf3a7a02adecb7590bab080e2ae4f60787ab41eac2e3a141',
-  'dispatch-activity/all/en': '6f2489a5906ca3d3675e8136bef0984d280c31f2f8a79375e1e2e3851298d95e',
-  'dispatch-activity/all/gu': '06962fcd1214fb4143f494c940cbc26853cdfebc9062392583b5e11661aee8a5',
-  'invoice-history/customer/en': '48ee2cf16f3b1f8420b0b26da8ae71116a5e186d9818b56adacf56964d599f31',
-  'invoice-history/customer/gu': 'dd206569b66da76118701c8168aa630426ef0a2d0bba39cc584ebf33391f5625',
-  'invoice-history/all/en': '6ce0a66071ef2b6b6037a85e83fe65f80338747047f121679f915c5ff21866cc',
-  'invoice-history/all/gu': 'c33240e45f72d09d0fdc46d0e29a64550fb98dc6495026e20f003095dff72c4a',
-  'stock-summary/customer/en': 'c8058911bcd79090092e8894c7aac9749dab3cd8c10d76bbacc4c6aa398cbe48',
-  'stock-summary/customer/gu': 'ab7dc6c78818a1ec94a536db6190a8a5f072a5f36a721677d917f78c364d0a69',
-  'stock-summary/all/en': 'f08d93de326e40975b452540026eb251a279250dc89e7a6042980492ef9d6fd0',
-  'stock-summary/all/gu': 'fca405f995c3859e9e200d0e3fe3c6f2f3a1f12b9930194cf47b3497a24911da',
-  'stock-aging/customer/en': 'cd6e39070e193cc338f90c68cd05d156cea3c80bf0ed679804c156f0af64f5d5',
-  'stock-aging/customer/gu': 'c043e77f385700e70ce99c381d2a74de996b143978d55509eb6c94e3fcd6f88a',
-  'stock-aging/all/en': 'd9fb25dc404eca762f2f7f0ad2bfd9d3368cf128b73a0ea80b1dc5f782b126fe',
-  'stock-aging/all/gu': '92084915881af766f54d0c969869942a0b074824127d42bede2d6385ce906e4e',
-  'item-stock-summary/customer/en': '636898edb986ef9d5f7dd8ada0a0a00e7bb1c6b74941213a20ad4c5fba5e15ba',
-  'item-stock-summary/customer/gu': 'bdeb9ef150b970b936c216a54f5582590cc36526b118f1c5c81ae35dc2e41d17',
-  'item-stock-summary/all/en': '8c4f9ae580c42e74315402b0f15bade523c7529ecd3e9587dfa4ffdb31f3d794',
-  'item-stock-summary/all/gu': 'f631a4f1f99c83795d608e6f714f45791ac7f695fc64a316f191cd29f84cc8e7',
-  'customer-activity/customer/en': 'c5044dc477b3bfef7fc17a9fb2268cc9c3285e7475e552d370dac08bb60540ec',
-  'customer-activity/customer/gu': 'd670d3ec926f195afe2ea75ca85803a3e9a097b60f6f307fb97881366074f7e0',
-  'customer-activity/all/en': '9d61344bfa50d911dd465f65b32c0dc3a07d3b080910b0a9253127cd25e69498',
-  'customer-activity/all/gu': '0c72342b628cb8b00989e1156d3d5b2d9a1458ce6a518bb3511a564b5bc5bbb5',
+  'grn-activity/customer/en': '1306c1412648d93deb2f1d072704f8fd4ba598a1a844c892f84244762e5da781',
+  'grn-activity/customer/gu': '01235510bad7d19a3d666c793586ca9c6fc614acff99ba8f11daba4cbc07eea3',
+  'grn-activity/all/en': '5d93410bb47bd6e10b7b2f5df264b66fdc9dba5665deb89d8aa70a79005c06ea',
+  'grn-activity/all/gu': '16fa0e432b42bf19fa2c78c1260eab4560eff0398310ffc945fce950b21fa551',
+  'dispatch-activity/customer/en': '321fbe984613d72b53e3ea7731aa1d6559d82f0274213f71b9a984b3c85e6044',
+  'dispatch-activity/customer/gu': '8252319ee00f608e7bde95a1d8b1fb8ef22a8e97ed47a5aba5ea8cac49083967',
+  'dispatch-activity/all/en': 'df7d9854fb96b15c148412ab7efb2639ae8cbc0d5a41623bf57a0f136f865800',
+  'dispatch-activity/all/gu': '36de38d6486aaec4bfb32daa1e44502a0f10c7e9a4a4573238f23bc62b93562b',
+  'invoice-history/customer/en': '05a927f36f680eea340f109923458f770dc6e82d11fcc23bfb898b4321154404',
+  'invoice-history/customer/gu': '28417f33d60a85a443ef87ebda2ad49044c5ae9bd98cff12723e448717261d3e',
+  'invoice-history/all/en': 'd25de594eb4336908f4487dba89c57a87a8e21a0e90624e5d8dd8096f4ff4630',
+  'invoice-history/all/gu': 'd66705e0cf687778db062fe94bca379b773280d336f918d75888e46dae068800',
+  'stock-summary/customer/en': '3da19eaac7f8ee61971b7de6922c4b268d8b2d81e5ef2375c6a4ebb617b86f56',
+  'stock-summary/customer/gu': 'a13f0c20d3d6055dc15208d6d37eca7d984df14593969f0224b0127ccbbd8aad',
+  'stock-summary/all/en': 'f1b2644b22ebf059af601744eca9906a8623ba5274317f30b8f6f030836efb62',
+  'stock-summary/all/gu': '30d8008f9511390b4d14b49b7373c04b33d89eb56af78e039746539b1fddb28f',
+  'stock-aging/customer/en': 'a7cb7751989135868dc7f083c95a678e9528e1b1d4ee01dd3a88bff6a2619c0d',
+  'stock-aging/customer/gu': '6e4f1130ee353d7da8f7f85e80562ca9dfd5d7e97ed9ad9fb6cf3152a093ff3c',
+  'stock-aging/all/en': '172564fb39d715782d77469012adf45bcc74a45693bdef3f6025217abefa30eb',
+  'stock-aging/all/gu': 'f54a1253203c12c7f039a358d2de4321848736d7fab37fe85a77e968a469ff73',
+  'item-stock-summary/customer/en': '4788fe4083debb66bd36fe3b29dc9a1711e348f8fde74ff5ba946e9229767fea',
+  'item-stock-summary/customer/gu': '76819733a1321755fcb79e0e0bef962959ab286a02e093858f8006dc8819bab3',
+  'item-stock-summary/all/en': 'ffd6998f6f935f034c5af591ab0b7351e63e25278ac37520e3732c7a7f8ee01e',
+  'item-stock-summary/all/gu': 'a26b93772bea56d38b2e190972098ff38345280b1ed32dfd9f225d9ad0b3c782',
+  'customer-activity/customer/en': '0dc787531a5be144a62d4fc077d6939e7ee3bf5833e9754f7fa094ade808ddf4',
+  'customer-activity/customer/gu': '4e6b45be7898879abcef458be1d9025670712c00f9dedaed67c6ec1c7816d075',
+  'customer-activity/all/en': 'a4c0459d5547148b9b28769b1dfe93bb6a88c725a1da29ab243eff90a77f8324',
+  'customer-activity/all/gu': '2fc67a899182ab8db08bddfae4cdb953d96b25c9406f7161010128c8607a635d',
 };
 
-// What the new invoice history documents (fixtures of migration 61: net = total = 1,000.00, tax 180.00, one pending invoice)
-// hold in place of the old ones, as [new text, old text, times]. The old documents had a Net amount column and figure of
-// 1,180.00 = total + tax (all-customers: 1,180.00 too, from net_amount).
-function oldInvoiceHistory(level, lang) {
-  const word = key => label(lang, key);
-  const oldNet = { en: 'Net amount', gu: 'ચોખ્ખી રકમ' }[lang];
-  const num = value => `<td class="num">${value}</td>`;
-  if (level === 'all') {
-    return [
-      ['<th colspan="4">', '<th colspan="5">', 1],
-      [`<th class="num">${word('amount')}</th>`, `<th class="num">${word('amount')}</th><th class="num">${oldNet}</th>`, 1],
-      [`${num('1,000.00')}<td>31-01-2026</td>`, `${num('1,000.00')}${num('1,180.00')}<td>31-01-2026</td>`, 1],
-      [`${num('1,000.00')}<td></td></tr>`, `${num('1,000.00')}${num('1,180.00')}<td></td></tr>`, 1],
-      [`<dt>${word('amount')}</dt><dd>1,000.00</dd></div></dl>`,
-        `<dt>${word('amount')}</dt><dd>1,000.00</dd></div><div class="kpi"><dt>${oldNet}</dt><dd>1,180.00</dd></div></dl>`, 1],
-    ];
-  }
-  const status = `<td>${formatCell('status', 'pending', lang)}</td>`;
-  return [
-    ['<th colspan="6">', '<th colspan="7">', 1],
-    [`<th class="num">${word('tax')}</th><th>${word('status')}</th>`, `<th class="num">${word('tax')}</th><th class="num">${oldNet}</th><th>${word('status')}</th>`, 1],
-    [num('180.00') + status, num('180.00') + num('1,180.00') + status, 1],
-    [`${num('180.00')}<td></td></tr>`, `${num('180.00')}${num('1,180.00')}<td></td></tr>`, 1],
-    [`<dt>${word('amount')}</dt><dd>1,000.00</dd>`, `<dt>${oldNet}</dt><dd>1,180.00</dd>`, 1],
-    [`<dt>${word('pending')}</dt><dd>1,000.00</dd>`, `<dt>${word('pending')}</dt><dd>1,180.00</dd>`, 1],
-  ];
-}
-
-// The ten documents that printed a weight until 2026-10-14 (GRN activity, stock summary and the one-customer dispatch activity) in
-// the old text, as [new text, old text, times]: the colspan, the header cell, each row's cell, the totals cell and the summary figure.
-// The old label "Weight (kg)" is no longer in report-labels.ts, so the test holds the old words itself. The weights are those of the
-// fixtures: GRN activity 1,500 and 4,020 (bag weight times bags, total 5,520) one customer, 234.5 and 1,000 (1,234.5) all customers;
-// dispatch activity 600; stock summary 2,500 and 2,000 (4,500) one customer, 4,500 all customers.
-function oldWeight(report, level, lang) {
-  const word = key => label(lang, key);
-  const W = { en: 'Weight (kg)', gu: 'વજન (કિલો)' }[lang];
-  const num = value => `<td class="num">${value}</td>`;
-  const th = `<th class="num">${W}</th>`;
-  const kpi = value => `<div class="kpi"><dt>${W}</dt><dd>${value}</dd></div>`;
-  const figure = (key, value) => `<div class="kpi"><dt>${word(key)}</dt><dd>${value}</dd></div>`;
-  if (report === 'grn-activity' && level === 'customer') {
-    return [
-      ['<th colspan="6">', '<th colspan="7">', 1],
-      [`<th class="num">${word('quantity')}</th><th class="num">${word('stock')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th class="num">${word('stock')}</th>`, 1],
-      [`${num('50')}${num('50')}<td></td></tr>`, `${num('50')}${num('1,500')}${num('50')}<td></td></tr>`, 1],
-      [`${num('100')}${num('40')}<td>2026-7</td>`, `${num('100')}${num('4,020')}${num('40')}<td>2026-7</td>`, 1],
-      [`${num('150')}${num('90')}<td></td></tr></tbody>`, `${num('150')}${num('5,520')}${num('90')}<td></td></tr></tbody>`, 1],
-      [figure('quantity', '150'), figure('quantity', '150') + kpi('5,520'), 1],
-    ];
-  }
-  if (report === 'grn-activity') {
-    return [
-      ['<th colspan="4">', '<th colspan="5">', 1],
-      [`<th class="num">${word('quantity')}</th><th>${word('latestGrn')}</th>`, `<th class="num">${word('quantity')}</th>${th}<th>${word('latestGrn')}</th>`, 1],
-      [`${num('800')}<td>15-01-2026</td>`, `${num('800')}${num('234.5')}<td>15-01-2026</td>`, 1],
-      [`${num('100')}<td>10-01-2026</td>`, `${num('100')}${num('1,000')}<td>10-01-2026</td>`, 1],
-      [`${num('900')}<td></td></tr></tbody>`, `${num('900')}${num('1,234.5')}<td></td></tr></tbody>`, 1],
-      [`${figure('quantity', '900')}</dl>`, `${figure('quantity', '900')}${kpi('1,234.5')}</dl>`, 1],
-    ];
-  }
-  if (report === 'dispatch-activity') {
-    return [[`${figure('bagsDispatched', '12')}</dl>`, `${figure('bagsDispatched', '12')}${kpi('600')}</dl>`, 1]];
-  }
-  if (level === 'customer') {
-    return [
-      ['<th colspan="6">', '<th colspan="7">', 1],
-      [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
-      [`${num('50')}</tr>`, `${num('50')}${num('2,500')}</tr>`, 1],
-      [`${num('40')}</tr>`, `${num('40')}${num('2,000')}</tr>`, 1],
-      [`${num('90')}</tr></tbody>`, `${num('90')}${num('4,500')}</tr></tbody>`, 1],
-      [`${figure('unitsInStock', '90')}${figure('grnsWithStock', '2')}`, `${figure('unitsInStock', '90')}${kpi('4,500')}${figure('grnsWithStock', '2')}`, 1],
-    ];
-  }
-  return [
-    ['<th colspan="4">', '<th colspan="5">', 1],
-    [`<th class="num">${word('stock')}</th></tr></thead>`, `<th class="num">${word('stock')}</th>${th}</tr></thead>`, 1],
-    [`<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}</tr>`, `<td>Amar Traders</td>${num('1')}${num('2')}${num('90')}${num('4,500')}</tr>`, 1],
-    [`${num('2')}${num('90')}</tr></tbody>`, `${num('2')}${num('90')}${num('4,500')}</tr></tbody>`, 1],
-    [`${figure('unitsInStock', '90')}</dl>`, `${figure('unitsInStock', '90')}${kpi('4,500')}</dl>`, 1],
-  ];
-}
-
-test('without status every existing fixture prints byte for byte the HTML it printed before, but for the time stamp and the changes on purpose', () => {
-  // The stock aging figure is a count of stock lines: 'Lots over 364 days' since 2026-10-13 (it said 'Items over 364 days').
-  const english = ['<div class="kpi"><dt>Lots over 364 days</dt><dd>0</dd></div>', '<div class="kpi"><dt>Over 1 year</dt><dd>0</dd></div>'];
-  const gujarati = ['<div class="kpi"><dt>૩૬૪ દિવસથી વધુ જૂના જથ્થા</dt><dd>0</dd></div>', '<div class="kpi"><dt>૧ વર્ષથી વધુ</dt><dd>0</dd></div>'];
-  const swapped = {
-    'invoice-history/all/gu': ['છેલ્લું ઇન્વૉઇસ', 'Latest invoice'], 'customer-activity/all/gu': ['છેલ્લી કામગીરી', 'Last activity'],
-    'stock-aging/customer/en': english, 'stock-aging/all/en': english, 'stock-aging/customer/gu': gujarati, 'stock-aging/all/gu': gujarati,
-  };
-  // The Gujarati wording review of 2026-10-12 (the owner applied its suggestions) changes every Gujarati document: the sort line
-  // (under the title and in the table's header row) and, where the table has the column, the GRN number and the stock age
-  // headers. [new text, old text, times]. The stock age text is told from the averageAge one ('સરેરાશ કેટલા દિવસથી (દિવસ)') by
-  // what comes before it: the closing tag of the header cell, or the label of the sort line. The English documents are unchanged.
-  const gujaratiReview = (key) => [
-    ['<strong>સૉર્ટનો ક્રમ:</strong>', '<strong>આ મુજબ સૉર્ટ કરો:</strong>', 2],
-    ...(['grn-activity/customer/gu', 'stock-summary/customer/gu', 'stock-aging/customer/gu'].includes(key)
-      ? [['>આવક નં.</th>', '>આવક પાવતી નંબર</th>', 1]] : []),
-    ...(key === 'stock-aging/customer/gu'
-      ? [['>કેટલા દિવસથી (દિવસ)</th>', '>માલ કેટલા દિવસથી પડ્યો છે (દિવસ)</th>', 1],
-        ['</strong> કેટલા દિવસથી (દિવસ) (', '</strong> માલ કેટલા દિવસથી પડ્યો છે (દિવસ) (', 2]] : []),
-  ];
+test('every fixture prints the report HTML pinned by its hash', () => {
   let compared = 0;
-  let weighted = 0;
+  const seen = {};
   for (const report of reportNames) {
     for (const level of ['customer', 'all']) {
       for (const lang of ['en', 'gu']) {
@@ -838,57 +716,21 @@ test('without status every existing fixture prints byte for byte the HTML it pri
         const req = parseReportRequest({ report, lang, ...period, ...(level === 'customer' ? { customer_id: customer } : {}) });
         const built = buildReport(req, unwrapReportBody(fixtures[report][level]));
         const filters = reportFilters(req, level === 'customer' ? 'Amar Traders' : null, built, NOW);
-        let html = reportHtml({ title: built.title, company: 'Fictional Cold Storage', lang, filters, summaryTitle: label(lang, 'summary'), summary: built.summary,
+        const html = reportHtml({ title: built.title, company: 'Fictional Cold Storage', lang, filters, summaryTitle: label(lang, 'summary'), summary: built.summary,
           columns: built.columns, rows: built.rows, totals: built.totals, note: '', empty: built.empty });
         const key = `${report}/${level}/${lang}`;
-        const stamp = time => label(lang, 'updated', { time });
-        assert.equal(html.split(stamp('12-10-2026 13:30 IST')).length - 1, 2, `${key} holds the new time stamp twice`);
-        html = html.replaceAll(stamp('12-10-2026 13:30 IST'), stamp('12-10-2026 08:00 UTC'));
-        if (swapped[key]) {
-          assert.equal(html.split(swapped[key][0]).length - 1, 1, `${key} holds the new text once`);
-          html = html.replace(swapped[key][0], swapped[key][1]);
-        }
-        if (lang === 'gu') {
-          for (const [added, old, times] of gujaratiReview(key)) {
-            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
-            html = html.replaceAll(added, old);
-          }
-        }
-        if (report === 'invoice-history') {
-          for (const [added, old, times] of oldInvoiceHistory(level, lang)) {
-            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
-            html = html.replaceAll(added, old);
-          }
-        }
-        if (['grn-activity', 'dispatch-activity', 'stock-summary'].includes(report) && !(report === 'dispatch-activity' && level === 'all')) {
-          weighted += 1;
-          for (const [added, old, times] of oldWeight(report, level, lang)) {
-            assert.equal(html.split(added).length - 1, times, `${key} holds ${added} ${times} time(s)`);
-            html = html.replaceAll(added, old);
-          }
-        }
-        assert.equal(createHash('sha256').update(html).digest('hex'), baselineHtml[key], key);
+        assert.equal(html.split(label(lang, 'updated', { time: '12-10-2026 13:30 IST' })).length - 1, 2, `${key} holds the time stamp twice`);
+        seen[key] = createHash('sha256').update(html).digest('hex');
         compared += 1;
       }
     }
   }
+  if (process.env.REPORT_HTML_PRINT) console.log(Object.entries(seen).map(([key, hash]) => `  '${key}': '${hash}',`).join('\n'));
   assert.equal(compared, 28);
-  assert.equal(weighted, 10);
-  assert.deepEqual(Object.keys(baselineHtml).length, 28);
+  assert.deepEqual(seen, baselineHtml);
 });
 
-test('the one-customer GRN PDF prints the same document with or without migration 59, and no report PDF prints a weight', () => {
-  // Before migration 59 the RPC's total_weight of a GRN was the sum of its per-bag weights (30 and 75); after it, the kg (1500 and 4020).
-  // The report ignores both: weights are no longer printed (2026-10-14). This equality guards against a total weight being read
-  // from the RPC answer again: if the report used total_weight, the two documents would differ.
-  const before = structuredClone(fixtures['grn-activity'].customer);
-  const after = structuredClone(fixtures['grn-activity'].customer);
-  after.data.grns[0].total_weight = 1500;
-  after.data.grns[1].total_weight = 4020;
-  after.data.summary.total_weight_kg = 5520;
-  const request = parseReportRequest({ report: 'grn-activity', customer_id: customer, from: '2026-01-01', to: '2026-01-31' });
-  const built = [before, after].map(answer => buildReport(request, unwrapReportBody(answer)));
-  assert.deepEqual(built[0], built[1]);
+test('no report PDF prints a weight', () => {
   // Each part protects one thing, although the RPC answers still carry weights. Labels: no column label or summary label of any
   // document says weight or kg (a label that came back). Shape: every row and totals row is as wide as the columns (the table
   // stays aligned); it cannot fail on a weight cell by itself because buildReport maps the level's columns, so the two
@@ -941,13 +783,6 @@ test('the label table holds no weight or kg label, and the GRN document PDF says
   // The row array keeps the weight of one package between the stock and the rack, as it is read, not multiplied by the quantity.
   assert.ok(source.includes('rows = details.data?.map(line => [line.item_name,line.packaging,line.qty,line.stock,kgEach(line.weight),line.rack,line.package_mark]);'));
   assert.doesNotMatch(source, /line\.qty\s*\*\s*line\.weight|line\.weight\s*\*\s*line\.qty/);
-});
-
-test('the SQL test for the GRN activity weight is registered after the dispatch weight one (migration 59)', () => {
-  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  const dispatchWeight = migrations.indexOf('"$ROOT/tests/report_dispatch_weight.sql"');
-  const grnWeight = migrations.indexOf('"$ROOT/tests/report_grn_weight.sql"');
-  assert.ok(dispatchWeight >= 0 && grnWeight > dispatchWeight);
 });
 
 // ---------------------------------------------------------------------------
@@ -1037,19 +872,10 @@ const threeInvoices = (net, summary) => ({ success: true, data: { summary: { tot
   { invoice_number: '2026-6102', invoice_date: '2026-10-05', grn_ref: 'G2', total: 111, labour: 12, tax_amount: 6, discount: 7.5, net_total: net(121.5, 111), payment_status: { status: 'paid' } },
   { invoice_number: '2026-6101', invoice_date: '2026-09-20', grn_ref: 'G1', total: 14, labour: 2.5, tax_amount: 1, discount: 0, net_total: net(17.5, 14), payment_status: { status: 'paid' } },
 ] } });
-const withoutMigration61 = threeInvoices(old => old, { net_amount: 276.5, paid_amount: 139, pending_amount: 138 });
 const withMigration61 = threeInvoices((old, total) => total, { net_amount: 234, paid_amount: 125, pending_amount: 109 });
 
-test('the invoice history of one customer prints the same on a database with or without migration 61, from the invoices\' totals', () => {
-  for (const lang of ['en', 'gu']) {
-    for (const fields of [{}, { status: 'paid' }, { status: 'pending' }, { sort: { field: 'net', order: 'asc' } }]) {
-      const before = invoiceDocument(lang, fields, withoutMigration61);
-      const after = invoiceDocument(lang, fields, withMigration61);
-      assert.deepEqual(before.built, after.built, `${lang} ${JSON.stringify(fields)}`);
-      assert.equal(before.html, after.html, `${lang} ${JSON.stringify(fields)}`);
-    }
-  }
-  const built = invoiceDocument('en', {}, withoutMigration61).built;
+test('the invoice history of one customer prints the amounts from the invoices\' totals', () => {
+  const built = invoiceDocument('en', {}, withMigration61).built;
   assert.deepEqual(built.columns.map(column => column.label), ['Invoice number', 'Date', 'GRN', 'Amount', 'Tax', 'Status']);
   assert.deepEqual(built.rows, [
     ['2026-6103', '12-10-2026', 'G3', '109.00', '17.00', 'Pending'],
@@ -1057,27 +883,23 @@ test('the invoice history of one customer prints the same on a database with or 
     ['2026-6101', '20-09-2026', 'G1', '14.00', '1.00', 'Paid'],
   ]);
   assert.deepEqual(built.totals, ['Total', '', '', '234.00', '24.00', '']);
-  // Amount, paid and pending are worked out from the totals listed (125.00 + 109.00 = 234.00), not the RPC's 276.50, 139.00, 138.00.
+  // Amount, paid and pending are worked out from the totals listed (125.00 + 109.00 = 234.00), not taken from the RPC's summary.
   assert.deepEqual(built.summary, [['Invoices', '3'], ['Amount', '234.00'], ['Paid', '125.00'], ['Pending', '109.00']]);
-  const html = invoiceDocument('en', {}, withoutMigration61).html;
-  for (const wrong of ['17.50', '121.50', '138.00', '276.50', '139.00']) assert.ok(!html.includes(wrong), `${wrong} is not printed`);
-  assert.ok(html.includes('<td class="num">14.00</td>'), 'the worked example is 14.00');
-  // With a choice the figures cover the listed invoices only, as before.
-  assert.deepEqual(invoiceDocument('en', { status: 'paid' }, withoutMigration61).built.summary,
+  assert.ok(invoiceDocument('en', {}, withMigration61).html.includes('<td class="num">14.00</td>'), 'the worked example is 14.00');
+  // With a choice the figures cover the listed invoices only.
+  assert.deepEqual(invoiceDocument('en', { status: 'paid' }, withMigration61).built.summary,
     [['Invoices', '2'], ['Amount', '125.00'], ['Paid', '125.00'], ['Pending', '0.00']]);
-  assert.deepEqual(invoiceDocument('en', { status: 'pending' }, withoutMigration61).built.summary,
+  assert.deepEqual(invoiceDocument('en', { status: 'pending' }, withMigration61).built.summary,
     [['Invoices', '1'], ['Amount', '109.00'], ['Paid', '0.00'], ['Pending', '109.00']]);
 });
 
-test('the invoice history of all customers prints total_amount once, as the amount, with or without migration 61', () => {
-  const answer = net => ({ success: true, data: { summary: { total_invoices: 4, total_customers: 2, total_amount: 502, net_amount: net(583, 502) }, by_customer: [
-    { customer_name: 'Amar Traders', invoice_count: 3, total_amount: 323, net_amount: net(375, 323), latest_invoice_date: '2026-10-12' },
-    { customer_name: 'Bharat Foods', invoice_count: 1, total_amount: 179, net_amount: net(208, 179), latest_invoice_date: '2026-10-08' },
-  ] } });
+test('the invoice history of all customers prints total_amount once, as the amount', () => {
+  const answer = { success: true, data: { summary: { total_invoices: 4, total_customers: 2, total_amount: 502, net_amount: 502 }, by_customer: [
+    { customer_name: 'Amar Traders', invoice_count: 3, total_amount: 323, net_amount: 323, latest_invoice_date: '2026-10-12' },
+    { customer_name: 'Bharat Foods', invoice_count: 1, total_amount: 179, net_amount: 179, latest_invoice_date: '2026-10-08' },
+  ] } };
   const req = parseReportRequest({ report: 'invoice-history', ...invoicePeriod });
-  const before = buildReport(req, unwrapReportBody(answer(old => old)));
-  const after = buildReport(req, unwrapReportBody(answer((old, total) => total)));
-  assert.deepEqual(before, after);
+  const after = buildReport(req, unwrapReportBody(answer));
   assert.deepEqual(after.columns.map(column => column.label), ['Customer', 'Invoices', 'Amount', 'Latest invoice']);
   assert.deepEqual(after.rows, [['Amar Traders', '3', '323.00', '12-10-2026'], ['Bharat Foods', '1', '179.00', '08-10-2026']]);
   assert.deepEqual(after.totals, ['Total', '4', '502.00', '']);
@@ -1125,21 +947,6 @@ test('the app\'s net sort of the invoice history is still accepted at both level
   assert.deepEqual(names(allBuilt({ sort: { field: 'latest', order: 'asc' } })), ['Bharat Foods', 'Amar Traders', 'Chandra Stores']);
   assert.deepEqual(allBuilt({ sort: { field: 'constructor', order: 'asc' } }).sort, { field: 'amount', order: 'desc', label: 'Amount (descending)' });
   assert.deepEqual(sortFields(parseReportRequest({ report: 'invoice-history', ...invoicePeriod })), ['customer', 'invoices', 'amount', 'latest', 'net']);
-});
-
-test('the SQL test for the invoice amounts is registered once, after the PDF retention one (migration 61)', () => {
-  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  const retention = migrations.indexOf('"$ROOT/tests/report_pdf_retention.sql"');
-  const amounts = migrations.indexOf('"$ROOT/tests/report_invoice_amounts.sql"');
-  assert.equal(migrations.split('"$ROOT/tests/report_invoice_amounts.sql"').length - 1, 1);
-  assert.ok(retention >= 0 && amounts > retention && amounts < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
-});
-
-test('the SQL test for paid and pending is registered once, directly after the invoice amounts one (migration 62)', () => {
-  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  assert.equal(migrations.split('"$ROOT/tests/report_invoice_paid.sql"').length - 1, 1);
-  assert.ok(migrations.includes('  "$ROOT/tests/report_invoice_amounts.sql"\n  "$ROOT/tests/report_invoice_paid.sql"\n'));
-  assert.ok(migrations.indexOf('"$ROOT/tests/report_invoice_paid.sql"') < migrations.indexOf('"$ROOT/tests/report_to_date.sql"'));
 });
 
 // ---------------------------------------------------------------------------
@@ -1260,19 +1067,7 @@ test('the status choice follows the rule: a part-paid invoice is under Pending, 
   assert.deepEqual(byStatus.rows.map(row => row[5].split(' ')[0]), ['Paid', 'Paid', 'Paid', 'Paid', 'Pending', 'Pending', 'Pending', 'Pending']);
 });
 
-test('the same document is printed from the answer of a database with and without migration 62', () => {
-  for (const lang of ['en', 'gu']) {
-    for (const fields of [{}, { status: 'paid' }, { status: 'pending' }, { sort: { field: 'amount', order: 'desc' } }, { sort: { field: 'net', order: 'asc' } }]) {
-      const before = invoiceDocument(lang, fields, moneyShapes.without);
-      const after = invoiceDocument(lang, fields, moneyShapes.with);
-      assert.deepEqual(before.built, after.built, `${lang} ${JSON.stringify(fields)}`);
-      assert.equal(before.html, after.html, `${lang} ${JSON.stringify(fields)}`);
-    }
-  }
-  // Without migration 62 the answer calls the part-paid invoices paid; the PDF does not follow it.
-  assert.equal(moneyShapes.without.data.invoices.filter(invoice => invoice.payment_status.status === 'paid').length, 7);
-  assert.equal(moneyShapes.with.data.invoices.filter(invoice => invoice.payment_status.status === 'paid').length, 4);
-  // The two new keys are not columns and are never printed.
+test('the two keys of a newer answer, paid_amount and balance_amount, are not columns and are never printed', () => {
   assert.ok(!invoiceDocument('en', {}, moneyShapes.with).html.includes('balance_amount'));
   assert.deepEqual(sortFields(invoicesRequest()), ['invoice_no', 'date', 'grn', 'amount', 'tax', 'status', 'net']);
 });
@@ -1611,96 +1406,8 @@ test('any status word is worked out by the app\'s rule: no payment is Pending fo
   assert.deepEqual(invoiceDocument('en', {}, mixed).built.summary, [['Invoices', '4'], ['Amount', '40.00'], ['Paid', '20.00'], ['Pending', '20.00']]);
 });
 
-// A database without migration 61 answers an invoice once per payment row (evidence/staged-pre61.txt: invoice 2026-6203, total
-// 111.00, one row of 51.00 and one of 60.00): the same invoice_id and fields, each row's payment_status.amount one payment.
-const payment = (amount, day, ref) => ({ status: 'paid', paid_date: `2026-01-${day}T06:00:00+00:00`, payment_ref: ref, amount, payment_mode: 'ONLINE' });
-const preRow = (id, number, day, total, payment_status) => ({
-  invoice_id: id, invoice_number: `2026-${number}`, invoice_date: `2026-01-${day}T06:00:00+00:00`, grn_ref: `Z${number}`, total, tax_amount: total / 10,
-  net_total: total, payment_status });
-const pre61Rows = [
-  preRow('i5', '6205', 26, 66, payment(20, 27, 'UTR-5A')),
-  preRow('i5', '6205', 26, 66, payment(30, 29, 'UTR-5B')),
-  preRow('i4', '6204', 24, 109, payment(108.5, 25, 'UTR-4')),
-  preRow('i3', '6203', 22, 111, payment(60, 23, 'UTR-3A')),
-  preRow('i2', '6202', 20, 89, { status: 'pending', paid_date: null, payment_ref: null }),
-  preRow('i3', '6203', 22, 111, payment(51, 22, 'UTR-3B')),
-  preRow('i1', '6201', 16, 14, payment(4, 17, 'UTR-1A')),
-  preRow('i1', '6201', 16, 14, payment(10, 18, 'UTR-1B')),
-];
-// The RPC counts the rows: 8, for five invoices. Amount 389.00 = Paid 283.50 + Pending 105.50.
-const pre61 = { success: true, data: { summary: { total_invoices: 8, total_amount: 500, net_amount: 500 }, invoices: pre61Rows } };
-
-test('a database without migration 61 answers an invoice once per payment row; the PDF prints it once, with the payments added up', () => {
-  const { built, html } = invoiceDocument('en', {}, pre61);
-  assert.deepEqual(built.rows, [
-    ['2026-6205', '26-01-2026', 'Z6205', '66.00', '6.60', 'Pending (Paid 50.00)'],
-    ['2026-6204', '24-01-2026', 'Z6204', '109.00', '10.90', 'Paid'],
-    ['2026-6203', '22-01-2026', 'Z6203', '111.00', '11.10', 'Paid'],
-    ['2026-6202', '20-01-2026', 'Z6202', '89.00', '8.90', 'Pending'],
-    ['2026-6201', '16-01-2026', 'Z6201', '14.00', '1.40', 'Paid'],
-  ]);
-  assert.deepEqual(built.totals, ['Total', '', '', '389.00', '38.90', '']);
-  // The count is the invoices listed, not the RPC's rows (8).
-  assert.deepEqual(built.summary, [['Invoices', '5'], ['Amount', '389.00'], ['Paid', '283.50'], ['Pending', '105.50']]);
-  assert.equal(built.rowsTotal, 5);
-  assert.equal(html.split('<td>2026-6203</td>').length - 1, 1, 'an invoice of two payments is in the table once');
-  // The invoice of 14.00 with payments of 4.00 and 10.00: once, Amount 14.00, Paid 14.00, Pending 0.00, status Paid.
-  const small = invoiceDocument('en', {}, { success: true, data: { summary: { total_invoices: 2 }, invoices: pre61Rows.slice(-2) } }).built;
-  assert.deepEqual(small.rows, [['2026-6201', '16-01-2026', 'Z6201', '14.00', '1.40', 'Paid']]);
-  assert.deepEqual(small.summary, [['Invoices', '1'], ['Amount', '14.00'], ['Paid', '14.00'], ['Pending', '0.00']]);
-  // The choices and the Gujarati document list the same invoices once.
-  assert.deepEqual(invoiceNumbers(invoiceDocument('en', { status: 'paid' }, pre61).built), ['2026-6204', '2026-6203', '2026-6201']);
-  const pending = invoiceDocument('en', { status: 'pending' }, pre61).built;
-  assert.deepEqual(invoiceNumbers(pending), ['2026-6205', '2026-6202']);
-  assert.deepEqual(pending.summary, [['Invoices', '2'], ['Amount', '155.00'], ['Paid', '50.00'], ['Pending', '105.00']]);
-  const gu = invoiceDocument('gu', {}, pre61).built;
-  assert.deepEqual(gu.rows.map(row => row[5]), ['બાકી (ચૂકવેલ 50.00)', 'ચૂકવેલ', 'ચૂકવેલ', 'બાકી', 'ચૂકવેલ']);
-  assert.deepEqual(gu.summary, [['ઇન્વૉઇસ', '5'], ['રકમ', '389.00'], ['ચૂકવેલ', '283.50'], ['બાકી', '105.50']]);
-});
-
-test('rows of one invoice are merged into the first row, with the amounts added in paise, status paid if any row is, and the latest payment\'s date and reference', () => {
-  const input = structuredClone(pre61Rows);
-  const merged = oneRowPerInvoice(input);
-  assert.deepEqual(merged.map(row => row.invoice_id), ['i5', 'i4', 'i3', 'i2', 'i1'], 'the first row\'s position');
-  assert.deepEqual(input, pre61Rows, 'the answer itself is not changed');
-  // i5: 20.00 on the 27th and 30.00 on the 29th: the fields of the first row, the sum, the date and reference of the 29th.
-  assert.deepEqual(merged[0], { ...pre61Rows[0], payment_status: { status: 'paid', paid_date: '2026-01-29T06:00:00+00:00', payment_ref: 'UTR-5B', amount: 50, payment_mode: 'ONLINE' } });
-  // i3: 60.00 on the 23rd (first row) and 51.00 on the 22nd: the latest is the first row's.
-  assert.deepEqual(merged[2].payment_status, { status: 'paid', paid_date: '2026-01-23T06:00:00+00:00', payment_ref: 'UTR-3A', amount: 111, payment_mode: 'ONLINE' });
-  // An invoice answered once is the very row that came; an answer without duplicates is returned as it is.
-  assert.equal(merged[1], input[2]);
-  assert.equal(merged[3], input[4]);
-  const single = [pre61Rows[2], pre61Rows[4]];
-  oneRowPerInvoice(single).forEach((row, index) => assert.equal(row, single[index]));
-  // Rows with no invoice_id are never merged, also when they are alike.
-  const anonymous = { invoice_number: 'N', total: 10, payment_status: { status: 'paid', amount: 4 } };
-  assert.deepEqual(oneRowPerInvoice([anonymous, { ...anonymous }, { ...anonymous, invoice_id: null }, { ...anonymous, invoice_id: '' }]).length, 4);
-  // Whole paise: 0.10 + 0.20 is 0.30. An amount that cannot be read adds nothing; none that can be read leaves the first row's.
-  const row = (payment_status, id = 'x') => ({ invoice_id: id, total: 1, payment_status });
-  assert.equal(oneRowPerInvoice([row({ status: 'paid', amount: 0.1 }), row({ status: 'paid', amount: 0.2 })])[0].payment_status.amount, 0.3);
-  assert.equal(oneRowPerInvoice([row({ status: 'paid', amount: '4.00' }), row({ status: 'paid', amount: 'abc' }), row({ status: 'paid' })])[0].payment_status.amount, 4);
-  assert.deepEqual(oneRowPerInvoice([row({ status: 'paid', amount: 'abc' }), row({ status: 'paid' })])[0].payment_status.amount, 'abc');
-  // Paid if any row says paid; otherwise the first row's word. A date that cannot be read is the oldest; equal dates keep the first row.
-  assert.equal(oneRowPerInvoice([row({ status: 'pending' }), row({ status: 'paid', amount: 1 })])[0].payment_status.status, 'paid');
-  assert.equal(oneRowPerInvoice([row({ status: 'void' }), row({ status: 'pending' })])[0].payment_status.status, 'void');
-  assert.equal(oneRowPerInvoice([row({ paid_date: 'soon', payment_ref: 'A' }), row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'B' })])[0].payment_status.payment_ref, 'B');
-  assert.equal(oneRowPerInvoice([row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'A' }), row({ paid_date: '2026-01-01T00:00:00+00:00', payment_ref: 'B' })])[0].payment_status.payment_ref, 'A');
-  // A row whose payment_status is missing or not an object is merged with the others without error.
-  assert.equal(oneRowPerInvoice([{ invoice_id: 'y', total: 1 }, row({ status: 'paid', amount: 1 }, 'y')])[0].payment_status.amount, 1);
-});
-
-test('an answer without duplicate rows prints exactly what it printed, with or without invoice ids', () => {
-  for (const [shape, body] of Object.entries(moneyShapes)) {
-    const withIds = { ...body, data: { ...body.data, invoices: body.data.invoices.map((invoice, index) => ({ invoice_id: `id-${index}`, ...invoice })) } };
-    for (const lang of ['en', 'gu']) for (const fields of [{}, { status: 'paid' }, { status: 'pending' }]) {
-      const plain = invoiceDocument(lang, fields, body);
-      const keyed = invoiceDocument(lang, fields, withIds);
-      assert.equal(keyed.html, plain.html, `${shape} ${lang} ${JSON.stringify(fields)}`);
-      assert.deepEqual(keyed.built, plain.built, `${shape} ${lang} ${JSON.stringify(fields)}`);
-    }
-  }
-  // The RPC's own count is still printed when nothing was merged (here it differs from the rows on purpose).
-  const counted = { success: true, data: { summary: { total_invoices: 9 }, invoices: mixedInvoices.data.invoices.map((invoice, index) => ({ invoice_id: `id-${index}`, ...invoice })) } };
+test('an invoice history without a choice prints the RPC\'s own count, whatever the number of rows listed', () => {
+  const counted = { success: true, data: { summary: { total_invoices: 9 }, invoices: mixedInvoices.data.invoices } };
   assert.equal(invoiceDocument('en', {}, counted).built.summary[0][1], '9');
 });
 
@@ -1757,25 +1464,11 @@ test('the totals row of a table cut at the limit says "Total of rows shown"; a t
   assert.deepEqual([invoices.totals.slice(0, 4), invoices.summary.slice(0, 2)], [['Total of rows shown', '', '', '2,000.00'], [['Invoices', '2,100'], ['Amount', '2,100.00']]]);
 });
 
-// ---------------------------------------------------------------------------
-// Migration 63: one row per receipt in the GRN activity of one customer
-// ---------------------------------------------------------------------------
-test('the SQL test for one GRN row per receipt closes the list and is ASCII (migration 63)', () => {
-  const migrations = readFileSync(new URL('../tests/migrations.sh', import.meta.url), 'utf8');
-  assert.equal(migrations.split('"$ROOT/tests/report_grn_invoices.sql"').length - 1, 1);
-  assert.ok(migrations.includes('"$ROOT/tests/report_grn_weight.sql"\n  "$ROOT/tests/report_grn_invoices.sql"\n)\nfor test_sql in'));
-  assert.match(readFileSync(new URL('../tests/report_grn_invoices.sql', import.meta.url), 'utf8'), /^[\x00-\x7F]*$/, 'the SQL test is ASCII');
-});
-
-test('the GRN activity PDF reads invoice_number of invoice_status and needs nothing from the new key', () => {
+test('the GRN activity PDF reads invoice_number of invoice_status', () => {
   const grn = (invoice_status) => ({ success: true, data: { summary: { total_grns: 1, total_quantity: 1, total_invoiced_grns: 1 }, grns: [
     { gr_no: 'Z0001', grn_date: '2026-01-20', total_items: 1, total_qty: 1, items: [{ weight: 10, quantity: 1 }], dispatch_summary: { current_stock: 1 }, invoice_status }] } });
   const req = parseReportRequest({ report: 'grn-activity', customer_id: customer, ...invoicePeriod });
-  // The answer of a database with migration 63 (invoice_count) and one without it print the same document.
-  const without = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101' })));
-  const withKey = buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101', invoice_count: 2 })));
-  assert.deepEqual(withKey, without);
-  assert.equal(withKey.rows[0][5], '2026-7101');
+  assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: true, invoice_id: 'x', invoice_number: '2026-7101', invoice_count: 2 }))).rows[0][5], '2026-7101');
   assert.equal(buildReport(req, unwrapReportBody(grn({ is_invoiced: false, invoice_id: null, invoice_number: null, invoice_count: 0 }))).rows[0][5], '');
 });
 

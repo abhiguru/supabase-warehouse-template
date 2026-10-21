@@ -68,3 +68,17 @@ test('the fingerprint pins the session settings that shape row text', () => {
   for (const setting of ["TimeZone='UTC'", "DateStyle='ISO, MDY'", 'extra_float_digits=1', "bytea_output='hex'", "IntervalStyle='postgres'"])
     assert.ok(script.includes(`SET ${setting}`), setting);
 });
+
+// The append-only records the owner asked for (discount, zero charge, item prices): a restore that loses them must not compare as identical.
+test('the data fingerprint covers the three histories beside the business tables', () => {
+  const list = script.match(/^tables=\(([^)]*)\)/m);
+  assert.ok(list, 'data-fingerprint.sh has no tables=(...) list');
+  const tables = list[1].split(/\s+/).filter(Boolean);
+  for (const table of ['customers', 'users_customers_new', 'items', 'item_storage_prices', 'goodsreceived', 'goodsreceived_trl', 'grn_images',
+    'dispatch', 'dispatch_trl', 'dispatch_images', 'invoice', 'invoice_trl', 'stock_movements', 'user_profiles',
+    'invoice_discount_history', 'invoice_zero_charge_history', 'item_price_history',
+    'standard_rate_tiers', 'grn_rates', 'payments', 'orders', 'order_items', 'order_revisions']) {
+    assert.ok(tables.includes(table), `${table} is not fingerprinted`);
+  }
+  assert.equal(new Set(tables).size, tables.length);
+});

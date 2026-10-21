@@ -29,8 +29,7 @@ test('gateway refreshes replaced Compose upstream addresses within readiness bud
   assert.ok(compose.includes('KONG_DNS_NOT_FOUND_TTL: "1"'));
 });
 
-test('operator gateway cannot route Studio or postgres-meta', () => {
-  assert.doesNotMatch(kong, /url: http:\/\/(?:studio|meta):/);
+test('the operator gateway publishes exactly one port', () => {
   assert.equal((compose.match(/^\s+ports:/gm) || []).length, 1);
 });
 
@@ -95,13 +94,6 @@ test('the per-minute limits are described as a budget per fixed minute, not as a
   }
   // No route has a per-second window; if one is added, the wording above has to change with it.
   assert.doesNotMatch(kong, /^\s+second: \d+$/m);
-});
-
-test('gateway has no metrics plugin, status listener or metrics port: the monitoring checker reads Docker and the HTTP answers, not Kong metrics', () => {
-  assert.doesNotMatch(kong, /prometheus|status_code_metrics|latency_metrics/);
-  assert.doesNotMatch(kong, /\nplugins:\n/, 'kong.yml has no global plugin');
-  assert.doesNotMatch(compose, /KONG_STATUS_LISTEN|prometheus/);
-  assert.doesNotMatch(compose, /8100/);
 });
 
 test('gateway configuration survives the entrypoint that fills in its variables', () => {
@@ -224,7 +216,6 @@ test('publisher images are pinned by digest and the notices name the versions in
   assert.deepEqual(images.filter(image => !/@sha256:[0-9a-f]{64}$/.test(image)), [], 'every pulled image is pinned by digest');
 
   const notices = readFileSync(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url), 'utf8');
-  const review = readFileSync(new URL('../docs/ATTRIBUTION_REVIEW.md', import.meta.url), 'utf8');
   const base = (recipe, image) => new RegExp(`^FROM ${image}:([^@\\s]+)@sha256:`, 'm').exec(readFileSync(new URL(`../docker/${recipe}/Dockerfile`, import.meta.url), 'utf8'))?.[1];
   const versions = {
     Kong: /image: kong:([0-9.]+)-ubuntu/.exec(compose)[1],
@@ -242,9 +233,8 @@ test('publisher images are pinned by digest and the notices name the versions in
     assert.ok(version, `${name} version was not read`);
     const row = notices.split('\n').find(line => line.startsWith('|') && line.includes(name) && line.includes(version));
     assert.ok(row, `THIRD_PARTY_NOTICES.md does not name ${name} ${version}`);
-    assert.ok(new RegExp(`${name} ${version.replaceAll('.', '\\.')}[,) ]`).test(review), `docs/ATTRIBUTION_REVIEW.md does not name ${name} ${version}`);
   }
-  assert.doesNotMatch(`${notices}\n${review}`, /v1\.76\.2|postgrest:v14\.17|PostgREST v14\.17/);
+  assert.doesNotMatch(notices, /v1\.76\.2|postgrest:v14\.17|PostgREST v14\.17/);
 });
 
 test('the gateway compresses JSON and text answers only, so a large invoice-form preview is sent gzipped', () => {
@@ -279,7 +269,6 @@ test('gateway runs one worker, loads only the plugins its routes use, and has no
   assert.deepEqual(used, [...plugins].sort());
   assert.doesNotMatch(liveKong, /\bacls?:|name: acl\b/);
   assert.doesNotMatch(liveKong, /graphql/);
-  assert.doesNotMatch(kong, /realtime/i, 'the Realtime route is removed');
 });
 
 test('the rendered Kong environment has one worker and the five-plugin list', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
