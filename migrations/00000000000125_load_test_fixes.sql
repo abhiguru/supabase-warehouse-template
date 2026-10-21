@@ -1,6 +1,9 @@
 -- Migration 125: load-test fixes (scale check of 2026-10-21, 300 ms bar).
 --  * get_dispatch_list_with_items: the page is cut first and the item list is built only for those rows; search and package
 --    filters are semi joins; three expression indexes serve the date and the disp_no sorts and the number range. Same output.
+--  * get_dispatch_list_with_items search: ILIKE columns without COALESCE and one UNION branch per table, so the new trigram
+--    indexes on dispatch and goodsreceived_trl (and the existing one on goodsreceived.gr_no) are used. Same output.
+--  * get_next_dispatch_number / get_next_grn_number: partial expression indexes, so the highest number is one index read.
 --  * get_invoices_list: the main statement runs through EXECUTE ... USING, so it never switches to a generic plan on a reused
 --    connection. Same output.
 --  * get_customer_invoice_summary: the invoice_items CTE and the payment_status aggregate read only the requested customer's
@@ -13,7 +16,12 @@ GRANT EXECUTE ON FUNCTION warehouse_security.document_number_sort_key(text) TO s
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_date_desc ON public.dispatch (disp_date DESC NULLS LAST, (warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_desc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_asc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") ASC NULLS LAST);
+-- Trigram indexes for the quick search (every word is an ILIKE '%word%' on these columns): the search no longer scans every
+-- dispatch and every GRN line per word. Same operator class schema as idx_goodsreceived_gr_no_trgm (baseline).
+CREATE INDEX IF NOT EXISTS idx_dispatch_search_trgm ON public.dispatch USING gin (disp_no public.gin_trgm_ops, customer_name public.gin_trgm_ops, registration public.gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_goodsreceived_trl_search_trgm ON public.goodsreceived_trl USING gin (item_name public.gin_trgm_ops, package_mark public.gin_trgm_ops, rack public.gin_trgm_ops);
 ANALYZE public.dispatch;
+ANALYZE public.goodsreceived_trl;
 
 CREATE OR REPLACE FUNCTION public.get_dispatch_list_with_items(p_customer_id uuid DEFAULT NULL::uuid, p_filters jsonb DEFAULT '{}'::jsonb, p_sort_by text DEFAULT 'dispatch_date'::text, p_sort_order text DEFAULT 'desc'::text, p_page integer DEFAULT 1, p_limit integer DEFAULT 10, p_include_items boolean DEFAULT false)
  RETURNS jsonb
@@ -179,11 +187,12 @@ BEGIN
             IF v_customer_filter <> '' THEN
                 -- With a customer filter the match is tested per row of that customer's dispatches.
                 v_item_ids_filter := v_item_ids_filter || format(
-                    ' AND (d.disp_no ILIKE %1$L OR COALESCE(d.customer_name, '''') ILIKE %1$L OR COALESCE(d.registration, '''') ILIKE %1$L OR EXISTS (SELECT 1 FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id JOIN goodsreceived gr_s ON grt_s.gr_id = gr_s.id WHERE dt_s.disp_id = d.id AND (COALESCE(grt_s.item_name, '''') ILIKE %1$L OR COALESCE(grt_s.package_mark, '''') ILIKE %1$L OR COALESCE(grt_s.rack, '''') ILIKE %1$L OR gr_s.gr_no ILIKE %1$L)))',
+                    ' AND (d.disp_no ILIKE %1$L OR d.customer_name ILIKE %1$L OR d.registration ILIKE %1$L OR EXISTS (SELECT 1 FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id WHERE dt_s.disp_id = d.id AND (grt_s.item_name ILIKE %1$L OR grt_s.package_mark ILIKE %1$L OR grt_s.rack ILIKE %1$L)) OR EXISTS (SELECT 1 FROM dispatch_trl dt_g JOIN goodsreceived_trl grt_g ON dt_g.gr_trl_id = grt_g.id JOIN goodsreceived gr_g ON grt_g.gr_id = gr_g.id WHERE dt_g.disp_id = d.id AND gr_g.gr_no ILIKE %1$L))',
                     v_term);
             ELSE
+                -- One branch per table, so each ILIKE can use its trigram index (dispatch, goodsreceived_trl, goodsreceived).
                 v_item_ids_filter := v_item_ids_filter || format(
-                    ' AND d.id IN (SELECT d2.id FROM dispatch d2 WHERE d2.disp_no ILIKE %1$L OR COALESCE(d2.customer_name, '''') ILIKE %1$L OR COALESCE(d2.registration, '''') ILIKE %1$L UNION SELECT dt_s.disp_id FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id JOIN goodsreceived gr_s ON grt_s.gr_id = gr_s.id WHERE COALESCE(grt_s.item_name, '''') ILIKE %1$L OR COALESCE(grt_s.package_mark, '''') ILIKE %1$L OR COALESCE(grt_s.rack, '''') ILIKE %1$L OR gr_s.gr_no ILIKE %1$L)',
+                    ' AND d.id IN (SELECT d2.id FROM dispatch d2 WHERE d2.disp_no ILIKE %1$L OR d2.customer_name ILIKE %1$L OR d2.registration ILIKE %1$L UNION SELECT dt_s.disp_id FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id WHERE grt_s.item_name ILIKE %1$L OR grt_s.package_mark ILIKE %1$L OR grt_s.rack ILIKE %1$L UNION SELECT dt_g.disp_id FROM dispatch_trl dt_g JOIN goodsreceived_trl grt_g ON dt_g.gr_trl_id = grt_g.id JOIN goodsreceived gr_g ON grt_g.gr_id = gr_g.id WHERE gr_g.gr_no ILIKE %1$L)',
                     v_term);
             END IF;
         END LOOP;
@@ -873,3 +882,70 @@ EXCEPTION
         );
 END;
 $$;
+
+-- Fast get_next_dispatch_number() / get_next_grn_number(): partial expression indexes that match the function text, so
+-- the "highest number" lookups become one-entry index reads instead of a read-and-sort of every row.
+-- get_next_invoice_number(integer) needs nothing: unique_inv_no_per_year (inv_fin_year, inv_no) already serves it (measured).
+-- The functions return exactly what they returned before. Soft-deleted rows still count (as before): no deleted_at filter.
+
+-- Dispatch: the predicate and the expression are the function's text (the function itself is unchanged).
+CREATE INDEX IF NOT EXISTS idx_dispatch_disp_no_num
+  ON public.dispatch ((CAST(SUBSTRING(disp_no FROM 2) AS INTEGER)))
+  WHERE disp_no ~ '^I[0-9]{1,7}$';
+
+-- GRN: letter (collation "C", as max(... COLLATE "C") uses) then number.
+CREATE INDEX IF NOT EXISTS idx_goodsreceived_gr_no_series
+  ON public.goodsreceived ((LEFT(gr_no, 1) COLLATE "C"), (CAST(SUBSTRING(gr_no FROM 2) AS INTEGER)))
+  WHERE gr_no ~ '^[A-Z][0-9]{1,7}$';
+
+-- GRN function: the highest letter and its highest number come from one ORDER BY ... DESC LIMIT 1 read of the index (was
+-- max(letter) then max(number) of that letter: same values). The next-letter equality test gets COLLATE "C" so the planner
+-- matches the index; a letter compared with = is the same under every deterministic collation, so the result is identical.
+CREATE OR REPLACE FUNCTION public.get_next_grn_number() RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'extensions', 'utils', 'pg_temp'
+    AS $function$
+DECLARE
+    v_prefix CHAR(1);
+    v_num INTEGER;
+    v_next_prefix CHAR(1);
+    v_next_max INTEGER;
+BEGIN
+  PERFORM warehouse_security.authorize_rpc('get_next_grn_number',jsonb_build_object());
+    -- The letter is the highest one in use (migration 121), not the letter of the GRN entered last: a GRN entered under
+    -- an older letter later does not send the suggestion back to that series.
+    -- One index read (idx_goodsreceived_gr_no_series): the highest letter and, within it, the highest number.
+    SELECT LEFT(gr_no, 1) COLLATE "C", CAST(SUBSTRING(gr_no FROM 2) AS INTEGER) INTO v_prefix, v_num
+    FROM goodsreceived
+    WHERE gr_no ~ '^[A-Z][0-9]{1,7}$'
+    ORDER BY LEFT(gr_no, 1) COLLATE "C" DESC, CAST(SUBSTRING(gr_no FROM 2) AS INTEGER) DESC
+    LIMIT 1;
+
+    IF v_prefix IS NULL THEN
+        RETURN 'A0001';
+    END IF;
+
+    IF v_num >= 1000 THEN
+        -- Advance to next letter: A→B→...→Z→A
+        IF v_prefix = 'Z' THEN
+            v_next_prefix := 'A';
+        ELSE
+            v_next_prefix := CHR(ASCII(v_prefix) + 1);
+        END IF;
+        -- The next letter's series may exist already (A after Z): it is continued, not started again at 0001.
+        SELECT MAX(CAST(SUBSTRING(gr_no FROM 2) AS INTEGER))
+        INTO v_next_max
+        FROM goodsreceived
+        WHERE LEFT(gr_no, 1) COLLATE "C" = v_next_prefix::text AND gr_no ~ '^[A-Z][0-9]{1,7}$';
+        IF v_next_max IS NOT NULL AND v_next_max < 1000 THEN
+            RETURN v_next_prefix || LPAD((v_next_max + 1)::TEXT, 4, '0');
+        END IF;
+        RETURN v_next_prefix || '0001';
+    ELSE
+        RETURN v_prefix || LPAD((v_num + 1)::TEXT, 4, '0');
+    END IF;
+END;
+$function$;
+
+ANALYZE public.dispatch;
+ANALYZE public.goodsreceived;
