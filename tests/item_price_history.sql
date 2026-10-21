@@ -31,7 +31,8 @@ END $$;
 CREATE FUNCTION pg_temp.ph_rows() RETURNS jsonb LANGUAGE sql AS $$
   SELECT COALESCE(jsonb_agg(jsonb_build_array(h.action,h.old_values->'unit_price',h.new_values->'unit_price',h.changed_by,h.changed_by_role) ORDER BY h.id),'[]'::jsonb)
   FROM public.item_price_history h $$;
-CREATE FUNCTION pg_temp.ph_last() RETURNS public.item_price_history LANGUAGE sql AS $$
+-- Owner's rights: an app role has no SELECT grant on the history table (migration 123).
+CREATE FUNCTION pg_temp.ph_last() RETURNS public.item_price_history LANGUAGE sql SECURITY DEFINER AS $$
   SELECT h FROM public.item_price_history h ORDER BY h.id DESC LIMIT 1 $$;
 CREATE FUNCTION pg_temp.ph_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
  DECLARE c jsonb; l jsonb; claims jsonb;
@@ -249,7 +250,7 @@ SELECT pg_temp.ph_assert((public.get_item_price_history(p_limit=>200,p_offset=>2
 -- The supervisor reads it too, through the RPC and from the table.
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
 SELECT pg_temp.ph_assert(warehouse_security.active_role()='supervisor' AND public.get_item_price_history()->'data'=:'everything'::jsonb->'data'
- AND (SELECT count(*)=5 FROM public.item_price_history),'the supervisor reads the same history');
+ AND pg_temp.ph_raises('SELECT count(*) FROM public.item_price_history','permission denied%'),'the supervisor reads the same history through the RPC, not the table (migration 123)');
 
 -- ---------------------------------------------------------------------------
 -- 3. Nobody else reads it
@@ -262,7 +263,7 @@ SELECT pg_temp.ph_assert(pg_temp.ph_call(statement)=jsonb_build_object('raised',
 FROM (VALUES ('SELECT public.get_item_price_history()'),
   (format('SELECT public.get_item_price_history(p_customer_id=>%L::uuid)',:'north')),
   (format('SELECT public.get_item_price_history(p_item_id=>%L::uuid,p_limit=>1)',:'chillies'))) AS s(statement);
-SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_price_history),'staff read no history row from the table');
+SELECT pg_temp.ph_assert(pg_temp.ph_raises('SELECT count(*) FROM public.item_price_history','permission denied%'),'staff read no history row from the table');
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_call(format($q$SELECT public.replace_item_rates(%L::uuid,%L::uuid,'monthly',%L::date,
   '[{"weight_min":0,"weight_max":100,"unit_price":5,"labour_rate":2,"tax_percent":5}]'::jsonb)$q$,:'chillies',:'north',:'f')) AS staff_create \gset
@@ -278,7 +279,7 @@ SELECT pg_temp.ph_assert(pg_temp.ph_call(statement)=jsonb_build_object('raised',
  'a customer account is refused: '||statement||' -> '||pg_temp.ph_call(statement)::text)
 FROM (VALUES ('SELECT public.get_item_price_history()'),
   (format('SELECT public.get_item_price_history(p_customer_id=>%L::uuid)',:'north'))) AS s(statement);
-SELECT pg_temp.ph_assert((SELECT count(*)=0 FROM public.item_price_history),'a customer account reads no history row from the table');
+SELECT pg_temp.ph_assert(pg_temp.ph_raises('SELECT count(*) FROM public.item_price_history','permission denied%'),'a customer account reads no history row from the table');
 SELECT set_config('request.jwt.claims',:'former_claims',true);
 SELECT pg_temp.ph_assert(pg_temp.ph_call('SELECT public.get_item_price_history()')=jsonb_build_object('raised','Active account required','state','42501'),
  'a deactivated supervisor is refused');
@@ -356,7 +357,7 @@ INSERT INTO public.item_price_history(price_id,item_id,item_name,action,changed_
  VALUES (gen_random_uuid(),:'chillies'::uuid,'Price History Chillies','insert',:'admin_profile'::uuid,'admin');
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ph_assert(public.get_item_price_history(p_limit=>1)#>>'{data,0,changed_by_name}'='Price History Administrator'
- AND (SELECT h.changed_by_name IS NULL FROM public.item_price_history h ORDER BY h.id DESC LIMIT 1),
+ AND (pg_temp.ph_last()).changed_by_name IS NULL,
  'without a stored name the profile''s present name is shown');
 RESET ROLE;
 

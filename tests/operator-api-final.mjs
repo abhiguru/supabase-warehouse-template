@@ -74,9 +74,12 @@ const b = customers.data.find(row => row.name === 'Backend Test Customer B').id;
 // Customer B's own cart: the Realtime test used to create it between the core test and this one.
 const cartB = await rpc('get_or_create_cart', tokenB, { p_customer_id: b });
 assert.ok(cartB.ok && typeof cartB.data === 'string', 'B cart created');
-const orders = await api('/rest/v1/orders?select=id,customer_id', admin);
-assert.ok(orders.ok && orders.data.some(row => row.customer_id === a) && orders.data.some(row => row.customer_id === b),
-  'staff queue sees both fictional customers');
+// The orders table has no direct read for an app role (migration 123): the queue is read through get_orders_list.
+assert.equal((await api('/rest/v1/orders?select=id,customer_id', admin)).status, 403, 'orders are not readable directly');
+for (const customer of [a, b]) {
+  const queue = success(await rpc('get_orders_list', admin, { p_customer_id: customer }), 'staff queue of one fictional customer');
+  assert.ok(queue.data.orders.length >= 1, 'staff queue sees the fictional customer');
+}
 const staffOrders = success(await rpc('get_orders_list', admin, { p_customer_id: a }), 'staff order queue');
 assert.ok(staffOrders.data.orders.length >= 1, 'staff queue includes A order after dispatch');
 const grn = (await api('/rest/v1/goodsreceived?gr_no=eq.BAA01&select=id', admin)).data[0].id;

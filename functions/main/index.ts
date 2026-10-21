@@ -1,6 +1,6 @@
 import { verifySignedInRequest } from '../_shared/jwt.ts';
 import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { workerEnv } from './worker-env.ts';
 
 // ingest-sensor-readings is called by the sensor bridge with its own ingest key, not a user token.
@@ -9,13 +9,11 @@ const allowed = new Set([...publicFunctions, 'get-config', 'get-printer-status',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
 
 Deno.serve(async (req: Request) => {
-  const cors = handleCors(req);
-  if (cors) return cors;
   const name = new URL(req.url).pathname.split('/')[1];
   if (['print-grn-preprinted', 'print-dispatch-preprinted', 'print-invoice-preprinted', 'print-via-ipp', 'get-printer-status'].includes(name)) {
-    return new Response(JSON.stringify({ success: false, error: 'Printing is not configured for this operator instance' }), { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ success: false, error: 'Printing is not configured for this operator instance' }), { status: 503, headers: { ...securityHeaders, 'Content-Type': 'application/json' } });
   }
-  if (!allowed.has(name)) return new Response('Function not found', { status: 404, headers: corsHeaders });
+  if (!allowed.has(name)) return new Response('Function not found', { status: 404, headers: securityHeaders });
   try {
     // Each function still checks its caller itself; this keeps the anon key out
     // of any function added later without that check.
@@ -50,6 +48,6 @@ Deno.serve(async (req: Request) => {
     });
     return await worker.fetch(req);
   } catch (error) {
-    return createAuthErrorResponse(error, corsHeaders);
+    return createAuthErrorResponse(error, securityHeaders);
   }
 });

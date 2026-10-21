@@ -84,9 +84,10 @@ SELECT pg_temp.sr_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.
  AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','UPDATE')
  AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','DELETE')
  AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','TRUNCATE')
+ AND NOT has_table_privilege('authenticated','public.standard_rate_tiers','SELECT')
  AND NOT has_table_privilege('anon','public.standard_rate_tiers','SELECT')
- AND (SELECT count(*)=1 AND bool_and(cmd='SELECT') FROM pg_policies WHERE schemaname='public' AND tablename='standard_rate_tiers'),
- 'the table has row level security, one read policy and no write privilege');
+ AND (SELECT count(*)=0 FROM pg_policies WHERE schemaname='public' AND tablename='standard_rate_tiers'),
+ 'the table has row level security, no policy and no app-role privilege (migration 123)');
 
 -- ---------------------------------------------------------------------------
 -- 2. Fixtures (before any standard rate is saved)
@@ -240,12 +241,12 @@ SELECT pg_temp.sr_assert((SELECT bool_and(r.created_by=:'admin_profile'::uuid AN
     AND r.price_type='monthly' AND r.customer_id IS NULL) FROM public.item_storage_prices r WHERE r.item_id=pg_temp.sr_item('SR Grn')),
  'the rows are monthly default rows created by the administrator');
 
--- Direct access: no write, and only managers read.
+-- Direct access: no write, and no app role reads the table (migration 123); the rate is read through get_standard_rate.
 SELECT pg_temp.sr_as(:'admin_claims'::jsonb,$q$SELECT to_jsonb(count(*)) FROM public.standard_rate_tiers$q$) AS admin_reads \gset
 SELECT pg_temp.sr_as(:'staff_claims'::jsonb,$q$SELECT to_jsonb(count(*)) FROM public.standard_rate_tiers$q$) AS staff_reads \gset
 SELECT pg_temp.sr_as(:'customer_claims'::jsonb,$q$SELECT to_jsonb(count(*)) FROM public.standard_rate_tiers$q$) AS customer_reads \gset
-SELECT pg_temp.sr_assert(:'admin_reads'::jsonb='3'::jsonb AND :'staff_reads'::jsonb='0'::jsonb AND :'customer_reads'::jsonb='0'::jsonb,
- 'direct reads: administrator 3, staff 0, customer 0: '||:'admin_reads'||'/'||:'staff_reads'||'/'||:'customer_reads');
+SELECT pg_temp.sr_assert(:'admin_reads'::jsonb->>'state'='42501' AND :'staff_reads'::jsonb->>'state'='42501' AND :'customer_reads'::jsonb->>'state'='42501',
+ 'direct reads are refused for administrator, staff and customer: '||:'admin_reads'||'/'||:'staff_reads'||'/'||:'customer_reads');
 SELECT pg_temp.sr_assert(pg_temp.sr_as(:'admin_claims'::jsonb,$q$WITH x AS (INSERT INTO public.standard_rate_tiers(weight_min,weight_max,unit_price,labour_rate,tax_percent) VALUES (500,600,1,1,1) RETURNING 1) SELECT to_jsonb(count(*)) FROM x$q$)->>'state'='42501'
  AND pg_temp.sr_as(:'admin_claims'::jsonb,$q$WITH x AS (UPDATE public.standard_rate_tiers SET unit_price=0 RETURNING 1) SELECT to_jsonb(count(*)) FROM x$q$)->>'state'='42501'
  AND pg_temp.sr_as(:'admin_claims'::jsonb,$q$WITH x AS (DELETE FROM public.standard_rate_tiers RETURNING 1) SELECT to_jsonb(count(*)) FROM x$q$)->>'state'='42501',

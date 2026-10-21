@@ -88,13 +88,14 @@ SELECT pg_temp.si_assert(to_regprocedure('public.get_sensor_polling_data(timesta
 SELECT pg_temp.si_assert(NOT has_table_privilege(r.rolname, 'warehouse_security.sensor_ingest_keys', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'),
   r.rolname || ' holds a privilege on the ingest key table')
 FROM pg_roles r WHERE r.rolname IN ('anon', 'authenticated', 'service_role');
--- sensor_latest and sensor_hubs: read-only for the app role and the service role, row security on.
+-- sensor_latest and sensor_hubs: no app-role read since migration 123 (the app reads sensors through the RPCs); the service role reads only;
+-- nothing for anon; row security on, no policy.
 SELECT pg_temp.si_assert(c.relrowsecurity
-    AND has_table_privilege('authenticated', c.oid, 'SELECT') AND has_table_privilege('service_role', c.oid, 'SELECT')
-    AND NOT has_table_privilege('authenticated', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE')
+    AND NOT has_table_privilege('authenticated', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') AND has_table_privilege('service_role', c.oid, 'SELECT')
     AND NOT has_table_privilege('service_role', c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE')
-    AND NOT has_table_privilege('anon', c.oid, 'SELECT,INSERT,UPDATE,DELETE'),
-  c.relname || ': SELECT only for the app and service roles, nothing for anon, row security on')
+    AND NOT has_table_privilege('anon', c.oid, 'SELECT,INSERT,UPDATE,DELETE')
+    AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = c.oid),
+  c.relname || ': no app-role privilege, SELECT only for the service role, nothing for anon, row security on, no policy')
 FROM pg_class c WHERE c.oid IN ('public.sensor_latest'::regclass, 'public.sensor_hubs'::regclass);
 SELECT pg_temp.si_assert(NOT has_table_privilege('authenticated', 'public.sensor_status', 'SELECT')
     AND NOT has_table_privilege('anon', 'public.sensor_status', 'SELECT')
@@ -333,8 +334,8 @@ SELECT public.get_sensor_history(:'d1'::uuid, 2) AS staff_bad_period \gset
 SELECT public.get_sensor_history(gen_random_uuid(), 7) AS staff_no_device \gset
 SELECT public.get_sensor_device(:'d1'::uuid) AS staff_device \gset
 SELECT public.get_sensor_device(gen_random_uuid()) AS staff_device_missing \gset
-SELECT count(*) AS staff_latest_rows FROM public.sensor_latest \gset
-SELECT count(*) AS staff_hub_rows FROM public.sensor_hubs \gset
+SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM public.sensor_latest') AS staff_latest_read \gset
+SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM public.sensor_hubs') AS staff_hub_read \gset
 SELECT pg_temp.si_call('INSERT INTO public.sensor_latest(device_id, device_name) VALUES (gen_random_uuid(), ''x'')') AS staff_write \gset
 SELECT pg_temp.si_call(format('SELECT public.record_sensor_batch(%L, %L::jsonb, ''[]''::jsonb)', :'k1', :'hub_on')) AS staff_ingest \gset
 SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM warehouse_security.sensor_ingest_keys') AS staff_keys \gset
@@ -419,18 +420,18 @@ SELECT pg_temp.si_assert((SELECT bool_and(:'staff_device'::jsonb->'data' ? k)
   'one sensor carries the polling entry keys with the same values: ' || :'staff_device');
 SELECT pg_temp.si_assert(:'staff_device_missing'::jsonb = '{"success":false,"error":"Device not found","error_code":"DEVICE_NOT_FOUND"}'::jsonb,
   'an unknown device: ' || :'staff_device_missing');
--- Staff read the latest rows and the hub directly, and write nothing.
-SELECT pg_temp.si_assert(:'staff_latest_rows'::int = 2 AND :'staff_hub_rows'::int = 1
+-- Staff read neither table directly (migration 123: the RPCs above are the way in), and write nothing.
+SELECT pg_temp.si_assert(:'staff_latest_read'::jsonb->>'state' = '42501' AND :'staff_hub_read'::jsonb->>'state' = '42501'
     AND :'staff_write'::jsonb->>'state' = '42501' AND :'staff_ingest'::jsonb->>'state' = '42501'
     AND :'staff_keys'::jsonb->>'state' = '42501' AND :'staff_update'::jsonb->>'state' = '42501',
-  'staff read sensor_latest and sensor_hubs, cannot write them, ingest, read the keys or change a sensor: '
+  'staff cannot read or write sensor_latest and sensor_hubs, ingest, read the keys or change a sensor: '
     || :'staff_write' || :'staff_ingest' || :'staff_keys' || :'staff_update');
 
 -- A customer account and the anonymous role read nothing.
 SELECT set_config('request.jwt.claims', :'customer_claims', true);
 SET LOCAL ROLE authenticated;
-SELECT count(*) AS customer_latest_rows FROM public.sensor_latest \gset
-SELECT count(*) AS customer_hub_rows FROM public.sensor_hubs \gset
+SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM public.sensor_latest') AS customer_latest_read \gset
+SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM public.sensor_hubs') AS customer_hub_read \gset
 SELECT pg_temp.si_call(format('SELECT public.get_sensor_device(%L::uuid)', :'d1')) AS customer_device \gset
 SELECT pg_temp.si_call('SELECT public.get_sensor_polling_data()') AS customer_poll \gset
 RESET ROLE;
@@ -439,7 +440,7 @@ SET LOCAL ROLE anon;
 SELECT pg_temp.si_call('SELECT count(*)::text::jsonb FROM public.sensor_latest') AS anon_latest \gset
 SELECT pg_temp.si_call(format('SELECT public.get_sensor_device(%L::uuid)', :'d1')) AS anon_device \gset
 RESET ROLE;
-SELECT pg_temp.si_assert(:'customer_latest_rows'::int = 0 AND :'customer_hub_rows'::int = 0
+SELECT pg_temp.si_assert(:'customer_latest_read'::jsonb->>'state' = '42501' AND :'customer_hub_read'::jsonb->>'state' = '42501'
     AND :'customer_device'::jsonb->>'state' = '42501' AND :'customer_poll'::jsonb->>'state' = '42501'
     AND :'anon_latest'::jsonb->>'state' = '42501' AND :'anon_device'::jsonb->>'state' = '42501',
   'a customer account sees no sensor row and is refused the RPCs; anon is refused: '

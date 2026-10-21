@@ -177,7 +177,7 @@ SELECT pg_temp.core_assert((SELECT count(*)=1 FROM public.invoice),'staff sees i
 SELECT pg_temp.core_assert((SELECT count(*)=2 FROM public.invoice_trl t
  JOIN public.dispatch_trl d ON d.id=t.disp_trl_id JOIN public.goodsreceived_trl g ON g.id=d.gr_trl_id
  WHERE t.invoice_id=(:'saved'::jsonb->>'invoice_id')::uuid),'caller-RLS PDF line joins complete');
-SELECT pg_temp.core_assert((SELECT count(*)=0 FROM public.item_storage_prices),'no direct pricing read grant');
+SELECT pg_temp.core_assert(NOT has_table_privilege('authenticated','public.item_storage_prices','SELECT'),'no direct pricing read grant');
 -- Migration 42: no role writes these tables directly, so the statement is
 -- refused outright instead of matching no row.
 DO $$ DECLARE tbl text; refused boolean; BEGIN

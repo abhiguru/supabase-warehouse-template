@@ -1,9 +1,10 @@
--- Slimming round 2 (migration 123, S3): characterisation of trg_restore_stock_on_dispatch_delete (BEFORE DELETE ON public.dispatch).
+-- Slimming round 2 (migration 123, S3): intended behaviour (owner decision 2026-10-21): deleting a dispatch made from an order returns every
+-- line of that order to pending with 0 fulfilled and reopens the order, including out-of-stock and cancelled lines. That is what
+-- trg_restore_stock_on_dispatch_delete (BEFORE DELETE ON public.dispatch) does, so the trigger stays (migration 123 does not drop it).
 -- delete_dispatch_with_order_cleanup, the only delete path, gives the stock and the cart quantities back itself and removes the dispatch
--- lines first, so the trigger's stock half finds nothing to do. Its other half is NOT redundant: it sets every line of the source order to
--- pending with nothing fulfilled, so a line that was out_of_stock or cancelled becomes pending again. The scenario below runs with the
+-- lines first, so the trigger's stock half finds nothing to do; its other half is the order reset above. The scenario below runs with the
 -- trigger on and with it off (each run is undone); stock, movements, order status and the answer are equal, and the lines differ exactly
--- as pinned at the end. The trigger therefore stays (migration 123 does not drop it); drop it only on an owner decision about those lines.
+-- as pinned at the end: with the trigger an out_of_stock or cancelled line becomes pending again, without it the line keeps its state.
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;

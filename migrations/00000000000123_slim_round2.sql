@@ -22,6 +22,10 @@
 --       extension in a later migration, once released builds carry a version-agnostic check.
 --  * 7. get_public_config(text): the edge function get-public-config reads its two tables through this narrow function with the
 --       anon key instead of holding the service-role key.
+--  * 8. The print "View jobs" sheet (get_print_jobs, cancel_print_job) works for administrators, supervisors and staff.
+--  * 9. 18 tables the app never reads directly lose the authenticated SELECT grant and their 23 starter policies (row security stays on).
+--  * 10. audit_log keeps 24 months: a retention_policy row and run_database_retention creates partitions ahead and drops old ones.
+--  * 11. restore_customer, safe_delete_customer and get_open_invoices_for_customer are dropped (no caller).
 -- trg_restore_stock_on_dispatch_delete stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 
 -- 0. Guard: refuse to drop anything that holds data. Dev held none; a database with real data (the production box) must be decided
@@ -906,3 +910,367 @@ REVOKE ALL ON FUNCTION public.get_public_config(p_environment text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_public_config(p_environment text) TO anon;
 GRANT EXECUTE ON FUNCTION public.get_public_config(p_environment text) TO service_role;
 
+
+-- ===== 8. The print "View jobs" sheet works for the people who can print (owner decision, 2026-10-21) =====
+-- The app (GRNs list, printer icon on a GRN row, "Print GRNs", View jobs) calls get_print_jobs and cancel_print_job with the user's
+-- session, but both were EXECUTE for service_role only, so the sheet always failed. Only View jobs is fixed: the print routes stay off
+-- by design (docs/PRINTING.md) and the Print buttons are unchanged.
+--  * Who: administrators, supervisors and staff, the roles that can print in the app (canCreate or canUpdate). Customers and anon are
+--    refused. authorize_rpc admits administrators and supervisors to every name; the two names are added to its staff list, and a
+--    customer reaches the final ELSE ("Staff access required").
+--  * What each role sees and cancels: the rule the two bodies already had. The printer and its queue are shared by the whole
+--    facility, so administrators, supervisors and staff list every job and may cancel any job that is not finished. A customer
+--    never reaches the bodies, so no customer sees another customer's data (a job holds a document range, the user's name and
+--    a printer name, no customer data).
+--  * get_print_jobs: calls authorize_rpc first; otherwise unchanged.
+--  * cancel_print_job: calls authorize_rpc first; its role lookup compared user_profiles.id with auth.uid() (a profile id against a
+--    login id), so it answered "not authenticated" to everyone; it now compares auth_user_id, as get_print_jobs does.
+--  * authorize_rpc: the stale name get_cart_dispatches (dropped above) leaves both lists.
+
+CREATE OR REPLACE FUNCTION public.get_print_jobs(p_limit integer DEFAULT 50, p_job_type text DEFAULT NULL::text, p_status text DEFAULT NULL::text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_user_role VARCHAR(20);
+    v_user_profile_id UUID;
+    v_auth_uid UUID;
+    v_result jsonb;
+BEGIN
+    PERFORM warehouse_security.authorize_rpc('get_print_jobs', jsonb_build_object());
+    v_auth_uid := auth.uid();
+
+    SELECT up.id, up.role
+    INTO v_user_profile_id, v_user_role
+    FROM public.user_profiles up
+    WHERE up.auth_user_id = v_auth_uid;
+
+    IF v_user_role IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'data', null,
+            'message', 'User not authenticated',
+            'error', jsonb_build_object('code', 'NOT_AUTHENTICATED')
+        );
+    END IF;
+
+    SELECT jsonb_build_object(
+        'success', true,
+        'data', COALESCE(jsonb_agg(jsonb_build_object(
+            'id', pj.id,
+            'cups_job_id', pj.cups_job_id,
+            'job_type', pj.job_type,
+            'document_range_start', pj.document_range_start,
+            'document_range_end', pj.document_range_end,
+            'document_count', pj.document_count,
+            'user_id', pj.user_id,
+            'user_name', pj.user_name,
+            'status', pj.status,
+            'error_message', pj.error_message,
+            'content_size', pj.content_size,
+            'printer_name', pj.printer_name,
+            'submitted_at', pj.submitted_at,
+            'completed_at', pj.completed_at,
+            'created_at', pj.created_at,
+            'updated_at', pj.updated_at
+        ) ORDER BY pj.submitted_at DESC), '[]'::jsonb),
+        'message', null
+    ) INTO v_result
+    FROM public.print_jobs pj
+    WHERE
+        (v_user_role IN ('admin', 'supervisor', 'staff') OR pj.user_id = v_auth_uid)
+        AND (p_job_type IS NULL OR pj.job_type = p_job_type)
+        AND (p_status IS NULL OR pj.status = p_status)
+    LIMIT p_limit;
+
+    RETURN v_result;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.cancel_print_job(p_print_job_id uuid) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_user_role VARCHAR(20);
+    v_job_user_id UUID;
+    v_cups_job_id INTEGER;
+    v_job_status VARCHAR(20);
+BEGIN
+    PERFORM warehouse_security.authorize_rpc('cancel_print_job', jsonb_build_object('p_print_job_id', p_print_job_id));
+    SELECT role INTO v_user_role FROM public.user_profiles WHERE auth_user_id = auth.uid();
+
+    IF v_user_role IS NULL THEN
+        RETURN utils.not_authenticated_response();
+    END IF;
+
+    SELECT user_id, cups_job_id, status INTO v_job_user_id, v_cups_job_id, v_job_status
+    FROM public.print_jobs WHERE id = p_print_job_id;
+
+    IF v_job_user_id IS NULL THEN
+        RETURN utils.not_found_response('Print job', p_print_job_id::text);
+    END IF;
+
+    IF v_job_user_id != auth.uid() AND v_user_role NOT IN ('admin', 'supervisor', 'staff') THEN
+        RETURN utils.error_response('PERMISSION_DENIED', 'Permission denied. You can only cancel your own print jobs.');
+    END IF;
+
+    IF v_job_status IN ('completed', 'cancelled', 'failed') THEN
+        RETURN utils.error_response('INVALID_STATUS', 'Cannot cancel job with status: ' || v_job_status);
+    END IF;
+
+    UPDATE public.print_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE id = p_print_job_id;
+
+    RETURN utils.success_response(
+        jsonb_build_object(
+            'print_job_id', p_print_job_id,
+            'cups_job_id', v_cups_job_id,
+            'note', 'Call manage-print-jobs Edge Function to cancel CUPS job: ' || v_cups_job_id
+        ),
+        'Print job marked as cancelled'
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) TO service_role;
+GRANT ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) TO authenticated;
+REVOKE ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) TO service_role;
+GRANT ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) TO authenticated;
+
+-- authorize_rpc: the two print names for staff; get_cart_dispatches (dropped above) removed from both lists.
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$    'get_cart_dispatches','search_customer_items_for_order',
+$m$,
+    $m$    'get_sensor_device'
+  ) THEN RETURN; END IF;
+$m$,
+    $m$  ELSIF rpc IN ('get_order_with_items','get_cart_dispatches','add_item_to_order',
+$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$    'search_customer_items_for_order',
+$m$,
+    $m$    'get_sensor_device',
+    -- The print "View jobs" sheet (migration 123); customers stay refused by the final ELSE.
+    'get_print_jobs','cancel_print_job'
+  ) THEN RETURN; END IF;
+$m$,
+    $m$  ELSIF rpc IN ('get_order_with_items','add_item_to_order',
+$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('warehouse_security.authorize_rpc(text, jsonb)'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'authorize_rpc: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;
+
+
+-- ===== 9. Tables the app never reads directly: no SELECT for authenticated, no starter policies (owner decision, 2026-10-21) =====
+-- The app reads user_profiles, customers, goodsreceived, goodsreceived_trl, grn_images and items directly; the PDF edge functions read
+-- customers, goodsreceived(_trl), dispatch(_trl), invoice (column grant) and invoice_trl with the caller's token; the Storage policies
+-- read grn_images, dispatch_images, goodsreceived and dispatch; feature_flags is read by anon. Everything else goes through
+-- SECURITY DEFINER RPCs (owner's rights), through service_role, or through supabase_admin (fas-sync reads as the owner and its writes are
+-- RPC calls as authenticated). The caller check (2026-10-21) found no use of the 18 tables below by: the app (.from, /rest/v1, select
+-- embeds), the edge functions (they use service_role for print_jobs), fas-sync, the Storage policies, the RLS policies of the tables
+-- that stay readable, any view an app role can read (sensor_status and v_orders_list are service_role only), or any SECURITY
+-- INVOKER function an app role can execute (only get_available_stock, which reads goodsreceived_trl, and auth.uid()/auth.jwt()).
+-- get_print_jobs and cancel_print_job (section 8) are SECURITY DEFINER and read print_jobs with the owner's rights.
+-- Row-level security stays enabled on every table: with no grant and no policy an API role gets "permission denied", and a future
+-- direct read fails closed. Grants to service_role and the table owner are not touched. (sensor_health_events went in section 5.)
+-- Kept readable (not revoked): customers, dispatch, dispatch_images, dispatch_trl, feature_flags, goodsreceived, goodsreceived_trl,
+-- grn_images, invoice (six internal columns excluded), invoice_trl, items, user_profiles; the reason for each is above.
+
+REVOKE SELECT ON TABLE public.grn_rates, public.invoice_discount_history, public.invoice_zero_charge_history,
+  public.item_price_history, public.item_storage_prices, public.order_items, public.order_revisions, public.orders,
+  public.payments, public.print_jobs, public.printer_status, public.sensor_devices, public.sensor_hubs, public.sensor_latest,
+  public.sensor_readings, public.standard_rate_tiers, public.stock_movements, public.users_customers_new
+  FROM authenticated;
+
+DROP POLICY IF EXISTS starter_staff ON public.grn_rates;
+DROP POLICY IF EXISTS starter_staff ON public.invoice_discount_history;
+DROP POLICY IF EXISTS starter_staff ON public.invoice_zero_charge_history;
+DROP POLICY IF EXISTS starter_staff ON public.item_price_history;
+DROP POLICY IF EXISTS starter_staff ON public.item_storage_prices;
+DROP POLICY IF EXISTS starter_customer_read ON public.order_items;
+DROP POLICY IF EXISTS starter_staff ON public.order_items;
+DROP POLICY IF EXISTS starter_customer_read ON public.order_revisions;
+DROP POLICY IF EXISTS starter_staff ON public.order_revisions;
+DROP POLICY IF EXISTS starter_customer ON public.orders;
+DROP POLICY IF EXISTS starter_order_staff_read ON public.orders;
+DROP POLICY IF EXISTS starter_staff ON public.orders;
+DROP POLICY IF EXISTS starter_customer ON public.payments;
+DROP POLICY IF EXISTS starter_staff ON public.payments;
+DROP POLICY IF EXISTS starter_staff ON public.print_jobs;
+DROP POLICY IF EXISTS starter_warehouse_read ON public.printer_status;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_devices;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_hubs;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_latest;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_readings;
+DROP POLICY IF EXISTS starter_staff ON public.standard_rate_tiers;
+DROP POLICY IF EXISTS starter_staff ON public.stock_movements;
+DROP POLICY IF EXISTS starter_assignments ON public.users_customers_new;
+
+
+-- ===== 10. audit_log keeps 24 months (owner decision, 2026-10-21) =====
+-- audit_log is written by 8 triggers and read by nothing; its monthly partitions ended at audit_log_2026_12 and nothing created the next
+-- ones, so from January 2027 every row would fall into audit_log_default, and nothing ever removed an old row. Now:
+--  * retention_policy gets the row audit_log, 730 days (24 months; the table counts days).
+--  * run_database_retention (CREATE OR REPLACE of the definition in section 1, answer shape kept, keys added) does, when applying:
+--    (a) creates the monthly partitions of the current month (UTC) and the next 3 months if missing; rows that audit_log_default
+--        already holds for a month about to get its partition are moved into it in the same transaction (PostgreSQL refuses to create a
+--        partition that overlaps rows of the default, so they are taken out first and put back);
+--    (b) drops whole monthly partitions whose month ended on or before p_now minus the policy's days;
+--    (c) deletes rows of audit_log_default older than that cutoff.
+--    In preview mode (p_apply false) it reports the same four numbers and names and changes nothing.
+--  * New answer keys: rows.audit_log (rows removed: those of the dropped partitions and the old rows of the default partition) and, at the
+--    top level, audit_log: {partitions_created, partitions_dropped, default_rows_moved, default_rows_deleted}. With the audit_log policy row
+--    removed by an operator, none of this runs (nothing is created, nothing is dropped) and the keys are absent.
+-- scripts/watch.mjs (daily pass) -> scripts/watch-daily.sh -> scripts/retention.sh apply -> run_database_retention(now(), true).
+
+INSERT INTO warehouse_maintenance.retention_policy(key, days, description)
+VALUES ('audit_log', 730, 'Audit trail (audit_log): whole monthly partitions that ended more than 24 months ago are dropped; new partitions are made 3 months ahead')
+ON CONFLICT (key) DO UPDATE SET days = EXCLUDED.days, description = EXCLUDED.description;
+
+CREATE OR REPLACE FUNCTION warehouse_maintenance.run_database_retention(p_now timestamp with time zone DEFAULT now(), p_apply boolean DEFAULT false)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'warehouse_security', 'warehouse_maintenance'
+AS $function$
+DECLARE
+  auth_cutoff timestamptz;
+  sensor_cutoff timestamptz;
+  audit_cutoff timestamptz;
+  audit_days integer;
+  result jsonb := '{}'::jsonb;
+  affected bigint;
+  audit_info jsonb;
+  v_month timestamp;
+  v_from timestamptz;
+  v_to timestamptz;
+  v_name text;
+  v_part record;
+  v_created text[] := '{}';
+  v_dropped text[] := '{}';
+  v_moved bigint := 0;
+  v_deleted bigint := 0;
+  v_gone bigint := 0;
+  v_n bigint;
+BEGIN
+  SELECT p_now - make_interval(days => days) INTO auth_cutoff
+    FROM warehouse_maintenance.retention_policy WHERE key = 'ephemeral_auth';
+  SELECT p_now - make_interval(days => days) INTO sensor_cutoff
+    FROM warehouse_maintenance.retention_policy WHERE key = 'sensor_readings';
+  SELECT days INTO audit_days FROM warehouse_maintenance.retention_policy WHERE key = 'audit_log';
+  IF audit_days IS NOT NULL THEN audit_cutoff := p_now - make_interval(days => audit_days); END IF;
+
+  -- audit_log: the partitions to create (current month and the next 3, UTC) and to drop (ended on or before the cutoff), the rows of
+  -- audit_log_default to move into a new partition and the rows older than the cutoff to delete. Applied below, counted in preview.
+  IF audit_days IS NOT NULL THEN
+    -- (c) rows of the default partition older than the cutoff go first, so they are not moved into a partition and dropped again
+    SELECT count(*) INTO v_n FROM public.audit_log_default WHERE created_at < audit_cutoff;
+    v_deleted := v_n;
+    IF p_apply AND v_n > 0 THEN DELETE FROM public.audit_log_default WHERE created_at < audit_cutoff; END IF;
+
+    -- (b) whole partitions that ended on or before the cutoff
+    FOR v_part IN
+      SELECT c.relname::text AS part_name,
+             (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \(''([^'']+)''\)'))[1]::timestamptz AS part_to
+        FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+       WHERE i.inhparent = 'public.audit_log'::regclass AND c.relname <> 'audit_log_default'
+       ORDER BY 1
+    LOOP
+      CONTINUE WHEN v_part.part_to IS NULL OR v_part.part_to > audit_cutoff;
+      EXECUTE format('SELECT count(*) FROM public.%I', v_part.part_name) INTO v_n;
+      v_gone := v_gone + v_n;
+      v_dropped := v_dropped || v_part.part_name;
+      IF p_apply THEN EXECUTE format('DROP TABLE public.%I', v_part.part_name); END IF;
+    END LOOP;
+
+    -- (a) the current month and the next 3
+    FOR i IN 0..3 LOOP
+      v_month := date_trunc('month', p_now AT TIME ZONE 'UTC') + make_interval(months => i);
+      v_from := v_month AT TIME ZONE 'UTC';
+      v_to := (v_month + interval '1 month') AT TIME ZONE 'UTC';
+      v_name := 'audit_log_' || to_char(v_month, 'YYYY_MM');
+      -- a month that is itself older than the cutoff is never made again (a short policy would otherwise recreate what it just dropped)
+      CONTINUE WHEN v_to <= audit_cutoff;
+      CONTINUE WHEN to_regclass(format('public.%I', v_name)) IS NOT NULL;
+      v_created := v_created || v_name;
+      SELECT count(*) INTO v_n FROM public.audit_log_default WHERE created_at >= v_from AND created_at < v_to;
+      v_moved := v_moved + v_n;
+      IF p_apply THEN
+        CREATE TEMP TABLE IF NOT EXISTS audit_log_move ON COMMIT DROP AS SELECT * FROM public.audit_log WITH NO DATA;
+        TRUNCATE pg_temp.audit_log_move;
+        WITH taken AS (DELETE FROM public.audit_log_default WHERE created_at >= v_from AND created_at < v_to RETURNING *)
+          INSERT INTO pg_temp.audit_log_move SELECT * FROM taken;
+        EXECUTE format('CREATE TABLE public.%I PARTITION OF public.audit_log FOR VALUES FROM (%L) TO (%L)', v_name, v_from, v_to);
+        EXECUTE format('GRANT ALL ON public.%I TO service_role', v_name);
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_name);
+        INSERT INTO public.audit_log SELECT * FROM pg_temp.audit_log_move;
+        TRUNCATE pg_temp.audit_log_move;
+      END IF;
+    END LOOP;
+    audit_info := jsonb_build_object('partitions_created', to_jsonb(v_created), 'partitions_dropped', to_jsonb(v_dropped),
+                                     'default_rows_moved', v_moved, 'default_rows_deleted', v_deleted);
+  END IF;
+
+  IF p_apply THEN
+    DELETE FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('consumed_refresh_tokens', affected);
+    DELETE FROM warehouse_security.refresh_sessions WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('refresh_sessions', affected);
+    DELETE FROM warehouse_security.central_token_use WHERE expires_at < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('central_token_use', affected);
+    DELETE FROM public.otp_verifications WHERE expires_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_verifications', affected);
+    DELETE FROM public.otp_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('otp_rate_limits', affected);
+    DELETE FROM public.ip_rate_limits WHERE updated_at < auth_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('ip_rate_limits', affected);
+    DELETE FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('idempotency_keys', affected);
+    DELETE FROM public.sensor_readings WHERE measured_at < sensor_cutoff;
+    GET DIAGNOSTICS affected = ROW_COUNT; result := result || jsonb_build_object('sensor_readings', affected);
+  ELSE
+    SELECT result || jsonb_build_object(
+      'consumed_refresh_tokens', (SELECT count(*) FROM warehouse_security.consumed_refresh_tokens WHERE expires_at < p_now),
+      'refresh_sessions', (SELECT count(*) FROM warehouse_security.refresh_sessions WHERE expires_at < p_now),
+      'central_token_use', (SELECT count(*) FROM warehouse_security.central_token_use WHERE expires_at < p_now),
+      'otp_verifications', (SELECT count(*) FROM public.otp_verifications WHERE expires_at < auth_cutoff),
+      'otp_rate_limits', (SELECT count(*) FROM public.otp_rate_limits WHERE updated_at < auth_cutoff),
+      'ip_rate_limits', (SELECT count(*) FROM public.ip_rate_limits WHERE updated_at < auth_cutoff),
+      'idempotency_keys', (SELECT count(*) FROM public.idempotency_keys WHERE COALESCE(expires_at, created_at) < p_now),
+      'sensor_readings', (SELECT count(*) FROM public.sensor_readings WHERE measured_at < sensor_cutoff)
+    ) INTO result;
+  END IF;
+  IF audit_days IS NOT NULL THEN
+    result := result || jsonb_build_object('audit_log', v_gone + v_deleted);
+    RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result, 'audit_log', audit_info);
+  END IF;
+  RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result);
+END $function$;
+
+
+-- ===== 11. Three functions nothing calls (owner decision, 2026-10-21) =====
+-- restore_customer(uuid) and safe_delete_customer(uuid, boolean) were the released app's old Activate and Deactivate; the app now calls
+-- set_customer_active, which never deletes. get_open_invoices_for_customer(uuid, date) was service_role only and is not called by any edge
+-- function, script or SQL body (the report code only names it in comments). The caller check covered the app, central identity, fas-sync,
+-- functions/, scripts/, every SQL body and policy. One overload of each exists; no CASCADE, so a surprise dependency stops the migration.
+DROP FUNCTION public.restore_customer(uuid);
+DROP FUNCTION public.safe_delete_customer(uuid, boolean);
+DROP FUNCTION public.get_open_invoices_for_customer(uuid, date);

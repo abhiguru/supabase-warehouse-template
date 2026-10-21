@@ -27,7 +27,9 @@ SELECT 'acl_authenticated_enrollment_review=' || COALESCE((SELECT bool_and(has_f
 DO $$ BEGIN
   IF NOT has_table_privilege('anon','public.feature_flags','SELECT')
     OR has_table_privilege('anon','public.orders','SELECT')
-    OR NOT has_table_privilege('authenticated','public.orders','SELECT')
+    -- Migration 123 took the app roles' direct read of orders away, so the check no longer asks for it (a backup of either era must verify);
+    -- customers is read directly in both eras. The printed acl_authenticated_orders_select line above is informational and is diffed as it was.
+    OR NOT has_table_privilege('authenticated','public.customers','SELECT')
     OR NOT has_function_privilege('service_role','public.operator_prepare_otp(text,inet)','EXECUTE')
     OR has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
     OR COALESCE((SELECT bool_or(has_function_privilege('anon',p.oid,'EXECUTE')) FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname='send_otp'),false)

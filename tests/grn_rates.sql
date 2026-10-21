@@ -141,9 +141,9 @@ SELECT pg_temp.gr_assert((SELECT bool_and(p.prosecdef AND p.proacl::text=(SELECT
 SELECT pg_temp.gr_assert((SELECT relrowsecurity FROM pg_class WHERE oid='public.grn_rates'::regclass)
  AND NOT has_table_privilege('authenticated','public.grn_rates','INSERT') AND NOT has_table_privilege('authenticated','public.grn_rates','UPDATE')
  AND NOT has_table_privilege('authenticated','public.grn_rates','DELETE') AND NOT has_table_privilege('authenticated','public.grn_rates','TRUNCATE')
- AND NOT has_table_privilege('anon','public.grn_rates','SELECT') AND has_table_privilege('authenticated','public.grn_rates','SELECT')
- AND (SELECT count(*)=1 AND bool_and(cmd='SELECT' AND policyname='starter_staff') FROM pg_policies WHERE schemaname='public' AND tablename='grn_rates'),
- 'grn_rates has row level security, one read policy (admin, supervisor) and no write privilege');
+ AND NOT has_table_privilege('anon','public.grn_rates','SELECT') AND NOT has_table_privilege('authenticated','public.grn_rates','SELECT')
+ AND (SELECT count(*)=0 FROM pg_policies WHERE schemaname='public' AND tablename='grn_rates'),
+ 'grn_rates has row level security, no policy and no app-role read or write privilege (migration 123)');
 
 -- ---------------------------------------------------------------------------
 -- 2. The floor without any GRN is today
@@ -655,12 +655,10 @@ SELECT pg_temp.gr_assert(:'oth'::jsonb->>'success'='true','a GRN of another busi
 SELECT count(*) AS all_rates FROM public.grn_rates \gset
 SELECT count(*) AS orchard_rates FROM public.grn_rates r JOIN public.goodsreceived g ON g.id=r.gr_id WHERE g.customer_id=:'orchard'::uuid \gset
 SELECT pg_temp.gr_assert(:'orchard_rates'::int>0 AND :'all_rates'::int>:'orchard_rates'::int,'fixture: rates of two businesses');
-SELECT pg_temp.gr_as(:'admin_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_admin \gset
-SELECT pg_temp.gr_as(:'staff_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_staff \gset
-SELECT pg_temp.gr_as(:'rater_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_rater \gset
-SELECT pg_temp.gr_as(:'customer_claims'::jsonb,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'n' AS n_customer \gset
-SELECT pg_temp.gr_assert(:'n_admin'::int=:'all_rates'::int AND :'n_customer'::int=0 AND :'n_staff'::int=0 AND :'n_rater'::int=:'all_rates'::int,
- 'direct reads: administrator all ('||:'n_admin'||'), supervisor all ('||:'n_rater'||'), customer 0 even for its own GRNs ('||:'orchard_rates'||' exist), staff 0 ('||:'n_staff'||')');
+SELECT bool_and(pg_temp.gr_as(c.claims,'SELECT jsonb_build_object(''n'',count(*)) FROM public.grn_rates')->>'state'='42501') AS refused_all
+  FROM (VALUES (:'admin_claims'::jsonb),(:'rater_claims'::jsonb),(:'staff_claims'::jsonb),(:'customer_claims'::jsonb)) c(claims) \gset
+SELECT pg_temp.gr_assert(:'refused_all'::boolean,
+ 'direct reads of grn_rates are refused for the administrator, the supervisor, staff and a customer (migration 123); rates reach the app through get_grn_details');
 SELECT pg_temp.gr_as(:'customer_claims'::jsonb,format($q$SELECT public.get_grn_details(%L::uuid)$q$,pg_temp.gr_grn('GRN-G1'))) AS det_cust \gset
 SELECT pg_temp.gr_assert(:'det_cust'::jsonb->>'success'='true' AND :'det_cust'::jsonb#>>'{data,grn,gr_no}'='GRN-G1'
  AND :'det_cust'::jsonb#>'{data,grn,rates}'='[]'::jsonb AND :'det_cust'::jsonb::text NOT LIKE '%GR Plum 0%' AND (pg_temp.gr_own('GRN-G1')<>'(none)'),

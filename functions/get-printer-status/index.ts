@@ -2,16 +2,7 @@ import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-he
 import { printerStatusFromReply } from '../_shared/ipp-validate.ts'
 import { validPrinterName, printerStatusFailure } from '../_shared/printer-name.ts'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-
   try {
     const userProfile = await validatePrintAccess(req);
 
@@ -53,7 +44,7 @@ Deno.serve(async (req) => {
     if (reading.printerState === undefined) {
       return new Response(
         JSON.stringify({ success: false, status: 'error', error: reading.message, printer_name, timestamp: new Date().toISOString() }, null, 2),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 }
+        { headers: { 'Content-Type': 'application/json' }, status: 502 }
       );
     }
 
@@ -70,21 +61,21 @@ Deno.serve(async (req) => {
         queued_job_count: reading.queuedJobCount,
         timestamp: new Date().toISOString()
       }, null, 2),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      { headers: { 'Content-Type': 'application/json' }, status: 200 }
     );
 
   } catch (error) {
     console.error('get-printer-status ERROR:', error);
 
     if (error.status && error.message) {
-      return createAuthErrorResponse(error, corsHeaders);
+      return createAuthErrorResponse(error);
     }
 
     const { status: errorStatus, message: errorMessage } = printerStatusFailure(error);
 
     return new Response(
       JSON.stringify({ success: false, status: 'error', error: errorMessage, timestamp: new Date().toISOString() }, null, 2),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: errorStatus }
+      { headers: { 'Content-Type': 'application/json' }, status: errorStatus }
     )
   }
 })

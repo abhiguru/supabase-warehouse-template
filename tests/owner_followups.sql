@@ -1,4 +1,4 @@
--- Owner follow-ups (2026-10-20): Activate refused on a shared mobile (set_customer_active, update_customer, restore_customer); customer assignments only for the Customer role. Fictional data.
+-- Owner follow-ups (2026-10-20): Activate refused on a shared mobile (set_customer_active, update_customer); customer assignments only for the Customer role. Fictional data.
 -- Runs only in migrations.sh's disposable, network-disabled database. Uses the existing operator test-session lifecycle.
 \set ON_ERROR_STOP on
 BEGIN;
@@ -73,12 +73,11 @@ SELECT pg_temp.of_assert(:'r'::jsonb->>'success'='true' AND :'r2'::jsonb->>'succ
 SELECT public.set_customer_active(:'t2'::uuid,true) AS r \gset
 SELECT pg_temp.of_assert(:'r'::jsonb->>'success'='true' AND (SELECT active FROM public.customers WHERE id=:'t2'::uuid),'Activate allowed when the holder is deleted: '||:'r');
 -- 3b. Switching on a DELETED customer whose number another active customer now has (T2 is active since test 3): refused, H2 stays deleted.
-SELECT public.set_customer_active(:'h2'::uuid,true) AS r1, public.update_customer(:'h2'::uuid, p_active=>true) AS r2, public.restore_customer(:'h2'::uuid) AS r3 \gset
+SELECT public.set_customer_active(:'h2'::uuid,true) AS r1, public.update_customer(:'h2'::uuid, p_active=>true) AS r2 \gset
 SELECT pg_temp.of_assert(:'r1'::jsonb#>>'{error,code}'='DUPLICATE_MOBILE' AND :'r1'::jsonb#>>'{error,details,customer_id}'=:'t2' AND :'r1'::jsonb#>>'{error,details,name}'='OF T2'
  AND :'r2'::jsonb#>>'{error,code}'='DUPLICATE_MOBILE' AND :'r2'::jsonb#>>'{error,details,name}'='OF T2'
- AND :'r3'::jsonb#>>'{error,code}'='DUPLICATE_MOBILE' AND :'r3'::jsonb#>>'{error,details,name}'='OF T2'
  AND (SELECT deleted_at IS NOT NULL FROM public.customers WHERE id=:'h2'::uuid),
- 'deleted customer cannot be switched on over a shared number, stays deleted: '||:'r1'||:'r2'||:'r3');
+ 'deleted customer cannot be switched on over a shared number, stays deleted: '||:'r1'||:'r2');
 -- 3c. Edit and Activate in one call to a number another active customer has: the Activate sentence, not the Edit one.
 SELECT public.update_customer(:'t4'::uuid, p_mobile=>'9777700018', p_active=>true) AS r \gset
 SELECT pg_temp.of_assert(:'r'::jsonb#>>'{error,code}'='DUPLICATE_MOBILE' AND :'r'::jsonb->>'message'='OF H8 already uses this mobile number. Change one of the numbers first.'
@@ -119,12 +118,7 @@ SET LOCAL ROLE authenticated;
 SELECT public.update_customer(:'twin_b'::uuid, p_city=>'Surat') AS r1, public.update_customer(:'twin_b'::uuid, p_active=>true) AS r2 \gset
 SELECT pg_temp.of_assert(:'r1'::jsonb->>'success'='true' AND :'r2'::jsonb->>'success'='true' AND (SELECT city='Surat' FROM public.customers WHERE id=:'twin_b'::uuid),
  'normal edit of an active customer is not re-checked: '||:'r1'||:'r2');
--- 8. restore_customer: refused on a shared number, allowed otherwise.
-SELECT public.restore_customer(:'t8'::uuid) AS r \gset
-SELECT pg_temp.of_assert(:'r'::jsonb#>>'{error,code}'='DUPLICATE_MOBILE' AND :'r'::jsonb#>>'{error,details,customer_id}'=:'h8'
- AND (SELECT NOT active FROM public.customers WHERE id=:'t8'::uuid),'restore_customer refused on a shared number: '||:'r');
-SELECT public.restore_customer(:'t5'::uuid) AS r \gset
-SELECT pg_temp.of_assert(:'r'::jsonb->>'success'='true' AND (SELECT active FROM public.customers WHERE id=:'t5'::uuid),'restore_customer allowed without a clash: '||:'r');
+-- 8. (restore_customer was dropped by migration 123: set_customer_active and update_customer, tested above, are the way to activate.)
 -- 9. Customer assignments: refused for staff and supervisor, still work for a customer; removal from a non-customer still works.
 SELECT pg_temp.of_call(format('SELECT to_jsonb(public.assign_customer_to_user(%L,%L::uuid))','919777700021',:'t4')) AS a_staff,
        pg_temp.of_call(format('SELECT to_jsonb(public.assign_customer_to_user(%L,%L::uuid))','919777700022',:'t4')) AS a_sup,

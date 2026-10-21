@@ -1,7 +1,7 @@
 import { documentRequestBody } from './request-body.ts';
 import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
-import { corsHeaders, handleCors } from './cors.ts';
+import { securityHeaders } from './security-headers.ts';
 import { htmlToPdf } from './pdf-renderer-client.ts';
 import { documentDate, documentHtml, kgEach } from './document-html.ts';
 import { headerColumns } from './document-columns.ts';
@@ -11,8 +11,6 @@ type Kind = 'grn' | 'dispatch' | 'invoice' | 'stock';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 export const documentPdf = (kind: Kind) => async (req: Request): Promise<Response> => {
-  const cors = handleCors(req);
-  if (cors) return cors;
   try {
     if (req.method !== 'POST') throw { status: 405, message: 'POST required' };
     await validateUserAccess(req);
@@ -89,7 +87,7 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     const signedUrl = new URL(signed.data.signedUrl);
     return new Response(JSON.stringify({ success:true,pdf_url:publicUrl+signedUrl.pathname+signedUrl.search,expires_in:3600,
       document:{type:kind,number,date,customer:header.customer_name,items_count:rows.length} }), {
-      headers:{...corsHeaders,'Content-Type':'application/json','Cache-Control':'no-store'},
+      headers:{...securityHeaders,'Content-Type':'application/json','Cache-Control':'no-store'},
     });
-  } catch(error) { return createAuthErrorResponse(error,corsHeaders); }
+  } catch(error) { return createAuthErrorResponse(error,securityHeaders); }
 };

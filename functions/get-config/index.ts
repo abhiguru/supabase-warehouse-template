@@ -1,12 +1,10 @@
 import { restClient } from '../_shared/supabase-rest.ts';
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { validateUserAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 
 Deno.serve(async (req: Request) => {
-  const cors = handleCors(req);
-  if (cors) return cors;
-  if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
+  if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
   try {
     // Session tokens are verified locally (validateUserAccess); there is no GoTrue service.
     const profile = await validateUserAccess(req);
@@ -40,7 +38,7 @@ Deno.serve(async (req: Request) => {
       },
       support: { email: settings.support_email || '', phone: settings.support_phone || '', appName: settings.app_name || 'Warehouse Manager' },
     }, timestamp: new Date().toISOString() }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
-  } catch (error) { return createAuthErrorResponse(error, corsHeaders); }
+  } catch (error) { return createAuthErrorResponse(error, securityHeaders); }
 });

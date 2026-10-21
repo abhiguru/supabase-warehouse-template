@@ -27,14 +27,15 @@ CREATE FUNCTION pg_temp.dcm_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS 
   RETURN claims;
  END $$;
 -- A lot's movements as "type quantity before>after (reference type)", sorted.
-CREATE FUNCTION pg_temp.dcm_moves(lot uuid) RETURNS text LANGUAGE sql AS $$
+-- The movement and cart lines are read with the owner's rights: an app role has no SELECT grant on these tables (migration 123).
+CREATE FUNCTION pg_temp.dcm_moves(lot uuid) RETURNS text LANGUAGE sql SECURITY DEFINER AS $$
   SELECT COALESCE(string_agg(movement_type || ' ' || quantity || ' ' || balance_before || '>' || balance_after
                              || ' (' || COALESCE(reference_type,'-') || ')', ', '
                              ORDER BY movement_type, quantity, balance_before), 'none')
   FROM public.stock_movements WHERE gr_trl_id = lot
 $$;
 -- A cart line of a lot as "requested/fulfilled status", or 'no line'.
-CREATE FUNCTION pg_temp.dcm_cart(cart uuid, lot uuid) RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION pg_temp.dcm_cart(cart uuid, lot uuid) RETURNS text LANGUAGE sql SECURITY DEFINER AS $$
   SELECT COALESCE((SELECT string_agg(requested_quantity || '/' || fulfilled_quantity || ' ' || item_status, ', ')
                    FROM public.order_items WHERE order_id = cart AND grn_items_id = lot), 'no line')
 $$;

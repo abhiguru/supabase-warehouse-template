@@ -8,7 +8,7 @@
 // (document-pdf.ts): { success, pdf_url, expires_in, document }.
 import { restClient } from './supabase-rest.ts';
 import { validateUserAccess, createAuthErrorResponse } from './auth-helpers.ts';
-import { corsHeaders, handleCors } from './cors.ts';
+import { securityHeaders } from './security-headers.ts';
 import { htmlToPdf, createFooterHtml } from './pdf-renderer-client.ts';
 import { reportHtml } from './document-html.ts';
 import { documentRequestBody } from './request-body.ts';
@@ -18,8 +18,6 @@ import { buildReport, formatCell, reportFilters, reportLevel, reportRefusal, unw
 import { label } from './report-labels.ts';
 
 export async function reportPdf(req: Request): Promise<Response> {
-  const cors = handleCors(req);
-  if (cors) return cors;
   try {
     if (req.method !== 'POST') throw { status: 405, message: 'POST required' };
     await validateUserAccess(req);
@@ -89,7 +87,7 @@ export async function reportPdf(req: Request): Promise<Response> {
       sort: { field: report.sort.field, order: report.sort.order },
     });
     return new Response(JSON.stringify({ success: true, pdf_url: publicUrl + signedUrl.pathname + signedUrl.search, expires_in: 3600, document }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
-  } catch (error) { return createAuthErrorResponse(error, corsHeaders); }
+  } catch (error) { return createAuthErrorResponse(error, securityHeaders); }
 }

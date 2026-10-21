@@ -30,7 +30,7 @@ CREATE FUNCTION pg_temp.rc_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $
   RETURN claims;
  END $$;
 -- The rows of a scope as text, oldest start first: "0-100@6.00/2.50/5 2026-01-01..open".
-CREATE FUNCTION pg_temp.rc_rows(p_item uuid, p_customer uuid, p_type text) RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION pg_temp.rc_rows(p_item uuid, p_customer uuid, p_type text) RETURNS text LANGUAGE sql SECURITY DEFINER AS $$
   SELECT COALESCE(string_agg(r.weight_min||'-'||r.weight_max||'@'||r.unit_price||'/'||r.labour_rate||'/'||trim_scale(r.tax_percent)
            ||' '||r.effective_from||'..'||COALESCE(r.effective_to::text,'open'), ' | ' ORDER BY r.effective_from, r.weight_min),'(none)')
   FROM public.item_storage_prices r
@@ -48,7 +48,8 @@ CREATE FUNCTION pg_temp.rc_replace(p_item uuid, p_customer uuid, p_type text, p_
 CREATE FUNCTION pg_temp.rc_row(p_item uuid, p_customer uuid, p_wmin int, p_wmax int, p_rent numeric, p_from date, p_to date) RETURNS void LANGUAGE sql AS $$
   INSERT INTO public.item_storage_prices(item_id,customer_id,price_type,unit_price,weight_min,weight_max,labour_rate,tax_percent,effective_from,effective_to,unit_price_one_time,unit_price_monthly)
   VALUES (p_item,p_customer,'monthly',p_rent,p_wmin,p_wmax,2.5,5,p_from,p_to,0,p_rent) $$;
-CREATE FUNCTION pg_temp.rc_hist() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM public.item_price_history $$;
+-- Owner's rights: an app role has no SELECT grant on the history table (migration 123).
+CREATE FUNCTION pg_temp.rc_hist() RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT count(*)::int FROM public.item_price_history $$;
 
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
  ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
@@ -502,10 +503,11 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_replace(:'ub'::uuid,NULL,'monthly',:'d30',jsonb_build_array(pg_temp.rc_band(0,100,7))) AS ub_g_change \gset
 RESET ROLE;
 SELECT id AS ub_new_id FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' AND effective_from=:'d30'::date \gset
+SELECT array_agg(id)::text AS ub_all_ids FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly' \gset
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,%L::uuid[])',:'ub','monthly',:'d30',:'ub_old_ids')) AS undo_g_stale \gset
-SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,%L::uuid[])',:'ub','monthly',:'d30',(SELECT array_agg(id)::text FROM public.item_storage_prices WHERE item_id=:'ub'::uuid AND customer_id IS NULL AND price_type='monthly'))) AS undo_g_ok \gset
+SELECT pg_temp.rc_call(format('SELECT public.undo_rate_change(%L,NULL,%L,%L,%L::uuid[])',:'ub','monthly',:'d30',:'ub_all_ids')) AS undo_g_ok \gset
 RESET ROLE;
 SELECT pg_temp.rc_assert(:'undo_g_stale'::jsonb->>'success'='false' AND :'undo_g_stale'::jsonb->>'error_code'='STALE_RATES'
  AND :'undo_g_stale'::jsonb#>>'{data,ids}'=format('["%s"]',:'ub_new_id') AND :'ub_g_change'::jsonb->>'success'='true',

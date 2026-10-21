@@ -1,6 +1,6 @@
 import { restBaseUrl } from '../_shared/rest-url.ts';
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from '../vendor/jose.mjs';
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { httpsAddress } from '../_shared/https-address.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { readBoundedJson } from '../operator-otp/body.ts';
@@ -50,7 +50,7 @@ export function createKeyCache(): KeyCache {
 }
 const workerKeys = createKeyCache();
 
-const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+const headers = { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 function respond(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers });
 }
@@ -241,8 +241,6 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
     env: name => Deno.env.get(name), fetch: (input, init) => fetch(input, init),
     now: () => Date.now(), log: message => console.error(message), keys: workerKeys, ...overrides,
   };
-  const cors = handleCors(req);
-  if (cors) return cors;
   if (req.method !== 'POST') return respond({ success: false, error: 'Method not allowed' }, 405);
   const issuer = deps.env('CENTRAL_ISSUER') || '';
   // The keys come from a file of the installation (its text arrives from the
