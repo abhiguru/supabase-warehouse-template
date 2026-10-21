@@ -26,6 +26,13 @@ test('restore verifier rejects incomplete backup before starting a container', (
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('backup restarts only the services it stopped: every up has --no-deps', () => {
+  const script = readFileSync(new URL('../scripts/backup.sh', import.meta.url), 'utf8');
+  const ups = script.split('\n').filter(line => /compose up\b/.test(line));
+  assert.equal(ups.length, 2, 'the cleanup restart and the normal restart');
+  for (const line of ups) assert.match(line, /up -d --no-recreate --no-deps --wait --wait-timeout 180 "\$\{restart\[@\]\}"/, line);
+});
+
 test('backup pauses owned writers, preserves credentials and resumes writers', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-flow-'));
   const state = join(scratch, 'state');
@@ -97,11 +104,12 @@ esac
     assert.ok(mainDump && !mainDump.includes('--no-owner'), 'main dump keeps owners for in-place restore');
     assert.ok(calls.split('\n').some(line => line.includes('pg_dump') && line.includes('-d _supabase') && line.includes('--format=custom')));
     assert.ok(calls.indexOf('stop kong') < calls.indexOf('-d _supabase'));
-    assert.ok(calls.indexOf('-d _supabase') < calls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
+    assert.ok(calls.indexOf('-d _supabase') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
     assert.ok(calls.indexOf('stop kong') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('stop supavisor') < calls.indexOf('pg_dump'));
-    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
-    assert.match(calls, /up -d --no-recreate --wait --wait-timeout 180 kong/);
+    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
+    assert.match(calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong/);
+    assert.doesNotMatch(calls, /up -d --no-recreate --wait/, 'no restart without --no-deps');
     assert.equal(existsSync(join(destination, 'storage.tar.gz')), true);
     writeFileSync(log, '');
     const failed = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'failed-backup')], {
@@ -111,7 +119,7 @@ esac
     assert.match(failed.stderr, /Service storage is running \(unhealthy\)\. Its last log lines:\nfake log of storage\n/);
     assert.equal(existsSync(join(scratch, 'failed-backup')), false);
     const failureCalls = readFileSync(log, 'utf8');
-    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --wait --wait-timeout 180 kong'));
+    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
     assert.equal(existsSync(join(destination, 'tunnel')), false, 'no tunnel directory without an adopted credential');
 
     // A tunnel credential adopted into the state (scripts/tunnel.sh) travels with every backup.

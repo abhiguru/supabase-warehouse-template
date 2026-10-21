@@ -34,11 +34,13 @@ if [[ "$(stat -c %d "$parent")" == "$(stat -c %d "$state/data")" ]]; then
 fi
 stage="$(mktemp -d "$parent/.warehouse-backup-staging.XXXXXXXX")"
 restart=()
+# Only the services this script stopped come back: --no-deps keeps compose from also starting what they depend
+# on (restarting storage would start rest, which the operator may have stopped on purpose).
 cleanup() {
   status=$?
   trap - EXIT
   if ((${#restart[@]})); then
-    if ! compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; then
+    if ! compose up -d --no-recreate --no-deps --wait --wait-timeout 180 "${restart[@]}"; then
       if command -v node >/dev/null 2>&1; then node "$ROOT/scripts/service-diagnostics.mjs" --unhealthy || true; else echo 'Service diagnostics skipped (node not on PATH): run node scripts/service-diagnostics.mjs --unhealthy' >&2; fi
       echo 'Backup services did not restart cleanly; run doctor and start.sh.' >&2
       status=1
@@ -141,7 +143,7 @@ backup_sign_dir "$stage" "$BACKUP_KEY"
 find "$stage" -mindepth 1 -type f -exec chmod 600 {} +
 find "$stage" -mindepth 1 -type d -exec chmod 700 {} +
 mv "$stage" "$destination"
-if ((${#restart[@]})); then compose up -d --no-recreate --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
+if ((${#restart[@]})); then compose up -d --no-recreate --no-deps --wait --wait-timeout 180 "${restart[@]}"; restart=(); fi
 echo "Backup created at $destination"
 echo 'Treat this directory as sensitive and test every retained backup with db:verify-restore.'
 echo "It is signed with $state/config/backup.key; keep a copy of that key away from this machine and from the backup drive."

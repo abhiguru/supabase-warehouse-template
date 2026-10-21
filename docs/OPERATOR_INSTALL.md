@@ -1624,6 +1624,9 @@ services are down from step 4 until step 7 ends, so plan a window. The old data 
 second tag, so the way back (step 9) stays open. The data directory inside the container stays `/var/lib/postgresql/data` (the stack sets
 `PGDATA` to it); the official 18 image's own default is elsewhere, so nothing else needs changing on the host.
 
+Data checksums: a new PostgreSQL 18 cluster has data checksums on by default, and an upgraded facility gets them through the restore (the restore creates a
+new cluster). No action is needed.
+
 Use one shell for all steps. Start with these helpers and the disk check: the new
 cluster, the backup and the kept 17 directory exist side by side, so check the free space first.
 
@@ -1642,7 +1645,7 @@ lock themselves, so the lock is released before them (step 4 and step 6). `verif
 **Step 1. Take the operator lock, record the old commit and stop every writer.** Stop what writes from outside the stack: a sensor bridge on
 another host, a script that posts readings or uploads. Mute the checker for the window (`node scripts/watch.mjs mute 240`). Then stop the
 stack's own writers; the database and Storage stay up for the backup and the fingerprints. With the writers already stopped, `backup.sh`
-finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself), so no write can sneak in between the backup and the restore.
+finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself; it brings services back with `up --no-deps`, so it starts only the services it stopped, never `rest` or anything else Storage depends on), so no write can sneak in between the backup and the restore.
 
 ```bash
 exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
@@ -1652,17 +1655,19 @@ bash scripts/compose.sh --profile '*' stop kong functions rest pdf-renderer supa
 bash scripts/compose.sh --profile '*' ps --status running --services     # only db and storage may remain
 ```
 
-**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** The configuration directory is copied whole
-(`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup).
+**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** Right after the backup, the configuration directory is copied whole
+for the rollback (`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup). It sits before the checks so that
+a failing check cannot skip it, and `mkdir` (without `-p`) refuses a rerun instead of nesting a second copy inside the first. The row counts come from
+`scripts/data-fingerprint.sh --counts`, the same text in step 2 and step 8.
 
 ```bash
 bash scripts/db-image.sh                         # must print postgres:17.…: this is still the old checkout
 bash scripts/backup.sh "$B/backup"
+mkdir "$B/config" && cp -a "$WAREHOUSE_STATE_DIR/config/." "$B/config/"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
 (cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass
 bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
 bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY 1 COLLATE \"C\"" > "$B/counts-before.txt"
-cp -a "$WAREHOUSE_STATE_DIR/config" "$B/config"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
+bash scripts/data-fingerprint.sh --counts > "$B/counts-before.txt"
 ```
 
 **Step 3. Tag the current images** (of stopped containers too: `ps -a`, because step 1 stopped most of them) so that a rollback uses them instead of building them again (the db image is the one that matters):
@@ -1699,7 +1704,9 @@ npm run db:verify-restore -- "$B/backup"      # must pass
 
 **Step 6. Restore.** `db:restore` takes the lock itself and needs the stack down (step 4). It moves `data/db` to `data/db.pre-restore-<utc>` and
 `data/storage` to `data/storage.pre-restore-<utc>`, creates a new PostgreSQL 18 cluster from the db image of this checkout (it rebuilds a stale db image
-first and refuses, before moving anything, if it cannot), replays the dump, runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
+first and refuses, before moving anything, if it cannot), replays the dump, analyzes every database (`vacuumdb --all --analyze-in-stages`: a dump made by
+`pg_dump` 18 does not carry planner statistics, so without this the restored tables stay unanalyzed until autovacuum reaches them; the disposable rehearsal of
+step 5 does not need it, because it only compares the integrity report and the catalog), runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
 
 ```bash
 npm run db:restore -- --yes "$B/backup"
@@ -1718,10 +1725,12 @@ bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(cat "$B/
 
 ```bash
 bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT version()'          # PostgreSQL 18.6
-sudo cat "$WAREHOUSE_STATE_DIR/data/db/PG_VERSION"                                                  # 18 (the file belongs to the container's user)
+bash scripts/compose.sh exec -T db cat /var/lib/postgresql/data/PG_VERSION                          # 18 (read inside the container, no sudo)
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
 bash scripts/data-fingerprint.sh --all | diff "$B/fingerprint-all-before.txt" - && echo IDENTICAL   # run on a quiet system (the file says which tables move on their own)
-bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY 1 COLLATE \"C\"" | diff "$B/counts-before.txt" - && echo 'counts equal'
+bash scripts/data-fingerprint.sh --counts | diff "$B/counts-before.txt" - && echo 'counts equal'
+ORIGIN=$(sed -n 's/.*"canonicalOrigin": *"\([^"]*\)".*/\1/p' "$WAREHOUSE_STATE_DIR/public/instance.json")
+curl -s -o /dev/null -w '%{url_effective} %{http_code}\n' "$ORIGIN/functions/v1/get-public-config"     # prints the URL it hit, then 200
 bash scripts/compose.sh ps                                  # every service Up (healthy); rest has no healthcheck and shows plain Up
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 npm run test:gateway
@@ -1729,6 +1738,7 @@ bash scripts/compose.sh exec -T db psql -X -q -U supabase_admin -d postgres -c "
 npm run db:backup                                           # the first backup of the new database
 npm run db:verify-restore -- "$(ls -dt "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n 1)"     # adjust the path if backups are written elsewhere
 node scripts/watch.mjs unmute
+bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT max(measured_at) FROM sensor_readings'   # newest sensor reading: run it again a minute later; a later value shows the sensor bridge writes again
 ```
 
 Run any `sudo` command that `setup.sh` printed. Sign in from a phone with one role before the window ends. Restart what you stopped outside the
