@@ -209,14 +209,15 @@ jobs:
           echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/core-backend-test-20260929" >> "$GITHUB_ENV"
       - name: Configure isolated gateway regression network
         run: |
-          cat >> docker/docker-compose.override.yml <<'YAML'
-
+          # An extra Compose file (scripts/compose.sh reads WAREHOUSE_COMPOSE_EXTRA): a fixed subnet for the default network.
+          cat > "$RUNNER_TEMP/compose-subnet.yml" <<'YAML'
           networks:
             default:
               ipam:
                 config:
                   - subnet: 10.233.245.0/24
           YAML
+          echo "WAREHOUSE_COMPOSE_EXTRA=$RUNNER_TEMP/compose-subnet.yml" >> "$GITHUB_ENV"
         working-directory: backend
       - name: Fresh private operator configuration and local services
         run: |

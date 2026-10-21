@@ -1,16 +1,27 @@
 # Supabase Warehouse Template - Docker Compose
 #
-# Start:    docker compose up -d
-# Stop:     docker compose down
-# Destroy:  docker compose down -v --remove-orphans
+# Run it only through scripts/compose.sh (it checks the operator state, which owns the data paths and the
+# environment file); setup.sh, start.sh and stop.sh do. For example:
+#   bash scripts/compose.sh ps
+#   bash scripts/compose.sh logs --tail 50 kong
+#   bash scripts/compose.sh --profile '*' config
 
 name: warehouse-template
+
+# Every service keeps at most three 10 MB log files; without this a service
+# uses the Docker daemon's default, which is unbounded unless the host sets one.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
 
   kong:
     image: kong:3.9.4-ubuntu@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620
     restart: unless-stopped
+    logging: *default-logging
     # Kong's resolver can wait on an inherited, unavailable search domain even
     # when Docker has answered the bare service alias. Resolve Compose aliases
     # at the DNS root; do not inherit a VM's LAN search suffix.
@@ -19,6 +30,14 @@ services:
       nofile:
         soft: 65535
         hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "kong health"]
       interval: 30s
@@ -43,7 +62,7 @@ services:
       KONG_DNS_NOT_FOUND_TTL: "1"
       KONG_DNS_ERROR_TTL: "1"
       KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
-      # The container is limited to 0.5 CPU (docker-compose.override.yml), but
+      # The container is limited to 0.5 CPU (deploy.resources above), but
       # nginx "auto" starts one worker per host core: 8 workers use about 590 MB
       # on an 8-core host, over the 512M limit.
       KONG_NGINX_WORKER_PROCESSES: "1"
@@ -100,10 +119,23 @@ services:
     image: postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df
     restart: unless-stopped
     networks: [default, database]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     depends_on:
       db:
         condition: service_healthy
     environment:
+      PGRST_DB_POOL: "20"
+      PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
+      PGRST_DB_CONFIG: "false"
+      PGRST_DB_PREPARED_STATEMENTS: "true"
       PGRST_DB_URI: postgres://authenticator:${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
       PGRST_DB_ANON_ROLE: anon
@@ -119,6 +151,16 @@ services:
       context: ./storage
     restart: unless-stopped
     networks: [default, database]
+    logging: *default-logging
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     volumes:
       - ${WAREHOUSE_STORAGE_PATH:?Set private storage path}:/var/lib/storage:z
     healthcheck:
@@ -154,11 +196,19 @@ services:
     restart: unless-stopped
     # `default` for the gateway and `renderer` (internal) for the PDF renderer.
     networks: [default, renderer]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     # The edge runtime has no health endpoint and ships neither wget nor curl.
     # Probe the public `hello` function (functions/main/index.ts) on the main
     # service port 9000 over bash /dev/tcp and require an HTTP 200 status line,
     # so a listening socket whose worker cannot start is reported unhealthy.
-    # docker-compose.override.yml carries the same probe.
     healthcheck:
       test:
         - CMD-SHELL
@@ -215,6 +265,16 @@ services:
       context: ./postgres
     restart: unless-stopped
     networks: [database]
+    logging: *default-logging
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     volumes:
       # The official image runs only the top level of /docker-entrypoint-initdb.d, in name order,
       # once, on an empty data directory.
@@ -263,11 +323,37 @@ services:
       MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow ID required}
       MSG91_PE_ID: ${MSG91_PE_ID:?MSG91 PE ID required}
       MSG91_SENDER_ID: ${MSG91_SENDER_ID:?MSG91 sender ID required}
-    command:
-      [
-        "postgres",
-        "-c", "log_min_messages=fatal"
-      ]
+    # PostgreSQL performance tuning. timezone and log_timezone are set to UTC (the facilities ran Etc/UTC, the same offset):
+    # the SQL code and its tests assume the time zone is named UTC. extra_float_digits is not set: the facilities ran the
+    # server default of 1 and the official image starts the same way.
+    command: >-
+      postgres
+      -c max_connections=100
+      -c listen_addresses=*
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c timezone=UTC
+      -c log_timezone=UTC
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c log_min_messages=warning
+      -c log_connections=on
+      -c log_disconnections=on
+      -c log_statement=none
+      -c log_min_duration_statement=-1
+      -c log_lock_waits=on
+      -c log_temp_files=0
+      -c wal_level=replica
+      -c archive_mode=off
+      -c shared_buffers=128MB
+      -c effective_cache_size=512MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c wal_buffers=32MB
+      -c checkpoint_completion_target=0.9
+      -c checkpoint_timeout=15min
+      -c min_wal_size=256MB
+      -c max_wal_size=2GB
 
   # Connection pooler — start with: docker compose --profile pooler up -d
   supavisor:
@@ -276,6 +362,12 @@ services:
     restart: unless-stopped
     profiles: ["pooler"]
     networks: [database]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     # The upstream entrypoint requires this limit; Docker defaults vary by host.
     ulimits:
       nofile:
@@ -331,6 +423,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     profiles: ["printing"]
+    logging: *default-logging
     privileged: true
     volumes:
       - ./cups/config/cupsd.conf:/etc/cups/cupsd.conf.custom:ro,z
@@ -361,6 +454,12 @@ services:
       context: ./sensor-bridge
     restart: unless-stopped
     profiles: ["sensors"]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     # As in docker-compose.standalone.yml: only /data (queue, change detector,
@@ -399,6 +498,7 @@ services:
     build: ./pdf-renderer
     restart: unless-stopped
     networks: [renderer]
+    logging: *default-logging
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -406,8 +506,15 @@ services:
     security_opt: ["no-new-privileges:true"]
     pids_limit: 512
     # 1.5 GiB is required, not a preference: the renderer's memory thresholds are sized for it (its README).
+    # Compose rejects a deploy limit that differs from mem_limit and pids_limit, so the deploy block repeats them.
     mem_limit: 1536m
     memswap_limit: 1536m
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1536M
+          pids: 512
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]

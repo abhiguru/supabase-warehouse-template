@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { composeAvailable, renderCompose, renderedCompose, renderedComposeEnv } from './compose-render.mjs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -106,9 +108,8 @@ test('every service still shares a network with each host it is configured to ca
 });
 
 test('the Compose files define no studio, meta or admin', () => {
-  for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
-    assert.doesNotMatch(read(file), /^  (?:studio|meta|admin):/m, `${file} defines studio, meta or admin`);
-  }
+  assert.doesNotMatch(read('docker/docker-compose.yml'), /^  (?:studio|meta|admin):/m, 'docker-compose.yml defines studio, meta or admin');
+  assert.equal(existsSync(new URL('../docker/docker-compose.override.yml', import.meta.url)), false, 'the override file is merged into docker-compose.yml');
 });
 
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
@@ -219,4 +220,24 @@ test('the renderer runs read-only with no capabilities, no ports and bounded mem
   assert.ok(renderer.build, 'the image is built locally, as every other service');
   assert.equal(renderer.tmpfs.some(entry => /^\/tmp(?::|$)/.test(entry) && /size=256m/.test(entry)), true);
   assert.equal(services.gotenberg, undefined, 'the old PDF service is gone');
+});
+
+test('WAREHOUSE_COMPOSE_EXTRA merges one more Compose file (CI pins the default network subnet this way) and refuses a bad path', { skip }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-compose-extra-'));
+  const previous = process.env.WAREHOUSE_COMPOSE_EXTRA;
+  try {
+    const extra = join(scratch, 'subnet.yml');
+    writeFileSync(extra, 'networks:\n  default:\n    ipam:\n      config:\n        - subnet: 10.233.245.0/24\n');
+    process.env.WAREHOUSE_COMPOSE_EXTRA = extra;
+    const merged = renderCompose();
+    assert.equal(merged.status, 0, merged.stderr);
+    assert.equal(JSON.parse(merged.stdout).networks.default.ipam.config[0].subnet, '10.233.245.0/24');
+    process.env.WAREHOUSE_COMPOSE_EXTRA = 'relative.yml';
+    const refused = renderCompose();
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /WAREHOUSE_COMPOSE_EXTRA must be the absolute path/);
+  } finally {
+    if (previous === undefined) delete process.env.WAREHOUSE_COMPOSE_EXTRA; else process.env.WAREHOUSE_COMPOSE_EXTRA = previous;
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

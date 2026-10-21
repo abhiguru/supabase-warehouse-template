@@ -20,10 +20,10 @@ test('operator fixture refuses live paths, symlinks, origins and provider creden
     assert.throws(() => operatorFixture(), /symlinks/);
     process.env.WAREHOUSE_STATE_DIR = state;
     writeFileSync(join(state, 'config/compose.env'),
-      'AUTH_MODE=operator\nBIND_ADDRESS=127.0.0.1\nSUPABASE_PUBLIC_URL=https://production.example.test\n', { mode: 0o600 });
+      'AUTH_MODE=operator\nSUPABASE_PUBLIC_URL=https://production.example.test\n', { mode: 0o600 });
     assert.throws(() => operatorFixture());
     writeFileSync(join(state, 'config/compose.env'),
-      'AUTH_MODE=operator\nBIND_ADDRESS=127.0.0.1\nSUPABASE_PUBLIC_URL=https://backend-core.example.test\nMSG91_AUTH_KEY=not-the-approved-fictional-key\n', { mode: 0o600 });
+      'AUTH_MODE=operator\nSUPABASE_PUBLIC_URL=https://backend-core.example.test\nMSG91_AUTH_KEY=not-the-approved-fictional-key\n', { mode: 0o600 });
     assert.throws(() => operatorFixture());
   } finally {
     if (previous === undefined) delete process.env.WAREHOUSE_STATE_DIR;

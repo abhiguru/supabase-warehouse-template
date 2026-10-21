@@ -70,7 +70,7 @@ export const listening = port => new Promise(resolve => {
 
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
-  if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.BIND_ADDRESS !== '127.0.0.1' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode, MSG91 and loopback gateway.');
+  if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode and MSG91.');
   // One rule with the edge function (scripts/provider-placeholder.mjs): template text is never accepted,
   // the fixture sentinel `isolated-` only for a reserved .test address (CI and fixtures).
   const fixture = isFixtureAddress(env.SUPABASE_PUBLIC_URL);

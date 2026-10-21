@@ -307,7 +307,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
   const manifest = { schemaVersion: 1, instanceId: randomUUID(), displayName: company, companyName: company,
     canonicalOrigin: canonical, supportedApiVersions: ['1'], minimumClientVersion: '0.1.0',
     capabilities: { sensors: false, printing: false } };
-  const values = { AUTH_MODE: 'operator', APP_ENV: 'production', BIND_ADDRESS: '127.0.0.1',
+  const values = { AUTH_MODE: 'operator', APP_ENV: 'production',
     SMS_PRODUCTION_MODE: 'true', SUPABASE_PUBLIC_URL: canonical, API_EXTERNAL_URL: canonical,
     SITE_URL: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),

@@ -33,6 +33,19 @@ test('the storage image fails the build if npm install changes package-lock.json
     assert.ok(!install.includes(flag), `npm install must not use ${flag}`);
   }
   assert.ok(!/--no-package-lock|--package-lock=false/.test(docker), 'no flag may skip the lockfile');
-  assert.match(docker, /&& npm ls --omit=dev --all > \/dev\/null\s+&& rm -rf/, 'npm ls must be fatal (no ||)');
+  assert.match(docker, /&& npm ls --omit=dev --all > \/dev\/null\s*\n/, 'npm ls must be fatal (no ||)');
   assert.match(docker, /npm@11\.12\.1/, 'the failure message names how to regenerate');
+});
+
+test('the storage image runs on a clean, digest-pinned Node image and carries only the patched /app from the publisher stage', () => {
+  const docker = read('docker/storage/Dockerfile');
+  const froms = docker.split('\n').filter(l => /^FROM /.test(l));
+  assert.equal(froms.length, 2);
+  assert.match(froms[0], /^FROM supabase\/storage-api:v[0-9.]+@sha256:[0-9a-f]{64} AS patched$/);
+  assert.match(froms[1], /^FROM node:[0-9.]+-alpine[0-9.]+@sha256:[0-9a-f]{64}$/);
+  const final = docker.slice(docker.indexOf(froms[1]));
+  assert.match(final, /^COPY --from=patched \/app \/app$/m);
+  assert.doesNotMatch(final, /apk add|npm install|npm ci|USER /, 'the final stage adds no packages and installs nothing');
+  // The publisher's tag and the version the image reports are the same.
+  assert.equal(/ENV VERSION=(\S+)/.exec(final)[1], /storage-api:v([0-9.]+)@/.exec(froms[0])[1]);
 });

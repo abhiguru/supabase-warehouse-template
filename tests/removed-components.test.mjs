@@ -45,7 +45,7 @@ const components = [
         [SELF, 'this test'],
       ]),
     },
-    clean: [{ files: ['docker/docker-compose.yml', 'docker/docker-compose.override.yml', 'functions/main/worker-env.ts', 'health-check.sh', 'scripts/backup.sh', '.github/workflows/ci.yml', 'docker/image-exceptions.json', '.github/dependabot.yml'], pattern: /gotenberg/i }],
+    clean: [{ files: ['docker/docker-compose.yml', 'functions/main/worker-env.ts', 'health-check.sh', 'scripts/backup.sh', '.github/workflows/ci.yml', 'docker/image-exceptions.json', '.github/dependabot.yml'], pattern: /gotenberg/i }],
   },
   {
     name: 'Grafana (no dashboards; alerts go to the facility Slack)',
@@ -57,7 +57,7 @@ const components = [
         [SELF, 'this test'],
       ]),
     },
-    clean: [{ files: ['docker/docker-compose.yml', 'docker/docker-compose.override.yml', 'package.json', '.github/workflows/ci.yml', '.github/dependabot.yml', '.env.example', 'scripts/configure.mjs', 'scripts/db-roles.mjs', 'scripts/image-recipes.mjs', 'docker/image-exceptions.json'], pattern: /grafana/i }],
+    clean: [{ files: ['docker/docker-compose.yml', 'package.json', '.github/workflows/ci.yml', '.github/dependabot.yml', '.env.example', 'scripts/configure.mjs', 'scripts/db-roles.mjs', 'scripts/image-recipes.mjs', 'docker/image-exceptions.json'], pattern: /grafana/i }],
   },
   {
     name: 'wal-g (backups are pg_dump, archive_mode is off)',
@@ -85,7 +85,7 @@ const components = [
     },
     checks: [
       ['no Compose file has an auth service, and Kong has no route to one', () => {
-        for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
+        for (const file of ['docker/docker-compose.yml']) {
           assert.doesNotMatch(read(file), /^  auth:\s*$/m, file);
           assert.doesNotMatch(read(file), /GOTRUE_/, file);
         }
@@ -119,7 +119,7 @@ const components = [
         [SELF, 'this test'],
       ]),
     },
-    clean: [{ files: ['docker/docker-compose.yml', 'docker/docker-compose.override.yml'], pattern: /imgproxy/i }, { files: ['.env.example'], pattern: /IMGPROXY/ }],
+    clean: [{ files: ['docker/docker-compose.yml'], pattern: /imgproxy/i }, { files: ['.env.example'], pattern: /IMGPROXY/ }],
     checks: [
       ['Storage has image transformation off', () => {
         const compose = read('docker/docker-compose.yml');
@@ -162,7 +162,7 @@ const components = [
         assert.deepEqual(readdirSync(root + 'docker').filter(name => /alert|prometheus|exporter|cadvisor/i.test(name)), []);
       }],
       ['no Compose service has the monitoring profile, a monitoring volume or a monitoring port', () => {
-        for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
+        for (const file of ['docker/docker-compose.yml']) {
           const text = read(file);
           assert.doesNotMatch(text, /profiles:\s*\[[^\]]*"monitoring"/, `${file} has a monitoring profile`);
           assert.doesNotMatch(text, /^  (?:prometheus|alertmanager|postgres-exporter|node-exporter|cadvisor):/m, `${file} defines a monitoring service`);

@@ -114,8 +114,7 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:' };
   for (const [name, prefix] of Object.entries(uses)) assert.ok(compose.includes(`${prefix}\${${name}:?`), `${name} is required where it is used`);
   assert.doesNotMatch(compose, /supabaserealtime|REALTIME_DB_ENC_KEY/);
-  const override = read('docker/docker-compose.override.yml');
-  assert.doesNotMatch(`${compose}\n${override}`, /warehouse_monitoring|DB_PASSWORD_MONITORING/, 'no service signs in as the monitoring login');
+  assert.doesNotMatch(compose, /warehouse_monitoring|DB_PASSWORD_MONITORING/, 'no service signs in as the monitoring login');
   assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role), ['authenticator', 'supabase_storage_admin', 'pgbouncer']);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_password" => System\.fetch_env!\("DB_PASSWORD_POOLER"\)/);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /update_manager_user_credentials\(tenant, Map\.take\(pool_user, \["db_user", "db_password"\]\)\)/);

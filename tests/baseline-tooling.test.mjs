@@ -255,8 +255,8 @@ test('the tooling reads the shipped image from scripts/db-image.sh; the old imag
     const frozen = [...override.stdout.matchAll(/^ *-c ((?:shared_preload_libraries|wal_level|pg_stat_statements\.[a-z_]+|cron\.[a-z_]+)=.*)$/gm)].map(m => m[1]);
     assert.deepEqual(FROZEN_FLAGS, frozen, 'the literals equal the -c flags of the frozen override file');
   }
-  // The checkout's override no longer has them: only the postgres:17 side reads it.
-  assert.doesNotMatch(readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8'), /pg_cron|cron\./);
+  // The checkout's Compose file no longer has them: only the postgres:17 side reads it.
+  assert.doesNotMatch(readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8'), /pg_cron|cron\./);
 });
 
 test('pg_trgm: the baseline replays the chain ACL of extension members, so the allow-list holds no entry for them', () => {

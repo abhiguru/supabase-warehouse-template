@@ -101,7 +101,7 @@ test('gateway has no metrics plugin, status listener or metrics port: the monito
   assert.doesNotMatch(kong, /prometheus|status_code_metrics|latency_metrics/);
   assert.doesNotMatch(kong, /\nplugins:\n/, 'kong.yml has no global plugin');
   assert.doesNotMatch(compose, /KONG_STATUS_LISTEN|prometheus/);
-  assert.doesNotMatch(readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8'), /KONG_STATUS_LISTEN|8100/);
+  assert.doesNotMatch(compose, /8100/);
 });
 
 test('gateway configuration survives the entrypoint that fills in its variables', () => {
@@ -145,9 +145,9 @@ test('the gateway access log has no query string, so a signed link or an apikey 
   assertRedactedAccessLog(environment, 'docker-compose.yml');
   // Written with $$ in the file: a single $ would be read by Compose as a variable (and warned about).
   assert.ok(!/\$[a-z_]+/.test(environment.KONG_NGINX_HTTP_LOG_FORMAT.replaceAll('$$', '')), 'every dollar sign in the format is doubled for Compose');
-  // The override file adds resources and logging only; it must not put the default format back.
-  const override = readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8');
-  assert.doesNotMatch(override, /KONG_PROXY_ACCESS_LOG|KONG_NGINX_HTTP_LOG_FORMAT/);
+  // One definition of the format and of the access log (the single Compose file), so no second copy can put the default back.
+  assert.equal(compose.match(/KONG_NGINX_HTTP_LOG_FORMAT:/g).length, 1);
+  assert.equal(compose.match(/KONG_PROXY_ACCESS_LOG:/g).length, 1);
   // kong.yml is evaluated by the entrypoint: no log format may be defined there.
   assert.doesNotMatch(kong, /log_format|access_log/);
 });
@@ -218,8 +218,7 @@ test('ingress is Cloudflare Tunnel only', () => {
 });
 
 test('publisher images are pinned by digest and the notices name the versions in use', () => {
-  const override = readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8');
-  const images = [...`${compose}\n${override}`.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]).filter(image => !image.endsWith(':local'));
+  const images = [...compose.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]).filter(image => !image.endsWith(':local'));
   assert.ok(images.some(image => /^kong:3\.9\.4-ubuntu@sha256:[0-9a-f]{64}$/.test(image)), 'Kong is not pinned by digest');
   assert.ok(images.some(image => /^postgrest\/postgrest:v[0-9.]+@sha256:[0-9a-f]{64}$/.test(image)), 'PostgREST is not pinned by digest');
   assert.deepEqual(images.filter(image => !/@sha256:[0-9a-f]{64}$/.test(image)), [], 'every pulled image is pinned by digest');
@@ -270,9 +269,9 @@ test('gateway runs one worker, loads only the plugins its routes use, and has no
   assert.ok(live.includes('KONG_NGINX_WORKER_PROCESSES: "1"'));
   const plugins = live.match(/KONG_PLUGINS: (\S+)/)[1].split(',');
   assert.deepEqual([...plugins].sort(), FIVE_PLUGINS);
-  // The plugin list lives in the base file only; the override must not carry a second copy.
-  const override = withoutYamlComments(readFileSync(new URL('../docker/docker-compose.override.yml', import.meta.url), 'utf8'));
-  assert.doesNotMatch(override, /KONG_PLUGINS|KONG_NGINX_WORKER_PROCESSES/);
+  // The plugin list and the worker count are each set once.
+  assert.equal(live.match(/KONG_PLUGINS:/g).length, 1);
+  assert.equal(live.match(/KONG_NGINX_WORKER_PROCESSES:/g).length, 1);
   assert.doesNotMatch(compose, /DASHBOARD_(?:USERNAME|PASSWORD)/);
   // Every plugin kong.yml really uses (per route) is loaded, and nothing else is.
   const liveKong = withoutYamlComments(kong);

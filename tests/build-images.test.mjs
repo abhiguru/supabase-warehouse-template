@@ -312,9 +312,8 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
 });
 
 test('every recipe is its own build directory', () => {
-  const override = readFileSync(join(repo, 'docker/docker-compose.override.yml'), 'utf8');
   // A context of `.` would put every file under docker/ into one image's fingerprint.
-  assert.doesNotMatch(`${readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8')}\n${override}`, /^\s+context: \.$/m);
+  assert.doesNotMatch(readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8'), /^\s+context: \.$/m);
 });
 
 test('the PDF renderer image is pinned, verified and minimal', () => {
@@ -356,7 +355,7 @@ test('the PDF renderer image is pinned, verified and minimal', () => {
 test('no built service names its own image: Compose tags each `<project>-<service>`, so installations never share one', () => {
   // A fixed tag (one was `warehouse-<service>:local`) is shared by every
   // installation on the host: one checkout's build replaced another's running image.
-  for (const file of ['docker/docker-compose.yml', 'docker/docker-compose.override.yml']) {
+  for (const file of ['docker/docker-compose.yml']) {
     const text = readFileSync(join(repo, file), 'utf8');
     const blocks = text.split(/\n(?=  [a-z][a-z0-9-]*:\n)/);
     for (const block of blocks.filter(item => /^    build:/m.test(item))) {

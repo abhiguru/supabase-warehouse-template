@@ -48,7 +48,7 @@ chain_plan_of() {
 #   OLD image (no bootstrap): the FROZEN flags the chain was written against (docker/docker-compose.override.yml and
 #   tests/migrations.sh at f1236ae, the last commit before the switch; migration 91 creates pg_cron, which must be preloaded
 #   and told its database). They do not read the checkout, so the chain still builds after the switch removed pg_cron there.
-#   postgres:17 (bootstrap): the shipped flags of this checkout's docker/docker-compose.override.yml.
+#   postgres:17 (bootstrap): the shipped flags of this checkout's docker/docker-compose.yml.
 OLD_DB_FLAGS=(
   shared_preload_libraries=pg_stat_statements,pg_cron
   pg_stat_statements.track=all
@@ -59,7 +59,7 @@ OLD_DB_FLAGS=(
 shipped_flags() {
   if [[ -z "${DB_BOOTSTRAP:-}" ]]; then printf '%s\n' "${OLD_DB_FLAGS[@]}"; return; fi
   sed -n 's/^ *-c \(\(shared_preload_libraries\|wal_level\|timezone\|log_timezone\|extra_float_digits\|pg_stat_statements\.[a-z_]*\)=.*\)$/\1/p' \
-    "$BASELINE_ROOT/docker/docker-compose.override.yml"
+    "$BASELINE_ROOT/docker/docker-compose.yml"
 }
 
 # Environment switches of start_db:
@@ -71,7 +71,7 @@ shipped_flags() {
 start_db() {
   local image="$1" name="$2" flags=() f
   while IFS= read -r f; do flags+=(-c "$f"); done < <(shipped_flags)
-  [[ " ${flags[*]} " == *shared_preload_libraries=* ]] || { echo 'No shared_preload_libraries in docker-compose.override.yml' >&2; return 1; }
+  [[ " ${flags[*]} " == *shared_preload_libraries=* ]] || { echo 'No shared_preload_libraries in docker-compose.yml' >&2; return 1; }
   local extra=() command=(${DB_COMMAND:-postgres -D /etc/postgresql})
   if [[ -n "${DB_BOOTSTRAP:-}" ]]; then
     [[ -d "$DB_BOOTSTRAP" ]] || { echo "Bootstrap directory $DB_BOOTSTRAP does not exist" >&2; return 1; }

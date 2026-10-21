@@ -68,6 +68,15 @@ while IFS= read -r line; do
 done < "$ENV_FILE"
 # WAREHOUSE_PUBLIC_PATH: the functions service reads the optional central
 # sign-in key file from the state's public directory (next to instance.json).
+# WAREHOUSE_COMPOSE_EXTRA: one more Compose file (an absolute path), merged after the shipped one. CI uses it to give
+# the default network a fixed subnet; an operator has no use for it.
+extra=()
+if [[ -n "${WAREHOUSE_COMPOSE_EXTRA:-}" ]]; then
+  if [[ "$WAREHOUSE_COMPOSE_EXTRA" != /* || ! -f "$WAREHOUSE_COMPOSE_EXTRA" ]]; then
+    echo 'WAREHOUSE_COMPOSE_EXTRA must be the absolute path of an existing file.' >&2
+    exit 1
+  fi
+  extra=(-f "$WAREHOUSE_COMPOSE_EXTRA")
+fi
 exec env "${unset_args[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
-  --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" \
-  -f "$ROOT/docker/docker-compose.override.yml" "$@"
+  --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" "${extra[@]}" "$@"

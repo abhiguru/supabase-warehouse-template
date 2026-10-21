@@ -248,7 +248,7 @@ test('the shipped exception ledger is well formed and names recipes that exist',
   const newest = Math.max(...ledger.exceptions.map(entry => Date.parse(`${entry.reviewed}T00:00:00Z`)));
   const entries = validateLedger(ledger, newest);
   assert.ok(entries.length > 0);
-  const compose = ['docker-compose.yml', 'docker-compose.override.yml'].map(name => readFileSync(join(repo, 'docker', name), 'utf8')).join('\n');
+  const compose = readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8');
   const pulled = [...compose.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]);
   for (const entry of entries) {
     assert.equal(entry.owner, 'abhiguru', `${entry.id}: owner (decision D3)`);

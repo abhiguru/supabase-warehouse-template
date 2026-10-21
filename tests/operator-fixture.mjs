@@ -20,7 +20,6 @@ export function operatorFixture() {
     'Fixture configuration must be a private regular file');
   const env = readEnv(config);
   assert.equal(env.AUTH_MODE, 'operator');
-  assert.equal(env.BIND_ADDRESS, '127.0.0.1');
   assert.equal(env.SUPABASE_PUBLIC_URL, 'https://backend-core.example.test');
   assert.equal(env.MSG91_AUTH_KEY, 'isolated-no-delivery-key');
   assert.equal(env.WAREHOUSE_DB_PATH, resolve(state, 'data/db'));

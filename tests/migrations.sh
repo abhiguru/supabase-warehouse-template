@@ -2,7 +2,7 @@
 # Tests ONLY a newly created, network-isolated, disposable database. No host ports.
 #
 # The database is the shipped one: the official Postgres image of scripts/db-image.sh, started as production starts it
-# (POSTGRES_USER=supabase_admin, en_US.UTF-8, the `-c` flags of docker/docker-compose.override.yml, the init scripts
+# (POSTGRES_USER=supabase_admin, en_US.UTF-8, the `-c` flags of docker/docker-compose.yml, the init scripts
 # 00-bootstrap.sql and roles.sql). The order is setup.sh's: database, migrations (the baseline, run twice), then the real
 # Storage 1.80.2 (the recipe image of docker/storage) on a throwaway --internal network (DB_SUPER_USER=supabase_storage_admin, DB_INSTALL_ROLES=false), then
 # scripts/configure-storage.sql, then the SQL suites. No schema fixture stands in for Storage.
@@ -20,15 +20,15 @@ cleanup() {
   if [[ -n "$net" ]]; then docker network rm "$net" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
-# The library settings the shipped database runs with (docker/docker-compose.override.yml): the same `-c` flags are passed here,
+# The library settings the shipped database runs with (docker/docker-compose.yml): the same `-c` flags are passed here,
 # so the harness tests what ships.
 shipped_flags=()
 while IFS= read -r flag; do
   shipped_flags+=(-c "${flag#-c }")
 done < <(
-  sed -n 's/^ *\(-c \(shared_preload_libraries\|wal_level\|timezone\|log_timezone\|extra_float_digits\|pg_stat_statements\.[a-z_]*\)=.*\)$/\1/p' "$ROOT/docker/docker-compose.override.yml")
-[[ " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements\ * || " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements ]] || { echo 'shared_preload_libraries is not exactly pg_stat_statements in docker-compose.override.yml' >&2; exit 1; }
-[[ " ${shipped_flags[*]} " == *wal_level=replica* ]] || { echo 'No wal_level=replica in docker-compose.override.yml' >&2; exit 1; }
+  sed -n 's/^ *\(-c \(shared_preload_libraries\|wal_level\|timezone\|log_timezone\|extra_float_digits\|pg_stat_statements\.[a-z_]*\)=.*\)$/\1/p' "$ROOT/docker/docker-compose.yml")
+[[ " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements\ * || " ${shipped_flags[*]} " == *shared_preload_libraries=pg_stat_statements ]] || { echo 'shared_preload_libraries is not exactly pg_stat_statements in docker-compose.yml' >&2; exit 1; }
+[[ " ${shipped_flags[*]} " == *wal_level=replica* ]] || { echo 'No wal_level=replica in docker-compose.yml' >&2; exit 1; }
 db_image="$(bash "$ROOT/scripts/db-image.sh")"
 # Random service passwords for the init script roles.sql (it needs 32 to 128 distinct characters of [A-Za-z0-9_-]).
 net=$(create_net)
