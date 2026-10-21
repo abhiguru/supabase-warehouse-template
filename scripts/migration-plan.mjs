@@ -4,11 +4,15 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 
-export function migrationPlan(root) {
+// through: optional file name; the plan then stops after that file (the Baseline reload loads old data between
+// the baseline and 111 onward). An unknown name is an error.
+export function migrationPlan(root, { through } = {}) {
   const directory = resolve(root, 'migrations');
   const files = readdirSync(directory).filter(name => name.endsWith('.sql')).sort();
   if (!files.length) throw new Error('No migrations found');
-  const migrations = files.map(name => {
+  if (through !== undefined && !files.includes(through)) throw new Error(`Unknown migration for --through: ${through}`);
+  const planned = through === undefined ? files : files.slice(0, files.indexOf(through) + 1);
+  const migrations = planned.map(name => {
     if (!/^\d+_[a-z0-9_]+\.sql$/.test(name)) throw new Error('Invalid migration filename');
     const sql = readFileSync(resolve(directory, name), 'utf8');
     return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
@@ -62,5 +66,19 @@ ${sql}
 }
 
 if (isMain(import.meta.url)) {
-  process.stdout.write(migrationPlan(fileURLToPath(new URL('..', import.meta.url))));
+  const args = process.argv.slice(2);
+  let through;
+  if (args.length) {
+    if (args.length !== 2 || args[0] !== '--through' || !args[1]) {
+      process.stderr.write('Usage: migration-plan.mjs [--through <migration file name>]\n');
+      process.exit(2);
+    }
+    through = args[1];
+  }
+  try {
+    process.stdout.write(migrationPlan(fileURLToPath(new URL('..', import.meta.url)), { through }));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  }
 }

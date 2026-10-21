@@ -1493,11 +1493,16 @@ git checkout --detach <this release>        # the tag or commit you are installi
 bash scripts/checkout-permissions.sh
 bash scripts/build-images.sh                 # builds the new db image; needs the network (if the build fails, go to step 9)
 bash scripts/compose.sh up -d --wait --wait-timeout 180 db
-bash scripts/migrate.sh --operator           # applies the baseline; the ledger gets one row
+bash scripts/migrate.sh --operator --through 00000000000000_baseline.sql   # applies the baseline only; the ledger gets one row
 bash scripts/compose.sh up -d --no-deps --wait --wait-timeout 180 storage
 dbsql -At -c "SELECT count(*) FROM storage.migrations"   # must equal the storage_migrations line of record-before.txt
 bash scripts/compose.sh stop storage
 ```
+
+`--through` stops the migration run after the named file. Without it `migrate.sh` applies every file of the directory, and
+the files after the baseline (111 onward) must not run yet: migration 123 drops tables and columns that the old data fills,
+so the dump of step 6 would no longer load, and its guard (which refuses to drop objects that hold rows) would only look at
+the new, empty database. Step 8 applies 111 onward on the loaded data. An unknown name is refused before the database is touched.
 
 The first start of the empty data directory runs `docker/volumes/db/00-bootstrap.sql`, `roles.sql`, `_supabase.sql` and
 `pooler.sql` ([roles](CONTAINER_SECURITY.md#database-roles)). Storage builds its own tables in the schema `storage`. It is
@@ -1557,7 +1562,11 @@ bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-after.txt"; diff "$
 Any orphan, any `diff` output or a missing `IDENTICAL` is a stop: go to step 9. The fingerprints also cover the storage
 catalog and the stored files.
 
-**Step 8. Run setup.** With the arguments written down in step 1. It is idempotent, sets the role passwords and the
+**Step 8. Run setup.** With the arguments written down in step 1. It runs the migrations after the baseline (111 onward) on
+the data you loaded. Migration 123 refuses to drop a table or column that holds rows: if the old database used any of them,
+setup stops with `Migration 123 would drop data: ...` and nothing of 123 is applied (the database stays at the migrations before it). Check
+that the named data is not needed, export it if it is, empty those objects (`dbsql -c 'TRUNCATE <table>'`, or set the named
+column to NULL), and run the same setup command again. If you cannot decide, go to step 9: the old database is untouched. It is idempotent, sets the role passwords and the
 configuration, and starts the core services. Release the lock first (setup takes it again), then start the optional
 services that ran before:
 
