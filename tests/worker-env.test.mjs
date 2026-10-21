@@ -27,7 +27,7 @@ function namesRead(entry) {
 }
 
 const container = {
-  JWT_SECRET: 'unit-test-signing-secret-0123456789abcdef', SUPABASE_URL: 'http://kong:8000', SUPABASE_ANON_KEY: 'unit-anon',
+  JWT_SECRET: 'unit-test-signing-secret-0123456789abcdef', SUPABASE_URL: 'http://kong:8000', SUPABASE_REST_URL: 'http://rest:3000', SUPABASE_STORAGE_URL: 'http://storage:5000', SUPABASE_ANON_KEY: 'unit-anon',
   SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_PUBLIC_URL: 'https://api.example.test', PDF_RENDERER_URL: 'http://pdf-renderer:3000',
   APP_ENV: 'production', AUTH_MODE: 'operator', VERIFY_JWT: 'true', INSTANCE_MANIFEST_PATH: '/etc/warehouse/instance.json',
   CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
@@ -66,15 +66,16 @@ test('public workers get no signing secret, and no worker gets a database addres
   }
   // The sensor ingest worker gets the RPC address and the server key, nothing else.
   assert.deepEqual(Object.fromEntries(workerEnv('ingest-sensor-readings', container)), {
-    SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
+    SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_REST_URL: 'http://rest:3000',
   });
   assert.deepEqual(Object.fromEntries(workerEnv('operator-otp', container)), {
-    APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
+    APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service', SUPABASE_REST_URL: 'http://rest:3000',
   });
   // The central settings reach the exchange and the public configuration, not the SMS sign-in or a signed-in function.
   assert.deepEqual(Object.fromEntries(workerEnv('central-exchange', container)), {
     APP_ENV: 'production', AUTH_MODE: 'operator', SUPABASE_URL: 'http://kong:8000', SUPABASE_SERVICE_ROLE_KEY: 'unit-service',
     SUPABASE_PUBLIC_URL: 'https://api.example.test', CENTRAL_ISSUER: 'https://login.example.test', CENTRAL_JWKS_URL: 'https://login.example.test/jwks.json',
+    SUPABASE_REST_URL: 'http://rest:3000',
   });
   // The key file's text is passed by the router to the exchange only; its name also tells get-public-config that keys are configured.
   const withKeys = name => Object.fromEntries(workerEnv(name, { ...container, CENTRAL_JWKS_FILE: 'central-jwks.json', CENTRAL_JWKS_DIR: '/etc/warehouse/public' }, { CENTRAL_JWKS_JSON: '{"keys":[]}' }));

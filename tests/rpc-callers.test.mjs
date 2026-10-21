@@ -31,8 +31,9 @@ test('every RPC an edge function calls is in the list of rpc_callers_exist.sql',
   for (const file of sources(join(root, 'functions'))) {
     const text = readFileSync(file, 'utf8');
     for (const m of text.matchAll(/\brpc\((?:deps,\s*)?'([a-z_0-9]+)'/g)) called.add(m[1]);
-    for (const m of text.matchAll(/\/rest\/v1\/rpc\/([a-z_0-9]+)/g)) called.add(m[1]);
+    for (const m of text.matchAll(/\/rpc\/([a-z_0-9]+)/g)) called.add(m[1]);
   }
+  assert.ok(called.has('record_sensor_batch'), 'the direct-path call (restBaseUrl(...)/rpc/record_sensor_batch) was found');
   assert.ok(called.size >= 10, 'the edge calls were found: ' + [...called]);
   assert.deepEqual([...called].filter(name => !edgeListed.has(name)), []);
 });
