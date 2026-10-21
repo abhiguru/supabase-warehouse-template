@@ -1,7 +1,7 @@
 # Invoice rules
 
 This describes the database contract in `calculate_invoice_duration`,
-`build_invoice_recalculation_rows` and `save_invoice(jsonb)`. The invoice form's preview
+`build_invoice_recalculation_rows` and `save_invoice(uuid, jsonb, jsonb[])`. (The one-argument `save_invoice(jsonb)`, `recalculate_invoice_items` and `create_item_storage_price` were removed in migration 123.) The invoice form's preview
 (`generate_invoice_data_for_grn`) is built by `build_invoice_form_lines` (migration 102): it follows the same rules and
 calls `calculate_invoice_duration` for the duration, but never reads stored invoice lines (`invoice_trl`). The boundary
 fixtures in `tests/invoice_duration.sql` assert explicit expected values.
@@ -32,11 +32,11 @@ to two places. Line total is base plus that rounded line tax.
 ONE_TIME storage is quantity × unit price, rounded to two places, with zero
 labour in the current preview. Rates are selected using item, customer, weight,
 GRN date and pricing mode; a stored invoice figure takes precedence
-(used by `build_invoice_recalculation_rows` / `recalculate_invoice_items`, and reported by `get_grn_item_rates`; never by the preview). Missing prices are reported to the caller.
+(used by `build_invoice_recalculation_rows`, and reported by `get_grn_item_rates`; never by the preview). Missing prices are reported to the caller.
 
 A rate typed for one GRN only (migration 86, `grn_rates`) sits between the two: a line's rent,
-labour and tax come from one source, in this order, never mixed: the stored invoice figure (used by `build_invoice_recalculation_rows` /
-`recalculate_invoice_items`, and reported by `get_grn_item_rates`; never by the preview), then
+labour and tax come from one source, in this order, never mixed: the stored invoice figure (used by `build_invoice_recalculation_rows`, and reported by
+`get_grn_item_rates`; never by the preview), then
 the GRN's own rate whose weight band holds the line's weight (the narrowest band wins), then the
 item's rate. Once the invoice is saved its figures win; if the invoice is deleted, the GRN's own
 rate applies again.
@@ -48,10 +48,10 @@ Preview subtotal sums line bases. Header tax is the ceiling of the sum of
 tax. Consequently the sum of displayed line totals can differ from the header.
 
 Since migration 24 the header money columns are server-computed for every
-save path (`save_invoice(jsonb)`, `save_invoice(uuid,jsonb,jsonb[])` and
+save path (`save_invoice(uuid,jsonb,jsonb[])` and
 `update_invoice`) and for every role. Client-supplied `labour`, `tax_amount`
 and `total` are ignored; `warehouse_security.recalculate_invoice_header`
-derives them from the saved lines. Those three RPCs and `delete_invoice` are the
+derives them from the saved lines. Those two RPCs and `delete_invoice` are the
 only ways an app session changes an invoice: since migration 42 no role, the
 administrator and supervisor included, can insert, update or delete `invoice`
 or `invoice_trl` rows with a direct table call, so "for every role" holds for
@@ -177,8 +177,8 @@ GRN/customer consistency and dispatch references and rolls the whole save back
 on a missing, duplicate or unrelated line. The mobile client computes the same
 numbers for display; the stored values are authoritative.
 
-A dispatch line is invoiced once (migration 41). Both `save_invoice` signatures
-refuse a receipt that is already marked invoiced (`GRN is already invoiced`)
+A dispatch line is invoiced once (migration 41). `save_invoice`
+refuses a receipt that is already marked invoiced (`GRN is already invoiced`)
 and a line that is on another invoice (`A dispatch line is already on another
 invoice`); `update_invoice` refuses to move an invoice onto an invoiced receipt
 or to take a line from another invoice. Two saves for the same receipt run one
@@ -245,9 +245,7 @@ it uses the financial year of today's date in India (`Asia/Kolkata`), which
 turns at 18:30 UTC on 31 March. The app passes the financial year of the
 invoice date.
 
-**The year must be the invoice date's (migration 120).** `save_invoice(jsonb)`,
-when it is sent no year, takes the financial year of the invoice date in India
-(it took today's), and both `save_invoice` signatures and `update_invoice` refuse
+**The year must be the invoice date's (migration 120).** `save_invoice` and `update_invoice` refuse
 a year that is not the one of the invoice date with `The invoice date belongs to
 financial year <year>, not <sent>` (SQLSTATE `WH422`). `update_invoice` checks
 this only when the edit changes the invoice date or the year, so an invoice saved
@@ -258,10 +256,10 @@ invoiced if another live invoice still holds it.
 **Range (migration 73).** An invoice number runs from 1 to 99999999
 (`INVOICE_NUMBER_MAX`, eight digits so that year-prefixed numbers such as
 20260929 stay valid; held by `warehouse_security.invoice_number_max()`).
-`save_invoice` (both signatures) and `update_invoice` refuse any other number
+`save_invoice` and `update_invoice` refuse any other number
 with `Invoice number must be between 1 and 99999999` (SQLSTATE `WH422`) before
-they write anything; the three-argument `save_invoice` raises it, the other two
-return it in their `{"success": false, "error": ...}` answer. An edit that keeps
+they write anything; `save_invoice` raises it, `update_invoice`
+returns it in their `{"success": false, "error": ...}` answer. An edit that keeps
 the invoice's own stored number is accepted, so an invoice saved earlier with a
 larger number can still be edited, but not moved to another number outside the
 range. The suggestion counts only numbers from 1 to 99999999, so a row above the
@@ -309,7 +307,7 @@ reserves its number, as above.)
 
 ## Invoices only when the goods are out, and the total the user confirmed (migration 121, owner decisions D9, D18, D23)
 
-- **No invoice while stock remains (D9).** `save_invoice` (both signatures) and `update_invoice` refuse, before writing, a GRN that has
+- **No invoice while stock remains (D9).** `save_invoice` and `update_invoice` refuse, before writing, a GRN that has
   stock in any of its lots: `GRN_HAS_STOCK` (`gr_no`, `stock`, `lots`; "GRN <no> still has <stock> in stock. Dispatch it first, then
   make the invoice."). The rule is on the GRN the request names, whatever the lines of the invoice are. An invoice that already exists
   on a GRN that now holds stock (for example after a dispatch was deleted) is refused on its next edit too, until the stock is
@@ -319,8 +317,7 @@ reserves its number, as above.)
   > 1.00` the save is rolled back and answered `TOTAL_CHANGED` with `current_total`, `expected_total` and `lines` (`disp_trl_id`,
   `duration`, `no_of_days` as the server just computed them): a date that moved, or another phone's edit, can change the days between
   the preview and the save. No `expected_total` (older apps): no check; their `total` key stays an estimate that the server ignores.
-  `save_invoice(jsonb)` is not checked.
-- **The GRN date and the dispatch date and number are locked once invoiced (D2, D23).** The invoice's days are counted from them, so
+  - **The GRN date and the dispatch date and number are locked once invoiced (D2, D23).** The invoice's days are counted from them, so
   `update_grn` refuses a changed GRN date (`GRN_DATE_LOCKED`) and `update_dispatch_smart` a changed dispatch date or number
   (`DISPATCH_INVOICED`) while a live invoice holds the GRN, or a line of the dispatch. Delete or edit the invoice first.
 - **A stale edit is refused (D1).** `update_invoice` compares `expected_updated_at` (the `invoice.updated_at` the form read) and answers
@@ -347,10 +344,8 @@ that an invalid dispatch reference rolls back the invoice header.
 
 ## Unsupported contract
 
-`create_item_storage_price` takes `p_price_type` and `p_unit_price`. The mobile
-client does not call it (it sets rates through the item-rate functions). The
-legacy overload accepting `p_unit_price_monthly` and `p_unit_price_one_time`
-always failed the required `price_type` constraint and has been dropped. No
-combined-rate semantics or additional grants are introduced.
+The `create_item_storage_price` helpers were removed in migration 123 (the app sets rates through the item-rate functions); the
+legacy overload accepting `p_unit_price_monthly` and `p_unit_price_one_time` had always failed the required `price_type`
+constraint. No combined-rate semantics or additional grants are introduced.
 Tax jurisdiction, discount application, payments and production billing approval
 remain business-owner decisions.

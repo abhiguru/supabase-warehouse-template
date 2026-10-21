@@ -96,7 +96,7 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
   `search_path`, and is granted explicitly; new tables enable RLS and revoke default grants.
 - Checks before a pull request: `npm test` and `npm run test:migrations` (Docker); add a SQL
   test under `tests/` for each policy or RPC change and register it in `tests/migrations.sh`.
-  CI's `contract` job checks the backend against the app commit in `MOBILE_REF` (`.github/workflows/ci.yml`): bump it with
+  The mobile pin (`MOBILE_REF`) is described in [CONTRIBUTING.md](CONTRIBUTING.md#mobile-companion-pin-mobile_ref): bump it with
   every change that needs the app, and run `npm run check:contract -- <app checkout>` first. `npm run baseline:verify` is
   needed only when the baseline file is regenerated, never for an ordinary migration.
 - Use fictional names and phone numbers in tests and fixtures; never commit secrets.

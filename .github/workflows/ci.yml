@@ -7,15 +7,9 @@ on:
 permissions:
   contents: read
 env:
-  # MOBILE_REF is the one commit of abhiguru/rn-warehouse-template that the
-  # contract job checks this backend against. It is always a full 40-character
-  # SHA (tests/workflows.test.mjs refuses a branch, a tag or a short hash) and
-  # it does not follow the app by itself: bump it together with every mobile
-  # release, and whenever a change here needs a change in the app. The job
-  # compares names only; overloads, argument names and grants are compared by
-  # `check-mobile-contract.mjs --live` against a running stack, which is a step
-  # of docs/RELEASE_CHECKLIST.md ("Mobile contract before a release"). See also
-  # CONTRIBUTING.md "Mobile companion pin".
+  # MOBILE_REF: the one app commit the contract job checks against, always a full SHA
+  # (tests/workflows.test.mjs refuses anything else). What it is for and when to move it:
+  # CONTRIBUTING.md, "Mobile companion pin".
   MOBILE_REF: f82df63e025629ae6e94754fc304b9f7e08cb6fa
 # Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
 # ["self-hosted","linux","x64","my-label"]); operator-install takes OPERATOR_INSTALL_RUNNER instead. Without the
@@ -62,15 +56,42 @@ jobs:
       - run: 'pip install --require-hashes --only-binary=:all: -r docker/sensor-bridge/requirements.txt'
       - run: python -m compileall -q docker/sensor-bridge/sensor_bridge
       - run: python -m unittest discover -s docker/sensor-bridge/tests -t docker/sensor-bridge
-  pdf-renderer:
-    name: PDF renderer image, unit tests and integration
-    # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); test/integration.sh
-    # builds the image and runs it with the hardening flags of docker/docker-compose.yml (read-only root,
-    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap), then checks
-    # health, a real render, blocked network access and the 400/413 cases.
+  # Which parts of the change need the renderer jobs. A plain git diff (no third-party action): a push or pull request that
+  # touches the renderer, its golden pages, the shared function code (the document and report HTML templates live in
+  # functions/_shared and move the golden output) or this workflow runs them. Where the base cannot be read, they run.
+  changes:
+    name: Which jobs this change needs
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
-    needs: validate
-    timeout-minutes: 30
+    outputs:
+      renderer: ${{ steps.filter.outputs.renderer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          renderer=true
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if git diff --name-only "$BASE" HEAD | grep -Eq '^(docker/pdf-renderer/|tests/golden-pdf/|functions/_shared/|\.github/workflows/ci\.yml$)'; then renderer=true; else renderer=false; fi
+          fi
+          echo "renderer=$renderer" >> "$GITHUB_OUTPUT"
+  pdf-renderer:
+    name: PDF renderer unit tests, integration and golden pages
+    # docker/pdf-renderer: the unit tests run on a fake browser (no Chrome needed); the image is built once, then
+    # test/integration.sh (IMAGE=) runs it with the hardening flags of docker/docker-compose.yml (read-only root,
+    # tmpfs /tmp, no capabilities, no-new-privileges, 512 pids, 1.5 GiB memory without swap) and checks health, a real
+    # render, blocked network access and the 400/413 cases. Then each case of tests/golden-pdf/corpus is rendered by the
+    # same image, rasterised at 150 dpi in a poppler container built from a fixed Debian snapshot (tests/golden-pdf/Dockerfile)
+    # and compared page by page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact.
+    # Regenerate with `run.sh --update` and review what moved. Skipped (not required, so never pending) when `changes` says
+    # the change cannot move the renderer.
+    needs: [validate, changes]
+    if: needs.changes.outputs.renderer == 'true'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,29 +103,14 @@ jobs:
         working-directory: docker/pdf-renderer
       - run: node --test test/*.test.mjs
         working-directory: docker/pdf-renderer
-      - run: bash docker/pdf-renderer/test/integration.sh
-  pdf-golden:
-    name: Golden PDFs (rasterised, fuzz 0)
-    # Renders each case of tests/golden-pdf/corpus through the built image, rasterises every PDF at
-    # 150 dpi in a poppler container built from a fixed Debian snapshot (tests/golden-pdf/Dockerfile) and compares
-    # each page by decoded pixels (fuzz 0) with tests/golden-pdf/golden; what moved is uploaded as an artifact. Required on every change to the Chrome for Testing
-    # pin, puppeteer-core or the fonts; regenerate with `run.sh --update` and review what moved.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
-    needs: validate
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-      - name: Build the renderer image and start it with the hardening flags
+      - name: Build the renderer image once
+        run: docker build -t pdf-renderer:ci docker/pdf-renderer
+      - run: IMAGE=pdf-renderer:ci bash docker/pdf-renderer/test/integration.sh
+      - name: Start the image with the hardening flags
         run: |
-          docker build -t pdf-renderer:golden docker/pdf-renderer
           docker run -d --name pdf-renderer-golden -p 127.0.0.1:3000:3000 --read-only --tmpfs /tmp:size=256m \
             --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1536m --memory-swap 1536m \
-            pdf-renderer:golden
+            pdf-renderer:ci
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && exit 0; sleep 2; done
           docker logs pdf-renderer-golden >&2; exit 1
       - name: Render the corpus, rasterise in the pinned poppler container and compare

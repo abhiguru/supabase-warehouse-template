@@ -11,17 +11,17 @@ on the installation's host.
 |---|---|---|
 | `kong` (gateway) | `kong:3.9.4-ubuntu`, pulled by digest | none (no recipe of its own) |
 | `rest` | `postgrest/postgrest:v16.4`, pulled by digest | none; static binary, see "Exceptions" |
-| `storage` | `docker/storage`: `supabase/storage-api` v1.80.2 by digest | Locked npm manifest with same-major leaf fixes (`@fastify/busboy` 3.2.3, `fast-copy` 4.1.2, an `undici` override scoped to `undici@^7`), Alpine package upgrade, unused npm CLI removed |
+| `storage` | `docker/storage`: `supabase/storage-api` v1.80.2 by digest | Two stages: the locked npm manifest with same-major leaf fixes (`@fastify/busboy` 3.2.3, `fast-copy` 4.1.2, an `undici` override scoped to `undici@^7`) is built on the publisher image, then the patched `/app` is copied onto a clean `node:24.21.0-alpine3.23` (no g++, make or python3; the image is about 550 MB, was 1 GB). Keep that Node in step with the publisher's: `docker/storage/README.md` |
 | `functions` | `docker/edge-runtime`: supabase/edge-runtime v1.77.4 binary on `debian:bookworm-slim` (both by digest) | Full `apt-get upgrade` and a minimum PCRE2 version check |
-| `db` | `docker/postgres`: the official `postgres:18.6-trixie` image (Debian 13), pinned by tag and index digest in the `FROM` line (`scripts/db-image.sh` prints it) | The recipe adds only a `gosu` 1.19 rebuilt with a patched Go (`golang:1.27.3-bookworm`, by digest); the base image ships a `gosu` built with an old Go toolchain. Operating-system rows with no fix are covered by the ledger entry `db-os-no-fix`. The earlier Supabase database image is no longer used |
+| `db` | `docker/postgres`: the official `postgres:18.6-trixie` image (Debian 13), pinned by tag and index digest in the `FROM` line (`scripts/db-image.sh` prints it) | The recipe deletes the base image's `gosu` (a Go binary built with an old toolchain, which Trivy reported) in a layer of its own and copies in `docker/postgres/gosu`, a shell shim over util-linux `setpriv`; the build checks that it drops to `postgres` with the same ids, groups and `HOME`. No Go is built or shipped. Operating-system rows with no fix are covered by the ledger entry `db-os-no-fix`. The earlier Supabase database image is no longer used |
 | `pdf-renderer` | `docker/pdf-renderer`: Node 24 (by digest), chrome-headless-shell from Chrome for Testing, puppeteer-core | Our own code; see "PDF renderer" |
 | `supavisor` (profile `pooler`) | `docker/supavisor`: 2.9.13 by digest | Debian package upgrade |
 | `cups` (profile `printing`) | `docker/cups`: `ubuntu:22.04` by digest | Ubuntu package upgrade |
 | `sensor-bridge` (profile `sensors`) | `docker/sensor-bridge`: `python:3.15-slim-bookworm` by digest | Hashed `requirements.txt`; pip uninstalled after the install |
 
 Every service image is either built from a Dockerfile whose `FROM` lines carry a digest, or referenced with a digest in
-Compose. `tests/gateway-config.test.mjs` fails on a tag-only image and on a version in `THIRD_PARTY_NOTICES.md` or
-[ATTRIBUTION_REVIEW.md](ATTRIBUTION_REVIEW.md) that differs from Compose or the Dockerfiles. Dependabot proposes a new
+Compose. `tests/gateway-config.test.mjs` fails on a tag-only image and on a version in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) that differs from Compose or the Dockerfiles (the only place that must name versions). Dependabot proposes a new
 digest when a tag is rebuilt. Operating-system package repositories stay live: rebuild without stale layers and rescan
 before deploying; a previous passing scan is not a current guarantee.
 
@@ -40,8 +40,13 @@ rendered configuration.
 - `renderer`: `internal: true` (Docker adds no route out: no internet, no host, no Kong, no database). Only the function
   runtime and the PDF renderer are on it.
 - `default`: the gateway and everything it or a function calls.
-- Operator probes follow the same rule: `health-check.sh` and `scripts/gateway-dns-check.sh` call the gateway from the
+- Operator probes follow the same rule: `health-check.sh` and `tests/gateway-dns-check.sh` call the gateway from the
   `storage` container.
+
+The functions call PostgREST and Storage directly (`SUPABASE_REST_URL=http://rest:3000`, `SUPABASE_STORAGE_URL=http://storage:5000`) for
+reports, PDFs and config, so those calls are not under Kong's 1800 a minute bucket or its key check; PostgREST verifies the JWT and
+`check_session` itself, and Storage still never sees `CF-Connecting-IP`. `operator-otp`, `central-exchange`, `ingest-sensor-readings` and
+the profile read of `_shared/auth-helpers.ts` still go through Kong.
 
 What this does not do: services on `default` still reach each other without Kong's limits (`functions:9000`,
 `storage:5000`, `rest:3000`), so PostgREST, Storage and the functions check tokens themselves. A service on `database`
@@ -115,7 +120,7 @@ client address and has no hourly window**.
 
 ## Logs
 
-What a service log may hold, for the 3 x 10 MB of `json-file` log each service keeps (`docker/docker-compose.override.yml`,
+What a service log may hold, for the 3 x 10 MB of `json-file` log each service keeps (`docker/docker-compose.yml`,
 `x-logging`; the oldest file is dropped when the third fills, and a recreated container starts with an empty log).
 
 - **The rule.** No log line holds a token, a key, an OTP, a password or a query string. A signed storage link
@@ -260,7 +265,7 @@ current Stable in Chrome for Testing's `last-known-good-versions.json`, and `.gi
 same check weekly and opens or updates an issue. If the release dates cannot be read the result is "unknown" (exit 2): the
 run fails, and no issue is opened or closed for it. Each network fetch is tried three times. To bump: change both args and
 puppeteer-core together (take the puppeteer-core release that pins that Chrome major), run the renderer's unit tests and
-`test/integration.sh`, check the golden-PDF job, then rebuild with `bash scripts/build-images.sh --no-cache` and scan. The
+`test/integration.sh`, check the golden pages in the `pdf-renderer` job, then rebuild with `bash scripts/build-images.sh --no-cache` and scan. The
 golden job renders a fictional corpus, rasterises it in a poppler container built from a fixed Debian snapshot and compares
 decoded pixels with the committed goldens at fuzz 0, so a font, Chrome or puppeteer change that moves a pixel is seen and
 judged (Gujarati shaping by eye, the rest as a failure).
@@ -293,7 +298,7 @@ devices on the facility LAN. What limits it:
 - **Process:** non-root (uid 10001), `cap_drop: [ALL]`, `no-new-privileges`, a read-only root filesystem (`/tmp` a tmpfs;
   the queue, change detector and health file are in the `/data` volume), limited to 0.25 CPU and 128 MB, logs bounded like
   every service. The log formatter replaces the Tapo password, the ingest key and any URL query with `***`;
-  `scripts/sensor-bridge-check.sh` fails if the configuration check prints a fictional password or key.
+  `tests/sensor-bridge-check.sh` fails if the configuration check prints a fictional password or key.
 - **Image:** pinned by digest; python-kasa and its dependencies are pinned in `requirements.txt` and updated by
   Dependabot (`pip`). The image is built on the operator's host.
 - **Not done:** the Tapo password and the ingest key are container environment variables, readable with `docker inspect`
@@ -433,13 +438,13 @@ then generate the value, existing ones gain it on the next setup, restores add i
   the one-time-code HMAC was not made, by owner decision D13, because it would void pending codes.
 - The database has no `http`, `pg_net`, `pg_graphql` or `supabase_vault` extension and no pgjwt; the database has no way to
   send a web request. A session's access token is signed by `warehouse_security.jwt_sign_hs256` (pgcrypto's `hmac`), which
-  no API role can execute. `PGRST_DB_SCHEMAS` is `public,storage`.
+  no API role can execute. `PGRST_DB_SCHEMAS` is `public` (an old `public,storage` is rewritten by `setup.sh` and the restore scripts), so the REST API cannot reach the `storage` schema, and `PGRST_OPENAPI_MODE=disabled`: `/rest/v1/` serves no OpenAPI document.
 - `no-new-privileges`, dropped capabilities and a read-only root filesystem are set on the PDF renderer and the sensor
   bridge. Kong's entrypoint writes `/tmp/kong.yml` and the other services have not been trialled, so they are not hardened
   this way.
 - **CUPS runs privileged** (optional profile). It also accepts print jobs from any container on `default` without a login;
   no function reaches it while the router refuses the printing functions.
-- Every service except CUPS has a CPU and memory limit (`docker/docker-compose.override.yml`; the PDF renderer's are in `docker/docker-compose.yml` too) and bounded logs.
+- Every service except CUPS has a CPU and memory limit (`docker/docker-compose.yml`) and bounded logs.
 
 ## Open items
 

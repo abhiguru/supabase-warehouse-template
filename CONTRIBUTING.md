@@ -36,7 +36,10 @@ branch moves, bump `MOBILE_REF` to the full 40-character SHA of the mobile
 commit you tested against (never a branch or tag name), run
 `node scripts/check-mobile-contract.mjs <path-to-mobile-checkout>` locally at
 that commit, and record the backend/mobile commit pair in the pull request so
-the tested combination stays traceable. Do not merge a backend change that
+the tested combination stays traceable. The same job also runs
+`tests/rpc-callers.test.mjs` with `MOBILE_CHECKOUT` set, which compares the app's
+RPC names with `tests/rpc_callers_exist.sql`. The live comparison before a release is a step of
+[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md#mobile-contract-before-a-release). Do not merge a backend change that
 needs a mobile change until the mobile commit exists and the pin points at it.
 
 ## Pull Request Process

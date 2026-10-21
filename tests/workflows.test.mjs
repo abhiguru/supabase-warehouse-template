@@ -87,3 +87,16 @@ test('a one-line run command with ": " or " #" in it is quoted', () => {
     }
   }
 });
+
+test('the renderer job runs only for a change that can move it, builds the image once, and is not a required check', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = name => ci.slice(ci.indexOf(`\n  ${name}:\n`) + 1).split(/\n  [a-z-]+:\n/)[0];
+  // The filter names every path that can change the renderer's output; the whole _shared folder holds the HTML templates.
+  for (const path of ['docker/pdf-renderer/', 'tests/golden-pdf/', 'functions/_shared/']) assert.ok(job('changes').includes(path), path);
+  assert.match(job('changes'), /\.github\/workflows\/ci\\\.yml/);
+  const renderer = job('pdf-renderer');
+  assert.match(renderer, /\n    needs: \[validate, changes\]\n    if: needs\.changes\.outputs\.renderer == 'true'\n/);
+  assert.equal((renderer.match(/docker build /g) || []).length, 1, 'the image is built once');
+  assert.match(renderer, /IMAGE=pdf-renderer:ci bash docker\/pdf-renderer\/test\/integration\.sh/);
+  assert.doesNotMatch(ci, /\n  pdf-golden:/, 'the golden job is part of pdf-renderer');
+});

@@ -1,7 +1,7 @@
 # Mobile/backend API coverage
 
 The app and the backend are checked as a pair. CI's `contract` job checks out
-the app at the commit pinned in `.github/workflows/ci.yml` (`MOBILE_REF`) and
+the app at the pinned commit ([CONTRIBUTING.md](../CONTRIBUTING.md#mobile-companion-pin-mobile_ref)) and
 runs the checker against it; locally, with the app checked out beside this
 repository:
 
@@ -19,8 +19,8 @@ What it reports, for the pinned pair: the app's RPC names (none missing), its ty
 compared (no mismatches), its direct table names and its literal Edge Function names (none missing). Five dynamic RPC
 calls (the name is in a variable: `src/config/supabaseConfig.ts`, `src/utils/serviceErrorHandler.ts`,
 `src/services/stock-service.ts`, `src/services/sensor-service.ts`, and the template `delete_${kind}_image` in
-`src/services/imageDeletion.ts`) are not checked. The pin in `.github/workflows/ci.yml` is app commit `e6a513b`: the
-older pin `d8af378` still called `get_dispatch_list`, which this release drops, so it must not be used.
+`src/services/imageDeletion.ts`) are not checked. An older pin than the current one may still call a function that this release drops
+(for example `get_dispatch_list`), so it must not be used.
 `get-config` still publishes `urls.realtime` although the `/realtime/v1` route is gone; the app ignores it, and it can be
 dropped once `minimumClientVersion` is past the builds that read it. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
 `print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design
@@ -113,6 +113,32 @@ still a 200 `{success:false, error_code:'DEVICE_NOT_FOUND'|'INVALID_PERIOD'}`.
 `record_sensor_reading` and `update_sensor` were dropped: they were granted to
 the service role only and nothing called them.
 
+## Removed in migration 123 (2026-10-21) and the public configuration
+
+`tests/rpc_callers_exist.sql` lists every function the app, the edge functions and fas-sync call and proves it exists after all
+migrations. About 110 functions that nothing called are dropped, among them (their entries below are history, marked "removed in 123"):
+
+- `save_invoice(jsonb)` (the one-argument form; `save_invoice(uuid, jsonb, jsonb[])` is the only save path) and the unused
+  `get_invoiceable_grns(integer, integer)` overload;
+- `create_item_storage_price`, `update_item_storage_price` (both overloads), `delete_item_storage_price` and
+  `find_or_create_item_storage_price`: rates are written by `replace_item_rates`, `set_standard_rate` and the GRN `p_rates`;
+- `get_cart_dispatches`, `get_item_dispatch_records`, `get_item_grn_rates(p_item_id)` (`get_grn_item_rates(p_grn_id)` stays),
+  `recalculate_invoice_items` and `update_order_metadata`;
+- the table `sensor_health_events` and 15 other empty tables, 8 views, 12 columns and 13 indexes. The migration refuses to run if
+  one of those tables or columns holds data (it names each and says to export or empty it first).
+
+`build_invoice_recalculation_rows` stays (tests and the lot-rate reader use it). The invoice-save path, `create_dispatch_with_stock_check`
+(four-argument form, called by fas-sync) and `trg_restore_stock_on_dispatch_delete` are kept on purpose.
+
+**`get_public_config(p_environment text)`** returns `json {app_version, maintenance_mode, feature_flags}` (`feature_flags` an object of
+name to enabled), or NULL when the environment has no active row (the edge function `get-public-config` then answers 503, "not
+seeded"). It is the one RPC callable by `anon` (and `service_role`): it is a narrow read of `api_configurations` and `feature_flags`,
+so the function no longer holds the service-role key. Like `check_session` and `refresh_jwt_token`, it is the exception to "every
+RPC calls `authorize_rpc` first". It does not exist before migration 123, so `get-public-config` answers 503 between the code update and
+the migration.
+
+`/rest/v1/` serves no OpenAPI document and exposes only the `public` schema (`PGRST_DB_SCHEMAS=public`, `PGRST_OPENAPI_MODE=disabled`).
+
 ## Legacy and dormant functions
 
 There is no accounting integration (migration 71 removed the unused Tally one, with the dead baseline functions that
@@ -134,7 +160,7 @@ from the router until printing is accepted ([PRINTING.md](PRINTING.md),
 **Staff lose item pricing (migration 90, 2026-10-16, owner decision).** Every function of this section
 and of the next ones that reads or writes rates (`get_item_storage_prices`, `create_item_storage_price`,
 `update_item_storage_price`, `delete_item_storage_price`, `replace_item_rates`, `undo_rate_change`,
-`get_standard_rate`, `set_standard_rate`, `get_item_grn_rates`) is for administrators and supervisors
+`get_standard_rate`, `set_standard_rate`, `get_item_grn_rates`; the `create/update/delete_item_storage_price` helpers and `get_item_grn_rates` were removed in 123) is for administrators and supervisors
 only: a staff call is refused by the guard with SQLSTATE 42501 and the message 'Staff access required'
 (the price functions that catch errors answer `{ success: false, error: 'Staff access required', error_code: '42501' }`).
 The staff rules described below for these functions (`PAST_DATE_NOT_ALLOWED` for staff,
@@ -193,7 +219,7 @@ ahead; also for `p_move_from`), `PAST_DATE_NOT_ALLOWED`, `RATE_IN_FORCE_MANAGER_
 `NOT_A_RATE_START`, `NOTHING_TO_MOVE`, `NOTHING_TO_STOP`. A customer account is refused with
 SQLSTATE 42501.
 
-`find_or_create_item_storage_price` is for administrators and supervisors only (no app code calls
+`find_or_create_item_storage_price` (removed in migration 123) was for administrators and supervisors only (no app code called
 it); it uses the India day, stores labour 0 for one-time and refuses an overlapping row
 (`BANDS_OVERLAP`). `get_item_storage_prices` without `include_expired` hides rows that ended before
 the India day.
@@ -226,6 +252,8 @@ A row that ended before `p_starts_on - 1` is never touched and never counts, lis
 facility without this migration gets PGRST202 (no such function), because the old signature has four arguments.
 
 ### Changed price functions
+
+(`create_item_storage_price`, `update_item_storage_price` and `delete_item_storage_price` were removed in migration 123; this list is history.)
 
 - `create_item_storage_price`, `update_item_storage_price`: refuse an overlap of the same item,
   customer, price type, weight and days (`BANDS_OVERLAP`); a one-day rate is valid
@@ -524,7 +552,7 @@ narrowest wins), else the item's rate. The invoice form's preview (`build_invoic
 reads `invoice_trl`: it prices the GRN's dispatched lines afresh, with the duration from `calculate_invoice_duration`.
 `save_invoice` calls `calculate_invoice_duration` itself and takes charge, tax and labour from the lines it is sent.
 `build_invoice_recalculation_rows` (which also takes the stored invoice figure of an already invoiced line) is now
-called only by `recalculate_invoice_items` (service_role only, not used by the app); `get_grn_item_rates` also takes
+called only by tests and the lot-rate reader (`recalculate_invoice_items` was removed in 123); `get_grn_item_rates` also takes
 the stored invoice figure first (`source 'invoice'`, from the lines of any live invoice of the lot, migration 88),
 then follows its rule. Once an invoice is saved its figures win and the GRN-only rate is "archived"; delete the
 invoice and it applies again.
@@ -551,7 +579,7 @@ The `grn` object gains `rates`: `[{id, item_id, item_name, price_type, weight_mi
 unit_price, labour_rate, tax_percent, archived}]` ordered by item name and `weight_min` (`[]` when none);
 `archived` is true when the GRN is invoiced. For a customer account and, since migration 90, for staff, `rates` is always `[]`.
 
-### `get_item_grn_rates(p_item_id uuid)`
+### `get_item_grn_rates(p_item_id uuid)` (removed in migration 123)
 
 Roles: admin, supervisor (since migration 90; staff and a customer account are refused with SQLSTATE 42501). Answer
 `{success:true, data:{rates:[{id, gr_id, gr_no, grn_date:'YYYY-MM-DD', customer_id, customer_name,
@@ -601,7 +629,7 @@ rows). `create_item_storage_price` has no window, as before.
   deleted or other customer's cart with `The order belongs to another customer` (`WH409`);
   `update_dispatch_smart` refuses moving a dispatch that has a `source_order_id` to a customer other than
   the cart's (same text and code; a dispatch already for another customer can still be edited without
-  changing its customer). `get_cart_dispatches`, `get_orders_list` and `get_order_with_items` show only a dispatch of the cart customer's own.
+  changing its customer). `get_cart_dispatches` (removed in 123), `get_orders_list` and `get_order_with_items` show only a dispatch of the cart customer's own.
 - Create takes the document lock (advisory 71040) before it looks up the idempotency key, so a retry that
   overlaps its first call waits and is then answered from the cache (`from_cache:true`), never with a
   unique-key error. A dispatch from a cart reads the cart line `FOR UPDATE`: a concurrent change of the line's
@@ -876,7 +904,7 @@ document can be entered again; `I1` and `I0001` are different strings. A number 
 
 ### Unbilled bags (D9)
 
-`save_invoice(uuid,jsonb,jsonb[])` (through `save_invoice_internal`), `save_invoice(jsonb)` and `update_invoice`: before any write, any stock
+`save_invoice(uuid,jsonb,jsonb[])` (through `save_invoice_internal`) and `update_invoice` (and the one-argument `save_invoice(jsonb)` until 123): before any write, any stock
 in any lot of the GRN the request names is `GRN_HAS_STOCK`. An existing invoice of a GRN that now holds stock is refused on its next edit
 too. `update_grn`: a line without `id` while the GRN is invoiced is `GRN_INVOICED`.
 
@@ -917,7 +945,7 @@ A deactivated business may still order and be dispatched: migration 121 adds no 
 `save_invoice(uuid,jsonb,jsonb[])` and `update_invoice` read an optional number `expected_total` (rupees) in the invoice data. After
 `recalculate_invoice_header`, when `abs(invoice.total - expected_total) > 1.00` the save is rolled back and answered `TOTAL_CHANGED` with
 `lines` = each line's `disp_trl_id`, `duration`, `no_of_days` as the server just recomputed them. Absent (older apps): no check; their
-`total` key stays an estimate. `save_invoice(jsonb)` does not check it.
+`total` key stays an estimate.
 
 ## List freshness (migration 106, 2026-10-19)
 

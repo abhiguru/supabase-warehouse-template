@@ -136,40 +136,10 @@ never written; every line is also filtered for them.
 
 ## Standalone run (outside the warehouse stack)
 
-For a bridge on its own host or VM, next to the hubs. First mint a key on the installation
-the bridge posts to, from that installation's backend folder (it prints the key once, as the
-only line; put it straight into `SENSOR_INGEST_KEY` of `sensor-bridge.env`):
-
-```sh
-bash scripts/compose.sh exec -T db psql -X -qAt -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-  -v label=main-bridge < scripts/sensor-ingest-key.sql
-```
-
-To revoke that bridge's keys later (the bridge then gets 401 and waits):
-
-```sh
-bash scripts/compose.sh exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-  -c "UPDATE warehouse_security.sensor_ingest_keys SET revoked_at = now() WHERE label = 'main-bridge' AND revoked_at IS NULL"
-```
-
-Then:
-
-```sh
-mkdir -p ~/sensor-bridge && cd ~/sensor-bridge
-cp /path/to/repo/docker/sensor-bridge/docker-compose.standalone.yml docker-compose.yml
-cp /path/to/repo/docker/sensor-bridge/sensor-bridge.env.example sensor-bridge.env
-chmod 600 sensor-bridge.env        # then fill it in with an editor
-echo "SENSOR_BRIDGE_SOURCE=/path/to/repo/docker/sensor-bridge" > .env
-docker compose build
-docker compose run --rm sensor-bridge --check-config
-docker compose run --rm sensor-bridge --once --dump
-docker compose run --rm sensor-bridge --once
-docker compose up -d
-docker compose logs -f
-```
-
-The queue lives in the volume `sensor-bridge_data`; `docker compose down` keeps it
-(`down -v` deletes it, together with anything not yet delivered).
+For a bridge on its own host or VM, next to the hubs: the one description is in
+[docs/SENSORS.md](../../docs/SENSORS.md#run-it-as-its-own-compose-project) (mint and revoke a key, copy
+`docker-compose.standalone.yml` and `sensor-bridge.env.example`, check, post once, start). The queue lives in the volume
+`sensor-bridge_data`.
 
 ## Image
 

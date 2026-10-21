@@ -5,7 +5,7 @@ Brief description of changes.
 -
 
 ## Testing
-- [ ] Ran `./setup.sh` on a clean environment
+- [ ] Ran `./setup.sh --operator ...` (see docs/OPERATOR_INSTALL.md) on a clean environment
 - [ ] Ran `./health-check.sh` — all checks pass
 - [ ] Updated `.env.example` if new env vars added
 - [ ] Updated `CHANGELOG.md`
