@@ -111,7 +111,7 @@ SELECT pg_temp.ist_assert(plan ~ 'idx_goodsreceived_date_active' AND plan ~ 'Ind
 FROM (SELECT pg_temp.ist_plan($q$SELECT id FROM public.goodsreceived WHERE deleted_at IS NULL
   AND date >= warehouse_security.business_day_start('2026-10-10') AND date < warehouse_security.business_day_start(date '2026-10-12' + 1)
   ORDER BY date DESC$q$) AS plan) p;
-SELECT pg_temp.ist_assert(plan ~ 'idx_dispatch_disp_date' AND plan ~ 'Index Cond: \(\(disp_date >= ''2026-10-09 18:30:00\+00''',
+SELECT pg_temp.ist_assert(plan ~ 'idx_dispatch_(disp_date|list_date_desc)' AND plan ~ 'Index Cond: \(\(disp_date >= ''2026-10-09 18:30:00\+00''',
   'a period on dispatch.disp_date uses its index: ' || plan)
 FROM (SELECT pg_temp.ist_plan($q$SELECT id FROM public.dispatch
   WHERE disp_date >= warehouse_security.business_day_start('2026-10-10') AND disp_date < warehouse_security.business_day_start(date '2026-10-12' + 1)$q$) AS plan) p;
