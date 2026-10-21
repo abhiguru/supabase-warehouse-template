@@ -437,17 +437,25 @@ done
   echo 'pgbouncer.get_auth did not return a normal login.' >&2; exit 1; }
 [[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d _supabase -v ON_ERROR_STOP=1 -c "SELECT nspname FROM pg_namespace WHERE nspname = '_supavisor'")" == _supavisor ]] || {
   echo 'The _supabase database has no _supavisor schema.' >&2; exit 1; }
-# Off again leaves them (pooler.sh off deletes nothing); the clean-up of an unused pooler removes them. This is the SQL of
-# `pooler.sh cleanup`; the removal itself is what leaves the default database for the suites below.
-docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-BEGIN;
-DROP SCHEMA IF EXISTS pgbouncer CASCADE;
-DROP ROLE IF EXISTS pgbouncer;
-COMMIT;
-SQL
-docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS _supabase WITH (FORCE)'
-[[ "$(roles_sql "SELECT (SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer') + (SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer') + (SELECT count(*) FROM pg_database WHERE datname = '_supabase')")" == 0 ]] || {
-  echo 'The pooler clean-up SQL left an object behind.' >&2; exit 1; }
+# Off removes them (scripts/drop-pooler.sql, run by pooler.sh off and cleanup and by db-roles.sh apply while the pooler is off).
+# It refuses, and changes nothing, when the schema holds something besides get_auth or _supabase holds a relation; this is
+# also what leaves the default database for the suites below.
+pooler_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin "$@" -v ON_ERROR_STOP=1; }
+pooler_objects="SELECT (SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_database WHERE datname = '_supabase')"
+pooler_psql -d postgres -c 'CREATE TABLE pgbouncer.stray (id int)'
+if pooler_psql -d postgres < "$ROOT/scripts/drop-pooler.sql" 2>/dev/null; then
+  echo 'drop-pooler.sql removed a schema that holds another table.' >&2; exit 1; fi
+[[ "$(roles_sql "$pooler_objects")" == '1 1 1' ]] || { echo 'A refused pooler removal changed something.' >&2; exit 1; }
+pooler_psql -d postgres -c 'DROP TABLE pgbouncer.stray'
+pooler_psql -d _supabase -c 'CREATE TABLE _supavisor.tenants (id int)'
+if pooler_psql -d postgres < "$ROOT/scripts/drop-pooler.sql" 2>/dev/null; then
+  echo 'drop-pooler.sql removed a _supabase database that holds a table.' >&2; exit 1; fi
+[[ "$(roles_sql "$pooler_objects")" == '1 1 1' ]] || { echo 'A refused pooler removal changed something.' >&2; exit 1; }
+pooler_psql -d _supabase -c 'DROP TABLE _supavisor.tenants'
+pooler_psql -d postgres < "$ROOT/scripts/drop-pooler.sql"
+[[ "$(roles_sql "$pooler_objects")" == '0 0 0' ]] || {
+  echo 'The pooler removal SQL left an object behind.' >&2; exit 1; }
+pooler_psql -d postgres < "$ROOT/scripts/drop-pooler.sql"
 rm -f "$pooler_env"
 unset pooler_env
 

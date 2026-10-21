@@ -176,8 +176,8 @@ function setEnvLine(text, key, value) {
 
 // The compose.env text for a pooler switch (scripts/pooler.sh). Nothing is read from or written to the database here.
 //   on      POOLER_ENABLED=true; the three pooler secrets and the tunables are added where missing, never replaced
-//   off     POOLER_ENABLED=false; the secrets stay (the tenant in the _supabase database is encrypted with them)
-//   forget  POOLER_ENABLED=false and the three secrets removed (the one-time clean-up of an install that never used the pooler)
+//   off     POOLER_ENABLED=false; the secrets stay (cleanup of an install where it cannot be told whether the pooler was used)
+//   forget  POOLER_ENABLED=false and the three secrets removed (pooler.sh off, and the clean-up of an unused pooler)
 // Returns the new text and the names added or removed.
 export function poolerEnvText(text, mode) {
   let result = text;

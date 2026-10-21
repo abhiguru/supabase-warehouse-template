@@ -1467,6 +1467,7 @@ a rollback uses them instead of building them again:
 exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
 npm run db:backup -- "$B/backup"
 bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
+cp -p "$WAREHOUSE_STATE_DIR/config/compose.env" "$B/compose.env"   # the old configuration, put back by the rollback (step 9)
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
 while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); i=$(docker inspect --format '{{.Config.Image}}' "$c")
   case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-baseline" && echo "$s" >> "$B/old-images.txt";; esac
@@ -1592,12 +1593,15 @@ setup stops with `Migration 123 would drop data: ...` and nothing of 123 is appl
 that the named data is not needed, export it if it is, empty those objects (`dbsql -c 'TRUNCATE <table>'`, or set the named
 column to NULL), and run the same setup command again. If you cannot decide, go to step 9: the old database is untouched. It is idempotent, sets the role passwords and the
 configuration, and starts the core services. Release the lock first (setup takes it again), then start the optional
-services that ran before:
+services that ran before. The pooler exists only while it is turned on, and the new cluster has no `_supabase` database, so setup
+keeps the pooler secrets and records it off (it prints the path of a saved copy of `compose.env`). If `supavisor` was in
+`running-services.txt`, turn the pooler on with `pooler.sh on` instead of starting it with `up`:
 
 ```bash
 exec 9>&-
 bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(cat "$B/running-services.txt")   # the optional services that ran before
+bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")   # the optional services that ran before
+if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi   # role, schema, _supabase and the supavisor service
 node scripts/doctor.mjs --local && node scripts/doctor.mjs
 npm run db:backup                                  # the first backup of the new database
 node scripts/watch.mjs unmute
@@ -1623,6 +1627,7 @@ D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.failed" && mv -T "$D" "$D.failed
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
 while read -r s; do docker tag "$P-$s:pre-baseline" "$P-$s"; done < "$B/old-images.txt"
 cp -p "$B/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
+cp -p "$B/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the configuration from step 2: the old release needs DB_PASSWORD_POOLER, which the new setup may have removed
 bash scripts/compose.sh up -d --no-build --wait --wait-timeout 180 db storage
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL   # before any writer starts; a difference: stop here
 bash start.sh
@@ -1630,6 +1635,10 @@ bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180
 ```
 
 Stored files were never changed by the reload. Anything written to the new database after the load is lost by a rollback.
+The old data directory still has its `pgbouncer` role. If you roll back with the new database kept (`data/db` not moved back), or run an
+older release's `setup.sh` against a database where the pooler objects were removed, create the role first, because the older
+`setup.sh` runs `ALTER ROLE pgbouncer`: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`
+(skip it if `\du pgbouncer` shows the role).
 
 ### Restoring a pre-baseline backup
 
@@ -1764,12 +1773,14 @@ npm run db:restore -- --yes "$B/backup"
 ```
 
 **Step 7. Run setup.** With the arguments of the installation (the same `setup.sh --operator ...` command as the last rerun). It is idempotent,
-sets the role passwords and the configuration, and starts the core services. While `POOLER_ENABLED=true`, setup recreates the pooler's role, schema and `_supabase` database, and it
-now reports the running server's version. Then start the optional services that ran before:
+sets the role passwords and the configuration, starts the core services, and now reports the running server's version. The restored cluster has no
+`_supabase` database, so setup keeps the pooler secrets and records the pooler off. If `supavisor` was in `running-services.txt`, `pooler.sh on`
+recreates its role, schema, database and service. Then start the other optional services that ran before:
 
 ```bash
 bash setup.sh --operator ...
-bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(cat "$B/running-services.txt")
+bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(grep -vx supavisor "$B/running-services.txt")
+if grep -qx supavisor "$B/running-services.txt"; then bash scripts/pooler.sh on; fi
 ```
 
 **Step 8. Check the result.** Every line must pass; the first failure is a stop, go to step 9.
@@ -1813,10 +1824,14 @@ git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permis
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
 while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
 cp -p "$B/config/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
+cp -p "$B/config/compose.env" "$WAREHOUSE_STATE_DIR/config/compose.env"   # the saved configuration (the pooler secrets setup may have removed)
 bash start.sh
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
 bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
 ```
+
+If setup of this release already ran, the pooler role `pgbouncer` was dropped when the pooler was off. Before running the old release's
+`setup.sh`, create it: `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'` (skip it if the role exists).
 
 **Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every command after the
 guard sits inside it: nothing is moved or changed unless both kept directories are there. If `Stop:` is printed, run nothing more and investigate.
@@ -1829,7 +1844,7 @@ if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-res
    && mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
    && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"; then
   git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-  cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config)
+  cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config; puts the pooler secrets back)
   P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
   while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
   bash start.sh
@@ -1839,6 +1854,10 @@ else
   echo 'Stop: the kept directories are missing, db.failed already exists, or a move failed; check the directories by hand.'
 fi
 ```
+
+The kept database is the old one and has its `pgbouncer` role. If you instead keep a database where this release's `setup.sh` or `pooler.sh off`
+removed the pooler objects, create the role before an older release's `setup.sh` (it runs `ALTER ROLE pgbouncer`):
+`bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`.
 
 ## Windows host with Linux VM
 
