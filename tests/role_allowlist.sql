@@ -483,8 +483,8 @@ SELECT pg_temp.ra_assert(:'customer_dispatch_supervisor'::jsonb->>'name'='Role M
 SELECT pg_temp.ra_assert(public.get_grn_details(:'grn_a'::uuid)::text NOT LIKE '%919888888933%'
  AND public.get_dispatch_details(:'dispatch_a'::uuid)::text NOT LIKE '%919888888933%',
  'the supervisor''s number is nowhere in the customer''s answers');
-SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM public.printer_status),'customer reads no printer status');
-SELECT pg_temp.ra_assert((SELECT count(*)=1 AND bool_and(id=:'cart_a'::uuid) FROM public.orders),'customer reads only the own customers'' orders');
+SELECT pg_temp.ra_assert(pg_temp.ra_call('SELECT to_jsonb(count(*)) FROM public.printer_status')->>'state'='42501','customer reads no printer status (no app role reads the table, migration 123)');
+SELECT pg_temp.ra_assert(pg_temp.ra_call('SELECT to_jsonb(count(*)) FROM public.orders')->>'state'='42501','customer reads no order row directly (orders come through get_orders_list)');
 SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM storage.objects WHERE name=:'img_pending'::jsonb->>'storage_path'),
  'customer does not read a pending file');
 RESET ROLE;
@@ -572,13 +572,12 @@ SELECT pg_temp.ra_assert((SELECT count(*)=1 FROM public.item_storage_prices WHER
  AND (SELECT count(*)=0 FROM public.item_price_history h WHERE h.changed_by_role='staff'),
  'the refused staff price calls changed nothing and left no history');
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM public.item_storage_prices),'the price table itself stays closed to staff; prices are read through the RPC');
--- The order queue: staff read every order row (the order queue screen), still
--- without a direct write.
-SELECT pg_temp.ra_assert((SELECT count(*)=:orders_total AND count(*)>=2 FROM public.orders),'staff read every order');
+SELECT pg_temp.ra_assert(pg_temp.ra_call('SELECT to_jsonb(count(*)) FROM public.item_storage_prices')->>'state'='42501','the price table itself is closed to every app role; prices are read through the RPC');
+-- The order queue: staff read it through get_orders_list; the table has no direct read (migration 123) and no direct write.
+SELECT pg_temp.ra_assert(pg_temp.ra_call('SELECT to_jsonb(count(*)) FROM public.orders')->>'state'='42501' AND :'orders_total'::int>=2,'staff read no order row directly');
 SELECT pg_temp.ra_assert(pg_temp.ra_call(format('WITH changed AS (UPDATE public.orders SET note=''x'' WHERE id=%L RETURNING id) SELECT to_jsonb(count(*)) FROM changed',:'cart_a'))->>'state'='42501',
  'staff cannot write an order directly');
-SELECT pg_temp.ra_assert((SELECT count(*)=1 FROM public.printer_status WHERE printer_name='role-matrix-printer'),'staff read the printer status');
+SELECT pg_temp.ra_assert(pg_temp.ra_call('SELECT to_jsonb(count(*)) FROM public.printer_status')->>'state'='42501','staff read no printer status row directly');
 -- Supervisor contact details stay complete for warehouse roles.
 SELECT pg_temp.ra_assert(public.get_grn_details(:'grn_a'::uuid)#>>'{data,grn,supervisor_details,mobile}'='919888888933'
  AND public.get_grn_details(:'grn_a'::uuid)#>>'{data,grn,supervisor_details,role}'='supervisor'
