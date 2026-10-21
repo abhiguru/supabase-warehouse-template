@@ -55,7 +55,10 @@ case "$1" in
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *' exec -T db sh -c IFS= read -r pw;'*)
-        cat >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"
+        # The removal of the pooler objects (the pooler is off) comes first and is not an apply of the logins.
+        cat > "$FAKE_APPLY_INPUT.part"
+        if grep -q 'DROP ROLE IF EXISTS pgbouncer' "$FAKE_APPLY_INPUT.part"; then exit 0; fi
+        cat "$FAKE_APPLY_INPUT.part" >> "$FAKE_APPLY_INPUT"; echo ===== >> "$FAKE_APPLY_INPUT"
         n=$(( $(cat "$FAKE_APPLY_INPUT.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_APPLY_INPUT.count"
         if [ "$FAKE_FAIL" = apply ]; then exit 3; fi
         if [ "$n" -ge 2 ] && [ "\${FAKE_FAIL_REVERSAL:-}" = yes ]; then exit 3; fi

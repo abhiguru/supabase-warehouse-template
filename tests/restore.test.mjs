@@ -373,7 +373,10 @@ test('restore of a backup taken before per-role passwords keeps this state\'s va
     assertVerifiers(stdin, readEnv(join(state, 'config/compose.env')));
     assert.match(stdin, /ALTER ROLE authenticator WITH LOGIN PASSWORD/, 'configure-db-roles.sql follows the prelude');
     assert.doesNotMatch(stdin, /^\\set pooler_verifier|CREATE DATABASE _supabase|CREATE ROLE pgbouncer/m, 'the pooler is off: no pooler object is created and no pooler password is given');
-    assert.doesNotMatch(stdin, /postgres_verifier|monitoring_verifier|DROP ROLE|supabase_auth_admin|supabase_functions_admin/, 'no verifier or statement for a role of the earlier image');
+    assert.match(stdin, /DROP SCHEMA IF EXISTS pgbouncer;\nDROP ROLE IF EXISTS pgbouncer;/, 'the pooler is off: pooler objects a restore brought back are dropped');
+    assert.doesNotMatch(stdin, /CASCADE|FORCE/);
+    assert.match(result.stdout, /Note: the pooler was 'unset' when the backup was taken and is 'false' in this installation/);
+    assert.doesNotMatch(stdin, /postgres_verifier|monitoring_verifier|DROP ROLE (?!IF EXISTS pgbouncer;)|supabase_auth_admin|supabase_functions_admin/, 'no verifier or statement for a role of the earlier image');
     for (const secret of ['5'.repeat(64), '1'.repeat(64)]) assert.equal(result.calls.includes(secret), false, 'no password in a docker argument');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -511,6 +514,8 @@ test('restore while the pooler is on recreates its role, schema and _supabase da
     assert.equal(stdin.includes('4'.repeat(64)), false, 'the pool user password itself is not sent');
     // Without the pooler objects in the backup, nothing in the restore connects to _supabase.
     assert.equal(result.calls.includes('-d _supabase'), false);
+    assert.doesNotMatch(stdin, /DROP ROLE IF EXISTS pgbouncer/, 'the pooler is on: nothing is dropped');
+    assert.doesNotMatch(result.stdout, /Note: the pooler was/, 'same setting: no note');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

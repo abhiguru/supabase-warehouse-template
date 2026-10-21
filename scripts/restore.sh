@@ -102,6 +102,11 @@ without_added() {
 # state without the pooler no longer has.
 without_pooler() { grep -v -E '^(POOLER_ENABLED|DB_PASSWORD_POOLER|SECRET_KEY_BASE|VAULT_ENC_KEY)=' || true; }
 backup_env() { without_pooler < "$backup/compose.env"; }
+backup_pooler="$(sed -n 's/^POOLER_ENABLED=//p' "$backup/compose.env" | head -n 1)"
+state_pooler="$(sed -n 's/^POOLER_ENABLED=//p' "$state/config/compose.env" | head -n 1)"
+if [[ "$restore_config" != true && "$backup_pooler" != "$state_pooler" ]]; then
+  echo "Note: the pooler was '${backup_pooler:-unset}' when the backup was taken and is '${state_pooler:-unset}' in this installation. This installation's setting applies (the pooler role, schema and _supabase database are created or dropped to match it); run bash scripts/pooler.sh on or off afterwards if you want the other."
+fi
 if [[ "$restore_config" == true ]]; then
   for key in WAREHOUSE_PROJECT_NAME WAREHOUSE_DB_PATH WAREHOUSE_STORAGE_PATH WAREHOUSE_MANIFEST_PATH; do
     if [[ "$(sed -n "s/^$key=//p" "$backup/compose.env")" != "$(sed -n "s/^$key=//p" "$state/config/compose.env")" ]]; then

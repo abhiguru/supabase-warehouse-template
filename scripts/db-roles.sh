@@ -9,7 +9,8 @@
 #       (scripts/rotate-db-passwords.sh only). setup.sh and both restore paths
 #       run `apply` after their migrations. While the pooler is on (POOLER_ENABLED=true),
 #       it first creates the pooler's role, schema, auth lookup and _supabase database
-#       (scripts/configure-pooler.sql) and sets the pool user's password too.
+#       (scripts/configure-pooler.sql) and sets the pool user's password too. While it is
+#       off (POOLER_ENABLED=false) it drops those objects if present (scripts/drop-pooler.sql).
 #   bash scripts/db-roles.sh check      (npm run test:db-roles)
 #       Proves first that POSTGRES_PASSWORD is the superuser password the
 #       database has (supabase_admin signs in with it), then for each login that
@@ -60,9 +61,15 @@ case "$command" in
     [[ "$password" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "No usable POSTGRES_PASSWORD in $connect." >&2; exit 1; }
     prelude="$(node "$ROOT/scripts/db-roles.mjs" prelude "$values" "${superuser[@]}")"
     # While the pooler is on, its role, schema, auth lookup and metadata database must exist before its password is set.
-    # With the pooler off none of them is created here (scripts/pooler.sh).
-    if [[ "$(node "$ROOT/scripts/db-roles.mjs" pooler-state "$values")" == on ]]; then
+    # With the pooler off none of them is created; if a restore or an older state left them, they are dropped
+    # (scripts/drop-pooler.sql: no CASCADE, no FORCE; it refuses with a message when they are in use). Unset (an
+    # installation from before the switch) leaves them for `pooler.sh cleanup`.
+    pooler_state="$(node "$ROOT/scripts/db-roles.mjs" pooler-state "$values")"
+    if [[ "$pooler_state" == on ]]; then
       { printf '%s\n' "$password"; cat "$ROOT/scripts/configure-pooler.sql"; } |
+        compose exec -T db sh -c 'IFS= read -r pw; PGPASSWORD="$pw" exec psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1'
+    elif [[ "$pooler_state" == off ]]; then
+      { printf '%s\n' "$password"; cat "$ROOT/scripts/drop-pooler.sql"; } |
         compose exec -T db sh -c 'IFS= read -r pw; PGPASSWORD="$pw" exec psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1'
     fi
     # The first line is the sign-in password, read by the shell in the container;

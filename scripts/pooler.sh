@@ -7,18 +7,25 @@
 #                                   password, the schema pgbouncer with get_auth and the database _supabase
 #                                   (scripts/configure-pooler.sql), records POOLER_ENABLED=true and starts the supavisor
 #                                   service. Safe to repeat. setup.sh and both restore paths keep these objects while it is on.
-#   bash scripts/pooler.sh off      Stops and removes the supavisor container and records POOLER_ENABLED=false. The role,
-#                                   the schema, the _supabase database and the secrets stay (nothing is deleted); turning
-#                                   the pooler on again reuses them.
+#   bash scripts/pooler.sh off      Stops and removes the supavisor container, then removes the role pgbouncer, the schema
+#                                   pgbouncer (get_auth), the _supabase database and the three secrets
+#                                   (scripts/drop-pooler.sql: no CASCADE, no FORCE; it refuses and changes nothing if the
+#                                   schema holds more than get_auth or the database has relations or connections), and
+#                                   records POOLER_ENABLED=false. `on` recreates everything. The role, database and
+#                                   secrets exist only while the pooler is on.
 #   bash scripts/pooler.sh status   Prints on, off or unset.
 #   bash scripts/pooler.sh cleanup  The one-time clean-up setup.sh runs for an installation made before the pooler had a
 #                                   switch (POOLER_ENABLED absent from compose.env). See docs/OPERATOR_INSTALL.md.
 #                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
-#                                   - none exists and _supabase holds no relation and no schema beyond _supavisor and public:
-#                                     role, schema and database are removed, the three secrets leave compose.env, the switch
-#                                     is recorded as off, and what was removed is printed
-#                                   - none exists but _supabase holds relations or other schemas (the pooler was used):
-#                                     refuses, changes nothing, exit 1 (setup.sh prints it and goes on)
+#                                   Before it changes anything it saves a 0600 copy of compose.env next to it
+#                                   (compose.env.pre-pooler-cleanup-<time>) and prints its path.
+#                                   - a supavisor container exists: the pooler is in use, so it is recorded as on
+#                                   - none exists and the _supabase database is missing: the switch is recorded as off, the
+#                                     secrets STAY (a new cluster has no _supabase even when the pooler was used); run
+#                                     `bash scripts/pooler.sh on` if it was
+#                                   - none exists and _supabase holds nothing: same removal as `off`
+#                                   - none exists but _supabase holds relations or other schemas (the pooler was used), or the
+#                                     removal is refused: changes nothing, exit 1 (setup.sh prints it and goes on)
 # Needs a running, healthy db service. Takes the operator lock (inherited when setup.sh runs it).
 set -euo pipefail
 umask 077
@@ -50,6 +57,13 @@ commit_env() {
   node "$ROOT/scripts/db-roles.mjs" pooler-stage "$live" "$staged" "$1"
   mv -f "$staged" "$live"
 }
+# Removes the pooler's database objects (scripts/drop-pooler.sql); on a refusal nothing was changed.
+drop_objects() {
+  if ! db_psql -d postgres < "$ROOT/scripts/drop-pooler.sql"; then
+    echo 'The pooler objects were not removed and compose.env is unchanged (see above). Stop what uses the pooler, then run this again.' >&2
+    return 1
+  fi
+}
 supavisor_exists() {
   local project
   project="$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$live" | head -n 1)"
@@ -76,14 +90,19 @@ case "$command" in
     ;;
   off)
     compose config --quiet
+    require_db
     compose --profile pooler rm -sf supavisor >/dev/null
-    commit_env off
-    echo 'The pooler is off: the supavisor container is stopped and removed.'
-    echo 'Nothing was deleted: the role pgbouncer, the schema pgbouncer, the _supabase database and the pooler secrets stay, and bash scripts/pooler.sh on reuses them. While it is off, setup, rotation and backups leave them alone (the password of pgbouncer is not rotated).'
+    drop_objects || exit 1
+    commit_env forget
+    echo 'The pooler is off: the supavisor container is removed, and the role pgbouncer, the schema pgbouncer, the _supabase database and the pooler secrets are gone. bash scripts/pooler.sh on recreates them.'
     ;;
   cleanup)
     [[ "$(switch)" == unset ]] || exit 0
     require_db
+    copy="$live.pre-pooler-cleanup-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -p "$live" "$copy"
+    chmod 600 "$copy"
+    echo "Pooler clean-up: saved a copy of compose.env as $copy (use it to roll back to an older release)."
     if supavisor_exists; then
       commit_env on
       echo 'Pooler: a supavisor container exists, so the pooler is in use here. Recorded POOLER_ENABLED=true; its role, database and secrets stay.'
@@ -91,31 +110,16 @@ case "$command" in
     fi
     facts="$(db_psql -d postgres -c "SELECT (SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer') || ' ' || (SELECT count(*) FROM pg_database WHERE datname = '_supabase')")"
     read -r has_role has_schema has_database <<< "$facts"
+    if [[ "$has_database" == 0 ]]; then
+      commit_env off
+      echo "Pooler: no supavisor container and no _supabase database, so it cannot be told whether the pooler was used (a new cluster has neither). Recorded POOLER_ENABLED=false and kept the pooler secrets. If this installation used the pooler, run: bash scripts/pooler.sh on (compose.env copy: $copy)"
+      exit 0
+    fi
     removed=()
-    if [[ "$has_database" != 0 ]]; then
-      held="$(db_psql -d _supabase -c "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','v','m','S','f')) || ' ' || COALESCE((SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' AND nspname NOT IN ('information_schema','public','_supavisor')), '-')")"
-      read -r relations others <<< "$held"
-      if [[ "$relations" != 0 || "$others" != - ]]; then
-        what="$relations relation(s)"
-        [[ "$others" == - ]] || what="$what and the schema(s) $others"
-        echo "Pooler clean-up refused: the database _supabase holds $what. The pooler has been used here, so nothing was changed. Keep using it with bash scripts/pooler.sh on, or remove the pooler objects by hand after a backup." >&2
-        exit 1
-      fi
-    fi
-    if [[ "$has_role" != 0 || "$has_schema" != 0 ]]; then
-      db_psql -d postgres <<'SQL'
-BEGIN;
-DROP SCHEMA IF EXISTS pgbouncer CASCADE;
-DROP ROLE IF EXISTS pgbouncer;
-COMMIT;
-SQL
-      [[ "$has_schema" == 0 ]] || removed+=('schema pgbouncer (get_auth)')
-      [[ "$has_role" == 0 ]] || removed+=('role pgbouncer')
-    fi
-    if [[ "$has_database" != 0 ]]; then
-      db_psql -d postgres -c 'DROP DATABASE IF EXISTS _supabase WITH (FORCE)'
-      removed+=('database _supabase (empty)')
-    fi
+    drop_objects || exit 1
+    [[ "$has_schema" == 0 ]] || removed+=('schema pgbouncer (get_auth)')
+    [[ "$has_role" == 0 ]] || removed+=('role pgbouncer')
+    removed+=('database _supabase (empty)')
     for name in DB_PASSWORD_POOLER SECRET_KEY_BASE VAULT_ENC_KEY; do
       if grep -q "^$name=" "$live"; then removed+=("$name from config/compose.env"); fi
     done
