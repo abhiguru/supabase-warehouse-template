@@ -31,7 +31,7 @@ network table from the rendered configuration).
 | rest | PostgREST v16.4 | 3000 | always |
 | storage | Supabase storage-api 1.80.2 | 5000 | always |
 | functions | Supabase edge-runtime 1.77.4 | 9000 | always |
-| db | PostgreSQL 17 (official `postgres:17.11-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
+| db | PostgreSQL 18 (official `postgres:18.6-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
 | pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
 | supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler` |
 | cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |

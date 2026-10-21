@@ -67,7 +67,7 @@ redistributing them. Versions are the ones pinned in
 | --- | --- | --- | --- |
 | Kong Gateway (open source) | 3.9.4 (`kong:3.9.4-ubuntu`) | Apache-2.0 | https://github.com/Kong/kong |
 | PostgREST | v16.4 (`postgrest/postgrest:v16.4`, pinned by index digest) | MIT | https://github.com/PostgREST/postgrest |
-| PostgreSQL (official Docker image) | 17.11 (`postgres:17.11-trixie`, pinned by tag and index digest in `docker/postgres/Dockerfile`; the Supabase PostgreSQL image is no longer used) | PostgreSQL License for PostgreSQL; Debian packages under their individual free-software licences | https://hub.docker.com/_/postgres and https://www.postgresql.org/ |
+| PostgreSQL (official Docker image) | 18.6 (`postgres:18.6-trixie`, pinned by tag and index digest in `docker/postgres/Dockerfile`; the Supabase PostgreSQL image is no longer used) | PostgreSQL License for PostgreSQL; Debian packages under their individual free-software licences | https://hub.docker.com/_/postgres and https://www.postgresql.org/ |
 | Supavisor | 2.9.13 (base of `docker/supavisor/Dockerfile`) | Apache-2.0 | https://github.com/supabase/supavisor |
 | Supabase edge-runtime | v1.77.4 (only its `edge-runtime` binary is copied, onto `debian:bookworm-slim`, by `docker/edge-runtime/Dockerfile`) | MIT | https://github.com/supabase/edge-runtime |
 | Chrome for Testing (chrome-headless-shell) | 155.0.8059.84 (`ARG CHS_VERSION` in `docker/pdf-renderer/Dockerfile`, downloaded at build time and checked against `ARG CHS_SHA256`) | BSD-3-Clause (Chromium), plus the bundled third-party notices of the archive | https://googlechromelabs.github.io/chrome-for-testing/ and https://www.chromium.org/ |
@@ -79,7 +79,7 @@ redistributing them. Versions are the ones pinned in
 
 The dependency manifest under `docker/storage` is copied from the upstream version listed in
 [CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) and modified to resolve
-security updates. `docker/postgres` is the official PostgreSQL 17 image plus one component built from source: `gosu`
+security updates. `docker/postgres` is the official PostgreSQL 18 image plus one component built from source: `gosu`
 1.19, rebuilt with a patched Go toolchain (Apache-2.0; text in `LICENSES/gosu/LICENSE`, also copied into the image).
 (The Alertmanager, node exporter, Postgres exporter, cAdvisor and Prometheus recipes were removed on 2026-10-19.) Recipe URLs and SHA-256 checksums identify the source archives.
 No third-party executable or source archive is committed or published here.

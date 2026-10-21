@@ -227,11 +227,18 @@ it; only `functions` can.
 - **`sudo: a terminal is required` or `a password is required` running setup**:
   the command was started from a shell without a terminal. Run it in a
   terminal window on the host or an SSH session.
-- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 17 and cannot start on that data.`**: the
+- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data.`**: the
+  full text is `Refusing: <the running database reports server_version_num 170011 (PostgreSQL 17). | the data directory <path>
+  holds a PostgreSQL 17 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No
+  database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17,
+  then restore on this one (docs/OPERATOR_INSTALL.md, "Major upgrade 17 → 18").` The installation still runs PostgreSQL 17.
+  Nothing was built or started. Follow [Major upgrade 17 → 18](OPERATOR_INSTALL.md#major-upgrade-17--18). `db:backup` run
+  with this checkout against the 17 server refuses the same way (`the running database reports '17|true'`): take the backup with the old checkout.
+- **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on that data.`**: the
   full text is `Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path>
-  holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 17 and cannot start on that data. No database,
+  holds a PostgreSQL 15 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on that data. No database,
   container or image was changed. Back the installation up with the release tagged migrations-pre-baseline, then reload the data into a new
-  PostgreSQL 17 database: docs/OPERATOR_INSTALL.md, "Baseline reload".` The installation still runs the earlier PostgreSQL 15
+  PostgreSQL 18 database: docs/OPERATOR_INSTALL.md, "Baseline reload".` The installation still runs the earlier PostgreSQL 15
   database. Nothing was built or started. Follow [Baseline reload](OPERATOR_INSTALL.md#baseline-reload).
 - **`scripts/migrate.sh` stops with `This database recorded migrations that are not in this release (...)`**: the full text is
   `This database recorded migrations that are not in this release (<names>). Either it was built by an earlier migration chain
@@ -288,6 +295,13 @@ it; only `functions` can.
 
 ## Backup, USB drive and restore
 
+- **`db:restore`, `db:restore-host` or `db:verify-restore` prints `Refusing: the backup was made on 'postgres:19...', a newer
+  PostgreSQL major than the 18 this checkout runs`** (or `the database dump was made by PostgreSQL '19.x', a newer major`): a
+  dump cannot be restored on an older server. Nothing was touched. Check out the release the backup was made with, or a newer one.
+  Backups from PostgreSQL 17 and 18 restore on this release.
+- **`db:restore` prints `Refusing: the db image could not be rebuilt`** or `the db image still does not match this checkout`: the
+  restore initialises a new cluster with the db image of this checkout and found an older image (the previous PostgreSQL major). It
+  refused before moving any data. Run `bash scripts/build-images.sh` (needs the network), then retry.
 - **`db:restore`, `db:restore-host` or `db:verify-restore` prints `Refusing: the backup was made on the database image
   'supabase/postgres...'`**: the full text is `Refusing: the backup was made on the database image '<image>', which this
   version no longer runs. Restore it with the release tagged migrations-pre-baseline, then reload the data into this
