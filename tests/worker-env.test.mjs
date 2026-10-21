@@ -126,3 +126,12 @@ test('the functions container holds no database address', () => {
     if (String(dir).endsWith('.ts')) assert.doesNotMatch(readFileSync(join(functions, String(dir)), 'utf8'), /SUPABASE_DB_URL/, String(dir));
   }
 });
+
+test('get-public-config runs with the anon key only, never the service-role key (migration 123: get_public_config)', () => {
+  assert.ok(!workerEnvNames['get-public-config'].includes('SUPABASE_SERVICE_ROLE_KEY'));
+  assert.ok(!workerEnv('get-public-config', container, { INSTANCE_MANIFEST_JSON: '{}' }).some(([key]) => key === 'SUPABASE_SERVICE_ROLE_KEY'));
+  assert.ok(workerEnv('get-public-config', container).some(([key]) => key === 'SUPABASE_ANON_KEY'));
+  const source = readFileSync(new URL('../functions/get-public-config/index.ts', import.meta.url), 'utf8');
+  assert.match(source, /rpc\('get_public_config'/);
+  assert.doesNotMatch(source, /SERVICE_ROLE/);
+});

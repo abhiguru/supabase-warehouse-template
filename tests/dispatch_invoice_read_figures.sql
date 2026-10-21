@@ -19,8 +19,8 @@
 --       tax_amount 8.5, line_total 178.5 (were 1.5, 6.67, 3, 50, 5, 18); total_quantity 20 (was 3.0);
 --       the lines add up to the header (357; ONE_TIME 42).
 --   I11 invoice numbers longer than four digits are not cut: 2026-90101 (was 2026-9010) in the invoice
---       history and the activity detail; 104 is still 0104. get_grn_invoices (dormant, it cannot run:
---       it reads a table that does not exist) and the get_invoices_list search get the same expression.
+--       history and the activity detail; 104 is still 0104. The get_invoices_list search gets the same expression.
+--       (get_grn_invoices, dormant, was dropped by migration 123.)
 --
 -- Each answer is read as the role under test and compared after RESET ROLE.
 -- Runs ONLY in migrations.sh's fresh, network-disabled database. All fixture rows roll back.
@@ -173,8 +173,6 @@ SELECT pg_temp.dirf_assert(warehouse_security.active_role() = 'customer', 'actua
 SELECT pg_temp.dirf_refusal('SELECT public.get_all_dispatch_items(p_limit => 20, p_offset => 0)') AS juniper_items \gset
 RESET ROLE;
 
--- get_grn_invoices is granted to no app role (dormant); read as the owner.
-SELECT public.get_grn_invoices(:'g1'::uuid)::text AS grn_invoices \gset
 
 -- ---------------------------------------------------------------------------
 -- I6 get_dispatch_details
@@ -272,19 +270,11 @@ SELECT pg_temp.dirf_assert(jsonb_array_length(:'summary'::jsonb#>'{data,invoices
   'I10: four invoices, 1113 in all, the line keys unchanged');
 
 -- ---------------------------------------------------------------------------
--- I11 get_customer_activity_detail and get_grn_invoices
+-- I11 get_customer_activity_detail
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.dirf_assert(pg_temp.dirf_col(:'activity'::jsonb#>'{data,recent_invoices}', 'invoice_number')
     @> ARRAY['2026-90101', '2026-90102', '2026-90103', '2026-0104'],
   'I11: the recent invoices show full numbers: ' || pg_temp.dirf_col(:'activity'::jsonb#>'{data,recent_invoices}', 'invoice_number')::text);
--- get_grn_invoices cannot answer (it reads a table user_customers that no migration creates; it is
--- granted to no app role): its text is checked instead, with the same expression as the two reports.
-SELECT pg_temp.dirf_assert(:'grn_invoices'::jsonb->>'error' LIKE '%relation "user_customers" does not exist%',
-  'get_grn_invoices still fails as before (dormant): ' || left(:'grn_invoices', 200));
-SELECT pg_temp.dirf_assert(position('LPAD(inv.inv_no::text, GREATEST(4, LENGTH(inv.inv_no::text)), ''0'')' IN pg_get_functiondef(p.oid)) > 0
-  AND position('LPAD(inv.inv_no::text, 4, ''0'')' IN pg_get_functiondef(p.oid)) = 0,
-  'I11: get_grn_invoices pads to at least four digits without cutting')
-FROM pg_proc p WHERE p.oid = 'public.get_grn_invoices(uuid)'::regprocedure;
 SELECT pg_temp.dirf_assert(position('lpad(m.inv_no::text, 4, ''0'')' IN pg_get_functiondef(p.oid)) = 0,
   'I11: get_invoices_list compares the search with the uncut number')
 FROM pg_proc p WHERE p.oid = 'public.get_invoices_list(integer,integer,uuid,integer,text,text,text,text,integer,integer,text,timestamp with time zone,timestamp with time zone,uuid[])'::regprocedure;
@@ -301,7 +291,5 @@ SELECT pg_temp.dirf_assert(has_function_privilege('authenticated', p.oid, 'EXECU
   'grants of ' || p.proname)
 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
   AND p.proname IN ('get_dispatch_details', 'get_all_dispatch_items', 'get_customer_invoice_summary', 'get_customer_activity_detail', 'get_invoices_list');
-SELECT pg_temp.dirf_assert(NOT has_function_privilege('authenticated', 'public.get_grn_invoices(uuid)', 'EXECUTE'),
-  'get_grn_invoices stays ungranted');
 
 ROLLBACK;

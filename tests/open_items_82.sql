@@ -264,16 +264,6 @@ SELECT pg_temp.oi_assert(position('Open Items D with data' IN :'rd_a_inv')>0 AND
  AND position('Open Items D with data' IN :'rd_a_inv_all')>0 AND position('Open Items D with data' IN :'rd_s_inv_all')>0,
  'get_invoices_list lists the invoice of the deactivated business, with and without p_customer_id: '||left(:'rd_a_inv',200)||left(:'rd_s_inv',200));
 
--- get_item_dispatch_records (administrator): the dispatch of the deactivated D's stock is listed
-INSERT INTO public.dispatch(id,disp_no,disp_date,customer_id,customer_name)
- VALUES ('0a820000-0000-4000-8000-000000000001','OI82DD',now(),:'cust_d'::uuid,'Open Items D with data');
-INSERT INTO public.dispatch_trl(gr_id,gr_trl_id,disp_id,disp_qty)
- SELECT t.gr_id,t.id,'0a820000-0000-4000-8000-000000000001',1 FROM public.goodsreceived_trl t WHERE t.gr_id=:'grn_d'::uuid LIMIT 1;
--- Not granted to app roles (no app screen calls it), so it runs as the owner with the administrator's claims.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT public.get_item_dispatch_records(p_item_id=>:'item_id'::uuid)::text AS rd_a_disp \gset
-SELECT pg_temp.oi_assert(position('Open Items D with data' IN :'rd_a_disp')>0 AND position('OI82DD' IN :'rd_a_disp')>0,
- 'get_item_dispatch_records (administrator) lists the dispatch of the deactivated business: '||left(:'rd_a_disp',300));
 
 -- safe_delete_customer: nothing with data is deleted. Soft (the released app's Deactivate) deactivates, permanent refuses.
 SELECT set_config('request.jwt.claims',:'admin_claims',true);

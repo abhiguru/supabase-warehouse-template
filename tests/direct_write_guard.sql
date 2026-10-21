@@ -6,6 +6,12 @@
 -- migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.guard_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'direct write guard: %',label; END IF; END $$;
 -- True only when the statement is refused for lack of privilege (42501). A
@@ -18,9 +24,9 @@ END $$;
 CREATE FUNCTION pg_temp.guard_tables() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['customers','items','item_storage_prices','goodsreceived','goodsreceived_trl',
     'dispatch','dispatch_trl','invoice','invoice_trl','payments','orders','order_items','grn_images','dispatch_images',
-    'stock_movements','print_jobs','sensor_devices','sensor_readings','sensor_health_events','grn_rates'] $$;
+    'stock_movements','print_jobs','sensor_devices','sensor_readings','grn_rates'] $$;
 -- Runs as the caller. Names every business table on which a direct INSERT,
--- UPDATE or DELETE is NOT refused; the result is empty when all 60 are refused.
+-- UPDATE or DELETE is NOT refused; the result is empty when all 57 are refused.
 -- The statements touch no row (DEFAULT VALUES fails on a NOT NULL column when
 -- it is allowed to run, WHERE false matches nothing), so a table that lets one
 -- through is reported, not changed.
@@ -75,8 +81,8 @@ SELECT pg_temp.guard_assert((SELECT bool_and(
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'INSERT')
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'UPDATE')
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'DELETE'))
-  AND count(*)=20 FROM unnest(pg_temp.guard_tables()) AS t),
- 'authenticated reads and cannot write the 20 business tables; service_role still writes them');
+  AND count(*)=19 FROM unnest(pg_temp.guard_tables()) AS t),
+ 'authenticated reads and cannot write the 19 business tables; service_role still writes them');
 SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM pg_class c
   WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m') AND c.relname<>'user_profiles'
     AND (has_any_column_privilege('authenticated',c.oid,'INSERT,UPDATE') OR has_table_privilege('authenticated',c.oid,'DELETE,TRUNCATE'))),
@@ -87,7 +93,7 @@ SELECT pg_temp.guard_assert((SELECT array_agg(column_name::text ORDER BY column_
  'the profile column grant UPDATE(name, display_name) is unchanged');
 SELECT pg_temp.guard_assert(NOT has_any_column_privilege('authenticated','public.user_profiles','INSERT')
   AND NOT has_table_privilege('authenticated','public.user_profiles','DELETE'),'profiles are not inserted or deleted directly');
-SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=20 FROM pg_policies
+SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=19 FROM pg_policies
   WHERE schemaname='public' AND policyname='starter_staff' AND tablename=ANY(pg_temp.guard_tables())),
  'the administrator and supervisor policy on each business table is read-only');
 SELECT pg_temp.guard_assert((SELECT count(*)=1 AND bool_and(tablename='user_profiles' AND policyname='starter_profile_update' AND cmd='UPDATE')
@@ -104,9 +110,6 @@ SELECT pg_temp.guard_assert((SELECT bool_and(pg_get_userbyid(p.proowner)=pg_get_
     AND has_function_privilege('authenticated',p.oid,'EXECUTE')
     AND c.relnamespace='public'::regnamespace AND c.relname=ANY(pg_temp.guard_tables())),
  'the granted functions are owned by the owner of the business tables');
-SELECT pg_temp.guard_assert(has_function_privilege('authenticated','public.update_order_metadata(uuid,text,text,timestamp without time zone)','EXECUTE')
-  AND NOT has_function_privilege('anon','public.update_order_metadata(uuid,text,text,timestamp without time zone)','EXECUTE'),
- 'update_order_metadata is granted to signed-in users only');
 
 -- Fixture accounts: administrator, supervisor, staff, and a customer login
 -- assigned to the fixture customer.
@@ -141,9 +144,7 @@ SELECT pg_temp.guard_assert(public.create_item('Write Guard Potatoes','Bag')->>'
 SELECT id AS customer_id FROM public.customers WHERE name='Write Guard Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Write Guard Potatoes' \gset
 SELECT pg_temp.guard_assert(public.assign_customer_to_user('919888888824',:'customer_id'::uuid,'Write guard fixture'),'customer login assigned');
-SELECT pg_temp.guard_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'customer_id'::uuid,p_tax_percent=>5)->>'success'='true','monthly price');
+SELECT pg_temp.guard_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','monthly price');
 SELECT pg_temp.guard_assert(public.save_grn(p_gr_no=>'WGA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Write Guard Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'write-guard-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Write Guard Potatoes',
@@ -167,7 +168,7 @@ SELECT jsonb_agg(jsonb_build_object('disp_trl_id',t.id,'grn_item_id',t.gr_trl_id
 SELECT jsonb_build_object('inv_no',20261091,'inv_fin_year',2026,'customer_id',:'customer_id','customer_name','Write Guard Customer',
  'inv_date','2026-05-02T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
  'gr_id',:'grn_a','gr_no','WGA') AS a_header \gset
-SELECT public.save_invoice(:'a_header'::jsonb || jsonb_build_object('items',:'a_items'::jsonb)) AS saved \gset
+SELECT pg_temp.save_invoice_doc(:'a_header'::jsonb || jsonb_build_object('items',:'a_items'::jsonb)) AS saved \gset
 SELECT pg_temp.guard_assert(:'saved'::jsonb->>'success'='true','invoice saved through the RPC: ' || :'saved');
 SELECT (:'saved'::jsonb->>'invoice_id') AS invoice_a \gset
 SELECT public.get_or_create_cart(:'customer_id'::uuid) AS cart \gset
@@ -291,23 +292,7 @@ RESET ROLE;
 SELECT pg_temp.guard_assert((SELECT stock=6 FROM public.goodsreceived_trl WHERE id=:'lot_b'::uuid),'the dispatch of 4 leaves 6 in stock');
 SELECT id AS dispatch_b1 FROM public.dispatch WHERE disp_no='WGB1' \gset
 
--- 5. An order's note goes through update_order_metadata, which records order
--- history; only the administrator and the supervisor may call it.
-SELECT count(*) AS revisions_before FROM public.order_revisions WHERE order_id=:'cart'::uuid \gset
-SET LOCAL ROLE authenticated;
-SELECT pg_temp.guard_assert(public.update_order_metadata(:'cart'::uuid,'Collect before noon')->>'success'='true','supervisor sets the order note');
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.guard_assert(public.update_order_metadata(:'cart'::uuid,'Collect after noon')->>'success'='true','administrator sets the order note');
-SELECT public.update_order_metadata(:'cart'::uuid,'Not saved','urgent') AS bad_priority \gset
-SELECT pg_temp.guard_assert(:'bad_priority'::jsonb->>'success'='false','a priority outside low/normal is refused: ' || :'bad_priority');
-SELECT pg_temp.guard_assert(public.update_order_metadata(gen_random_uuid(),'No such order')->>'success'='false','an unknown order is reported');
-SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$SELECT public.update_order_metadata('$s$||:'cart'||$s$','Staff note')$s$),'staff cannot set the order note');
-SELECT set_config('request.jwt.claims',:'customer_claims',true);
-SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$SELECT public.update_order_metadata('$s$||:'cart'||$s$','Customer note')$s$),'the customer cannot set the order note');
-RESET ROLE;
-SELECT pg_temp.guard_assert((SELECT note='Collect after noon' AND priority IN ('low','normal') FROM public.orders WHERE id=:'cart'::uuid),'the note is the administrator''s; refused calls changed nothing');
-SELECT pg_temp.guard_assert((SELECT count(*)=:revisions_before+2 FROM public.order_revisions WHERE order_id=:'cart'::uuid),'each accepted note change wrote one history row');
+-- 5. (An order's note went through update_order_metadata, which migration 123 dropped: no screen called it.)
 
 -- 6. The dependency-checked deletes still work for the supervisor: the invoice
 -- first, then a dispatch (stock restored), then a receipt with its lines.

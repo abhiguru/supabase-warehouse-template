@@ -15,6 +15,12 @@
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.rd_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'review decisions 121: %',label; END IF; END $$;
 -- True when the statement raises an error whose text matches the pattern.
@@ -632,7 +638,7 @@ SELECT jsonb_build_object('disp_trl_id',dt.id,'grn_item_id',dt.gr_trl_id,'durati
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.save_invoice(NULL::uuid,:'inv_base'::jsonb||jsonb_build_object('inv_no',92007,'gr_id',:'grn_7','gr_no','DG7'),ARRAY[:'line_7a'::jsonb]) AS stock_save3 \gset
-SELECT public.save_invoice(:'inv_base'::jsonb||jsonb_build_object('inv_no',92007,'gr_id',:'grn_7','gr_no','DG7','items',jsonb_build_array(:'line_7a'::jsonb))) AS stock_save1 \gset
+SELECT pg_temp.save_invoice_doc(:'inv_base'::jsonb||jsonb_build_object('inv_no',92007,'gr_id',:'grn_7','gr_no','DG7','items',jsonb_build_array(:'line_7a'::jsonb))) AS stock_save1 \gset
 RESET ROLE;
 SELECT pg_temp.rd_assert(:'stock_save3'::jsonb->>'success'='false' AND :'stock_save3'::jsonb->>'reason'='GRN_HAS_STOCK' AND :'stock_save3'::jsonb->>'gr_no'='DG7'
  AND (:'stock_save3'::jsonb->>'stock')::int=6 AND (:'stock_save3'::jsonb->>'lots')::int=1

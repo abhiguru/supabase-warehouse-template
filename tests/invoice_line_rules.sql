@@ -17,10 +17,10 @@ END $$;
 -- The same lines with other rates.
 CREATE FUNCTION pg_temp.rule_rates(items jsonb, rates jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_agg(item || rates) FROM jsonb_array_elements(items) AS item $$;
--- The three save paths with one argument shape. A refused save answers
--- success=false; the one-argument path wraps the reason in "Database error: ...".
+-- The save paths with one argument shape. A refused save answers success=false.
+-- Since migration 123 there is one save path: rule_save1 is the call the one-argument save_invoice(jsonb) used to take, now made the app's way.
 CREATE FUNCTION pg_temp.rule_save1(header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
-  SELECT public.save_invoice(header || jsonb_build_object('items',items)) $$;
+  SELECT public.save_invoice(NULL::uuid, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
 CREATE FUNCTION pg_temp.rule_save3(header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT public.save_invoice(NULL::uuid, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
 CREATE FUNCTION pg_temp.rule_update(invoice uuid, header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
@@ -70,9 +70,7 @@ SELECT pg_temp.rule_assert(public.create_customer('Line Rule Customer','98888888
 SELECT pg_temp.rule_assert(public.create_item('Line Rule Potatoes','Bag')->>'success'='true','catalog item');
 SELECT id AS customer_id FROM public.customers WHERE name='Line Rule Customer' \gset
 SELECT id AS item_id FROM public.items WHERE name='Line Rule Potatoes' \gset
-SELECT pg_temp.rule_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'customer_id'::uuid,p_tax_percent=>5)->>'success'='true','monthly price');
+SELECT pg_temp.rule_assert(public.replace_item_rates(:'item_id'::uuid,:'customer_id'::uuid,'monthly','2026-01-01'::date,jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','monthly price');
 SELECT pg_temp.rule_assert(public.save_grn(p_gr_no=>'RULA',p_date=>'2026-04-01T12:00:00Z',p_customer_id=>:'customer_id'::uuid,
  p_customer_name=>'Line Rule Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'line-rule-a',
  p_items=>jsonb_build_array(jsonb_build_object('item_id',:'item_id','item_name','Line Rule Potatoes',
@@ -127,10 +125,10 @@ SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-100}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: negative tax refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":100.01}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: tax above 100 refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'one-argument save: negative charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb)),'Invoice line charge must be between 0 and 999999'),'one-argument save: absurd charge refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb))->>'success'='false','one-argument save: negative charge refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb))->>'success'='false','one-argument save: absurd charge refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
  pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'one-argument save: absurd labour rate refused');
 SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)) AS three_charge \gset

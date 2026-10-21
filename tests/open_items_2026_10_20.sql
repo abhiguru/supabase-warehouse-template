@@ -4,6 +4,12 @@
 -- network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.oi_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'open items 2026-10-20: %',label; END IF; END $$;
 CREATE FUNCTION pg_temp.oi_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -210,7 +216,7 @@ SELECT pg_temp.oi_dispatch_rest('LO1','LOD1R','2026-06-12');
 SET LOCAL enable_hashjoin = off;
 SET LOCAL enable_mergejoin = on;
 SELECT pg_temp.oi_as_admin();
-SELECT public.save_invoice(jsonb_build_object('inv_no', 9801, 'inv_fin_year', 2026, 'gr_id', :'lo1', 'gr_no', 'LO1',
+SELECT pg_temp.save_invoice_doc(jsonb_build_object('inv_no', 9801, 'inv_fin_year', 2026, 'gr_id', :'lo1', 'gr_no', 'LO1',
   'customer_id', :'lines_customer', 'customer_name', 'Open Items Lines Customer', 'inv_date', '2026-06-20T06:00:00Z',
   'discount', 0, 'duration_mode', 'legacy',
   'items', jsonb_build_array(
@@ -293,7 +299,7 @@ SELECT pg_temp.oi_assert((SELECT string_agg(i->>'grn_items_package_mark', ',' OR
 -- Migration 121 D9: the rest of LO3 is dispatched (LOD3R).
 SELECT pg_temp.oi_dispatch_rest('LO3','LOD3R','2026-06-12');
 SELECT pg_temp.oi_as_admin();
-SELECT public.save_invoice(jsonb_build_object('inv_no', 9803, 'inv_fin_year', 2026, 'gr_id', :'lo3', 'gr_no', 'LO3',
+SELECT pg_temp.save_invoice_doc(jsonb_build_object('inv_no', 9803, 'inv_fin_year', 2026, 'gr_id', :'lo3', 'gr_no', 'LO3',
   'customer_id', :'lines_customer', 'customer_name', 'Open Items Lines Customer', 'inv_date', '2026-06-21T06:00:00Z',
   'discount', 0, 'duration_mode', 'legacy',
   'items', jsonb_build_array(
@@ -466,10 +472,6 @@ SELECT pg_temp.oi_assert(NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n
       'update_customer_contact_with_auth_phone', 'get_priority_contact_for_customer', 'bulk_update_customers_priority_contact', 'get_grn_autocomplete')),
   'the dead functions are dropped');
 SELECT pg_temp.oi_assert(to_regclass('public.customers_with_priority_contact') IS NULL, 'the dead view is dropped');
-SELECT pg_temp.oi_assert((SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = 'create_item_storage_price') = 1
-    AND to_regprocedure('public.create_item_storage_price(uuid,text,numeric,numeric,numeric,numeric,date,uuid,numeric,date)') IS NOT NULL
-    AND to_regprocedure('public.create_item_storage_price(uuid,numeric,numeric,numeric,date,uuid,numeric,numeric,numeric,date)') IS NULL,
-  'only the p_price_type overload of create_item_storage_price is left');
 SELECT pg_temp.oi_assert(pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) NOT LIKE '%get_grn_autocomplete%'
     AND pg_get_functiondef('warehouse_security.authorize_rpc(text,jsonb)'::regprocedure) LIKE '%get_grn_prefixes_with_stock%', 'the staff allowlist no longer names get_grn_autocomplete');
 -- No function body still calls a dropped name (a word match: operator_verify_otp is not verify_otp).

@@ -5,6 +5,12 @@
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.ir_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'grn item rates: %',label; END IF; END $$;
 CREATE FUNCTION pg_temp.ir_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -207,7 +213,7 @@ SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id
          'charge',CASE WHEN d.disp_no='IRD2' THEN 7 ELSE 6 END,'tax',5,'labour_rate',CASE WHEN d.disp_no='IRD2' THEN 2 ELSE 1 END)) AS inv_items
   FROM jsonb_array_elements(public.build_invoice_recalculation_rows(pg_temp.ir_grn('IR-INV'))->'rows') r
   JOIN public.dispatch_trl dt ON dt.id=(r->>'disp_trl_id')::uuid JOIN public.dispatch d ON d.id=dt.disp_id WHERE d.disp_no<>'IRD3' \gset
-SELECT pg_temp.ir_as(:'admin_claims'::jsonb, format($q$SELECT public.save_invoice(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
+SELECT pg_temp.ir_as(:'admin_claims'::jsonb, format($q$SELECT pg_temp.save_invoice_doc(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
   jsonb_build_object('inv_no',20269911,'inv_fin_year',2026,'customer_id',:'orchard'::uuid,'customer_name','IR Orchard',
     'inv_date',:'dm6'||'T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
     'gr_id',pg_temp.ir_grn('IR-INV'),'gr_no','IR-INV'), :'inv_items')) AS inv_save \gset

@@ -76,7 +76,7 @@ SELECT pg_temp.br_assert(NOT EXISTS (
 
 -- 6. State that the old transition probes (migrations 103, 105, 106, 107, 108) used to prove: extensions exactly these,
 --    no publication, no event trigger, no replication slot, and the signer gives the jwt.io token.
-SELECT pg_temp.br_assert((SELECT string_agg(extname, ', ' ORDER BY extname COLLATE "C") FROM pg_extension) = 'pg_stat_statements, pg_trgm, pgcrypto, plpgsql, uuid-ossp',
+SELECT pg_temp.br_assert((SELECT string_agg(extname, ', ' ORDER BY extname COLLATE "C") FROM pg_extension) = 'pg_stat_statements, pg_trgm, pgcrypto, plpgsql',
   'extensions: ' || (SELECT string_agg(extname, ', ' ORDER BY extname) FROM pg_extension));
 SELECT pg_temp.br_assert(NOT EXISTS (SELECT 1 FROM pg_publication), 'a publication exists');
 SELECT pg_temp.br_assert(NOT EXISTS (SELECT 1 FROM pg_event_trigger), 'an event trigger exists: ' || COALESCE((SELECT string_agg(evtname, ', ') FROM pg_event_trigger), ''));

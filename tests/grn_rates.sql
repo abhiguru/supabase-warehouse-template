@@ -8,6 +8,12 @@
 -- Fictional data; runs only in migrations.sh's disposable, network-disabled database.
 \set ON_ERROR_STOP on
 BEGIN;
+-- The one-argument save_invoice(jsonb) is gone (migration 123): the app's save, a header and an array of lines, is used. This takes
+-- the header with its lines under 'items' (as the old call did) and adds what the save asks of each line: its lot and a duration of 1.
+CREATE FUNCTION pg_temp.save_invoice_doc(doc jsonb) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT public.save_invoice(NULL::uuid, doc - 'items', ARRAY(
+    SELECT jsonb_build_object('grn_item_id', (SELECT d.gr_trl_id FROM public.dispatch_trl d WHERE d.id = (i->>'disp_trl_id')::uuid), 'duration', 1) || i
+    FROM jsonb_array_elements(doc->'items') i)) $$;
 CREATE FUNCTION pg_temp.gr_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT COALESCE(ok,false) THEN RAISE EXCEPTION 'grn rates: %',label; END IF; END $$;
 CREATE FUNCTION pg_temp.gr_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -74,7 +80,7 @@ BEGIN
   rws := public.build_invoice_recalculation_rows(pg_temp.gr_grn(p_gr_no));
   SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id',r->>'grn_item_id','duration',(r->>'duration')::numeric,
            'charge',5,'tax',5,'labour_rate',1)) INTO its FROM jsonb_array_elements(rws->'rows') r;
-  RETURN pg_temp.gr_as(claims, format($q$SELECT public.save_invoice(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
+  RETURN pg_temp.gr_as(claims, format($q$SELECT pg_temp.save_invoice_doc(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,
     jsonb_build_object('inv_no',p_inv_no,'inv_fin_year',2026,'customer_id',p_customer,'customer_name','GR Orchard',
       'inv_date',p_date::text||'T12:00:00Z','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
       'gr_id',pg_temp.gr_grn(p_gr_no),'gr_no',p_gr_no), its));
@@ -128,8 +134,6 @@ SELECT pg_temp.gr_assert((SELECT bool_and(p.prosecdef AND p.proacl::text=(SELECT
       AND p.proconfig::text LIKE '%search_path=pg_catalog, public, extensions, utils, pg_temp%' AND p.proconfig::text LIKE '%jit=off%')
    FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname IN ('save_grn','update_grn'))
  AND bool_and(has_function_privilege('authenticated',f,'EXECUTE') AND has_function_privilege('service_role',f,'EXECUTE') AND NOT has_function_privilege('anon',f,'EXECUTE'))
- AND has_function_privilege('authenticated','public.get_item_grn_rates(uuid)','EXECUTE')
- AND NOT has_function_privilege('anon','public.get_item_grn_rates(uuid)','EXECUTE')
  AND NOT has_function_privilege('authenticated','warehouse_security.rate_start_floor()','EXECUTE')
  AND NOT has_function_privilege('authenticated','warehouse_security.apply_grn_rates(uuid,jsonb)','EXECUTE'),
  'grants, owner and options of the re-created functions; the new ones are granted and the helpers are not')
@@ -263,7 +267,7 @@ SELECT pg_temp.gr_assert(:'miss_update'::jsonb->>'error_code'='RATE_MISSING' AND
 -- ---------------------------------------------------------------------------
 -- 6. Scope "grn": stored, replaced on update, shown by get_grn_details, listed per item
 -- ---------------------------------------------------------------------------
--- G2 (older) and G3 (newer) also carry a Plum rate, for the order of get_item_grn_rates.
+-- G2 (older) and G3 (newer) also carry a Plum rate.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-G2',:'dm12'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Plum',1,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Plum',0,50,2,1,5))) AS g2 \gset
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-G3',:'dm9'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Plum',1,10)),
@@ -296,17 +300,6 @@ SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-G1','[]') AS g1x \gset
 SELECT pg_temp.gr_assert(:'g1x'::jsonb->>'error_code'='RATE_MISSING' AND (:'g1x'::jsonb#>>'{data,lines,0,item_name}')='GR Plum'
  AND pg_temp.gr_own('GRN-G1')='GR Plum 0-50@8.00/2.00/5 monthly','[] on a GRN whose line needs its own rate: refused, the stored rate stays: '||:'g1x');
 -- Kiwi has the item rate, Plum the GRN rate, so [] with the GRN rate still in place is not enough: p_rates replaces the set.
--- The listing per item: not archived first, newest GRN first, a deleted GRN left out.
-SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Plum'))) AS list_a \gset
-SELECT pg_temp.gr_assert(:'list_a'::jsonb->>'success'='true' AND (SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_a'::jsonb#>'{data,rates}') r)='["GRN-G3", "GRN-G1", "GRN-G2"]'::jsonb
- AND (SELECT bool_and(r->>'archived'='false') FROM jsonb_array_elements(:'list_a'::jsonb#>'{data,rates}') r)
- AND :'list_a'::jsonb#>>'{data,rates,0,grn_date}'=:'dm9' AND :'list_a'::jsonb#>>'{data,rates,0,customer_name}'='GR Orchard'
- AND (:'list_a'::jsonb#>>'{data,rates,0,unit_price}')::numeric=3 AND :'list_a'::jsonb#>>'{data,rates,0,price_type}'='monthly',
- 'get_item_grn_rates: newest first, the deleted GRN left out: '||(SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_a'::jsonb#>'{data,rates}') r)::text);
-SELECT pg_temp.gr_assert(pg_temp.gr_as(:'customer_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Plum')))->>'state'='42501',
- 'a customer account is refused get_item_grn_rates');
-SELECT pg_temp.gr_assert(pg_temp.gr_as(:'supervisor_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Plum')))->>'success'='true'
- AND pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Plum')))->>'success'='true','supervisors and administrators may read it');
 
 -- The invoice uses the GRN rate: dispatch 5 Plum on dm8, then the recalculation rows.
 SELECT jsonb_build_object('customer_id',:'orchard','customer_name','GR Orchard','supervisor_id',:'admin_profile','supervisor_name','GR Administrator') AS dispatch_for \gset
@@ -335,7 +328,7 @@ SELECT jsonb_build_object('inv_no',20269901,'inv_fin_year',2026,'customer_id',:'
 SELECT jsonb_agg(jsonb_build_object('disp_trl_id',r->>'disp_trl_id','grn_item_id',r->>'grn_item_id','duration',(r->>'duration')::numeric,
    'charge',(r->>'charge')::numeric,'tax',(r->>'tax_percent')::numeric,'labour_rate',(r->>'labour_rate')::numeric)) AS inv_items
  FROM jsonb_array_elements(:'rows1'::jsonb->'rows') r \gset
-SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.save_invoice(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,:'inv_header',:'inv_items')) AS inv1 \gset
+SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT pg_temp.save_invoice_doc(%L::jsonb||jsonb_build_object('items',%L::jsonb))$q$,:'inv_header',:'inv_items')) AS inv1 \gset
 SELECT pg_temp.gr_assert(:'inv1'::jsonb->>'success'='true' AND (SELECT invoiced FROM public.goodsreceived WHERE gr_no='GRN-G1'),'invoice saved, GRN invoiced: '||:'inv1');
 SELECT (:'inv1'::jsonb->>'invoice_id') AS invoice_g1 \gset
 UPDATE public.grn_rates SET unit_price=9 WHERE gr_id=pg_temp.gr_grn('GRN-G1');
@@ -355,9 +348,6 @@ SELECT pg_temp.gr_upd(:'rater_claims'::jsonb,'GRN-G1',jsonb_build_array(pg_temp.
 SELECT pg_temp.gr_assert(:'inv_same'::jsonb->>'success'='true' AND pg_temp.gr_own('GRN-G1')='GR Plum 0-50@9.00/2.00/5 monthly','the equal set on an invoiced GRN is accepted: '||:'inv_same');
 SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_grn_details(%L::uuid)$q$,pg_temp.gr_grn('GRN-G1'))) AS det2 \gset
 SELECT pg_temp.gr_assert(:'det2'::jsonb#>>'{data,grn,rates,0,archived}'='true','the rate of an invoiced GRN is archived');
-SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Plum'))) AS list_b \gset
-SELECT pg_temp.gr_assert((SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_b'::jsonb#>'{data,rates}') r)='["GRN-G3", "GRN-G2", "GRN-G1"]'::jsonb
- AND :'list_b'::jsonb#>>'{data,rates,2,archived}'='true','the archived rate (invoiced GRN G1) moves to the end: '||(SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_b'::jsonb#>'{data,rates}') r)::text);
 -- Delete the invoice: the GRN rate (9) applies again, also through the old invoice id.
 SELECT pg_temp.gr_as(:'admin_claims'::jsonb,format($q$SELECT public.delete_invoice(%L::uuid)$q$,:'invoice_g1')) AS del1 \gset
 SELECT pg_temp.gr_assert(:'del1'::jsonb->>'success'='true' AND NOT (SELECT invoiced FROM public.goodsreceived WHERE gr_no='GRN-G1'),'invoice deleted: '||:'del1');
@@ -420,10 +410,7 @@ SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-O2',:'dm5'::date,:'orchard'::
   jsonb_build_array(pg_temp.gr_rate('grn','GR Cherry',0,50,3,1,5))) AS o2 \gset
 UPDATE public.goodsreceived SET date=(:'dm5'||'T06:00:00Z')::timestamptz WHERE gr_no='GRN-O1';
 UPDATE public.goodsreceived SET date=(:'dm5'||'T15:00:00Z')::timestamptz WHERE gr_no='GRN-O2';
-SELECT pg_temp.gr_as(:'rater_claims'::jsonb,format($q$SELECT public.get_item_grn_rates(%L::uuid)$q$,pg_temp.gr_item('GR Cherry'))) AS list_c \gset
-SELECT pg_temp.gr_assert(:'o1'::jsonb->>'success'='true' AND :'o2'::jsonb->>'success'='true'
- AND (SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_c'::jsonb#>'{data,rates}') r)='["GRN-O1", "GRN-O2", "GRN-INV2"]'::jsonb,
- 'the same India day is ordered by GRN number (O1 before O2 although O2 is later), archived last: '||(SELECT jsonb_agg(r->>'gr_no') FROM jsonb_array_elements(:'list_c'::jsonb#>'{data,rates}') r)::text);
+SELECT pg_temp.gr_assert(:'o1'::jsonb->>'success'='true' AND :'o2'::jsonb->>'success'='true','two GRNs on the same India day are saved');
 -- C4 / D24 (migration 121): a pricing-mode change that would drop the GRN's own rate is refused unless the same save sends a new rate.
 SELECT pg_temp.gr_save(:'rater_claims'::jsonb,'GRN-MM',:'dm5'::date,:'orchard'::uuid,'MONTHLY',jsonb_build_array(pg_temp.gr_line('GR Pear',1,10)),
   jsonb_build_array(pg_temp.gr_rate('grn','GR Pear',0,50,7,2,5))) AS mm \gset

@@ -76,8 +76,6 @@ SELECT jsonb_build_object('inv_fin_year',2097,'customer_id',:'customer_id','cust
  'inv_date','2097-06-01','total',0,'tax_amount',0,'labour',0,'discount',0,'duration_mode','legacy',
  'gr_id',:'grn_id','gr_no','INCA') AS header \gset
 SELECT jsonb_build_object('disp_trl_id',:'disp_line','grn_item_id',:'grn_line','duration',1,'charge',10,'tax',0,'labour_rate',2) AS line \gset
--- The one-argument save's body: the same fields with the lines inside.
-SELECT (:'header'::jsonb || jsonb_build_object('items',jsonb_build_array(:'line'::jsonb))) AS single_body \gset
 
 -- 1. Creating: a number outside 1..99999999 is refused, as staff (the role that
 -- creates most invoices) and as administrator, before anything is written.
@@ -91,17 +89,6 @@ SELECT pg_temp.inc_assert(pg_temp.inc_call(format('SELECT public.save_invoice(NU
   ||pg_temp.inc_call(format('SELECT public.save_invoice(NULL::uuid,%L::jsonb,ARRAY[%L::jsonb])',
    :'header'::jsonb || jsonb_build_object('inv_no',n.value),:'line'))::text)
 FROM (VALUES ('100000000'::jsonb),('2147483647'),('"9999999999"'),('0'),('-5')) AS n(value);
-SELECT pg_temp.inc_call(format('SELECT public.save_invoice(%L::jsonb)',:'single_body'::jsonb || '{"inv_no":100000000}')) AS single_refused \gset
-SELECT pg_temp.inc_assert((:'single_refused'::jsonb->>'answer')::jsonb->>'success'='false'
- AND (:'single_refused'::jsonb->>'answer')::jsonb->>'error'='Database error: Invoice number must be between 1 and 99999999 (SQLState: WH422)',
- 'one-argument save with inv_no 100000000 is refused: '||:'single_refused');
--- The one-argument save also reads the number from header.invoice_number.
-SELECT pg_temp.inc_call(format('SELECT public.save_invoice(%L::jsonb)',jsonb_build_object('header',
-  jsonb_build_object('invoice_number','2097-100000000','financial_year','2097-98','grn_id',:'grn_id','grn_no','INCA',
-   'customer_id',:'customer_id','customer_name','Ceiling Customer','invoice_date','2097-06-01','duration_mode','legacy'),
-  'items',jsonb_build_array(:'line'::jsonb)))) AS header_refused \gset
-SELECT pg_temp.inc_assert((:'header_refused'::jsonb->>'answer')::jsonb->>'error' LIKE '%Invoice number must be between 1 and 99999999 (SQLState: WH422)%',
- 'one-argument save with header invoice number 2097-100000000 is refused: '||:'header_refused');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SELECT pg_temp.inc_assert(warehouse_security.active_role()='admin','actual administrator role');
 SELECT pg_temp.inc_assert(pg_temp.inc_call(format('SELECT public.save_invoice(NULL::uuid,%L::jsonb,ARRAY[%L::jsonb])',
@@ -198,7 +185,7 @@ SELECT pg_temp.inc_assert(position('warehouse_security.authorize_rpc' IN d) < po
  AND position('warehouse_security.check_invoice_number' IN d) < (SELECT min(position(w IN d)) FROM unnest(ARRAY['INSERT INTO','UPDATE ',
    'DELETE FROM','claim_invoice_lines','save_invoice_internal(']) AS w WHERE position(w IN d) > 0),
  'guard, then the number check, then the first write in '||f::text)
-FROM (SELECT f, pg_get_functiondef(f) AS d FROM unnest(ARRAY['public.save_invoice(jsonb)','public.save_invoice(uuid,jsonb,jsonb[])',
+FROM (SELECT f, pg_get_functiondef(f) AS d FROM unnest(ARRAY['public.save_invoice(uuid,jsonb,jsonb[])',
   'public.update_invoice(uuid,jsonb,jsonb[])']::regprocedure[]) AS f) AS fns;
 ROLLBACK;
 \echo 'Invoice number ceiling: save refusals, edits, legacy numbers and next-number checks passed.'

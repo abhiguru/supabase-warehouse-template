@@ -62,9 +62,8 @@ const createdB = good(await rpc('create_customer', adminToken, { p_name: 'Backen
 const a = mustUuid(createdA.data.customer_id), b = mustUuid(createdB.data.customer_id);
 const catalog = good(await rpc('create_item', adminToken, { p_name: 'Backend Test Potatoes', p_packaging: 'Bag' }), 'catalog');
 const item = mustUuid(catalog.data.id);
-good(await rpc('create_item_storage_price', adminToken, { p_item_id: item, p_price_type: 'monthly',
-  p_unit_price: 5, p_weight_min: 0, p_weight_max: 100, p_labour_rate: 2,
-  p_tax_percent: 5, p_effective_from: '2026-01-01', p_customer_id: a }), 'fictional price');
+good(await rpc('replace_item_rates', adminToken, { p_item_id: item, p_customer_id: a, p_price_type: 'monthly', p_starts_on: '2026-01-01',
+  p_bands: [{ weight_min: 0, weight_max: 100, unit_price: 5, labour_rate: 2, tax_percent: 5 }] }), 'fictional price');
 
 for (const [phone, name] of [['919888888872', 'Customer A'], ['919888888873', 'Customer B']]) {
   const pending = login(phone, name);
@@ -175,16 +174,15 @@ const dispatchHeaders = await api('/rest/v1/dispatch?disp_no=in.(BAD01,BAD02)&se
 assert.ok(dispatchHeaders.ok && dispatchHeaders.data.length === 2, 'two dispatch headers available for invoice');
 const dispatchLines = [];
 for (const header of dispatchHeaders.data) {
-  const lines = await api(`/rest/v1/dispatch_trl?disp_id=eq.${header.id}&select=id`, adminToken);
+  const lines = await api(`/rest/v1/dispatch_trl?disp_id=eq.${header.id}&select=id,gr_trl_id`, adminToken);
   assert.ok(lines.ok && lines.data.length === 1, 'one line per fictional dispatch');
   dispatchLines.push(lines.data[0]);
 }
-const saved = good(await rpc('save_invoice', adminToken, { p_invoice_data: {
+const saved = good(await rpc('save_invoice', adminToken, { p_invoice_id: null, p_invoice_data: {
   inv_no: 20260929, inv_fin_year: 2026, gr_id: grn, gr_no: 'BAA01', customer_id: a,
   customer_name: 'Backend Test Customer A', inv_date: '2026-05-02T12:00:00Z',
   total: 998, tax_amount: 48, discount: 0, duration_mode: 'legacy',
-  items: dispatchLines.map(line => ({ disp_trl_id: line.id, charge: 5, tax: 5, labour_rate: 2 })),
-} }), 'save invoice');
+}, p_invoice_items: dispatchLines.map(line => ({ disp_trl_id: line.id, grn_item_id: line.gr_trl_id, duration: 1, charge: 5, tax: 5, labour_rate: 2 })) }), 'save invoice');
 assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=total`, adminToken)).data[0].total, 998);
 // Migration 42: the administrator has no direct table write either, so the
 // server totals and stock arithmetic cannot be bypassed with a table call.

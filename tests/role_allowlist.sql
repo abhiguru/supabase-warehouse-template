@@ -76,7 +76,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  -- a customer's own documents, carts and reports; staff for every customer
  ('get_grn_details',true,'own'),('get_grn_item_dispatches',true,'own'),('get_grn_item_rates',true,'own'),('get_dispatch_details',true,'own'),
  ('get_invoice_data',true,'own'),('get_invoice_detail',true,'own'),('get_invoice_items_detailed',true,'own'),
- ('get_order_with_items',true,'own'),('get_cart_dispatches',true,'own'),('add_item_to_order',true,'own'),
+ ('get_order_with_items',true,'own'),('add_item_to_order',true,'own'),
  ('update_order_item_quantity',true,'own'),('remove_item_from_order',true,'own'),('get_order_change_log',true,'own'),
  ('get_or_create_cart',true,'own'),('search_customer_items_for_order',true,'own'),
  ('get_customer_items_for_order_selection',true,'own'),
@@ -114,15 +114,10 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_all_stock_summary',true,'no'),('get_all_customer_activity_summary',true,'no'),
  -- migration 90: item pricing is for administrators and supervisors only
  ('get_item_storage_prices',false,'no'),
- -- migration 76: no app code calls it; administrators and supervisors only
- ('find_or_create_item_storage_price',false,'no'),
- ('create_item_storage_price',false,'no'),('update_item_storage_price',false,'no'),('delete_item_storage_price',false,'no'),
  -- migration 76: a rate change "from a date"
  ('replace_item_rates',false,'no'),('undo_rate_change',false,'no'),
  -- migration 85: the standard rate (staff refused by the guard since migration 90)
  ('get_standard_rate',false,'no'),('set_standard_rate',false,'no'),
- -- migration 86: the GRN-only rates of an item
- ('get_item_grn_rates',false,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
  ('get_sensor_device',true,'no'),
@@ -134,7 +129,6 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('create_customer',false,'no'),('update_customer',false,'no'),('safe_delete_customer',false,'no'),('restore_customer',false,'no'),
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
- ('update_order_metadata',false,'no'),
  -- the price history of migration 48: administrators and supervisors only
  ('get_item_price_history',false,'no'),('get_item_usage',false,'no'),
  -- migration 49: administrators only; the guard refuses a supervisor as well
@@ -174,9 +168,6 @@ BEGIN
       AND p.proname <> ALL(admitted) AND p.proname <> ALL(pg_temp.ra_unguarded())
     ORDER BY p.oid::regprocedure::text LOOP
     outcome := pg_temp.ra_outcome(format('SELECT public.%I(%s)', r.proname, COALESCE(r.arguments,'')));
-    -- get_invoiceable_grns(integer,integer) cannot be told from its
-    -- three-argument overload in a positional call; that overload is swept.
-    CONTINUE WHEN outcome LIKE 'error: function % is not unique';
     IF outcome <> 'refused' THEN open := open || ' ' || r.proname || ' -> ' || left(outcome,70) || ';'; END IF;
   END LOOP;
   RETURN open;
@@ -270,9 +261,7 @@ SELECT pg_temp.ra_assert(NOT has_table_privilege('anon','public.printer_status',
 SELECT pg_temp.ra_assert((SELECT count(*)=1 AND bool_and(cmd='SELECT' AND roles='{authenticated}')
   FROM pg_policies WHERE schemaname='public' AND tablename='orders' AND policyname='starter_order_staff_read'),
  'staff order policy is read-only');
-SELECT pg_temp.ra_assert(has_function_privilege('authenticated','warehouse_security.image_file_unreferenced(text,text)','EXECUTE')
-  AND NOT has_function_privilege('anon','warehouse_security.image_file_unreferenced(text,text)','EXECUTE')
-  AND has_function_privilege('authenticated','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE')
+SELECT pg_temp.ra_assert(has_function_privilege('authenticated','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE')
   AND NOT has_function_privilege('anon','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE'),
  'the storage helpers are for signed-in sessions only');
 SELECT pg_temp.ra_assert((SELECT count(*)=2 AND bool_and(qual LIKE '%staff_may_remove_image_file(bucket_id, name)%')
@@ -330,9 +319,8 @@ SELECT id AS gamma FROM public.customers WHERE name='Role Matrix Gamma' \gset
 SELECT id AS item_id FROM public.items WHERE name='Role Matrix Rice' \gset
 SELECT pg_temp.ra_assert(public.assign_customer_to_user('919888888935',:'alpha'::uuid,'Role matrix fixture')
   AND public.assign_customer_to_user('919888888935',:'beta'::uuid,'Role matrix fixture'),'customer login assigned to Alpha and Beta');
-SELECT pg_temp.ra_assert(public.create_item_storage_price(p_item_id=>:'item_id'::uuid,p_price_type=>'monthly',p_unit_price=>5,
- p_weight_min=>0,p_weight_max=>100,p_labour_rate=>2,p_effective_from=>'2026-01-01',
- p_customer_id=>:'gamma'::uuid,p_tax_percent=>5)->>'success'='true','Gamma''s monthly price');
+SELECT pg_temp.ra_assert(public.replace_item_rates(:'item_id'::uuid,:'gamma'::uuid,'monthly','2026-01-01'::date,
+ jsonb_build_array(jsonb_build_object('weight_min',0,'weight_max',100,'unit_price',5,'labour_rate',2,'tax_percent',5)))->>'success'='true','Gamma''s monthly price');
 SELECT pg_temp.ra_assert(public.save_grn(p_gr_no=>'RM'||c.code,p_date=>'2026-04-01T12:00:00Z',p_customer_id=>c.id,
  p_customer_name=>'Role Matrix '||c.label,p_supervisor_id=>:'supervisor_profile'::uuid,p_supervisor_name=>'Role Matrix Supervisor',
  p_pricing_mode=>'MONTHLY',p_idempotency_key=>'role-matrix-'||c.code,
@@ -435,7 +423,6 @@ FROM (VALUES ('SELECT public.get_all_stock_summary()'),
 SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.get_sensor_history(%L::uuid,7)',:'sensor_id'))
  AND pg_temp.ra_refused(format('SELECT public.get_sensor_device(%L::uuid)',:'sensor_id'))
  AND pg_temp.ra_refused(format('SELECT public.update_sensor_device(%L::uuid,''Renamed'')',:'sensor_id'))
- AND pg_temp.ra_refused(format('SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,''monthly'')',:'item_id',:'alpha'))
  AND pg_temp.ra_refused(format('SELECT public.delete_grn_image(%L::uuid)',:'img_a1'::jsonb->>'image_id'))
  AND pg_temp.ra_refused(format('SELECT public.update_user_role(%L::uuid,''staff''::public.user_role)',:'managed_profile')),
  'customer refused on sensors, pricing, photo removal and user management');
@@ -552,16 +539,10 @@ SELECT pg_temp.ra_assert(COALESCE(bool_and(COALESCE(pg_temp.ra_call(statement)->
  'staff are refused item pricing: '||string_agg(statement||' -> '||pg_temp.ra_call(statement)::text,' | ')
    FILTER (WHERE NOT (COALESCE(pg_temp.ra_call(statement)->>'success','false')<>'true' AND pg_temp.ra_call(statement)::text LIKE '%Staff access required%')))
 FROM (VALUES ('SELECT public.get_item_storage_prices()'),
-  (format('SELECT public.create_item_storage_price(p_item_id=>%L::uuid,p_price_type=>''monthly'',p_unit_price=>7,p_weight_min=>0,p_weight_max=>100,p_labour_rate=>1,p_effective_from=>CURRENT_DATE+30,p_customer_id=>%L::uuid,p_tax_percent=>5)',:'item_id',:'alpha')),
-  (format('SELECT public.update_item_storage_price(p_id=>%L::uuid,p_unit_price=>8,p_weight_min=>101,p_weight_max=>200,p_labour_rate=>1,p_tax_percent=>5,p_effective_from=>CURRENT_DATE+30,p_effective_to=>NULL)',:'gamma_price')),
-  (format('SELECT public.delete_item_storage_price(%L::uuid)',:'gamma_price')),
   (format('SELECT public.replace_item_rates(%L::uuid,NULL,''monthly'',CURRENT_DATE+30,''[]''::jsonb)',:'item_id')),
   (format('SELECT public.undo_rate_change(%L::uuid,NULL,''monthly'',CURRENT_DATE+30)',:'item_id')),
   ('SELECT public.get_standard_rate()'),
-  ('SELECT public.set_standard_rate(''[]''::jsonb)'),
-  (format('SELECT public.get_item_grn_rates(%L::uuid)',:'item_id'))) s(statement);
-SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.find_or_create_item_storage_price(%L::uuid,%L::uuid,10,''monthly'')',:'item_id',:'beta')),
- 'staff can no longer find or create a price (migration 76)');
+  ('SELECT public.set_standard_rate(''[]''::jsonb)')) s(statement);
 RESET ROLE;
 SELECT pg_temp.ra_assert((SELECT count(*)=1 FROM public.item_storage_prices WHERE id=:'gamma_price'::uuid AND unit_price=6)
  AND (SELECT count(*)=0 FROM public.item_storage_prices WHERE customer_id=:'alpha'::uuid OR customer_id=:'beta'::uuid)
@@ -648,13 +629,12 @@ SELECT pg_temp.ra_assert(pg_temp.ra_refused(format('SELECT public.get_customer_s
 -- The storage helpers answer staff only (migration 47): nobody else learns from
 -- them whether a path is in use.
 SELECT pg_temp.ra_assert(NOT warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
- AND NOT warehouse_security.image_file_unreferenced('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp'),
- 'a customer account gets false from the storage helpers for a free path in a live folder');
+,
+ 'a customer account gets false from the storage helper for a free path in a live folder');
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.ra_assert(warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
- AND warehouse_security.image_file_unreferenced('grn-images','headers/'||:'grn_a'||'/never-uploaded.webp')
  AND warehouse_security.staff_may_remove_image_file('grn-images','items/'||:'grn_a'||'/never-uploaded.webp')
  AND warehouse_security.staff_may_remove_image_file('dispatch-images',:'dispatch_a'||'/never-uploaded.webp')
  AND NOT warehouse_security.staff_may_remove_image_file('grn-images','headers/'||:'grn_x'||'/never-uploaded.webp')

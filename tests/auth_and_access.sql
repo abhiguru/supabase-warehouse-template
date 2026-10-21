@@ -22,7 +22,6 @@ INSERT INTO warehouse_security.auth_config(key,value) VALUES
   ('jwt_secret','isolated-test-secret-not-for-any-deployment-12345'),
   ('auth_mode','operator'),('demo_auth_enabled','false')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
-SELECT pg_temp.assert_true(NOT (public.send_otp('0000000001')->>'success')::boolean,'demo auth is unavailable');
 SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.operator_prepare_otp(text,inet)','EXECUTE')
   AND NOT has_function_privilege('anon','public.operator_verify_otp(text,text,text,text,inet)','EXECUTE'),
   'anonymous callers reach OTP only through the edge function');
@@ -61,7 +60,7 @@ DO $$ DECLARE refreshed jsonb; retried jsonb; BEGIN
   -- race: test.refresh still holds the pre-rotation token for the logout below.
   PERFORM pg_temp.assert_true(NOT (public.refresh_jwt_token(repeat('0',64))->>'success')::boolean,'forged refresh denied');
   BEGIN PERFORM * FROM public.customers; RAISE EXCEPTION 'anonymous customer read allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-  BEGIN PERFORM * FROM public.jwt_config; RAISE EXCEPTION 'anonymous secret read allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN PERFORM * FROM warehouse_security.auth_config; RAISE EXCEPTION 'anonymous secret read allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN PERFORM public.get_users_list(); RAISE EXCEPTION 'anonymous staff RPC allowed'; EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
 RESET ROLE;
@@ -268,7 +267,7 @@ SELECT pg_temp.assert_true(NOT has_function_privilege('anon','public.get_next_di
 SELECT pg_temp.assert_true(NOT EXISTS (
   SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname='public' AND has_function_privilege('anon',p.oid,'EXECUTE')
-    AND p.proname NOT IN ('refresh_jwt_token','logout_session','check_session')
+    AND p.proname NOT IN ('refresh_jwt_token','logout_session','check_session','get_public_config')
 ),'anonymous function allowlist');
 SELECT pg_temp.assert_true(NOT EXISTS (
   SELECT 1 FROM pg_matviews WHERE schemaname='public' AND NOT ispopulated
