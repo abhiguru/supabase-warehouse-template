@@ -163,10 +163,24 @@ test('the sensor bridge needs no variable to render, so installations that never
   assert.doesNotMatch(block, /\n    (?:networks|ports|privileged):/);
 });
 
-test('the pooler registers only a database role that exists', () => {
+test('the pooler registers only a database role that exists once it is turned on, and no install creates it by default', () => {
   const pooler = read('docker/volumes/pooler/pooler.exs');
   assert.deepEqual([...pooler.matchAll(/"db_user" => "([a-z_]+)"/g)].map(match => match[1]), ['pgbouncer']);
-  assert.match(read('docker/volumes/db/roles.sql'), /ALTER USER pgbouncer WITH PASSWORD :'pooler_password'/);
+  // The role, schema and database are made by scripts/pooler.sh on (configure-pooler.sql), never at first start.
+  assert.match(read('scripts/configure-pooler.sql'), /CREATE ROLE pgbouncer LOGIN/);
+  assert.match(read('scripts/configure-pooler.sql'), /CREATE DATABASE _supabase/);
+  assert.doesNotMatch((read('docker/volumes/db/roles.sql') + read('docker/volumes/db/00-bootstrap.sql')).replace(/--.*$/gm, ''), /pgbouncer|pooler|_supabase/i);
+  const compose = read('docker/docker-compose.yml');
+  assert.doesNotMatch(compose, /_supabase\.sql|pooler\.sql/);
+  const db = compose.slice(compose.indexOf('\n  db:\n'), compose.indexOf('\n  # Connection pooler'));
+  assert.doesNotMatch(db, /DB_PASSWORD_POOLER|SECRET_KEY_BASE|VAULT_ENC_KEY/, 'the db service needs no pooler value');
+});
+
+test('a fresh state has no pooler role value or secret, and Compose renders without them', { skip }, () => {
+  const env = renderedComposeEnv();
+  for (const name of ['DB_PASSWORD_POOLER', 'SECRET_KEY_BASE', 'VAULT_ENC_KEY']) assert.equal(name in env, false, `${name} is generated only by scripts/pooler.sh on`);
+  assert.equal(env.POOLER_ENABLED, 'false');
+  assert.ok(renderedCompose().services.supavisor, 'the pooler service is still defined (profile pooler)');
 });
 
 // TW-BE-002 (docs/CONTAINER_SECURITY.md, "Database passwords"): every value is
@@ -180,16 +194,22 @@ test('the superuser password reaches only db and supavisor; each login password 
     return Object.entries(services).filter(([, definition]) => JSON.stringify(definition).includes(value)).map(([service]) => service).sort();
   };
   assert.deepEqual(holders(env.POSTGRES_PASSWORD), ['db', 'supavisor']);
-  // db carries the three that exist before the migrations, for its first-start init script.
+  // db carries the two that exist before the migrations, for its first-start init script.
   assert.deepEqual(holders(env.DB_PASSWORD_AUTHENTICATOR), ['db', 'rest']);
   assert.deepEqual(holders(env.DB_PASSWORD_STORAGE), ['db', 'storage']);
-  assert.deepEqual(holders(env.DB_PASSWORD_POOLER), ['db', 'supavisor']);
+  // The pooler's values exist only after `pooler.sh on`: then they reach supavisor alone (db no longer carries any).
+  const on = renderCompose(text => `${text.replace(/^POOLER_ENABLED=.*$/m, 'POOLER_ENABLED=true')}DB_PASSWORD_POOLER=${'p'.repeat(64)}\nSECRET_KEY_BASE=${'s'.repeat(128)}\nVAULT_ENC_KEY=${'v'.repeat(32)}\n`);
+  assert.equal(on.status, 0, on.stderr);
+  const onServices = JSON.parse(on.stdout).services;
+  for (const value of ['p'.repeat(64), 's'.repeat(128), 'v'.repeat(32)]) {
+    assert.deepEqual(Object.entries(onServices).filter(([, definition]) => JSON.stringify(definition).includes(value)).map(([service]) => service), ['supavisor']);
+  }
   assert.equal('DB_PASSWORD_MONITORING' in env, false, 'the monitoring login has no password (migration 107)');
   assert.equal('POSTGRES_PASSWORD' in services.supavisor.environment, false);
 });
 
 test('a state without a per-role value fails at compose config with a message, not at the first login', { skip }, () => {
-  for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']) {
+  for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE']) {
     const result = renderCompose(text => text.replace(new RegExp(`^${name}=.*\n`, 'm'), ''));
     assert.notEqual(result.status, 0, `${name} missing still renders`);
     assert.match(result.stderr, /Run setup\.sh to generate the per-role database passwords/);

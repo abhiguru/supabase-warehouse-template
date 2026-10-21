@@ -11,7 +11,6 @@ SELECT pg_temp.br_assert((SELECT string_agg(rolname || ' ' || concat_ws('/', rol
     FROM pg_roles WHERE rolname !~ '^pg_') = $r$anon 0/1/0/0/0/0/0
 authenticated 0/1/0/0/0/0/0
 authenticator 0/0/1/0/0/0/0
-pgbouncer 0/1/1/0/0/0/0
 service_role 0/1/0/0/0/0/1
 supabase_admin 1/1/1/1/1/1/1
 supabase_storage_admin 0/0/1/0/0/0/0$r$,

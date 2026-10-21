@@ -74,9 +74,14 @@ fi
 source "$ROOT/scripts/backup-key.sh"
 [[ -n "${WAREHOUSE_BACKUP_KEY_FILE:-}" ]] || export WAREHOUSE_BACKUP_KEY_FILE="$state/config/backup.key"
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-for file in database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
+for file in database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
+# A backup made before the pooler became optional also holds _supabase.dump (the pooler's own metadata). It is not
+# replayed: the pooler writes its tenant again when it starts, and turning it on creates the database.
+if [[ -e "$backup/_supabase.dump" ]]; then
+  echo 'Note: the backup contains _supabase.dump (the pooler tenant). It is skipped: the pooler recreates its tenant when it starts.'
+fi
 if ! cmp -s "$backup/instance.json" "$state/public/instance.json"; then
   echo 'Refusing: the backup instance.json differs from this state; in-place restore only replaces the instance that produced the backup.' >&2
   exit 1
@@ -92,7 +97,11 @@ done < <(node "$ROOT/scripts/db-roles.mjs" names)
 without_added() {
   if ((${#added_since[@]})); then grep -v -E "^($(IFS='|'; printf '%s' "${added_since[*]}"))=" || true; else cat; fi
 }
-backup_env() { cat "$backup/compose.env"; }
+# The pooler's switch and secrets are left out of every comparison below, on both sides: the restored database gets the
+# values of this state, the pooler's tenant is not in the backup any more, and an old backup carries secrets that a
+# state without the pooler no longer has.
+without_pooler() { grep -v -E '^(POOLER_ENABLED|DB_PASSWORD_POOLER|SECRET_KEY_BASE|VAULT_ENC_KEY)=' || true; }
+backup_env() { without_pooler < "$backup/compose.env"; }
 if [[ "$restore_config" == true ]]; then
   for key in WAREHOUSE_PROJECT_NAME WAREHOUSE_DB_PATH WAREHOUSE_STORAGE_PATH WAREHOUSE_MANIFEST_PATH; do
     if [[ "$(sed -n "s/^$key=//p" "$backup/compose.env")" != "$(sed -n "s/^$key=//p" "$state/config/compose.env")" ]]; then
@@ -102,11 +111,11 @@ if [[ "$restore_config" == true ]]; then
   done
 elif [[ "$relocated" == true ]]; then
   without_paths() { grep -v -E '^WAREHOUSE_(DB|STORAGE|MANIFEST)_PATH=' || true; }
-  if ! cmp -s <(backup_env | without_paths) <(without_added < "$state/config/compose.env" | without_paths); then
+  if ! cmp -s <(backup_env | without_paths) <(without_added < "$state/config/compose.env" | without_pooler | without_paths); then
     echo 'Refusing: config/compose.env differs from the backup copy in more than the state paths.' >&2
     exit 1
   fi
-elif ! cmp -s <(backup_env) <(without_added < "$state/config/compose.env"); then
+elif ! cmp -s <(backup_env) <(without_added < "$state/config/compose.env" | without_pooler); then
   echo 'Refusing: config/compose.env differs from the backup copy (keys rotated or configuration changed after it was taken). Pass --restore-config to restore the backup configuration together with its data, or use a backup taken after the change.' >&2
   exit 1
 fi
@@ -204,7 +213,6 @@ compose up -d --wait --wait-timeout 180 db
 db_psql() { compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin "$@"; }
 db_restore() { compose exec -T db pg_restore -U supabase_admin --exit-on-error "$@"; }
 compose cp "$backup/database.dump" db:/tmp/database.dump
-compose cp "$backup/_supabase.dump" db:/tmp/_supabase.dump
 phase='create missing roles'
 # A role the backup names that the bootstrap did not create must exist before ownership and ACLs
 # replay (the bootstrap makes the whole agreed set, so this is a safety net). Names arrive as COPY
@@ -232,7 +240,8 @@ phase='recreate application database'
 # right after start-up makes CREATE DATABASE fail, and template0 accepts no connections. Every
 # non-extension object of the application database, including CREATE EXTENSION statements, is in
 # the dump. Per-database settings are not, but none is set: the roles and their settings come from the bootstrap.
-db_psql -d _supabase -c 'DROP DATABASE postgres WITH (FORCE)' \
+# Connected to template1 (the maintenance database of a cluster that has no _supabase before the pooler is turned on).
+db_psql -d template1 -c 'DROP DATABASE postgres WITH (FORCE)' \
   -c 'CREATE DATABASE postgres OWNER supabase_admin TEMPLATE template0'
 phase='restore database'
 # Sections replay with the archived owners, as the storage service's own migrations require. ACLs
@@ -247,12 +256,7 @@ acl_awk='$1 ~ /^[0-9]+;$/ && ($4 == "ACL" || ($4 == "DEFAULT" && $5 == "ACL")) {
 compose exec -T db sh -c 'pg_restore -l /tmp/database.dump > /tmp/restore.list && awk "$1" /tmp/restore.list > /tmp/acl.list && [ -s /tmp/acl.list ]' sh "$acl_awk" \
   || { echo 'Refusing: the database dump has no readable table of contents or lists no privileges (ACL entries).' >&2; exit 1; }
 db_restore -d postgres -L /tmp/acl.list /tmp/database.dump
-phase='restore _supabase'
-# Same approach for the _supabase database, which holds only the pooler's _supavisor schema: recreate, then replay.
-db_psql -d postgres -c 'DROP DATABASE _supabase WITH (FORCE)' \
-  -c 'CREATE DATABASE _supabase OWNER supabase_admin TEMPLATE template0'
-db_restore -d _supabase /tmp/_supabase.dump
-compose exec -T db rm -f /tmp/database.dump /tmp/_supabase.dump /tmp/acl.list /tmp/restore.list
+compose exec -T db rm -f /tmp/database.dump /tmp/acl.list /tmp/restore.list
 phase='analyze'
 # pg_dump 18 does not carry planner statistics (pg_dump before 18 never did): the restored tables are unanalyzed
 # until autovacuum reaches them, and the first queries would plan on defaults. Analyze every database in stages
@@ -268,7 +272,8 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
-# Every service login gets its password from compose.env again. The pooler rewrites its pool user when it starts.
+# Every service login gets its password from compose.env again. While the pooler is on, this also creates its role, schema
+# and _supabase database again (they are not in the backup) and sets its password.
 phase='database logins'
 bash "$ROOT/scripts/db-roles.sh" apply
 phase='start services'

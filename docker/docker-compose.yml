@@ -280,8 +280,6 @@ services:
       # once, on an empty data directory.
       - ./volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro,Z
       - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro,Z
-      - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/30-_supabase.sql:ro,Z
-      - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/32-pooler.sql:ro,Z
       - ${WAREHOUSE_DB_PATH:?Set private database path}:/var/lib/postgresql/data:Z
     tmpfs:
       # The official 18 image declares VOLUME /var/lib/postgresql, which would leave an anonymous volume behind
@@ -310,7 +308,6 @@ services:
       # directory); scripts/configure-db-roles.sql sets them on every setup run.
       DB_PASSWORD_AUTHENTICATOR: ${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}
       DB_PASSWORD_STORAGE: ${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}
-      DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:?Run setup.sh to generate the per-role database passwords}
       PGDATABASE: ${POSTGRES_DB}
       POSTGRES_DB: ${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
@@ -355,7 +352,7 @@ services:
       -c min_wal_size=256MB
       -c max_wal_size=2GB
 
-  # Connection pooler — start with: docker compose --profile pooler up -d
+  # Connection pooler (optional, off by default) — turn on with: bash scripts/pooler.sh on (off: bash scripts/pooler.sh off)
   supavisor:
     build:
       context: ./supavisor
@@ -396,11 +393,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       # The pool user's own password (volumes/pooler/pooler.exs); the superuser
       # password only for Supavisor's metadata database.
-      DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:?Run setup.sh to generate the per-role database passwords}
+      # Set by `bash scripts/pooler.sh on`; empty while the pooler is off (Compose reads this file whether or not the
+      # profile runs). The command below refuses to start without them.
+      DB_PASSWORD_POOLER: ${DB_PASSWORD_POOLER:-}
       DATABASE_URL: ecto://supabase_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/_supabase
       CLUSTER_POSTGRES: true
-      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-      VAULT_ENC_KEY: ${VAULT_ENC_KEY}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-}
+      VAULT_ENC_KEY: ${VAULT_ENC_KEY:-}
       API_JWT_SECRET: ${JWT_SECRET}
       METRICS_JWT_SECRET: ${JWT_SECRET}
       REGION: local
@@ -413,7 +412,7 @@ services:
     command:
       [
         "/bin/sh", "-c",
-        "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
+        "[ -n \"$$DB_PASSWORD_POOLER\" ] && [ -n \"$$SECRET_KEY_BASE\" ] && [ -n \"$$VAULT_ENC_KEY\" ] || { echo 'The pooler is off: run bash scripts/pooler.sh on' >&2; exit 1; }; /app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
       ]
 
   # CUPS Print Server — start with: docker compose --profile printing up -d

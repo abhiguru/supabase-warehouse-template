@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DB_ROLE_LOGINS, GENERATED_DB_NAMES, SUPERUSER_ROLES, addMissingDbValues, checkInput,
+  DB_ROLE_LOGINS, GENERATED_DB_NAMES, POOLER_LOGIN, POOLER_SECRET_NAMES, SUPERUSER_ROLES, activeLogins, addMissingDbValues, checkInput, poolerEnvText, poolerSwitch, stagePoolerEnv,
   addMissingDbValuesToFile, normalizeRestoredEnvFile, generatedDbValues, psqlPrelude, scramVerifier, stageRotatedDbEnv, validateDbValues,
 } from '../scripts/db-roles.mjs';
 
@@ -59,11 +59,11 @@ test('missing values are added, present ones never replaced, an empty line is fi
   assert.deepEqual(lines.map(line => line.split('=')[0]), GENERATED_DB_NAMES);
   // No final newline in the old file: the first added line still starts on its own.
   assert.ok(addMissingDbValues(older.trimEnd()).text.startsWith(`${older}${GENERATED_DB_NAMES[0]}=`));
-  const blank = full.replace(new RegExp(`^${DB_ROLE_LOGINS[2].env}=.*$`, 'm'), `${DB_ROLE_LOGINS[2].env}=`);
+  const blank = full.replace(new RegExp(`^${DB_ROLE_LOGINS[1].env}=.*$`, 'm'), `${DB_ROLE_LOGINS[1].env}=`);
   const filled = addMissingDbValues(blank);
-  assert.deepEqual(filled.added, [DB_ROLE_LOGINS[2].env]);
+  assert.deepEqual(filled.added, [DB_ROLE_LOGINS[1].env]);
   assert.equal(filled.text.split('\n').length, full.split('\n').length);
-  assert.match(filled.text, new RegExp(`^${DB_ROLE_LOGINS[2].env}=[0-9a-f]{64}$`, 'm'));
+  assert.match(filled.text, new RegExp(`^${DB_ROLE_LOGINS[1].env}=[0-9a-f]{64}$`, 'm'));
 });
 
 test('the psql prelude carries verifiers only, one per login, and the superuser pair only on request', () => {
@@ -84,8 +84,10 @@ test('the psql prelude carries verifiers only, one per login, and the superuser 
 test('configure-db-roles.sql, roles.sql and Compose name the same logins as scripts/db-roles.mjs', () => {
   const sql = read('scripts/configure-db-roles.sql');
   const altered = [...sql.matchAll(/^ALTER ROLE ([a-z_]+) WITH LOGIN PASSWORD :'([a-z_]+)';$/gm)].map(match => [match[1], match[2]]);
-  assert.deepEqual(altered, DB_ROLE_LOGINS.map(({ role, variable }) => [role, variable]));
-  for (const { variable } of [...DB_ROLE_LOGINS, ...SUPERUSER_ROLES]) assert.match(sql, new RegExp(`:\\{\\?${variable}\\}`), `${variable} is checked before use`);
+  assert.deepEqual(altered, [...DB_ROLE_LOGINS, POOLER_LOGIN].map(({ role, variable }) => [role, variable]));
+  // The pool user's password is set only when its verifier was given (the pooler is on).
+  assert.match(sql, /\\if :pooler_given\nALTER ROLE pgbouncer WITH LOGIN PASSWORD :'pooler_verifier';\n\\endif/);
+  for (const { variable } of [...DB_ROLE_LOGINS, POOLER_LOGIN, ...SUPERUSER_ROLES]) assert.match(sql, new RegExp(`:\\{\\?${variable}\\}`), `${variable} is checked before use`);
   assert.deepEqual([...sql.matchAll(/^ALTER ROLE ([a-z_]+) WITH PASSWORD :'([a-z_]+)';$/gm)].map(match => [match[1], match[2]]),
     SUPERUSER_ROLES.map(({ role, variable }) => [role, variable]));
   // Every statement that carries a verifier is in the one transaction, after tracking is switched off.
@@ -95,7 +97,8 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   // Only the roles of the agreed set exist: nothing is altered or dropped for a role of the earlier image.
   assert.doesNotMatch(sql, /supabase_functions_admin|supabase_auth_admin|warehouse_monitoring|DROP ROLE|ALTER ROLE postgres|postgres_verifier/);
   assert.deepEqual(SUPERUSER_ROLES, [{ role: 'supabase_admin', variable: 'supabase_admin_verifier' }], 'supabase_admin is the only superuser login');
-  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role).sort(), ['authenticator', 'pgbouncer', 'supabase_storage_admin']);
+  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role).sort(), ['authenticator', 'supabase_storage_admin']);
+  assert.equal(POOLER_LOGIN.role, 'pgbouncer');
   assert.doesNotMatch(sql, /monitoring_verifier|LOGIN PASSWORD :'monitoring/, 'the monitoring login has no password any more (migration 107)');
   // roles.sql (first start) takes the three logins that exist before the migrations from the db environment.
   const roles = read('docker/volumes/db/roles.sql');
@@ -111,7 +114,7 @@ test('configure-db-roles.sql, roles.sql and Compose name the same logins as scri
   const uses = { DB_PASSWORD_AUTHENTICATOR: 'PGRST_DB_URI: postgres://authenticator:', DB_PASSWORD_STORAGE: 'DATABASE_URL: postgres://supabase_storage_admin:' };
   for (const [name, prefix] of Object.entries(uses)) assert.ok(compose.includes(`${prefix}\${${name}:?`), `${name} is required where it is used`);
   assert.doesNotMatch(compose, /warehouse_monitoring|DB_PASSWORD_MONITORING/, 'no service signs in as the monitoring login');
-  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role), ['authenticator', 'supabase_storage_admin', 'pgbouncer']);
+  assert.deepEqual(DB_ROLE_LOGINS.map(({ role }) => role), ['authenticator', 'supabase_storage_admin']);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_password" => System\.fetch_env!\("DB_PASSWORD_POOLER"\)/);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /update_manager_user_credentials\(tenant, Map\.take\(pool_user, \["db_user", "db_password"\]\)\)/);
 });
@@ -206,5 +209,98 @@ test('the add-missing command (run by restore.sh and restore-host.sh) rewrites t
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /PGRST_DB_SCHEMAS is now public/);
     assert.match(readFileSync(file, 'utf8'), /^PGRST_DB_SCHEMAS=public$/m);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+const poolerOn = () => ({ ...env(), POOLER_ENABLED: 'true', DB_PASSWORD_POOLER: 'a1'.repeat(32) });
+
+test('the pooler login counts only while the pooler is on', () => {
+  assert.equal(poolerSwitch({}), null);
+  assert.equal(poolerSwitch({ POOLER_ENABLED: 'false' }), false);
+  assert.equal(poolerSwitch({ POOLER_ENABLED: 'true' }), true);
+  assert.deepEqual(activeLogins(env()).map(({ role }) => role), ['authenticator', 'supabase_storage_admin']);
+  assert.deepEqual(activeLogins(poolerOn()).map(({ role }) => role), ['authenticator', 'supabase_storage_admin', 'pgbouncer']);
+  // Off or undecided: no pooler verifier, no pooler line in the check input, nothing to validate.
+  for (const values of [env(), { ...env(), POOLER_ENABLED: 'false', DB_PASSWORD_POOLER: 'short' }]) {
+    assert.doesNotMatch(psqlPrelude(values), /pooler_verifier/);
+    assert.doesNotMatch(checkInput(values), /pgbouncer/);
+    assert.deepEqual(Object.keys(generatedDbValues(values)), GENERATED_DB_NAMES);
+  }
+  const on = poolerOn();
+  assert.match(psqlPrelude(on), /^\\set pooler_verifier 'SCRAM-SHA-256\$4096:/m);
+  assert.equal(psqlPrelude(on).includes(on.DB_PASSWORD_POOLER), false);
+  assert.match(checkInput(on), /^pgbouncer\t/m);
+  assert.deepEqual(Object.keys(generatedDbValues(on)), [...GENERATED_DB_NAMES, POOLER_LOGIN.env]);
+  assert.throws(() => validateDbValues({ ...on, DB_PASSWORD_POOLER: undefined }), /POOLER_ENABLED is true but the pooler password is missing; run bash scripts\/pooler\.sh on/);
+  assert.throws(() => validateDbValues({ ...on, DB_PASSWORD_POOLER: on.DB_PASSWORD_STORAGE }), /repeats DB_PASSWORD_STORAGE/);
+});
+
+test('turning the pooler on adds its secrets once; off keeps them; forget removes them and nothing else', () => {
+  const base = `POSTGRES_PASSWORD=${superuser}\nPOOLER_ENABLED=false\nPOOLER_TENANT_ID=my-tenant\nKONG_HTTP_PORT=18000\n`;
+  const on = poolerEnvText(base, 'on');
+  assert.deepEqual(on.changed, [...POOLER_SECRET_NAMES, 'POOLER_DEFAULT_POOL_SIZE', 'POOLER_MAX_CLIENT_CONN', 'POOLER_DB_POOL_SIZE']);
+  assert.match(on.text, /^POOLER_ENABLED=true$/m);
+  assert.match(on.text, /^POOLER_TENANT_ID=my-tenant$/m, 'a tunable that exists is kept');
+  assert.match(on.text, /^DB_PASSWORD_POOLER=[0-9a-f]{64}$/m);
+  assert.match(on.text, /^SECRET_KEY_BASE=[0-9a-f]{128}$/m);
+  assert.match(on.text, /^VAULT_ENC_KEY=[0-9a-f]{32}$/m);
+  // Repeating changes nothing but the (already true) switch: existing secrets are never replaced.
+  const again = poolerEnvText(on.text, 'on');
+  assert.deepEqual(again.changed, []);
+  assert.equal(again.text, on.text);
+  const off = poolerEnvText(on.text, 'off');
+  assert.deepEqual(off.changed, []);
+  assert.equal(off.text, on.text.replace('POOLER_ENABLED=true', 'POOLER_ENABLED=false'));
+  const forgotten = poolerEnvText(off.text, 'forget');
+  assert.deepEqual(forgotten.changed, POOLER_SECRET_NAMES);
+  assert.doesNotMatch(forgotten.text, /DB_PASSWORD_POOLER|SECRET_KEY_BASE|VAULT_ENC_KEY/);
+  assert.match(forgotten.text, /^POOLER_ENABLED=false$/m);
+  // A state with no switch line gets one.
+  assert.match(poolerEnvText('A=1', 'off').text, /^A=1\nPOOLER_ENABLED=false\n$/);
+  assert.throws(() => poolerEnvText('A=1\n', 'maybe'), /Usage/);
+});
+
+test('add-missing adds the pooler secrets only when the pooler is on', () => {
+  const full = Object.entries(env()).map(([key, value]) => `${key}=${value}\n`).join('');
+  assert.deepEqual(addMissingDbValues(`${full}POOLER_ENABLED=false\n`).added, []);
+  assert.deepEqual(addMissingDbValues(`${full}POOLER_ENABLED=true\n`).added, POOLER_SECRET_NAMES);
+});
+
+test('pooler-stage and pooler-state work on a private file and leave the live file alone', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-pooler-'));
+  try {
+    const live = join(scratch, 'compose.env');
+    const staged = join(scratch, 'compose.env.pooler');
+    const cli = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/db-roles.mjs', import.meta.url)), ...args], { encoding: 'utf8' });
+    const text = `POSTGRES_PASSWORD=${superuser}\nKONG_HTTP_PORT=18000\n`;
+    writeFileSync(live, text, { mode: 0o600 });
+    assert.equal(cli('pooler-state', live).stdout.trim(), 'unset');
+    const run = cli('pooler-stage', live, staged, 'on');
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(live, 'utf8'), text, 'the live file is untouched');
+    assert.equal(statSync(staged).mode & 0o777, 0o600);
+    assert.equal(cli('pooler-state', staged).stdout.trim(), 'on');
+    assert.throws(() => stagePoolerEnv(live, join(tmpdir(), 'elsewhere.env'), 'on'), /different file in the compose.env directory/);
+    chmodSync(live, 0o644);
+    assert.throws(() => stagePoolerEnv(live, staged, 'on'), /mode 0600/);
+    assert.deepEqual(readdirSync(scratch).sort(), ['compose.env', 'compose.env.pooler']);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('rotation covers the pooler login only while the pooler is on', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-db-roles-pooler-rotate-'));
+  try {
+    const live = join(scratch, 'compose.env');
+    const staged = join(scratch, 'compose.env.rotating-db');
+    const values = poolerOn();
+    const body = Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n');
+    writeFileSync(live, `${body}\n`, { mode: 0o600 });
+    assert.deepEqual(stageRotatedDbEnv(live, staged).replaced, [...GENERATED_DB_NAMES, POOLER_LOGIN.env]);
+    writeFileSync(live, `${body.replace('POOLER_ENABLED=true', 'POOLER_ENABLED=false')}\n`, { mode: 0o600 });
+    assert.deepEqual(stageRotatedDbEnv(live, staged).replaced, GENERATED_DB_NAMES);
+    assert.match(readFileSync(staged, 'utf8'), new RegExp(`^DB_PASSWORD_POOLER=${values.DB_PASSWORD_POOLER}$`, 'm'), 'an off pooler keeps its password line');
+    // A state that never had the pooler rotates without any pooler line.
+    writeFileSync(live, `${Object.entries(env()).map(([key, value]) => `${key}=${value}`).join('\n')}\n`, { mode: 0o600 });
+    assert.deepEqual(stageRotatedDbEnv(live, staged).replaced, GENERATED_DB_NAMES);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

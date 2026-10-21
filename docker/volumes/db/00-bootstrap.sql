@@ -7,13 +7,13 @@
 -- built-in defaults, so a default here would widen them) and ALTER ROLE ... SET storage.* (Storage
 -- gets DB_SUPER_USER and DB_INSTALL_ROLES=false from its service environment).
 
--- Roles of PostgREST, Storage, the pooler and the app.
+-- Roles of PostgREST, Storage and the app. The pooler's role, schema and auth lookup are not made here: scripts/pooler.sh on
+-- creates them (scripts/configure-pooler.sql), so an installation without the pooler has none of them.
 CREATE ROLE anon          NOLOGIN INHERIT   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE authenticated NOLOGIN INHERIT   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE service_role  NOLOGIN INHERIT   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 CREATE ROLE authenticator LOGIN   NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE supabase_storage_admin LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE pgbouncer     LOGIN   INHERIT   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;  -- Supavisor (optional pooler)
 GRANT anon, authenticated, service_role TO authenticator;
 GRANT authenticator TO supabase_storage_admin;
 
@@ -36,14 +36,3 @@ GRANT USAGE ON SCHEMA extensions TO anon, authenticated, service_role;
 CREATE SCHEMA storage AUTHORIZATION supabase_storage_admin;
 GRANT USAGE ON SCHEMA storage TO anon, authenticated, service_role;
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-
--- Supavisor's auth lookup. It never returns a superuser's verifier.
-CREATE SCHEMA pgbouncer AUTHORIZATION pgbouncer;
-CREATE FUNCTION pgbouncer.get_auth(p_usename text) RETURNS TABLE(username text, password text)
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $fn$
-BEGIN
-  RETURN QUERY SELECT usename::text, passwd::text FROM pg_catalog.pg_shadow
-  WHERE usename = p_usename AND NOT usesuper;
-END $fn$;
-REVOKE ALL ON FUNCTION pgbouncer.get_auth(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(text) TO pgbouncer;

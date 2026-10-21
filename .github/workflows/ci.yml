@@ -297,7 +297,10 @@ jobs:
           npm run test:db-roles
         working-directory: backend
       - name: Pooler session and transaction authentication
-        run: npm run test:pooler
+        run: |
+          # The pooler is off by default: turn it on through the operator step, then check it.
+          bash scripts/pooler.sh on
+          npm run test:pooler
         working-directory: backend
       - name: CUPS startup without printer hardware
         run: npm run test:cups

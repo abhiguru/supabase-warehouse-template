@@ -44,7 +44,7 @@ source "$ROOT/scripts/backup-image.sh"
 backup_check_database_image "$backup" || exit 1
 # Signature, then checksums: nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-for file in compose.env instance.json roles.txt _supabase.dump storage_objects.txt; do
+for file in compose.env instance.json roles.txt storage_objects.txt; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
   grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
 done
@@ -127,12 +127,11 @@ if [[ -n "${entry_types//[d-]/}" ]]; then
 fi
 
 # Size the disposable database from the backup. The restored cluster holds the
-# initialized image, both databases with their rebuilt indexes and the WAL the
+# initialized image, the database with its rebuilt indexes and the WAL the
 # load writes, so the dump size is multiplied and the WAL allowance added.
 natural() { [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "$1 must be a positive whole number: $2" >&2; exit 1; }; }
 mib() { echo $(( ($1 + 1048575) / 1048576 )); }
 dump_bytes="$(stat -c %s -- "$backup/database.dump")"
-dump_bytes=$((dump_bytes + $(stat -c %s -- "$backup/_supabase.dump")))
 dump_mb="$(mib "$dump_bytes")"
 factor="${WAREHOUSE_VERIFY_SIZE_FACTOR:-10}"; natural WAREHOUSE_VERIFY_SIZE_FACTOR "$factor"
 estimate_mb=$((dump_mb * factor))
@@ -282,13 +281,11 @@ docker exec "$container" sh -c 'awk "$1" /tmp/restore.list > /tmp/acl.list && [ 
 docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
   -U supabase_admin -d warehouse_restore --no-owner -L /tmp/acl.list \
   --exit-on-error /tmp/database.dump
-# The _supabase database (the pooler's _supavisor schema) must replay completely as well.
-docker cp "$backup/_supabase.dump" "$container:/tmp/_supabase.dump"
-docker exec -e PGPASSWORD=disposable-restore-only "$container" createdb \
-  -U supabase_admin -T template0 _supabase_restore
-docker exec -e PGPASSWORD=disposable-restore-only "$container" pg_restore \
-  -U supabase_admin -d _supabase_restore --no-owner --no-acl \
-  --exit-on-error /tmp/_supabase.dump
+# A backup made before the pooler became optional also holds _supabase.dump: it is not replayed (the pooler writes its
+# tenant again when it starts).
+if [[ -e "$backup/_supabase.dump" ]]; then
+  echo 'Note: the backup contains _supabase.dump (the pooler tenant). It is skipped: the pooler recreates its tenant when it starts.'
+fi
 docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
   psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
   < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"

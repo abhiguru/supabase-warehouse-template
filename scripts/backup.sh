@@ -85,10 +85,9 @@ echo 'Creating transaction-consistent logical database dumps.'
 # original ownership; scripts/verify-restore.sh still restores it with --no-owner.
 compose exec -T db pg_dump -U supabase_admin -d postgres \
   --format=custom --compress=6 > "$stage/database.dump"
-# _supabase holds the pooler (_supavisor) schema outside the application
-# database; the in-place restore needs it for a complete instance.
-compose exec -T db pg_dump -U supabase_admin -d _supabase \
-  --format=custom --compress=6 > "$stage/_supabase.dump"
+# The pooler's _supabase database is not dumped: it holds only the pooler's own metadata, and the pooler writes its
+# tenant again at every start (volumes/pooler/pooler.exs). Backups from before this change carry _supabase.dump;
+# restore.sh and verify-restore.sh skip it.
 compose exec -T db psql -X -q -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   < "$ROOT/scripts/backup-integrity.sql" > "$stage/integrity.txt"
 compose exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
@@ -137,7 +136,7 @@ source_commit=${source_commit:-unknown}
 database_image=$pin
 consistency=write-facing services stopped during database/storage capture
 EOF
-(cd "$stage" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${optional_files[@]}" "${tunnel_files[@]}" > SHA256SUMS)
+(cd "$stage" && sha256sum database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${optional_files[@]}" "${tunnel_files[@]}" > SHA256SUMS)
 # The signature covers SHA256SUMS and so every file; the key itself is never copied into the backup.
 backup_sign_dir "$stage" "$BACKUP_KEY"
 find "$stage" -mindepth 1 -type f -exec chmod 600 {} +
