@@ -49,3 +49,11 @@ test('transport failure diagnostics exclude private URL and exception details', 
     return true;
   });
 });
+
+test('a timeout of 0 still makes one attempt, so health --wait 0 can pass', async () => {
+  let calls = 0;
+  await waitForHttp('configuration', 'http://owned/config', {}, { timeoutMs: 0, fetchImpl: async () => { calls += 1; return { ok: true, status: 200, body: null }; } });
+  assert.equal(calls, 1);
+  await assert.rejects(waitForHttp('configuration', 'http://owned/config', {}, { timeoutMs: 0, sleep: async () => {}, fetchImpl: async () => { calls += 1; return { ok: false, status: 503, body: null }; } }), /readiness timed out \(HTTP 503\)/);
+  assert.equal(calls, 2, 'one attempt, no retry');
+});

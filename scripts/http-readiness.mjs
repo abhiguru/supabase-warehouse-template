@@ -6,7 +6,8 @@ export async function waitForHttp(name, url, headers = {}, {
 } = {}) {
   const deadline = now() + timeoutMs;
   let lastFailure = 'connection unavailable';
-  while (now() < deadline) {
+  // At least one attempt, even with timeoutMs 0 (health --wait 0).
+  for (let attempt = 0; attempt === 0 || now() < deadline; attempt += 1) {
     let response;
     try {
       response = await fetchImpl(url, {

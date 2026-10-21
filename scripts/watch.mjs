@@ -548,14 +548,26 @@ export function gatewayProbe(ctx, waitMs) {
   const input = `${readiness}\nconst WAIT_MS = ${Number(waitMs)};${GATEWAY_PROBES}`;
   const probe = ctx.compose(['exec', '-T', 'storage', 'node', '--input-type=module'], { input, timeoutMs: waitMs + 120000 });
   const answered = String(probe.stdout ?? '').split('\n').filter(line => /^(OK|FAILED) /.test(line));
-  if (answered.length) return answered.map(line => (line.startsWith('OK ') ? { ok: true, text: `${line.slice(3)}: answers through the gateway` } : { ok: false, text: `Gateway: ${line.slice(7)}` }));
+  if (answered.length) {
+    const out = answered.map(line => (line.startsWith('OK ') ? { ok: true, text: `${line.slice(3)}: answers through the gateway` } : { ok: false, text: `Gateway: ${line.slice(7)}` }));
+    // Both probes must have answered: an exec cut short after "OK REST" must not pass without the configuration check.
+    const seen = new Set(answered.map(line => line.replace(/^(OK|FAILED) /, '').split(':')[0]));
+    for (const name of ['REST', 'configuration']) if (!seen.has(name)) out.push({ ok: false, text: `Gateway: ${name} was not probed (the probe stopped early)` });
+    return out;
+  }
   return [{ ok: false, text: `Gateway probe could not run in the storage container (${clip(String(probe.stderr ?? '').trim(), 200) || `status ${probe.status}`})` }];
 }
 export async function runHealth(deps, { waitMs = 90000 } = {}) {
   const ctx = makeContext(deps, {});
   const lines = [];
   const add = (ok, text) => lines.push({ ok, text });
-  for (const r of checkServices(ctx)) add(r.ok, r.summary);
+  // Only the default-profile services can fail the health check. A profile service (supavisor, cups, sensor-bridge) that has
+  // a container but is not healthy is a warning: an unconfigured sensor bridge exits and restarts, and a stopped pooler is a choice.
+  const expected = ctx.expectedServices();
+  for (const r of checkServices(ctx)) {
+    if (expected.includes(r.id.replace(/^service_down:/, ''))) add(r.ok, r.summary);
+    else if (!r.ok) lines.push({ ok: true, warn: true, text: r.summary });
+  }
   const databaseOk = databaseReady(ctx);
   add(databaseOk, databaseOk ? 'PostgreSQL accepts connections' : 'PostgreSQL is not accepting connections');
   for (const line of gatewayProbe(ctx, waitMs)) add(line.ok, line.text);
@@ -1002,7 +1014,7 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
   if (command === 'health') {
     if (args.length && !(args.length === 2 && args[0] === '--wait' && /^\d{1,4}$/.test(args[1]))) { out('health takes only --wait SECONDS.'); return 1; }
     const report = await runHealth(deps, { waitMs: args.length ? Number(args[1]) * 1000 : undefined });
-    for (const line of report.lines) out(`${line.ok ? 'ok     ' : 'FAILED '}${line.text}`);
+    for (const line of report.lines) out(`${line.warn ? 'warn   ' : line.ok ? 'ok     ' : 'FAILED '}${line.text}`);
     return report.ok ? 0 : 1;
   }
   if (command === 'prune-backups') {

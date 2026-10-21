@@ -38,7 +38,7 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
     for (const [pattern, reply] of Object.entries(h.runs)) if (line.includes(pattern)) return typeof reply === 'function' ? reply(line) : reply;
     if (line.includes('compose.sh config --services')) return ok(h.expected.join('\n') + '\n');
     if (line.includes("compose.sh --profile * ps -a -q")) return ok(h.services.map(idOf).join('\n') + '\n');
-    if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|running|${['db', 'kong'].includes(name) ? 'healthy' : ''}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
+    if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|${h.stateOf?.[name] ?? `running|${['db', 'kong'].includes(name) ? 'healthy' : ''}`}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
     if (command === 'docker' && args[0] === 'events') return ok('');
     if (line.includes('pg_isready')) return ok('accepting connections');
     if (line.includes('psql')) return ok('5|0|100000|100|50\n');
@@ -438,6 +438,42 @@ test('health: a probe that cannot run (no storage container) is a failure with t
     const report = await W.runHealth(h.deps, { waitMs: 0 });
     assert.equal(report.ok, false);
     assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), ['Gateway probe could not run in the storage container (service "storage" is not running)']);
+  } finally { clean(h); }
+});
+
+test('health: an exited, restarting or starting optional container is a warning, never a failure; an unhealthy default service fails', async () => {
+  const h = harness();
+  try {
+    healthy(h);
+    h.services = [...SERVICES, 'supavisor', 'cups', 'sensor-bridge'];
+    h.stateOf = { supavisor: 'exited|', cups: 'restarting|', 'sensor-bridge': 'running|starting' };
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, true, JSON.stringify(report.lines));
+    assert.deepEqual(report.lines.filter(line => line.warn).map(line => line.text), ['Service supavisor is exited', 'Service cups is restarting', 'Service sensor-bridge is running starting']);
+    assert.equal(report.lines.some(line => !line.ok), false);
+    const lines = [];
+    assert.equal(await W.main(['health', '--wait', '0'], h.deps, text => lines.push(text)), 0);
+    assert.equal(lines.filter(line => line.startsWith('warn   ')).length, 3);
+    h.stateOf = { rest: 'running|unhealthy' };
+    const bad_ = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(bad_.ok, false);
+    assert.deepEqual(bad_.lines.filter(line => !line.ok).map(line => line.text), ['Service rest is running unhealthy']);
+  } finally { clean(h); }
+});
+
+test('health: the gateway probe passes only when both the REST and the configuration probe answered', async () => {
+  const h = harness();
+  try {
+    h.runs[PROBE] = ok('OK REST\n');
+    let report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), ['Gateway: configuration was not probed (the probe stopped early)']);
+    h.runs[PROBE] = ok('OK configuration\n');
+    report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), ['Gateway: REST was not probed (the probe stopped early)']);
+    h.runs[PROBE] = ok('FAILED REST: readiness timed out (HTTP 503)\nOK configuration\n');
+    report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), ['Gateway: REST: readiness timed out (HTTP 503)'], 'a named failure is not reported twice');
   } finally { clean(h); }
 });
 

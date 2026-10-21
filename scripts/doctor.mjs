@@ -165,6 +165,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // public configuration, a REST read and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
   const health = await runHealth(defaultDeps(process.env));
   if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.`);
+  for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
