@@ -14,9 +14,13 @@ export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f
 export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
   x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] }, null, 2) + '\n';
 // Fixed fictional database passwords as a state of this release holds them
-// (scripts/db-roles.mjs): the superuser's and one per service login.
+// (scripts/db-roles.mjs): the superuser's and one per service login. The pooler is off by default: no pooler login or secret.
 export const dbRoleLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\nDB_PASSWORD_AUTHENTICATOR=${'1'.repeat(64)}\n` +
-  `DB_PASSWORD_STORAGE=${'2'.repeat(64)}\nDB_PASSWORD_POOLER=${'4'.repeat(64)}\n`;
+  `DB_PASSWORD_STORAGE=${'2'.repeat(64)}\nPOOLER_ENABLED=false\n`;
+// A state that ran `bash scripts/pooler.sh on`: the switch, the pool user's password and the two pooler secrets.
+export const poolerOnLines = `POOLER_ENABLED=true\nDB_PASSWORD_POOLER=${'4'.repeat(64)}\nSECRET_KEY_BASE=${'6'.repeat(128)}\nVAULT_ENC_KEY=${'7'.repeat(32)}\n`;
+// A state or backup from before the pooler had a switch: the pooler secrets exist, POOLER_ENABLED does not.
+export const legacyPoolerLines = `DB_PASSWORD_POOLER=${'4'.repeat(64)}\nSECRET_KEY_BASE=${'6'.repeat(128)}\nVAULT_ENC_KEY=${'7'.repeat(32)}\n`;
 // A state of the previous release has the superuser password only.
 export const previousReleaseDbLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\n`;
 export const composeEnv = (state, extra = 'JWT_SECRET=current-secret\n', db = dbRoleLines) =>
@@ -50,8 +54,9 @@ export function makeState(scratch, { env } = {}) {
 // the storage root, defaulting to the tenant-prefixed layout of every object.
 // v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
 // `centralKey` adds the optional central-jwks.json (text), checksummed like the rest.
+// `legacyPooler` adds _supabase.dump, which backups from before the pooler became optional carry (restores skip it).
 export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
-  objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
+  legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
   mkdirSync(tree, { mode: 0o700 });
@@ -68,7 +73,8 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage 
     'compose.env': env, 'instance.json': instance, 'roles.txt': roles,
   };
   if (format === 'warehouse-backup-v4' || format === 'warehouse-backup-v5') {
-    content['_supabase.dump'] = 'fake supabase dump\n';
+    // A backup made before the pooler became optional also holds the pooler's metadata database (legacyPooler: true).
+    if (legacyPooler) content['_supabase.dump'] = 'fake supabase dump\n';
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
   }
   if (centralKey !== null) content['central-jwks.json'] = centralKey;

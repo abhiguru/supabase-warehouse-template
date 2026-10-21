@@ -6,6 +6,8 @@
 #      (the CI failure of 2026-10-09: "source database template1 is being accessed
 #      by other users"), with the data directory in memory.
 #   2. With the disk-backed data directory, which must be gone afterwards.
+#   2b. With the _supabase.dump that backups from before the pooler became optional also hold:
+#      verified, with a note that it is skipped.
 #   3. With an integrity report that claims one more price-history row than the
 #      dump holds: the verification must fail on exactly that line. Before, the
 #      three append-only histories were in no comparison, so a restore that lost
@@ -49,8 +51,6 @@ INSERT INTO public.item_price_history(price_id,item_name,action,new_values,chang
  VALUES (gen_random_uuid(),'Restore Drill Item','insert','{"unit_price":5}','Restore Drill Author','staff');
 SQL
 dump -d postgres > "$backup/database.dump"
-sql -d postgres -c 'CREATE DATABASE _supabase TEMPLATE template0' 2>/dev/null || true
-dump -d _supabase > "$backup/_supabase.dump"
 sql -d postgres < "$ROOT/scripts/backup-integrity.sql" > "$backup/integrity.txt"
 for line in '^invoice_discount_history_count=[1-9][0-9]*$' '^invoice_zero_charge_history_count=[1-9][0-9]*$' '^item_price_history_count=[1-9][0-9]*$' \
   '^acl_authenticated_invoice_internal_columns=0$' '^acl_authenticated_invoice_total_select=true$'; do
@@ -83,7 +83,7 @@ tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$work/objec
 printf 'WAREHOUSE_PROJECT_NAME=warehouse-restore-drill\n' > "$backup/compose.env"
 printf '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n' > "$backup/instance.json"
 printf 'format=warehouse-backup-v5\ncreated_at_utc=20260101T000000Z\nsource_commit=drill\ndatabase_image=%s\n' "$(bash "$ROOT/scripts/db-image.sh")" > "$backup/metadata.txt"
-(cd "$backup" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+(cd "$backup" && sha256sum database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
 openssl rand -hex 32 > "$work/backup.key"
@@ -119,10 +119,24 @@ verify WAREHOUSE_VERIFY_STORAGE=disk
 [[ -z "$(ls -A "$work/scratch")" ]] || { echo "Restore drill: the disk-backed data directory was left behind: $(ls -A "$work/scratch")" >&2; exit 1; }
 echo 'Restore drill 2 passed with the disk-backed data directory, which was removed afterwards.'
 
+# 2b. An old backup also holds the pooler's _supabase database as _supabase.dump. The verifier skips it with a note, and the
+#     verification still passes.
+sql -d postgres -c 'CREATE DATABASE _supabase TEMPLATE template0'
+dump -d _supabase > "$backup/_supabase.dump"
+sql -d postgres -c 'DROP DATABASE _supabase WITH (FORCE)'
+(cd "$backup" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+backup_sign_dir "$backup" "$BACKUP_KEY"
+legacy="$(verify WAREHOUSE_VERIFY_STORAGE=tmpfs 2>&1)" || { echo "Restore drill: a backup holding _supabase.dump was refused: $legacy" >&2; exit 1; }
+grep -q 'Note: the backup contains _supabase.dump (the pooler tenant). It is skipped' <<<"$legacy" || { echo "Restore drill: no note that _supabase.dump is skipped: $legacy" >&2; exit 1; }
+rm -f "$backup/_supabase.dump"
+(cd "$backup" && sha256sum database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+backup_sign_dir "$backup" "$BACKUP_KEY"
+echo 'Restore drill 2b passed: a backup from before the pooler became optional verifies, and its _supabase.dump is skipped with a note.'
+
 # 3. A history row fewer than the backup recorded is a failed verification.
 recorded="$(sed -n 's/^item_price_history_count=//p' "$backup/integrity.txt")"
 sed -i "s/^item_price_history_count=.*/item_price_history_count=$((recorded + 1))/" "$backup/integrity.txt"
-(cd "$backup" && sha256sum database.dump _supabase.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+(cd "$backup" && sha256sum database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
 backup_sign_dir "$backup" "$BACKUP_KEY"
 if lost="$(verify WAREHOUSE_VERIFY_STORAGE=tmpfs 2>&1)"; then
   echo 'Restore drill: a backup that recorded one more price-history row than its dump holds was verified.' >&2; exit 1

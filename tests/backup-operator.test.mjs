@@ -76,7 +76,8 @@ esac
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(destination, 'database.dump'), 'utf8'), 'fake database dump\n');
-    assert.equal(readFileSync(join(destination, '_supabase.dump'), 'utf8'), 'fake supabase dump\n');
+    // The pooler's _supabase database is not backed up: the pooler writes its tenant again at every start.
+    assert.equal(existsSync(join(destination, '_supabase.dump')), false);
     assert.equal(readFileSync(join(destination, 'storage_objects.txt'), 'utf8'), 'documents/a.pdf/v1\n');
     assert.equal(readFileSync(join(destination, 'compose.env'), 'utf8').includes('WAREHOUSE_PROJECT_NAME='), true);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v5/);
@@ -95,16 +96,15 @@ esac
     for (const name of readdirSync(destination)) if (statSync(join(destination, name)).isFile()) assert.ok(!readFileSync(join(destination, name), 'latin1').includes(key), `${name} does not contain the key`);
     assert.match(readFileSync(join(destination, 'roles.txt'), 'utf8'), /supabase_admin/);
     const sums = readFileSync(join(destination, 'SHA256SUMS'), 'utf8');
-    for (const file of ['database.dump', '_supabase.dump', 'storage.tar.gz', 'storage_objects.txt', 'integrity.txt', 'metadata.txt', 'compose.env', 'instance.json', 'roles.txt'])
+    for (const file of ['database.dump', 'storage.tar.gz', 'storage_objects.txt', 'integrity.txt', 'metadata.txt', 'compose.env', 'instance.json', 'roles.txt'])
       assert.match(sums, new RegExp(`^[0-9a-f]{64}  ${file.replace('.', '\\.')}$`, 'm'), `${file} is checksummed`);
     assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: destination, encoding: 'utf8' }).status, 0, 'SHA256SUMS verifies');
     assert.match(result.stderr, /shares a filesystem with .*\/data/, 'same-filesystem destination warns');
     const calls = readFileSync(log, 'utf8');
     const mainDump = calls.split('\n').find(line => line.includes('pg_dump') && line.includes('-d postgres'));
     assert.ok(mainDump && !mainDump.includes('--no-owner'), 'main dump keeps owners for in-place restore');
-    assert.ok(calls.split('\n').some(line => line.includes('pg_dump') && line.includes('-d _supabase') && line.includes('--format=custom')));
-    assert.ok(calls.indexOf('stop kong') < calls.indexOf('-d _supabase'));
-    assert.ok(calls.indexOf('-d _supabase') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
+    assert.equal(calls.includes('_supabase'), false, 'no command touches the _supabase database');
+    assert.equal(calls.split('\n').filter(line => line.includes('pg_dump')).length, 1, 'one dump: the application database');
     assert.ok(calls.indexOf('stop kong') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('stop supavisor') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
@@ -174,11 +174,11 @@ test('restore verifier requires the catalog files before starting a container', 
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-v4-'));
   try {
     const backup = makeBackup(join(scratch, 'backup'));
-    rmSync(join(backup, '_supabase.dump'));
+    rmSync(join(backup, 'storage_objects.txt'));
     // The signature is checked before the checksums, so the verifier needs the key to get as far as the file set.
     const result = verify(backup, scratch);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /not exactly the files its signed SHA256SUMS lists|_supabase\.dump/);
+    assert.match(result.stderr, /not exactly the files its signed SHA256SUMS lists|storage_objects\.txt/);
     assert.equal(result.calls, '', 'no container is started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -195,7 +195,7 @@ function verify(backup, scratch, env = {}, args = []) {
   return { ...result, calls: readFileSync(log, 'utf8') };
 }
 
-test('restore verifier replays both databases in isolation and matches the object catalog', () => {
+test('restore verifier replays the database in isolation and matches the object catalog', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-v4-'));
   try {
     const backup = makeBackup(join(scratch, 'backup'), { objects: ['documents/a.pdf/v1', 'dispatch-images/c1/photo.jpg/v7'] });
@@ -208,9 +208,8 @@ test('restore verifier replays both databases in isolation and matches the objec
     const main = lines.filter(line => line.includes('pg_restore') && line.includes('-d warehouse_restore'));
     assert.equal(main.length, 4, 'three sections plus the ACL replay');
     assert.ok(main.every(line => line.includes('--no-owner') && line.includes('--exit-on-error')));
-    const supabase = lines.find(line => line.includes('pg_restore') && line.includes('-d _supabase_restore'));
-    assert.ok(supabase && supabase.includes('--exit-on-error') && supabase.includes('/tmp/_supabase.dump'));
-    assert.ok(lines.some(line => line.includes('createdb') && line.includes('_supabase_restore')));
+    assert.equal(result.calls.includes('_supabase'), false, 'the pooler database is not part of a backup any more');
+    assert.doesNotMatch(result.stdout, /_supabase\.dump/);
     assert.ok(lines.some(line => line.includes('-d warehouse_restore') && line.includes('storage.objects')), 'restored catalog is read back');
     assert.match(result.stdout, /integrity comparison passed/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
@@ -238,7 +237,7 @@ test('restore verifier fails when a catalogued object is missing from the archiv
 
 test('restore verifier accepts a checksummed tunnel credential and refuses anything else in tunnel/', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-tunnel-'));
-  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt tunnel/* > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
+  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt tunnel/* > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
   try {
     const good = makeBackup(join(scratch, 'good'));
     mkdirSync(join(good, 'tunnel'), { mode: 0o700 });
@@ -275,7 +274,7 @@ test('restore verifier accepts a checksummed tunnel credential and refuses anyth
 
 test('restore verifier accepts a checksummed central key file and refuses it unlisted, altered or not a plain file', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-central-key-'));
-  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
+  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
   try {
     const good = makeBackup(join(scratch, 'good'), { centralKey: centralKeySet });
     const passed = verify(good, scratch, { FAKE_CATALOG_FILE: join(good, 'storage_objects.txt') });
@@ -313,15 +312,28 @@ test('restore verifier accepts a checksummed central key file and refuses it unl
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('restore verifier creates both disposable databases from template0, never template1', () => {
+test('restore verifier accepts a backup from before the pooler became optional and skips its _supabase.dump with a note', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-legacy-pooler-'));
+  try {
+    const backup = makeBackup(join(scratch, 'backup'), { legacyPooler: true });
+    assert.equal(existsSync(join(backup, '_supabase.dump')), true, 'the fixture is an old backup');
+    const result = verify(backup, scratch);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Note: the backup contains _supabase\.dump \(the pooler tenant\)\. It is skipped: the pooler recreates its tenant when it starts\./);
+    assert.equal(result.calls.includes('_supabase'), false, 'it is neither copied into the container nor replayed');
+    assert.match(result.stdout, /integrity comparison passed/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier creates one disposable database from template0, never template1', () => {
   // CI run fe19442: createdb -T template1 failed with "source database template1 is being accessed by other users".
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-template-'));
   try {
     const result = verify(makeBackup(join(scratch, 'backup')), scratch);
     assert.equal(result.status, 0, result.stderr);
     const created = result.calls.split('\n').filter(line => / createdb /.test(line));
-    assert.equal(created.length, 2, 'warehouse_restore and _supabase_restore');
-    for (const line of created) assert.match(line, / -T template0 (warehouse_restore|_supabase_restore)$/, line);
+    assert.equal(created.length, 1, 'warehouse_restore only');
+    for (const line of created) assert.match(line, / -T template0 warehouse_restore$/, line);
     assert.doesNotMatch(result.calls, /template1/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -358,7 +370,7 @@ test('restore verifier refuses a backup whose signature is missing, wrong or unv
     // Edited after the fact, checksums regenerated: only the key holder could re-sign.
     const edited = makeBackup(join(scratch, 'edited'));
     writeFileSync(join(edited, 'database.dump'), 'planted dump\n');
-    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: edited });
+    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: edited });
     assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: edited }).status, 0);
     let result = verify(edited, scratch);
     assert.notEqual(result.status, 0); assert.match(result.stderr, /signature of this backup does not match the backup key/); noContainer(result);
@@ -476,7 +488,7 @@ test('restore verifier sizes the disposable database from the dumps and can be o
     // A real size: 200 MiB of dumps need 2000 + 1024 + 256 MiB.
     const large = makeBackup(join(scratch, 'large'));
     truncateSync(join(large, 'database.dump'), 200 * 1024 * 1024 - 19);
-    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: large });
+    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: large });
     signBackup(large);
     mkdirSync(join(scratch, 'disk'));
     result = verify(large, scratch, { WAREHOUSE_VERIFY_STORAGE: 'disk', WAREHOUSE_VERIFY_SCRATCH_DIR: join(scratch, 'disk'), FAKE_CATALOG_FILE: join(large, 'storage_objects.txt') });
@@ -538,7 +550,7 @@ test('restore verifier names the numbers when the disposable database does not f
 
 test('a backup is authenticated before its SHA256SUMS is used: an unsigned or forged list cannot name files outside the backup', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-order-'));
-  const sums = 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt';
+  const sums = 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt';
   try {
     writeFileSync(join(scratch, 'outside.txt'), 'not part of any backup\n');
     // A signed backup whose list was rewritten to point outside: the signature fails first and the file is never opened.
@@ -577,7 +589,7 @@ function bigArchive(backup, scratch, count, prepare, tarArgs) {
   prepare(tree);
   const tar = spawnSync('tar', ['--sort=name', '-C', tree, '-czf', join(backup, 'storage.tar.gz'), ...tarArgs, '.'], { encoding: 'utf8' });
   assert.equal(tar.status, 0, tar.stderr);
-  assert.equal(spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }).status, 0);
+  assert.equal(spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }).status, 0);
   signBackup(backup);
 }
 

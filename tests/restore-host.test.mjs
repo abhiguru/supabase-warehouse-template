@@ -39,7 +39,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
   const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '', databaseImage = currentDatabaseImage() } = {}) => {
     writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n${databaseImage === null ? "" : `database_image=${databaseImage}\n`}`);
-    const sums = spawnSync('sh', ['-c', `sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt ${files} > SHA256SUMS`], { cwd: backup });
+    const sums = spawnSync('sh', ['-c', `sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt ${files} > SHA256SUMS`], { cwd: backup });
     assert.equal(sums.status, 0);
     if (sign) signBackup(backup); else rmSync(join(backup, 'SHA256SUMS.hmac'), { force: true });
   };
@@ -421,9 +421,9 @@ test('restore-host from a backup taken before per-role passwords adds them to th
     const env = readFileSync(join(f.state, 'config/compose.env'), 'utf8');
     assert.ok(env.startsWith(fromBackup), 'the backup configuration, with only the three paths rewritten');
     assert.deepEqual(env.slice(fromBackup.length).trimEnd().split('\n').map(line => line.split('=')[0]),
-      ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']);
+      ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE']);
     assert.equal(statSync(join(f.state, 'config/compose.env')).mode & 0o777, 0o600);
-    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE, DB_PASSWORD_POOLER: the backup was taken before/);
+    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE: the backup was taken before/);
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
     assert.equal(readFileSync(join(f.state, 'backups', NAME, 'compose.env'), 'utf8'), readFileSync(join(f.backup, 'compose.env'), 'utf8'), 'the kept backup is unmodified');
   } finally { clean(f); }

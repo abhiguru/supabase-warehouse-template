@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSy
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, poolerOnLines, legacyPoolerLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage } from './backup-test-helpers.mjs';
 import { scramVerifier } from '../scripts/db-roles.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
 
@@ -98,12 +98,12 @@ test('restore refuses a changed configuration unless --restore-config names the 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('restore verifies first, keeps the replaced data, replays both databases in order and reports rollback on failure', () => {
+test('restore verifies first, keeps the replaced data, replays the database in order and reports rollback on failure', () => {
   const { scratch, state, backup } = fixture('warehouse-restore-flow-', { env: composeEnv(join(tmpdir(), 'x'), 'JWT_SECRET=old-secret\n').replace(join(tmpdir(), 'x'), '') });
   try {
     // Backup configuration names this state but carries pre-rotation keys.
     writeFileSync(join(backup, 'compose.env'), composeEnv(state, 'JWT_SECRET=old-secret\n'), { mode: 0o600 });
-    const sums = spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup, encoding: 'utf8' });
+    const sums = spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup, encoding: 'utf8' });
     assert.equal(sums.status, 0, sums.stderr);
     signBackup(backup);
     const result = restore(scratch, ['--yes', '--restore-config', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
@@ -130,19 +130,18 @@ test('restore verifies first, keeps the replaced data, replays both databases in
       'run -d --pull missing', // disposable verification first
       'up -d --wait --wait-timeout 180 db',
       // A leading space: the verification container is warehouse-restore-<12 random hex digits>, whose name can end in "db".
-      ' db:/tmp/database.dump', ' db:/tmp/_supabase.dump',
+      ' db:/tmp/database.dump',
       'DROP DATABASE postgres WITH (FORCE)',
       '-d postgres --no-acl --section=pre-data', '-d postgres --no-acl --section=data',
       '-d postgres --no-acl --section=post-data',
       '-d postgres -L /tmp/acl.list',
-      'DROP DATABASE _supabase WITH (FORCE)', '-d _supabase /tmp/_supabase.dump',
-      'rm -f /tmp/database.dump /tmp/_supabase.dump /tmp/acl.list',
+      'rm -f /tmp/database.dump /tmp/acl.list',
       // pg_dump 18 carries no planner statistics: every restored database is analyzed before the services start.
       'exec -T db vacuumdb -U supabase_admin --all --analyze-in-stages',
     ];
     for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} precedes ${order[i]}`);
     const source = readFileSync(new URL('../scripts/restore.sh', import.meta.url), 'utf8');
-    assert.ok(source.indexOf('vacuumdb') > source.indexOf("phase='restore _supabase'") && source.indexOf('vacuumdb') < source.indexOf("phase='start services'"), 'ANALYZE runs after the data restore and before the services start');
+    assert.ok(source.indexOf('vacuumdb') > source.indexOf("phase='restore database'") && source.indexOf('vacuumdb') < source.indexOf("phase='start services'"), 'ANALYZE runs after the data restore and before the services start');
     assert.equal(calls.split('\n').filter(line => line.includes('vacuumdb')).length, 1);
     const sections = calls.split('\n').filter(line => line.includes('pg_restore') && line.includes('-d postgres') && line.includes('--section='));
     assert.equal(sections.length, 3);
@@ -150,11 +149,13 @@ test('restore verifies first, keeps the replaced data, replays both databases in
     const removed = calls.search(/^rm -f -v warehouse-restore-[0-9a-f]{12}$/m);
     assert.ok(removed >= 0 && removed < at('up -d --wait --wait-timeout 180 db'), 'verification container removed before initialization');
     assert.ok(calls.split('\n').filter(line => line.endsWith('up -d --wait --wait-timeout 180')).length <= 1);
-    // Both databases are recreated from template0: a session on template1 right after start-up must not fail the restore.
+    // The application database is recreated from template0 (connected to template1, as no _supabase database exists any more
+    // before the pooler is turned on): a session on template1 right after start-up must not fail the restore.
     const recreated = calls.split('\n').filter(line => line.includes('CREATE DATABASE'));
-    assert.equal(recreated.length, 2);
-    for (const line of recreated) assert.match(line, /CREATE DATABASE (postgres|_supabase) OWNER supabase_admin TEMPLATE template0$/, line);
-    assert.doesNotMatch(calls, /template1/);
+    assert.equal(recreated.length, 1);
+    assert.match(recreated[0], /CREATE DATABASE postgres OWNER supabase_admin TEMPLATE template0$/);
+    assert.match(recreated[0], /-d template1 /);
+    assert.equal(calls.includes('_supabase'), false, 'the pooler database is neither restored nor connected to');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -236,7 +237,7 @@ test('restore refuses a backup that is not signed with the key of this installat
   try {
     // Edited and re-checksummed by someone without the key.
     writeFileSync(join(backup, 'database.dump'), 'planted dump\n');
-    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
+    spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
     let result = restore(scratch, ['--yes', backup]);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /signature of this backup does not match the backup key/);
@@ -269,7 +270,7 @@ test('restore --restore-config onto a state without the key file the restored co
     try {
       const env = composeEnv(state, `JWT_SECRET=old-secret\nCENTRAL_ISSUER=https://login.association.example.test\nCENTRAL_JWKS_URL=\nCENTRAL_JWKS_FILE=central-jwks.json\n`);
       writeFileSync(join(backup, 'compose.env'), env, { mode: 0o600 });
-      spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump _supabase.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
+      spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup });
       signBackup(backup);
       if (keyOnDisk) writeFileSync(join(state, 'public/central-jwks.json'), '{"keys":[]}\n');
       const seen = join(scratch, 'doctor-saw.txt');
@@ -342,7 +343,7 @@ const standIns = root => {
 };
 // Each \set line of the prelude must be a verifier of the given password (its own salt reused).
 function assertVerifiers(stdin, env) {
-  const roles = { authenticator: 'DB_PASSWORD_AUTHENTICATOR', storage: 'DB_PASSWORD_STORAGE', pooler: 'DB_PASSWORD_POOLER' };
+  const roles = { authenticator: 'DB_PASSWORD_AUTHENTICATOR', storage: 'DB_PASSWORD_STORAGE', ...(env.POOLER_ENABLED === 'true' ? { pooler: 'DB_PASSWORD_POOLER' } : {}) };
   const sets = Object.fromEntries([...stdin.matchAll(/^\\set ([a-z]+)_verifier '([^']+)'$/gm)].map(match => [match[1], match[2]]));
   assert.deepEqual(Object.keys(sets).sort(), Object.keys(roles).sort());
   for (const [variable, name] of Object.entries(roles)) {
@@ -370,7 +371,8 @@ test('restore of a backup taken before per-role passwords keeps this state\'s va
     const stdin = readFileSync(stdinLog, 'utf8');
     assert.equal(stdin.split('\n')[0], '5'.repeat(64));
     assertVerifiers(stdin, readEnv(join(state, 'config/compose.env')));
-    assert.match(stdin, /ALTER ROLE pgbouncer WITH LOGIN PASSWORD/, 'configure-db-roles.sql follows the prelude');
+    assert.match(stdin, /ALTER ROLE authenticator WITH LOGIN PASSWORD/, 'configure-db-roles.sql follows the prelude');
+    assert.doesNotMatch(stdin, /^\\set pooler_verifier|CREATE DATABASE _supabase|CREATE ROLE pgbouncer/m, 'the pooler is off: no pooler object is created and no pooler password is given');
     assert.doesNotMatch(stdin, /postgres_verifier|monitoring_verifier|DROP ROLE|supabase_auth_admin|supabase_functions_admin/, 'no verifier or statement for a role of the earlier image');
     for (const secret of ['5'.repeat(64), '1'.repeat(64)]) assert.equal(result.calls.includes(secret), false, 'no password in a docker argument');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
@@ -399,11 +401,11 @@ test('restore --restore-config of a backup taken before per-role passwords gives
     const stdinLog = join(scratch, 'stdin.log');
     const result = restore(scratch, ['--yes', '--restore-config', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_STDIN_LOG: stdinLog }, standIns);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE, DB_PASSWORD_POOLER: the backup was taken before/);
+    assert.match(result.stdout, /Added DB_PASSWORD_AUTHENTICATOR, DB_PASSWORD_STORAGE: the backup was taken before/);
     const restored = readFileSync(join(state, 'config/compose.env'), 'utf8');
     assert.ok(restored.startsWith(old), 'the backup configuration comes back line for line');
     const env = readEnv(join(state, 'config/compose.env'));
-    for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER']) {
+    for (const name of ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE']) {
       assert.match(env[name], /^[0-9a-f]{64}$/, name);
       assert.equal(dbRoleLines.includes(env[name]), false, `${name} is new, not the replaced state's`);
     }
@@ -448,10 +450,10 @@ test('restore, verify-restore and restore-host share one image check, run before
   assert.ok(restoreSh.indexOf('backup_check_database_image "$backup"') < restoreSh.indexOf('backup_authenticate "$backup" "$allow_unsigned"'), 'restore.sh: the image check precedes the signature check');
 });
 
-test('restore recreates both databases owned by supabase_admin and carries no leftover of the earlier image', () => {
+test('restore recreates the database owned by supabase_admin and carries no leftover of the earlier image', () => {
   const restoreSh = readFileSync(new URL('../scripts/restore.sh', import.meta.url), 'utf8');
   const verifySh = readFileSync(new URL('../scripts/verify-restore.sh', import.meta.url), 'utf8');
-  assert.equal((restoreSh.match(/OWNER supabase_admin TEMPLATE template0/g) ?? []).length, 2);
+  assert.equal((restoreSh.match(/OWNER supabase_admin TEMPLATE template0/g) ?? []).length, 1);
   for (const [name, text] of [['restore.sh', restoreSh], ['verify-restore.sh', verifySh]]) {
     assert.doesNotMatch(text, /OWNER postgres|pg_net|pg_cron|graphql|retire_graphql|PGRST_DB_SCHEMAS|EVENT TRIGGER|triggers\.list|main\.list|full\.list|-U postgres/, name);
   }
@@ -460,16 +462,56 @@ test('restore recreates both databases owned by supabase_admin and carries no le
   assert.match(verifySh, /00-bootstrap\.sql:\/docker-entrypoint-initdb\.d\/00-bootstrap\.sql/);
 });
 
-test('the _supabase database is created at first start, used by the pooler, dumped by backup.sh and recreated by restore.sh, all owned by supabase_admin', () => {
+test('the _supabase database exists only while the pooler is on: made by pooler.sh, not dumped, not restored, owned by supabase_admin', () => {
   const read = file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
   const compose = read('docker/docker-compose.yml');
-  assert.match(compose, /30-_supabase\.sql/);
-  assert.match(read('docker/volumes/db/_supabase.sql'), /CREATE DATABASE _supabase WITH OWNER :pguser/);
+  assert.doesNotMatch(compose, /_supabase\.sql|pooler\.sql|initdb\.d\/3/);
+  assert.match(read('scripts/configure-pooler.sql'), /CREATE DATABASE _supabase WITH OWNER supabase_admin/);
+  assert.match(read('scripts/configure-pooler.sql'), /CREATE SCHEMA IF NOT EXISTS _supavisor AUTHORIZATION supabase_admin/);
   assert.match(compose, /DATABASE_URL: ecto:\/\/supabase_admin:\$\{POSTGRES_PASSWORD\}@\$\{POSTGRES_HOST\}:\$\{POSTGRES_PORT\}\/_supabase/);
-  assert.match(read('docker/volumes/db/pooler.sql'), /create schema if not exists _supavisor/);
-  assert.match(read('scripts/backup.sh'), /pg_dump -U supabase_admin -d _supabase/);
-  assert.match(read('scripts/restore.sh'), /CREATE DATABASE _supabase OWNER supabase_admin TEMPLATE template0/);
-  assert.doesNotMatch(read('docker/volumes/db/_supabase.sql') + read('docker/volumes/db/pooler.sql'), /_analytics/);
+  assert.doesNotMatch(read('scripts/backup.sh').replace(/^#.*$/gm, ''), /_supabase/);
+  assert.doesNotMatch(read('scripts/restore.sh').replace(/^\s*#.*$/gm, ''), /DROP DATABASE _supabase|CREATE DATABASE _supabase|-d _supabase|compose cp .*_supabase/);
+  assert.doesNotMatch(read('scripts/configure-pooler.sql'), /_analytics/);
+});
+
+test('restore of a backup that still holds _supabase.dump skips it with a note; a state without the pooler secrets still accepts the old configuration', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-legacy-pooler-'));
+  try {
+    // The state is clean of the pooler (setup removed its secrets); the backup is from before and carries them, and _supabase.dump.
+    const state = makeState(scratch);
+    const backup = makeBackup(join(scratch, 'backup'), { legacyPooler: true, env: composeEnv(state, undefined, dbRoleLines.replace('POOLER_ENABLED=false\n', '') + legacyPoolerLines) });
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') }, standIns);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Note: the backup contains _supabase\.dump \(the pooler tenant\)\. It is skipped: the pooler recreates its tenant when it starts\./);
+    assert.equal(result.calls.includes('_supabase'), false, 'it is not copied, dropped or replayed');
+    assert.equal(readFileSync(join(state, 'config/compose.env'), 'utf8'), composeEnv(state), 'this state keeps its own configuration');
+    // A backup of this release has no _supabase.dump and needs no note.
+    const other = mkdtempSync(join(tmpdir(), 'warehouse-restore-new-pooler-'));
+    try {
+      const otherState = makeState(other);
+      const plain = restore(other, ['--yes', makeBackup(join(other, 'plain'), { env: composeEnv(otherState) })], { FAKE_CATALOG_FILE: join(other, 'plain', 'storage_objects.txt') }, standIns);
+      assert.equal(plain.status, 0, plain.stderr);
+      assert.doesNotMatch(plain.stdout, /_supabase\.dump/);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore while the pooler is on recreates its role, schema and _supabase database before setting its password, from this state\'s values', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-restore-pooler-on-'));
+  try {
+    const env = composeEnv(join(scratch, 'state'), undefined, dbRoleLines.replace('POOLER_ENABLED=false\n', '') + poolerOnLines);
+    const state = makeState(scratch, { env });
+    const backup = makeBackup(join(scratch, 'backup'), { env });
+    const stdinLog = join(scratch, 'stdin.log');
+    const result = restore(scratch, ['--yes', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_STDIN_LOG: stdinLog }, standIns);
+    assert.equal(result.status, 0, result.stderr);
+    const stdin = readFileSync(stdinLog, 'utf8');
+    assert.ok(stdin.indexOf('CREATE DATABASE _supabase') >= 0 && stdin.indexOf('CREATE DATABASE _supabase') < stdin.indexOf('ALTER ROLE pgbouncer WITH LOGIN PASSWORD'), 'objects first, then the password');
+    assertVerifiers(stdin, readEnv(join(state, 'config/compose.env')));
+    assert.equal(stdin.includes('4'.repeat(64)), false, 'the pool user password itself is not sent');
+    // Without the pooler objects in the backup, nothing in the restore connects to _supabase.
+    assert.equal(result.calls.includes('-d _supabase'), false);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
 test('verify-restore refuses an old image backup with no container started', () => {
