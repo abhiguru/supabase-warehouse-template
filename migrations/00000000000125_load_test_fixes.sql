@@ -13,6 +13,7 @@ GRANT EXECUTE ON FUNCTION warehouse_security.document_number_sort_key(text) TO s
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_date_desc ON public.dispatch (disp_date DESC NULLS LAST, (warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_desc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_asc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") ASC NULLS LAST);
+ANALYZE public.dispatch;
 
 CREATE OR REPLACE FUNCTION public.get_dispatch_list_with_items(p_customer_id uuid DEFAULT NULL::uuid, p_filters jsonb DEFAULT '{}'::jsonb, p_sort_by text DEFAULT 'dispatch_date'::text, p_sort_order text DEFAULT 'desc'::text, p_page integer DEFAULT 1, p_limit integer DEFAULT 10, p_include_items boolean DEFAULT false)
  RETURNS jsonb
@@ -42,6 +43,10 @@ DECLARE
     v_item_ids_filter text;
     v_where text;
     v_term text;
+    v_pkg text;
+    v_dir text;
+    v_cut text;
+    v_ctes text;
 BEGIN
   PERFORM warehouse_security.authorize_rpc('get_dispatch_list_with_items',jsonb_build_object('p_customer_id',p_customer_id));
     SELECT role INTO v_user_role FROM user_profiles WHERE auth_user_id = auth.uid();
@@ -161,17 +166,26 @@ BEGIN
 
     -- Package: every word must be in the package of one line
     IF btrim(COALESCE(p_filters->>'package_mark', '')) <> '' THEN
-        v_item_ids_filter := v_item_ids_filter || format(
-            ' AND d.id IN (SELECT dt_pkg.disp_id FROM dispatch_trl dt_pkg JOIN goodsreceived_trl grt_pkg ON dt_pkg.gr_trl_id = grt_pkg.id WHERE NOT EXISTS (SELECT 1 FROM unnest(%L::text[]) AS term WHERE NOT COALESCE(grt_pkg.package_mark, '''') ILIKE term))',
-            warehouse_security.search_terms(p_filters->>'package_mark'));
+        v_pkg := '';
+        FOREACH v_term IN ARRAY warehouse_security.search_terms(p_filters->>'package_mark') LOOP
+            v_pkg := v_pkg || format(' AND grt_pkg.package_mark ILIKE %L', v_term);
+        END LOOP;
+        v_item_ids_filter := v_item_ids_filter || ' AND d.id IN (SELECT dt_pkg.disp_id FROM dispatch_trl dt_pkg JOIN goodsreceived_trl grt_pkg ON dt_pkg.gr_trl_id = grt_pkg.id WHERE true' || v_pkg || ')';
     END IF;
 
     -- Quick search: every word must match the dispatch or one of its lines (one semi-join per word)
     IF btrim(COALESCE(p_filters->>'search', '')) <> '' THEN
         FOREACH v_term IN ARRAY warehouse_security.search_terms(p_filters->>'search') LOOP
-            v_item_ids_filter := v_item_ids_filter || format(
-                ' AND d.id IN (SELECT d2.id FROM dispatch d2 WHERE d2.disp_no ILIKE %1$L OR COALESCE(d2.customer_name, '''') ILIKE %1$L OR COALESCE(d2.registration, '''') ILIKE %1$L UNION SELECT dt_s.disp_id FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id JOIN goodsreceived gr_s ON grt_s.gr_id = gr_s.id WHERE COALESCE(grt_s.item_name, '''') ILIKE %1$L OR COALESCE(grt_s.package_mark, '''') ILIKE %1$L OR COALESCE(grt_s.rack, '''') ILIKE %1$L OR gr_s.gr_no ILIKE %1$L)',
-                v_term);
+            IF v_customer_filter <> '' THEN
+                -- With a customer filter the match is tested per row of that customer's dispatches.
+                v_item_ids_filter := v_item_ids_filter || format(
+                    ' AND (d.disp_no ILIKE %1$L OR COALESCE(d.customer_name, '''') ILIKE %1$L OR COALESCE(d.registration, '''') ILIKE %1$L OR EXISTS (SELECT 1 FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id JOIN goodsreceived gr_s ON grt_s.gr_id = gr_s.id WHERE dt_s.disp_id = d.id AND (COALESCE(grt_s.item_name, '''') ILIKE %1$L OR COALESCE(grt_s.package_mark, '''') ILIKE %1$L OR COALESCE(grt_s.rack, '''') ILIKE %1$L OR gr_s.gr_no ILIKE %1$L)))',
+                    v_term);
+            ELSE
+                v_item_ids_filter := v_item_ids_filter || format(
+                    ' AND d.id IN (SELECT d2.id FROM dispatch d2 WHERE d2.disp_no ILIKE %1$L OR COALESCE(d2.customer_name, '''') ILIKE %1$L OR COALESCE(d2.registration, '''') ILIKE %1$L UNION SELECT dt_s.disp_id FROM dispatch_trl dt_s JOIN goodsreceived_trl grt_s ON dt_s.gr_trl_id = grt_s.id JOIN goodsreceived gr_s ON grt_s.gr_id = gr_s.id WHERE COALESCE(grt_s.item_name, '''') ILIKE %1$L OR COALESCE(grt_s.package_mark, '''') ILIKE %1$L OR COALESCE(grt_s.rack, '''') ILIKE %1$L OR gr_s.gr_no ILIKE %1$L)',
+                    v_term);
+            END IF;
         END LOOP;
     END IF;
 
@@ -226,18 +240,38 @@ BEGIN
             COALESCE(v_disp_qty_min, 0), COALESCE(v_disp_qty_max, 999999999)) ELSE '' END,
         v_item_ids_filter);
 
+    v_dir := CASE WHEN LOWER(p_sort_order) = 'asc' THEN 'ASC' ELSE 'DESC' END;
+    IF btrim(COALESCE(p_filters->>'search', '')) <> '' THEN
+        -- With a search the match set is computed once (page and count) and cut early on the leading sort column;
+        -- WITH TIES keeps every row that can reach the page, so the page is the same.
+        v_cut := CASE
+            WHEN v_disp_no_filter <> '' OR p_sort_by = 'disp_no' THEN ''
+            WHEN p_sort_by = 'customer_name' THEN format(' ORDER BY customer_name %s NULLS LAST, disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset + p_limit, 0))
+            WHEN p_sort_by = 'dispatch_date' THEN format(' ORDER BY disp_date %s NULLS LAST FETCH FIRST %s ROWS WITH TIES', v_dir, GREATEST(v_offset + p_limit, 0))
+            ELSE format(' ORDER BY disp_date DESC NULLS LAST FETCH FIRST %s ROWS WITH TIES', GREATEST(v_offset + p_limit, 0)) END;
+        v_ctes := format($c$f AS MATERIALIZED (SELECT d.id, d.disp_no, d.disp_date, d.customer_name FROM dispatch d WHERE 1=1 %s),
+            total AS (SELECT COUNT(*) AS n FROM f),
+            page_ids AS (SELECT pre.id FROM (SELECT * FROM f%s) pre ORDER BY %s LIMIT %s OFFSET %s),
+            paged AS (SELECT d.id, d.disp_no, d.disp_date, d.customer_id, d.customer_name, d.registration, d.created_at, d.updated_at, d.created_by, d.updated_by, d.note
+                      FROM dispatch d WHERE d.id IN (SELECT id FROM page_ids))$c$,
+            v_where, v_cut, v_order_by, p_limit, v_offset);
+    ELSE
+        v_ctes := format($c$paged AS (
+                SELECT d.id, d.disp_no, d.disp_date, d.customer_id, d.customer_name,
+                    d.registration, d.created_at, d.updated_at, d.created_by, d.updated_by, d.note
+                FROM dispatch d
+                WHERE 1=1 %s
+                ORDER BY %s LIMIT %s OFFSET %s
+            ),
+            total AS (
+                SELECT COUNT(*) AS n FROM dispatch d WHERE 1=1 %s
+            )$c$,
+            v_where, v_order_by, p_limit, v_offset, v_where);
+    END IF;
+
     -- Build the main query (snake_case response keys)
     v_query := format($query$
-        WITH paged AS (
-            SELECT d.id, d.disp_no, d.disp_date, d.customer_id, d.customer_name,
-                d.registration, d.created_at, d.updated_at, d.created_by, d.updated_by, d.note
-            FROM dispatch d
-            WHERE 1=1 %s
-            ORDER BY %s LIMIT %s OFFSET %s
-        ),
-        total AS (
-            SELECT COUNT(*) AS n FROM dispatch d WHERE 1=1 %s
-        ),
+        WITH %s,
         dispatch_items AS (
             SELECT dt.disp_id, %s as items,
                 SUM(dt.disp_qty) as total_qty,
@@ -289,7 +323,7 @@ BEGIN
         ) as result
         FROM paginated_results pr
     $query$,
-        v_where, v_order_by, p_limit, v_offset, v_where,
+        v_ctes,
         CASE WHEN p_include_items THEN
             'jsonb_agg(jsonb_build_object(
                 ''item_id'', grt.item_id, ''item_name'', grt.item_name, ''disp_qty'', dt.disp_qty,
