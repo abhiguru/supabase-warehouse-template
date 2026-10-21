@@ -96,7 +96,9 @@ case "$command" in
       held="$(db_psql -d _supabase -c "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','v','m','S','f')) || ' ' || COALESCE((SELECT string_agg(nspname, ',' ORDER BY nspname) FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' AND nspname NOT IN ('information_schema','public','_supavisor')), '-')")"
       read -r relations others <<< "$held"
       if [[ "$relations" != 0 || "$others" != - ]]; then
-        echo "Pooler clean-up refused: the database _supabase holds $relations relation(s) and other schemas: $others. The pooler has been used here, so nothing was changed. Keep using it with bash scripts/pooler.sh on, or remove the pooler objects by hand after a backup." >&2
+        what="$relations relation(s)"
+        [[ "$others" == - ]] || what="$what and the schema(s) $others"
+        echo "Pooler clean-up refused: the database _supabase holds $what. The pooler has been used here, so nothing was changed. Keep using it with bash scripts/pooler.sh on, or remove the pooler objects by hand after a backup." >&2
         exit 1
       fi
     fi

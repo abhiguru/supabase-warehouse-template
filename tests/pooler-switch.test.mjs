@@ -171,7 +171,7 @@ test('cleanup with nothing to remove still records the switch and takes the stal
 });
 
 test('cleanup refuses, and changes nothing, when _supabase holds a relation or another schema (the pooler was used)', () => {
-  for (const [held, shown] of [['4 -', /holds 4 relation\(s\)/], ['0 analytics', /other schemas: analytics/]]) {
+  for (const [held, shown] of [['4 -', /holds 4 relation\(s\)/], ['0 analytics', /holds 0 relation\(s\) and the schema\(s\) analytics/]]) {
     const f = fixture('warehouse-pooler-cleanup-refuse-', { env: legacy });
     try {
       const before = readFileSync(f.envPath, 'utf8');
