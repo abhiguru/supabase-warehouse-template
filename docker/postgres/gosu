@@ -1,0 +1,37 @@
+#!/bin/sh
+# gosu-compatible shim over util-linux setpriv (installed at /usr/local/bin/gosu, replacing the base image's
+# Go binary, which Trivy reports for Go standard-library CVEs). The official entrypoint uses only
+# `gosu postgres ...`; user, user:group and numeric ids are accepted as gosu accepts them.
+# Like gosu it: switches user and group, sets the supplementary groups (the user's own when no group is
+# given, none when one is), sets HOME to the user's home
+# directory ("/" when the user has no passwd entry), keeps the rest of the environment, and execs the command.
+set -eu
+if [ "$#" -lt 2 ]; then
+  echo "Usage: gosu user-spec command [args]" >&2
+  exit 1
+fi
+spec=$1
+shift
+user=${spec%%:*}
+group=
+case $spec in
+  *:*) group=${spec#*:} ;;
+esac
+if entry=$(getent passwd "$user"); then
+  home=$(printf '%s\n' "$entry" | cut -d: -f6)
+  if [ -n "$group" ]; then
+    # user:group sets that one group and no supplementary ones, as gosu does.
+    groups=--clear-groups
+  else
+    group=$(printf '%s\n' "$entry" | cut -d: -f4)
+    groups=--init-groups
+  fi
+else
+  # No passwd entry (a numeric id): no home, and no supplementary groups to look up.
+  home=/
+  groups=--clear-groups
+fi
+[ -n "$group" ] || group=0
+HOME=$home
+export HOME
+exec setpriv --reuid "$user" --regid "$group" "$groups" -- "$@"

@@ -4,7 +4,7 @@
 # The database is the shipped one: the official Postgres image of scripts/db-image.sh, started as production starts it
 # (POSTGRES_USER=supabase_admin, en_US.UTF-8, the `-c` flags of docker/docker-compose.override.yml, the init scripts
 # 00-bootstrap.sql and roles.sql). The order is setup.sh's: database, migrations (the baseline, run twice), then the real
-# Storage 1.80.2 on a throwaway --internal network (DB_SUPER_USER=supabase_storage_admin, DB_INSTALL_ROLES=false), then
+# Storage 1.80.2 (the recipe image of docker/storage) on a throwaway --internal network (DB_SUPER_USER=supabase_storage_admin, DB_INSTALL_ROLES=false), then
 # scripts/configure-storage.sql, then the SQL suites. No schema fixture stands in for Storage.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -104,7 +104,11 @@ if err=$(plan_of "$ROOT" | mig_psql 2>&1 >/dev/null); then echo 'An untracked da
 mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_migrations.applied_saved; DROP TABLE warehouse_migrations.applied_saved;"
 
 # Storage, as setup.sh does after the migrations: the real Storage 1.80.2 builds its own tables in the schema the bootstrap made.
-run_storage "$container" "$net" "$(storage_image)" >/dev/null
+# The image that ships (docker/storage, a multi-stage recipe on a clean Node image), built here from the same Dockerfile, not
+# the publisher's image: a native module or file the slimmed image lacks would fail Storage's start. Layers are cached.
+storage_recipe=warehouse-test-storage:recipe
+docker build -q -t "$storage_recipe" "$ROOT/docker/storage" >/dev/null
+run_storage "$container" "$net" "$storage_recipe" >/dev/null
 [[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
 # The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
 [[ "$(mig_psql -At -c "SELECT bool_and(has_schema_privilege(r, 'storage', 'USAGE')) FROM unnest(ARRAY['anon','authenticated','service_role']) r")" == t ]] || { echo 'An API role cannot use the storage schema.' >&2; exit 1; }
