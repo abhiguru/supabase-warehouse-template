@@ -34,7 +34,7 @@ db_image="$(bash "$ROOT/scripts/db-image.sh")"
 net=$(create_net)
 docker run -d --name "$container" --label purpose=warehouse-migration-test \
   --network "$net" --memory 1g --cpus 1 \
-  --tmpfs /var/lib/postgresql/data:rw,size=768m \
+  --tmpfs /var/lib/postgresql/data:rw,size=768m -e PGDATA=/var/lib/postgresql/data \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
   -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \

@@ -81,7 +81,7 @@ start_db() {
   fi
   docker run -d --rm -v /var/lib/postgresql --name "$name" --label purpose=slim-tool \
     --network "${DB_NET:-none}" --memory 1g --cpus 1 \
-    --tmpfs /var/lib/postgresql/data:rw,size=768m \
+    --tmpfs /var/lib/postgresql/data:rw,size=768m -e PGDATA=/var/lib/postgresql/data \
     -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
     -e AUTH_MODE=operator -e APP_ENV=production \
     -e POSTGRES_PASSWORD="$DB_PASSWORD" "${extra[@]}" \
