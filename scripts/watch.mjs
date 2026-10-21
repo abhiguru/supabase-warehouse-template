@@ -530,15 +530,16 @@ export function checkPdfRenderer(ctx) {
 // The operator health check, one source for health-check.sh, doctor --local and recovery-check.sh: the services, the database and
 // the PDF renderer with the check functions the 5-minute checker also runs, and the gateway probed from inside the project (a
 // container that shares a network with Kong: the intended project is probed, never an unrelated server on the host port). The
-// gateway probe is a public-configuration call and a table read with the public key (PostgREST's OpenAPI document at /rest/v1/ is
-// off, PGRST_OPENAPI_MODE=disabled); a container can be healthy before the gateway answers after a recreate, so it retries for
+// gateway probe is a public-configuration call and the anon-callable RPC get_public_config (it reads the database, and answers 200 with
+// null when the environment is not seeded; PostgREST's OpenAPI document at /rest/v1/ is off, PGRST_OPENAPI_MODE=disabled); a container can be healthy before the gateway answers after a recreate, so it retries for
 // up to waitMs. Returns { ok, lines: [{ ok, text }] }.
 const GATEWAY_PROBES = `
-for (const [name, url, headers] of [
-  ['REST', 'http://kong:8000/rest/v1/feature_flags?select=id&limit=1', { apikey: process.env.ANON_KEY }],
-  ['configuration', 'http://kong:8000/functions/v1/get-public-config', {}],
+for (const [name, url, headers, init] of [
+  ['REST', 'http://kong:8000/rest/v1/rpc/get_public_config', { apikey: process.env.ANON_KEY, 'Content-Type': 'application/json' },
+    { method: 'POST', body: JSON.stringify({ p_environment: 'production' }) }],
+  ['configuration', 'http://kong:8000/functions/v1/get-public-config', {}, {}],
 ]) {
-  try { await waitForHttp(name, url, headers, { timeoutMs: WAIT_MS }); console.log('OK ' + name); }
+  try { await waitForHttp(name, url, headers, { timeoutMs: WAIT_MS, init }); console.log('OK ' + name); }
   catch (error) { console.log('FAILED ' + error.message); process.exitCode = 1; }
 }
 `;

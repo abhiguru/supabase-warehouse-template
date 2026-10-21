@@ -57,3 +57,9 @@ test('a timeout of 0 still makes one attempt, so health --wait 0 can pass', asyn
   await assert.rejects(waitForHttp('configuration', 'http://owned/config', {}, { timeoutMs: 0, sleep: async () => {}, fetchImpl: async () => { calls += 1; return { ok: false, status: 503, body: null }; } }), /readiness timed out \(HTTP 503\)/);
   assert.equal(calls, 2, 'one attempt, no retry');
 });
+
+test('a request init (method and body) is passed on to every attempt', async () => {
+  const { options, calls } = fixture([503, 200]);
+  await waitForHttp('REST', 'http://owned/rpc', { apikey: 'test' }, { ...options, init: { method: 'POST', body: '{}' } });
+  assert.deepEqual(calls.map(call => [call.options.method, call.options.body]), [['POST', '{}'], ['POST', '{}']]);
+});

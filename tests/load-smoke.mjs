@@ -1,4 +1,4 @@
-// A read-only load smoke: 100 REST reads (10 at a time) through the gateway, then a 10-client pgbench read of feature_flags.
+// A read-only load smoke: 100 get_public_config RPC calls (10 at a time) through the gateway, then a 10-client pgbench read of feature_flags.
 // Needs a running installation (WAREHOUSE_STATE_DIR). Run with: npm run test:load
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +6,7 @@ import { performance } from 'node:perf_hooks';
 import { readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
 
 const env = readEnv(operatorEnvPath());
-const url = `http://127.0.0.1:${env.KONG_HTTP_PORT}/rest/v1/feature_flags?select=id&limit=1`;
+const url = `http://127.0.0.1:${env.KONG_HTTP_PORT}/rest/v1/rpc/get_public_config`;
 const total = Number(process.env.LOAD_REQUESTS || 100);
 const concurrency = Number(process.env.LOAD_CONCURRENCY || 10);
 const limitMs = Number(process.env.LOAD_P95_LIMIT_MS || 5000);
@@ -19,9 +19,9 @@ async function worker() {
     next += 1;
     const start = performance.now();
     try {
-      const response = await fetch(url, { headers: { apikey: env.ANON_KEY }, signal: AbortSignal.timeout(15000) });
+      const response = await fetch(url, { method: 'POST', body: JSON.stringify({ p_environment: 'production' }), headers: { apikey: env.ANON_KEY, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15000) });
       const body = await response.json();
-      if (!response.ok || !Array.isArray(body)) failures += 1;
+      if (!response.ok || (body !== null && typeof body !== 'object')) failures += 1;
     } catch { failures += 1; }
     durations.push(performance.now() - start);
   }

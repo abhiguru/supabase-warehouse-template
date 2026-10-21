@@ -138,7 +138,7 @@ test('operator probes run in a container that shares a network with their target
   // default network with Kong, and reads the public key under the name that container has for it.
   assert.ok(reaches('storage', 'kong'), 'storage cannot resolve kong');
   assert.match(read('scripts/watch.mjs'), /ctx\.compose\(\['exec', '-T', 'storage', 'node', '--input-type=module'\]/);
-  assert.match(read('scripts/watch.mjs'), /'http:\/\/kong:8000\/rest\/v1\/feature_flags/);
+  assert.match(read('scripts/watch.mjs'), /'http:\/\/kong:8000\/rest\/v1\/rpc\/get_public_config'/);
   assert.doesNotMatch(read('scripts/watch.mjs'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
 });

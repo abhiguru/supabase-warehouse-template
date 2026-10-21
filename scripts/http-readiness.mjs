@@ -2,7 +2,7 @@
 export async function waitForHttp(name, url, headers = {}, {
   fetchImpl = fetch, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
-  timeoutMs = 90000, intervalMs = 1000,
+  timeoutMs = 90000, intervalMs = 1000, init = {},
 } = {}) {
   const deadline = now() + timeoutMs;
   let lastFailure = 'connection unavailable';
@@ -11,7 +11,7 @@ export async function waitForHttp(name, url, headers = {}, {
     let response;
     try {
       response = await fetchImpl(url, {
-        headers, redirect: 'error',
+        ...init, headers, redirect: 'error',
         signal: AbortSignal.timeout(Math.max(1, Math.min(10000, deadline - now()))),
       });
     } catch {

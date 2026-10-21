@@ -405,12 +405,12 @@ test('health: the services, the database, the gateway probe and the renderer all
       ...SERVICES.map(name => `Service ${name} is running${['db', 'kong'].includes(name) ? ' healthy' : ''}`),
       'PostgreSQL accepts connections', 'REST: answers through the gateway', 'configuration: answers through the gateway', 'PDF renderer reachable from functions',
     ]);
-    // The probe runs in the storage container (a network shared with Kong), waits as long as it was told, reads a table with the
+    // The probe runs in the storage container (a network shared with Kong), waits as long as it was told, asks the RPC get_public_config with the
     // public key (the OpenAPI document at /rest/v1/ is off) and asks for the public configuration.
     assert.equal(inputs.length, 1);
     assert.match(inputs[0], /export async function waitForHttp/);
     assert.match(inputs[0], /const WAIT_MS = 7000;/);
-    assert.match(inputs[0], /http:\/\/kong:8000\/rest\/v1\/feature_flags\?select=id&limit=1', \{ apikey: process\.env\.ANON_KEY \}/);
+    assert.match(inputs[0], /http:\/\/kong:8000\/rest\/v1\/rpc\/get_public_config', \{ apikey: process\.env\.ANON_KEY, 'Content-Type': 'application\/json' \},\n    \{ method: 'POST', body: JSON\.stringify\(\{ p_environment: 'production' \}\) \}/);
     assert.match(inputs[0], /http:\/\/kong:8000\/functions\/v1\/get-public-config/);
   } finally { clean(h); }
 });
