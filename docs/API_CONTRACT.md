@@ -38,7 +38,7 @@ Refusals do not have one shape; each family has its own, and the app reads the o
   argument), except `DUPLICATE_MOBILE`, which carries `error:{code, field, details}`.
 - **Dispatch, GRN, invoice and order writes** (`NUMBER_TAKEN`, migration 120; the refusals of migration 121): `{success:false, error_code:'WH409',
   reason, error, message, ...fields}`, the fields at the top level, `error` and `message` the same English sentence; the app switches on `reason`
-  ([Review decisions](#review-decisions-migration-121-2026-10-20)). The legacy GRN length refusals keep `{success:false, error, error_code, data:{limit}, message}`.
+  ([Review decisions](#review-decisions-migration-121-2026-10-20); the warning `POSSIBLE_DUPLICATE` of migration 124: [Possible duplicate](#possible-duplicate-migration-124-2026-10-21)). The legacy GRN length refusals keep `{success:false, error, error_code, data:{limit}, message}`.
 - **Users, items, pricing and sensors:** a flat `error_code`. Users put the code in `error` too (`error` = the code, `message` = the text);
   items put the English text in `error` and the code in `error_code`. `delete_item_safe` sets `error_code` only on `NOT_FOUND`.
 
@@ -918,6 +918,63 @@ A deactivated business may still order and be dispatched: migration 121 adds no 
 `recalculate_invoice_header`, when `abs(invoice.total - expected_total) > 1.00` the save is rolled back and answered `TOTAL_CHANGED` with
 `lines` = each line's `disp_trl_id`, `duration`, `no_of_days` as the server just recomputed them. Absent (older apps): no check; their
 `total` key stays an estimate. `save_invoice(jsonb)` does not check it.
+
+## Possible duplicate (migration 124, 2026-10-21)
+
+A WARNING on GRN create and on direct dispatch create, never a block, and **opt-in**: only a call that asks for it is checked
+(`save_grn`: `p_warn_duplicate => true`; the dispatch: `warn_duplicate: true` in `p_dispatch_data`). A call that does not ask (an older app
+build, `fas-sync`'s bulk push) behaves exactly as before and never gets `POSSIBLE_DUPLICATE`. A call that asked is answered
+`POSSIBLE_DUPLICATE` and writes nothing; the same call sent again with the flag false (or absent) saves. Owner decision of 2026-10-21.
+
+**What counts as a duplicate.**
+- **GRN** (`save_grn`): a live GRN (`deleted_at IS NULL`) of the same customer, created in the last 30 minutes by anyone, with the same
+  GRN day (the Asia/Kolkata calendar day of `p_date`) and the same SET of (item, packaging) lines. The item is the item id; the
+  packaging is compared trimmed, in one case, with runs of white space as one space. Quantity, weight, rack and package mark are
+  ignored; line order and a repeated line do not matter.
+- **Direct dispatch** (`create_dispatch_with_stock_check`, both signatures): only when `source_order_id` is absent. A live dispatch (from an order
+  or not) of the same customer, created in the last 30 minutes, with the same SET of lots (`goodsreceived_trl` ids) and the same vehicle
+  registration, compared upper-cased with spaces and hyphens removed (two blank registrations are the same vehicle). Quantity is ignored.
+  A dispatch made from an order never gets the warning: its order line is used up.
+- With several matches the newest is reported.
+
+**Where it runs.** After the saved-answer lookup (a resend of a request that was saved returns its stored answer, not the warning) and
+after every other validation and refusal (`NUMBER_TAKEN`, a deactivated customer, stock, dates, order checks), right before the first
+write. The answer is not stored under the request key. A line that a later step of `save_grn` rejects (a bad rate, an image path) is
+still found after the warning: the person sees the warning first and that refusal after "Save anyway".
+
+**Answer** (HTTP 200), built by `warehouse_security.refuse('POSSIBLE_DUPLICATE', ...)` like `ORDER_CHANGED`:
+
+```
+{ "success": false, "error_code": "WH409", "reason": "POSSIBLE_DUPLICATE", "error": "<English sentence>", "message": "<same sentence>",
+  "kind": "grn" | "dispatch",
+  "existing_id": "<uuid>", "existing_number": "<gr_no / disp_no>",
+  "existing_created_at": "<timestamptz, ISO 8601>", "existing_created_by": "<display name, or null>",
+  "customer_name": "<text>",
+  "items": [ { "item_name", "packaging" } ]                       // GRN
+          | [ { "gr_no", "item_name", "packaging" } ],             // dispatch
+  "vehicle": "<registration as stored>",                           // dispatch only
+  "window_minutes": 30 }
+```
+
+`existing_created_by` is `user_profiles.name`, else `display_name`, else `null`. The sentence is "GRN {no} for {customer} was created
+{just now | 1 minute ago | n minutes ago} with the same items." and "Dispatch {no} for {customer} was created {...} with the same lots and
+vehicle."; the app words its own text from the fields. The dispatch wrappers add `retry_count` as for every answer.
+
+**The flag.**
+- `save_grn` gains the trailing parameter `p_warn_duplicate boolean DEFAULT false` (after `p_rates`); every existing argument keeps its
+  name and position. The old 17-argument function is dropped and the new one made with the same owner, `SECURITY DEFINER`,
+  `search_path`, `jit = off` and grants (`authenticated`, `service_role`), so PostgREST sees one `save_grn`. Absent, `NULL` and `false`
+  mean no check; only `true` checks.
+- The dispatch reads `warn_duplicate` (JSON `true`) in `p_dispatch_data`; no signature change. Absent, `false` or any other value means no check.
+- The app sends `true` on a normal create and `false` after the person confirms "Save anyway". The flag is part of the request body, so
+  the request key changes with it.
+
+**Bulk callers.** `fas-sync` calls `save_grn` and `create_dispatch_with_stock_check` by name without the flag, so its pushes are not
+checked and never get this answer.
+
+**Implementation.** The lookups are `warehouse_security.possible_duplicate_grn` and `possible_duplicate_dispatch` (not granted to any API
+role; fail-open: an error inside one means no warning, so a malformed line is answered by the save as before). They start from the
+existing `customer_id` indexes of `goodsreceived` and `dispatch`; no index is added. Tests: `tests/duplicate_warning_124.sql`.
 
 ## List freshness (migration 106, 2026-10-19)
 

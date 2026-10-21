@@ -67,6 +67,29 @@ data files do not open in 18.
 - **gosu builder.** The `gosu` in the db image is rebuilt with `golang:1.27.3-bookworm` (was 1.27.2, by digest), which fixes
   CVE-2026-111943 in the Go standard library.
 
+## Unreleased: Possible duplicate warning (migration 124)
+
+New migration (`duplicate_warning`), the server half of the owner decision of 2026-10-21: a **warning**, never a block, when a GRN or a
+direct dispatch looks like one that was just saved. It is **opt-in**: only a call that asks for it is checked, so an older app build and
+`fas-sync`'s bulk push (named arguments, no flag) behave exactly as before. Details and every field of the answer:
+[docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Possible duplicate (migration 124, 2026-10-21)". No data is changed and no index is added.
+
+- **GRN.** `save_grn` gains the trailing parameter `p_warn_duplicate boolean DEFAULT false` (after `p_rates`; every existing argument keeps
+  its name). With `true`, a live GRN of the same customer, the same GRN day (Asia/Kolkata) and the same SET of (item, packaging) lines,
+  created in the last 30 minutes by anyone, is answered `POSSIBLE_DUPLICATE` (`success:false, error_code:'WH409'`, the `NUMBER_TAKEN` shape) and
+  nothing is written. Quantity, weight, line order and repeated lines are ignored. The old 17-argument function is dropped and the new one made
+  with the same owner, security, `search_path`, `jit` and grants, so PostgREST sees one `save_grn`.
+- **Direct dispatch.** `p_dispatch_data.warn_duplicate = true` (no signature change; both `create_dispatch_with_stock_check` signatures): a live
+  dispatch of the same customer with the same SET of lots and the same vehicle (upper-cased, spaces and hyphens removed), created in the last
+  30 minutes, is answered `POSSIBLE_DUPLICATE`. A dispatch from an order (`source_order_id`) is never checked.
+- **Order of checks.** After the saved-answer lookup (a resend of a saved request still returns its stored answer) and after every other
+  validation and refusal (number taken, stock, dates...), right before the first write. The answer is not stored under the request key.
+  The newest match is reported, with `existing_id`, `existing_number`, `existing_created_at`, `existing_created_by` (a name, or null),
+  `customer_name`, `items`, `vehicle` (dispatch) and `window_minutes: 30`.
+- **Helpers.** `warehouse_security.possible_duplicate_grn` and `possible_duplicate_dispatch` (not granted to any API role; an error inside one
+  means no warning, so the save then answers as before). Both functions are patched from their latest definition with the marker-count pattern.
+- Tests: `tests/duplicate_warning_124.sql` (new, registered in `tests/migrations.sh`); `tests/grn_rates.sql` names the new last parameter.
+
 ## Unreleased: Push review (migration 122)
 
 New migration (`push_review`), four corrections found in the review of the whole backend diff, on top of migration 121 (which is
