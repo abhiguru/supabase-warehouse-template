@@ -58,7 +58,7 @@ SELECT pg_temp.lr_assert((SELECT bool_and(position('pg_advisory_xact_lock(71040)
    FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = 'update_grn'), 'update_grn keeps lock 71040 and its guard');
 -- The allow-list of authorize_rpc: the two dropped names are gone, their neighbours stay.
 SELECT pg_temp.lr_assert((SELECT position('''get_dispatch_list''' IN prosrc) = 0 AND position('get_list_freshness' IN prosrc) = 0
-     AND position('''get_dispatch_list_with_items''' IN prosrc) > 0 AND position('''get_invoices_list''' IN prosrc) > 0
+     AND position('get_cart_dispatches' IN prosrc) = 0 AND position('''get_dispatch_list_with_items''' IN prosrc) > 0 AND position('''get_invoices_list''' IN prosrc) > 0
    FROM pg_proc WHERE oid = 'warehouse_security.authorize_rpc(text,jsonb)'::regprocedure), 'authorize_rpc allow-list');
 SELECT pg_temp.lr_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql'), 'the baseline (which holds migration 106) is recorded');
 

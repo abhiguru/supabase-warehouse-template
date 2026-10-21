@@ -30,6 +30,8 @@ multiple slips/pages, disconnects, paper outages and unattended reboot. Keep
 CUPS administration and backend service-role credentials private to the server.
 The mobile app must submit under its own authorized user session.
 
+Since migration 123 the app's print "View jobs" sheet (`get_print_jobs`, `cancel_print_job`) is open to administrators, supervisors and staff with their own session; customers and anon are refused. The print routes stay off.
+
 ## Activation acceptance
 
 The five printing routes still answer 503 (`functions/main/index.ts`). These

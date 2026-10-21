@@ -25,7 +25,7 @@ older pin `d8af378` still called `get_dispatch_list`, which this release drops, 
 dropped once `minimumClientVersion` is past the builds that read it. The printing functions (`print-grn-preprinted`, `print-dispatch-preprinted`, `print-invoice-preprinted`,
 `print-via-ipp`, `get-printer-status`) exist and answer 503 "Printing is not configured" by design
 (`functions/main/index.ts`); the app names the three preprinted ones through a variable, so they are not in the literal
-count. `manage-print-jobs` is absent; the app does not call it.
+count. `manage-print-jobs` is absent; the app does not call it. `get_print_jobs` and `cancel_print_job` (the print "View jobs" sheet) are open to admin, supervisor and staff since migration 123; customers and anon are refused.
 
 The checker exits 1 only for a missing name or, with `--live`, a mismatch. Name presence is not signature, security or
 behaviour validation, and a missing endpoint is never replaced with a success stub to make the check pass.

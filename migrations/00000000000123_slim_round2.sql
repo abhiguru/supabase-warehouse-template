@@ -906,3 +906,170 @@ REVOKE ALL ON FUNCTION public.get_public_config(p_environment text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_public_config(p_environment text) TO anon;
 GRANT EXECUTE ON FUNCTION public.get_public_config(p_environment text) TO service_role;
 
+
+-- ===== 8. The print "View jobs" sheet works for the people who can print (owner decision, 2026-10-21) =====
+-- The app (GRNs list, printer icon on a GRN row, "Print GRNs", View jobs) calls get_print_jobs and cancel_print_job with the user's
+-- session, but both were EXECUTE for service_role only, so the sheet always failed. Only View jobs is fixed: the print routes stay off
+-- by design (docs/PRINTING.md) and the Print buttons are unchanged.
+--  * Who: administrators, supervisors and staff, the roles that can print in the app (canCreate or canUpdate). Customers and anon are
+--    refused. authorize_rpc admits administrators and supervisors to every name; the two names are added to its staff list, and a
+--    customer reaches the final ELSE ("Staff access required").
+--  * What each role sees and cancels: the rule the two bodies already had. The printer and its queue are shared by the whole
+--    facility, so administrators, supervisors and staff list every job and may cancel any job that is not finished. A customer
+--    never reaches the bodies, so no customer sees another customer's data (a job holds a document range, the user's name and
+--    a printer name, no customer data).
+--  * get_print_jobs: calls authorize_rpc first; otherwise unchanged.
+--  * cancel_print_job: calls authorize_rpc first; its role lookup compared user_profiles.id with auth.uid() (a profile id against a
+--    login id), so it answered "not authenticated" to everyone; it now compares auth_user_id, as get_print_jobs does.
+--  * authorize_rpc: the stale name get_cart_dispatches (dropped above) leaves both lists.
+
+CREATE OR REPLACE FUNCTION public.get_print_jobs(p_limit integer DEFAULT 50, p_job_type text DEFAULT NULL::text, p_status text DEFAULT NULL::text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_user_role VARCHAR(20);
+    v_user_profile_id UUID;
+    v_auth_uid UUID;
+    v_result jsonb;
+BEGIN
+    PERFORM warehouse_security.authorize_rpc('get_print_jobs', jsonb_build_object());
+    v_auth_uid := auth.uid();
+
+    SELECT up.id, up.role
+    INTO v_user_profile_id, v_user_role
+    FROM public.user_profiles up
+    WHERE up.auth_user_id = v_auth_uid;
+
+    IF v_user_role IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'data', null,
+            'message', 'User not authenticated',
+            'error', jsonb_build_object('code', 'NOT_AUTHENTICATED')
+        );
+    END IF;
+
+    SELECT jsonb_build_object(
+        'success', true,
+        'data', COALESCE(jsonb_agg(jsonb_build_object(
+            'id', pj.id,
+            'cups_job_id', pj.cups_job_id,
+            'job_type', pj.job_type,
+            'document_range_start', pj.document_range_start,
+            'document_range_end', pj.document_range_end,
+            'document_count', pj.document_count,
+            'user_id', pj.user_id,
+            'user_name', pj.user_name,
+            'status', pj.status,
+            'error_message', pj.error_message,
+            'content_size', pj.content_size,
+            'printer_name', pj.printer_name,
+            'submitted_at', pj.submitted_at,
+            'completed_at', pj.completed_at,
+            'created_at', pj.created_at,
+            'updated_at', pj.updated_at
+        ) ORDER BY pj.submitted_at DESC), '[]'::jsonb),
+        'message', null
+    ) INTO v_result
+    FROM public.print_jobs pj
+    WHERE
+        (v_user_role IN ('admin', 'supervisor', 'staff') OR pj.user_id = v_auth_uid)
+        AND (p_job_type IS NULL OR pj.job_type = p_job_type)
+        AND (p_status IS NULL OR pj.status = p_status)
+    LIMIT p_limit;
+
+    RETURN v_result;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.cancel_print_job(p_print_job_id uuid) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_user_role VARCHAR(20);
+    v_job_user_id UUID;
+    v_cups_job_id INTEGER;
+    v_job_status VARCHAR(20);
+BEGIN
+    PERFORM warehouse_security.authorize_rpc('cancel_print_job', jsonb_build_object('p_print_job_id', p_print_job_id));
+    SELECT role INTO v_user_role FROM public.user_profiles WHERE auth_user_id = auth.uid();
+
+    IF v_user_role IS NULL THEN
+        RETURN utils.not_authenticated_response();
+    END IF;
+
+    SELECT user_id, cups_job_id, status INTO v_job_user_id, v_cups_job_id, v_job_status
+    FROM public.print_jobs WHERE id = p_print_job_id;
+
+    IF v_job_user_id IS NULL THEN
+        RETURN utils.not_found_response('Print job', p_print_job_id::text);
+    END IF;
+
+    IF v_job_user_id != auth.uid() AND v_user_role NOT IN ('admin', 'supervisor', 'staff') THEN
+        RETURN utils.error_response('PERMISSION_DENIED', 'Permission denied. You can only cancel your own print jobs.');
+    END IF;
+
+    IF v_job_status IN ('completed', 'cancelled', 'failed') THEN
+        RETURN utils.error_response('INVALID_STATUS', 'Cannot cancel job with status: ' || v_job_status);
+    END IF;
+
+    UPDATE public.print_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE id = p_print_job_id;
+
+    RETURN utils.success_response(
+        jsonb_build_object(
+            'print_job_id', p_print_job_id,
+            'cups_job_id', v_cups_job_id,
+            'note', 'Call manage-print-jobs Edge Function to cancel CUPS job: ' || v_cups_job_id
+        ),
+        'Print job marked as cancelled'
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) TO service_role;
+GRANT ALL ON FUNCTION public.get_print_jobs(p_limit integer, p_job_type text, p_status text) TO authenticated;
+REVOKE ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) TO service_role;
+GRANT ALL ON FUNCTION public.cancel_print_job(p_print_job_id uuid) TO authenticated;
+
+-- authorize_rpc: the two print names for staff; get_cart_dispatches (dropped above) removed from both lists.
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$    'get_cart_dispatches','search_customer_items_for_order',
+$m$,
+    $m$    'get_sensor_device'
+  ) THEN RETURN; END IF;
+$m$,
+    $m$  ELSIF rpc IN ('get_order_with_items','get_cart_dispatches','add_item_to_order',
+$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$    'search_customer_items_for_order',
+$m$,
+    $m$    'get_sensor_device',
+    -- The print "View jobs" sheet (migration 123); customers stay refused by the final ELSE.
+    'get_print_jobs','cancel_print_job'
+  ) THEN RETURN; END IF;
+$m$,
+    $m$  ELSIF rpc IN ('get_order_with_items','add_item_to_order',
+$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('warehouse_security.authorize_rpc(text, jsonb)'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'authorize_rpc: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;

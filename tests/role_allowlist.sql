@@ -120,7 +120,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('get_standard_rate',false,'no'),('set_standard_rate',false,'no'),
  ('get_sensor_polling_data',true,'no'),('get_sensor_history',true,'no'),
  -- migration 74: one sensor
- ('get_sensor_device',true,'no'),
+ ('get_sensor_device',true,'no'),('get_print_jobs',true,'no'),('cancel_print_job',true,'no'),
  ('delete_grn_image',true,'no'),('delete_dispatch_image',true,'no'),
  -- administrators and supervisors only
  ('update_user_role',false,'no'),('update_user_status',false,'no'),
