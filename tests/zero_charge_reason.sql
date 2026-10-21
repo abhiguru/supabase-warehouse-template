@@ -150,11 +150,6 @@ FROM (SELECT substring(pg_get_functiondef('warehouse_security.invoice_discount_a
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.zc_assert(warehouse_security.active_role()='staff','actual staff role');
--- The first call: zc_save1 (the call the one-argument save used to take) and zc_save3 now both use the app's save.
-SELECT pg_temp.zc_save1(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused1 \gset
-SELECT pg_temp.zc_assert(:'refused1'::jsonb->>'success'='false'
- AND :'refused1'::jsonb->>'error'='Enter a reason for the zero charge',
- 'one-argument save: zero charge without a reason refused: '||:'refused1');
 -- Three-argument path (the one the app uses): the text and the code as they are.
 SELECT pg_temp.zc_save3(:'a_header'::jsonb || '{"inv_no":20261101}'::jsonb, pg_temp.zc_rates(:'a_items'::jsonb,'{"charge":0}'::jsonb)) AS refused3 \gset
 SELECT pg_temp.zc_assert(:'refused3'::jsonb->>'success'='false' AND :'refused3'::jsonb->>'error'='Enter a reason for the zero charge'

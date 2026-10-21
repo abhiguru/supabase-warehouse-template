@@ -27,6 +27,9 @@ CREATE FUNCTION pg_temp.rule_update(invoice uuid, header jsonb, items jsonb) RET
   SELECT public.update_invoice(invoice, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
 CREATE FUNCTION pg_temp.rule_refused(answer jsonb, reason text) RETURNS boolean LANGUAGE sql AS $$
   SELECT answer->>'success'='false' AND answer->>'error' LIKE '%' || reason || '%' $$;
+-- The charge range is refused by the item validator: its text sits in validation_errors, not in error.
+CREATE FUNCTION pg_temp.rule_refused_in(answer jsonb, reason text) RETURNS boolean LANGUAGE sql AS $$
+  SELECT answer->>'success'='false' AND answer->>'error'='Invalid invoice items' AND (answer->'validation_errors')::text LIKE '%' || reason || '%' $$;
 CREATE FUNCTION pg_temp.rule_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
  DECLARE c jsonb; l jsonb; claims jsonb;
  BEGIN
@@ -119,26 +122,24 @@ SELECT :'header'::jsonb || jsonb_build_object('gr_id',:'grn_c','gr_no','RULC') A
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.rule_assert(warehouse_security.active_role()='staff','actual staff role');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-7.5}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'one-argument save: negative labour rate refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-100}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: negative tax refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":100.01}'::jsonb)),'Invoice line tax must be between 0 and 100'),'one-argument save: tax above 100 refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb))->>'success'='false','one-argument save: negative charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb))->>'success'='false','one-argument save: absurd charge refused');
-SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save1(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'one-argument save: absurd labour rate refused');
-SELECT pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)) AS three_charge \gset
-SELECT pg_temp.rule_assert(:'three_charge'::jsonb->>'success'='false','three-argument save: negative charge refused: ' || :'three_charge');
+-- One save path since migration 123 (the app's three-argument save_invoice); each refusal names its exact reason (the charge range
+-- is checked by validate_numeric_range, whose text names the field).
+SELECT pg_temp.rule_assert(pg_temp.rule_refused_in(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":-5}'::jsonb)),'invoice_items[1].charge must be >= 0. Got: -5'),'save: negative charge refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_refused_in(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"charge":1000000}'::jsonb)),'invoice_items[1].charge must be <= 999999. Got: 1000000'),'save: absurd charge refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-2}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'three-argument save: negative labour rate refused');
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-7.5}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'save: negative labour rate refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-1}'::jsonb)),'Invoice line tax must be between 0 and 100'),'three-argument save: negative tax refused');
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":-2}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'save: negative labour rate (-2) refused');
 SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
- pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'three-argument save: absurd labour rate refused');
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"labour_rate":1000000}'::jsonb)),'Invoice line labour rate must be between 0 and 999999'),'save: absurd labour rate refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-100}'::jsonb)),'Invoice line tax must be between 0 and 100'),'save: negative tax refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":-1}'::jsonb)),'Invoice line tax must be between 0 and 100'),'save: tax of -1 refused');
+SELECT pg_temp.rule_assert(pg_temp.rule_refused(pg_temp.rule_save3(:'a_header'::jsonb || '{"inv_no":20261041}'::jsonb,
+ pg_temp.rule_rates(:'a_items'::jsonb,'{"tax":100.01}'::jsonb)),'Invoice line tax must be between 0 and 100'),'save: tax above 100 refused');
 RESET ROLE;
 SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice WHERE customer_id=:'customer_id'::uuid),'refused saves leave no invoice');
 SELECT pg_temp.rule_assert((SELECT invoiced IS NOT TRUE FROM public.goodsreceived WHERE id=:'grn_a'::uuid),'refused saves leave the receipt uninvoiced');

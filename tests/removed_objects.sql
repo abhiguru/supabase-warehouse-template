@@ -428,12 +428,26 @@ SELECT pg_temp.ro_assert(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tr
   AND (SELECT count(*) = 1 FROM warehouse_maintenance.retention_policy WHERE key = 'ephemeral_auth' AND days = 7)
   AND NOT EXISTS (SELECT 1 FROM warehouse_maintenance.retention_policy WHERE key IN ('session_activity', 'security_logs')),
   'the OTP cleanup trigger is gone and the 7-day ephemeral_auth rule is the only OTP retention rule');
-SELECT pg_temp.ro_assert(NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'uuid-ossp')
-  AND NOT EXISTS (SELECT 1 FROM pg_attrdef d WHERE pg_get_expr(d.adbin, d.adrelid) ~ 'uuid_generate'),
-  'uuid-ossp is gone and no column default uses it');
-SELECT pg_temp.ro_assert((SELECT bool_and(pg_get_expr(d.adbin, d.adrelid) = 'uuidv7()') FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+-- uuid-ossp stays: the app validates disp_trl_id with yup string().uuid() (versions 1 to 5), so the three line tables keep version-1 ids.
+SELECT pg_temp.ro_assert(EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'uuid-ossp'), 'uuid-ossp is still installed');
+SELECT pg_temp.ro_assert((SELECT count(*) = 3 AND bool_and(pg_get_expr(d.adbin, d.adrelid) ~ '^(extensions\.)?uuid_generate_v1\(\)$') FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
     WHERE d.adrelid IN ('public.dispatch_trl'::regclass, 'public.goodsreceived_trl'::regclass, 'public.invoice_trl'::regclass) AND a.attname = 'id'),
-  'the line tables that are ordered by uuid_extract_timestamp(id) get time-ordered ids');
+  'the three line tables still default to uuid_generate_v1()');
+SELECT pg_temp.ro_assert((SELECT count(*) = 0 FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum JOIN pg_class c ON c.oid = d.adrelid
+    WHERE c.relnamespace = 'public'::regnamespace AND pg_get_expr(d.adbin, d.adrelid) ~ 'uuid_generate|uuidv7'
+      AND c.relname NOT IN ('dispatch_trl', 'goodsreceived_trl', 'invoice_trl')),
+  'every other public default is gen_random_uuid(): no uuid_generate or uuidv7 default is left on another table');
+CREATE FUNCTION pg_temp.ro_default(tbl text) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE expr text; v uuid;
+BEGIN
+  SELECT pg_get_expr(d.adbin, d.adrelid) INTO expr FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+    WHERE d.adrelid = ('public.' || tbl)::regclass AND a.attname = 'id';
+  EXECUTE 'SELECT ' || expr INTO v;
+  RETURN v;
+END $$;
+-- A new line row gets a version-1 id (and the ordering by uuid_extract_timestamp(id) reads it).
+SELECT pg_temp.ro_assert((SELECT bool_and(uuid_extract_version(pg_temp.ro_default(t)) = 1) FROM unnest(ARRAY['dispatch_trl', 'goodsreceived_trl', 'invoice_trl']) t),
+  'a new id of each line table is a version-1 uuid');
 SELECT pg_temp.ro_assert(pg_get_expr(d.adbin, d.adrelid) = 'gen_random_uuid()', 'orders.id is random: the order number is cut from the first 8 characters of it')
 FROM pg_attrdef d WHERE d.adrelid = 'public.orders'::regclass AND d.adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'public.orders'::regclass AND attname = 'id');
 -- The live functions that lost a dead branch still answer the old keys.
@@ -441,8 +455,9 @@ SELECT pg_temp.ro_assert(pg_get_functiondef('public.delete_grn_safe(uuid)'::regp
   AND pg_get_functiondef('public.save_invoice_internal(uuid,jsonb,jsonb[])'::regprocedure) ~ 'resolved_errors_count'
   AND pg_get_functiondef('public.generate_invoice_data_for_grn(uuid,text)'::regprocedure) !~ 'user_customers', 'delete_grn_safe keeps auto_invoice_errors (0); no function reads user_customers');
 SELECT pg_temp.ro_assert((SELECT count(*) = 0 FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'warehouse_security'::regnamespace, 'warehouse_maintenance'::regnamespace)
-    AND p.prosrc ~ '\m(user_session_activity|auth_logs|config_access_logs|intrusion_events|user_customers|secrets_vault|jwt_config)\M'),
-  'no function body names a dropped table');
+    AND (p.prosrc ~ '\m(user_session_activity|auth_logs|config_access_logs|intrusion_events|user_customers|secrets_vault|jwt_config|sensor_health_events|intrusion_metrics|contact_submissions|captcha_config|order_number_counter|test_otp_records|v_jwt_secret|v_access_token_expiry|v_refresh_token_expiry)\M'
+      OR p.prosrc ~* '\m(FROM|JOIN|INTO|UPDATE)\s+(public\.)?auto_invoice_errors\M')),
+  'no function body names any of the 16 dropped tables');
 -- The trigger of S3 stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 SELECT pg_temp.ro_assert(EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_restore_stock_on_dispatch_delete'), 'trg_restore_stock_on_dispatch_delete is still there');
 ROLLBACK;

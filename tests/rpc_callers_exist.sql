@@ -31,7 +31,11 @@ FROM unnest(ARRAY[
   'set_my_language','set_standard_rate','undo_rate_change','update_customer','update_dispatch_smart',
   'update_grn','update_item','update_order_item_quantity','update_user_role','update_user_status',
   'user_accessible_customers','save_invoice','update_invoice','get_sensor_polling_data','get_sensor_device',
-  'update_sensor_device']) AS n
+  'update_sensor_device',
+  -- functions/_shared/report-pdf.ts calls these by variable name (call.name of report-definitions.ts), with the caller's token.
+  'get_customer_grn_activity','get_all_grn_activity','get_customer_dispatch_activity','get_all_dispatch_activity','get_customer_invoice_summary',
+  'get_customer_stock_summary','get_all_stock_summary','get_stock_aging_report','get_customer_activity_detail',
+  'get_all_customer_activity_summary']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
   AND has_function_privilege('authenticated', p.oid, 'EXECUTE'));
 -- The edge functions: called with the service key (or, for get_public_config, the anon key).
@@ -47,12 +51,12 @@ SELECT pg_temp.rc_assert(count(*) = 0, 'fas-sync calls a function that is gone o
 FROM (VALUES
   ('delete_dispatch_with_order_cleanup','{p_dispatch_id,p_user_id}'),
   ('delete_grn_safe','{p_grn_id}'),
-  ('create_customer','{p_name,p_mobile,p_email,p_address,p_city,p_state,p_pincode,p_gst_number,p_pan_number,p_contact_person,p_contact_mobile,p_contact_email}'),
-  ('create_item','{p_name,p_packaging}'),
+  ('create_customer','{p_name,p_mobile,p_address,p_city,p_state,p_pincode}'),
+  ('create_item','{p_name,p_packaging,p_description,p_active}'),
   ('save_grn','{p_gr_no,p_date,p_customer_id,p_customer_name,p_sender_id,p_sender_name,p_supervisor_id,p_supervisor_name,p_registration,p_note,p_leon,p_pricing_mode,p_items,p_images,p_idempotency_key,p_duration_mode}'),
   ('create_dispatch_with_stock_check','{p_dispatch_data,p_dispatch_items,p_retry_count,p_idempotency_key}'),
   ('update_dispatch_smart','{p_dispatch_id,p_dispatch_data,p_dispatch_items}'),
-  ('update_grn','{p_grn_id,p_date,p_registration}'),
+  ('update_grn','{p_grn_id,p_date,p_registration,p_leon,p_items,p_images}'),
   ('get_next_grn_number','{}'),
   ('get_next_dispatch_number','{}')) AS f(name, arguments)
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = f.name

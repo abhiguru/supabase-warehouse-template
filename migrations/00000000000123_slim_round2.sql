@@ -12,13 +12,53 @@
 --       save_invoice(jsonb), the item_storage_price helpers the app never uses: create, update, delete and find_or_create, the
 --       unused get_invoiceable_grns overload and the others listed in the notes). create_dispatch_with_stock_check(jsonb, jsonb[], integer,
 --       text) and its _internal_3param stay: fas-sync calls the four-argument form.
---  * 5. 8 views, 13 tables (all empty), 12 columns and 13 duplicate or covered indexes go. Every foreign key stays covered by an index.
---  * 6. uuid-ossp: the 20 uuid_generate_v1() column defaults become uuidv7() (PostgreSQL 18: time-ordered like version 1, and
---       uuid_extract_timestamp() still reads it, which the line order of dispatches and invoices uses), the 3 uuid_generate_v4() ones
---       gen_random_uuid(); then the extension is dropped.
+--  * 5. 8 views, 16 tables (empty on Dev), 12 columns (NULL on Dev) and 13 duplicate or covered indexes go. Every foreign key stays
+--       covered by an index. A guard at the very top (0.) refuses to run while any of those tables holds a row or any of those columns
+--       a value: the operator then decides, nothing is dropped silently.
+--  * 6. uuid defaults: the 17 uuid_generate_v1() defaults of ordinary tables become gen_random_uuid() (version 4); orders.id was and
+--       stays random. dispatch_trl, goodsreceived_trl and invoice_trl keep extensions.uuid_generate_v1(), so the uuid-ossp extension
+--       STAYS: the app validates disp_trl_id with yup string().uuid(), which accepts versions 1 to 5 only, so a version-7 id would break
+--       invoicing in every released app build. (uuid_extract_timestamp() of those ids orders the lines.) Switch to uuidv7() and drop the
+--       extension in a later migration, once released builds carry a version-agnostic check.
 --  * 7. get_public_config(text): the edge function get-public-config reads its two tables through this narrow function with the
 --       anon key instead of holding the service-role key.
 -- trg_restore_stock_on_dispatch_delete stays: it is not redundant (tests/dispatch_delete_trigger.sql).
+
+-- 0. Guard: refuse to drop anything that holds data. Dev held none; a database with real data (the production box) must be decided
+-- on by the operator. Each object is checked only if it exists. Empty database: passes silently. (GUARD-BEGIN: tests/migrations.sh runs this block.)
+-- GUARD-BEGIN
+DO $guard$
+DECLARE
+  v_obj text;
+  v_n bigint;
+  v_found text[] := '{}';
+  v_tables text[] := ARRAY['auth_logs','config_access_logs','intrusion_events','intrusion_metrics','contact_submissions','captcha_config',
+    'jwt_config','order_number_counter','secrets_vault','test_otp_records','user_session_activity','sensor_health_events',
+    'auto_invoice_errors','v_jwt_secret','v_access_token_expiry','v_refresh_token_expiry'];
+  v_columns text[] := ARRAY['api_configurations.custom_config','api_configurations.google_maps_key','api_configurations.mapbox_token',
+    'api_configurations.sentry_dsn','sms_config.account_sid','sms_config.auth_token','sms_config.from_phone','payments.bank',
+    'feature_flags.rollout_percentage','otp_verifications.msg91_response','otp_verifications.otp_hash','sensor_devices.last_alert_at'];
+BEGIN
+  FOREACH v_obj IN ARRAY v_tables LOOP
+    IF to_regclass('public.' || quote_ident(v_obj)) IS NOT NULL THEN
+      EXECUTE format('SELECT count(*) FROM public.%I', v_obj) INTO v_n;
+      IF v_n > 0 THEN v_found := v_found || format('table public.%s: %s rows', v_obj, v_n); END IF;
+    END IF;
+  END LOOP;
+  FOREACH v_obj IN ARRAY v_columns LOOP
+    IF EXISTS (SELECT 1 FROM information_schema.columns c
+               WHERE c.table_schema = 'public' AND c.table_name = split_part(v_obj, '.', 1) AND c.column_name = split_part(v_obj, '.', 2)) THEN
+      EXECUTE format('SELECT count(*) FROM public.%I WHERE %I IS NOT NULL', split_part(v_obj, '.', 1), split_part(v_obj, '.', 2)) INTO v_n;
+      IF v_n > 0 THEN v_found := v_found || format('column public.%s: %s non-NULL values', v_obj, v_n); END IF;
+    END IF;
+  END LOOP;
+  IF cardinality(v_found) > 0 THEN
+    RAISE EXCEPTION 'Migration 123 would drop data: %. Nothing was changed. Check that this data is not needed (export it if it is), empty these objects, then run the migration again.',
+      array_to_string(v_found, '; ');
+  END IF;
+END
+$guard$;
+-- GUARD-END
 
 -- 1. Live functions without their dead references
 
@@ -829,17 +869,14 @@ DROP INDEX public.idx_invoice_trl_disp_trl_id;
 DROP INDEX public.idx_order_items_order_id;
 DROP INDEX public.idx_users_customers_user_profile;
 
--- 6. uuid-ossp
+-- 6. uuid defaults (17 to gen_random_uuid(); the three line tables keep uuid_generate_v1(), see the header)
 ALTER TABLE public.api_configurations ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.customers ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.dispatch_images ALTER COLUMN id SET DEFAULT gen_random_uuid();
-ALTER TABLE public.dispatch_trl ALTER COLUMN id SET DEFAULT uuidv7();
 ALTER TABLE public.dispatch ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.feature_flags ALTER COLUMN id SET DEFAULT gen_random_uuid();
-ALTER TABLE public.goodsreceived_trl ALTER COLUMN id SET DEFAULT uuidv7();
 ALTER TABLE public.goodsreceived ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.grn_images ALTER COLUMN id SET DEFAULT gen_random_uuid();
-ALTER TABLE public.invoice_trl ALTER COLUMN id SET DEFAULT uuidv7();
 ALTER TABLE public.invoice ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.item_storage_prices ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.items ALTER COLUMN id SET DEFAULT gen_random_uuid();
@@ -850,7 +887,7 @@ ALTER TABLE public.print_jobs ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.sensor_devices ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.sensor_readings ALTER COLUMN id SET DEFAULT gen_random_uuid();
 ALTER TABLE public.stock_movements ALTER COLUMN id SET DEFAULT gen_random_uuid();
-DROP EXTENSION "uuid-ossp";
+-- uuid-ossp stays: dispatch_trl, goodsreceived_trl and invoice_trl still default to extensions.uuid_generate_v1().
 
 -- 7. get_public_config: what the public configuration shows, read without the service-role key. The answer is NULL when the
 -- environment has no active row (the edge function then answers 503 "not seeded", as before). json, not jsonb, keeps the order of the flags.
