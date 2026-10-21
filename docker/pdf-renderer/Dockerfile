@@ -33,16 +33,7 @@ RUN npm ci --omit=dev --ignore-scripts \
 # ---- runtime -----------------------------------------------------------------------------------------------------------
 FROM base AS runtime
 ARG TARGETARCH
-ARG CHS_VERSION=155.0.8059.84
-ARG PUPPETEER_CORE_VERSION=25.14.0
-ARG GIT_SHA=unknown
 RUN test "${TARGETARCH}" = "amd64" || { echo "pdf-renderer supports linux/amd64 only (TARGETARCH='${TARGETARCH}')" >&2; exit 1; }
-
-LABEL org.opencontainers.image.title="pdf-renderer" \
-      org.opencontainers.image.revision="${GIT_SHA}" \
-      pdf-renderer.chs-version="${CHS_VERSION}" \
-      pdf-renderer.puppeteer-core-version="${PUPPETEER_CORE_VERSION}" \
-      pdf-renderer.git-sha="${GIT_SHA}"
 
 # Shared libraries chrome-headless-shell needs (the minimum `ldd` reports), tini, fontconfig and the font set
 # of the Gotenberg 8.x image this service replaces. Packages are named without versions: Debian's security
@@ -106,6 +97,17 @@ ENV NODE_ENV=production \
     MALLOC_ARENA_MAX=2 \
     CHS_PATH=/opt/chs/chrome-headless-shell \
     PORT=3000
+
+# Last, so a new commit (GIT_SHA) changes only these metadata lines and never invalidates the cached apt-get, font and
+# node_modules layers above.
+ARG CHS_VERSION=155.0.8059.84
+ARG PUPPETEER_CORE_VERSION=25.14.0
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.title="pdf-renderer" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      pdf-renderer.chs-version="${CHS_VERSION}" \
+      pdf-renderer.puppeteer-core-version="${PUPPETEER_CORE_VERSION}" \
+      pdf-renderer.git-sha="${GIT_SHA}"
 
 USER 10001:10001
 EXPOSE 3000
