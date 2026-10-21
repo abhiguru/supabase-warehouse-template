@@ -37,7 +37,7 @@ esac
 }
 
 const REFUSAL = /Refusing: .*PostgreSQL 18.*migrations-pre-baseline.*Baseline reload/s;
-const UPGRADE = /Refusing: .*PostgreSQL 18 and cannot start on PostgreSQL 17 data.*Major upgrade 17 → 18/s;
+const UPGRADE = /Refusing: .*PostgreSQL 18 and cannot start on PostgreSQL 17 data.*Major PostgreSQL upgrade/s;
 
 test('a running PostgreSQL 15 database is refused, naming the baseline reload', () => {
   const r = run({ running: true, serverNum: '150008', dataDir: '15' });
@@ -115,4 +115,19 @@ test('every place that mounts the data directory also sets PGDATA to it (the off
   const verify = read('scripts/verify-restore.sh');
   assert.equal(verify.match(/-e PGDATA=\/var\/lib\/postgresql\/data/g)?.length, 2, 'tmpfs and disk runs');
   assert.match(read('scripts/compose.sh'), /destination='\/var\/lib\/postgresql\/data'/);
+});
+
+test('a running PostgreSQL 19 server is refused, naming a newer release', () => {
+  const r = run({ running: true, serverNum: '190001', dataDir: '18' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /server_version_num 190001 \(PostgreSQL 19\).*cannot start on newer data.*PostgreSQL 19/s);
+});
+
+test('an unknown data directory passes silently, an unreadable one only warns', () => {
+  const unknown = run({ dataDir: 'unknown' });
+  assert.equal(unknown.status, 0, unknown.stderr);
+  assert.equal(unknown.stderr, '');
+  const unreadable = run({ dataDir: 'unreadable' });
+  assert.equal(unreadable.status, 0, unreadable.stderr);
+  assert.match(unreadable.stderr, /Warning: could not read the data directory .* its PostgreSQL version was not checked/);
 });

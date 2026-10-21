@@ -56,6 +56,11 @@ for id in $ids; do
     echo "Refusing: existing $service container uses another data path." >&2
     exit 1
   fi
+  # The db container must also keep its data directory where the bind mount is (PGDATA, docker-compose.yml).
+  if [[ "$service" == db ]] && ! docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" | grep -qx 'PGDATA=/var/lib/postgresql/data'; then
+    echo "Refusing: existing db container does not use PGDATA=/var/lib/postgresql/data." >&2
+    exit 1
+  fi
 done
 unset_args=()
 while IFS= read -r line; do

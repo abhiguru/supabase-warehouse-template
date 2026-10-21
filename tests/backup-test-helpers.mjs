@@ -116,7 +116,7 @@ case "$1" in
   compose)
     case "$*" in
       *' config --format json') if [ -n "$FAKE_COMPOSE_CONFIG" ]; then cat "$FAKE_COMPOSE_CONFIG"; else printf '{"name":"warehouse-backup-test","services":{}}\\n'; fi ;;
-      *' build '*) if [ -n "$FAKE_BUILT_MARK" ] && [ "$FAKE_BUILD_FAILS" != yes ]; then : > "$FAKE_BUILT_MARK"; fi; [ "$FAKE_BUILD_FAILS" != yes ] ;;
+      *' build '*) if [ -n "$FAKE_BUILT_MARK" ] && [ "$FAKE_BUILD_FAILS" != yes ]; then : > "$FAKE_BUILT_MARK"; if [ "$FAKE_BUILD_NOOP" = yes ]; then echo drift >> "$FAKE_BUILD_CONTEXT/drift"; fi; fi; [ "$FAKE_BUILD_FAILS" != yes ] ;;
       *' exec -T db sh -c IFS= read -r pw;'*) cat >> "\${FAKE_STDIN_LOG:-/dev/null}" ;;
       *' ps -q') if [ "$FAKE_RUNNING" = yes ]; then printf 'abcdef123456\\n'; fi ;;
       *' ps --all --format '*) printf 'db running healthy\\nrest running \\nstorage running unhealthy\\nfunctions exited \\n' ;;

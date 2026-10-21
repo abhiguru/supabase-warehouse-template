@@ -205,7 +205,7 @@ reading scan numbers, record the build date with the scan, and cut no release fr
 
 **Database image rule.** The database image is the official PostgreSQL image, pinned by digest in `docker/postgres/Dockerfile`
 and bumped by Dependabot within major 18 (a new major needs a planned dump and restore on every installation; the PostgreSQL 17 to 18 move is in
-[Major upgrade 17 → 18](OPERATOR_INSTALL.md#major-upgrade-17--18), the 15 to 17 move in [Baseline reload](OPERATOR_INSTALL.md#baseline-reload)). The data directory is set explicitly (`PGDATA=/var/lib/postgresql/data`, the mount of the `db` service): the official 18 image defaults elsewhere. The cluster uses the `en_US.UTF-8` collation of the image's
+[Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), the 15 to 17 move in [Baseline reload](OPERATOR_INSTALL.md#baseline-reload)). The data directory is set explicitly (`PGDATA=/var/lib/postgresql/data`, the mount of the `db` service): the official 18 image defaults elsewhere. The cluster uses the `en_US.UTF-8` collation of the image's
 glibc, so a base-image bump that changes glibc or its locale data can change index order. Check the base image's changes
 before moving the digest, and plan a reindex if the collation changed.
 
@@ -354,7 +354,7 @@ right after `CREATE EXTENSION` (section "Privileges of extension members" at the
 `migrations/00000000000000_baseline.sql`). Without them `PUBLIC` could execute `pg_trgm` functions such as `similarity`.
 
 **The old chain is refused.** `setup.sh` and `start.sh` stop before they rebuild or start anything when the database is below
-PostgreSQL 18 (`scripts/db-version-preflight.sh`; a PostgreSQL 17 database is pointed to the [Major upgrade 17 → 18](OPERATOR_INSTALL.md#major-upgrade-17--18), an earlier one to the reload); a database whose ledger names a migration this release does not contain
+PostgreSQL 18 (`scripts/db-version-preflight.sh`; a PostgreSQL 17 database is pointed to the [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade), an earlier one to the reload); a database whose ledger names a migration this release does not contain
 stops `scripts/migrate.sh` with `This database recorded migrations that are not in this release (...)` (full text in
 [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#baseline-reload)) and changes nothing. `db:restore`, `db:restore-host` and `db:verify-restore` call
 `scripts/backup-image.sh` first and refuse a backup whose `database_image=` line is missing or names `supabase/postgres...`, or

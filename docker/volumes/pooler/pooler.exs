@@ -36,7 +36,7 @@ params = %{
 # An existing one keeps its settings, except the server_version it reports to
 # clients (default_parameter_status), which is set to the running server's at
 # every start: it stays on the old major after a major upgrade (docs/OPERATOR_INSTALL.md,
-# "Major upgrade 17 → 18") otherwise. The pool user's password is written
+# "Major PostgreSQL upgrade") otherwise. The pool user's password is written
 # again at every start: it changes on the upgrade to per-role passwords, on
 # `npm run db:rotate-passwords`, and when a restore brings back an older
 # _supabase database.

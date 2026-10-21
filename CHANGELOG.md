@@ -41,7 +41,7 @@ The database image moves from `postgres:17.11-trixie` to `postgres:18.6-trixie` 
 `scripts/db-image.sh` still prints the pin, and every version guard now reads the major from it). No migration changes. The schema
 of the baseline plus the migrations after it is identical on 17.11 and 18.6 (`pg_dump --schema-only` and `scripts/backup-integrity.sql`
 compared on both), and `tests/migrations.sh` passes on 18. **Every installation that runs PostgreSQL 17 needs the one-time
-[Major upgrade 17 → 18](docs/OPERATOR_INSTALL.md#major-upgrade-17--18)** (backup with the old checkout, restore on the new one); PostgreSQL 17
+[Major PostgreSQL upgrade](docs/OPERATOR_INSTALL.md#major-postgresql-upgrade)** (backup with the old checkout, restore on the new one); PostgreSQL 17
 data files do not open in 18.
 
 - **Data directory.** The official 18 image defaults `PGDATA` to `/var/lib/postgresql/18/docker` and declares `/var/lib/postgresql` as
@@ -56,7 +56,7 @@ data files do not open in 18.
   (`scripts/build-images.sh`) and refuses if it cannot, so a cross-major restore initialises the new cluster on 18, never on a stale 17 image.
 - **Containers removed with their volumes.** `verify-restore.sh` removes its container with `docker rm -f -v`: the image's `VOLUME` leaves no anonymous volume.
 - **Pooler.** `docker/volumes/pooler/pooler.exs` also updates the `server_version` of an existing tenant to the running server's.
-- **Docs and ledger.** New section "Major upgrade 17 → 18" in `docs/OPERATOR_INSTALL.md`; the `db-os-no-fix` exception in
+- **Docs and ledger.** New section "Major PostgreSQL upgrade" in `docs/OPERATOR_INSTALL.md`; the `db-os-no-fix` exception in
   `docker/image-exceptions.json` is re-reviewed for the 18.6 image (same 62 HIGH/CRITICAL rows without a fix).
 
 ## Unreleased: Push review (migration 122)

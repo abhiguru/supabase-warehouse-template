@@ -36,6 +36,10 @@ backup_check_database_image() {
   pin="$(bash "$(dirname "${BASH_SOURCE[0]}")/db-image.sh")" || return 1
   pin_major="${pin#postgres:}"; pin_major="${pin_major%%[!0-9]*}"
   image_major="${image#postgres:}"; image_major="${image_major%%[!0-9]*}"
+  if [[ ! "$image_major" =~ ^[0-9]{1,3}$ ]]; then
+    echo "Refusing: the backup records a database image '$image' whose PostgreSQL major version cannot be read." >&2
+    return 1
+  fi
   if ((image_major > pin_major)); then
     echo "Refusing: the backup was made on '$image', a newer PostgreSQL major than the $pin_major this checkout runs ($pin). A dump cannot be restored on an older server. Check out the release the backup was made with, or a newer one." >&2
     return 1

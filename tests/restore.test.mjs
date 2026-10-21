@@ -186,6 +186,30 @@ test('restore refuses with the data untouched when the stale db image cannot be 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('restore refuses with the data untouched when the db image is still stale after a build that reported success', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-stale-after-');
+  try {
+    const result = restore(scratch, ['--yes', backup], { ...staleDbImage(scratch), FAKE_BUILD_NOOP: 'yes', FAKE_BUILD_CONTEXT: join(scratch, 'root/docker/postgres'), FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing: the db image still does not match this checkout after the rebuild.*Nothing was moved/s);
+    assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/);
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore refuses with the data untouched when the db image check itself fails', () => {
+  const { scratch, state, backup } = fixture('warehouse-restore-plan-fails-');
+  try {
+    const broken = join(scratch, 'broken-config.json');
+    writeFileSync(broken, 'not json');
+    const result = restore(scratch, ['--yes', backup], { FAKE_COMPOSE_CONFIG: broken, FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt') });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing: could not check whether the db image matches this checkout\. Nothing was moved\./);
+    assert.doesNotMatch(result.calls, /up -d --wait --wait-timeout 180 db/);
+    untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('a restore whose services do not start names the unhealthy ones and shows their last log lines', () => {
   const { scratch, backup } = fixture('warehouse-restore-start-');
   try {

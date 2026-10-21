@@ -20,7 +20,7 @@ Sections: [host prerequisites](#host-prerequisites),
 [backup and restore](#backup-and-restore),
 [rerun and upgrade](#rerun-and-upgrade),
 [baseline reload](#baseline-reload) (for a database built before PostgreSQL 17),
-[major upgrade 17 → 18](#major-upgrade-17--18),
+[major PostgreSQL upgrade](#major-postgresql-upgrade) (17 to 18),
 [Windows host with Linux VM](#windows-host-with-linux-vm).
 
 ## Host prerequisites
@@ -1276,7 +1276,7 @@ what exists: the per-role database passwords and the backup key. Run it a second
 `public/instance.json` and the administrator record before and after.
 
 To upgrade to a newer `main` within one PostgreSQL major (an installation built before the PostgreSQL 17 release needs the
-[Baseline reload](#baseline-reload) once; one that runs PostgreSQL 17 needs the [Major upgrade 17 → 18](#major-upgrade-17--18) once):
+[Baseline reload](#baseline-reload) once; one that runs PostgreSQL 17 needs the [Major PostgreSQL upgrade](#major-postgresql-upgrade) once):
 
 ```bash
 cd /path/to/installed/backend
@@ -1606,21 +1606,21 @@ kept it, else `bash scripts/build-images.sh` (needs the network); then `npm run 
 reload from step 2, after moving any `data/db.pre-baseline` left by an earlier reload out of the way. Backups made by this
 release restore with this release.
 
-## Major upgrade 17 → 18
+## Major PostgreSQL upgrade
 
-This release runs the official PostgreSQL 18 image (`postgres:18.6-trixie`, pinned in `docker/postgres/Dockerfile`; `scripts/db-image.sh`
+This section moves an installation from PostgreSQL 17 to 18. This release runs the official PostgreSQL 18 image (`postgres:18.6-trixie`, pinned in `docker/postgres/Dockerfile`; `scripts/db-image.sh`
 prints the pin and is the one source every script reads). The schema is the same baseline plus the migrations after it. PostgreSQL 17
 data files do not open in 18, so an installation that runs PostgreSQL 17 **cannot be upgraded in place**: `setup.sh` and `start.sh` of this
 release stop before they build or recreate anything (`scripts/db-version-preflight.sh`), and `db:backup` refuses the running 17 server:
 
 ```
-Refusing: the data directory <path> holds a PostgreSQL 17 database (PG_VERSION). This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17, then restore on this one (docs/OPERATOR_INSTALL.md, "Major upgrade 17 → 18").
+Refusing: the data directory <path> holds a PostgreSQL 17 database (PG_VERSION). This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17, then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").
 ```
 
 The way forward is the ordinary backup and in-place restore ([In-place restore of the same instance](#in-place-restore-of-the-same-instance)),
 taken across the two releases: a backup made by the PostgreSQL 17 checkout restores on this one (the restore builds a new 18 cluster and
 replays the logical dump; a backup from a newer major than the checkout runs is refused, so the other way round does not work). The
-services are down from step 6 until step 7 ends, so plan a window. The old data directory is only moved and the old images are kept under a
+services are down from step 4 until step 7 ends, so plan a window. The old data directory is only moved and the old images are kept under a
 second tag, so the way back (step 9) stays open. The data directory inside the container stays `/var/lib/postgresql/data` (the stack sets
 `PGDATA` to it); the official 18 image's own default is elsewhere, so nothing else needs changing on the host.
 
@@ -1635,64 +1635,73 @@ df -h "$WAREHOUSE_STATE_DIR" /var/lib/docker       # free space must be at least
 du -sh "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
 ```
 
-**Step 1. Take the operator lock and stop outside writers.** Hold the lock in this shell until step 4 (`backup.sh` and `build-images.sh` accept
-the inherited lock; `verify-restore.sh` and `restore.sh` take their own, so release it before step 5). Stop what writes from outside the
-stack: a sensor bridge on another host, a script that posts readings or uploads, a scheduled `db:backup` (mute the checker with
-`node scripts/watch.mjs mute 240`). `backup.sh` pauses the stack's own writers itself.
+The lock is held by this shell on descriptor 9 from step 1 until the start of step 4. Run `bash scripts/backup.sh` directly, never
+`npm run db:backup`, in that stretch: npm does not pass descriptor 9 on, so the backup could not take the lock. `stop.sh` and `restore.sh` take the
+lock themselves, so the lock is released before them (step 4 and step 6). `verify-restore.sh` takes no lock.
+
+**Step 1. Take the operator lock, record the old commit and stop every writer.** Stop what writes from outside the stack: a sensor bridge on
+another host, a script that posts readings or uploads. Mute the checker for the window (`node scripts/watch.mjs mute 240`). Then stop the
+stack's own writers; the database and Storage stay up for the backup and the fingerprints. With the writers already stopped, `backup.sh`
+finds nothing to pause and restarts nothing but Storage (which it stops for the capture itself), so no write can sneak in between the backup and the restore.
 
 ```bash
 exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
+git rev-parse HEAD > "$B/old-commit.txt"; cat "$B/old-commit.txt"
 bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
+bash scripts/compose.sh --profile '*' stop kong functions rest pdf-renderer supavisor cups sensor-bridge
+bash scripts/compose.sh --profile '*' ps --status running --services     # only db and storage may remain
 ```
 
-**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.**
+**Step 2. With the OLD checkout (still PostgreSQL 17), take a verified backup and record the data.** The configuration directory is copied whole
+(`config/` holds `compose.env`, the backup key and the other private files; the copy is as private as the backup).
 
 ```bash
 bash scripts/db-image.sh                         # must print postgres:17.…: this is still the old checkout
-npm run db:backup -- "$B/backup"
+bash scripts/backup.sh "$B/backup"
 (cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass
 bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
 bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
 bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY 1 COLLATE \"C\"" > "$B/counts-before.txt"
-cp "$B/backup/integrity.txt" "$B/"               # the integrity report of the backup, compared by the restore itself
+cp -a "$WAREHOUSE_STATE_DIR/config" "$B/config"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
 ```
 
 **Step 3. Tag the current images** so that a rollback uses them instead of building them again (the db image is the one that matters):
 
 ```bash
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); i=$(docker inspect --format '{{.Config.Image}}' "$c")
+while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); [ -n "$c" ] || continue; i=$(docker inspect --format '{{.Config.Image}}' "$c")
   case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-pg18" && echo "$s" >> "$B/old-images.txt";; esac
 done < "$B/running-services.txt"
-grep -qx db "$B/old-images.txt" && cp -p "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256" "$B/" && echo 'old images kept'
+grep -qx db "$B/old-images.txt" && echo 'old images kept'
 ```
 
 "old images kept" must print. Do not run `docker image prune` or `docker builder prune` until the upgrade is accepted.
 
-**Step 4. Check out the new release and build the images.** The build needs the network; if it fails, nothing has changed yet: go to step 9.
-
-```bash
-git fetch --tags origin
-git checkout --detach <this release>          # the tag or commit you are installing
-bash scripts/checkout-permissions.sh
-bash scripts/db-image.sh                         # must print postgres:18.…
-bash scripts/build-images.sh                     # builds the images whose recipe changed, the db image among them
-```
-
-**Step 5. Rehearse the restore.** Release the lock first. The rehearsal restores the backup into a disposable PostgreSQL 18 container and compares
-the integrity report and the object catalog; it touches nothing of the installation. It refuses a backup that was made by a newer major than 18.
+**Step 4. Stop the stack with the old checkout, check out the new release and build the images.** Release the lock first (`stop.sh` takes it
+itself). The facility is down from here. The build needs the network; if it fails, nothing has been moved yet: use rollback A.
 
 ```bash
 exec 9>&-
+bash stop.sh                                     # the old checkout stops the old containers
+git fetch --tags origin
+git checkout --detach <this release>             # the tag or commit you are installing
+bash scripts/checkout-permissions.sh
+bash scripts/db-image.sh                         # must print postgres:18.…
+bash scripts/build-images.sh                     # takes the lock itself; builds the images whose recipe changed, the db image among them
+```
+
+**Step 5. Rehearse the restore.** The rehearsal restores the backup into a disposable PostgreSQL 18 container and compares the integrity report
+and the object catalog; it touches nothing of the installation and takes no lock. It refuses a backup made by a newer major than 18.
+
+```bash
 npm run db:verify-restore -- "$B/backup"      # must pass
 ```
 
-**Step 6. Stop the stack and restore.** `db:restore` moves `data/db` to `data/db.pre-restore-<utc>` and `data/storage` to `data/storage.pre-restore-<utc>`,
-creates a new PostgreSQL 18 cluster from the db image of this checkout (it rebuilds a stale db image first and refuses, before moving anything, if it cannot),
-replays the dump, runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
+**Step 6. Restore.** `db:restore` takes the lock itself and needs the stack down (step 4). It moves `data/db` to `data/db.pre-restore-<utc>` and
+`data/storage` to `data/storage.pre-restore-<utc>`, creates a new PostgreSQL 18 cluster from the db image of this checkout (it rebuilds a stale db image
+first and refuses, before moving anything, if it cannot), replays the dump, runs `migrate.sh --operator`, starts the services and runs `doctor --local`:
 
 ```bash
-bash stop.sh
 npm run db:restore -- --yes "$B/backup"
 ```
 
@@ -1709,7 +1718,7 @@ bash scripts/compose.sh --profile '*' up -d --wait --wait-timeout 180 $(cat "$B/
 
 ```bash
 bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 'SELECT version()'          # PostgreSQL 18.6
-cat "$WAREHOUSE_STATE_DIR/data/db/PG_VERSION"                                                       # 18 (the file belongs to the container's user: use sudo if it is unreadable)
+sudo cat "$WAREHOUSE_STATE_DIR/data/db/PG_VERSION"                                                  # 18 (the file belongs to the container's user)
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
 bash scripts/data-fingerprint.sh --all | diff "$B/fingerprint-all-before.txt" - && echo IDENTICAL   # run on a quiet system (the file says which tables move on their own)
 bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY 1 COLLATE \"C\"" | diff "$B/counts-before.txt" - && echo 'counts equal'
@@ -1722,30 +1731,53 @@ npm run db:verify-restore -- "$(ls -dt "$WAREHOUSE_STATE_DIR"/backups/warehouse-
 node scripts/watch.mjs unmute
 ```
 
-Run any `sudo` command that `setup.sh` printed. Sign in from a phone with one role before the window ends. Restart what you stopped in
-step 1. Keep `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>` for at least a day of use, then remove the two exact
+Run any `sudo` command that `setup.sh` printed. Sign in from a phone with one role before the window ends. Restart what you stopped outside the
+stack in step 1. Keep `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>` for at least a day of use, then remove the two exact
 paths with `sudo rm -rf` (the files belong to the containers' users) only after the first new backup passed `db:verify-restore`.
 Remove the `pre-pg18` image tags (`docker image rm "$P-<service>:pre-pg18"`) at the same time.
 
-**Step 9. Rollback** (any failure before the new database is accepted). The old directories were only moved and the old images are tagged
-`<project>-<service>:pre-pg18` (step 3). Do not run `docker image prune` before the upgrade is accepted. Writes made after step 6 are lost by the rollback:
+**Step 9. Rollback** (any failure before the new database is accepted). Do not run `docker image prune` before the upgrade is accepted. Writes made after
+step 6 are lost by a rollback. First find out whether `restore.sh` moved the data:
+
+```bash
+D="$WAREHOUSE_STATE_DIR/data"; ls -d "$D"/db.pre-restore-* 2>/dev/null || echo 'data not moved'
+```
+
+**Rollback A, data not moved** (the build, the rehearsal or `db:restore` failed or refused before moving anything; no `db.pre-restore-*` directory).
+`data/db` is the live PostgreSQL 17 directory and is not touched. Go back to the old commit and the old images:
 
 ```bash
 exec 9>&-
-bash stop.sh
-D="$WAREHOUSE_STATE_DIR/data"; ls "$D"                      # names the db.pre-restore-<utc> and storage.pre-restore-<utc> directories
-test ! -e "$D/db.failed" && mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-<utc>" "$D/db"
-test ! -e "$D/storage.failed" && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-<utc>" "$D/storage"
-git checkout --detach <the old commit>; bash scripts/checkout-permissions.sh      # the commit this installation ran before step 4
+git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
 while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-cp -p "$B/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
+cp -p "$B/config/image-recipes.sha256" "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256"
 bash start.sh
 bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
 bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
 ```
 
-If `config/compose.env.pre-restore-<utc>` exists (only after `--restore-config`), move it back over `config/compose.env` too.
+**Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every `mv` is guarded: nothing is
+moved unless both kept directories are there:
+
+```bash
+exec 9>&-
+bash stop.sh
+U=$(ls "$D" | sed -n 's/^db\.pre-restore-//p' | sort | tail -n 1); echo "kept: $U"
+if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-restore-$U" && test ! -e "$D/db.failed" && test ! -e "$D/storage.failed"; then
+  mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
+    && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"
+else
+  echo 'Stop: the kept directories are missing or db.failed already exists; nothing was moved.'; false
+fi
+git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
+cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config)
+P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
+while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
+bash start.sh
+bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
+bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
+```
 
 ## Windows host with Linux VM
 

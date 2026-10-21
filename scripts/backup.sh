@@ -65,7 +65,7 @@ pin_major="${pin#postgres:}"; pin_major="${pin_major%%[!0-9]*}"
 server="$(compose exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
   -c "SELECT current_setting('server_version_num')::int / 10000 || '|' || (to_regrole('postgres') IS NULL)" | tr -d '[:space:]')"
 if [[ "$server" != "$pin_major|true" ]]; then
-  echo "Refusing: the running database reports '$server' (major version | has no role postgres), but this release runs PostgreSQL $pin_major with no role postgres. A backup of it would carry the wrong image label. This installation has not been moved to this release's database yet. From PostgreSQL $((pin_major - 1)): follow docs/OPERATOR_INSTALL.md, \"Major upgrade 17 → 18\" (back up with the checkout that runs the old server first). From before PostgreSQL 17: back it up with the release tagged migrations-pre-baseline, then follow \"Baseline reload\"." >&2
+  echo "Refusing: the running database reports '$server' (major version | has no role postgres), but this release runs PostgreSQL $pin_major with no role postgres. A backup of it would carry the wrong image label. This installation has not been moved to this release's database yet. From PostgreSQL $((pin_major - 1)): follow docs/OPERATOR_INSTALL.md, \"Major PostgreSQL upgrade\" (back up with the checkout that runs the old server first). From before PostgreSQL 17: back it up with the release tagged migrations-pre-baseline, then follow \"Baseline reload\"." >&2
   exit 1
 fi
 

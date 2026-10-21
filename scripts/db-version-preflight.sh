@@ -6,7 +6,7 @@
 # one source of the expected major). A container recreated on the data directory of another major would chown it, fail
 # with "database files are incompatible with server" and restart in a loop; the old directory would be changed and the
 # message would not say what to do. From the previous major (17) the data moves with the major upgrade (docs/OPERATOR_INSTALL.md,
-# "Major upgrade 17 → 18"); from earlier than 17 with the baseline reload ("Baseline reload").
+# "Major PostgreSQL upgrade"); from earlier than 17 with the baseline reload ("Baseline reload").
 # Two checks, both read-only:
 #   1. a running db container: SHOW server_version_num must be the major of the pin;
 #   2. the data directory WAREHOUSE_DB_PATH, when it is not empty: PG_VERSION must be the major of the pin. The directory is
@@ -21,7 +21,7 @@ previous_major=$((pin_major - 1))
 refuse() {
   local what="$1" major="$2"
   if [[ "$major" =~ ^[0-9]+$ ]] && ((major == previous_major)); then
-    echo "Refusing: $what This release runs PostgreSQL $pin_major and cannot start on PostgreSQL $previous_major data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL $previous_major, then restore on this one (docs/OPERATOR_INSTALL.md, \"Major upgrade 17 → 18\")." >&2
+    echo "Refusing: $what This release runs PostgreSQL $pin_major and cannot start on PostgreSQL $previous_major data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL $previous_major, then restore on this one (docs/OPERATOR_INSTALL.md, \"Major PostgreSQL upgrade\")." >&2
   elif [[ "$major" =~ ^[0-9]+$ ]] && ((major > pin_major)); then
     echo "Refusing: $what This release runs PostgreSQL $pin_major and cannot start on newer data. No database, container or image was changed. Check out the release that runs PostgreSQL $major or newer." >&2
   else

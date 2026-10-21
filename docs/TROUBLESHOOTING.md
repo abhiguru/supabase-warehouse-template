@@ -231,8 +231,8 @@ it; only `functions` can.
   full text is `Refusing: <the running database reports server_version_num 170011 (PostgreSQL 17). | the data directory <path>
   holds a PostgreSQL 17 database (PG_VERSION).> This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No
   database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17,
-  then restore on this one (docs/OPERATOR_INSTALL.md, "Major upgrade 17 → 18").` The installation still runs PostgreSQL 17.
-  Nothing was built or started. Follow [Major upgrade 17 → 18](OPERATOR_INSTALL.md#major-upgrade-17--18). `db:backup` run
+  then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").` The installation still runs PostgreSQL 17.
+  Nothing was built or started. Follow [Major PostgreSQL upgrade](OPERATOR_INSTALL.md#major-postgresql-upgrade). `db:backup` run
   with this checkout against the 17 server refuses the same way (`the running database reports '17|true'`): take the backup with the old checkout.
 - **`setup.sh` or `start.sh` stops with `Refusing: ... This release runs PostgreSQL 18 and cannot start on that data.`**: the
   full text is `Refusing: <the running database reports server_version_num 150008 (PostgreSQL 15). | the data directory <path>

@@ -616,7 +616,7 @@ test('restore verifier lists the storage archive and never unpacks it', () => {
 test('backup refuses a database that is not this release\'s (an earlier major version or a role postgres), before any service is stopped', () => {
   for (const [label, server, reason] of [
     ['PostgreSQL 15', '15|true', /reports '15\|true'.*migrations-pre-baseline.*Baseline reload/s],
-    ['PostgreSQL 17, this release runs 18', '17|true', /reports '17\|true'.*Major upgrade 17 → 18/s],
+    ['PostgreSQL 17, this release runs 18', '17|true', /reports '17\|true'.*Major PostgreSQL upgrade/s],
     ['a role postgres', '18|false', /reports '18\|false'/],
   ]) {
     const scratch = mkdtempSync(join(tmpdir(), 'warehouse-backup-server-'));
@@ -671,6 +671,9 @@ test('the image check: a repeated image line is damaged metadata, an older pin a
     // The pin is PostgreSQL 18: a backup of 17 (the previous major) restores, one of a newer major is refused by the upper bound.
     const previous = imageCheck(makeBackup(join(scratch, 'previous'), { databaseImage: `postgres:17.11-trixie@sha256:${'b'.repeat(64)}` }));
     assert.equal(previous.status, 0, previous.stderr);
+    const odd = imageCheck(makeBackup(join(scratch, 'odd'), { databaseImage: `postgres:12345-trixie@sha256:${'d'.repeat(64)}` }));
+    assert.equal(odd.status, 1);
+    assert.match(odd.stderr, /whose PostgreSQL major version cannot be read/);
     const newer = imageCheck(makeBackup(join(scratch, 'newer'), { databaseImage: `postgres:19.1-trixie@sha256:${'c'.repeat(64)}` }));
     assert.equal(newer.status, 1);
     assert.match(newer.stderr, /Refusing: the backup was made on 'postgres:19\.1-trixie@sha256:[0-9a-f]{64}', a newer PostgreSQL major than the 18 this checkout runs/);

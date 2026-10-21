@@ -15,7 +15,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 13 (trixie) packages of the official postgres:18.6-trixie base with no fixed version (2026-10-21 scan of the recipe's image: 62 HIGH/CRITICAL rows, 1 CRITICAL in libxml2, 58 affected and 4 fix_deferred, across util-linux, gnupg, libxml2, perl, ncurses, systemd and acl packages; 0 rows with a fix). The recipe adds nothing to the base except a gosu rebuilt with the pinned Go builder (its Go standard-library rows, all fixable, are gone). The database has no host port and is on the database network only.",
+      "reason": "Debian 13 (trixie) packages of the official postgres:18.6-trixie base with no fixed version (2026-10-21 scan of the recipe's image: 62 HIGH/CRITICAL rows, 1 CRITICAL in libxml2, 58 affected and 4 fix_deferred, across util-linux, gnupg, libxml2, perl, ncurses, systemd and acl packages; none of these has a fixed version). The recipe adds nothing to the base except a gosu rebuilt with the pinned Go builder; that gosu's Go standard-library rows are not covered by this entry (the 2026-10-21 scan found one fixable row, CVE-2026-111943 in the Go 1.27.2 standard library, fixed in 1.27.3: it needs the builder bump, not an exception). The database has no host port and is on the database network only.",
       "reviewed": "2026-10-21",
       "expires": "2027-01-15"
     },

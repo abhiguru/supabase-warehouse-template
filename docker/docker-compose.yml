@@ -219,6 +219,10 @@ services:
       - ./volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/30-_supabase.sql:ro,Z
       - ./volumes/db/pooler.sql:/docker-entrypoint-initdb.d/32-pooler.sql:ro,Z
       - ${WAREHOUSE_DB_PATH:?Set private database path}:/var/lib/postgresql/data:Z
+    tmpfs:
+      # The official 18 image declares VOLUME /var/lib/postgresql, which would leave an anonymous volume behind
+      # at every stop. A small tmpfs takes that path; the bind mount above sits inside it.
+      - /var/lib/postgresql:size=16m
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "postgres", "-h", "localhost"]
       interval: 5s
