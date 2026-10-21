@@ -236,8 +236,10 @@ SELECT pg_temp.assert_true(public.get_grn_item_dispatches('55555555-0000-4000-80
 SELECT pg_temp.assert_true(jsonb_array_length(public.get_grn_item_dispatches('55555555-0000-4000-8000-000000000010')#>'{data,dispatches}')=3,'assigned customer reads per-item dispatch history');
 SELECT pg_temp.assert_true(public.get_customer_grn_items('22222222-0000-4000-8000-000000000001',NULL,NULL,'{}','date','desc',100,0)->>'success'='true','customer item catalog accepts documented maximum page size');
 SELECT pg_temp.assert_true(public.add_item_to_order('99999999-0000-4000-8000-000000000010','55555555-0000-4000-8000-000000000011',5)->>'success'='true','customer adds minimal GRN item to cart');
+RESET ROLE; -- order_items has no SELECT grant for an app role (migration 123)
 SELECT pg_temp.assert_true((SELECT grn_items_package_mark='' AND grn_items_packaging='' AND grn_items_rack='' AND grn_items_weight=0
   FROM public.order_items WHERE order_id='99999999-0000-4000-8000-000000000010'),'cart snapshot normalizes optional GRN labels');
+SET LOCAL ROLE authenticated;
 DO $$ BEGIN
   BEGIN
     PERFORM public.get_invoice_items_detailed('88888888-0000-4000-8000-000000000020');

@@ -1,6 +1,6 @@
 -- Migration 42 (grn_rates added by migration 86): the twenty business tables are written only through the
 -- guarded RPCs. For the administrator and the supervisor a direct INSERT, UPDATE
--- or DELETE is refused on every one of them, reads are unchanged, and the RPC
+-- or DELETE is refused on every one of them, reads are unchanged for the ten tables an app role still reads (migration 123 closed the other nine), and the RPC
 -- paths still apply their rules (server totals, rate limits, stock checks, the
 -- dependency-checked deletes, order history). Fictional data; runs only in
 -- migrations.sh's disposable, network-disabled database.
@@ -25,6 +25,11 @@ CREATE FUNCTION pg_temp.guard_tables() RETURNS text[] LANGUAGE sql IMMUTABLE AS 
   SELECT ARRAY['customers','items','item_storage_prices','goodsreceived','goodsreceived_trl',
     'dispatch','dispatch_trl','invoice','invoice_trl','payments','orders','order_items','grn_images','dispatch_images',
     'stock_movements','print_jobs','sensor_devices','sensor_readings','grn_rates'] $$;
+-- The ten of them an app role still reads (migration 123 removed the SELECT grant and the starter policies of the other nine): the
+-- tables the app, the PDF edge functions and the Storage policies read with the caller's token.
+CREATE FUNCTION pg_temp.guard_readable() RETURNS text[] LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY['customers','items','goodsreceived','goodsreceived_trl','dispatch','dispatch_trl','invoice','invoice_trl',
+    'grn_images','dispatch_images'] $$;
 -- Runs as the caller. Names every business table on which a direct INSERT,
 -- UPDATE or DELETE is NOT refused; the result is empty when all 57 are refused.
 -- The statements touch no row (DEFAULT VALUES fails on a NOT NULL column when
@@ -42,15 +47,36 @@ BEGIN
   END LOOP;
   RETURN open;
 END $$;
--- Runs as the caller: rows visible in each business table.
+-- Runs as the caller: rows visible in each readable business table.
 CREATE FUNCTION pg_temp.guard_visible() RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE table_name text; visible bigint; result jsonb := '{}';
 BEGIN
-  FOREACH table_name IN ARRAY pg_temp.guard_tables() LOOP
+  FOREACH table_name IN ARRAY pg_temp.guard_readable() LOOP
     EXECUTE format('SELECT count(*) FROM public.%I',table_name) INTO visible;
     result := result || jsonb_build_object(table_name,visible);
   END LOOP;
   RETURN result;
+END $$;
+-- Rows in each of the 19 tables, with the owner's rights (for the fixture check and the "nothing else is readable" checks).
+CREATE FUNCTION pg_temp.guard_counts_all() RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE table_name text; n bigint; result jsonb := '{}';
+BEGIN
+  FOREACH table_name IN ARRAY pg_temp.guard_tables() LOOP
+    EXECUTE format('SELECT count(*) FROM public.%I',table_name) INTO n;
+    result := result || jsonb_build_object(table_name,n);
+  END LOOP;
+  RETURN result;
+END $$;
+-- Runs as the caller. Names every one of the nine tables without a read grant that an app role CAN read (the result is empty when
+-- every direct SELECT is refused for lack of privilege).
+CREATE FUNCTION pg_temp.guard_open_reads() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE table_name text; open text := '';
+BEGIN
+  FOREACH table_name IN ARRAY pg_temp.guard_tables() LOOP
+    CONTINUE WHEN table_name = ANY(pg_temp.guard_readable());
+    IF NOT pg_temp.guard_denied(format('SELECT count(*) FROM public.%I',table_name)) THEN open := open || ' ' || table_name; END IF;
+  END LOOP;
+  RETURN open;
 END $$;
 CREATE FUNCTION pg_temp.guard_update(invoice uuid, header jsonb, items jsonb) RETURNS jsonb LANGUAGE sql AS $$
   SELECT public.update_invoice(invoice, header, ARRAY(SELECT jsonb_array_elements(items))) $$;
@@ -74,7 +100,7 @@ CREATE FUNCTION pg_temp.guard_login(phone text) RETURNS jsonb LANGUAGE plpgsql A
 -- the two profile columns; reads and service_role are untouched. (A read is a
 -- SELECT on the table or, for invoice since migration 48, on its columns.)
 SELECT pg_temp.guard_assert((SELECT bool_and(
-   has_any_column_privilege('authenticated',format('public.%I',t)::regclass,'SELECT')
+   (has_any_column_privilege('authenticated',format('public.%I',t)::regclass,'SELECT') = (t = ANY(pg_temp.guard_readable())))
    AND NOT has_any_column_privilege('authenticated',format('public.%I',t)::regclass,'INSERT,UPDATE')
    AND NOT has_table_privilege('authenticated',format('public.%I',t)::regclass,'DELETE,TRUNCATE')
    AND NOT has_any_column_privilege('anon',format('public.%I',t)::regclass,'SELECT,INSERT,UPDATE')
@@ -82,7 +108,7 @@ SELECT pg_temp.guard_assert((SELECT bool_and(
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'UPDATE')
    AND has_table_privilege('service_role',format('public.%I',t)::regclass,'DELETE'))
   AND count(*)=19 FROM unnest(pg_temp.guard_tables()) AS t),
- 'authenticated reads and cannot write the 19 business tables; service_role still writes them');
+ 'authenticated reads the ten readable tables, not the other nine, writes none of the 19; service_role still writes them all');
 SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM pg_class c
   WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m') AND c.relname<>'user_profiles'
     AND (has_any_column_privilege('authenticated',c.oid,'INSERT,UPDATE') OR has_table_privilege('authenticated',c.oid,'DELETE,TRUNCATE'))),
@@ -93,9 +119,13 @@ SELECT pg_temp.guard_assert((SELECT array_agg(column_name::text ORDER BY column_
  'the profile column grant UPDATE(name, display_name) is unchanged');
 SELECT pg_temp.guard_assert(NOT has_any_column_privilege('authenticated','public.user_profiles','INSERT')
   AND NOT has_table_privilege('authenticated','public.user_profiles','DELETE'),'profiles are not inserted or deleted directly');
-SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=19 FROM pg_policies
-  WHERE schemaname='public' AND policyname='starter_staff' AND tablename=ANY(pg_temp.guard_tables())),
- 'the administrator and supervisor policy on each business table is read-only');
+SELECT pg_temp.guard_assert((SELECT bool_and(cmd='SELECT') AND count(*)=10 FROM pg_policies
+  WHERE schemaname='public' AND policyname='starter_staff' AND tablename=ANY(pg_temp.guard_tables())
+    AND tablename=ANY(pg_temp.guard_readable())),
+ 'the administrator and supervisor policy on each readable business table is read-only');
+SELECT pg_temp.guard_assert((SELECT count(*)=0 FROM pg_policies
+  WHERE schemaname='public' AND tablename=ANY(pg_temp.guard_tables()) AND NOT tablename=ANY(pg_temp.guard_readable())),
+ 'the nine tables without a read grant have no policy either (migration 123)');
 SELECT pg_temp.guard_assert((SELECT count(*)=1 AND bool_and(tablename='user_profiles' AND policyname='starter_profile_update' AND cmd='UPDATE')
   FROM pg_policies WHERE schemaname='public' AND cmd<>'SELECT'),'the only write policy left is the own-profile update');
 -- The RPCs must not depend on the caller's table privileges: everything the
@@ -179,9 +209,10 @@ SELECT id AS dispatch_line FROM public.dispatch_trl WHERE gr_id=:'grn_a'::uuid A
 SELECT id AS dispatch_a1 FROM public.dispatch WHERE disp_no='WGA1' \gset
 -- Row counts as the database owner, to compare with what each role reads.
 SELECT pg_temp.guard_visible() AS actual \gset
-SELECT pg_temp.guard_assert((SELECT bool_and((:'actual'::jsonb->>t)::int >= 1)
+SELECT pg_temp.guard_counts_all() AS actual_all \gset
+SELECT pg_temp.guard_assert((SELECT bool_and((:'actual_all'::jsonb->>t)::int >= 1)
   FROM unnest(ARRAY['customers','items','item_storage_prices','goodsreceived','goodsreceived_trl','dispatch','dispatch_trl',
-    'invoice','invoice_trl','orders','order_items']) AS t),'the fixture put rows in eleven of the tables: ' || :'actual');
+    'invoice','invoice_trl','orders','order_items']) AS t),'the fixture put rows in eleven of the tables: ' || :'actual_all');
 
 -- 2. Administrator and supervisor: every direct write is refused, on empty
 -- probes and on the real rows of the review scenarios; reads show every row.
@@ -190,6 +221,7 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.guard_assert(warehouse_security.active_role()='admin','actual administrator role');
 SELECT pg_temp.guard_open_writes() AS admin_open \gset
 SELECT pg_temp.guard_assert(:'admin_open'='','administrator: direct writes still open on' || :'admin_open');
+SELECT pg_temp.guard_assert(pg_temp.guard_open_reads()='','administrator: direct reads still open on' || pg_temp.guard_open_reads());
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice SET total=1, labour=0, tax_amount=0 WHERE id='$s$||:'invoice_a'||$s$'$s$),'administrator cannot patch invoice totals');
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice SET discount=900 WHERE id='$s$||:'invoice_a'||$s$'$s$),'administrator cannot patch a discount');
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice_trl SET charge=1 WHERE invoice_id='$s$||:'invoice_a'||$s$'$s$),'administrator cannot patch a line rate');
@@ -212,6 +244,7 @@ SET LOCAL ROLE authenticated;
 SELECT pg_temp.guard_assert(warehouse_security.active_role()='supervisor','actual supervisor role');
 SELECT pg_temp.guard_open_writes() AS supervisor_open \gset
 SELECT pg_temp.guard_assert(:'supervisor_open'='','supervisor: direct writes still open on' || :'supervisor_open');
+SELECT pg_temp.guard_assert(pg_temp.guard_open_reads()='','supervisor: direct reads still open on' || pg_temp.guard_open_reads());
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice SET total=1, labour=0, tax_amount=0 WHERE id='$s$||:'invoice_a'||$s$'$s$),'supervisor cannot patch invoice totals');
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice SET discount=900 WHERE id='$s$||:'invoice_a'||$s$'$s$),'supervisor cannot patch a discount');
 SELECT pg_temp.guard_assert(pg_temp.guard_denied($s$UPDATE public.invoice_trl SET charge=1 WHERE invoice_id='$s$||:'invoice_a'||$s$'$s$),'supervisor cannot patch a line rate');
@@ -242,21 +275,17 @@ SELECT pg_temp.guard_visible() AS staff_sees \gset
 SELECT pg_temp.guard_assert((SELECT bool_and(:'staff_sees'::jsonb->t = :'actual'::jsonb->t)
   FROM unnest(ARRAY['customers','goodsreceived','goodsreceived_trl','dispatch','dispatch_trl','invoice','invoice_trl','items']) AS t),
  'staff still reads customers, receipts, dispatches, invoices and the catalog: ' || :'staff_sees');
--- Migration 45 gives staff a row read on orders (the live queue); the price
--- and order-line tables stay closed to them.
-SELECT pg_temp.guard_assert((:'staff_sees'::jsonb->>'item_storage_prices')::int=0 AND (:'staff_sees'::jsonb->>'order_items')::int=0
-  AND :'staff_sees'::jsonb->'orders' = :'actual'::jsonb->'orders' AND (:'actual'::jsonb->>'order_items')::int>0,
- 'staff read orders, and still no price or order line directly: ' || :'staff_sees');
+-- Since migration 123 no app role reads the nine tables without a grant (orders, order lines, prices, payments, stock movements,
+-- print jobs, sensor readings and devices, grn rates): each direct SELECT is refused for lack of privilege.
+SELECT pg_temp.guard_assert(pg_temp.guard_open_reads()='','staff: direct reads still open on' || pg_temp.guard_open_reads());
 RESET ROLE;
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.guard_assert(warehouse_security.active_role()='customer','actual customer role');
 SELECT pg_temp.guard_assert(pg_temp.guard_open_writes()='','customer: direct writes refused');
 SELECT pg_temp.guard_assert((SELECT count(*)=1 FROM public.invoice WHERE id=:'invoice_a'::uuid)
-  AND (SELECT count(*)=2 FROM public.goodsreceived WHERE customer_id=:'customer_id'::uuid)
-  AND (SELECT count(*)=1 FROM public.orders WHERE id=:'cart'::uuid)
-  AND (SELECT count(*)=1 FROM public.order_items WHERE order_id=:'cart'::uuid)
-  AND (SELECT count(*)=0 FROM public.item_storage_prices),'the assigned customer still reads its own documents and no prices');
+  AND (SELECT count(*)=2 FROM public.goodsreceived WHERE customer_id=:'customer_id'::uuid),'the assigned customer still reads its own documents');
+SELECT pg_temp.guard_assert(pg_temp.guard_open_reads()='','customer: direct reads still open on' || pg_temp.guard_open_reads());
 RESET ROLE;
 
 -- 4. The RPC paths work for the supervisor without table privileges and apply

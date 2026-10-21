@@ -17,8 +17,9 @@ SELECT pg_temp.rt_assert(NOT EXISTS (SELECT 1 FROM pg_class WHERE relreplident =
 SELECT pg_temp.rt_assert(to_regnamespace('realtime') IS NULL AND to_regnamespace('_realtime') IS NULL, 'the schema realtime or _realtime remains');
 SELECT pg_temp.rt_assert(NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name LIKE 'supabase\_realtime%' OR slot_name LIKE 'realtime%'), 'a Realtime replication slot remains');
 SELECT pg_temp.rt_assert(EXISTS (SELECT 1 FROM warehouse_migrations.applied WHERE name = '00000000000000_baseline.sql'), 'the ledger does not hold the baseline');
--- The tables still work for the app: the policies and grants of migrations 14 and 74 are untouched.
-SELECT pg_temp.rt_assert(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.sensor_latest'::regclass AND polname = 'starter_staff'), 'the sensor_latest policy remains');
+-- The sensor_latest table stays (the bridge writes it through the RPCs); migration 123 removed its app-role read grant and its starter policy.
+SELECT pg_temp.rt_assert(to_regclass('public.sensor_latest') IS NOT NULL AND NOT has_table_privilege('authenticated', 'public.sensor_latest', 'SELECT')
+  AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.sensor_latest'::regclass), 'sensor_latest keeps row security but has no app-role read and no policy');
 
 -- ===== from list_refresh_removed_106.sql =====
 CREATE FUNCTION pg_temp.lr_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -272,10 +273,11 @@ WHERE COALESCE(pg_get_expr(polqual, polrelid), '') || ' ' || COALESCE(pg_get_exp
 -- 3. Kept
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.lf_assert(to_regclass('public.payments') IS NOT NULL, 'payments is kept');
--- The baseline's role_based_payments_access was replaced by migration 3; these two are its policies since.
-SELECT pg_temp.lf_assert(string_agg(polname, ',' ORDER BY polname) = 'starter_customer,starter_staff',
-  'the payments policies starter_customer and starter_staff are kept: ' || COALESCE(string_agg(polname, ',' ORDER BY polname), 'none'))
-FROM pg_policy WHERE polrelid = 'public.payments'::regclass;
+-- The baseline's role_based_payments_access was replaced by migration 3 (starter_customer, starter_staff); migration 123 dropped those two
+-- and the app-role read grant: no app role reads payments directly, row security stays on.
+SELECT pg_temp.lf_assert(NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.payments'::regclass)
+  AND NOT has_table_privilege('authenticated', 'public.payments', 'SELECT') AND (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.payments'::regclass),
+  'payments has no policy and no app-role read, row security stays on');
 SELECT pg_temp.lf_assert(to_regprocedure('public.update_updated_at_column()') IS NOT NULL
   AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgfoid = 'public.update_updated_at_column()'::regprocedure),
   'update_updated_at_column() is kept and still serves other tables');

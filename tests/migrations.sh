@@ -144,7 +144,7 @@ test_files=(
   "$ROOT/tests/stock_history_cutoff.sql"
   "$ROOT/tests/dispatch_cart_and_movements.sql"
   "$ROOT/tests/removed_objects.sql" "$ROOT/tests/dispatch_delete_trigger.sql" "$ROOT/tests/public_config.sql" "$ROOT/tests/rpc_callers_exist.sql"
-  "$ROOT/tests/print_invoice_range.sql" "$ROOT/tests/print_jobs_access.sql"
+  "$ROOT/tests/print_invoice_range.sql" "$ROOT/tests/print_jobs_access.sql" "$ROOT/tests/table_reads_removed.sql"
   "$ROOT/tests/dispatch_invoice_read_figures.sql"
   "$ROOT/tests/grn_image_visibility.sql"
   "$ROOT/tests/stock_summary_item_identity.sql"

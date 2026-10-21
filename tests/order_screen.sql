@@ -78,16 +78,24 @@ SELECT public.get_or_create_cart(:'customer_a'::uuid) AS cart_a \gset
 SELECT public.get_or_create_cart(:'customer_b'::uuid) AS cart_b \gset
 SELECT pg_temp.order_assert(public.add_item_to_order(:'cart_a'::uuid,:'lot_a'::uuid,5)->>'success'='true','add to cart A');
 SELECT pg_temp.order_assert(public.add_item_to_order(:'cart_b'::uuid,:'lot_b'::uuid,2)->>'success'='true','add to cart B');
+RESET ROLE;
 SELECT id AS item_a FROM public.order_items WHERE order_id=:'cart_a'::uuid \gset
+SET LOCAL ROLE authenticated;
+RESET ROLE;
 SELECT id AS item_b FROM public.order_items WHERE order_id=:'cart_b'::uuid \gset
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.order_assert(public.update_order_item_quantity(:'item_a'::uuid,8)->>'success'='true','two-customer account changes quantity');
+RESET ROLE;
 SELECT pg_temp.order_assert((SELECT requested_quantity=8 FROM public.order_items WHERE id=:'item_a'::uuid),'quantity stored');
+SET LOCAL ROLE authenticated;
 
 -- Quantity rules.
 SELECT pg_temp.order_assert(public.update_order_item_quantity(:'item_a'::uuid,11)->>'message' LIKE 'Insufficient stock%','quantity above stock rejected');
 SELECT pg_temp.order_assert(public.update_order_item_quantity(:'item_a'::uuid,0)->>'success'='false','zero quantity rejected');
 SELECT pg_temp.order_assert(public.update_order_item_quantity(:'item_a'::uuid,-3)->>'success'='false','negative quantity rejected');
+RESET ROLE;
 SELECT pg_temp.order_assert((SELECT requested_quantity=8 FROM public.order_items WHERE id=:'item_a'::uuid),'rejected changes leave quantity');
+SET LOCAL ROLE authenticated;
 
 -- A lot appears in a cart once.
 SELECT pg_temp.order_assert(public.add_item_to_order(:'cart_a'::uuid,:'lot_a'::uuid,1)->>'message'='Item already exists in order','duplicate lot rejected');
@@ -100,14 +108,22 @@ SELECT pg_temp.order_assert(jsonb_array_length(public.search_customer_items_for_
 
 -- Removal goes through the recorded RPC only.
 SELECT pg_temp.order_denied($s$DELETE FROM public.order_items WHERE id='$s$||:'item_a'||$s$' RETURNING NULL::jsonb$s$,'direct customer delete');
+RESET ROLE;
 SELECT pg_temp.order_assert(EXISTS (SELECT 1 FROM public.order_items WHERE id=:'item_a'::uuid),'direct customer delete has no effect');
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.order_assert(public.remove_item_from_order(:'item_a'::uuid)->>'success'='true','remove through RPC');
+RESET ROLE;
 SELECT pg_temp.order_assert(NOT EXISTS (SELECT 1 FROM public.order_items WHERE id=:'item_a'::uuid),'item removed');
+SET LOCAL ROLE authenticated;
 
 -- History: add, change and remove are three rows; failed attempts write nothing.
+RESET ROLE;
 SELECT pg_temp.order_assert((SELECT count(*)=3 FROM public.order_revisions WHERE order_id=:'cart_a'::uuid),'three history rows readable by owner');
+SET LOCAL ROLE authenticated;
+RESET ROLE;
 SELECT pg_temp.order_assert((SELECT entry->'cart_items' @> '[{"quantity":0}]'
   FROM public.order_revisions WHERE order_id=:'cart_a'::uuid ORDER BY changed_at DESC LIMIT 1),'removal recorded at quantity 0');
+SET LOCAL ROLE authenticated;
 SELECT public.get_order_change_log(p_order_id=>:'cart_a'::uuid) AS history_a \gset
 SELECT pg_temp.order_assert(:'history_a'::jsonb->>'success'='true','customer reads own order history');
 SELECT pg_temp.order_assert(
@@ -128,8 +144,9 @@ SELECT pg_temp.order_denied(format('SELECT public.remove_item_from_order(%L::uui
 SELECT pg_temp.order_denied(format('SELECT public.get_order_change_log(p_order_id=>%L::uuid)',:'cart_b'),'foreign order history');
 SELECT pg_temp.order_denied(format('SELECT public.get_order_change_log(p_customer_id=>%L::uuid)',:'customer_b'),'foreign customer history');
 SELECT pg_temp.order_denied(format('SELECT public.search_customer_items_for_order(%L,%L::uuid)','12',:'customer_b'),'foreign item search');
-SELECT pg_temp.order_assert((SELECT count(*)=0 FROM public.order_revisions WHERE order_id=:'cart_b'::uuid),'foreign history rows hidden');
-SELECT pg_temp.order_assert((SELECT count(*)=3 FROM public.order_revisions WHERE order_id=:'cart_a'::uuid),'own customer history visible');
+-- The history table is not readable by an app role at all (migration 123): the customer sees history only through the RPC.
+SELECT pg_temp.order_denied(format('SELECT to_jsonb(count(*)) FROM public.order_revisions WHERE order_id=%L::uuid',:'cart_b'),'direct read of foreign history');
+SELECT pg_temp.order_denied(format('SELECT to_jsonb(count(*)) FROM public.order_revisions WHERE order_id=%L::uuid',:'cart_a'),'direct read of own history');
 SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list()#>'{data,orders}')=1,'single-customer account lists one cart');
 RESET ROLE;
 
@@ -149,7 +166,9 @@ SELECT pg_temp.order_assert(public.add_item_to_order(:'cart_a'::uuid,:'lot_a'::u
 SELECT pg_temp.order_assert(public.update_order_item_quantity(:'item_b'::uuid,4)->>'success'='true','staff changes quantity');
 SELECT pg_temp.order_assert(public.get_order_change_log(p_order_id=>:'cart_a'::uuid)->>'success'='true','staff reads history');
 SELECT pg_temp.order_assert(jsonb_typeof(public.get_customer_items_for_order_selection(:'customer_b'::uuid)->'data')='array','staff browses lots');
+RESET ROLE;
 SELECT pg_temp.order_assert((SELECT count(*)=4 FROM public.order_revisions WHERE order_id=:'cart_a'::uuid),'staff reads history rows');
+SET LOCAL ROLE authenticated;
 SELECT pg_temp.order_assert(jsonb_array_length(public.get_orders_list(p_limit=>1,p_offset=>0)#>'{data,orders}')=1
   AND (public.get_orders_list(p_limit=>1,p_offset=>0)#>>'{data,pagination,has_more}')::boolean,'orders list pages');
 RESET ROLE;

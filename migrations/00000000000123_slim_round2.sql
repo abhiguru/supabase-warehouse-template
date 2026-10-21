@@ -22,6 +22,8 @@
 --       extension in a later migration, once released builds carry a version-agnostic check.
 --  * 7. get_public_config(text): the edge function get-public-config reads its two tables through this narrow function with the
 --       anon key instead of holding the service-role key.
+--  * 8. The print "View jobs" sheet (get_print_jobs, cancel_print_job) works for administrators, supervisors and staff.
+--  * 9. 18 tables the app never reads directly lose the authenticated SELECT grant and their 23 starter policies (row security stays on).
 -- trg_restore_stock_on_dispatch_delete stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 
 -- 0. Guard: refuse to drop anything that holds data. Dev held none; a database with real data (the production box) must be decided
@@ -1073,3 +1075,49 @@ BEGIN
   EXECUTE v_def;
 END
 $patch$;
+
+
+-- ===== 9. Tables the app never reads directly: no SELECT for authenticated, no starter policies (owner decision, 2026-10-21) =====
+-- The app reads user_profiles, customers, goodsreceived, goodsreceived_trl, grn_images and items directly; the PDF edge functions read
+-- customers, goodsreceived(_trl), dispatch(_trl), invoice (column grant) and invoice_trl with the caller's token; the Storage policies
+-- read grn_images, dispatch_images, goodsreceived and dispatch; feature_flags is read by anon. Everything else goes through
+-- SECURITY DEFINER RPCs (owner's rights), through service_role, or through supabase_admin (fas-sync reads as the owner and its writes are
+-- RPC calls as authenticated). The caller check (2026-10-21) found no use of the 18 tables below by: the app (.from, /rest/v1, select
+-- embeds), the edge functions (they use service_role for print_jobs), fas-sync, the Storage policies, the RLS policies of the tables
+-- that stay readable, any view an app role can read (sensor_status and v_orders_list are service_role only), or any SECURITY
+-- INVOKER function an app role can execute (only get_available_stock, which reads goodsreceived_trl, and auth.uid()/auth.jwt()).
+-- get_print_jobs and cancel_print_job (section 8) are SECURITY DEFINER and read print_jobs with the owner's rights.
+-- Row-level security stays enabled on every table: with no grant and no policy an API role gets "permission denied", and a future
+-- direct read fails closed. Grants to service_role and the table owner are not touched. (sensor_health_events went in section 5.)
+-- Kept readable (not revoked): customers, dispatch, dispatch_images, dispatch_trl, feature_flags, goodsreceived, goodsreceived_trl,
+-- grn_images, invoice (six internal columns excluded), invoice_trl, items, user_profiles; the reason for each is above.
+
+REVOKE SELECT ON TABLE public.grn_rates, public.invoice_discount_history, public.invoice_zero_charge_history,
+  public.item_price_history, public.item_storage_prices, public.order_items, public.order_revisions, public.orders,
+  public.payments, public.print_jobs, public.printer_status, public.sensor_devices, public.sensor_hubs, public.sensor_latest,
+  public.sensor_readings, public.standard_rate_tiers, public.stock_movements, public.users_customers_new
+  FROM authenticated;
+
+DROP POLICY IF EXISTS starter_staff ON public.grn_rates;
+DROP POLICY IF EXISTS starter_staff ON public.invoice_discount_history;
+DROP POLICY IF EXISTS starter_staff ON public.invoice_zero_charge_history;
+DROP POLICY IF EXISTS starter_staff ON public.item_price_history;
+DROP POLICY IF EXISTS starter_staff ON public.item_storage_prices;
+DROP POLICY IF EXISTS starter_customer_read ON public.order_items;
+DROP POLICY IF EXISTS starter_staff ON public.order_items;
+DROP POLICY IF EXISTS starter_customer_read ON public.order_revisions;
+DROP POLICY IF EXISTS starter_staff ON public.order_revisions;
+DROP POLICY IF EXISTS starter_customer ON public.orders;
+DROP POLICY IF EXISTS starter_order_staff_read ON public.orders;
+DROP POLICY IF EXISTS starter_staff ON public.orders;
+DROP POLICY IF EXISTS starter_customer ON public.payments;
+DROP POLICY IF EXISTS starter_staff ON public.payments;
+DROP POLICY IF EXISTS starter_staff ON public.print_jobs;
+DROP POLICY IF EXISTS starter_warehouse_read ON public.printer_status;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_devices;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_hubs;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_latest;
+DROP POLICY IF EXISTS starter_staff ON public.sensor_readings;
+DROP POLICY IF EXISTS starter_staff ON public.standard_rate_tiers;
+DROP POLICY IF EXISTS starter_staff ON public.stock_movements;
+DROP POLICY IF EXISTS starter_assignments ON public.users_customers_new;

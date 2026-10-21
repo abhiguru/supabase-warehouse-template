@@ -254,13 +254,36 @@ SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM pg_proc p WHERE p.pronamespace=
     AND pg_get_functiondef(p.oid) ~ 'request\.jwt\.claims[^;]*(user_role|user_metadata)'),
  'no granted function reads user_role from the token');
 -- Tables.
+-- feature_flags stays public (the app reads it before sign-in). printer_status has no app-role read at all since migration 123.
 SELECT pg_temp.ra_assert(NOT has_table_privilege('anon','public.printer_status','SELECT')
-  AND has_table_privilege('authenticated','public.printer_status','SELECT')
+  AND NOT has_table_privilege('authenticated','public.printer_status','SELECT')
   AND has_table_privilege('anon','public.feature_flags','SELECT'),
- 'printer_status needs a sign-in; feature_flags stays public');
-SELECT pg_temp.ra_assert((SELECT count(*)=1 AND bool_and(cmd='SELECT' AND roles='{authenticated}')
-  FROM pg_policies WHERE schemaname='public' AND tablename='orders' AND policyname='starter_order_staff_read'),
- 'staff order policy is read-only');
+ 'printer_status has no app-role read; feature_flags stays public');
+-- Migration 123: exactly these tables and views have a SELECT grant (table or column) for an app role, and exactly these starter
+-- policies exist in schema public. Every other table has row security on, no grant for authenticated or anon and no policy.
+SELECT pg_temp.ra_assert((SELECT string_agg(c.relname,',' ORDER BY c.relname) FROM pg_class c
+    WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m') AND NOT c.relispartition
+      AND (has_any_column_privilege('authenticated',c.oid,'SELECT') OR has_any_column_privilege('anon',c.oid,'SELECT')))
+  = 'customers,dispatch,dispatch_images,dispatch_trl,feature_flags,goodsreceived,goodsreceived_trl,grn_images,invoice,invoice_trl,items,user_profiles',
+ 'the tables an app role can read are exactly the twelve the app, the PDF functions and the Storage policies use');
+SELECT pg_temp.ra_assert((SELECT string_agg(tablename||'.'||policyname,',' ORDER BY tablename,policyname) FROM pg_policies WHERE schemaname='public')
+  = (SELECT string_agg(t||'.'||p,',' ORDER BY t,p) FROM (VALUES
+    ('customers','starter_customer'),('customers','starter_grn_staff_read'),('customers','starter_staff'),
+    ('dispatch','starter_customer'),('dispatch','starter_document_staff_read'),('dispatch','starter_staff'),
+    ('dispatch_images','starter_customer'),('dispatch_images','starter_document_staff_read'),('dispatch_images','starter_staff'),
+    ('dispatch_trl','starter_customer'),('dispatch_trl','starter_document_staff_read'),('dispatch_trl','starter_staff'),
+    ('feature_flags','starter_public'),
+    ('goodsreceived','starter_customer'),('goodsreceived','starter_grn_staff_read'),('goodsreceived','starter_staff'),
+    ('goodsreceived_trl','starter_customer'),('goodsreceived_trl','starter_grn_staff_read'),('goodsreceived_trl','starter_staff'),
+    ('grn_images','starter_customer'),('grn_images','starter_grn_staff_read'),('grn_images','starter_staff'),
+    ('invoice','starter_customer'),('invoice','starter_document_staff_read'),('invoice','starter_staff'),
+    ('invoice_trl','starter_customer'),('invoice_trl','starter_document_staff_read'),('invoice_trl','starter_staff'),
+    ('items','starter_catalog'),('items','starter_staff'),
+    ('user_profiles','starter_profile_read'),('user_profiles','starter_profile_update')) v(t,p)),
+ 'the policies of schema public are exactly those of the twelve readable tables (23 starter policies of nine other tables were dropped)');
+SELECT pg_temp.ra_assert((SELECT count(*)=0 FROM pg_class c
+    WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p') AND NOT c.relispartition AND NOT c.relrowsecurity),
+ 'row security stays on for every public table');
 SELECT pg_temp.ra_assert(has_function_privilege('authenticated','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE')
   AND NOT has_function_privilege('anon','warehouse_security.staff_may_remove_image_file(text,text)','EXECUTE'),
  'the storage helpers are for signed-in sessions only');

@@ -339,14 +339,15 @@ SELECT pg_temp.rule_assert((SELECT total=25 AND discount=-25 FROM public.invoice
 SELECT pg_temp.rule_assert((SELECT count(*)=1 AND bool_and(old_discount=0 AND new_discount=-25 AND reason='Handling' AND changed_by=:'staff_profile'::uuid)
  FROM public.invoice_discount_history WHERE invoice_id=:'invoice_b'::uuid),'a discount on a new invoice is recorded');
 
--- Who reads the history: administrators (and supervisors) only; nobody writes.
+-- Who reads the history: no app role reads the table (migration 123), administrators and supervisors see it through get_invoice_detail; nobody writes.
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
 SET LOCAL ROLE authenticated;
-SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice_discount_history),'staff cannot read the history');
+SELECT pg_temp.rule_assert(pg_temp.rule_raises('SELECT count(*) FROM public.invoice_discount_history','permission denied%'),'staff cannot read the history');
 SELECT set_config('request.jwt.claims',:'customer_claims',true);
-SELECT pg_temp.rule_assert((SELECT count(*)=0 FROM public.invoice_discount_history),'a customer account cannot read the history');
+SELECT pg_temp.rule_assert(pg_temp.rule_raises('SELECT count(*) FROM public.invoice_discount_history','permission denied%'),'a customer account cannot read the history');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.rule_assert((SELECT count(*)=4 FROM public.invoice_discount_history),'the administrator reads the history');
+-- No app role reads the table directly (migration 123); the administrator sees the record through get_invoice_detail (section 5).
+SELECT pg_temp.rule_assert(pg_temp.rule_raises('SELECT count(*) FROM public.invoice_discount_history','permission denied%'),'the administrator cannot read the table directly');
 SELECT pg_temp.rule_assert(pg_temp.rule_raises('UPDATE public.invoice_discount_history SET reason=''rewritten''','permission denied%'),'the administrator cannot rewrite it');
 SELECT pg_temp.rule_assert(pg_temp.rule_raises('DELETE FROM public.invoice_discount_history','permission denied%'),'the administrator cannot delete from it');
 SELECT pg_temp.rule_assert(pg_temp.rule_raises(format('INSERT INTO public.invoice_discount_history(invoice_id,old_discount,new_discount) VALUES (%L,0,1)',:'invoice_a'),

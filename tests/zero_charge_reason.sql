@@ -34,7 +34,8 @@ CREATE FUNCTION pg_temp.zc_update(invoice uuid, header jsonb, items jsonb) RETUR
 CREATE FUNCTION pg_temp.zc_record(invoice uuid) RETURNS jsonb LANGUAGE sql AS $$
   SELECT jsonb_build_object('reason',i.zero_charge_reason,'by',i.zero_charge_set_by,'at',i.zero_charge_set_at)
   FROM public.invoice i WHERE i.id=invoice $$;
-CREATE FUNCTION pg_temp.zc_history(invoice uuid) RETURNS jsonb LANGUAGE sql AS $$
+-- The history table has no SELECT grant for an app role (migration 123): this read runs with the owner's rights.
+CREATE FUNCTION pg_temp.zc_history(invoice uuid) RETURNS jsonb LANGUAGE sql SECURITY DEFINER AS $$
   SELECT COALESCE(jsonb_agg(jsonb_build_array(h.old_reason,h.new_reason,cardinality(h.old_lines),cardinality(h.new_lines),h.changed_by,h.changed_by_role) ORDER BY h.id),'[]'::jsonb)
   FROM public.invoice_zero_charge_history h WHERE h.invoice_id=invoice $$;
 CREATE FUNCTION pg_temp.zc_login(phone text) RETURNS jsonb LANGUAGE plpgsql AS $$
@@ -538,19 +539,20 @@ SELECT pg_temp.zc_assert(:'detail_customer'::jsonb->>'success'='true' AND (:'det
  'the customer reads the invoice without the zero-charge record: '||(:'detail_customer'::jsonb->'invoice')::text);
 
 -- ---------------------------------------------------------------------------
--- 6. Who reads the history; nobody changes it
+-- 6. Nobody reads the history directly (migration 123); nobody changes it
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice_zero_charge_history),'a customer account cannot read the history');
+SELECT pg_temp.zc_assert(pg_temp.zc_raises('SELECT count(*) FROM public.invoice_zero_charge_history','permission denied%'),'a customer account cannot read the history');
 RESET ROLE;
 SELECT count(*) AS history_rows FROM public.invoice_zero_charge_history \gset
 SELECT pg_temp.zc_assert(:history_rows=14,'fourteen changes were recorded in all, found '||:history_rows);
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claims',:'staff_claims',true);
-SELECT pg_temp.zc_assert((SELECT count(*)=0 FROM public.invoice_zero_charge_history),'staff cannot read the history');
+SELECT pg_temp.zc_assert(pg_temp.zc_raises('SELECT count(*) FROM public.invoice_zero_charge_history','permission denied%'),'staff cannot read the history');
 SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SELECT pg_temp.zc_assert((SELECT count(*)=:history_rows FROM public.invoice_zero_charge_history),'the supervisor reads the history');
+-- No app role reads the table directly (migration 123); get_invoice_detail returns the record (section 5).
+SELECT pg_temp.zc_assert(pg_temp.zc_raises('SELECT count(*) FROM public.invoice_zero_charge_history','permission denied%'),'the supervisor cannot read the table directly');
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SELECT pg_temp.zc_assert((SELECT count(*)=:history_rows FROM public.invoice_zero_charge_history),'the administrator reads the history');
+SELECT pg_temp.zc_assert(pg_temp.zc_raises('SELECT count(*) FROM public.invoice_zero_charge_history','permission denied%'),'the administrator cannot read the table directly');
 SELECT pg_temp.zc_assert(pg_temp.zc_raises('UPDATE public.invoice_zero_charge_history SET new_reason=''rewritten''','permission denied%'),'the administrator cannot rewrite it');
 SELECT pg_temp.zc_assert(pg_temp.zc_raises('DELETE FROM public.invoice_zero_charge_history','permission denied%'),'the administrator cannot delete from it');
 SELECT pg_temp.zc_assert(pg_temp.zc_raises(format('INSERT INTO public.invoice_zero_charge_history(invoice_id,old_lines,new_lines) VALUES (%L,''{}'',''{}'')',:'invoice_a'),
@@ -603,12 +605,12 @@ SELECT pg_temp.zc_assert(:'g_after'::jsonb->>'zero_charge_set_by'=:'staff_profil
  'the zero-charge record keeps the name of a deleted account: '||:'g_after');
 SELECT pg_temp.zc_assert(:'b_after'::jsonb->>'discount_set_by'=:'staff_profile' AND :'b_after'::jsonb->>'discount_set_by_name'='Zero Charge Staff',
  'the discount record keeps the name of a deleted account: '||:'b_after');
+RESET ROLE;
 SELECT pg_temp.zc_assert((SELECT count(*)>=4 AND bool_and(h.changed_by_name='Zero Charge Staff' AND h.changed_by_role='staff')
    FROM public.invoice_zero_charge_history h WHERE h.changed_by=:'staff_profile'::uuid)
  AND (SELECT count(*)=1 AND bool_and(h.changed_by_name='Zero Charge Staff' AND h.changed_by_role='staff')
    FROM public.invoice_discount_history h WHERE h.changed_by=:'staff_profile'::uuid),
  'both histories keep the name and the role the author had');
-RESET ROLE;
 -- A record without a stored name (a history row from before migration 48 that
 -- the upgrade could not name, or an invoice row written in the database)
 -- shows the profile's present name.

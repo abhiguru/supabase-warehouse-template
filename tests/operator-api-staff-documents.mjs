@@ -91,7 +91,7 @@ const preview=good(await rpc('generate_invoice_data_for_grn_with_pricing',st,{p_
 const saved=good(await rpc('save_invoice',st,{p_invoice_id:null,p_invoice_items:lines,p_invoice_data:{inv_no:20261005,inv_fin_year:2026,gr_id:grn,gr_no:'SDA01',customer_id:a,customer_name:'Backend Test Customer A',inv_date:'2026-05-02T12:00:00Z',total:preview.totals.grand_total,tax_amount:preview.totals.tax,discount:0,duration_mode:'legacy'}}),'staff invoice save');
 good(await rpc('get_invoice_data',st,{p_invoice_id:saved.invoice_id}),'staff invoice read');
 assert.equal((await api(`/rest/v1/invoice?id=eq.${saved.invoice_id}&select=id`,st)).data.length,1,'caller-RLS staff invoice read');
-assert.equal((await api('/rest/v1/item_storage_prices?select=id',st)).data.length,0,'no direct pricing grant');
+assert.equal((await api('/rest/v1/item_storage_prices?select=id',st)).status,403,'no direct pricing grant');
 const pdfHashes=[];
 for(const [kind,body] of [['dispatch',{disp_no:'SDD01'}],['invoice',{inv_no:20261005,fin_year:2026}]]){
  const document=good(await api('/functions/v1/generate-'+kind+'-pdf',st,body),'staff '+kind+' PDF');

@@ -151,12 +151,15 @@ SELECT pg_temp.sp_assert(pg_temp.sp_ok(pg_temp.sp_as(:'admin_claims'::jsonb,$q$S
 SELECT pg_temp.sp_assert(pg_temp.sp_refused(pg_temp.sp_as(:'staff_claims'::jsonb,'SELECT public.get_standard_rate()')),'staff still refused get_standard_rate with a rate in place');
 
 -- ---------------------------------------------------------------------------
--- 5. Direct reads: staff see no row of the rate tables (rows exist: an administrator reads them)
+-- 5. Direct reads: no app role reads the rate tables (migration 123); they are read through the pricing RPCs
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.sp_as(:'admin_claims'::jsonb,'SELECT jsonb_build_object(''n'',(SELECT count(*) FROM public.item_storage_prices),''g'',(SELECT count(*) FROM public.grn_rates),''s'',(SELECT count(*) FROM public.standard_rate_tiers))') AS rows_admin \gset
-SELECT pg_temp.sp_as(:'staff_claims'::jsonb,'SELECT jsonb_build_object(''n'',(SELECT count(*) FROM public.item_storage_prices),''g'',(SELECT count(*) FROM public.grn_rates),''s'',(SELECT count(*) FROM public.standard_rate_tiers))') AS rows_staff \gset
-SELECT pg_temp.sp_assert((:'rows_admin'::jsonb->>'n')::int>0 AND (:'rows_admin'::jsonb->>'g')::int>0 AND (:'rows_admin'::jsonb->>'s')::int>0
- AND :'rows_staff'::jsonb='{"n":0,"g":0,"s":0}'::jsonb,'direct reads: administrator '||:'rows_admin'||', staff '||:'rows_staff');
+SELECT pg_temp.sp_assert((SELECT bool_and(pg_temp.sp_as(c.claims,format('SELECT to_jsonb(count(*)) FROM public.%I',t.tbl))->>'state'='42501')
+   FROM (VALUES ('item_storage_prices'),('grn_rates'),('standard_rate_tiers')) t(tbl),
+        (VALUES (:'admin_claims'::jsonb),(:'staff_claims'::jsonb)) c(claims)),
+ 'direct reads of the rate tables are refused for the administrator and for staff');
+SELECT pg_temp.sp_assert((SELECT count(*)>0 FROM public.item_storage_prices) AND (SELECT count(*)>0 FROM public.grn_rates) AND (SELECT count(*)>0 FROM public.standard_rate_tiers),
+ 'the rate tables hold rows (so a refusal is not an empty table)');
+
 
 -- ---------------------------------------------------------------------------
 -- 6. save_grn and update_grn: p_rates is a manager's input
