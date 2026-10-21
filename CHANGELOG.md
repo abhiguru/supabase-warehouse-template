@@ -103,6 +103,36 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   Grafana, the Prometheus stack and the wal-g binary, `pgjwt`, `pg_net`, `pg_graphql`, `supabase_vault` and `http`, the GraphQL route,
   supabase-js in the functions image, the Gotenberg upgrade path, the second-disk backup helper and backup formats before v5.
 
+### Possible duplicate warning (migration 124)
+
+New migration (`duplicate_warning`), the server half of the owner decision of 2026-10-21: a **warning**, never a block, when a GRN or a
+direct dispatch looks like one that was just saved. It is **opt-in**: only a call that asks for it, and sends a request key, is checked, so an
+older app build and `fas-sync`'s bulk push (named arguments, no flag) behave exactly as before. Details and every field of the answer:
+[docs/API_CONTRACT.md](docs/API_CONTRACT.md), "Possible duplicate (migration 124, 2026-10-21)". No data is changed and no index is added.
+
+- **GRN.** `save_grn` gains the trailing parameter `p_warn_duplicate boolean DEFAULT false` (after `p_rates`; every existing argument keeps
+  its name). With `true` and a request key, a live GRN of the same customer, the same GRN day (Asia/Kolkata) and the same SET of (item,
+  packaging) lines, created in the last 30 minutes by anyone, is answered `POSSIBLE_DUPLICATE` (`success:false, error_code:'WH409'`, the
+  `NUMBER_TAKEN` shape) and nothing is written. Quantity, weight, line order and repeated lines are ignored; packaging is compared trimmed, in one
+  case, with white space runs as one space. The old 17-argument function is dropped and the new one made with the same owner, security,
+  `search_path`, `jit` and grants, so PostgREST sees one `save_grn`.
+- **Direct dispatch.** `p_dispatch_data.warn_duplicate = true` with a request key (no signature change; both `create_dispatch_with_stock_check`
+  signatures): a live dispatch of the same customer with the same SET of lots and the same vehicle (upper-cased, spaces and hyphens removed),
+  created in the last 30 minutes, is answered `POSSIBLE_DUPLICATE`. A dispatch from an order (`source_order_id`) is never checked.
+- **Order of checks.** After the saved-answer lookup (a resend of a saved request still returns its stored answer) and after every other
+  validation and refusal: the check is the **last step of the write block** (for `save_grn` after the lines, images and rates; for the dispatch
+  after the lines, stock, movements and cart handling). A match raises `dup_warn`, the existing handler returns the answer, and the rollback leaves
+  nothing written, so a quantity, rate (`RATE_MISSING`, `RATE_PLANNED`...) or image refusal is answered instead of the warning, never after
+  "Save anyway". The answer is never stored under the request key. The newest match is reported, with `existing_id`, `existing_number`,
+  `existing_created_at`, `existing_created_by` (a name, or null), `customer_name`, `items`, `vehicle` (dispatch) and `window_minutes: 30`.
+- **Helpers.** `warehouse_security.possible_duplicate_grn` and `possible_duplicate_dispatch` (not granted to any API role; they skip the record
+  being written; an error inside one is logged as a `WARNING` and means no warning, so the save then answers as before). The GRN lookup is
+  bounded by customer and by the business day as a range of `date`. Both functions are patched from their latest definition with the
+  marker-count pattern.
+- Tests: `tests/duplicate_warning_124.sql` (new, registered in `tests/migrations.sh`); case 12 of `tests/concurrent_rules.sh` (two sessions: the
+  second of two creates is warned and names the first; an overlapping resend gets the stored answer); `tests/grn_rates.sql` names the new last parameter.
+
+
 ### Earlier in this release (not yet tagged)
 
 - **PostgreSQL 18.** `postgres:18.6-trixie` by index digest (was 17.11); no migration changes. A PostgreSQL 17 data directory does

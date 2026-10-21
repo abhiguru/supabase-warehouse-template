@@ -27,6 +27,9 @@
 #      one sees the first one's committed row and answers BANDS_OVERLAP.
 #  11. Migration 87 (BR-05/D1): a cancel of an upload whose confirm is still open (GRN and dispatch)
 #      waits, then answers ALREADY_CONFIRMED (success false); the row stays confirmed.
+#  12. Migration 124: two flagged GRN creates (and two direct dispatches) of one set at the same moment: the second is
+#      answered POSSIBLE_DUPLICATE naming the first; a resend with the same key that overlaps the original is answered
+#      from the stored answer, not warned about.
 set -euo pipefail
 container="${1:?disposable test container name required}"
 export PGPASSWORD=disposable-test-database-only
@@ -473,6 +476,86 @@ SQL
   )" = t ]] || { echo "Concurrent cancel ($kind): the row is not left confirmed." >&2; exit 1; }
   echo "Concurrent cancel ($kind): a cancel that overlapped a confirm waited and was answered ALREADY_CONFIRMED; the upload stays."
 done
+
+# Case 12. Migration 124: the possible-duplicate warning under two sessions acting at the same moment. Every call asks for the check with
+# p_warn_duplicate / warn_duplicate and a request key. The two creates are serialised by the document lock (71040) save_grn and the
+# dispatch create take first, so the second one sees the first one's committed row.
+#   C1  two GRN creates, other users, other numbers, other keys, the same set: the second is answered POSSIBLE_DUPLICATE naming the first
+#   C2  a resend with the same key that overlaps the first call: the stored answer ("idempotent"), not the warning
+#   C3  C1 for a direct dispatch (same lots and vehicle)
+#   C4  C2 for a direct dispatch ("from_cache")
+psql_exec <<'SQL'
+INSERT INTO public.customers(name,mobile) VALUES ('Concurrent Dup Customer','9888888890');
+INSERT INTO public.items(name,packaging) VALUES ('Concurrent Dup Item','Bag');
+SQL
+dup_grn_call() { # number, key, day
+  echo "public.save_grn(p_gr_no=>'$1',p_date=>'$3T12:00:00Z',p_customer_id=>(SELECT id FROM public.customers WHERE name='Concurrent Dup Customer'),p_customer_name=>'Concurrent Dup Customer',p_pricing_mode=>'MONTHLY',p_idempotency_key=>'$2',p_warn_duplicate=>true,p_items=>jsonb_build_array(jsonb_build_object('item_id',(SELECT id FROM public.items WHERE name='Concurrent Dup Item'),'item_name','Concurrent Dup Item','packaging','Bag','qty',100,'weight',10)))"
+}
+dup_disp_call() { # number, key, receipt number of the lot
+  echo "public.create_dispatch_with_stock_check(jsonb_build_object('disp_no','$1','disp_date','2026-05-02','customer_id',(SELECT id FROM public.customers WHERE name='Concurrent Dup Customer'),'customer_name','Concurrent Dup Customer','supervisor_id','$admin_one','supervisor_name','Concurrent Administrator One','registration','GJ01DUP0001','warn_duplicate',true),ARRAY[jsonb_build_object('gr_trl_id',(SELECT t.id FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='$3'),'disp_qty',1)],0,'$2')"
+}
+# C1
+call_as "$claims_one" "$(dup_grn_call CONCDA1 concurrent-dup-a1 2026-04-01)" 4 > "$scratch/dup-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(dup_grn_call CONCDA2 concurrent-dup-a2 2026-04-01)" > "$scratch/dup-second"
+wait "$holder" || { echo 'Concurrent duplicate GRN: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/dup-first"); second=$(answer "$scratch/dup-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent duplicate GRN: the first create did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"reason": "POSSIBLE_DUPLICATE"'* && "$second" == *'"existing_number": "CONCDA1"'* && "$second" == *'"kind": "grn"'* ]] ||
+  { echo "Concurrent duplicate GRN: the overlapping create was not answered POSSIBLE_DUPLICATE naming CONCDA1: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<'SQL'
+SELECT (SELECT count(*)=1 FROM public.goodsreceived WHERE gr_no='CONCDA1')
+  AND (SELECT count(*)=0 FROM public.goodsreceived WHERE gr_no='CONCDA2')
+  AND (SELECT count(*)=0 FROM public.idempotency_keys WHERE idempotency_key='concurrent-dup-a2')
+SQL
+)" = t ]] || { echo 'Concurrent duplicate GRN: the warned create left a GRN or a saved answer.' >&2; exit 1; }
+echo 'Concurrent duplicate GRN: two creates of one set at the same moment: the second waited and was answered POSSIBLE_DUPLICATE naming the first; nothing of it was written.'
+# C2: another day, so the first call itself is not a duplicate of CONCDA1.
+call_as "$claims_one" "$(dup_grn_call CONCDB1 concurrent-dup-b1 2026-04-02)" 4 > "$scratch/dup-first" &
+holder=$!
+sleep 1
+call_as "$claims_one" "$(dup_grn_call CONCDB1 concurrent-dup-b1 2026-04-02)" > "$scratch/dup-second"
+wait "$holder" || { echo 'Concurrent duplicate GRN resend: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/dup-first"); second=$(answer "$scratch/dup-second")
+[[ "$first" == *'"success": true'* && "$first" != *'POSSIBLE_DUPLICATE'* ]] ||
+  { echo "Concurrent duplicate GRN resend: the first call did not save: $first" >&2; exit 1; }
+[[ "$second" == *'"success": true'* && "$second" == *'"idempotent": true'* && "$second" != *'POSSIBLE_DUPLICATE'* ]] ||
+  { echo "Concurrent duplicate GRN resend: the overlapping resend was not answered from the stored answer: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<'SQL'
+SELECT count(*)=1 FROM public.goodsreceived WHERE gr_no='CONCDB1'
+SQL
+)" = t ]] || { echo 'Concurrent duplicate GRN resend: not exactly one GRN CONCDB1.' >&2; exit 1; }
+echo 'Concurrent duplicate GRN resend: an overlapping resend with the same key was answered from the stored answer, not warned about; one GRN.'
+# C3
+call_as "$claims_one" "$(dup_disp_call CONCDX1 concurrent-dup-x1 CONCDA1)" 4 > "$scratch/dup-first" &
+holder=$!
+sleep 1
+call_as "$claims_two" "$(dup_disp_call CONCDX2 concurrent-dup-x2 CONCDA1)" > "$scratch/dup-second"
+wait "$holder" || { echo 'Concurrent duplicate dispatch: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/dup-first"); second=$(answer "$scratch/dup-second")
+[[ "$first" == *'"success": true'* ]] || { echo "Concurrent duplicate dispatch: the first create did not succeed: $first" >&2; exit 1; }
+[[ "$second" == *'"reason": "POSSIBLE_DUPLICATE"'* && "$second" == *'"existing_number": "CONCDX1"'* && "$second" == *'"kind": "dispatch"'* ]] ||
+  { echo "Concurrent duplicate dispatch: the overlapping create was not answered POSSIBLE_DUPLICATE naming CONCDX1: $second" >&2; exit 1; }
+[[ "$(psql_exec -At <<'SQL'
+SELECT (SELECT count(*)=1 FROM public.dispatch WHERE disp_no='CONCDX1')
+  AND (SELECT count(*)=0 FROM public.dispatch WHERE disp_no='CONCDX2')
+  AND (SELECT stock=99 FROM public.goodsreceived_trl t JOIN public.goodsreceived g ON g.id=t.gr_id WHERE g.gr_no='CONCDA1')
+SQL
+)" = t ]] || { echo 'Concurrent duplicate dispatch: the warned create left a dispatch or took stock (the lot must hold 99).' >&2; exit 1; }
+echo 'Concurrent duplicate dispatch: two direct dispatches of one lot and vehicle at the same moment: the second was answered POSSIBLE_DUPLICATE naming the first; no stock taken by it.'
+# C4: another lot (CONCDB1), so the first call is not a duplicate of CONCDX1.
+call_as "$claims_one" "$(dup_disp_call CONCDY1 concurrent-dup-y1 CONCDB1)" 4 > "$scratch/dup-first" &
+holder=$!
+sleep 1
+call_as "$claims_one" "$(dup_disp_call CONCDY1 concurrent-dup-y1 CONCDB1)" > "$scratch/dup-second"
+wait "$holder" || { echo 'Concurrent duplicate dispatch resend: the first call failed.' >&2; exit 1; }
+first=$(answer "$scratch/dup-first"); second=$(answer "$scratch/dup-second")
+[[ "$first" == *'"success": true'* && "$first" != *'POSSIBLE_DUPLICATE'* ]] ||
+  { echo "Concurrent duplicate dispatch resend: the first call did not save: $first" >&2; exit 1; }
+[[ "$second" == *'"success": true'* && "$second" == *'"from_cache": true'* && "$second" != *'POSSIBLE_DUPLICATE'* ]] ||
+  { echo "Concurrent duplicate dispatch resend: the overlapping resend was not answered from the stored answer: $second" >&2; exit 1; }
+echo 'Concurrent duplicate dispatch resend: an overlapping resend with the same key was answered from the stored answer, not warned about.'
 
 # The administrators set aside at the start get their place back.
 psql_exec -v others="$others" <<'SQL'
