@@ -62,7 +62,7 @@ for (const path of [`/storage/v1/object/sign/documents/smoke-${marker}.pdf?token
   await response.body?.cancel();
 }
 const gatewayLog = () => {
-  const result = spawnSync('bash', [fileURLToPath(new URL('./compose.sh', import.meta.url)), 'logs', '--no-color', '--no-log-prefix', '--since', startedAt, 'kong'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync('bash', [fileURLToPath(new URL('../scripts/compose.sh', import.meta.url)), 'logs', '--no-color', '--no-log-prefix', '--since', startedAt, 'kong'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`Could not read the gateway log: ${result.stderr.trim().split('\n').pop()}`);
   return `${result.stdout}\n${result.stderr}`;
 };
@@ -76,4 +76,24 @@ if (!log.includes(`"GET /storage/v1/object/sign/documents/smoke-${marker}.pdf HT
   throw new Error('The gateway access log has no line for the smoke requests (or it is not in the redacted format).');
 }
 
-console.log('Exact-origin CORS, request-size limit, per-client rate limit and a query-free gateway log passed on the loopback gateway.');
+// The storage schema is not exposed over REST (PGRST_DB_SCHEMAS=public) and the OpenAPI document is off. PostgREST v16.4
+// (checked against the pinned image): a profile for an unexposed schema is 406 PGRST106, on a read and on a write, and the
+// root endpoint is 404 PGRST126 "Root endpoint metadata is disabled".
+const restCall = async (path, init = {}) => {
+  const response = await fetch(`${httpBase}/rest/v1/${path}`, { ...init, headers: { apikey: env.ANON_KEY, ...init.headers }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+  const text = await response.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch { /* not JSON */ }
+  return { status: response.status, body, text };
+};
+for (const [label, call] of [
+  ['read with Accept-Profile: storage', () => restCall('objects?select=id&limit=1', { headers: { 'Accept-Profile': 'storage' } })],
+  ['write with Content-Profile: storage', () => restCall('objects', { method: 'POST', headers: { 'Content-Profile': 'storage', 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ name: `smoke-${marker}` }) })],
+]) {
+  const r = await call();
+  if (r.status !== 406 || r.body?.code !== 'PGRST106') throw new Error(`The storage schema is reachable over REST (${label}): HTTP ${r.status} ${r.text.slice(0, 120)}`);
+}
+const root = await restCall('');
+if (root.status !== 404 || root.body?.code !== 'PGRST126' || /swagger|openapi|definitions/i.test(root.text)) throw new Error(`/rest/v1/ still serves an OpenAPI document: HTTP ${root.status} ${root.text.slice(0, 120)}`);
+
+console.log('Exact-origin CORS, request-size limit, per-client rate limit, a query-free gateway log, the storage schema off REST and no OpenAPI document passed on the loopback gateway.');

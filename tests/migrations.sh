@@ -106,8 +106,8 @@ mig_psql -c "INSERT INTO warehouse_migrations.applied SELECT * FROM warehouse_mi
 # Storage, as setup.sh does after the migrations: the real Storage 1.80.2 builds its own tables in the schema the bootstrap made.
 # The image that ships (docker/storage, a multi-stage recipe on a clean Node image), built here from the same Dockerfile, not
 # the publisher's image: a native module or file the slimmed image lacks would fail Storage's start. Layers are cached.
-storage_recipe=warehouse-test-storage:recipe
-docker build -q -t "$storage_recipe" "$ROOT/docker/storage" >/dev/null
+# The image ID, not a fixed tag: two harness runs on one host (two checkouts, two CI jobs) cannot overwrite each other's image.
+storage_recipe=$(docker build -q "$ROOT/docker/storage")
 run_storage "$container" "$net" "$storage_recipe" >/dev/null
 [[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
 # The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
