@@ -406,7 +406,7 @@ create_price_call() { # item, weight min, weight max, unit price
 call_as "$claims_one" "$(create_price_call "$rw_item_a" 0 100 5)" 4 > "$scratch/rw-first" &
 holder=$!
 sleep 1
-call_as "$claims_two" "$(create_price_call "$rw_item_a" 50 150 9)" > "$scratch/rw-second"
+call_as "$claims_two" "$(create_price_call "$rw_item_a" 0 100 9)" > "$scratch/rw-second"
 wait "$holder" || { echo 'Concurrent rate writers: the first change failed.' >&2; exit 1; }
 first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
 [[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the first change did not succeed: $first" >&2; exit 1; }
@@ -425,7 +425,7 @@ SQL
 call_as "$claims_one" "public.replace_item_rates('$rw_item_b'::uuid,NULL,'monthly',CURRENT_DATE + 10,'[{\"weight_min\":0,\"weight_max\":100,\"unit_price\":5,\"labour_rate\":2,\"tax_percent\":5}]'::jsonb,true)" 4 > "$scratch/rw-first"  &
 holder=$!
 sleep 1
-call_as "$claims_two" "$(create_price_call "$rw_item_b" 50 150 9)" > "$scratch/rw-second"
+call_as "$claims_two" "$(create_price_call "$rw_item_b" 0 100 9)" > "$scratch/rw-second"
 wait "$holder" || { echo 'Concurrent rate writers: the widening failed.' >&2; exit 1; }
 first=$(answer "$scratch/rw-first"); second=$(answer "$scratch/rw-second")
 [[ "$first" == *'"success": true'* ]] || { echo "Concurrent rate writers: the widening did not succeed: $first" >&2; exit 1; }

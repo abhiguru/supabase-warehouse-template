@@ -222,9 +222,9 @@ FROM (SELECT string_agg(p.oid::regprocedure::text, ', ') AS unguarded FROM pg_pr
 SELECT pg_temp.ra_assert((SELECT bool_and(pg_get_functiondef(p.oid) NOT LIKE '%authorize_rpc(%') FROM pg_proc p
   WHERE p.pronamespace='public'::regnamespace AND p.proname=ANY(pg_temp.ra_unguarded())
     AND has_function_privilege('authenticated',p.oid,'EXECUTE')),'the unguarded list names only functions without the guard');
-SELECT pg_temp.ra_assert((SELECT array_agg(p.proname::text ORDER BY p.proname)=ARRAY['check_session','logout_session','refresh_jwt_token']
+SELECT pg_temp.ra_assert((SELECT array_agg(p.proname::text ORDER BY p.proname)=ARRAY['check_session','get_public_config','logout_session','refresh_jwt_token']
   FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND has_function_privilege('anon',p.oid,'EXECUTE')),
- 'the anonymous function list is unchanged');
+ 'the anonymous function list is the session functions and get_public_config (migration 123)');
 -- is_admin_or_supervisor() is true for staff as well, so it keeps staff out of
 -- nothing. These are the granted functions that call it; the five that staff
 -- may run are meant to treat staff like a supervisor, and the staff sweep
