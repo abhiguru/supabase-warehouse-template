@@ -55,6 +55,12 @@ data files do not open in 18.
 - **`restore.sh` and the db image.** Before it moves any data, `restore.sh` rebuilds the db image when it does not match the checkout
   (`scripts/build-images.sh`) and refuses if it cannot, so a cross-major restore initialises the new cluster on 18, never on a stale 17 image.
 - **Containers removed with their volumes.** `verify-restore.sh` removes its container with `docker rm -f -v`: the image's `VOLUME` leaves no anonymous volume.
+- **Data checksums.** New PostgreSQL 18 clusters have data checksums on by default; an upgraded facility gets them through the restore. No action is needed.
+- **Upgrade follow-ups (from the first real move).** `scripts/data-fingerprint.sh --counts` is the one row-count query for steps 2 and 8 of the upgrade (the inline
+  `ORDER BY 1 COLLATE "C"` failed); `scripts/backup.sh` restarts with `--no-deps`, so only the services it stopped come back; `scripts/restore.sh` runs
+  `vacuumdb --all --analyze-in-stages` before the services start (dumps carry no planner statistics); `scripts/configure-sms.sql` and `configure-operator.sql`
+  write only a changed value, so a setup rerun leaves `updated_at` alone; the config rollback copy is taken right after the backup; step 8 reads `PG_VERSION` without sudo,
+  prints the public-config URL and shows the newest sensor reading.
 - **Pooler.** `docker/volumes/pooler/pooler.exs` also updates the `server_version` of an existing tenant to the running server's.
 - **Docs and ledger.** New section "Major PostgreSQL upgrade" in `docs/OPERATOR_INSTALL.md`; the `db-os-no-fix` exception in
   `docker/image-exceptions.json` is re-reviewed for the 18.6 image (same 62 HIGH/CRITICAL rows without a fix).

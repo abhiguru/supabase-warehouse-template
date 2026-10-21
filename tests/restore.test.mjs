@@ -137,8 +137,13 @@ test('restore verifies first, keeps the replaced data, replays both databases in
       '-d postgres -L /tmp/acl.list',
       'DROP DATABASE _supabase WITH (FORCE)', '-d _supabase /tmp/_supabase.dump',
       'rm -f /tmp/database.dump /tmp/_supabase.dump /tmp/acl.list',
+      // pg_dump 18 carries no planner statistics: every restored database is analyzed before the services start.
+      'exec -T db vacuumdb -U supabase_admin --all --analyze-in-stages',
     ];
     for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} precedes ${order[i]}`);
+    const source = readFileSync(new URL('../scripts/restore.sh', import.meta.url), 'utf8');
+    assert.ok(source.indexOf('vacuumdb') > source.indexOf("phase='restore _supabase'") && source.indexOf('vacuumdb') < source.indexOf("phase='start services'"), 'ANALYZE runs after the data restore and before the services start');
+    assert.equal(calls.split('\n').filter(line => line.includes('vacuumdb')).length, 1);
     const sections = calls.split('\n').filter(line => line.includes('pg_restore') && line.includes('-d postgres') && line.includes('--section='));
     assert.equal(sections.length, 3);
     assert.ok(sections.every(line => line.includes('--exit-on-error') && !line.includes('--no-owner')), 'in-place replay keeps owners');

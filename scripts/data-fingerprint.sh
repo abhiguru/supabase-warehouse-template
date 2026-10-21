@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Usage: data-fingerprint.sh [--all]
+# Usage: data-fingerprint.sh [--all | --counts]
 #   --all  also fingerprints every other table in the business schemas (public,
 #          warehouse_security, warehouse_maintenance), not just the 23 fixed ones below.
+#   --counts  prints only "schema.table rowcount" for every table of the business schemas and storage,
+#          sorted by name in the C collation (no hashes, no stored files). Steps 2 and 8 of the major upgrade run it
+#          before and after and diff the two outputs.
 # Every sort uses the C collation, so the fingerprint does not depend on the database's
 # collation and survives a glibc or major-version change. --all also hashes tables that change on
 # their own (OTPs, rate limits, the audit log, auth_config), so use it only on a quiet system and
@@ -28,11 +31,21 @@ tables=(customers users_customers_new items item_storage_prices goodsreceived go
   invoice_discount_history invoice_zero_charge_history item_price_history standard_rate_tiers grn_rates
   payments orders order_items order_revisions)
 all=false
+counts=false
 case "${1:-}" in
   '') ;;
   --all) all=true ;;
-  *) echo 'Usage: data-fingerprint.sh [--all]' >&2; exit 2 ;;
+  --counts) counts=true ;;
+  *) echo 'Usage: data-fingerprint.sh [--all | --counts]' >&2; exit 2 ;;
 esac
+if [[ "$counts" == true ]]; then
+  # The sort key is the qualified name, a text expression; a sort by column position with a collation fails on an integer.
+  IFS= read -r -d '' counts_sql <<'SQL' || true
+SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('public','storage','warehouse_security','warehouse_maintenance') ORDER BY (n.nspname || '.' || c.relname) COLLATE "C"
+SQL
+  compose exec -T db psql -X -q -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "$counts_sql"
+  exit 0
+fi
 # Qualified names (schema.table) in the order of the list above; --all adds the other tables of the
 # business schemas, sorted by name in the C collation. Their lines are in the same format.
 names=()

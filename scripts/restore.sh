@@ -253,6 +253,11 @@ db_psql -d postgres -c 'DROP DATABASE _supabase WITH (FORCE)' \
   -c 'CREATE DATABASE _supabase OWNER supabase_admin TEMPLATE template0'
 db_restore -d _supabase /tmp/_supabase.dump
 compose exec -T db rm -f /tmp/database.dump /tmp/_supabase.dump /tmp/acl.list /tmp/restore.list
+phase='analyze'
+# pg_dump 18 does not carry planner statistics (pg_dump before 18 never did): the restored tables are unanalyzed
+# until autovacuum reaches them, and the first queries would plan on defaults. Analyze every database in stages
+# (a quick pass first), before the services start. Runs on the loopback of the db container, as supabase_admin.
+compose exec -T db vacuumdb -U supabase_admin --all --analyze-in-stages
 
 # 5. The restored database must report exactly what the backup recorded.
 phase='integrity comparison'

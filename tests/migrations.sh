@@ -197,6 +197,37 @@ done
 sms_synced=$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" \
   psql -X -qAt -U supabase_admin -d postgres -c "SELECT count(*)=1 AND bool_and(provider='msg91' AND production_mode AND msg91_auth_key='isolated-test-key' AND msg91_template_id='694a8ea0cd30ae1f432f445a' AND msg91_pe_id='1101817660000088076' AND msg91_sender_id='GCSAMD') FROM public.sms_config")
 [[ "$sms_synced" = t ]] || { echo 'Private MSG91 configuration did not synchronize idempotently.' >&2; exit 1; }
+# A rerun with the same values leaves the row untouched (no updated_at bump, which a trigger would apply to any UPDATE);
+# a changed value is written and does bump it.
+sms_run() {
+  docker exec -i -e PGPASSWORD=disposable-test-database-only \
+    -e SMS_PROVIDER=msg91 -e SMS_PRODUCTION_MODE=true \
+    -e MSG91_AUTH_KEY="$1" -e MSG91_TEMPLATE_ID=694a8ea0cd30ae1f432f445a \
+    -e MSG91_PE_ID=1101817660000088076 -e MSG91_SENDER_ID=GCSAMD \
+    "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-sms.sql"
+}
+sms_stamp() { docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c "SELECT updated_at::text || ' ' || msg91_auth_key FROM public.sms_config"; }
+sms_before=$(sms_stamp)
+sleep 1
+sms_run isolated-test-key
+[[ "$(sms_stamp)" = "$sms_before" ]] || { echo 'configure-sms.sql changed the row on a rerun with the same values.' >&2; exit 1; }
+sms_run isolated-test-key-changed
+[[ "$(sms_stamp)" != "$sms_before" && "$(sms_stamp)" == *' isolated-test-key-changed' ]] || { echo 'configure-sms.sql did not write a changed value.' >&2; exit 1; }
+# configure-operator.sql: the placeholder app name is replaced once; a rerun, or a company equal to the placeholder, changes nothing.
+op_psql() { docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -v ON_ERROR_STOP=1 "$@"; }
+op_stamp() { op_psql -c "SELECT string_agg(key || '=' || value || '@' || updated_at::text, ',' ORDER BY key) FROM public.system_settings WHERE key IN ('app_name','support_email')"; }
+op_psql -c "UPDATE public.system_settings SET value='Warehouse Manager' WHERE key='app_name'" >/dev/null
+op_psql -v company='Warehouse Manager' < "$ROOT/scripts/configure-operator.sql" >/dev/null
+op_before=$(op_stamp)
+sleep 1
+op_psql -v company='Warehouse Manager' < "$ROOT/scripts/configure-operator.sql" >/dev/null
+[[ "$(op_stamp)" = "$op_before" ]] || { echo 'configure-operator.sql changed app_name to its own value.' >&2; exit 1; }
+op_psql -v company='Test Company' < "$ROOT/scripts/configure-operator.sql" >/dev/null
+[[ "$(op_stamp)" == *'app_name=Test Company@'* ]] || { echo 'configure-operator.sql did not set the company name.' >&2; exit 1; }
+op_after=$(op_stamp)
+sleep 1
+op_psql -v company='Test Company' < "$ROOT/scripts/configure-operator.sql" >/dev/null
+[[ "$(op_stamp)" = "$op_after" ]] || { echo 'configure-operator.sql changed the row on a rerun.' >&2; exit 1; }
 # TW-BE-003 (migration 92, scripts/configure-auth.sql): the JWT signing secret is not a database setting.
 # Every role reads a database-level setting through current_setting(), so that is checked as anon in a new
 # session. SET ROLE does not apply a role's own settings, so those are read from pg_db_role_setting.

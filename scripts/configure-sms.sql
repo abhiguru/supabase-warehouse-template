@@ -24,5 +24,8 @@ WHERE NOT EXISTS (SELECT 1 FROM public.sms_config);
 UPDATE public.sms_config SET provider='msg91',production_mode=true,
   msg91_auth_key=:'sms_auth_key',msg91_template_id=:'sms_flow_id',
   msg91_pe_id=:'sms_pe_id',msg91_sender_id=:'sms_sender_id',updated_at=now()
-WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1);
+WHERE id=(SELECT id FROM public.sms_config ORDER BY id DESC LIMIT 1)
+  -- A rerun with the same values changes nothing (a trigger sets updated_at on every UPDATE, even a no-op one).
+  AND (provider,production_mode,msg91_auth_key,msg91_template_id,msg91_pe_id,msg91_sender_id)
+    IS DISTINCT FROM ('msg91',true,:'sms_auth_key',:'sms_flow_id',:'sms_pe_id',:'sms_sender_id');
 COMMIT;
