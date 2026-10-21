@@ -1665,11 +1665,11 @@ bash scripts/compose.sh exec -T db psql -X -At -U supabase_admin -d postgres -c 
 cp -a "$WAREHOUSE_STATE_DIR/config" "$B/config"   # compose.env, backup.key, image-recipes.sha256 and the rest, for the rollback
 ```
 
-**Step 3. Tag the current images** so that a rollback uses them instead of building them again (the db image is the one that matters):
+**Step 3. Tag the current images** (of stopped containers too: `ps -a`, because step 1 stopped most of them) so that a rollback uses them instead of building them again (the db image is the one that matters):
 
 ```bash
 P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env"); : > "$B/old-images.txt"
-while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -q "$s"); [ -n "$c" ] || continue; i=$(docker inspect --format '{{.Config.Image}}' "$c")
+while read -r s; do c=$(bash scripts/compose.sh --profile '*' ps -a -q "$s" | head -n 1); [ -n "$c" ] || continue; i=$(docker inspect --format '{{.Config.Image}}' "$c")
   case "$i" in "$P-"*@*|"") continue;; "$P-"*) docker tag "$(docker inspect --format '{{.Image}}' "$c")" "$P-$s:pre-pg18" && echo "$s" >> "$B/old-images.txt";; esac
 done < "$B/running-services.txt"
 grep -qx db "$B/old-images.txt" && echo 'old images kept'
@@ -1757,26 +1757,26 @@ bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo ID
 bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
 ```
 
-**Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every `mv` is guarded: nothing is
-moved unless both kept directories are there:
+**Rollback B, data moved by `restore.sh`** (a `db.pre-restore-<utc>` and a `storage.pre-restore-<utc>` directory exist). Every command after the
+guard sits inside it: nothing is moved or changed unless both kept directories are there. If `Stop:` is printed, run nothing more and investigate.
 
 ```bash
 exec 9>&-
 bash stop.sh
 U=$(ls "$D" | sed -n 's/^db\.pre-restore-//p' | sort | tail -n 1); echo "kept: $U"
-if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-restore-$U" && test ! -e "$D/db.failed" && test ! -e "$D/storage.failed"; then
-  mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
-    && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"
+if test -n "$U" && test -d "$D/db.pre-restore-$U" && test -d "$D/storage.pre-restore-$U" && test ! -e "$D/db.failed" && test ! -e "$D/storage.failed" \
+   && mv -T "$D/db" "$D/db.failed" && mv -T "$D/db.pre-restore-$U" "$D/db" \
+   && mv -T "$D/storage" "$D/storage.failed" && mv -T "$D/storage.pre-restore-$U" "$D/storage"; then
+  git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
+  cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config)
+  P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
+  while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
+  bash start.sh
+  bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
+  bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
 else
-  echo 'Stop: the kept directories are missing or db.failed already exists; nothing was moved.'; false
+  echo 'Stop: the kept directories are missing, db.failed already exists, or a move failed; check the directories by hand.'
 fi
-git checkout --detach "$(cat "$B/old-commit.txt")"; bash scripts/checkout-permissions.sh
-cp -a "$B/config/." "$WAREHOUSE_STATE_DIR/config/"       # the configuration as it was before step 4 (undoes setup.sh and --restore-config)
-P=$(sed -n 's/^WAREHOUSE_PROJECT_NAME=//p' "$WAREHOUSE_STATE_DIR/config/compose.env")
-while read -r s; do docker tag "$P-$s:pre-pg18" "$P-$s"; done < "$B/old-images.txt"
-bash start.sh
-bash scripts/data-fingerprint.sh | diff "$B/fingerprint-before.txt" - && echo IDENTICAL
-bash scripts/compose.sh --profile '*' up -d --no-build --wait --wait-timeout 180 $(cat "$B/running-services.txt")
 ```
 
 ## Windows host with Linux VM
