@@ -28,7 +28,7 @@ case "$1" in
     esac ;;
 esac
 `, { mode: 0o700 });
-    const result = spawnSync('bash', [new URL('../scripts/gateway-dns-check.sh', import.meta.url).pathname], {
+    const result = spawnSync('bash', [new URL('./gateway-dns-check.sh', import.meta.url).pathname], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state },
     });
     assert.notEqual(result.status, 0);

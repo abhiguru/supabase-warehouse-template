@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bash "$ROOT/scripts/check-readiness.sh" "${1:-}"
+if [[ "${1:-}" != --operator ]]; then
+  echo 'Use scripts/migrate.sh --operator (setup.sh runs it with the state directory chosen).' >&2
+  exit 1
+fi
 # setup.sh and restore.sh run this under their own lock; run alone, it takes the lock.
 # shellcheck source=scripts/operator-lock.sh
 . "$ROOT/scripts/operator-lock.sh"

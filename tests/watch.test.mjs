@@ -388,6 +388,76 @@ test('PDF renderer probe runs in the functions container; the central key file i
   } finally { clean(h); }
 });
 
+// ---------------------------------------------------------------- health
+const PROBE = 'exec -T storage node --input-type=module';
+function healthy(h) { h.runs[PROBE] = ok('OK REST\nOK configuration\n'); }
+
+test('health: the services, the database, the gateway probe and the renderer all pass', async () => {
+  const h = harness();
+  try {
+    healthy(h);
+    const inputs = [];
+    const run = h.deps.run;
+    h.deps.run = (command, args, options) => { if (options?.input !== undefined) inputs.push(options.input); return run(command, args, options); };
+    const report = await W.runHealth(h.deps, { waitMs: 7000 });
+    assert.equal(report.ok, true, JSON.stringify(report.lines));
+    assert.deepEqual(report.lines.map(line => line.text), [
+      ...SERVICES.map(name => `Service ${name} is running${['db', 'kong'].includes(name) ? ' healthy' : ''}`),
+      'PostgreSQL accepts connections', 'REST: answers through the gateway', 'configuration: answers through the gateway', 'PDF renderer reachable from functions',
+    ]);
+    // The probe runs in the storage container (a network shared with Kong), waits as long as it was told, reads a table with the
+    // public key (the OpenAPI document at /rest/v1/ is off) and asks for the public configuration.
+    assert.equal(inputs.length, 1);
+    assert.match(inputs[0], /export async function waitForHttp/);
+    assert.match(inputs[0], /const WAIT_MS = 7000;/);
+    assert.match(inputs[0], /http:\/\/kong:8000\/rest\/v1\/feature_flags\?select=id&limit=1', \{ apikey: process\.env\.ANON_KEY \}/);
+    assert.match(inputs[0], /http:\/\/kong:8000\/functions\/v1\/get-public-config/);
+  } finally { clean(h); }
+});
+
+test('health: a missing service, a database that is down, a gateway that does not answer and an unreachable renderer each fail the check and are named', async () => {
+  const h = harness();
+  try {
+    h.services = h.services.filter(name => name !== 'storage');
+    h.runs.pg_isready = bad('no response');
+    h.runs[PROBE] = ok('FAILED REST: readiness timed out (HTTP 503)\nOK configuration\n');
+    h.runs['exec -T functions'] = bad();
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), [
+      'Service storage is missing', 'PostgreSQL is not accepting connections',
+      'Gateway: REST: readiness timed out (HTTP 503)', 'PDF renderer is not reachable from functions (docker/docker-compose.yml, network renderer)',
+    ]);
+  } finally { clean(h); }
+});
+
+test('health: a probe that cannot run (no storage container) is a failure with the reason, not a pass', async () => {
+  const h = harness();
+  try {
+    h.runs[PROBE] = bad('service "storage" is not running');
+    const report = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.lines.filter(line => !line.ok).map(line => line.text), ['Gateway probe could not run in the storage container (service "storage" is not running)']);
+  } finally { clean(h); }
+});
+
+test('watch.mjs health prints one line per check and exits 1 on a fault; it refuses other arguments', async () => {
+  const h = harness();
+  try {
+    healthy(h);
+    const lines = [];
+    assert.equal(await W.main(['health', '--wait', '0'], h.deps, text => lines.push(text)), 0);
+    assert.ok(lines.every(line => line.startsWith('ok     ')), lines.join('\n'));
+    h.runs[PROBE] = ok('OK REST\nFAILED configuration: readiness timed out (HTTP 502)\n');
+    lines.length = 0;
+    assert.equal(await W.main(['health', '--wait', '0'], h.deps, text => lines.push(text)), 1);
+    assert.deepEqual(lines.filter(line => line.startsWith('FAILED ')), ['FAILED Gateway: configuration: readiness timed out (HTTP 502)']);
+    lines.length = 0;
+    assert.equal(await W.main(['health', '--fast'], h.deps, text => lines.push(text)), 1);
+    assert.match(lines[0], /only --wait SECONDS/);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- backups
 test('backups: missing after 26 h, grace for a new install, failed, newest directory counts, retention failure', () => {
   const h = harness();

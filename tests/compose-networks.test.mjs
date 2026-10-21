@@ -114,14 +114,14 @@ test('the Compose files define no studio, meta or admin', () => {
 
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
   const { reaches } = topology();
-  for (const path of ['health-check.sh', 'scripts/gateway-dns-check.sh', 'scripts/pooler-check.sh']) {
+  for (const path of ['tests/gateway-dns-check.sh', 'tests/pooler-check.sh']) {
     const source = read(path);
     // Split the script at each probe container; every host named up to the next one belongs to it.
     const parts = source.split(/(?:probe_from |exec -T )([a-z][a-z-]*)\b/);
     let checked = 0;
     for (let index = 1; index < parts.length; index += 2) {
       const from = parts[index];
-      const body = path === 'scripts/gateway-dns-check.sh' ? source : parts[index + 1];
+      const body = path === 'tests/gateway-dns-check.sh' ? source : parts[index + 1];
       for (const match of body.matchAll(/http:\/\/([a-z][a-z0-9-]*):\d+|-h ([a-z][a-z0-9-]*) /g)) {
         const host = match[1] ?? match[2];
         assert.ok(reaches(from, host) || host === from, `${path}: ${from} cannot reach ${host}`);
@@ -132,9 +132,14 @@ test('operator probes run in a container that shares a network with their target
   }
   // The renderer is probed from the function runtime (the path PDFs take), which must be on its network.
   assert.ok(reaches('functions', 'pdf-renderer'), 'functions cannot resolve pdf-renderer');
-  assert.match(read('health-check.sh'), /compose exec -T functions bash -c '[^']*\/dev\/tcp\/pdf-renderer\/3000/);
-  // The gateway probes read the public key under the name the storage container has for it.
-  assert.doesNotMatch(read('health-check.sh'), /SUPABASE_ANON_KEY/);
+  assert.match(read('scripts/watch.mjs'), /const PDF_PROBE = '[^']*\/dev\/tcp\/pdf-renderer\/3000/);
+  assert.match(read('scripts/watch.mjs'), /ctx\.compose\(\['exec', '-T', 'functions', 'bash', '-c', PDF_PROBE\]\)/);
+  // The health check (scripts/watch.mjs, run by health-check.sh) probes the gateway from the storage container, which shares the
+  // default network with Kong, and reads the public key under the name that container has for it.
+  assert.ok(reaches('storage', 'kong'), 'storage cannot resolve kong');
+  assert.match(read('scripts/watch.mjs'), /ctx\.compose\(\['exec', '-T', 'storage', 'node', '--input-type=module'\]/);
+  assert.match(read('scripts/watch.mjs'), /'http:\/\/kong:8000\/rest\/v1\/feature_flags/);
+  assert.doesNotMatch(read('scripts/watch.mjs'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
 });
 

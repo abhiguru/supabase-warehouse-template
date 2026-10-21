@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const helper = fileURLToPath(new URL('../scripts/pooler-readiness.sh', import.meta.url));
+const helper = fileURLToPath(new URL('./pooler-check.sh', import.meta.url));
 for (const [name, behavior, expectedStatus, expectedAttempts] of [
   ['ready authenticated query', 'echo 1', 0, 1],
   ['listener startup race', 'if (( count < 3 )); then exit 2; fi; echo 1', 0, 3],

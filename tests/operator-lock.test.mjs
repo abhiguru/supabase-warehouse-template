@@ -38,12 +38,12 @@ test('every operator command refuses to run while another holds the state lock',
     const commands = [
       ['stop.sh', []],
       ['rotate-keys.sh', ['--yes']],
-      ['scripts/recovery-check.sh', []],
+      ['tests/recovery-check.sh', []],
       ['scripts/retention.sh', ['preview']],
-      ['scripts/gateway-dns-check.sh', []],
-      ['scripts/pooler-check.sh', []],
-      ['scripts/cups-check.sh', []],
-      ['scripts/sensor-bridge-check.sh', []],
+      ['tests/gateway-dns-check.sh', []],
+      ['tests/pooler-check.sh', []],
+      ['tests/cups-check.sh', []],
+      ['tests/sensor-bridge-check.sh', []],
       ['scripts/migrate.sh', ['--operator']],
     ];
     for (const [script, args] of commands) {

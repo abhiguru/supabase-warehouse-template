@@ -64,7 +64,6 @@ if [[ -e "$state" || -L "$state" ]]; then
 fi
 parent="$(dirname -- "$state")"
 [[ -d "$parent" && "$(stat -c %u -- "$parent")" == "$(id -u)" ]] || die "The parent directory $parent must exist and belong to you: sudo install -d -m 0755 -o \"\$(id -un)\" -g \"\$(id -gn)\" $parent"
-bash "$ROOT/scripts/check-readiness.sh" --operator
 WAREHOUSE_STATE_DIR="$state" node "$ROOT/scripts/doctor.mjs" --host-preflight
 
 # 2. The backup: an archive is checked against its .sha256 and unpacked next to

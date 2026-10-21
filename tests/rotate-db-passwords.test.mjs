@@ -35,6 +35,12 @@ case "$1" in
   info) printf '28.0.0\\n' ;;
   inspect)
     case "$3" in
+      # The health check of scripts/watch.mjs (INSPECT_FORMAT): one line per container id given.
+      *com.docker.compose.service*) shift 3
+        for id in "$@"; do
+          case "$id" in a00000000001) n=db ;; a00000000002) n=kong ;; a00000000003) n=rest ;; a00000000004) n=storage ;; a00000000005) n=functions ;; *) n=pdf-renderer ;; esac
+          printf '%s|%s|running|healthy|0|false|2026-10-18T00:00:00Z|False\\n' "$id" "$n"
+        done ;;
       *State.Status*) printf 'running healthy\\n' ;;
       *State.Health.Status*) printf 'healthy\\n' ;;
       *State.Running*) printf 'true\\n' ;;
@@ -43,6 +49,9 @@ case "$1" in
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       'compose up --help') printf '      --wait-timeout int   Maximum duration in seconds to wait\\n' ;;
+      *' config --services') printf 'db\\nkong\\nrest\\nstorage\\nfunctions\\npdf-renderer\\n' ;;
+      *' ps -a -q') printf 'a00000000001\\na00000000002\\na00000000003\\na00000000004\\na00000000005\\na00000000006\\n' ;;
+      *' exec -T storage node '*) cat >/dev/null; printf 'OK REST\\nOK configuration\\n' ;;
       *' ps -q supavisor') : ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *' exec -T db sh -c IFS= read -r pw;'*)

@@ -14,10 +14,10 @@ before_data=$(compose exec -T db psql -X -qAt -U supabase_admin -d postgres \
 compose restart rest storage functions kong >/dev/null
 healthy=false
 for ((i=0; i<60; i++)); do
-  if bash "$ROOT/health-check.sh" >/dev/null 2>&1; then healthy=true; break; fi
+  if node "$ROOT/scripts/watch.mjs" health --wait 10 >/dev/null 2>&1; then healthy=true; break; fi
   sleep 2
 done
-[[ "$healthy" == true ]] || { bash "$ROOT/health-check.sh"; exit 1; }
+[[ "$healthy" == true ]] || { bash "$ROOT/health-check.sh" --wait 0; exit 1; }
 after_env=$(sha256sum "$state/config/compose.env" "$state/public/instance.json")
 after_data=$(compose exec -T db psql -X -qAt -U supabase_admin -d postgres \
   -c "SELECT count(*)||':'||COALESCE(max(gr_no),'') FROM public.goodsreceived")

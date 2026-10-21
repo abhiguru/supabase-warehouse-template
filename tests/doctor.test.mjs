@@ -140,7 +140,7 @@ test('doctor runs the central key file check for --local and the full run, after
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   const call = source.indexOf('checkCentralKeyFile(env, state)');
   const preflight = source.indexOf("return 'Operator configuration, private paths and gateway port preflight passed.'");
-  const health = source.indexOf("probe('bash', [resolve(root, 'health-check.sh')]");
+  const health = source.indexOf('const health = await runHealth(');
   assert.ok(preflight > 0 && health > preflight, 'the doctor still has the shape this test expects');
   assert.ok(call > preflight && call < health, 'checkCentralKeyFile(env, state) sits between them');
   assert.equal(source.split('checkCentralKeyFile(env, state)').length, 2, 'one call site');

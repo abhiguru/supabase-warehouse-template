@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Refuses to go on when the database on this host is not the PostgreSQL major this checkout runs. Called by setup.sh and
 # start.sh (which hold the operator lock) before the first step that builds the database image or recreates the db
-# container, and by rotate-keys.sh, rotate-db-passwords.sh and pooler-check.sh, the other commands that recreate db.
+# container, and by rotate-keys.sh, rotate-db-passwords.sh and tests/pooler-check.sh, the other commands that recreate db.
 # Why: this release runs the official PostgreSQL image of the pin in docker/postgres/Dockerfile (scripts/db-image.sh, the
 # one source of the expected major). A container recreated on the data directory of another major would chown it, fail
 # with "database files are incompatible with server" and restart in a loop; the old directory would be changed and the

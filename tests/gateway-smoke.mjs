@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { readEnv, operatorEnvPath } from './doctor-common.mjs';
+import { readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
 
 const env = readEnv(operatorEnvPath());
 const httpBase = `http://127.0.0.1:${env.KONG_HTTP_PORT}`;

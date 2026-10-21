@@ -82,5 +82,5 @@ test('setup.sh normalizes the checkout before anything else runs', () => {
   const setup = readFileSync(join(ROOT, 'setup.sh'), 'utf8');
   const normalize = setup.indexOf('scripts/checkout-permissions.sh');
   assert.ok(normalize > 0, 'setup.sh calls checkout-permissions.sh');
-  assert.ok(normalize < setup.indexOf('scripts/check-readiness.sh'), 'before the readiness check');
+  assert.ok(normalize < setup.indexOf('scripts/doctor.mjs'), 'before the host check');
 });

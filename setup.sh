@@ -4,8 +4,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # An update (git pull) writes files with the caller's umask; restore the modes of a
 # umask 022 clone so the containers can read them and the root-run helpers accept them.
 bash "$ROOT/scripts/checkout-permissions.sh" --quiet
-bash "$ROOT/scripts/check-readiness.sh" "${1:-}"
+# The host prerequisites (Linux x86-64, node, npm, openssl, flock, docker compose) are checked by
+# `doctor.mjs --host-preflight` below, once the state directory is known.
+if [[ "${1:-}" != --operator ]]; then
+  echo 'Use ./setup.sh --operator with an explicitly selected state directory. Demo installation is no longer supported.' >&2
+  exit 1
+fi
 shift
+# shellcheck source=scripts/operator-lock.sh
+. "$ROOT/scripts/operator-lock.sh"
 STATE=''
 ADMIN_PHONE=''
 ADMIN_NAME=''
@@ -44,8 +51,7 @@ node "$ROOT/scripts/doctor.mjs" --host-preflight
 # can only take it once configure.mjs has created the state directory.
 LOCKED=''
 if [[ -d "$STATE/config" ]]; then
-  exec 9>"$STATE/config/operator.lock"
-  if ! flock -n 9; then echo 'Another operator setup, start, stop, backup, restore or key rotation is running for this state.' >&2; exit 1; fi
+  operator_lock "$STATE"
   LOCKED=1
 fi
 # An existing installation of the earlier PostgreSQL 15 release is refused here, before configure.mjs rewrites its
@@ -77,8 +83,7 @@ fi
 node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
 rm -f "$WEBHOOK_TMP"
 if [[ -z "$LOCKED" ]]; then
-  exec 9>"$STATE/config/operator.lock"
-  if ! flock -n 9; then echo 'Another operator setup, start, stop, backup, restore or key rotation is running for this state.' >&2; exit 1; fi
+  operator_lock "$STATE"
 fi
 node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
@@ -89,9 +94,6 @@ bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation.
 bash "$ROOT/scripts/build-images.sh"
-# The shipped db runs with wal_level=replica (set since the tag's migration 105), which refuses to start while a logical slot exists: drop idle ones
-# (and refuse if one is in use) while the db still runs with its old settings.
-bash "$ROOT/scripts/drop-logical-slots.sh"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.
 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator

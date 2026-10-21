@@ -5,6 +5,7 @@
 //   node scripts/watch.mjs status                   what is failing, muted, and when the daily jobs last ran
 //   node scripts/watch.mjs mute MINUTES ["ALERT"]   silence all alerts, or one alert id, for MINUTES
 //   node scripts/watch.mjs unmute ["ALERT"]
+//   node scripts/watch.mjs health [--wait SECONDS]  the operator health check (health-check.sh, doctor --local, recovery-check.sh)
 //
 // Reads WAREHOUSE_STATE_DIR. scripts/watch-timer.sh installs the timer. docs/MONITORING.md describes the alerts.
 //
@@ -24,8 +25,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
-import { readEnv, root as checkoutRoot } from './doctor-common.mjs';
-import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
+import { centralKeyFault, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
@@ -192,8 +192,8 @@ export function defaultDeps(env = process.env) {
   return {
     state, root: checkoutRoot, env,
     now: () => Date.now(),
-    run: (command, args, { timeoutMs = 30000, env: runEnv } = {}) => {
-      const r = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: runEnv ?? process.env });
+    run: (command, args, { timeoutMs = 30000, env: runEnv, input } = {}) => {
+      const r = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], env: runEnv ?? process.env });
       return { status: r.status ?? (r.error ? 127 : 1), stdout: r.stdout ?? '', stderr: r.stderr ?? (r.error ? String(r.error.message) : '') };
     },
     runGroup,
@@ -314,9 +314,9 @@ const DB_SQL = `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type
   COALESCE((SELECT blks_hit FROM pg_stat_database WHERE datname='postgres'),0),
   COALESCE((SELECT blks_read FROM pg_stat_database WHERE datname='postgres'),0),
   COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables),0)`;
+export const databaseReady = ctx => ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'supabase_admin', '-d', 'postgres']).status === 0;
 export function checkDatabase(ctx) {
-  const ready = ctx.compose(['exec', '-T', 'db', 'pg_isready', '-U', 'supabase_admin', '-d', 'postgres']);
-  if (ready.status !== 0) return [result('database', 'postgres_down', false, 'PostgreSQL is not responding', 'pg_isready failed.')];
+  if (!databaseReady(ctx)) return [result('database', 'postgres_down', false, 'PostgreSQL is not responding', 'pg_isready failed.')];
   const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
     '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', DB_SQL]);
   if (q.status !== 0) throw new Error(`database query failed: ${clip(q.stderr.trim(), 200)}`);
@@ -524,20 +524,56 @@ const PDF_PROBE = 'exec 3<>/dev/tcp/pdf-renderer/3000 && printf "GET /health HTT
 export function checkPdfRenderer(ctx) {
   const probe = ctx.compose(['exec', '-T', 'functions', 'bash', '-c', PDF_PROBE]);
   const ok = probe.status === 0;
-  return [result('pdf_renderer', 'pdf_renderer_down', ok, ok ? 'PDF renderer reachable from functions' : 'PDF renderer is not reachable from functions')];
+  return [result('pdf_renderer', 'pdf_renderer_down', ok, ok ? 'PDF renderer reachable from functions' : 'PDF renderer is not reachable from functions', ok ? '' : 'docker/docker-compose.yml, network renderer')];
 }
-// The same rules as doctor.mjs checkCentralKeyFile (without its import cost): the file the router reads must be a usable key set.
+
+// The operator health check, one source for health-check.sh, doctor --local and recovery-check.sh: the services, the database and
+// the PDF renderer with the check functions the 5-minute checker also runs, and the gateway probed from inside the project (a
+// container that shares a network with Kong: the intended project is probed, never an unrelated server on the host port). The
+// gateway probe is a public-configuration call and a table read with the public key (PostgREST's OpenAPI document at /rest/v1/ is
+// off, PGRST_OPENAPI_MODE=disabled); a container can be healthy before the gateway answers after a recreate, so it retries for
+// up to waitMs. Returns { ok, lines: [{ ok, text }] }.
+const GATEWAY_PROBES = `
+for (const [name, url, headers] of [
+  ['REST', 'http://kong:8000/rest/v1/feature_flags?select=id&limit=1', { apikey: process.env.ANON_KEY }],
+  ['configuration', 'http://kong:8000/functions/v1/get-public-config', {}],
+]) {
+  try { await waitForHttp(name, url, headers, { timeoutMs: WAIT_MS }); console.log('OK ' + name); }
+  catch (error) { console.log('FAILED ' + error.message); process.exitCode = 1; }
+}
+`;
+export function gatewayProbe(ctx, waitMs) {
+  const readiness = ctx.readText(join(ctx.root, 'scripts/http-readiness.mjs'));
+  if (readiness === null) throw new Error('scripts/http-readiness.mjs is missing');
+  const input = `${readiness}\nconst WAIT_MS = ${Number(waitMs)};${GATEWAY_PROBES}`;
+  const probe = ctx.compose(['exec', '-T', 'storage', 'node', '--input-type=module'], { input, timeoutMs: waitMs + 120000 });
+  const answered = String(probe.stdout ?? '').split('\n').filter(line => /^(OK|FAILED) /.test(line));
+  if (answered.length) return answered.map(line => (line.startsWith('OK ') ? { ok: true, text: `${line.slice(3)}: answers through the gateway` } : { ok: false, text: `Gateway: ${line.slice(7)}` }));
+  return [{ ok: false, text: `Gateway probe could not run in the storage container (${clip(String(probe.stderr ?? '').trim(), 200) || `status ${probe.status}`})` }];
+}
+export async function runHealth(deps, { waitMs = 90000 } = {}) {
+  const ctx = makeContext(deps, {});
+  const lines = [];
+  const add = (ok, text) => lines.push({ ok, text });
+  for (const r of checkServices(ctx)) add(r.ok, r.summary);
+  const databaseOk = databaseReady(ctx);
+  add(databaseOk, databaseOk ? 'PostgreSQL accepts connections' : 'PostgreSQL is not accepting connections');
+  for (const line of gatewayProbe(ctx, waitMs)) add(line.ok, line.text);
+  for (const r of checkPdfRenderer(ctx)) add(r.ok, r.ok ? r.summary : `${r.summary} (${r.detail})`);
+  return { ok: lines.every(line => line.ok), lines };
+}
+// The rule is centralKeyFault (doctor-common.mjs), the same one doctor.mjs applies: the file the router reads must be a usable key set.
 export function centralKeyProblem(env, state) {
-  const name = env.CENTRAL_JWKS_FILE;
-  if (!name) return '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) return `CENTRAL_JWKS_FILE must be a plain file name, not ${name}.`;
-  const path = resolve(state, 'public', name);
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat) return `Central sign-in reads its keys from ${path}, but that file is missing: every central sign-in fails while the app still offers it.`;
-  if (!stat.isFile()) return `${path} must be a regular file.`;
-  if (stat.size > KEY_SET_MAX_BYTES) return `${path} is larger than 64 KB; central sign-in refuses it.`;
-  try { usableKeys(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path)))); } catch (error) { return `${path} is not a usable key set: ${error.message}`; }
-  return '';
+  const fault = centralKeyFault(env.CENTRAL_JWKS_FILE, state);
+  if (!fault) return '';
+  return {
+    name: `CENTRAL_JWKS_FILE must be a plain file name, not ${fault.path}.`,
+    missing: `Central sign-in reads its keys from ${fault.path}, but that file is missing: every central sign-in fails while the app still offers it.`,
+    'not-file': `${fault.path} must be a regular file.`,
+    'too-large': `${fault.path} is larger than 64 KB; central sign-in refuses it.`,
+    'not-json': `${fault.path} is not a usable key set: ${fault.detail}`,
+    unusable: `${fault.path} is not a usable key set: ${fault.detail}`,
+  }[fault.code];
 }
 export function checkCentralKey(ctx) {
   const problem = centralKeyProblem(ctx.env_(), ctx.state);
@@ -925,8 +961,9 @@ export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner } = {
 }
 
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+const USAGE = `Usage: node scripts/watch.mjs run | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
   run           one pass of the checks (the systemd timer runs this every 5 minutes)
+  health        the operator health check now: services, database, gateway, REST read, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's Slack webhook
   status        failing alerts, mutes, the daily jobs and the time zone
   mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES
@@ -962,6 +999,12 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
   if (!command || ['--help', '-h', 'help'].includes(command)) { out(USAGE); return command ? 0 : 1; }
   const now = deps.now();
   if (command === 'run') { await runOnce(deps); return 0; }
+  if (command === 'health') {
+    if (args.length && !(args.length === 2 && args[0] === '--wait' && /^\d{1,4}$/.test(args[1]))) { out('health takes only --wait SECONDS.'); return 1; }
+    const report = await runHealth(deps, { waitMs: args.length ? Number(args[1]) * 1000 : undefined });
+    for (const line of report.lines) out(`${line.ok ? 'ok     ' : 'FAILED '}${line.text}`);
+    return report.ok ? 0 : 1;
+  }
   if (command === 'prune-backups') {
     // Used by scripts/watch-daily.sh under its lock: prints removed=N and note=TEXT.
     if (args.length !== 1) { out('prune-backups needs the path of the backup just made.'); return 1; }

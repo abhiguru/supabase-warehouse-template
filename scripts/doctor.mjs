@@ -4,15 +4,14 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { centralKeyFault, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
-import { KEY_SET_MAX_BYTES, usableKeys } from './central-key-set.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
-import { statePath } from './watch.mjs';
+import { defaultDeps, runHealth, statePath } from './watch.mjs';
 
 export const CHECKER_MAX_AGE_MS = 15 * 60 * 1000;
 // The unit is named from the facility's Compose project (WAREHOUSE_PROJECT_NAME in config/compose.env), not from the
@@ -162,9 +161,10 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
   const keyFileWarning = checkCentralKeyFile(env, state);
   if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
-  // The script probes ten containers plus five HTTP endpoints. Its own
-  // bounded readiness retries can exceed the short CLI-preflight deadline.
-  if (!probe('bash', [resolve(root, 'health-check.sh')], 300000).ok) throw new Error('Local service health check failed.');
+  // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the 6 default services, the database, the gateway's
+  // public configuration, a REST read and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
+  const health = await runHealth(defaultDeps(process.env));
+  if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.`);
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
@@ -187,24 +187,21 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
 // operator to put a missing file back (WAREHOUSE_CENTRAL_KEY_PENDING=yes, set by restore-host for
 // restore.sh and so for this doctor) is a missing file a returned warning instead of a failure.
 export function checkCentralKeyFile(env, stateDir, { pending = process.env.WAREHOUSE_CENTRAL_KEY_PENDING === 'yes' } = {}) {
-  const name = env.CENTRAL_JWKS_FILE;
-  if (!name) return '';
-  // The router reads only a plain file name from public/; so does this check.
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) throw new Error(`CENTRAL_JWKS_FILE must be a plain file name (such as central-jwks.json), not ${name}.`);
-  const path = resolve(stateDir, 'public', name);
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat) {
-    const message = `Central sign-in reads its keys from ${path}, but that file is missing: every central sign-in fails while the app still offers it. `
-      + `Put it back by rerunning setup.sh --operator with your usual inputs plus --central-issuer ${env.CENTRAL_ISSUER || '<issuer>'} --central-jwks-file <the key set the association sent you> (docs/OPERATOR_INSTALL.md, "Central sign-in").`;
-    if (pending) return message;
-    throw new Error(message);
-  }
-  if (!stat.isFile()) throw new Error(`${path} must be a regular file.`);
-  if (stat.size > KEY_SET_MAX_BYTES) throw new Error(`${path} is larger than 64 KB; central sign-in refuses it. Replace it with setup.sh --central-jwks-file.`);
-  let document;
-  try { document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path))); } catch { throw new Error(`${path} is not a JSON key set; central sign-in cannot verify a token. Replace it with setup.sh --central-jwks-file.`); }
-  try { usableKeys(document); } catch (error) { throw new Error(`${path} is not usable: ${error.message}. Replace it with setup.sh --central-jwks-file.`); }
-  return '';
+  // The rule itself (plain name, regular file, 64 KB, usable key set) is centralKeyFault in doctor-common.mjs, shared with watch.mjs.
+  const fault = centralKeyFault(env.CENTRAL_JWKS_FILE, stateDir);
+  if (!fault) return '';
+  const replace = 'Replace it with setup.sh --central-jwks-file.';
+  const message = {
+    name: `CENTRAL_JWKS_FILE must be a plain file name (such as central-jwks.json), not ${fault.path}.`,
+    missing: `Central sign-in reads its keys from ${fault.path}, but that file is missing: every central sign-in fails while the app still offers it. `
+      + `Put it back by rerunning setup.sh --operator with your usual inputs plus --central-issuer ${env.CENTRAL_ISSUER || '<issuer>'} --central-jwks-file <the key set the association sent you> (docs/OPERATOR_INSTALL.md, "Central sign-in").`,
+    'not-file': `${fault.path} must be a regular file.`,
+    'too-large': `${fault.path} is larger than 64 KB; central sign-in refuses it. ${replace}`,
+    'not-json': `${fault.path} is not a JSON key set; central sign-in cannot verify a token. ${replace}`,
+    unusable: `${fault.path} is not usable: ${fault.detail}. ${replace}`,
+  }[fault.code];
+  if (fault.code === 'missing' && pending) return message;
+  throw new Error(message);
 }
 
 if (isMain(import.meta.url)) {

@@ -469,11 +469,11 @@ test('generate-report-pdf is routed for signed-in callers and gets the document 
   assert.match(router, /const allowed = new Set\(\[\.\.\.publicFunctions, [^\]]*'generate-report-pdf'\]\);/);
   assert.doesNotMatch(/const publicFunctions = new Set\(\[([^\]]+)\]\)/.exec(router)[1], /generate-report-pdf/);
   assert.deepEqual([...workerEnvNames['generate-report-pdf']].sort(),
-    ['JWT_SECRET', 'PDF_RENDERER_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL']);
-  const env = { JWT_SECRET: 's', SUPABASE_URL: 'u', SUPABASE_ANON_KEY: 'a', SUPABASE_SERVICE_ROLE_KEY: 'k', SUPABASE_PUBLIC_URL: 'p',
+    ['JWT_SECRET', 'PDF_RENDERER_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'SUPABASE_REST_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_STORAGE_URL', 'SUPABASE_URL']);
+  const env = { JWT_SECRET: 's', SUPABASE_URL: 'u', SUPABASE_REST_URL: 'r', SUPABASE_STORAGE_URL: 't', SUPABASE_ANON_KEY: 'a', SUPABASE_SERVICE_ROLE_KEY: 'k', SUPABASE_PUBLIC_URL: 'p',
     PDF_RENDERER_URL: 'g', SUPABASE_DB_URL: 'postgresql://x', CENTRAL_ISSUER: 'c', APP_ENV: 'production' };
   assert.deepEqual(Object.keys(Object.fromEntries(workerEnv('generate-report-pdf', env))).sort(),
-    ['JWT_SECRET', 'PDF_RENDERER_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL']);
+    ['JWT_SECRET', 'PDF_RENDERER_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'SUPABASE_REST_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_STORAGE_URL', 'SUPABASE_URL']);
   assert.equal(readFileSync(new URL('../functions/generate-report-pdf/index.ts', import.meta.url), 'utf8'),
     "import { reportPdf } from '../_shared/report-pdf.ts';\nDeno.serve(reportPdf);\n");
 });

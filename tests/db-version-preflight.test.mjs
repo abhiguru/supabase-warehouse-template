@@ -85,7 +85,7 @@ test('a running PostgreSQL 18, an empty data directory and a PG_VERSION of 18 pa
 });
 
 test('setup.sh and start.sh run the preflight before anything is built or recreated', () => {
-  for (const [script, first] of [['setup.sh', 'scripts/build-images.sh'], ['start.sh', 'scripts/drop-logical-slots.sh']]) {
+  for (const [script, first] of [['setup.sh', 'scripts/build-images.sh'], ['start.sh', 'scripts/compose.sh" up -d']]) {
     const text = readFileSync(new URL(`../${script}`, import.meta.url), 'utf8');
     const preflight = text.indexOf('scripts/db-version-preflight.sh');
     assert.ok(preflight > 0, `${script} runs the preflight`);
@@ -99,7 +99,7 @@ test('setup.sh checks an existing installation before configure.mjs rewrites its
 });
 
 test('the commands that recreate db (key and password rotation, the pooler check) run the preflight first', () => {
-  for (const [script, first] of [['rotate-keys.sh', '--force-recreate'], ['scripts/rotate-db-passwords.sh', '--force-recreate'], ['scripts/pooler-check.sh', 'up -d --wait']]) {
+  for (const [script, first] of [['rotate-keys.sh', '--force-recreate'], ['scripts/rotate-db-passwords.sh', '--force-recreate'], ['tests/pooler-check.sh', 'up -d --wait']]) {
     const text = readFileSync(new URL(`../${script}`, import.meta.url), 'utf8');
     const preflight = text.indexOf('scripts/db-version-preflight.sh');
     assert.ok(preflight > 0, `${script} runs the preflight`);
