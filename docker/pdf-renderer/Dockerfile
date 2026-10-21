@@ -35,8 +35,9 @@ FROM base AS runtime
 ARG TARGETARCH
 RUN test "${TARGETARCH}" = "amd64" || { echo "pdf-renderer supports linux/amd64 only (TARGETARCH='${TARGETARCH}')" >&2; exit 1; }
 
-# Shared libraries chrome-headless-shell needs (the minimum `ldd` reports), tini, fontconfig and the font set
-# of the Gotenberg 8.x image this service replaces. Packages are named without versions: Debian's security
+# Shared libraries chrome-headless-shell needs (the minimum `ldd` reports), tini, fontconfig and the fonts the
+# documents use (Liberation for Helvetica/Arial, Noto Sans and Noto Sans Gujarati; no CJK, emoji, Carlito, Caladea,
+# OpenSymbol or DejaVu extras: no document prints them). Packages are named without versions: Debian's security
 # revisions are replaced and removed from the archive, so an exact pin would stop building within weeks. The
 # font-file hash below is the guard against a font change slipping in, and the golden-PDF job (tests/golden-pdf)
 # catches any change in the rendered pages.
@@ -47,11 +48,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       libxkbcommon0 libxrandr2 \
       fontconfig \
       fonts-liberation fonts-liberation2 \
-      fonts-dejavu fonts-dejavu-core fonts-dejavu-extra fonts-dejavu-mono \
-      fonts-noto-core fonts-noto-mono fonts-noto-cjk \
-      fonts-noto-color-emoji \
-      fonts-crosextra-carlito fonts-crosextra-caladea \
-      fonts-opensymbol \
+      fonts-dejavu-core \
+      fonts-noto-core fonts-noto-mono \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian's default fontconfig conf.d plus Gotenberg's rendering settings (identical in 8.25, 8.32, 8.37).
@@ -59,10 +57,10 @@ COPY fontconfig/100-gotenberg.conf /etc/fonts/conf.d/100-gotenberg.conf
 # Last font step: build the cache now, because the root file system is read-only at run time.
 RUN fc-cache -sf
 
-# The font tree must equal the Gotenberg targets' (GCS live 8.32 and template 8.37 give the same value): the sorted
-# list of font files fontconfig knows, hashed the way targets/probe.sh does. A Debian update that adds or drops a
+# The pinned value is the sorted list of font files fontconfig knows (this reduced set, no longer the Gotenberg
+# targets' full tree), hashed the way targets/probe.sh does. A Debian update that adds or drops a
 # font file fails the build instead of silently changing the PDFs (the file list, not the package versions).
-ARG FONT_FILELIST_SHA256=bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d
+ARG FONT_FILELIST_SHA256=9ebf7b690441c5f7ad261405923f96cf060ec13ba1eae1b0fb0dfa529a8e6dde
 RUN actual="$(fc-list --format '%{file}\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" \
     && if [ "$actual" != "${FONT_FILELIST_SHA256}" ]; then \
          echo "font file list hash ${actual} differs from the pinned ${FONT_FILELIST_SHA256}" >&2; \
