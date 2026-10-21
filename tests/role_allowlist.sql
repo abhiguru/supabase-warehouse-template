@@ -126,7 +126,7 @@ INSERT INTO ra_rpc(name,staff,customer) VALUES
  ('update_user_role',false,'no'),('update_user_status',false,'no'),
  ('assign_customer_to_user',false,'no'),('remove_customer_assignment',false,'no'),
  ('get_users_list',false,'no'),('get_user_details',false,'no'),('get_operations_dashboard',false,'no'),
- ('create_customer',false,'no'),('update_customer',false,'no'),('safe_delete_customer',false,'no'),('restore_customer',false,'no'),
+ ('create_customer',false,'no'),('update_customer',false,'no'),
  ('create_item',false,'no'),('update_item',false,'no'),('delete_item_safe',false,'no'),
  ('delete_grn_safe',false,'no'),('delete_dispatch_with_order_cleanup',false,'no'),('delete_invoice',false,'no'),
  -- the price history of migration 48: administrators and supervisors only

@@ -281,12 +281,6 @@ SELECT pg_temp.lf_assert(NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'p
 SELECT pg_temp.lf_assert(to_regprocedure('public.update_updated_at_column()') IS NOT NULL
   AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgfoid = 'public.update_updated_at_column()'::regprocedure),
   'update_updated_at_column() is kept and still serves other tables');
-SELECT pg_temp.lf_assert(to_regprocedure('public.get_open_invoices_for_customer(uuid,date)') IS NOT NULL, 'get_open_invoices_for_customer(uuid,date) is kept');
-SELECT pg_temp.lf_assert(has_function_privilege('service_role', 'public.get_open_invoices_for_customer(uuid,date)', 'EXECUTE')
-  AND NOT has_function_privilege('authenticated', 'public.get_open_invoices_for_customer(uuid,date)', 'EXECUTE')
-  AND NOT has_function_privilege('anon', 'public.get_open_invoices_for_customer(uuid,date)', 'EXECUTE'),
-  'get_open_invoices_for_customer stays the service role''s only');
-
 -- ---------------------------------------------------------------------------
 -- 4. The live path, written by the database owner
 -- ---------------------------------------------------------------------------
@@ -301,17 +295,6 @@ SELECT pg_temp.lf_assert((SELECT total FROM public.invoice WHERE id = :'invoice_
   'the invoice total and the customer name changed');
 INSERT INTO public.payments(payment_no, payment_date, customer_id, customer_name, amount, payment_mode, online_ref, invoice_id)
 VALUES ('LRP-1', '2026-09-22T12:00:00Z', :'juniper'::uuid, 'Legacy Retire Juniper Cold Stores', 4, 'ONLINE', 'UTR-71', :'invoice_id'::uuid);
-
-SELECT set_config('request.jwt.claims', '{"role":"service_role"}', true);
-SET LOCAL ROLE service_role;
-SELECT public.get_open_invoices_for_customer(:'juniper'::uuid) AS open_invoices \gset
-RESET ROLE;
-SELECT pg_temp.lf_assert((:'open_invoices'::jsonb)->>'success' = 'true'
-  AND jsonb_array_length((:'open_invoices'::jsonb)->'data') = 1
-  AND ((:'open_invoices'::jsonb)#>>'{data,0,total}')::numeric = 14
-  AND ((:'open_invoices'::jsonb)#>>'{data,0,paid}')::numeric = 4
-  AND ((:'open_invoices'::jsonb)#>>'{data,0,outstanding}')::numeric = 10,
-  'one open invoice, 14 total, 4 paid, 10 outstanding: ' || :'open_invoices');
 
 -- ---------------------------------------------------------------------------
 -- 5. Migration 74: the MAC-based sensor writers
@@ -361,7 +344,7 @@ FROM unnest(ARRAY[
   'public.get_item_grn_records(uuid,jsonb,text,text,integer,integer)', 'public.get_item_pricing_config(uuid,uuid)',
   'public.get_item_stock_analysis(timestamp with time zone,jsonb,jsonb)', 'public.get_jwt_secret()',
   'public.get_next_invoice_number_with_year()', 'public.get_order_item_change_summary(uuid)',
-  'public.get_order_list(jsonb,text,text,integer,integer)', 'public.get_order_stats(uuid)',
+  'public.get_open_invoices_for_customer(uuid,date)', 'public.get_order_list(jsonb,text,text,integer,integer)', 'public.get_order_stats(uuid)',
   'public.get_otp_stats(character varying)', 'public.get_recent_auto_invoice_errors(integer,boolean)',
   'public.get_sensor_devices(boolean)', 'public.get_sensor_latest()',
   'public.get_sensor_readings(uuid,timestamp with time zone,timestamp with time zone,integer,integer)', 'public.get_sensor_statistics(uuid,character varying)',
@@ -375,7 +358,7 @@ FROM unnest(ARRAY[
   'public.refresh_auth_token(text)', 'public.resolve_auto_invoice_error(uuid,text)',
   'public.resolve_auto_invoice_errors_by_grn(uuid,uuid)', 'public.restore_cart_quantities_from_dispatch(uuid)',
   'public.restore_dispatch(uuid)', 'public.restore_grn(uuid)',
-  'public.restore_invoice(uuid)', 'public.safe_delete_dispatch(uuid,boolean)',
+  'public.restore_customer(uuid)', 'public.restore_invoice(uuid)', 'public.safe_delete_customer(uuid,boolean)', 'public.safe_delete_dispatch(uuid,boolean)',
   'public.safe_delete_grn(uuid,boolean)', 'public.save_invoice(jsonb)',
   'public.search_grns(text,integer)', 'public.send_otp(character varying,character varying,text,inet,text)',
   'public.send_otp_simple(character varying,character varying)', 'public.send_otp_with_config(character varying,character varying,text,inet)',
@@ -460,6 +443,9 @@ SELECT pg_temp.ro_assert((SELECT count(*) = 0 FROM pg_proc p WHERE p.pronamespac
     AND (p.prosrc ~ '\m(user_session_activity|auth_logs|config_access_logs|intrusion_events|user_customers|secrets_vault|jwt_config|sensor_health_events|intrusion_metrics|contact_submissions|captcha_config|order_number_counter|test_otp_records|v_jwt_secret|v_access_token_expiry|v_refresh_token_expiry)\M'
       OR p.prosrc ~* '\m(FROM|JOIN|INTO|UPDATE)\s+(public\.)?auto_invoice_errors\M')),
   'no function body names any of the 16 dropped tables');
+-- restore_customer, safe_delete_customer and get_open_invoices_for_customer are gone in every overload.
+SELECT pg_temp.ro_assert((SELECT count(*) = 0 FROM pg_proc WHERE proname IN ('restore_customer', 'safe_delete_customer', 'get_open_invoices_for_customer')),
+  'a function named restore_customer, safe_delete_customer or get_open_invoices_for_customer still exists');
 -- The trigger of S3 stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 SELECT pg_temp.ro_assert(EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_restore_stock_on_dispatch_delete'), 'trg_restore_stock_on_dispatch_delete is still there');
 ROLLBACK;

@@ -34,7 +34,7 @@ behaviour validation, and a missing endpoint is never replaced with a success st
 
 Refusals do not have one shape; each family has its own, and the app reads the one of the function it calls.
 - **Customer functions** (migrations 112, 116, 117, 118): `{success:false, data:null, message, error:{code, field?, details?}}`.
-  Two exceptions: `set_customer_active` and `restore_customer` answer an uncoded `{success:false, message}` (an unknown id, a missing
+  One exception: `set_customer_active` answers an uncoded `{success:false, message}` (an unknown id, a missing
   argument), except `DUPLICATE_MOBILE`, which carries `error:{code, field, details}`.
 - **Dispatch, GRN, invoice and order writes** (`NUMBER_TAKEN`, migration 120; the refusals of migration 121): `{success:false, error_code:'WH409',
   reason, error, message, ...fields}`, the fields at the top level, `error` and `message` the same English sentence; the app switches on `reason`
@@ -332,19 +332,6 @@ ever deleted.
   active customer uses the same mobile (owner decision 2026-10-20; details in "Customers: duplicates, stale edit, deactivated search").
 - `update_customer(..., p_active)` (migration 83): `p_active = true` also clears `deleted_at` / `deleted_by`, so a
   business is never active and deleted at once; `false` and NULL leave `deleted_at` untouched.
-- `safe_delete_customer(p_customer_id uuid, p_permanent boolean DEFAULT false)`. "Data" means any GRN,
-  dispatch or invoice row (deleted rows count), any payment, any customer-specific rate
-  (`item_storage_prices.customer_id`), any active user assignment, and any order that has lines or is not
-  OPEN. For a business WITH data: soft (`p_permanent = false`) deactivates it instead and answers
-  `{success:true, delete_type:'deactivated', message:'"<name>" has records, so it was deactivated instead of
-  deleted.', related_records}`; permanent answers `{success:false, message:'Cannot delete "<name>": it has
-  GRNs, dispatches, invoices, payments, rates, linked users or orders. Deactivate it instead.', related_records}`. `related_records` is
-  `{grn_count, dispatch_count, invoice_count, order_count, payment_count, rate_count, assignment_count}`.
-  A business without data: soft delete as before (`delete_type:'soft'`, its empty OPEN carts stay);
-  permanent (`delete_type:'permanent'`) also removes its empty OPEN carts and switched-off assignments.
-- `restore_customer(p_customer_id uuid)`: takes a business that is deleted OR inactive and makes it active
-  with `deleted_at` / `deleted_by` cleared (same as `set_customer_active(id, true)`); an active, undeleted
-  business answers `{success:false, message:'Customer not found or not deleted'}`; it is refused with `DUPLICATE_MOBILE` like Activate (see "Customers: duplicates, stale edit, deactivated search") when another active customer uses the number.
 - `get_orders_list` leaves out orders of a deleted business.
 - Five readers that no longer hide a deactivated business from staff and administrators (filter is
   `deleted_at IS NULL`): `get_invoices_list`, `get_all_stock_summary`, `get_item_wise_stock_list` (all
@@ -987,8 +974,7 @@ Errors use the shape `{success:false, data:null, message, error:{code, field?, d
   a name is trimmed. Other codes: `PERMISSION_DENIED`, `CUSTOMER_NOT_FOUND` (unknown id), `DATABASE_ERROR`.
   `set_customer_active` has no `error.code` for an unknown id or a missing argument (it answers `{success:false, message}`).
   **Activate re-checks the mobile (owner decision 2026-10-20).** `set_customer_active(id, true)`, `update_customer(..., p_active => true)`
-  on a deactivated or deleted customer (the number checked is the one sent in the same call, else the stored one) and the legacy
-  `restore_customer` answer `{success:false, data:null, message:'<other name> already uses this mobile number. Change one of the numbers
+  on a deactivated or deleted customer (the number checked is the one sent in the same call, else the stored one) answer `{success:false, data:null, message:'<other name> already uses this mobile number. Change one of the numbers
   first.', error:{code:'DUPLICATE_MOBILE', field:'mobile', details:{customer_id, name, active:true}}}` when another ACTIVE, undeleted
   customer has the same mobile key; `details` is the OTHER customer, and nothing changes. A customer with no mobile is never refused,
   and an already active customer is not re-checked on a normal edit (`update_customer` with `p_active = true` on an active customer).

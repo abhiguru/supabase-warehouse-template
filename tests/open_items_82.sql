@@ -3,12 +3,11 @@
 -- login. A deactivated business is still listed. Fictional data; runs only in migrations.sh's disposable,
 -- network-disabled database.
 -- Also (owner decisions A and B, 2026-10-15): set_customer_active (roles, no stock check, restore clears
--- deleted_at), safe_delete_customer never deleting a business with data (soft: deactivates, permanent:
--- refuses; data = GRN, dispatch, invoice incl. deleted rows, payment, rate, active assignment, order with
--- lines or not OPEN), restore_customer taking an inactive business, empty carts removed only by a permanent
--- delete, the data fix for soft-deleted businesses with data, a customer login still reading the past
+-- deleted_at), the data fix for soft-deleted businesses with data, a customer login still reading the past
 -- records of a deactivated business, staff and administrators still seeing it in the readers, and no new
--- GRN or dispatch for a DELETED business.
+-- GRN or dispatch for a DELETED business. (safe_delete_customer and restore_customer, which this file also
+-- tested, were dropped by migration 123: nothing called them. The not-deleted-with-data rule they carried
+-- stays in the data fix below and in set_customer_active, which never deletes.)
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.oi_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -107,7 +106,7 @@ SELECT pg_temp.oi_assert((SELECT (o->'customer'->'active')='false'::jsonb FROM j
    AND (SELECT (o->'customer'->'active')='true'::jsonb FROM jsonb_array_elements(:'list_staff'::jsonb#>'{data,orders}') o WHERE o->>'customer_id'=:'cust_a'),
  'staff login: the order of the deactivated business is listed with active false, A true: '||:'list_staff');
 
--- ---- set_customer_active, safe_delete_customer, the data fix
+-- ---- set_customer_active, the data fix
 INSERT INTO public.items(name,packaging) VALUES ('Open Items Ginger','Bag') RETURNING id AS item_id \gset
 INSERT INTO public.customers(name,mobile) VALUES ('Open Items D with data','9555560213') RETURNING id AS cust_d \gset
 INSERT INTO public.customers(name,mobile) VALUES ('Open Items E empty cart','9555560214') RETURNING id AS cust_e \gset
@@ -265,62 +264,9 @@ SELECT pg_temp.oi_assert(position('Open Items D with data' IN :'rd_a_inv')>0 AND
  'get_invoices_list lists the invoice of the deactivated business, with and without p_customer_id: '||left(:'rd_a_inv',200)||left(:'rd_s_inv',200));
 
 
--- safe_delete_customer: nothing with data is deleted. Soft (the released app's Deactivate) deactivates, permanent refuses.
-SELECT set_config('request.jwt.claims',:'admin_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.safe_delete_customer(:'cust_d'::uuid,false) AS del_d_soft \gset
-SELECT public.safe_delete_customer(:'cust_d'::uuid,true) AS del_d_perm \gset
-SELECT public.safe_delete_customer(:'cust_g'::uuid,false) AS del_g_soft \gset
-SELECT public.safe_delete_customer(:'cust_g'::uuid,true) AS del_g_perm \gset
-SELECT public.safe_delete_customer(:'cust_j'::uuid,false) AS del_j_soft \gset
-SELECT public.safe_delete_customer(:'cust_j'::uuid,true) AS del_j_perm \gset
-SELECT public.safe_delete_customer(:'cust_k'::uuid,true) AS del_k_perm \gset
-SELECT public.safe_delete_customer(:'cust_l'::uuid,true) AS del_l_perm \gset
-SELECT public.safe_delete_customer(:'cust_m'::uuid,true) AS del_m_perm \gset
-SELECT public.safe_delete_customer(:'cust_n'::uuid,false) AS del_n_soft \gset
-SELECT public.safe_delete_customer(:'cust_n'::uuid,true) AS del_n_perm \gset
-RESET ROLE;
-SELECT pg_temp.oi_assert((:'del_d_soft'::jsonb->>'success')='true' AND (:'del_d_soft'::jsonb->>'delete_type')='deactivated'
- AND (:'del_d_soft'::jsonb->>'message')='"Open Items D with data" has records, so it was deactivated instead of deleted.'
- AND (SELECT NOT active AND deleted_at IS NULL FROM public.customers WHERE id=:'cust_d'::uuid)
- AND (:'del_d_perm'::jsonb->>'success')='false'
- AND (:'del_d_perm'::jsonb->>'message')='Cannot delete "Open Items D with data": it has GRNs, dispatches, invoices, payments, rates, linked users or orders. Deactivate it instead.'
- AND (:'del_d_perm'::jsonb#>>'{related_records,grn_count}')='2' AND (:'del_d_perm'::jsonb#>>'{related_records,invoice_count}')='1'
- AND EXISTS (SELECT 1 FROM public.customers WHERE id=:'cust_d'::uuid),
- 'business with GRNs and an invoice: soft deactivates, permanent refuses: '||:'del_d_soft'||:'del_d_perm');
-SELECT pg_temp.oi_assert((:'del_g_soft'::jsonb->>'delete_type')='deactivated' AND (:'del_g_perm'::jsonb->>'success')='false'
- AND (:'del_g_perm'::jsonb#>>'{related_records,order_count}')='1'
- AND (SELECT deleted_at IS NULL FROM public.customers WHERE id=:'cust_g'::uuid)
- AND EXISTS (SELECT 1 FROM public.orders WHERE customer_id=:'cust_g'::uuid AND status='DISPATCHED'),
- 'business with a not-OPEN order: soft deactivates, permanent refuses: '||:'del_g_soft'||:'del_g_perm');
-SELECT pg_temp.oi_assert((:'del_j_soft'::jsonb->>'delete_type')='deactivated' AND (:'del_j_perm'::jsonb->>'success')='false'
- AND (:'del_j_perm'::jsonb#>>'{related_records,payment_count}')='1',
- 'business with a payment: soft deactivates, permanent refuses: '||:'del_j_soft'||:'del_j_perm');
-SELECT pg_temp.oi_assert((:'del_k_perm'::jsonb->>'success')='false' AND (:'del_k_perm'::jsonb#>>'{related_records,rate_count}')='1'
- AND (:'del_l_perm'::jsonb->>'success')='false' AND (:'del_l_perm'::jsonb#>>'{related_records,assignment_count}')='1'
- AND EXISTS (SELECT 1 FROM public.customers WHERE id=:'cust_k'::uuid) AND EXISTS (SELECT 1 FROM public.customers WHERE id=:'cust_l'::uuid),
- 'business with a customer rate or an active assignment is not deleted: '||:'del_k_perm'||:'del_l_perm');
-SELECT pg_temp.oi_assert((:'del_m_perm'::jsonb->>'success')='false' AND (:'del_m_perm'::jsonb#>>'{related_records,grn_count}')='1'
- AND (:'del_n_soft'::jsonb->>'delete_type')='deactivated' AND (:'del_n_perm'::jsonb#>>'{related_records,dispatch_count}')='1'
- AND (SELECT deleted_at IS NULL FROM public.customers WHERE id=:'cust_n'::uuid),
- 'deleted GRN and deleted dispatch rows count as data: '||:'del_m_perm'||:'del_n_soft'||:'del_n_perm');
-
--- No data: E (empty cart) soft keeps the cart, H (empty cart + switched-off assignment) permanent removes both, F soft
-SELECT set_config('request.jwt.claims',:'supervisor_claims',true);
-SET LOCAL ROLE authenticated;
-SELECT public.safe_delete_customer(:'cust_e'::uuid,false) AS del_e \gset
-SELECT public.safe_delete_customer(:'cust_h'::uuid,true) AS del_h \gset
-SELECT public.safe_delete_customer(:'cust_f'::uuid,false) AS del_f \gset
-RESET ROLE;
-SELECT pg_temp.oi_assert((:'del_e'::jsonb->>'success')='true' AND (:'del_e'::jsonb->>'delete_type')='soft'
- AND (SELECT deleted_at IS NOT NULL AND NOT active FROM public.customers WHERE id=:'cust_e'::uuid)
- AND (SELECT count(*)=1 FROM public.orders WHERE customer_id=:'cust_e'::uuid)
- AND (:'del_h'::jsonb->>'success')='true' AND (:'del_h'::jsonb->>'delete_type')='permanent'
- AND NOT EXISTS (SELECT 1 FROM public.customers WHERE id=:'cust_h'::uuid)
- AND NOT EXISTS (SELECT 1 FROM public.orders WHERE customer_id=:'cust_h'::uuid)
- AND NOT EXISTS (SELECT 1 FROM public.users_customers_new WHERE customer_id=:'cust_h'::uuid)
- AND (:'del_f'::jsonb->>'success')='true' AND (SELECT deleted_at IS NOT NULL FROM public.customers WHERE id=:'cust_f'::uuid),
- 'businesses without data: soft keeps the empty cart, permanent removes cart and assignment: '||:'del_e'||:'del_h'||:'del_f');
+-- A business without data is soft deleted (deleted_at set, active false), as the dropped safe_delete_customer did: E keeps its empty cart,
+-- F has nothing.
+UPDATE public.customers SET deleted_at = now(), active = false WHERE id IN (:'cust_e'::uuid, :'cust_f'::uuid);
 
 -- get_orders_list leaves out the leftover empty cart of the now soft-deleted E, for admin and staff; G's order is listed
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
@@ -336,14 +282,14 @@ SELECT pg_temp.oi_assert((SELECT count(*)=1 FROM public.orders WHERE customer_id
  AND position(:'cust_g' IN :'ol_a_deleted')>0 AND position(:'cust_g' IN :'ol_s_deleted')>0,
  'get_orders_list: the empty cart of a deleted business is not listed, the order of a deactivated one is');
 
--- set_customer_active(true) brings a soft-deleted business back (F); restore_customer (the released app's
--- Activate) takes a deleted one (E) and an inactive one (D); on an active one it answers not found
+-- set_customer_active(true) brings a soft-deleted business back (F and E) and an inactive one (D); on an active one it answers that
+-- it is already active
 SELECT set_config('request.jwt.claims',:'admin_claims',true);
 SET LOCAL ROLE authenticated;
 SELECT public.set_customer_active(:'cust_f'::uuid,true) AS sca_back \gset
-SELECT public.restore_customer(:'cust_e'::uuid) AS rest_e \gset
-SELECT public.restore_customer(:'cust_d'::uuid) AS rest_d \gset
-SELECT public.restore_customer(:'cust_d'::uuid) AS rest_d_again \gset
+SELECT public.set_customer_active(:'cust_e'::uuid,true) AS rest_e \gset
+SELECT public.set_customer_active(:'cust_d'::uuid,true) AS rest_d \gset
+SELECT public.set_customer_active(:'cust_d'::uuid,true) AS rest_d_again \gset
 RESET ROLE;
 SELECT pg_temp.oi_assert((:'sca_back'::jsonb->>'success')='true' AND (:'sca_back'::jsonb#>'{data,active}')='true'::jsonb
  AND (SELECT active AND deleted_at IS NULL AND deleted_by IS NULL FROM public.customers WHERE id=:'cust_f'::uuid),
@@ -356,8 +302,8 @@ SELECT pg_temp.oi_assert(position(:'cust_e' IN :'ol_a_restored')>0,'get_orders_l
 SELECT pg_temp.oi_assert((:'rest_e'::jsonb->>'success')='true' AND (:'rest_d'::jsonb->>'success')='true'
  AND (SELECT active AND deleted_at IS NULL FROM public.customers WHERE id=:'cust_e'::uuid)
  AND (SELECT active AND deleted_at IS NULL FROM public.customers WHERE id=:'cust_d'::uuid)
- AND (:'rest_d_again'::jsonb->>'success')='false',
- 'restore_customer: a deleted and an inactive business become active, an active one is not found: '||:'rest_e'||:'rest_d'||:'rest_d_again');
+ AND (:'rest_d_again'::jsonb->>'success')='true' AND (:'rest_d_again'::jsonb->>'message') LIKE '%already active%',
+ 'set_customer_active(true): a deleted and an inactive business become active, an active one is already active: '||:'rest_e'||:'rest_d'||:'rest_d_again');
 
 -- Data fix of migration 82 (the same statement the migration runs once): a soft-deleted business WITH data of
 -- any kind (GRN+invoice D, payment J, rate K, active assignment L, deleted GRN M, deleted dispatch N, a not-OPEN

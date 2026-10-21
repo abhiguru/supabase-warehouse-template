@@ -25,6 +25,7 @@
 --  * 8. The print "View jobs" sheet (get_print_jobs, cancel_print_job) works for administrators, supervisors and staff.
 --  * 9. 18 tables the app never reads directly lose the authenticated SELECT grant and their 23 starter policies (row security stays on).
 --  * 10. audit_log keeps 24 months: a retention_policy row and run_database_retention creates partitions ahead and drops old ones.
+--  * 11. restore_customer, safe_delete_customer and get_open_invoices_for_customer are dropped (no caller).
 -- trg_restore_stock_on_dispatch_delete stays: it is not redundant (tests/dispatch_delete_trigger.sql).
 
 -- 0. Guard: refuse to drop anything that holds data. Dev held none; a database with real data (the production box) must be decided
@@ -1263,3 +1264,13 @@ BEGIN
   END IF;
   RETURN jsonb_build_object('applied', p_apply, 'as_of', p_now, 'rows', result);
 END $function$;
+
+
+-- ===== 11. Three functions nothing calls (owner decision, 2026-10-21) =====
+-- restore_customer(uuid) and safe_delete_customer(uuid, boolean) were the released app's old Activate and Deactivate; the app now calls
+-- set_customer_active, which never deletes. get_open_invoices_for_customer(uuid, date) was service_role only and is not called by any edge
+-- function, script or SQL body (the report code only names it in comments). The caller check covered the app, central identity, fas-sync,
+-- functions/, scripts/, every SQL body and policy. One overload of each exists; no CASCADE, so a surprise dependency stops the migration.
+DROP FUNCTION public.restore_customer(uuid);
+DROP FUNCTION public.safe_delete_customer(uuid, boolean);
+DROP FUNCTION public.get_open_invoices_for_customer(uuid, date);
