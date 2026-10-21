@@ -501,6 +501,14 @@ association sent you for that case). An in-place `db:restore --restore-config`
 can bring back a `compose.env` that names a key file this state no longer has;
 it finishes with a warning and prints the same rerun.
 
+After any restore that brought back `central-jwks.json` (a copied key-set file
+rather than `--central-jwks-url`), install the association's newest key-set
+file before people sign in: rerun `setup.sh` with your usual inputs and
+`--central-jwks-file <newest file>`. The restored copy is as old as the backup,
+so it may still trust a key the association has since withdrawn, or lack the
+key it signs with now. Ask the association for the current file and compare
+the key ids with it.
+
 `doctor` (`--local` and the full run) fails whenever `CENTRAL_JWKS_FILE` is set
 and `public/central-jwks.json` is missing, not a regular file, larger than
 64 KB, not JSON or without a usable P-256 key: without the file every central
