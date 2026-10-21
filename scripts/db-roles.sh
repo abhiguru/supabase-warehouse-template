@@ -7,7 +7,9 @@
 #       signs in as supabase_admin with the POSTGRES_PASSWORD of CONNECT_FILE
 #       (default: VALUES_FILE). --superuser also sets the superuser password
 #       (scripts/rotate-db-passwords.sh only). setup.sh and both restore paths
-#       run `apply` after their migrations.
+#       run `apply` after their migrations. While the pooler is on (POOLER_ENABLED=true),
+#       it first creates the pooler's role, schema, auth lookup and _supabase database
+#       (scripts/configure-pooler.sql) and sets the pool user's password too.
 #   bash scripts/db-roles.sh check      (npm run test:db-roles)
 #       Proves first that POSTGRES_PASSWORD is the superuser password the
 #       database has (supabase_admin signs in with it), then for each login that
@@ -15,6 +17,7 @@
 #       connection that PostgreSQL authenticates with SCRAM (connections from
 #       127.0.0.1 inside the database container are trusted by the image, so they
 #       would prove nothing). The roles of the earlier image do not exist and are not checked.
+#       The pooler's login pgbouncer is checked only while the pooler is on.
 #   bash scripts/db-roles.sh matches FILE
 #       Whether the database takes FILE's values (authenticator and supabase_admin
 #       sign in with them over the same network connection): exit 0 yes, 1 no,
@@ -56,6 +59,12 @@ case "$command" in
     password="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$connect" | head -n 1)"
     [[ "$password" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "No usable POSTGRES_PASSWORD in $connect." >&2; exit 1; }
     prelude="$(node "$ROOT/scripts/db-roles.mjs" prelude "$values" "${superuser[@]}")"
+    # While the pooler is on, its role, schema, auth lookup and metadata database must exist before its password is set.
+    # With the pooler off none of them is created here (scripts/pooler.sh).
+    if [[ "$(node "$ROOT/scripts/db-roles.mjs" pooler-state "$values")" == on ]]; then
+      { printf '%s\n' "$password"; cat "$ROOT/scripts/configure-pooler.sql"; } |
+        compose exec -T db sh -c 'IFS= read -r pw; PGPASSWORD="$pw" exec psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1'
+    fi
     # The first line is the sign-in password, read by the shell in the container;
     # psql reads the verifiers and the script from the rest of the stream.
     { printf '%s\n%s\n' "$password" "$prelude"; cat "$ROOT/scripts/configure-db-roles.sql"; } |

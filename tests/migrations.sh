@@ -38,7 +38,7 @@ docker run -d --name "$container" --label purpose=warehouse-migration-test \
   -e JWT_SECRET=isolated-test-secret-not-for-any-deployment-12345 -e JWT_EXP=3600 \
   -e AUTH_MODE=operator -e APP_ENV=production \
   -e POSTGRES_USER=supabase_admin -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD="$(openssl rand -hex 32)" \
-  -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" -e DB_PASSWORD_POOLER="$(openssl rand -hex 32)" \
+  -e DB_PASSWORD_AUTHENTICATOR="$(openssl rand -hex 32)" -e DB_PASSWORD_STORAGE="$(openssl rand -hex 32)" \
   -e POSTGRES_INITDB_ARGS=--locale=en_US.UTF-8 \
   -v "$ROOT/docker/volumes/db/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro" \
   -v "$ROOT/docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro" \
@@ -382,20 +382,26 @@ roles_env=$(mktemp "${TMPDIR:-/tmp}/warehouse-db-roles.XXXXXX")
   done
 } > "$roles_env"
 stored_verifiers="SELECT string_agg(rolname || ' ' || rolcanlogin || ' ' || rolpassword, E'\n' ORDER BY rolname) FROM pg_authid WHERE rolname IN ('authenticator','supabase_storage_admin','pgbouncer')"
+# The pooler is off by default: the bootstrap creates no pgbouncer role, schema or _supabase database, and the logins script
+# neither creates nor sets one. (Turning it on is covered after the security baseline below.)
+[[ "$(roles_sql "SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer'")" == 0 \
+  && "$(roles_sql "SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer'")" == 0 \
+  && "$(roles_sql "SELECT count(*) FROM pg_database WHERE datname = '_supabase'")" == 0 ]] || {
+  echo 'A new database has pooler objects (role, schema or _supabase database).' >&2; exit 1; }
 for pass in 1 2; do
   prelude=$(node "$ROOT/scripts/db-roles.mjs" prelude "$roles_env")
   apply_db_roles <<< "$prelude"
   expected=$(printf '%s\n' "$prelude" | sed -n "s/^\\\\set \\([a-z_]*\\)_verifier '\\(.*\\)'$/\\1 \\2/p" |
     sed -e 's/^authenticator /authenticator true /' -e 's/^storage /supabase_storage_admin true /' \
-        -e 's/^pooler /pgbouncer true /' | LC_ALL=C sort)
+        | LC_ALL=C sort)
   [[ "$(roles_sql "$stored_verifiers" | LC_ALL=C sort)" == "$expected" ]] || {
     echo "configure-db-roles.sql pass $pass did not store each login's own verifier with LOGIN." >&2; exit 1; }
 done
 grep -q "$(sed -n 's/^DB_PASSWORD_AUTHENTICATOR=//p' "$roles_env")" <<< "$(roles_sql "$stored_verifiers")" && {
   echo 'A password reached the database instead of its verifier.' >&2; exit 1; }
 before_refusals=$(roles_sql "$stored_verifiers")
-if apply_db_roles <<< "$(grep -v '^\\set pooler_verifier' <<< "$prelude")" >/dev/null 2>&1; then
-  echo 'configure-db-roles.sql ran without the pool user verifier.' >&2; exit 1; fi
+if apply_db_roles <<< "$(grep -v '^\\set storage_verifier' <<< "$prelude")" >/dev/null 2>&1; then
+  echo 'configure-db-roles.sql ran without the storage verifier.' >&2; exit 1; fi
 if apply_db_roles <<< "$(sed "s/^\\\\set storage_verifier .*/\\\\set storage_verifier 'plaintext-password-not-a-verifier'/" <<< "$prelude")" >/dev/null 2>&1; then
   echo 'configure-db-roles.sql accepted a plaintext password.' >&2; exit 1; fi
 [[ "$(roles_sql "$stored_verifiers")" == "$before_refusals" ]] || { echo 'A refused configure-db-roles.sql run changed a password.' >&2; exit 1; }
@@ -406,6 +412,44 @@ rm -f "$roles_env"
 unset prelude expected before_refusals
 # The baseline holds after the logins were configured too.
 docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/tests/security_baseline.sql" >/dev/null
+
+# Turning the pooler on (scripts/pooler.sh on, through scripts/db-roles.sh apply): configure-pooler.sql creates the role, the
+# schema with get_auth and the _supabase database (with _supavisor), repeats without error, and the pool user's verifier is
+# then stored. Everything is removed again, so the suites that follow see the default database.
+pooler_env=$(mktemp "${TMPDIR:-/tmp}/warehouse-db-roles.XXXXXX")
+{
+  printf 'POSTGRES_PASSWORD=%s\nPOOLER_ENABLED=true\n' "$(openssl rand -hex 32)"
+  for name in $(node "$ROOT/scripts/db-roles.mjs" names) DB_PASSWORD_POOLER; do
+    printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
+  done
+} > "$pooler_env"
+for pass in 1 2; do
+  docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-pooler.sql"
+  apply_db_roles <<< "$(node "$ROOT/scripts/db-roles.mjs" prelude "$pooler_env")"
+done
+[[ "$(roles_sql "SELECT rolcanlogin::text || ' ' || (rolpassword LIKE 'SCRAM-SHA-256\$%')::text || ' ' || rolsuper::text FROM pg_authid WHERE rolname = 'pgbouncer'")" == 'true true false' ]] || {
+  echo 'Turning the pooler on did not give pgbouncer a SCRAM login without superuser rights.' >&2; exit 1; }
+[[ "$(roles_sql "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'pgbouncer' AND p.proname = 'get_auth' AND p.prosecdef")" == 1 ]] || {
+  echo 'pgbouncer.get_auth is missing or not SECURITY DEFINER.' >&2; exit 1; }
+[[ "$(roles_sql "SELECT count(*) FROM pgbouncer.get_auth('supabase_admin')")" == 0 ]] || {
+  echo 'pgbouncer.get_auth returned a superuser verifier.' >&2; exit 1; }
+[[ "$(roles_sql "SELECT count(*) FROM pgbouncer.get_auth('authenticator')")" == 1 ]] || {
+  echo 'pgbouncer.get_auth did not return a normal login.' >&2; exit 1; }
+[[ "$(docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d _supabase -v ON_ERROR_STOP=1 -c "SELECT nspname FROM pg_namespace WHERE nspname = '_supavisor'")" == _supavisor ]] || {
+  echo 'The _supabase database has no _supavisor schema.' >&2; exit 1; }
+# Off again leaves them (pooler.sh off deletes nothing); the clean-up of an unused pooler removes them. This is the SQL of
+# `pooler.sh cleanup`; the removal itself is what leaves the default database for the suites below.
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+DROP SCHEMA IF EXISTS pgbouncer CASCADE;
+DROP ROLE IF EXISTS pgbouncer;
+COMMIT;
+SQL
+docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS _supabase WITH (FORCE)'
+[[ "$(roles_sql "SELECT (SELECT count(*) FROM pg_roles WHERE rolname = 'pgbouncer') + (SELECT count(*) FROM pg_namespace WHERE nspname = 'pgbouncer') + (SELECT count(*) FROM pg_database WHERE datname = '_supabase')")" == 0 ]] || {
+  echo 'The pooler clean-up SQL left an object behind.' >&2; exit 1; }
+rm -f "$pooler_env"
+unset pooler_env
 
 # scripts/sensor-ingest-key.sql (migration 74): each run prints one new key, 64 hex, once;
 # only its SHA-256 is stored; record_sensor_batch takes it until it is revoked. A missing or

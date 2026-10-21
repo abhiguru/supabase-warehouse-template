@@ -98,8 +98,8 @@ test('setup.sh checks an existing installation before configure.mjs rewrites its
   assert.ok(text.indexOf('scripts/db-version-preflight.sh') < text.indexOf('node "$ROOT/scripts/configure.mjs"'));
 });
 
-test('the commands that recreate db (key and password rotation, the pooler check) run the preflight first', () => {
-  for (const [script, first] of [['rotate-keys.sh', '--force-recreate'], ['scripts/rotate-db-passwords.sh', '--force-recreate'], ['tests/pooler-check.sh', 'up -d --wait']]) {
+test('the commands that recreate db (key and password rotation; `pooler.sh on` starts the pooler with --no-deps and never recreates it) run the preflight first', () => {
+  for (const [script, first] of [['rotate-keys.sh', '--force-recreate'], ['scripts/rotate-db-passwords.sh', '--force-recreate']]) {
     const text = readFileSync(new URL(`../${script}`, import.meta.url), 'utf8');
     const preflight = text.indexOf('scripts/db-version-preflight.sh');
     assert.ok(preflight > 0, `${script} runs the preflight`);

@@ -99,6 +99,11 @@ bash "$ROOT/scripts/build-images.sh"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.
 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
+# The pooler is off unless it was turned on (bash scripts/pooler.sh on). An installation made before it had a switch is
+# decided once here: a supavisor container means it is in use; otherwise its unused role, schema and empty _supabase
+# database and its secrets are removed. If the pooler was used (the database holds data), the clean-up refuses, changes
+# nothing and setup goes on.
+bash "$ROOT/scripts/pooler.sh" cleanup || echo 'Warning: the pooler clean-up did not run (message above). Setup goes on; nothing was changed.' >&2
 # Every service login has its own password (docs/CONTAINER_SECURITY.md, "Database
 # passwords"). docker/volumes/db/roles.sql sets them only on an empty data directory;
 # this sets them on every run, so an upgraded installation gets them here. Running

@@ -10,6 +10,9 @@ import { isMain } from './is-main.mjs';
 // POSTGRES_PASSWORD stays the superuser password (supabase_admin, the only superuser),
 // used by the operator scripts and Supavisor's
 // metadata connection.
+// The pooler's login (pgbouncer) and its secrets exist only while the pooler is
+// turned on (POOLER_ENABLED=true in compose.env, written by scripts/pooler.sh):
+// the three below are the logins of every installation.
 //   env       the compose.env line
 //   role      the PostgreSQL login it is the password of
 //   variable  the psql variable scripts/configure-db-roles.sql reads (a verifier)
@@ -20,8 +23,22 @@ import { isMain } from './is-main.mjs';
 export const DB_ROLE_LOGINS = [
   { env: 'DB_PASSWORD_AUTHENTICATOR', role: 'authenticator', variable: 'authenticator_verifier', usedBy: 'PostgREST' },
   { env: 'DB_PASSWORD_STORAGE', role: 'supabase_storage_admin', variable: 'storage_verifier', usedBy: 'Storage' },
-  { env: 'DB_PASSWORD_POOLER', role: 'pgbouncer', variable: 'pooler_verifier', usedBy: "Supavisor's pool user" },
 ];
+// The login that exists only with the pooler on (scripts/pooler.sh on).
+export const POOLER_LOGIN = { env: 'DB_PASSWORD_POOLER', role: 'pgbouncer', variable: 'pooler_verifier', usedBy: "Supavisor's pool user" };
+// What `pooler.sh on` generates when it is missing; a value that exists is never replaced.
+const POOLER_SECRETS = { DB_PASSWORD_POOLER: () => newPassword(), SECRET_KEY_BASE: () => randomBytes(64).toString('hex'), VAULT_ENC_KEY: () => randomBytes(16).toString('hex') };
+export const POOLER_SECRET_NAMES = Object.keys(POOLER_SECRETS);
+const POOLER_SETTINGS = { POOLER_DEFAULT_POOL_SIZE: '50', POOLER_MAX_CLIENT_CONN: '150', POOLER_TENANT_ID: 'warehouse-tenant', POOLER_DB_POOL_SIZE: '25' };
+// true: on; false: off; null: never decided (an installation from before this switch).
+export function poolerSwitch(env) {
+  const value = env.POOLER_ENABLED;
+  return value === 'true' ? true : value === 'false' ? false : null;
+}
+// The logins whose passwords this configuration manages.
+export function activeLogins(env = {}) {
+  return poolerSwitch(env) === true ? [...DB_ROLE_LOGINS, POOLER_LOGIN] : DB_ROLE_LOGINS;
+}
 // The superuser login: supabase_admin, with POSTGRES_PASSWORD. There is no role named postgres.
 export const SUPERUSER_ROLES = [
   { role: 'supabase_admin', variable: 'supabase_admin_verifier' },
@@ -31,8 +48,8 @@ const PASSWORD_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const newPassword = () => randomBytes(32).toString('hex');
 
 // The values a fresh state gets, and what an existing one lacks.
-export function generatedDbValues() {
-  return Object.fromEntries(DB_ROLE_LOGINS.map(({ env }) => [env, newPassword()]));
+export function generatedDbValues(env = {}) {
+  return Object.fromEntries(activeLogins(env).map(({ env: name }) => [name, newPassword()]));
 }
 export const GENERATED_DB_NAMES = DB_ROLE_LOGINS.map(({ env }) => env);
 
@@ -40,10 +57,11 @@ export const GENERATED_DB_NAMES = DB_ROLE_LOGINS.map(({ env }) => env);
 // added; a value that exists is never replaced. Returns the new text and the
 // names that were added.
 export function addMissingDbValues(text) {
-  const fresh = generatedDbValues();
+  const on = /^POOLER_ENABLED=true$/m.test(text);
+  const fresh = { ...generatedDbValues(), ...(on ? Object.fromEntries(POOLER_SECRET_NAMES.map(name => [name, POOLER_SECRETS[name]()])) : {}) };
   let result = text;
   const added = [];
-  for (const name of GENERATED_DB_NAMES) {
+  for (const name of on ? [...GENERATED_DB_NAMES, ...POOLER_SECRET_NAMES] : GENERATED_DB_NAMES) {
     const line = result.match(new RegExp(`^${name}=(.*)$`, 'm'));
     if (line && line[1] !== '') continue;
     if (line) result = replaceEnvLines(result, { [name]: fresh[name] });
@@ -57,9 +75,9 @@ export function addMissingDbValues(text) {
 // a role password that repeats the superuser password or another role's.
 export function validateDbValues(env) {
   const seen = new Map([[env.POSTGRES_PASSWORD, 'POSTGRES_PASSWORD']]);
-  for (const { env: name } of DB_ROLE_LOGINS) {
+  for (const { env: name } of activeLogins(env)) {
     const value = env[name] ?? '';
-    if (!PASSWORD_PATTERN.test(value)) throw new Error(`Invalid ${name}: run setup.sh to generate the per-role database passwords.`);
+    if (!PASSWORD_PATTERN.test(value)) throw new Error(name === POOLER_LOGIN.env ? `Invalid ${name}: POOLER_ENABLED is true but the pooler password is missing; run bash scripts/pooler.sh on.` : `Invalid ${name}: run setup.sh to generate the per-role database passwords.`);
     if (seen.has(value)) throw new Error(`${name} repeats ${seen.get(value)}; every database login needs its own password.`);
     seen.set(value, name);
   }
@@ -82,7 +100,7 @@ export function scramVerifier(password, salt = randomBytes(16), iterations = 409
 // login. With `superuser`, also the superuser login (rotation only).
 export function psqlPrelude(env, { superuser = false } = {}) {
   validateDbValues(env);
-  const lines = DB_ROLE_LOGINS.map(({ env: name, variable }) => `\\set ${variable} '${scramVerifier(env[name])}'`);
+  const lines = activeLogins(env).map(({ env: name, variable }) => `\\set ${variable} '${scramVerifier(env[name])}'`);
   if (superuser) {
     if (!PASSWORD_PATTERN.test(env.POSTGRES_PASSWORD ?? '')) throw new Error('Invalid POSTGRES_PASSWORD.');
     for (const { variable } of SUPERUSER_ROLES) lines.push(`\\set ${variable} '${scramVerifier(env.POSTGRES_PASSWORD)}'`);
@@ -94,7 +112,7 @@ export function psqlPrelude(env, { superuser = false } = {}) {
 // container: the superuser password, then one `role<TAB>password` line per login.
 export function checkInput(env) {
   validateDbValues(env);
-  return `${env.POSTGRES_PASSWORD}\n${DB_ROLE_LOGINS.map(({ env: name, role }) => `${role}\t${env[name]}`).join('\n')}\n`;
+  return `${env.POSTGRES_PASSWORD}\n${activeLogins(env).map(({ env: name, role }) => `${role}\t${env[name]}`).join('\n')}\n`;
 }
 
 function privateFile(path) {
@@ -111,8 +129,9 @@ export function stageRotatedDbEnv(envPath, stagedPath, { superuser = false } = {
   if (dirname(resolve(stagedPath)) !== dirname(resolve(envPath)) || resolve(stagedPath) === resolve(envPath)) throw new Error('Staged configuration must be a different file in the compose.env directory.');
   privateFile(envPath);
   const current = readFileSync(envPath, 'utf8');
-  validateDbValues(readEnv(envPath));
-  const values = generatedDbValues();
+  const env = readEnv(envPath);
+  validateDbValues(env);
+  const values = generatedDbValues(env);
   if (superuser) values.POSTGRES_PASSWORD = newPassword();
   const updated = replaceEnvLines(current, values);
   rmSync(stagedPath, { force: true });
@@ -148,11 +167,63 @@ export function normalizeRestoredEnvFile(envPath) {
   return { added, schemasRewritten: final !== text };
 }
 
+// Sets KEY=value in an env text: the line is replaced, or appended when absent.
+function setEnvLine(text, key, value) {
+  const line = new RegExp(`^${key}=.*$`, 'm');
+  if (line.test(text)) return text.replace(line, () => `${key}=${value}`);
+  return `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}${key}=${value}\n`;
+}
+
+// The compose.env text for a pooler switch (scripts/pooler.sh). Nothing is read from or written to the database here.
+//   on      POOLER_ENABLED=true; the three pooler secrets and the tunables are added where missing, never replaced
+//   off     POOLER_ENABLED=false; the secrets stay (the tenant in the _supabase database is encrypted with them)
+//   forget  POOLER_ENABLED=false and the three secrets removed (the one-time clean-up of an install that never used the pooler)
+// Returns the new text and the names added or removed.
+export function poolerEnvText(text, mode) {
+  let result = text;
+  const changed = [];
+  if (mode === 'on') {
+    for (const [name, make] of Object.entries(POOLER_SECRETS)) {
+      const line = result.match(new RegExp(`^${name}=(.*)$`, 'm'));
+      if (line && line[1] !== '') continue;
+      result = setEnvLine(result, name, make());
+      changed.push(name);
+    }
+    for (const [name, value] of Object.entries(POOLER_SETTINGS)) {
+      if (new RegExp(`^${name}=.+$`, 'm').test(result)) continue;
+      result = setEnvLine(result, name, value);
+      changed.push(name);
+    }
+    result = setEnvLine(result, 'POOLER_ENABLED', 'true');
+  } else if (mode === 'off' || mode === 'forget') {
+    if (mode === 'forget') {
+      for (const name of POOLER_SECRET_NAMES) {
+        if (new RegExp(`^${name}=`, 'm').test(result)) { result = result.replace(new RegExp(`^${name}=.*\n?`, 'm'), ''); changed.push(name); }
+      }
+    }
+    result = setEnvLine(result, 'POOLER_ENABLED', 'false');
+  } else throw new Error(USAGE);
+  return { text: result, changed };
+}
+
+// Stage a copy of compose.env for a pooler switch; the caller applies the database side and then renames it over compose.env.
+export function stagePoolerEnv(envPath, stagedPath, mode) {
+  if (!isAbsolute(envPath) || !isAbsolute(stagedPath)) throw new Error('Configuration paths must be absolute.');
+  if (dirname(resolve(stagedPath)) !== dirname(resolve(envPath)) || resolve(stagedPath) === resolve(envPath)) throw new Error('Staged configuration must be a different file in the compose.env directory.');
+  privateFile(envPath);
+  const { text, changed } = poolerEnvText(readFileSync(envPath, 'utf8'), mode);
+  rmSync(stagedPath, { force: true });
+  writeFileSync(stagedPath, text, { mode: 0o600, flag: 'wx' });
+  return { staged: resolve(stagedPath), changed };
+}
+
 const USAGE = `Usage: node scripts/db-roles.mjs prelude ENV_FILE [--superuser]
        node scripts/db-roles.mjs check-input ENV_FILE
        node scripts/db-roles.mjs stage ENV_FILE STAGED_FILE [--superuser]
        node scripts/db-roles.mjs add-missing ENV_FILE
-       node scripts/db-roles.mjs names`;
+       node scripts/db-roles.mjs names
+       node scripts/db-roles.mjs pooler-stage ENV_FILE STAGED_FILE on|off|forget
+       node scripts/db-roles.mjs pooler-state ENV_FILE`;
 
 if (isMain(import.meta.url)) {
   try {
@@ -173,6 +244,12 @@ if (isMain(import.meta.url)) {
       const { added, schemasRewritten } = normalizeRestoredEnvFile(rest[0]);
       if (added.length) console.log(`Added ${added.join(', ')}: the backup was taken before every database login had its own password.`);
       if (schemasRewritten) console.log('PGRST_DB_SCHEMAS is now public: the backup was taken before the storage schema left the REST API.');
+    } else if (command === 'pooler-stage' && rest.length === 3 && !superuser) {
+      const { changed } = stagePoolerEnv(rest[0], rest[1], rest[2]);
+      console.log(changed.length ? `Staged the pooler switch (${rest[2]}); changed ${changed.join(', ')}.` : `Staged the pooler switch (${rest[2]}).`);
+    } else if (command === 'pooler-state' && rest.length === 1 && !superuser) {
+      const state = poolerSwitch(envFile(rest[0]));
+      console.log(state === true ? 'on' : state === false ? 'off' : 'unset');
     } else if (command === 'names' && rest.length === 0 && !superuser) console.log(GENERATED_DB_NAMES.join('\n'));
     else throw new Error(USAGE);
   } catch (error) { console.error(`Database roles: ${error.message}`); process.exitCode = 1; }

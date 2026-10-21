@@ -121,7 +121,7 @@ test('rerun with a changed provider file replaces only the provider lines atomic
     assert.equal(afterEnv.MSG91_PE_ID, 'pe-two');
     assert.equal(afterEnv.MSG91_SENDER_ID, 'SECOND');
     assert.equal(afterEnv.SMS_PROVIDER, 'msg91');
-    for (const key of ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'POSTGRES_PASSWORD', 'SECRET_KEY_BASE', 'WAREHOUSE_PROJECT_NAME', 'SITE_URL']) assert.equal(afterEnv[key], originalEnv[key], key);
+    for (const key of ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'POSTGRES_PASSWORD', 'WAREHOUSE_PROJECT_NAME', 'SITE_URL']) assert.equal(afterEnv[key], originalEnv[key], key);
     const changedLines = original.split('\n').filter((line, index) => line !== after.split('\n')[index]);
     assert.deepEqual(changedLines.map(line => line.split('=')[0]).sort(), ['MSG91_AUTH_KEY', 'MSG91_PE_ID', 'MSG91_SENDER_ID', 'MSG91_TEMPLATE_ID']);
     assert.equal(after.includes('first-provider-key'), false);
@@ -441,7 +441,7 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-db-roles-'));
   const root = join(scratch, 'checkout');
   const providerEnv = join(scratch, 'provider.env');
-  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE', 'DB_PASSWORD_POOLER'];
+  const names = ['DB_PASSWORD_AUTHENTICATOR', 'DB_PASSWORD_STORAGE'];
   const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/configure.mjs', import.meta.url).pathname, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
   try {
     mkdirSync(root);
@@ -459,6 +459,9 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     assert.equal(new Set([env.POSTGRES_PASSWORD, ...names.map(name => env[name])]).size, names.length + 1);
     assert.doesNotMatch(readFileSync(envPath, 'utf8'), /generated-by-setup/);
     assert.equal(validateOperatorEnv(env, stateDir).origin, options.apiUrl);
+    // The pooler is off by default: no pooler password or secret is generated, and the switch says so.
+    assert.equal(env.POOLER_ENABLED, 'false');
+    for (const name of ['DB_PASSWORD_POOLER', 'SECRET_KEY_BASE', 'VAULT_ENC_KEY']) assert.equal(name in env, false, `${name} is generated only by scripts/pooler.sh on`);
 
     // Rerun: byte for byte the same file.
     const current = readFileSync(envPath, 'utf8');
@@ -466,7 +469,7 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     assert.deepEqual(configure(root, { stateDir }).dbValuesAdded, []);
     assert.equal(readFileSync(envPath, 'utf8'), current);
 
-    // A state written by the previous release has none of the four lines. The next run appends
+    // A state written by the previous release has none of these lines. The next run appends
     // them, changes no other line, keeps the file private and leaves no temporary file.
     const previous = current.replace(/^DB_PASSWORD_[A-Z]+=.*\n/gm, '');
     assert.doesNotMatch(previous, /^DB_PASSWORD_/m);
@@ -490,12 +493,12 @@ test('per-role database passwords: a fresh state has them, a rerun keeps them, a
     // A value that exists is never replaced, even a shorter one an operator chose; an empty
     // line counts as missing and is filled where it is.
     const chosen = 'operator-chosen-value-0123456789abcdef';
-    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_POOLER=.*$/m, 'DB_PASSWORD_POOLER='), { mode: 0o600 });
+    writeFileSync(envPath, after.replace(/^DB_PASSWORD_STORAGE=.*$/m, `DB_PASSWORD_STORAGE=${chosen}`).replace(/^DB_PASSWORD_AUTHENTICATOR=.*$/m, 'DB_PASSWORD_AUTHENTICATOR='), { mode: 0o600 });
     const filled = cli('--state-dir', stateDir);
     assert.equal(filled.status, 0, filled.stderr);
-    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_POOLER to the existing operator state/);
+    assert.match(filled.stdout, /only missing generated values were added\.\nAdded DB_PASSWORD_AUTHENTICATOR to the existing operator state/);
     assert.equal(readEnv(envPath).DB_PASSWORD_STORAGE, chosen);
-    assert.match(readEnv(envPath).DB_PASSWORD_POOLER, /^[0-9a-f]{64}$/);
+    assert.match(readEnv(envPath).DB_PASSWORD_AUTHENTICATOR, /^[0-9a-f]{64}$/);
     assert.equal(readFileSync(envPath, 'utf8').split('\n').length, after.split('\n').length);
 
     // A state written before the Auth service and the monitoring login were removed still has their password

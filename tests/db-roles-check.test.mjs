@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configure } from '../scripts/configure.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
+import { poolerEnvText } from '../scripts/db-roles.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 
@@ -41,7 +42,8 @@ case "$query" in
 esac
 `;
 
-function fixture(prefix) {
+// `pooler: true` is an installation that ran `pooler.sh on`: POOLER_ENABLED=true and the pooler's password in compose.env.
+function fixture(prefix, { pooler = false } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), prefix));
   const state = join(scratch, 'state');
   const bin = join(scratch, 'bin');
@@ -53,12 +55,13 @@ function fixture(prefix) {
   writeFileSync(join(bin, 'docker'), fakeDocker, { mode: 0o700 });
   writeFileSync(join(bin, 'psql'), fakePsql, { mode: 0o700 });
   const envPath = join(state, 'config/compose.env');
+  if (pooler) writeFileSync(envPath, poolerEnvText(readFileSync(envPath, 'utf8'), 'on').text, { mode: 0o600 });
   const values = readEnv(envPath);
   // The database as setup leaves it: every login has its own value, the superuser POSTGRES_PASSWORD.
   const database = {
     FAKE_DB_supabase_admin: values.POSTGRES_PASSWORD, FAKE_DB_authenticator: values.DB_PASSWORD_AUTHENTICATOR,
     FAKE_DB_supabase_storage_admin: values.DB_PASSWORD_STORAGE,
-    FAKE_DB_pgbouncer: values.DB_PASSWORD_POOLER,
+    ...(pooler ? { FAKE_DB_pgbouncer: values.DB_PASSWORD_POOLER } : {}),
   };
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: join(scratch, 'docker.log'), ...database };
   const run = (args, extra = {}) => spawnSync('bash', [join(root, 'scripts/db-roles.sh'), ...args], { encoding: 'utf8', env: { ...env, ...extra }, timeout: 60000 });
@@ -72,8 +75,8 @@ test('check passes when every login behaves and POSTGRES_PASSWORD is the live su
     const result = f.run(['check']);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /^ok   supabase_admin accepts POSTGRES_PASSWORD \(SCRAM, network connection\)/m);
-    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 7, 'supabase_admin, then two lines for each of the three logins');
-    assert.doesNotMatch(result.stdout, /^FAIL/m);
+    assert.equal((result.stdout.match(/^ok   /gm) ?? []).length, 5, 'supabase_admin, then two lines for each of the two logins (the pooler is off)');
+    assert.doesNotMatch(result.stdout, /^FAIL|pgbouncer/m);
     assert.match(result.stdout, /Every database login refuses the superuser password and accepts only its own\.\n$/);
     const calls = readFileSync(join(f.scratch, 'docker.log'), 'utf8');
     for (const value of Object.values(f.values).filter(value => /^[0-9a-f]{64}$/.test(value))) assert.equal(calls.includes(value), false, 'no password in a docker argument');
@@ -96,7 +99,7 @@ test('check reads only the logins of the agreed role set: no role of the earlier
   try {
     const ok = f.run(['check']);
     assert.equal(ok.status, 0, ok.stdout);
-    for (const role of ['authenticator', 'supabase_storage_admin', 'pgbouncer']) {
+    for (const role of ['authenticator', 'supabase_storage_admin']) {
       assert.match(ok.stdout, new RegExp(`^ok   ${role} refuses POSTGRES_PASSWORD$`, 'm'));
       assert.match(ok.stdout, new RegExp(`^ok   ${role} accepts its own password \\(SCRAM, network connection\\)$`, 'm'));
     }
@@ -108,8 +111,23 @@ test('check reads only the logins of the agreed role set: no role of the earlier
   } finally { clean(f); }
 });
 
+test('check includes the pooler login while the pooler is on', () => {
+  const f = fixture('warehouse-db-check-pooler-', { pooler: true });
+  try {
+    const ok = f.run(['check']);
+    assert.equal(ok.status, 0, ok.stdout);
+    assert.equal((ok.stdout.match(/^ok   /gm) ?? []).length, 7, 'supabase_admin, then two lines for each of the three logins');
+    assert.match(ok.stdout, /^ok   pgbouncer refuses POSTGRES_PASSWORD$/m);
+    assert.match(ok.stdout, /^ok   pgbouncer accepts its own password \(SCRAM, network connection\)$/m);
+    // A pooler that is on but whose login the database refuses is a failure.
+    const stale = f.run(['check'], { FAKE_DB_pgbouncer: 'd'.repeat(64) });
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.stdout, /^FAIL pgbouncer does not accept its own password over the network/m);
+  } finally { clean(f); }
+});
+
 test('check fails for a login that still takes POSTGRES_PASSWORD or no longer takes its own value', () => {
-  const f = fixture('warehouse-db-check-roles-');
+  const f = fixture('warehouse-db-check-roles-', { pooler: true });
   try {
     const shared = f.run(['check'], { FAKE_DB_pgbouncer: f.values.POSTGRES_PASSWORD });
     assert.notEqual(shared.status, 0);
