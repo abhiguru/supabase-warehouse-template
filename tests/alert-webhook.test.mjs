@@ -180,6 +180,10 @@ while time.time() < end:
 sys.exit(5 if b'probeword' in seen else 0)
 `;
 const python = spawnSync('python3', ['-I', '-c', PROBE, process.execPath], { stdio: 'ignore', timeout: 20000 }).status === 0;
+// REQUIRE_PTY=1 (a runner known to have a pty) turns the silent skip into a failure.
+test('a usable pty is there when REQUIRE_PTY=1', { skip: process.env.REQUIRE_PTY !== '1' && 'REQUIRE_PTY is not 1' }, () => {
+  assert.ok(python, 'REQUIRE_PTY=1, but python3 has no usable pty with raw mode: the terminal tests below would be skipped');
+});
 const DRIVER = `
 import os, pty, sys, time, select, json
 node, script, state, out = sys.argv[1:5]

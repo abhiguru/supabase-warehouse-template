@@ -82,3 +82,15 @@ test('the data fingerprint covers the three histories beside the business tables
   }
   assert.equal(new Set(tables).size, tables.length);
 });
+
+test('the backup integrity report still counts the history, payment and order-line tables', () => {
+  // Both sides of the restore comparison come from this file: a dropped line would make the restore drill pass without them.
+  const sql = readFileSync(new URL('../scripts/backup-integrity.sql', import.meta.url), 'utf8');
+  for (const [name, table] of [
+    ['invoice_discount_history_count', 'invoice_discount_history'], ['invoice_zero_charge_history_count', 'invoice_zero_charge_history'],
+    ['item_price_history_count', 'item_price_history'], ['payment_count', 'payments'],
+    ['order_item_count', 'order_items'], ['order_revision_count', 'order_revisions'],
+  ]) {
+    assert.match(sql, new RegExp(`SELECT '${name}=' \\|\\| count\\(\\*\\) FROM public\\.${table};`), name);
+  }
+});
