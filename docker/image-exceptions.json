@@ -15,7 +15,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 13 (trixie) packages of the official postgres:18.6-trixie base with no fixed version (2026-10-21 scan of the recipe's image: 62 HIGH/CRITICAL rows, 1 CRITICAL in libxml2, 58 affected and 4 fix_deferred, across util-linux, gnupg, libxml2, perl, ncurses, systemd and acl packages; none of these has a fixed version). The recipe adds nothing to the base except a gosu rebuilt with the pinned Go builder; that gosu is built with Go 1.27.3, which fixes CVE-2026-111943 (the one fixable row of the 2026-10-21 scan, in the Go 1.27.2 standard library); Go rows are not covered by this entry. The database has no host port and is on the database network only.",
+      "reason": "Debian 13 (trixie) packages of the official postgres:18.6-trixie base with no fixed version (2026-10-21 scan of the recipe's image: 62 HIGH/CRITICAL rows, 1 CRITICAL in libxml2, 58 affected and 4 fix_deferred, across util-linux, gnupg, libxml2, perl, ncurses, systemd and acl packages; none of these has a fixed version). The recipe adds nothing to the base except a small gosu shell script over util-linux setpriv, which replaces the base image's Go gosu: no Go binary remains in the image, so there are no Go rows, and Go rows are not covered by this entry (2026-10-21 rescan of the shim image: the same 62 rows, no others). The database has no host port and is on the database network only.",
       "reviewed": "2026-10-21",
       "expires": "2027-01-15"
     },
@@ -90,8 +90,8 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the python:3.14-slim-bookworm base with no fixed version (2026-10-18 scan: 61 HIGH, 2 CRITICAL in libsqlite3-0 and zlib1g). The recipe applies every Debian update. The bridge is in the optional sensors profile, on the default network only, with no host port, a read-only root and all capabilities dropped. This text records the 3.14 scan: it must be rescanned for the 3.15 base before the next release.",
-      "reviewed": "2026-10-17",
+      "reason": "Debian 12 packages of the python:3.15-slim-bookworm base (Python 3.15.0, Debian 12.15) with no fixed version (2026-10-21 scan: 63 HIGH/CRITICAL rows, 61 HIGH and 2 CRITICAL; 55 affected, 7 fix_deferred, 1 will_not_fix; the CRITICAL rows are CVE-2025-7458 in libsqlite3-0 and CVE-2023-45853 in zlib1g; the rest are in util-linux and its libraries, bsdutils, mount, ncurses, openssl, gzip, perl-base, libacl1, libsystemd0 and libudev1; none has a fixed version). The recipe applies every Debian update. The bridge is in the optional sensors profile, on the default network only, with no host port, a read-only root and all capabilities dropped. Rescan whenever the base image changes (the previous text of this entry recorded a python:3.14 scan).",
+      "reviewed": "2026-10-21",
       "expires": "2027-01-15"
     },
     {
