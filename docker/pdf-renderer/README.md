@@ -153,14 +153,17 @@ docker run --read-only --tmpfs /tmp:size=256m --cap-drop ALL --security-opt no-n
 - tini is PID 1 (`init` is not needed in compose). The user is uid 10001.
 - `HOME=/tmp/home`, `TZ=UTC`, `LANG=LC_ALL=C.UTF-8`, XDG directories under `/tmp`; the service creates them at boot.
 - Base `node:24-trixie-slim` pinned by digest; amd64 only (the build fails fast otherwise).
-- Fonts: `fonts-liberation fonts-liberation2 fonts-dejavu fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
-  fonts-crosextra-carlito fonts-crosextra-caladea fonts-opensymbol`, named without versions because Debian's security
-  revisions replace and remove older ones (the Gotenberg targets carry `fonts-opensymbol` 4:102.12+LibO26.2.2.2-3~bpo13+1
-  from trixie-backports; trixie's own build has the same `opens___.ttf` path). Debian's
+- Fonts: `fonts-liberation fonts-liberation2 fonts-dejavu-core fonts-noto-core fonts-noto-mono`, named without versions
+  because Debian's security revisions replace and remove older ones. Kept because the documents use them:
+  Liberation Sans (what `Helvetica`/`Arial` resolve to), Noto Sans (the `sans-serif` and `Helvetica Neue` fallback), Noto Sans
+  Gujarati (Gujarati text and digits, ships in `fonts-noto-core`; Debian has no narrower package that covers it), DejaVu
+  Sans as a symbol/line-drawing fallback. Dropped because no document or golden case uses them: `fonts-noto-cjk`,
+  `fonts-noto-color-emoji`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea`, `fonts-opensymbol`, DejaVu extra and mono
+  (these came from the Gotenberg 8.x image this service replaces). Debian's
   default fontconfig `conf.d` plus `fontconfig/100-gotenberg.conf` (byte-identical in Gotenberg 8.25, 8.32 and 8.37), then
   `fc-cache -sf` as the last font step. The build fails unless the sorted `fc-list` file list hashes to
-  `bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d` (`ARG FONT_FILELIST_SHA256`), the value of both
-  targets, computed as `targets/probe.sh` does. A Debian update that changes the font file list
+  `9ebf7b690441c5f7ad261405923f96cf060ec13ba1eae1b0fb0dfa529a8e6dde` (`ARG FONT_FILELIST_SHA256`, 291 files), computed as
+  `targets/probe.sh` does. The value no longer equals the Gotenberg targets' hash. A Debian update that changes the font file list
   fails the build; the golden-PDF job (`tests/golden-pdf`) catches any change in the rendered pages.
 - `MALLOC_ARENA_MAX=2` limits glibc arena growth in the Node process.
 - npm, corepack and yarn are removed from the final image (the files stay in the base layer).

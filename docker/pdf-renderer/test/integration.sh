@@ -106,7 +106,7 @@ check "tini is PID 1" bash -c "docker exec $MAIN cat /proc/1/comm | grep -q tini
 check "root file system is read-only" bash -c "! docker exec $MAIN sh -c 'touch /app/x' 2>/dev/null"
 check "no npm in the image" bash -c "! docker exec $MAIN sh -c 'command -v npm'"
 check "image labels carry CHS and puppeteer-core versions" bash -c "docker inspect $IMAGE --format '{{index .Config.Labels \"pdf-renderer.chs-version\"}} {{index .Config.Labels \"pdf-renderer.puppeteer-core-version\"}}' | grep -Eq '^[0-9.]+ [0-9.]+\$'"
-eq "font file list hash is the target's" "$(docker exec "$MAIN" sh -c "fc-list --format '%{file}\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1")" bb94b4513fc8a1aba5b2d7949632f3fc9311cad45ad288dc204555be0814986d
+eq "font file list hash is the pinned reduced set" "$(docker exec "$MAIN" sh -c "fc-list --format '%{file}\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1")" 9ebf7b690441c5f7ad261405923f96cf060ec13ba1eae1b0fb0dfa529a8e6dde
 eq "MALLOC_ARENA_MAX is set" "$(docker exec "$MAIN" printenv MALLOC_ARENA_MAX)" 2
 
 # ---- a fixture render: parameters that reach printToPDF ---------------------------------------------------------------
