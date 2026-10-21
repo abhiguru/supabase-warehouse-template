@@ -7,6 +7,9 @@
 --    invoices (were: every invoice line and payment of the facility). Same output.
 -- CREATE OR REPLACE keeps each function's owner and its REVOKE/GRANT (same signatures).
 
+-- The index expressions are evaluated on every write to public.dispatch; service_role (GRANT ALL on the table) writes directly,
+-- and the function is REVOKEd from PUBLIC, so it needs EXECUTE or its INSERT/UPDATE fails.
+GRANT EXECUTE ON FUNCTION warehouse_security.document_number_sort_key(text) TO service_role;
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_date_desc ON public.dispatch (disp_date DESC NULLS LAST, (warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_desc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_dispatch_list_no_asc ON public.dispatch ((warehouse_security.document_number_sort_key(disp_no) COLLATE "C") ASC NULLS LAST);
@@ -292,7 +295,7 @@ BEGIN
                 ''item_id'', grt.item_id, ''item_name'', grt.item_name, ''disp_qty'', dt.disp_qty,
                 ''weight'', grt.weight, ''gr_no'', gr.gr_no, ''grn_qty'', grt.qty,
                 ''grn_item_id'', grt.id, ''package_mark'', grt.package_mark, ''rack'', grt.rack
-            ) ORDER BY grt.item_name)'
+            ) ORDER BY grt.item_name, grt.id)'
         ELSE 'NULL::jsonb' END,
         v_order_by, v_order_by, p_page, p_limit, p_limit
     );
@@ -592,7 +595,7 @@ BEGIN
                             'rack', grt.rack,
                             'package_mark', grt.package_mark
                         )
-                    )
+                    ) ORDER BY grt.item_name, it.id
                 ) as line_items
             FROM invoice_trl it
             JOIN dispatch_trl dt ON it.disp_trl_id = dt.id
