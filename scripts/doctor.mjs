@@ -161,8 +161,8 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
   const keyFileWarning = checkCentralKeyFile(env, state);
   if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
-  // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the 6 default services, the database, the gateway's
-  // public configuration, a REST read and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
+  // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the default-profile services (an unhealthy optional
+  // service only warns), the database, the gateway's public configuration, the get_public_config RPC probe and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
   const health = await runHealth(defaultDeps(process.env));
   if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.`);
   for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);

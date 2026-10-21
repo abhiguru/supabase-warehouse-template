@@ -43,10 +43,10 @@ rendered configuration.
 - Operator probes follow the same rule: `health-check.sh` and `tests/gateway-dns-check.sh` call the gateway from the
   `storage` container.
 
-The functions call PostgREST and Storage directly (`SUPABASE_REST_URL=http://rest:3000`, `SUPABASE_STORAGE_URL=http://storage:5000`) for
-reports, PDFs and config, so those calls are not under Kong's 1800 a minute bucket or its key check; PostgREST verifies the JWT and
-`check_session` itself, and Storage still never sees `CF-Connecting-IP`. `operator-otp`, `central-exchange`, `ingest-sensor-readings` and
-the profile read of `_shared/auth-helpers.ts` still go through Kong.
+All edge functions call PostgREST and Storage directly (`SUPABASE_REST_URL=http://rest:3000`, `SUPABASE_STORAGE_URL=http://storage:5000`), including
+`operator-otp`, `central-exchange`, `ingest-sensor-readings` and the profile read of `_shared/auth-helpers.ts`, so none of those calls is under
+Kong's 1800 a minute bucket or its key check; PostgREST verifies the JWT and `check_session` itself, and Storage still never sees
+`CF-Connecting-IP`. Only the client to Kong path remains.
 
 What this does not do: services on `default` still reach each other without Kong's limits (`functions:9000`,
 `storage:5000`, `rest:3000`), so PostgREST, Storage and the functions check tokens themselves. A service on `database`

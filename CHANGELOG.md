@@ -1,7 +1,8 @@
 # Changelog
 
 Older entries (every release and every dated section before the baseline reload) are in git: the full text is
-`git show migrations-pre-baseline:CHANGELOG.md`. Each section below is the short form. "Migration N", for N up to 110, names
+`git show migrations-pre-baseline:CHANGELOG.md`. The full text of the entries written after that tag (the post-baseline history) is in
+main at `5561868`: `git show 5561868:CHANGELOG.md`. Each section below is the short form. "Migration N", for N up to 110, names
 a file in that tag; the baseline `migrations/00000000000000_baseline.sql` is their squash.
 
 ## Unreleased
@@ -58,7 +59,8 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   7-day `ephemeral_auth` retention rule is the only OTP clean-up. `trg_restore_stock_on_dispatch_delete` stays. The contract
   docs ([API_CONTRACT](docs/API_CONTRACT.md), [STAFF_GRN_POLICY](docs/STAFF_GRN_POLICY.md), [INVOICE_RULES](docs/INVOICE_RULES.md)) mark the dropped entries.
 - **Edge functions call PostgREST and Storage directly** (`rest:3000`, `storage:5000`) for reports, PDFs and config, not through Kong;
-  `operator-otp`, `central-exchange`, `ingest-sensor-readings` and the profile read of `_shared/auth-helpers.ts` still use the gateway.
+  `operator-otp`, `central-exchange`, `ingest-sensor-readings` and the profile read of `_shared/auth-helpers.ts` do too (only
+  `apikey` and `Authorization` are sent). Only the client to Kong path remains under Kong's limits.
 - **Images.** Storage is a two-stage build on a clean pinned `node:24.21.0-alpine3.23` (no compiler); the db image replaces the
   base image's Go `gosu` with a `setpriv` shell shim (no Go build, no Go CVE rows); the `pdf-renderer` `GIT_SHA` and label moved
   to the end of the Dockerfile so a commit no longer rebuilds the `apt-get` layer.

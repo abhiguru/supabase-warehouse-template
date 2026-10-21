@@ -976,7 +976,7 @@ export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner } = {
 // ---------------------------------------------------------------- commands
 const USAGE = `Usage: node scripts/watch.mjs run | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
   run           one pass of the checks (the systemd timer runs this every 5 minutes)
-  health        the operator health check now: services, database, gateway, REST read, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
+  health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's Slack webhook
   status        failing alerts, mutes, the daily jobs and the time zone
   mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES

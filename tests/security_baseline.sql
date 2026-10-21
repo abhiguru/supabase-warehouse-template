@@ -185,7 +185,7 @@ END
 $$;
 
 -- The roles of the earlier image and the removed warehouse roles do not exist, and the auth functions
--- (auth.uid(), auth.role(), auth.email(), auth.jwt()) belong to supabase_admin. The exact role set is asserted by
+-- (auth.uid(), auth.jwt(); migration 123 drops auth.role() and auth.email()) belong to supabase_admin. The exact role set is asserted by
 -- tests/baseline_roles.sql, and scripts/backup-image.sh refuses a backup that names one of these roles, so nothing
 -- brings them back.
 DO $$
