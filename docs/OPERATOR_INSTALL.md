@@ -1295,6 +1295,18 @@ check that line. The `--force-recreate functions` line is needed because the edg
 a setup rerun neither rebuilds an image for them nor recreates the container. Database migrations need no such step: setup
 applies them. If setup prints a `sudo bash scripts/watch-timer.sh install …` command, run it.
 
+**What the slimming release (migration 123) asks of you.**
+
+- The `db`, `storage` and `pdf-renderer` recipes changed, so setup rebuilds those three images; the first run is slower.
+- Setup (and a restore) rewrites an old default `PGRST_DB_SCHEMAS` (`public,storage` or `public,storage,graphql_public`) in
+  `compose.env` to `public` and recreates `rest`; a list you edited yourself is left alone. `/rest/v1/` then serves no OpenAPI
+  document and cannot reach the `storage` schema.
+- `get-public-config` can answer 503 between the code update (`git pull`) and migration 123, because the function it calls
+  (`get_public_config`) does not exist yet. Run `setup.sh` at once after the pull; do not leave the new code on the old schema.
+- Migration 123 refuses to run if a table or column it drops holds data. It stops with `Migration 123 would drop data: ...` and
+  changes nothing. Look at what it names, export what you need, empty those objects, and run `setup.sh` again. A database that
+  never held such data passes without a message.
+
 **Setup rebuilds the images whose recipes changed.** Before it starts
 anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
 image recipe (the files under its `docker/` build directory, its Dockerfile

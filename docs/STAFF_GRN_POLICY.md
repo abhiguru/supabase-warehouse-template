@@ -4,6 +4,11 @@ This document is a dated record of role decisions. The role table under
 [Roles after migration 45](#roles-after-migration-45) is current; later sections add migrations 46–90 and 69.
 Where an earlier section says otherwise, a note marks it as superseded.
 
+**Removed in migration 123 (2026-10-21):** `create_item_storage_price`, `update_item_storage_price`, `delete_item_storage_price`,
+`find_or_create_item_storage_price`, `get_item_grn_rates(p_item_id)`, `get_cart_dispatches`, `update_order_metadata`, `save_invoice(jsonb)`
+and the table `sensor_health_events` no longer exist; where a section below names them, it is history. Rates are written by
+`replace_item_rates`, `set_standard_rate` and the GRN `p_rates`; an order's note, priority and requested date have no RPC.
+
 The operator selected this policy on 3 October 2026: active, approved staff may
 view, create and edit warehouse GRNs. GRN deletion remains limited to admins
 and supervisors. Customers retain their assigned-customer read boundary.
@@ -121,7 +126,7 @@ to 25 implement it and `tests/staff_dispatch_invoice_access.sql`,
 The operator decided that staff have the same order access as supervisors.
 Migration 28 adds these RPCs to the staff allowlist: `get_orders_list`,
 `get_order_with_items`, `get_or_create_cart`, `add_item_to_order`,
-`update_order_item_quantity`, `remove_item_from_order`, `get_cart_dispatches`,
+`update_order_item_quantity`, `remove_item_from_order`, `get_cart_dispatches` (removed in 123),
 `search_customer_items_for_order`, `get_customer_items_for_order_selection` and
 `get_order_change_log`. Staff can read `order_revisions`. Direct table writes to
 orders and order items stay denied for staff. Customers keep access to their
@@ -157,7 +162,7 @@ Migration 42 revokes INSERT, UPDATE and DELETE on `customers`, `items`,
 `item_storage_prices`, `goodsreceived`, `goodsreceived_trl`, `dispatch`,
 `dispatch_trl`, `invoice`, `invoice_trl`, `payments`, `orders`, `order_items`,
 `grn_images`, `dispatch_images`, `stock_movements`, `print_jobs`,
-`sensor_devices`, `sensor_readings` and `sensor_health_events` from the app's
+`sensor_devices`, `sensor_readings` and `sensor_health_events` (dropped in 123) from the app's
 database role and makes the administrator/supervisor policy on each read-only.
 A direct write now answers HTTP 403 for every role. Consequences:
 
@@ -166,7 +171,7 @@ A direct write now answers HTTP 403 for every role. Consequences:
   `update_dispatch_smart`, `save_invoice`, `update_invoice`, the `delete_*`
   RPCs, the customer, item, price, image and cart RPCs). Their role rules are
   unchanged.
-- An order's note, priority and requested date are changed with
+- (Removed in migration 123.) An order's note, priority and requested date were changed with
   `update_order_metadata(p_order_id, p_note, p_priority,
   p_requested_dispatch_date)`, now granted. Administrators and supervisors only;
   each change is written to the order history.
@@ -348,7 +353,7 @@ several customers calls once per customer.
 - **`printer_status`** is readable by signed-in administrators, supervisors and
   staff only; it was readable with the public key. `feature_flags` stays
   public.
-- **`find_or_create_item_storage_price`** refused every role (it looked the
+- **`find_or_create_item_storage_price`** (removed in migration 123) refused every role (it looked the
   caller up in a table that operator sign-in does not fill); it now works for
   the roles that may write prices.
 - `is_admin_or_supervisor()` is true for staff as well, despite its name; it is
@@ -368,9 +373,9 @@ several customers calls once per customer.
 | Reports: one customer | yes | yes | **yes** | assigned customers (**now also stock aging and item-wise stock**) |
 | Operations dashboard | yes | yes | no | no |
 | Item pricing: read | yes | yes | **no** (migration 90) | no |
-| Item pricing: add, change, delete (`create/update/delete_item_storage_price`, `replace_item_rates`, `undo_rate_change`) | yes | yes | **no** (migration 90) | no |
+| Item pricing: add, change, delete (`replace_item_rates`, `undo_rate_change`) | yes | yes | **no** (migration 90) | no |
 | Standard rate (`get_standard_rate`, `set_standard_rate`, migration 85): read / set | yes / yes | yes / yes | **no / no** (refused by the guard, migration 90) | no |
-| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, `get_item_grn_rates`, migration 86): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **no** (migration 90): a staff call with `p_rates`, `[]` included, is answered `RATES_MANAGER_ONLY`; `get_item_grn_rates` is refused; `get_grn_details` answers `rates` = `[]` | no |
+| Rates typed on the GRN sheet (`p_rates` of `save_grn` / `update_grn`, migration 86; `get_item_grn_rates` was removed in 123): a rate for this GRN only, or for the business or everyone from the GRN's day, on any day | yes | yes | **no** (migration 90): a staff call with `p_rates`, `[]` included, is answered `RATES_MANAGER_ONLY`; `get_item_grn_rates` is refused; `get_grn_details` answers `rates` = `[]` | no |
 | The rate of each line of a GRN (`get_grn_item_rates`, migration 88): read | yes | yes | yes | **yes, for the GRNs of its own customer** (owner, 2026-10-16), each rate as its own: no source but `invoice`, no band edges (migration 89) |
 | Price history (`get_item_price_history`, migration 48) | yes | yes | no | no |
 | Sensors | yes | yes | **yes** | no |

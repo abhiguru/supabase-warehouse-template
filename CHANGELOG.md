@@ -69,11 +69,11 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   replaces three inline `flock` copies; `setup.sh` and `restore-host.sh` check for `node` before the first `node` call
   (`scripts/require-node.sh`); the CI-only drivers (`gateway-smoke`, `gateway-dns-check`, `load-smoke`, `recovery-check`,
   `cups-check`, `sensor-bridge-check`, `pooler-check`) live in `tests/`; the npm script `keys:rotate` is gone.
-- **Tests, docs and CI.** About 1,000 lines of tests went: gates that were always true, text checks of the frozen baseline (its hash
+- **Tests, docs and CI.** About 1,000 lines of tests went: the three hand-run HTTP drivers and their refusal tests, tests that pinned exact doc sentences, gates that were always true, text checks of the frozen baseline (its hash
   pin stays), CI step-order checks, the pre-migration-61 report code and its tests. One table (`tests/removed-components.test.mjs`)
   guards every removed component; one test checks that every `tests/*.sql` is registered once in `tests/migrations.sh`; the report
   HTML hashes were re-taken. `THIRD_PARTY_NOTICES.md` is the only place that names pinned versions and holds the ownership
-  review (`docs/ATTRIBUTION_REVIEW.md` is merged into it). CI: no npm cache in `validate`, one `CI_RUNNER` comment, no duplicate
+  review (`docs/ATTRIBUTION_REVIEW.md` is merged into it). CI: the `pdf-renderer` and golden-page jobs are one job that runs only when `docker/pdf-renderer/`, `tests/golden-pdf/`, `functions/_shared/` or `ci.yml` changed (a `changes` job decides; none is a required check); no npm cache in `validate`, one `CI_RUNNER` comment, no duplicate
   verify in `operator-install`, and the `contract` job runs `tests/rpc-callers.test.mjs` against the pinned app. The alert-webhook
   terminal test skips on a runner without a usable pty. `tests/sensor-bridge-check.sh` fails, not "Skipped", without its Dockerfile.
 
