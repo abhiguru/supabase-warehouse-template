@@ -4,11 +4,6 @@ import { SUBMIT_TIMEOUT_MS, submitWithTimeout } from '../_shared/print-monitor-r
 import { submittedJob } from '../_shared/ipp-validate.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
 // ESC/P Control Codes for Epson LQ 1310
 const ESC = '\x1B';
 const LF = '\x0A';
@@ -350,10 +345,6 @@ function generatePrePrintedDispatch(dispatchData: any): string {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-
   try {
     // 🔐 AUTHENTICATION & AUTHORIZATION: Validate JWT token and role-based access
     const authHeader = req.headers.get('Authorization');
@@ -489,7 +480,7 @@ Deno.serve(async (req) => {
           timestamp: new Date().toISOString()
         }, null, 2),
         {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           status: 502
         }
       );
@@ -527,7 +518,7 @@ Deno.serve(async (req) => {
         timestamp: new Date().toISOString()
       }, null, 2),
       {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         status: 200
       }
     )
@@ -536,7 +527,7 @@ Deno.serve(async (req) => {
 
     // Handle auth errors with proper status codes
     if (error.status && (error.status === 401 || error.status === 403)) {
-      return createAuthErrorResponse(error, corsHeaders);
+      return createAuthErrorResponse(error);
     }
 
     return new Response(
@@ -546,7 +537,7 @@ Deno.serve(async (req) => {
         timestamp: new Date().toISOString()
       }, null, 2),
       {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         status: 500
       }
     )

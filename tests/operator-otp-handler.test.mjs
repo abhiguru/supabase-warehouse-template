@@ -60,11 +60,11 @@ test('is unavailable unless AUTH_MODE is operator and APP_ENV is production', as
   }
 });
 
-test('answers preflight, refuses other methods and unknown operations', async () => {
+test('refuses other methods (a preflight too: Kong answers it) and unknown operations', async () => {
   const { calls, call } = harness();
   const preflight = await call('request', undefined, {}, 'OPTIONS');
-  assert.equal(preflight.status, 200);
-  assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(preflight.status, 405);
+  assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), null, 'the function sets no CORS header');
   assert.deepEqual(await bodyOf(await call('request', undefined, {}, 'GET')), { status: 405, body: { success: false, error: 'Method not allowed' } });
   for (const operation of ['', 'prepare', 'request/extra', 'operator_verify_otp']) {
     assert.deepEqual(await bodyOf(await call(operation, phone)), { status: 404, body: { success: false, error: 'Not found' } });

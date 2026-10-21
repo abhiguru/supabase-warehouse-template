@@ -1,5 +1,5 @@
 import { restClient } from '../_shared/supabase-rest.ts';
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { advertisedCentralLogin } from '../_shared/https-address.ts';
 
@@ -32,9 +32,7 @@ async function readInstanceManifest(origin: string): Promise<InstanceManifest> {
 }
 
 Deno.serve(async (req: Request) => {
-  const cors = handleCors(req);
-  if (cors) return cors;
-  if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
+  if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
   try {
     const baseUrl = publicBaseUrl(Deno.env.get('SUPABASE_PUBLIC_URL'));
     const instance = await readInstanceManifest(baseUrl);
@@ -63,12 +61,12 @@ Deno.serve(async (req: Request) => {
       urls: { publicConfig: `${baseUrl}/functions/v1/get-public-config`, fullConfig: `${baseUrl}/functions/v1/get-config` },
       featureFlags: config.feature_flags ?? {},
     }, timestamp: new Date().toISOString() }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   } catch (error) {
     console.error('Public configuration failed:', error instanceof Error ? error.message : 'unknown error');
     return new Response(JSON.stringify({ success: false, error: 'Backend configuration unavailable; finish migrations and seed first' }), {
-      status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      status: 503, headers: { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   }
 });

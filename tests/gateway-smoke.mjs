@@ -20,6 +20,20 @@ if (!accepted.ok || accepted.headers.get('access-control-allow-origin') !== allo
 }
 const denied = await preflight('https://untrusted.invalid');
 if (denied.headers.get('access-control-allow-origin') === 'https://untrusted.invalid') throw new Error('Untrusted browser origin received CORS permission.');
+// CORS is Kong's alone (the edge functions set no Access-Control-* header): the preflight above is answered by
+// Kong itself, and an ordinary response carries Kong's configured origin, never the wildcard a function used to add.
+const ordinary = async origin => {
+  const response = await fetch(`${httpBase}/functions/v1/get-public-config`, { headers: { Origin: origin }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+  await response.body?.cancel();
+  return response;
+};
+const trustedReply = await ordinary(allowed);
+if (trustedReply.headers.get('access-control-allow-origin') !== allowed) {
+  throw new Error(`A response to the trusted origin carries access-control-allow-origin ${trustedReply.headers.get('access-control-allow-origin')} instead of ${allowed}.`);
+}
+if (trustedReply.headers.get('x-content-type-options') !== 'nosniff') throw new Error('A function response lost its X-Content-Type-Options header.');
+const untrustedReply = await ordinary('https://untrusted.invalid');
+if (['*', 'https://untrusted.invalid'].includes(untrustedReply.headers.get('access-control-allow-origin'))) throw new Error('A response to an untrusted origin carries CORS permission.');
 
 const oversized = await fetch(`${httpBase}/functions/v1/get-public-config`, {
   method: 'POST',

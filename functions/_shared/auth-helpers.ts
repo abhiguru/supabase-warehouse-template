@@ -46,11 +46,11 @@ export async function validatePrintAccess(req: Request, _supabase?: unknown): Pr
   return profile;
 }
 
-export function createAuthErrorResponse(error: unknown, corsHeaders: Record<string, string>): Response {
+export function createAuthErrorResponse(error: unknown, extraHeaders: Record<string, string> = {}): Response {
   const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 500;
   const safeStatus = [400, 401, 403, 404, 405, 503].includes(status) ? status : 500;
   const message = safeStatus < 500 && typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : 'Server unavailable';
   return new Response(JSON.stringify({ success: false, error: message }), {
-    status: safeStatus, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    status: safeStatus, headers: { ...extraHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
 }

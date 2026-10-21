@@ -153,11 +153,11 @@ test('not configured: either setting empty, or not an operator production instan
   }
 });
 
-test('answers preflight, refuses other methods and bodies without a token', async () => {
+test('refuses other methods (a preflight too: Kong answers it) and bodies without a token', async () => {
   const h = harness();
   const preflight = await handle(new Request('http://edge.test/central-exchange', { method: 'OPTIONS' }), { env: () => undefined });
-  assert.equal(preflight.status, 200);
-  assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(preflight.status, 405);
+  assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), null, 'the function sets no CORS header');
   assert.deepEqual((({ status, body }) => ({ status, body }))(await h.call(undefined, {}, 'GET')), { status: 405, body: { success: false, error: 'Method not allowed' } });
   const badRequest = { status: 400, body: { success: false, error: 'Invalid request', code: 'invalid_request' } };
   for (const body of ['{', '[]', {}, { identity_token: 7 }, { identity_token: '' }, { identity_token: 'x'.repeat(9000) },

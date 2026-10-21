@@ -1,4 +1,4 @@
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { readBoundedJson } from '../operator-otp/body.ts';
 
 // Sensor readings from the facility's sensor bridge (docker/sensor-bridge).
@@ -23,7 +23,7 @@ export const MAX_READINGS = 500;
 const KEY_PATTERN = /^[0-9a-f]{64}$/;
 const RPC_TIMEOUT_MS = 15000;
 
-const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+const headers = { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 function respond(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...headers, ...extra } });
 }
@@ -79,9 +79,7 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
     env: name => Deno.env.get(name), fetch: (input, init) => fetch(input, init), log: message => console.error(message), ...overrides,
   };
   const note = (reason: string, details = '') => deps.log(`ingest-sensor-readings: event=ingest reason=${reason}${details}`);
-  const cors = handleCors(req);
-  if (cors) return cors;
-  if (req.method !== 'POST') return respond({ success: false, error: 'Method not allowed' }, 405, { Allow: 'POST, OPTIONS' });
+  if (req.method !== 'POST') return respond({ success: false, error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
   // The key's shape is checked before anything else: no database call for a caller without one.
   const key = bearer(req);

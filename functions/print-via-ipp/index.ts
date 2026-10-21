@@ -1,15 +1,12 @@
 // Edge Function: print-via-ipp
 // Generic IPP print function — sends raw data to CUPS printer
 
-import { corsHeaders, handleCors } from '../_shared/cors.ts'
+import { securityHeaders } from '../_shared/security-headers.ts'
 import { validatePrintAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts'
 import { submittedJob } from '../_shared/ipp-validate.ts'
 import { Buffer } from 'node:buffer'
 
 Deno.serve(async (req) => {
-  const corsResponse = handleCors(req);
-  if (corsResponse) return corsResponse;
-
   try {
     const userProfile = await validatePrintAccess(req);
 
@@ -18,7 +15,7 @@ Deno.serve(async (req) => {
     if (!content) {
       return new Response(
         JSON.stringify({ success: false, error: 'Missing "content" field (raw print data)' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }
 
@@ -55,7 +52,7 @@ Deno.serve(async (req) => {
       console.error('print-via-ipp: the printer reply did not confirm the job');
       return new Response(
         JSON.stringify({ success: false, error: 'The printer did not confirm the job', unconfirmed: true }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 }
+        { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 502 }
       );
     }
 
@@ -67,19 +64,19 @@ Deno.serve(async (req) => {
         printer: printer_name,
         timestamp: new Date().toISOString()
       }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 200 }
     );
 
   } catch (error) {
     console.error('print-via-ipp ERROR:', error);
 
     if (error.status && error.message) {
-      return createAuthErrorResponse(error, corsHeaders);
+      return createAuthErrorResponse(error, securityHeaders);
     }
 
     return new Response(
       JSON.stringify({ success: false, error: error.message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+      { headers: { ...securityHeaders, 'Content-Type': 'application/json' }, status: 500 }
     );
   }
 });

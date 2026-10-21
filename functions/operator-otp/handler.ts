@@ -1,11 +1,11 @@
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { securityHeaders } from '../_shared/security-headers.ts';
 import { readBoundedJson } from './body.ts';
 import { deliverOtp, type Delivery, Msg91DeliveryError } from './provider.ts';
 
 type RpcResult = { success: boolean; code?: string; retry_at?: string; data?: Record<string, unknown> };
 // Everything the handler reaches outside itself, so tests can stand in for it.
 export type HandlerDeps = { env: (name: string) => string | undefined; fetch: typeof fetch };
-const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+const headers = { ...securityHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
 function respond(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...headers, ...extra } });
@@ -62,8 +62,6 @@ function clientAddress(req: Request): string | null {
 
 export async function handle(req: Request, overrides: Partial<HandlerDeps> = {}): Promise<Response> {
   const deps: HandlerDeps = { env: name => Deno.env.get(name), fetch: (input, init) => fetch(input, init), ...overrides };
-  const cors = handleCors(req);
-  if (cors) return cors;
   if (req.method !== 'POST') return respond({ success: false, error: 'Method not allowed' }, 405);
   if (deps.env('AUTH_MODE') !== 'operator' || deps.env('APP_ENV') !== 'production') {
     return failure({ code: 'unavailable' });
