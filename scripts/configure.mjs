@@ -50,6 +50,31 @@ export function centralValues(centralIssuer, centralJwksUrl, centralJwksFile) {
   return { values: { CENTRAL_ISSUER: centralIssuer, CENTRAL_JWKS_URL: '', CENTRAL_JWKS_FILE: CENTRAL_KEY_FILE }, keyFile: centralKeyFile(centralJwksFile) };
 }
 
+// Setup tries the key address once (--central-jwks-url) and only warns: a host may be set up offline, and the
+// functions container, not this process, does the fetching later. Returns null when the address answered with a
+// JSON key list, else the reason in a few words. `fetchImpl` is injectable for tests.
+export async function centralKeysFault(url, fetchImpl = fetch) {
+  let response;
+  try {
+    response = await fetchImpl(url, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+  } catch (error) {
+    // Node's fetch reports only "fetch failed"; the reason (DNS, refused, unreachable) is in error.cause.
+    const cause = error.cause ? ` (${error.cause.code ?? ''} ${error.cause.message ?? error.cause})`.replace('( ', '(') : '';
+    return `${error.message}${cause}`;
+  }
+  if (!response.ok) return `HTTP ${response.status}`;
+  let document;
+  try { document = await response.json(); } catch { return 'the answer is not JSON'; }
+  if (!document || typeof document !== 'object' || !Array.isArray(document.keys)) return 'the answer has no "keys" list';
+  return null;
+}
+
+export async function centralKeysWarning(url, fetchImpl = fetch) {
+  const fault = await centralKeysFault(url, fetchImpl);
+  return fault === null ? null
+    : `Warning: could not fetch the central keys from ${url} (${fault}). Central sign-in answers "temporarily unavailable" until this host can reach it; SMS sign-in is unaffected. See docs/TROUBLESHOOTING.md, "Tunnel and public address".`;
+}
+
 // The facility's own extra code (--central-local-code on|off; owner decision of
 // 2026-10-15): with it on, this facility asks for an SMS code of its own at
 // every central sign-in; off (the default) leaves the association's sign-in
@@ -347,7 +372,8 @@ export function parseConfigureArgs(args) {
 
 if (isMain(import.meta.url)) {
   try {
-    const result = configure(fileURLToPath(new URL('..', import.meta.url)), parseConfigureArgs(process.argv.slice(2)));
+    const options = parseConfigureArgs(process.argv.slice(2));
+    const result = configure(fileURLToPath(new URL('..', import.meta.url)), options);
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
@@ -372,5 +398,10 @@ if (isMain(import.meta.url)) {
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);
     }
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);
+    // After the state is written, so a refused command prints no warning; the warning never fails setup.
+    if (options.centralJwksUrl !== undefined && options.centralIssuer !== 'off') {
+      const warning = await centralKeysWarning(options.centralJwksUrl);
+      if (warning) console.error(warning);
+    }
   } catch (error) { console.error(`Configure: ${error.message}`); process.exitCode = 1; }
 }

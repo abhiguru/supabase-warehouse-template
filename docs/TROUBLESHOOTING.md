@@ -183,6 +183,9 @@ it; only `functions` can.
   `journalctl -u <unit>.service`, where `<unit>` is the name `bash scripts/watch-timer.sh status` prints before
   `.timer` (`warehouse-<instance>-watch`, from `WAREHOUSE_PROJECT_NAME` in `config/compose.env`), and `node scripts/watch.mjs status` (the last Slack failure is
   shown there); `node scripts/watch.mjs test-message` posts a test message to the stored webhook.
+- **Right after install, `npm run doctor` warns "... the monitoring checker has never run ...".** Expected for the first
+  few minutes: the timer runs the checker every 5 minutes, and the warning goes away after its first run. Rerun doctor after
+  that; if it persists, read `journalctl -u <unit>.service` as above.
 - **Alerts for services you stopped on purpose.** Mute before a planned stop: `node scripts/watch.mjs mute 60`
   ([MONITORING.md](MONITORING.md#mute-and-unmute)).
 - **Nothing reaches Slack, but the checker runs.** `status` says `Slack webhook: none` when the install was made with
@@ -274,6 +277,10 @@ it; only `functions` can.
   cache with `resolvectl flush-caches`). Check `systemctl status` of the
   unit and `cloudflared ... tunnel ingress validate`. Right after a key rotation
   one failure is normal; rerun after about thirty seconds.
+- **External doctor fails with `ENETUNREACH` and an IPv6 address**: this host has no IPv6 route, and the name either
+  resolved only to IPv6 or its IPv4 lookup failed (often the NXDOMAIN cache described above). Check
+  `dig +short A <hostname>` against `dig +short A <hostname> @1.1.1.1`; when only the second answers, flush the resolver cache
+  as above and rerun.
 - **`tunnel.sh adopt` refuses**: `certificate or key block` / `origincert`: you
   pointed it at `cert.pem` or at a config naming it; adopt only the tunnel's
   `config.yml` with its credentials JSON (remove the `origincert:` line) or the

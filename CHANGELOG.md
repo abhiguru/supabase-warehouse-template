@@ -164,6 +164,12 @@ older app build and `fas-sync`'s bulk push (named arguments, no flag) behave exa
 
 ### Fixed
 
+- **Operator install fixes.** `setup.sh` tries `--central-jwks-url` once from the host (10 seconds) and prints a warning, without
+  stopping, when the keys cannot be fetched; `npm run doctor` prints the cause of an external fetch failure (`ENETUNREACH`,
+  `ENOTFOUND`) instead of "fetch failed". `docs/OPERATOR_INSTALL.md` has a list of the inputs to gather (state directory, API
+  address, company, tunnel, MSG91 file, administrator, Slack webhook, central sign-in), notes on host prerequisites, central
+  sign-in and the storage permission, and says that notes from an older deployment do not apply;
+  `docs/TROUBLESHOOTING.md` explains the "checker has never run" warning right after install and `ENETUNREACH` from the external doctor.
 - `tests/rpc-callers.test.mjs` imported a script that no longer existed and skipped silently; it runs the contract scanner now.
 - The v0.6.1 release gate failed on a hosted runner at the alert-webhook terminal test (see Changed).
 - Report PDFs print each invoice once, from its total: no code for a database without migrations 59, 61, 62 or 63 remains.
