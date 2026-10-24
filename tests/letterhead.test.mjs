@@ -5,8 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
+import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { configure, parseConfigureArgs } from '../scripts/configure.mjs';
 import { ASK_REFUSAL, decideLetterheadSource, obtainLetterhead, OFF_NOTICE, PROMPT, REFUSAL, readLetterhead } from '../scripts/letterhead.mjs';
@@ -397,6 +397,13 @@ test('the prompt flow: Enter is off, a bad file is explained and asked again, a 
     assert.equal((await run('off')).value, 'off');
     assert.equal((await run(`  ${png}  `)).value, png, 'the path is returned as typed, trimmed');
     assert.equal((await run(jpg)).value, jpg);
+    assert.equal((await run(`'${png}'`)).value, png, 'quotes from a dropped file are removed');
+    assert.equal((await run(`"${png}"`)).value, png);
+    const home = process.env.HOME;
+    try {
+      process.env.HOME = scratch; // os.homedir() reads HOME
+      assert.equal((await run(`~/${relative(scratch, png)}`)).value, join(homedir(), relative(scratch, png)), '~/ is the home directory');
+    } finally { process.env.HOME = home; }
 
     // Each wrong answer is explained with the reason setup itself gives, then asked again.
     const text = join(scratch, 'notes.txt'); writeFileSync(text, 'not an image');

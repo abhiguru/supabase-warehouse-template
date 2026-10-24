@@ -10,6 +10,7 @@
 //       3 tries; Enter means plain PDFs) and writes the answer (a path or `off`) to FILE. Empty on a rerun: keeps what is
 //       there and asks nothing. No terminal where it must ask: refuses, exit 1.
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { MAX_ATTEMPTS, readLine } from './alert-webhook.mjs';
 import { isMain } from './is-main.mjs';
@@ -55,7 +56,8 @@ export async function obtainLetterhead({ company, ask, write, attempts = MAX_ATT
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const answer = await ask(PROMPT(company));
     if (answer === null) throw new Error('No answer was given; nothing was changed.');
-    const value = String(answer).trim();
+    // A typed answer may start with ~/ or carry the quotes a file manager adds when a file is dropped on the terminal.
+    const value = String(answer).trim().replace(/^(['"])(.*)\1$/, '$2').replace(/^~(?=\/)/, homedir());
     if (value === '' || value === 'off') return 'off';
     try { readLetterhead(value); return value; } catch (error) { write(`${error.message}${attempt < attempts ? ' Try again.' : ''}\n`); }
   }
