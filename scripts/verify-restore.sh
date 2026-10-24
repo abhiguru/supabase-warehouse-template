@@ -65,6 +65,14 @@ if [[ -e "$backup/central-jwks.json" || -L "$backup/central-jwks.json" ]]; then
   [[ -f "$backup/central-jwks.json" && ! -L "$backup/central-jwks.json" ]] || { echo 'Backup entry central-jwks.json is not a regular file.' >&2; exit 1; }
   grep -Fqx "$(cd "$backup" && sha256sum central-jwks.json)" "$backup/SHA256SUMS" || { echo 'Backup checksum missing for central-jwks.json' >&2; exit 1; }
 fi
+# Optional letterhead image (scripts/backup.sh copies public/letterhead.jpg and letterhead.png): each a regular, checksummed file
+# when present. A backup written before backups carried it has none, which is fine (plain PDFs).
+for letterhead in letterhead.jpg letterhead.png; do
+  if [[ -e "$backup/$letterhead" || -L "$backup/$letterhead" ]]; then
+    [[ -f "$backup/$letterhead" && ! -L "$backup/$letterhead" ]] || { echo "Backup entry $letterhead is not a regular file." >&2; exit 1; }
+    grep -Fqx "$(cd "$backup" && sha256sum "$letterhead")" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $letterhead" >&2; exit 1; }
+  fi
+done
 # Same catalog projection as scripts/backup.sh: <bucket>/<name>/<version> in byte order.
 catalog_query="SELECT p FROM (SELECT bucket_id||'/'||name||COALESCE('/'||version,'') AS p FROM storage.objects) s ORDER BY p COLLATE \"C\""
 

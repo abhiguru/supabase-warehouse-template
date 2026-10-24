@@ -50,6 +50,15 @@ layout uses the warehouse name installed in `system_settings.app_name`. It
 omits private addresses, organization-specific terms and preprinted-paper
 positioning. Review the document terms/layout for your organization.
 
+**Letterhead (optional).** The GRN, dispatch, invoice and customer stock PDFs print the facility's letterhead image at the top, full
+width, when the operator supplied one with `setup.sh --letterhead-file` (a JPEG or PNG of at most 2 MiB, copied to
+`public/letterhead.jpg` or `.png` and named by `LETTERHEAD_FILE`; [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#letterhead-image-optional)).
+The functions router reads the file and hands the document functions a `data:image/jpeg|png;base64,...` address
+(`functions/main/letterhead-reader.ts`, `functions/_shared/letterhead.ts`); `documentHtml` uses it only when it matches that exact shape, adds `img-src data:` to the
+document's content policy only then, and otherwise produces the same HTML as before. The renderer already lets `data:` images load
+(`docker/pdf-renderer/README.md`, also with `RENDERER_CSP=on`, whose policy allows `img-src data:`). A missing or unusable file is logged
+once and the PDF is made without it; report PDFs and QR images never carry it.
+
 Generated PDFs live in the private documents bucket. Links expire after one hour;
 there is no direct client-read policy. Signed links are bearer capabilities:
 do not log, share publicly, or send them to unrelated services.

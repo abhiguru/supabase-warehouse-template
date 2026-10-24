@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage } from './backup-test-helpers.mjs';
+import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -167,6 +167,39 @@ esac
     assert.notEqual(linked.status, 0);
     assert.match(linked.stderr, /central-jwks\.json is not a regular file/);
     assert.equal(existsSync(join(scratch, 'backup-linked')), false);
+
+    // The letterhead image of the document PDFs travels with the backup the same way (setup.sh --letterhead-file);
+    // none of the earlier backups had one to carry.
+    rmSync(join(state, 'public/central-jwks.json'));
+    for (const earlier of [destination, withTunnel, withKeys]) {
+      assert.deepEqual(readdirSync(earlier).filter(name => name.startsWith('letterhead')), [], 'no letterhead in a backup of a state without one');
+      assert.doesNotMatch(readFileSync(join(earlier, 'SHA256SUMS'), 'utf8'), /letterhead/);
+    }
+    const backupWith = (name, bytes, target) => {
+      writeFileSync(join(state, 'public', name), bytes, { mode: 0o644 });
+      return [target, spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, target], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+      })];
+    };
+    for (const [name, bytes] of [['letterhead.png', pngLetterhead], ['letterhead.jpg', jpegLetterhead]]) {
+      const [target, run] = backupWith(name, bytes, join(scratch, `backup-${name}`));
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(readFileSync(join(target, name)), bytes, 'the image is copied byte for byte');
+      assert.equal(statSync(join(target, name)).mode & 0o777, 0o600, 'private like every file of the backup');
+      assert.match(readFileSync(join(target, 'SHA256SUMS'), 'utf8'), new RegExp(`^[0-9a-f]{64} {2}${name.replace('.', '\\.')}$`, 'm'), 'listed in SHA256SUMS, which the signature covers');
+      assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: target }).status, 0);
+      assert.equal(readFileSync(join(target, 'SHA256SUMS.hmac'), 'utf8'),
+        `warehouse-backup-hmac-v1 ${hmacHex(key, 'warehouse-backup-manifest-v1', readFileSync(join(target, 'SHA256SUMS')))}\n`);
+      rmSync(join(state, 'public', name));
+    }
+    // A link in its place is refused, and no backup is left behind.
+    symlinkSync(join(state, 'public/instance.json'), join(state, 'public/letterhead.png'));
+    const linkedImage = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'backup-linked-image')], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
+    });
+    assert.notEqual(linkedImage.status, 0);
+    assert.match(linkedImage.stderr, /letterhead\.png is not a regular file/);
+    assert.equal(existsSync(join(scratch, 'backup-linked-image')), false);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -308,6 +341,48 @@ test('restore verifier accepts a checksummed central key file and refuses it unl
     const notPlain = verify(directory, scratch);
     assert.notEqual(notPlain.status, 0);
     assert.match(notPlain.stderr, /Backup entry central-jwks\.json is not a regular file/);
+    assert.equal(notPlain.calls, '', 'no container is started');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('restore verifier accepts a checksummed letterhead image, a backup without one, and refuses it unlisted, altered or not a plain file', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-letterhead-'));
+  const resum = backup => { spawnSync('sh', ['-c', 'sha256sum storage.tar.gz database.dump storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: backup }); signBackup(backup); };
+  try {
+    for (const [name, bytes] of [['letterhead.png', pngLetterhead], ['letterhead.jpg', jpegLetterhead]]) {
+      const good = makeBackup(join(scratch, `good-${name}`), { letterhead: { name, bytes } });
+      const passed = verify(good, scratch, { FAKE_CATALOG_FILE: join(good, 'storage_objects.txt') });
+      assert.equal(passed.status, 0, passed.stderr);
+      assert.match(passed.stdout, /signature, checksums/);
+      assert.match(readFileSync(join(good, 'SHA256SUMS'), 'utf8'), new RegExp(name.replace('.', '\\.')));
+    }
+    // An older backup has none: treated as no letterhead.
+    const older = makeBackup(join(scratch, 'older'));
+    assert.equal(verify(older, scratch, { FAKE_CATALOG_FILE: join(older, 'storage_objects.txt') }).status, 0);
+
+    const unlisted = makeBackup(join(scratch, 'unlisted'));
+    writeFileSync(join(unlisted, 'letterhead.png'), pngLetterhead);
+    const missingSum = verify(unlisted, scratch);
+    assert.notEqual(missingSum.status, 0);
+    assert.match(missingSum.stderr, /not exactly the files its signed SHA256SUMS lists/);
+    const unlistedUnsigned = makeBackup(join(scratch, 'unlisted-unsigned'), { key: null });
+    writeFileSync(join(unlistedUnsigned, 'letterhead.jpg'), jpegLetterhead);
+    const missingSumUnsigned = verify(unlistedUnsigned, scratch, { WAREHOUSE_BACKUP_KEY_FILE: join(scratch, 'absent.key') }, ['--allow-unsigned']);
+    assert.notEqual(missingSumUnsigned.status, 0);
+    assert.match(missingSumUnsigned.stderr, /Backup checksum missing for letterhead\.jpg/);
+
+    const altered = makeBackup(join(scratch, 'altered'), { letterhead: { name: 'letterhead.png', bytes: pngLetterhead } });
+    writeFileSync(join(altered, 'letterhead.png'), Buffer.concat([pngLetterhead, Buffer.from('planted')]));
+    const changed = verify(altered, scratch);
+    assert.notEqual(changed.status, 0);
+    assert.match(changed.stderr, /does not match its SHA256SUMS/);
+
+    const directory = makeBackup(join(scratch, 'directory'));
+    mkdirSync(join(directory, 'letterhead.png'));
+    resum(directory);
+    const notPlain = verify(directory, scratch);
+    assert.notEqual(notPlain.status, 0);
+    assert.match(notPlain.stderr, /Backup entry letterhead\.png is not a regular file/);
     assert.equal(notPlain.calls, '', 'no container is started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

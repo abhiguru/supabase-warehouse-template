@@ -25,7 +25,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
-import { centralKeyFault, readEnv, root as checkoutRoot } from './doctor-common.mjs';
+import { centralKeyFault, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
@@ -593,6 +593,13 @@ export function checkCentralKey(ctx) {
   return [problem ? result('central_key', 'central_key_file', false, 'Central sign-in key file is missing or unusable', problem)
     : result('central_key', 'central_key_file', true, 'Central sign-in key file fine or not used')];
 }
+// The optional letterhead image of the document PDFs (LETTERHEAD_FILE): a missing or unusable file does not stop a PDF, which is
+// made plain, so the detail says what to rerun; the rule is letterheadFault (doctor-common.mjs), as in doctor.mjs.
+export function checkLetterhead(ctx) {
+  const problem = letterheadProblem(ctx.env_(), ctx.state);
+  return [problem ? result('letterhead', 'letterhead_file', false, 'Letterhead image is missing or unusable (PDFs are plain)', problem)
+    : result('letterhead', 'letterhead_file', true, 'Letterhead image fine or not used')];
+}
 
 // ---------------------------------------------------------------- backups
 const fieldsOf = text => Object.fromEntries(String(text ?? '').split('\n').filter(l => l.includes('='))
@@ -634,7 +641,7 @@ export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic],
-  ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['backups', checkBackups],
+  ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.

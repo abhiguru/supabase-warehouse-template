@@ -1,4 +1,5 @@
 import { formatCell } from './report-definitions.ts';
+import { isLetterheadUri } from './letterhead.ts';
 
 export const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g,
   char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
@@ -12,11 +13,15 @@ export const kgEach = (value: unknown): unknown =>
 // dates (a receipt's "2026-10-13T00:00:00+00:00" is 13-10-2026). A value that cannot be read as a date is printed as it is.
 export const documentDate = (value: unknown): string => formatCell('date', value, 'en') || String(value ?? '');
 
-export function documentHtml(title: string, company: string, metadata: Record<string, unknown>, columns: string[], rows: unknown[][]): string {
+// `letterhead` is the optional data URI of the facility's letterhead image (functions/_shared/letterhead.ts). Only a value
+// of exactly the shape data:image/(jpeg|png);base64,<base64> is used; anything else is ignored and the document is the
+// plain one. With an image the content policy also allows `img-src data:` and the image is printed first, full width.
+export function documentHtml(title: string, company: string, metadata: Record<string, unknown>, columns: string[], rows: unknown[][], letterhead?: string): string {
+  const image = isLetterheadUri(letterhead) ? letterhead : '';
   return `<!doctype html><html><head><meta charset="utf-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-    <style>body{font:12px 'Liberation Sans','Noto Sans Gujarati',sans-serif;color:#18212f}h1{font-size:24px}h2{font-size:18px}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}th{background:#edf1f5}tr{break-inside:avoid}small{color:#555}</style>
-    </head><body><h1>${escapeHtml(company)}</h1><h2>${escapeHtml(title)}</h2>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none';${image ? " img-src data:;" : ''} style-src 'unsafe-inline'">
+    <style>body{font:12px 'Liberation Sans','Noto Sans Gujarati',sans-serif;color:#18212f}h1{font-size:24px}h2{font-size:18px}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}th{background:#edf1f5}tr{break-inside:avoid}small{color:#555}${image ? '.letterhead{width:100%;height:auto;display:block;margin-bottom:16px}' : ''}</style>
+    </head><body>${image ? `<img class="letterhead" src="${image}" alt="">` : ''}<h1>${escapeHtml(company)}</h1><h2>${escapeHtml(title)}</h2>
     ${Object.entries(metadata).map(([key,value]) => `<p><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</p>`).join('')}
     <table><thead><tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>

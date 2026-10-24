@@ -76,7 +76,9 @@ export const documentPdf = (kind: Kind) => async (req: Request): Promise<Respons
     if (company.error || typeof company.data?.value !== 'string' || !company.data.value.trim()) {
       throw { status:503,message:'Warehouse branding unavailable' };
     }
-    const html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows);
+    // The optional letterhead: the router read the file and passed the data URI. Nothing here can fail a PDF; documentHtml
+    // ignores a value that is not exactly a JPEG or PNG data URI.
+    const html = documentHtml(kind.toUpperCase(),company.data.value,metadata,columns,rows,Deno.env.get('LETTERHEAD_DATA_URI') || undefined);
     const pdf = await htmlToPdf(html);
     // Upload uses server authority only after document reads were authorized.
     const path = `${kind}/${header.id}/${crypto.randomUUID()}.pdf`;

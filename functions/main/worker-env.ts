@@ -9,6 +9,9 @@ const signedIn = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SU
 // _shared/auth-helpers.ts (the profile lookup of every signed-in function) and the sign-in and sensor functions use only the REST address, so it is in `signedIn`.
 const storageApi = ['SUPABASE_STORAGE_URL'];
 const documentPdf = [...signedIn, ...storageApi, 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'PDF_RENDERER_URL'];
+// The four document PDFs also receive the letterhead image as a finished data URI: the router reads the file
+// (LETTERHEAD_FILE, in the public directory) and passes the text, as it does the central key set. It is not in the container environment.
+const documentLetterhead = [...documentPdf, 'LETTERHEAD_DATA_URI'];
 
 export const workerEnvNames: Record<string, readonly string[]> = {
   'hello': [],
@@ -27,10 +30,10 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // ingest key is checked by the database, not here.
   'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
   'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
-  'generate-grn-pdf': documentPdf,
-  'generate-dispatch-pdf': documentPdf,
-  'generate-invoice-pdf': documentPdf,
-  'generate-customer-stock-pdf': documentPdf,
+  'generate-grn-pdf': documentLetterhead,
+  'generate-dispatch-pdf': documentLetterhead,
+  'generate-invoice-pdf': documentLetterhead,
+  'generate-customer-stock-pdf': documentLetterhead,
   // Report PDFs read like the document PDFs: caller token for the data, the
   // server key for the warehouse name and the upload.
   'generate-report-pdf': documentPdf,

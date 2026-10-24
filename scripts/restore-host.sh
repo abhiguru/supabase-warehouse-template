@@ -6,7 +6,7 @@
 # instance.json, rewriting only the three state-path lines (and adding the
 # per-role database passwords a backup made before them lacks), and then hands
 # over to scripts/restore.sh --relocated for the database and storage replay. A
-# central sign-in key file (public/central-jwks.json) and a tunnel credential
+# central sign-in key file (public/central-jwks.json), the letterhead image (public/letterhead.jpg or .png) and a tunnel credential
 # in the backup are put back as well.
 #
 #   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes BACKUP
@@ -191,6 +191,18 @@ elif [[ -n "$(sed -n 's/^CENTRAL_JWKS_FILE=//p' "$staged_env" | head -n 1)" ]]; 
   central_missing=true
   central_issuer="$(sed -n 's/^CENTRAL_ISSUER=//p' "$staged_env" | head -n 1)"
 fi
+# The letterhead image of the document PDFs, when the backup carries one (setup.sh --letterhead-file). A backup
+# written before backups held it has none: the PDFs are then plain, which is not a fault, unless compose.env names one.
+letterhead_restored='' letterhead_missing=false
+for letterhead in letterhead.jpg letterhead.png; do
+  src="$stage/backups/$name/$letterhead"
+  if [[ -e "$src" || -L "$src" ]]; then
+    [[ -f "$src" && ! -L "$src" ]] || die "The backup entry $letterhead is not a regular file."
+    install -m 0644 -- "$src" "$stage/public/$letterhead"
+    letterhead_restored="$letterhead"
+  fi
+done
+if [[ -z "$letterhead_restored" && -n "$(sed -n 's/^LETTERHEAD_FILE=//p' "$staged_env" | head -n 1)" ]]; then letterhead_missing=true; fi
 # The tunnel credential, when the backup carries one (scripts/tunnel.sh adopt).
 tunnel=false
 if [[ -d "$stage/backups/$name/tunnel" ]]; then
@@ -215,6 +227,7 @@ mv -T -- "$stage" "$state"
 trap cleanup EXIT
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
 if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
+if [[ -n "$letterhead_restored" ]]; then echo "Restored the letterhead image public/$letterhead_restored from the backup."; fi
 # 6. The database and storage replay is the in-place restore, unchanged.
 restore_args=(--yes --relocated)
 if [[ "$allow_unsigned" == true ]]; then restore_args+=(--allow-unsigned); fi
@@ -262,6 +275,13 @@ if [[ "$central_missing" == true ]]; then
      this identity and its data, and rebuilds the images once:
        bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
          --central-issuer $issuer --central-jwks-file /absolute/path/to/association-jwks.json"
+fi
+if [[ "$letterhead_missing" == true ]]; then
+  step "Put the letterhead image back (optional). This backup carries no letterhead image although its configuration
+     names one, so the GRN, dispatch, invoice and customer stock PDFs are plain and node scripts/doctor.mjs warns until
+     you rerun setup with your usual administrator inputs and the image, or with --letterhead-file off:
+       bash setup.sh --operator --state-dir $state --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\
+         --letterhead-file /absolute/path/to/letterhead.png"
 fi
 step "Compare with the fingerprint taken at backup time, if you have one:
      (A fingerprint recorded before the release that added orders, order lines, order revisions and
