@@ -308,7 +308,7 @@ key file; for an older backup it prints the one rerun that puts the key file bac
 
 ## Built, and not built
 
-Built: the central identity service (its own repository), the app's central sign-in, My facilities and the code step for
+Built: the central identity service (the private repository [abhiguru/central-identity-template](https://github.com/abhiguru/central-identity-template); ask the association for access), the app's central sign-in, My facilities and the code step for
 a facility that asks for its own code, and this endpoint with migration 81 (the association's sign-in opens an existing
 person profile; a facility's own code only when it asks; service accounts refused).
 

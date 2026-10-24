@@ -210,5 +210,9 @@ if (isMain(import.meta.url)) {
     const args = process.argv.slice(2);
     if (args.some(arg => !['--host-preflight', '--preflight', '--local'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/doctor.mjs [--host-preflight|--preflight|--local]');
     console.log(await doctor({ hostPreflight: args.includes('--host-preflight'), preflight: args.includes('--preflight'), local: args.includes('--local') }));
-  } catch (error) { console.error(`Doctor: ${error.message}`); process.exitCode = 1; }
+  } catch (error) {
+    // Node's fetch reports only "fetch failed"; the reason (DNS, refused, unreachable) is in error.cause.
+    const cause = error.cause ? ` (${error.cause.code ?? ''} ${error.cause.message ?? error.cause})`.replace('( ', '(') : '';
+    console.error(`Doctor: ${error.message}${cause}`); process.exitCode = 1;
+  }
 }

@@ -19,7 +19,7 @@ Sections: [host prerequisites](#host-prerequisites),
 [rotate signing keys](#rotate-signing-keys),
 [backup and restore](#backup-and-restore),
 [rerun and upgrade](#rerun-and-upgrade),
-[baseline reload](#baseline-reload) (for a database built before PostgreSQL 17),
+[baseline reload](#baseline-reload) (for a database built before PostgreSQL 17; the reload builds the current major, 18),
 [major PostgreSQL upgrade](#major-postgresql-upgrade) (17 to 18),
 [Windows host with Linux VM](#windows-host-with-linux-vm).
 
@@ -35,12 +35,15 @@ Sections: [host prerequisites](#host-prerequisites),
   - Docker Compose v5.6.0 with Docker Engine 29.9.1 (the development host; verified
     for this service and for the facility backend).
 - Network access to `storage.googleapis.com` while the pdf-renderer image is built (it downloads Chrome headless shell).
-- Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`).
+- Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`), and `dig` (package `dnsutils`).
+- `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
+  run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
 - At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data; the doctor enforces
   the minimum.
-- A **USB drive formatted exFAT for backups** (an existing drive is fine; it is not reformatted) and `sudo` once to set up
-  the automatic copy ([USB backup drive](#usb-backup-drive)).
+- Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
+  reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
+  it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
 - `cloudflared` for the tunnel ([Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress)).
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
@@ -53,7 +56,7 @@ current 22.x release; the checksum file comes from Node's HTTPS site, which is n
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils
+sudo apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils tmux
 NODE=v22.23.3
 mkdir -p "$HOME/.local/opt" "$HOME/.cache/warehouse-node-download"
 cd "$HOME/.cache/warehouse-node-download"
@@ -68,7 +71,9 @@ node --version && npm --version
 Repeat the `PATH` export in every shell that runs setup, doctor, start or stop, and add it to `~/.profile`.
 
 Install Docker from [Docker's Ubuntu repository](https://docs.docker.com/engine/install/ubuntu/). Any Compose plugin whose
-`up` accepts `--wait-timeout` works; the commands below install the build the review verified.
+`up` accepts `--wait-timeout` works; the commands below install the build the review verified. That build can leave the
+repository's index later: if `apt-get install` cannot find `docker-compose-plugin=2.40.3-…`, take a current build from the
+`apt-cache madison` list instead of stopping.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -1347,6 +1352,14 @@ start then replaces only the containers whose image changed. What to expect:
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather
   than leaving the installation half way.
+- **Setup does not check that the address answers.** A wrong or unresolvable address shows only at the first sign-in
+  ("temporarily unavailable"). Test it from this host first: `curl -fsS https://login.association.example/.well-known/jwks.json`.
+  A host resolver that cached an NXDOMAIN answer fails here too ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address)).
+- **The app must be built for central sign-in too.** The backend setting alone leaves the app on its single "warehouse
+  server" screen: build the app with `EXPO_PUBLIC_CENTRAL_ORIGIN=https://login.association.example` (the app repository's
+  `.env.example`). The value is inlined when the app is bundled, so restart Metro with `--clear` after changing it.
+- **The central service has its own Cloudflare Tunnel and hostname**, separate from this facility's; see the OPERATOR.md of
+  the central identity repository ([CENTRAL_LOGIN.md](CENTRAL_LOGIN.md#built-and-not-built)).
 - The pooler's objects follow `POOLER_ENABLED` (see [Pooler (optional)](#pooler-optional)).
 - Optional services (`printing`, `pooler`, `sensors`) are rebuilt only if
   this installation has a container of them, and setup replaces the running
@@ -1511,6 +1524,10 @@ D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.pre-baseline" && mv -T "$D" "$D.
 ```
 
 The files in `data/storage` stay where they are; the reload does not touch them.
+
+If you copy files into `data/storage` by hand (for example to bring over the photos of another server), make the folders
+mode 755 and the files mode 644, whatever the source had. Files that keep a source mode such as 700, or that belong to
+root, make `db:backup` fail with `tar: ./stub/stub/<bucket>: Cannot open: Permission denied`.
 
 **Step 5. Check out this release, build the new database, apply the baseline, let Storage migrate.**
 
