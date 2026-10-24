@@ -393,7 +393,7 @@ test('setup.sh asks after the host checks and the lock, hands the URL over throu
   assert.ok(gate < setup.indexOf('scripts/configure.mjs'), 'and before configure.mjs');
   assert.match(setup, /mktemp "\$\{TMPDIR:-\/tmp\}\/warehouse-slack-webhook\.XXXXXX"/);
   assert.match(setup, /\(umask 077; mktemp/);
-  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP"' EXIT/);
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"' EXIT/);
   assert.match(setup, /CONFIG_ARGS\+=\(--alert-webhook-file "\$WEBHOOK_TMP"\)/);
   assert.match(setup, /\[\[ "\$2" != ask \]\]/, '`ask` is for the gate; configure.mjs never sees it');
   assert.doesNotMatch(setup, /curl|wget/, 'no URL on a shell command line');
@@ -404,7 +404,7 @@ test('setup.sh asks after the host checks and the lock, hands the URL over throu
   assert.match(setup, /WAREHOUSE_STATE_DIR="\$STATE" bash "\$ROOT\/scripts\/watch-timer\.sh" hint/);
   assert.doesNotMatch(setup, /^\s*sudo /m);
   assert.match(read('start.sh'), /watch-timer\.sh" hint/);
-  assert.match(read('.github/workflows/ci.yml'), /--admin-name 'Core Demo Administrator' \\\n\s+--alert-webhook-file off\n/, 'CI installs with off');
+  assert.match(read('.github/workflows/ci.yml'), /--admin-name 'Core Demo Administrator' \\\n\s+--alert-webhook-file off \\\n\s+--letterhead-file off\n/, 'CI installs with off');
 });
 
 // An installation made before the Slack checker kept the URL for Alertmanager; a rerun moves it (docs/MONITORING.md).

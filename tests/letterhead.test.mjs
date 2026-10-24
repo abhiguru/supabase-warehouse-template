@@ -1,5 +1,6 @@
 // The optional letterhead image of the GRN, dispatch, invoice and customer stock PDFs (setup.sh --letterhead-file):
-// setup (scripts/configure.mjs), the document HTML, the router's reader, the worker lists, doctor and watch.
+// setup (scripts/configure.mjs), the question setup asks (scripts/letterhead.mjs gate), the document HTML, the router's
+// reader, the worker lists, doctor and watch.
 // The backup, verify-restore and restore-host cases are in backup-operator.test.mjs and restore-host.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { configure, parseConfigureArgs } from '../scripts/configure.mjs';
+import { ASK_REFUSAL, decideLetterheadSource, obtainLetterhead, OFF_NOTICE, PROMPT, REFUSAL, readLetterhead } from '../scripts/letterhead.mjs';
 import { readEnv, letterheadFault } from '../scripts/doctor-common.mjs';
 import { checkLetterhead } from '../scripts/doctor.mjs';
 import { checkLetterhead as watchLetterhead, CHECKS } from '../scripts/watch.mjs';
@@ -313,4 +315,132 @@ test('doctor and watch warn when LETTERHEAD_FILE is set but the file is missing 
     const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
     assert.match(doctor, /const letterheadWarning = checkLetterhead\(env, state\);\n  if \(letterheadWarning\) console\.error\(`Warning: \$\{letterheadWarning\}`\);/);
   } finally { rmSync(state, { recursive: true, force: true }); }
+});
+
+// The question setup.sh asks (scripts/letterhead.mjs gate), the way the Slack webhook is asked (tests/alert-webhook.test.mjs).
+const gateScript = new URL('../scripts/letterhead.mjs', import.meta.url).pathname;
+const gate = (state, given, out) => spawnSync(process.execPath, [gateScript, 'gate', '--state-dir', state, '--company', 'Acme', '--given', given, '--out', out], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+// A fresh state has no config/compose.env (setup has not run); an installed one has it.
+function gateScratch({ installed }) {
+  const dir = mkdtempSync(join(tmpdir(), 'warehouse-letterhead-gate-'));
+  const state = join(dir, 'state');
+  if (installed) { mkdirSync(join(state, 'config'), { recursive: true }); writeFileSync(join(state, 'config/compose.env'), 'COMPANY=x\n'); }
+  const out = join(dir, 'out');
+  writeFileSync(out, '', { mode: 0o600 });
+  return { dir, state, out };
+}
+
+test('where the letterhead comes from: given path or off, prompt on a terminal, keep on a rerun, refusal without a terminal', () => {
+  assert.equal(decideLetterheadSource({ given: '/l.png', fresh: true, isTTY: false }), 'given');
+  assert.equal(decideLetterheadSource({ given: 'off', fresh: true, isTTY: false }), 'given');
+  assert.equal(decideLetterheadSource({ given: 'off', fresh: false, isTTY: true }), 'given');
+  assert.equal(decideLetterheadSource({ given: '', fresh: true, isTTY: true }), 'prompt');
+  assert.equal(decideLetterheadSource({ given: '', fresh: true, isTTY: false }), 'refuse');
+  assert.equal(decideLetterheadSource({ given: undefined, fresh: true, isTTY: false }), 'refuse');
+  assert.equal(decideLetterheadSource({ given: '', fresh: false, isTTY: false }), 'keep', 'a rerun asks nothing, also unattended');
+  assert.equal(decideLetterheadSource({ given: '', fresh: false, isTTY: true }), 'keep');
+  assert.equal(decideLetterheadSource({ given: 'ask', fresh: false, isTTY: true }), 'prompt', 'ask asks on a rerun');
+  assert.equal(decideLetterheadSource({ given: 'ask', fresh: true, isTTY: false }), 'refuse');
+});
+
+test('gate without a terminal on a fresh state refuses with the exact message, exit 1, and writes and creates nothing', () => {
+  const s = gateScratch({ installed: false });
+  try {
+    const run = gate(s.state, '', s.out);
+    assert.equal(run.status, 1);
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr.trim(), 'Refusing: choose the PDF letterhead. Give --letterhead-file /absolute/path/letterhead.png (a JPEG or PNG of at most 2 MiB) to print your letterhead at the top of the GRN, dispatch, invoice and customer stock PDFs, or --letterhead-file off for plain PDFs. Nothing was changed.');
+    assert.equal(run.stderr.trim(), REFUSAL);
+    assert.equal(readFileSync(s.out, 'utf8'), '');
+    assert.equal(existsSync(s.state), false);
+    const ask = gate(s.state, 'ask', s.out);
+    assert.equal(ask.status, 1);
+    assert.equal(ask.stderr.trim(), ASK_REFUSAL);
+    assert.equal(readFileSync(s.out, 'utf8'), '');
+  } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('gate keeps silently on a rerun, and a given path or off is used as given with no question and nothing written', () => {
+  const s = gateScratch({ installed: true });
+  try {
+    for (const given of ['', '/some/letterhead.png', 'off']) {
+      const run = gate(s.state, given, s.out);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stderr + run.stdout, '', `given "${given}"`);
+      assert.equal(readFileSync(s.out, 'utf8'), '');
+    }
+    const fresh = gateScratch({ installed: false });
+    try {
+      for (const given of ['/some/letterhead.png', 'off']) {
+        const run = gate(fresh.state, given, fresh.out);
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.stderr + run.stdout, '');
+      }
+    } finally { rmSync(fresh.dir, { recursive: true, force: true }); }
+    assert.equal(gate(s.state, 'ask', s.out).status, 1, 'ask needs a terminal, also on a rerun');
+  } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('the prompt flow: Enter is off, a bad file is explained and asked again, a good image is returned, three bad tries refuse', async () => {
+  const { scratch, png, jpg } = scratchSetup();
+  try {
+    const run = async (...answers) => {
+      const asked = []; const printed = [];
+      const result = await obtainLetterhead({ company: 'Acme Stores', ask: async text => { asked.push(text); return answers.shift() ?? null; }, write: text => printed.push(text) }).then(value => ({ value }), error => ({ error: error.message }));
+      return { ...result, asked, printed: printed.join('') };
+    };
+    // The prompt names the company and says what the image is for, how big it may be and what Enter does.
+    const enter = await run('');
+    assert.deepEqual(enter, { value: 'off', asked: [PROMPT('Acme Stores')], printed: '' });
+    assert.equal(PROMPT('Acme Stores'), 'PDF letterhead for Acme Stores: the GRN, dispatch, invoice and customer stock PDFs can print your letterhead at the top. Path of a JPEG or PNG image (at most 2 MiB), or press Enter for plain PDFs:');
+    assert.equal((await run('  ')).value, 'off');
+    assert.equal((await run('off')).value, 'off');
+    assert.equal((await run(`  ${png}  `)).value, png, 'the path is returned as typed, trimmed');
+    assert.equal((await run(jpg)).value, jpg);
+
+    // Each wrong answer is explained with the reason setup itself gives, then asked again.
+    const text = join(scratch, 'notes.txt'); writeFileSync(text, 'not an image');
+    const big = join(scratch, 'big.png'); writeFileSync(big, Buffer.concat([pngLetterhead, Buffer.alloc(2 * 1024 * 1024)]));
+    const again = await run('relative/letterhead.png', join(scratch, 'missing.png'), text, big, png);
+    assert.equal(again.value, undefined, 'four wrong answers in a row used up the tries');
+    const recovered = await run('relative/letterhead.png', text, png);
+    assert.equal(recovered.value, png);
+    assert.equal(recovered.asked.length, 3);
+    assert.equal(recovered.printed, '--letterhead-file must be an absolute path (or off). Try again.\n--letterhead-file is not a JPEG or PNG image (its first bytes are not a JPEG or PNG signature); nothing was copied. Try again.\n');
+
+    const refused = await run(join(scratch, 'missing.png'), big, text, png);
+    assert.equal(refused.error, 'No usable letterhead image after 3 tries; nothing was changed.');
+    assert.equal(refused.asked.length, 3, 'three tries, not four');
+    assert.equal(refused.printed, '--letterhead-file must be a readable regular file. Try again.\n--letterhead-file is larger than 2 MiB. Save the image at the page width (2480 pixels for A4 at 300 dpi) as a JPEG, or as a smaller PNG. Try again.\n--letterhead-file is not a JPEG or PNG image (its first bytes are not a JPEG or PNG signature); nothing was copied.\n');
+
+    // The input ending without an answer is not "plain PDFs".
+    assert.equal((await run()).error, 'No answer was given; nothing was changed.');
+    assert.match(OFF_NOTICE, /--letterhead-file \/absolute\/path\/letterhead\.png/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('readLetterhead is the one set of rules: setup --letterhead-file and the question give the same reasons', () => {
+  const { scratch, png } = scratchSetup();
+  try {
+    assert.deepEqual(readLetterhead(png), { name: 'letterhead.png', bytes: pngLetterhead });
+    for (const bad of ['relative.png', join(scratch, 'missing.png'), scratch]) {
+      let reason;
+      assert.throws(() => readLetterhead(bad), error => { reason = error.message; return true; });
+      assert.throws(() => configure(join(scratch, 'checkout'), { stateDir: join(scratch, 'x'), apiUrl: 'https://api.example.com', company: 'A', letterheadFile: bad }), error => error.message === reason);
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('setup.sh asks after the Slack webhook question and the lock, before configure.mjs, and never passes `ask` on', () => {
+  const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
+  const ask = setup.indexOf('letterhead.mjs" gate');
+  assert.ok(ask > setup.indexOf('alert-webhook.mjs" gate'), 'after the webhook question');
+  assert.ok(ask > setup.indexOf('LOCKED=1'), 'and after the operator lock of an existing state is held');
+  assert.ok(ask > setup.indexOf('doctor.mjs" --host-preflight'), 'and after the host checks');
+  assert.ok(ask < setup.indexOf('scripts/configure.mjs'), 'and before configure.mjs');
+  assert.match(setup, /--letterhead-file\) LETTERHEAD_ARG="\$2"; if \[\[ "\$2" != ask \]\]; then CONFIG_ARGS\+=\("\$1" "\$2"\); fi ;;/, '`ask` is for the gate; configure.mjs never sees it');
+  assert.match(setup, /--given "\$LETTERHEAD_ARG" --out "\$LETTERHEAD_TMP" \|\| exit 1/, 'a refusal ends setup');
+  assert.match(setup, /CONFIG_ARGS\+=\(--letterhead-file "\$\(<"\$LETTERHEAD_TMP"\)"\)/);
+  assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"' EXIT/);
+  assert.equal(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8').match(/--letterhead-file off/g).length, 2, 'both CI setup calls (install and rerun) answer the question');
 });

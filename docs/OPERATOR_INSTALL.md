@@ -116,7 +116,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
-| Letterhead image (optional) | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top; leave it out for plain PDFs. See [Letterhead image](#letterhead-image-optional). |
+| PDF letterhead | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top, or `off` for plain PDFs. On a first install setup asks for it on a terminal (Enter means plain PDFs) and, with no terminal and without the option, refuses; a rerun without the option asks nothing and keeps what is there. See [Letterhead image](#letterhead-image-optional). |
 
 **State directory.** An empty absolute path outside the checkout, not reached through a symlink, on the persistent
 filesystem, mode 0700 and owned by the installation user. The installer builds the state next to its final path
@@ -165,7 +165,8 @@ sends nothing to MSG91 when the key or the Flow ID is empty, template text or th
 without a route to the internet (for example on an `internal: true` Compose network, or with a firewall rule for its
 address) and prove it with a request from inside that must fail. Tests that need the provider's answer inject their own `fetch`.
 
-A test installation also passes `--alert-webhook-file off` (no Slack channel exists for it; alerts stay on the host).
+A test installation also passes `--alert-webhook-file off` (no Slack channel exists for it; alerts stay on the host) and
+`--letterhead-file off` (plain PDFs).
 A real facility gives its own Slack webhook, see [Setup](#setup).
 
 **First administrator.** The 12-digit phone number with the `91` prefix
@@ -184,7 +185,8 @@ bash setup.sh --operator \
   --provider-env /secure/warehouse-msg91.env \
   --admin-phone 91XXXXXXXXXX \
   --admin-name 'Warehouse Administrator' \
-  --alert-webhook-file /secure/warehouse-slack-webhook.txt
+  --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --letterhead-file /secure/letterhead.png        # or: --letterhead-file off (plain PDFs)
 node scripts/doctor.mjs --local
 ```
 
@@ -219,6 +221,11 @@ let setup ask for it on a terminal; without a terminal and without the option se
 `--alert-webhook-file off` is for a non-production install. The prompt, the test message, the stored file, the daily
 "Monitoring is alive" message and muting before a planned stop are in [MONITORING.md](MONITORING.md).
 
+The PDF letterhead is asked the same way: give `--letterhead-file /absolute/path` (a JPEG or PNG of at most 2 MiB) or
+`--letterhead-file off` for plain PDFs, or let setup ask on a terminal (the path, or Enter for plain PDFs). Without a
+terminal and without the option a first install refuses, so whoever runs setup for the installer has to ask them first
+(see [Letterhead image](#letterhead-image-optional)).
+
 Running the same command again is safe: a rerun preserves identity, keys, database and stored files
 ([rerun and upgrade](#rerun-and-upgrade)). Setup refuses an active administrator with a different phone, a state path
 through a symlink or inside the checkout, a running project owned by another checkout, and another operator command
@@ -227,7 +234,17 @@ holding the lock. Private configuration belongs outside the checkout; no source 
 ### Letterhead image (optional)
 
 The GRN, dispatch, invoice and customer stock PDFs can print the facility's letterhead (logo, name and address as a picture) at the
-top of the first page. The report PDFs are not changed. Without the option the PDFs are the plain ones; nothing is required.
+top of the first page. The report PDFs are not changed. The choice is the installer's, so a first install always asks for it:
+
+- **With the option.** `--letterhead-file /absolute/path/letterhead.png` uses that image; `--letterhead-file off` makes the PDFs plain.
+  Nothing is asked.
+- **On a terminal, without the option.** Setup asks for the path of a JPEG or PNG image (at most 2 MiB), or Enter for plain PDFs. A
+  file that cannot be used is explained and asked for again, three tries in all; then setup refuses. `--letterhead-file ask` asks
+  on a rerun as well.
+- **No terminal (a script, or an agent running setup), without the option, on a first install.** Setup refuses before it changes
+  anything: `Refusing: choose the PDF letterhead. Give --letterhead-file /absolute/path/letterhead.png (a JPEG or PNG of at most 2 MiB) ...,
+  or --letterhead-file off for plain PDFs. Nothing was changed.` Ask the installer which they want and run it again with the option.
+- **A rerun without the option** asks nothing and keeps what is there, so an unattended upgrade needs no change.
 
 ```bash
 bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
@@ -264,6 +281,7 @@ bash setup.sh --operator --state-dir /srv/warehouse/second \
   --api-url https://backend-two.example.test --company 'Second Facility' \
   --provider-env /srv/warehouse/second-provider.env \
   --admin-phone 91XXXXXXXXXX --admin-name 'Second Administrator' \
+  --alert-webhook-file /secure/second-slack-webhook.txt --letterhead-file off \
   --gateway-port 18001
 ```
 
@@ -508,6 +526,8 @@ bash setup.sh --operator \
   --central-issuer https://login.association.example \
   --central-jwks-file /secure/association-jwks.json
 ```
+
+(On a first installation, the command also carries `--alert-webhook-file` and `--letterhead-file`, or setup asks for both on a terminal.)
 
 - `--central-issuer` goes with exactly one of `--central-jwks-url` and `--central-jwks-file`. The issuer and the address
   must be `https://`; the issuer is stored exactly as typed, because it is compared with the token as a string.

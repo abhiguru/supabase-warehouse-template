@@ -8,7 +8,7 @@ import { generateSigningKeys, replaceEnvLines, updateRestSchemas } from './keys.
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
-import { LETTERHEAD_MAX_BYTES, LETTERHEAD_NAMES, letterheadKind } from './letterhead.mjs';
+import { LETTERHEAD_NAMES, readLetterhead } from './letterhead.mjs';
 import { LEGACY_WEBHOOK_FILE, WEBHOOK_FILE, placeWebhook, readAlertWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
@@ -148,15 +148,7 @@ function setEnvLines(text, values) {
 function letterheadValue(path) {
   if (path === undefined) return undefined;
   if (path === 'off') return { name: '', bytes: null };
-  if (!isAbsolute(path)) throw new Error('--letterhead-file must be an absolute path (or off).');
-  const st = statSync(path, { throwIfNoEntry: false });
-  if (!st?.isFile()) throw new Error('--letterhead-file must be a readable regular file.');
-  if (st.size > LETTERHEAD_MAX_BYTES) throw new Error('--letterhead-file is larger than 2 MiB. Save the image at the page width (2480 pixels for A4 at 300 dpi) as a JPEG, or as a smaller PNG.');
-  const bytes = readFileSync(path);
-  if (bytes.length > LETTERHEAD_MAX_BYTES) throw new Error('--letterhead-file is larger than 2 MiB. Save the image at the page width (2480 pixels for A4 at 300 dpi) as a JPEG, or as a smaller PNG.');
-  const kind = letterheadKind(bytes);
-  if (!kind) throw new Error('--letterhead-file is not a JPEG or PNG image (its first bytes are not a JPEG or PNG signature); nothing was copied.');
-  return { name: LETTERHEAD_NAMES[kind], bytes };
+  return readLetterhead(path);
 }
 
 // Puts the letterhead into the state's public directory (mode 0644, through a same-directory temporary). Returns whether
