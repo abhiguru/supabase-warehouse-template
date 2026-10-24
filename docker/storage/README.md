@@ -56,3 +56,14 @@ for the release checklist.
 2026-10-18: the `undici` override is scoped to `undici@^7` (every 7.x copy is raised to
 the root's 7.30.0). `@kubernetes/client-node` declares `undici ^8.7.0` and keeps its nested
 8.11.2; an unscoped override made `npm ls` report it invalid.
+
+2026-10-24: advisories published after the last main run failed `check:container-dependencies`:
+`undici` [GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c) (HIGH) with
+GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472 (moderate), in both the root 7.30.0 and the 8.11.2 under
+`@kubernetes/client-node`; `fast-uri` (four, up to moderate), `ip-address`
+[GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5) and `fastify`
+[GHSA-389g-gv7q-r4x8](https://github.com/advisories/GHSA-389g-gv7q-r4x8) (low). Raised: `undici`
+7.30.1 (root, so the `undici@^7` override follows), a new scoped override `undici@^8` 8.12.3 (the nested
+copy stays valid for `^8.7.0`), `fast-uri` 3.1.9 and 4.2.3, `ip-address` 10.7.4, `fastify` `^5.12.6`
+(locks 5.12.7). The lock was regenerated as above with npm 11.12.1 and changed only those packages;
+`npm audit --omit=dev` reports 0 vulnerabilities, and the image builds with its lockfile and `npm ls` guards.
