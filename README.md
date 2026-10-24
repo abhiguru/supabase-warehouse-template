@@ -28,7 +28,9 @@ bash setup.sh --operator \
   --company 'Example Cold Storage' \
   --provider-env /secure/warehouse-msg91.env \
   --admin-phone 91XXXXXXXXXX \
-  --admin-name 'Warehouse Administrator'
+  --admin-name 'Warehouse Administrator' \
+  --alert-webhook-file /secure/warehouse-slack-webhook.txt \
+  --letterhead-file /secure/letterhead.png   # or: --letterhead-file off (plain PDFs)
 export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
 node scripts/doctor.mjs --local      # every service healthy on the loopback gateway
 # start the cloudflared connector for your hostname (deploy/cloudflared-config.example.yml)

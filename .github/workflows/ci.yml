@@ -224,7 +224,8 @@ jobs:
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
             --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
-            --alert-webhook-file off
+            --alert-webhook-file off \
+            --letterhead-file off
         working-directory: backend
       - run: node scripts/doctor.mjs --local
         working-directory: backend
@@ -319,7 +320,8 @@ jobs:
             --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-ci.env" \
             --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
-            --alert-webhook-file off
+            --alert-webhook-file off \
+            --letterhead-file off
           sha256sum -c /tmp/warehouse-config.sha256
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/compose.env")" = "$(cat /tmp/warehouse-config.mode)"
         working-directory: backend

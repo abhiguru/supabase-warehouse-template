@@ -18,6 +18,7 @@ ADMIN_PHONE=''
 ADMIN_NAME=''
 COMPANY_ARG=''
 ALERT_ARG=''
+LETTERHEAD_ARG=''
 CONFIG_ARGS=()
 while (($#)); do
   case "$1" in
@@ -29,6 +30,7 @@ while (($#)); do
         --admin-name) ADMIN_NAME="$2" ;;
         --company) COMPANY_ARG="$2"; CONFIG_ARGS+=("$1" "$2") ;;
         --alert-webhook-file) ALERT_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
+        --letterhead-file) LETTERHEAD_ARG="$2"; if [[ "$2" != ask ]]; then CONFIG_ARGS+=("$1" "$2"); fi ;;
         *) CONFIG_ARGS+=("$1" "$2") ;;
       esac
       shift 2 ;;
@@ -82,8 +84,19 @@ node "$ROOT/scripts/alert-webhook.mjs" gate --state-dir "$STATE" --company "${PR
 if [[ -s "$WEBHOOK_TMP" ]]; then
   CONFIG_ARGS+=(--alert-webhook-file "$WEBHOOK_TMP")
 fi
+# The PDF letterhead (docs/OPERATOR_INSTALL.md, "Letterhead image (optional)"). Without --letterhead-file, a terminal is
+# asked for the path of a JPEG or PNG (Enter means plain PDFs) on a fresh install; with no terminal setup refuses, so
+# whoever runs it for the installer has to ask. A rerun without the option asks nothing and keeps what is there
+# (`--letterhead-file ask` asks anyway). It runs after the webhook question, so after the host checks and the lock of an existing state, for the same reason.
+# scripts/letterhead.mjs decides (and prints the refusal); the answer reaches configure.mjs through a temporary file.
+LETTERHEAD_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/warehouse-letterhead.XXXXXX")"
+trap 'rm -f "$WEBHOOK_TMP" "$LETTERHEAD_TMP"' EXIT
+node "$ROOT/scripts/letterhead.mjs" gate --state-dir "$STATE" --company "${PROMPT_COMPANY:-this facility}" --given "$LETTERHEAD_ARG" --out "$LETTERHEAD_TMP" || exit 1
+if [[ -s "$LETTERHEAD_TMP" ]]; then
+  CONFIG_ARGS+=(--letterhead-file "$(<"$LETTERHEAD_TMP")")
+fi
 node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
-rm -f "$WEBHOOK_TMP"
+rm -f "$WEBHOOK_TMP" "$LETTERHEAD_TMP"
 if [[ -z "$LOCKED" ]]; then
   operator_lock "$STATE"
 fi

@@ -193,6 +193,10 @@ it; only `functions` can.
 
 ## Installation and setup
 
+- **`Refusing: choose the PDF letterhead. ...` from `setup.sh`**: a first install with no terminal needs the choice made
+  for it. Ask the installer whether the GRN, dispatch, invoice and customer stock PDFs should print their letterhead, then
+  rerun the same command with `--letterhead-file /absolute/path/letterhead.png` (a JPEG or PNG of at most 2 MiB) or
+  `--letterhead-file off` for plain PDFs. Nothing was changed. A rerun of an installed state never gives this message.
 - **`Another operator command ... is running for this state`**: a previous
   setup, start, backup or restore is still running, or was interrupted while
   holding `config/operator.lock`. Wait or inspect `ps`; never delete the lock

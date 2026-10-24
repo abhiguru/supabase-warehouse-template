@@ -52,6 +52,10 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
+  JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
+  letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option
+  asks nothing and keeps the letterhead; `--letterhead-file ask` asks on a rerun. CI passes `--letterhead-file off`.
 - **Pooler on/off.** The pooler is only on when turned on (`bash scripts/pooler.sh on|off|status`); a new install has no pgbouncer
   objects, no `_supabase` database and no pooler secrets, and backups no longer contain `_supabase.dump` (old backups still restore;
   the file is skipped with a note). Existing installs: setup cleans up the unused pooler objects once (Operator actions, item 9).
