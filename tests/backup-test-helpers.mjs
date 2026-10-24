@@ -13,6 +13,9 @@ export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f
 // A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
 export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
   x: 'f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU', y: 'x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0' }] }, null, 2) + '\n';
+// Fictional letterhead images (only the signature and a few bytes matter): setup.sh --letterhead-file copies one to public/letterhead.jpg or .png.
+export const pngLetterhead = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('fictional png letterhead bytes')]);
+export const jpegLetterhead = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('fictional jpeg letterhead bytes')]);
 // Fixed fictional database passwords as a state of this release holds them
 // (scripts/db-roles.mjs): the superuser's and one per service login. The pooler is off by default: no pooler login or secret.
 export const dbRoleLines = `POSTGRES_PASSWORD=${'5'.repeat(64)}\nDB_PASSWORD_AUTHENTICATOR=${'1'.repeat(64)}\n` +
@@ -53,9 +56,9 @@ export function makeState(scratch, { env } = {}) {
 // entries (<bucket>/<name>/<version>); `files` are archive paths relative to
 // the storage root, defaulting to the tenant-prefixed layout of every object.
 // v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
-// `centralKey` adds the optional central-jwks.json (text), checksummed like the rest.
+// `centralKey` adds the optional central-jwks.json (text), checksummed like the rest; `letterhead` ({ name, bytes }) adds letterhead.jpg or .png.
 // `legacyPooler` adds _supabase.dump, which backups from before the pooler became optional carry (restores skip it).
-export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
+export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, letterhead = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
   legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tree = join(dir, '.tree');
@@ -78,6 +81,7 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage 
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
   }
   if (centralKey !== null) content['central-jwks.json'] = centralKey;
+  if (letterhead !== null) content[letterhead.name] = letterhead.bytes;
   for (const [name, body] of Object.entries(content)) writeFileSync(join(dir, name), body, { mode: 0o600 });
   const listed = ['storage.tar.gz', ...Object.keys(content)];
   const sums = spawnSync('sha256sum', listed, { cwd: dir, encoding: 'utf8' });

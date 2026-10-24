@@ -116,6 +116,7 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 | First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
 | Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
 | Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
+| Letterhead image (optional) | `--letterhead-file` | A JPEG or PNG banner (at most 2 MiB) that the GRN, dispatch, invoice and customer stock PDFs print at the top; leave it out for plain PDFs. See [Letterhead image](#letterhead-image-optional). |
 
 **State directory.** An empty absolute path outside the checkout, not reached through a symlink, on the persistent
 filesystem, mode 0700 and owned by the installation user. The installer builds the state next to its final path
@@ -222,6 +223,33 @@ Running the same command again is safe: a rerun preserves identity, keys, databa
 ([rerun and upgrade](#rerun-and-upgrade)). Setup refuses an active administrator with a different phone, a state path
 through a symlink or inside the checkout, a running project owned by another checkout, and another operator command
 holding the lock. Private configuration belongs outside the checkout; no source edit is needed.
+
+### Letterhead image (optional)
+
+The GRN, dispatch, invoice and customer stock PDFs can print the facility's letterhead (logo, name and address as a picture) at the
+top of the first page. The report PDFs are not changed. Without the option the PDFs are the plain ones; nothing is required.
+
+```bash
+bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --letterhead-file /secure/letterhead.png
+```
+
+- **Format.** A JPEG or a PNG of at most 2 MiB; setup reads the file's first bytes, not its name, and refuses anything else (GIF, WebP,
+  SVG, PDF, a renamed text file), a relative path or a larger file, and copies nothing. The image is scaled to the printable width of
+  the A4 page (the page minus its side margins), so a wide, short banner works best: **2480 pixels wide** is the width of A4 at 300 dpi
+  and is more than enough; a photograph of letterhead paper wastes the page. Save a photo-like picture as JPEG and a logo with flat
+  colour as PNG to stay under 2 MiB.
+- **Where it goes.** Setup copies it to `public/letterhead.jpg` or `public/letterhead.png` in the state (mode 0644) and records the name
+  in `config/compose.env` as `LETTERHEAD_FILE`. Replacing the image needs no restart: the functions container reads the file when a PDF
+  is made and notices a changed file.
+- **Change or remove it.** Rerun `setup.sh --operator` with your usual inputs plus `--letterhead-file <new image>`, or
+  `--letterhead-file off` for plain PDFs again. A rerun without the option keeps what is there. Switching between JPEG and PNG
+  removes the old file.
+- **Never a failed PDF.** If the file is missing, unreadable, too large or not an image, the PDF is made without it and the functions
+  log one line (`letterhead: ...`). `npm run doctor` prints a warning, and the checker (`scripts/watch.mjs`) raises an alert
+  "Letterhead image is missing or unusable", with the rerun command, while `LETTERHEAD_FILE` names a file that cannot be used.
+- **Backups.** A backup carries the image (`letterhead.jpg` or `letterhead.png`, signed with the rest), `db:verify-restore` checks it,
+  and `db:restore-host` puts it back. A backup made before this option has none and restores to plain PDFs.
 
 ## Several facilities on one host
 
@@ -799,6 +827,7 @@ only the services that were running. The directory contains:
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
+| `letterhead.jpg` or `letterhead.png` | Only when the installation has a letterhead image (`--letterhead-file`): a copy of `public/letterhead.jpg` or `.png`. `db:restore-host` puts it back; a backup without it restores to plain PDFs. |
 | `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit, `database_image=` (the database image the dump was taken on; restores refuse an earlier one) and checksums of every file above. |
 | `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 

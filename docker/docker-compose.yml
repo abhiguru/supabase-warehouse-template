@@ -224,7 +224,7 @@ services:
       - ../functions:/home/deno/functions:ro,Z
       - ${WAREHOUSE_MANIFEST_PATH:?Set public manifest path}:/etc/warehouse/instance.json:ro
       # The state's public directory, for the optional central sign-in key file
-      # (CENTRAL_JWKS_FILE). A directory, not the file: the file may be absent,
+      # (CENTRAL_JWKS_FILE) and the optional letterhead image (LETTERHEAD_FILE). A directory, not the file: the file may be absent,
       # and a replaced file is seen without recreating the container.
       # scripts/compose.sh sets the path for every state, old or new.
       - ${WAREHOUSE_PUBLIC_PATH:?Run through scripts/compose.sh}:/etc/warehouse/public:ro
@@ -253,6 +253,10 @@ services:
       # on = this facility also asks for its own SMS code at every central sign-in (default off).
       CENTRAL_LOCAL_CODE: ${CENTRAL_LOCAL_CODE:-}
       CENTRAL_JWKS_DIR: /etc/warehouse/public
+      # The optional letterhead image of the document PDFs (setup.sh --letterhead-file): letterhead.jpg or
+      # letterhead.png in the public directory above; empty = plain PDFs. ":-" so a state from before it still renders.
+      LETTERHEAD_FILE: ${LETTERHEAD_FILE:-}
+      LETTERHEAD_DIR: /etc/warehouse/public
       INSTANCE_MANIFEST_PATH: /etc/warehouse/instance.json
     command:
       [

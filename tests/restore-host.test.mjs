@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
@@ -565,6 +565,62 @@ test('restore-host prints the exact setup rerun when central sign-in names a key
     // The numbered steps stay in order whether or not this step is there.
     assert.deepEqual([...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   } finally { clean(f); }
+});
+
+// The letterhead image of the document PDFs (setup.sh --letterhead-file) is in the backup next to the key file.
+const letterheadEnv = (name = 'letterhead.png') => composeEnv('/srv/warehouse/lost-host', `JWT_SECRET=kept-secret\nLETTERHEAD_FILE=${name}\n`);
+
+test('restore-host puts the letterhead image back byte for byte with mode 0644 and nothing is left to redo', () => {
+  for (const [name, bytes] of [['letterhead.png', pngLetterhead], ['letterhead.jpg', jpegLetterhead]]) {
+    const f = fixture('warehouse-restore-host-letterhead-', { env: letterheadEnv(name) });
+    try {
+      writeFileSync(join(f.backup, name), bytes, { mode: 0o600 });
+      f.resum({ files: name });
+      const result = f.run(['--state-dir', f.state, '--yes', f.tarball()]);
+      assert.equal(result.status, 0, name + result.stderr + result.stdout);
+      const path = join(f.state, 'public', name);
+      assert.deepEqual(readFileSync(path), bytes);
+      assert.equal(statSync(path).mode & 0o777, 0o644, 'readable by the functions container, like the copy setup makes');
+      assert.deepEqual(readdirSync(join(f.state, 'public')).sort(), ['instance.json', name]);
+      assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^LETTERHEAD_FILE=(.*)$/m)[1], name);
+      assert.ok(result.stdout.includes(`Restored the letterhead image public/${name} from the backup.`));
+      assert.doesNotMatch(withoutAlertStep(result.stdout), /setup\.sh|letterhead image back/, 'nothing to rerun');
+      assert.equal(result.keyPending, '');
+    } finally { clean(f); }
+  }
+});
+
+test('restore-host refuses a backup whose letterhead image was changed after it was signed', () => {
+  const f = fixture('warehouse-restore-host-letterhead-edit-', { env: letterheadEnv() });
+  try {
+    writeFileSync(join(f.backup, 'letterhead.png'), pngLetterhead, { mode: 0o600 });
+    f.resum({ files: 'letterhead.png' });
+    writeFileSync(join(f.backup, 'letterhead.png'), Buffer.concat([pngLetterhead, Buffer.from('planted')]));
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /does not match its SHA256SUMS/); nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host from an older backup (no letterhead) works: plain PDFs, and a rerun is named only when the configuration names an image', () => {
+  const none = fixture('warehouse-restore-host-lh-none-');
+  try {
+    const result = none.run(['--state-dir', none.state, '--yes', none.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(readdirSync(join(none.state, 'public')), ['instance.json']);
+    assert.doesNotMatch(result.stdout, /letterhead/i);
+  } finally { clean(none); }
+  const named = fixture('warehouse-restore-host-letterhead-named-', { env: letterheadEnv() });
+  try {
+    const result = named.run(['--state-dir', named.state, '--yes', named.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(existsSync(join(named.state, 'public/letterhead.png')), false, 'no image is invented');
+    assert.equal(result.keyPending, '', 'a missing letterhead is not a key-file allowance');
+    assert.match(result.stdout, /Put the letterhead image back \(optional\)\. This backup carries no letterhead image although its configuration\s+names one/);
+    assert.ok(result.stdout.includes(`bash setup.sh --operator --state-dir ${named.state} --admin-phone 91XXXXXXXXXX --admin-name 'ADMIN NAME' \\\n`));
+    assert.ok(result.stdout.includes('--letterhead-file /absolute/path/to/letterhead.png'));
+    const numbers = [...result.stdout.matchAll(/^ {2}(\d+)\. /gm)].map(m => Number(m[1]));
+    assert.deepEqual(numbers, numbers.map((_, i) => i + 1), 'the numbered steps stay in order');
+  } finally { clean(named); }
 });
 
 test('restore-host says nothing about a key file when central sign-in uses an address or is off', () => {

@@ -164,6 +164,14 @@ older app build and `fas-sync`'s bulk push (named arguments, no flag) behave exa
 
 ### Fixed
 
+- **Optional letterhead image on the document PDFs.** `setup.sh --operator --letterhead-file ABSOLUTE|off` (also `scripts/configure.mjs`)
+  adds a JPEG or PNG banner (at most 2 MiB, checked by its first bytes) at the top of the GRN, dispatch, invoice and customer stock
+  PDFs; report PDFs and QR images are unchanged and plain PDFs stay the default. The image is copied to `public/letterhead.jpg` or
+  `.png` and recorded as `LETTERHEAD_FILE` in `config/compose.env` (a rerun without the flag keeps it, `off` removes it); the functions
+  router reads it and `documentHtml` prints it only for an exact `data:image/(jpeg|png);base64` address, with `img-src data:` added to that
+  document's content policy only then. A missing or unusable file never fails a PDF: it is logged and the PDF is plain. Backups carry the
+  image, `db:verify-restore` checks it, `db:restore-host` puts it back (an older backup restores to plain PDFs), and doctor and the checker
+  warn when `LETTERHEAD_FILE` names a file that cannot be used. See `docs/OPERATOR_INSTALL.md`, "Letterhead image".
 - **Operator install fixes.** `setup.sh` tries `--central-jwks-url` once from the host (10 seconds) and prints a warning, without
   stopping, when the keys cannot be fetched; `npm run doctor` prints the cause of an external fetch failure (`ENETUNREACH`,
   `ENOTFOUND`) instead of "fetch failed". `docs/OPERATOR_INSTALL.md` has a list of the inputs to gather (state directory, API

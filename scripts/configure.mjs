@@ -8,6 +8,7 @@ import { generateSigningKeys, replaceEnvLines, updateRestSchemas } from './keys.
 import { KEY_SET_MAX_BYTES, holdsPrivateKey, usableKeys } from './central-key-set.mjs';
 import { addMissingDbValues, generatedDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
+import { LETTERHEAD_MAX_BYTES, LETTERHEAD_NAMES, letterheadKind } from './letterhead.mjs';
 import { LEGACY_WEBHOOK_FILE, WEBHOOK_FILE, placeWebhook, readAlertWebhook } from './alert-webhook.mjs';
 
 export function canonicalOrigin(value, name = 'URL') {
@@ -130,14 +131,57 @@ function placeCentralKeyFile(publicDir, bytes) {
   return true;
 }
 
-// Sets the central lines of an existing compose.env; a state written by a
+// Sets lines of an existing compose.env (the central lines, LETTERHEAD_FILE); a state written by a
 // release that had no such lines gets them appended.
-function setCentralLines(text, values) {
+function setEnvLines(text, values) {
   let result = text;
   for (const key of Object.keys(values)) {
     if (!new RegExp(`^${key}=.*$`, 'm').test(result)) result += `${result.endsWith('\n') ? '' : '\n'}${key}=\n`;
   }
   return replaceEnvLines(result, values);
+}
+
+// The optional letterhead image of the GRN, dispatch, invoice and customer stock PDFs (--letterhead-file ABSOLUTE|off).
+// Returns undefined when the flag was not given (leave the state as it is), { name: '', bytes: null } for `off`, else the
+// file name to store (letterhead.jpg or letterhead.png, by the file's first bytes) and the bytes. Everything is checked
+// before anything is written: a refused file changes nothing.
+function letterheadValue(path) {
+  if (path === undefined) return undefined;
+  if (path === 'off') return { name: '', bytes: null };
+  if (!isAbsolute(path)) throw new Error('--letterhead-file must be an absolute path (or off).');
+  const st = statSync(path, { throwIfNoEntry: false });
+  if (!st?.isFile()) throw new Error('--letterhead-file must be a readable regular file.');
+  if (st.size > LETTERHEAD_MAX_BYTES) throw new Error('--letterhead-file is larger than 2 MiB. Save the image at the page width (2480 pixels for A4 at 300 dpi) as a JPEG, or as a smaller PNG.');
+  const bytes = readFileSync(path);
+  if (bytes.length > LETTERHEAD_MAX_BYTES) throw new Error('--letterhead-file is larger than 2 MiB. Save the image at the page width (2480 pixels for A4 at 300 dpi) as a JPEG, or as a smaller PNG.');
+  const kind = letterheadKind(bytes);
+  if (!kind) throw new Error('--letterhead-file is not a JPEG or PNG image (its first bytes are not a JPEG or PNG signature); nothing was copied.');
+  return { name: LETTERHEAD_NAMES[kind], bytes };
+}
+
+// Puts the letterhead into the state's public directory (mode 0644, through a same-directory temporary). Returns whether
+// anything changed. The file of the other kind is removed by removeOtherLetterheads, after compose.env names the new one.
+function placeLetterhead(publicDir, letterhead) {
+  for (const name of Object.values(LETTERHEAD_NAMES)) {
+    const st = lstatSync(join(publicDir, name), { throwIfNoEntry: false });
+    if (st && !st.isFile()) throw new Error(`public/${name} must be a regular file.`);
+  }
+  const path = join(publicDir, letterhead.name);
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (st && (st.mode & 0o777) === 0o644 && readFileSync(path).equals(letterhead.bytes)) return false;
+  const stage = join(publicDir, `.${letterhead.name}.${randomBytes(8).toString('hex')}`);
+  writeFileSync(stage, letterhead.bytes, { mode: 0o644, flag: 'wx' });
+  try { chmodSync(stage, 0o644); renameSync(stage, path); } catch (error) { rmSync(stage, { force: true }); throw error; }
+  return true;
+}
+// Removes the letterhead file(s) except `keep` ('' = all). Returns whether anything was removed.
+function removeOtherLetterheads(publicDir, keep) {
+  let removed = false;
+  for (const name of Object.values(LETTERHEAD_NAMES)) {
+    const path = join(publicDir, name);
+    if (name !== keep && lstatSync(path, { throwIfNoEntry: false })) { rmSync(path); removed = true; }
+  }
+  return removed;
 }
 
 function providerValues(path, checkout, apiUrl) {
@@ -211,9 +255,10 @@ function projectContainersRunning(project) {
 }
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
-export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
+export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, letterheadFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
   const port = gatewayPortValue(gatewayPort);
   const central = centralValues(centralIssuer, centralJwksUrl, centralJwksFile);
+  const letterhead = letterheadValue(letterheadFile);
   if (centralLocalCode !== undefined && centralLocalCode !== 'on' && centralLocalCode !== 'off') throw new Error('--central-local-code must be on or off.');
   if (!stateDir || !isAbsolute(stateDir)) throw new Error('--state-dir must be an absolute path outside the checkout.');
   const checkout = realpathSync(root);
@@ -281,11 +326,25 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         const localCode = centralLocalCodeValues(centralLocalCode, central, current);
         // "Off" on a state that never had the lines changes nothing.
         const absent = !/^CENTRAL_(?:ISSUER|JWKS_URL|JWKS_FILE)=/m.test(current);
-        const updated = !central ? setCentralLines(current, localCode)
-          : absent && !central.values.CENTRAL_ISSUER ? current : setCentralLines(current, { ...central.values, ...localCode });
+        const updated = !central ? setEnvLines(current, localCode)
+          : absent && !central.values.CENTRAL_ISSUER ? current : setEnvLines(current, { ...central.values, ...localCode });
         // The key file first: compose.env never names a file that is not there.
         if (central && placeCentralKeyFile(join(state, 'public'), central.keyFile)) centralUpdated = true;
         if (updated !== current) { replaceFileAtomically(envPath, updated); centralUpdated = true; }
+      }
+      // The letterhead image (--letterhead-file). Omitted = keep what is there. The image first, then the line that names it;
+      // `off` takes the line out first, so compose.env never names a file that is not there.
+      let letterheadUpdated = false;
+      if (letterhead) {
+        const publicDir = join(state, 'public');
+        const current = readFileSync(envPath, 'utf8');
+        const stored = current.match(/^LETTERHEAD_FILE=(.*)$/m)?.[1] ?? '';
+        if (letterhead.bytes && placeLetterhead(publicDir, letterhead)) letterheadUpdated = true;
+        if (stored !== letterhead.name && (letterhead.name || /^LETTERHEAD_FILE=/m.test(current))) {
+          replaceFileAtomically(envPath, setEnvLines(current, { LETTERHEAD_FILE: letterhead.name }));
+          letterheadUpdated = true;
+        }
+        if (removeOtherLetterheads(publicDir, letterhead.name)) letterheadUpdated = true;
       }
       // An installation made before per-role database passwords gets them here
       // (docs/CONTAINER_SECURITY.md, "Database passwords"); a value that exists
@@ -319,7 +378,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -339,7 +398,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { KONG_HTTP_PORT: port }),
     ...provider,
-    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null) };
+    ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
   const template = replaceEnvLines(readFileSync(resolve(root, '.env.example'), 'utf8'), values);
   const stage = `${state}.installing-${randomBytes(8).toString('hex')}`;
@@ -350,21 +409,22 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     writeFileSync(join(stage, 'public/instance.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o644, flag: 'wx' });
     if (faultAfterManifest) throw new Error('Injected failure after manifest staging.');
     if (central?.keyFile) placeCentralKeyFile(join(stage, 'public'), central.keyFile);
+    if (letterhead?.bytes) placeLetterhead(join(stage, 'public'), letterhead);
     writeFileSync(join(stage, 'config/compose.env'), template, { mode: 0o600, flag: 'wx' });
     createBackupKey(join(stage, 'config'));
     placeWebhook(stage, webhook);
     renameSync(stage, state);
   } catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }
-  return { created: true, state, manifest, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
+  return { created: true, state, manifest, letterhead: letterhead?.bytes ? letterhead.name : undefined, gatewayPortChanged: port !== null, dbValuesAdded: [], backupKeyCreated: true, monitoringUpdated: true, webhook: webhookReport };
 }
 
 export function parseConfigureArgs(args) {
   const options = {};
   const names = { '--state-dir': 'stateDir', '--api-url': 'apiUrl', '--app-url': 'appUrl', '--company': 'company', '--provider-env': 'providerEnv',
     '--central-issuer': 'centralIssuer', '--central-jwks-url': 'centralJwksUrl', '--central-jwks-file': 'centralJwksFile',
-    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--gateway-port': 'gatewayPort' };
+    '--central-local-code': 'centralLocalCode', '--alert-webhook-file': 'alertWebhookFile', '--letterhead-file': 'letterheadFile', '--gateway-port': 'gatewayPort' };
   for (let i = 0; i < args.length; i += 2) {
-    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--gateway-port 1024-65535]');
+    if (!names[args[i]] || !args[i + 1]) throw new Error('Usage: --state-dir ABSOLUTE [--api-url HTTPS --app-url HTTPS --company NAME --provider-env ABSOLUTE] [--central-issuer HTTPS|off (--central-jwks-url HTTPS | --central-jwks-file ABSOLUTE)] [--central-local-code on|off] [--alert-webhook-file ABSOLUTE|off] [--letterhead-file ABSOLUTE|off] [--gateway-port 1024-65535]');
     options[names[args[i]]] = args[i + 1];
   }
   return options;
@@ -377,6 +437,7 @@ if (isMain(import.meta.url)) {
     console.log(result.created ? 'Created operator state and private credentials.'
       : result.providerUpdated ? 'Updated MSG91 provider settings in existing operator state.'
         : result.centralUpdated ? 'Updated central sign-in settings in existing operator state.'
+          : result.letterheadUpdated ? 'Updated the letterhead image in existing operator state.'
           : result.gatewayPortChanged ? 'Updated the gateway port in existing operator state.'
             : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (now `public` only).'
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
@@ -391,6 +452,8 @@ if (isMain(import.meta.url)) {
     if (result.dbValuesAdded?.length) console.log(`Added ${result.dbValuesAdded.join(', ')} to the existing operator state: every database login now gets its own password (setup applies them to the database).`);
     if (result.monitoringUpdated && !result.created && result.webhook === undefined) console.log('Updated the monitoring files in the state: the Slack webhook is now config/slack-webhook-url (docs/MONITORING.md).');
     if (result.monitoringCleaned && !result.created) console.log('Removed the old Prometheus and Alertmanager files under config/monitoring, metrics and data/alertmanager.');
+    if (result.letterhead) console.log(`Stored the letterhead image public/${result.letterhead}: the GRN, dispatch, invoice and customer stock PDFs print it at the top.`);
+    else if (result.letterhead === null) console.log('Removed the letterhead image: the GRN, dispatch, invoice and customer stock PDFs are plain again.');
     if (result.webhook) console.log('Stored the Slack webhook for the monitoring checker (mode 0600, in the state).');
     else if (result.webhook === null) console.log('Removed the Slack webhook: the monitoring checker keeps alerts on this host only.');
     if (result.gatewayPortChanged) {

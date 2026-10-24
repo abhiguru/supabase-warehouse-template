@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { centralKeyFault, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { centralKeyFault, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -161,6 +161,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.
   const keyFileWarning = checkCentralKeyFile(env, state);
   if (keyFileWarning) console.error(`Warning: ${keyFileWarning}`);
+  // The optional letterhead image: a fault is a warning only, because the PDFs are then made without it.
+  const letterheadWarning = checkLetterhead(env, state);
+  if (letterheadWarning) console.error(`Warning: ${letterheadWarning}`);
   // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the default-profile services (an unhealthy optional
   // service only warns), the database, the gateway's public configuration, the get_public_config RPC probe and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
   const health = await runHealth(defaultDeps(process.env));
@@ -203,6 +206,13 @@ export function checkCentralKeyFile(env, stateDir, { pending = process.env.WAREH
   }[fault.code];
   if (fault.code === 'missing' && pending) return message;
   throw new Error(message);
+}
+
+// The optional letterhead image (LETTERHEAD_FILE, set by setup.sh --letterhead-file). Returns '' when it is fine or none is
+// configured, else the warning with the rerun command. Never throws: a PDF is made without an unusable letterhead, and a
+// restore from an older backup (which carries none) must not fail here.
+export function checkLetterhead(env, stateDir) {
+  return letterheadProblem(env, stateDir);
 }
 
 if (isMain(import.meta.url)) {

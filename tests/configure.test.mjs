@@ -377,7 +377,7 @@ test('setup and the edge function apply the same key set rules', () => {
 
 test('setup.sh passes the central options on and applies the issuer to the database after the auth settings', () => {
   const setup = readFileSync(new URL('../setup.sh', import.meta.url), 'utf8');
-  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--gateway-port\)/);
+  assert.match(setup, /--admin-name\|--central-issuer\|--central-jwks-url\|--central-jwks-file\|--central-local-code\|--alert-webhook-file\|--letterhead-file\|--gateway-port\)/);
   const auth = setup.indexOf('scripts/configure-auth.sql');
   const central = setup.indexOf('scripts/configure-central.sql');
   assert.ok(auth > 0 && central > auth && central < setup.indexOf('scripts/configure-sms.sql'));

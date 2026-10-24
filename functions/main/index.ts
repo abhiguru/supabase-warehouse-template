@@ -2,11 +2,21 @@ import { verifySignedInRequest } from '../_shared/jwt.ts';
 import { createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { securityHeaders } from '../_shared/security-headers.ts';
 import { workerEnv } from './worker-env.ts';
+import { letterheadReader } from './letterhead-reader.ts';
 
 // ingest-sensor-readings is called by the sensor bridge with its own ingest key, not a user token.
 const publicFunctions = new Set(['hello', 'get-public-config', 'operator-otp', 'central-exchange', 'ingest-sensor-readings']);
 const allowed = new Set([...publicFunctions, 'get-config', 'get-printer-status', 'print-via-ipp',
   'generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf', 'generate-report-pdf']);
+
+// The four document PDFs print the optional letterhead image (setup.sh --letterhead-file); the report PDFs do not.
+const letterheadFunctions = new Set(['generate-grn-pdf', 'generate-dispatch-pdf', 'generate-invoice-pdf', 'generate-customer-stock-pdf']);
+const readLetterhead = letterheadReader({
+  env: name => Deno.env.get(name),
+  stat: async path => { const info = await Deno.stat(path); return { isFile: info.isFile, size: info.size, mtimeMs: info.mtime?.getTime() ?? 0 }; },
+  readFile: path => Deno.readFile(path),
+  log: line => console.error(line),
+});
 
 Deno.serve(async (req: Request) => {
   const name = new URL(req.url).pathname.split('/')[1];
@@ -38,6 +48,12 @@ Deno.serve(async (req: Request) => {
           console.error('central-exchange: the key file could not be read');
         }
       }
+    }
+    // The optional letterhead image of the four document PDFs, read from the public directory like the key file above
+    // and passed as a finished data URI; a missing or unusable image is logged by the reader and left out.
+    if (letterheadFunctions.has(name)) {
+      const uri = await readLetterhead();
+      if (uri) extra.LETTERHEAD_DATA_URI = uri;
     }
     const worker = await EdgeRuntime.userWorkers.create({
       servicePath: `/home/deno/functions/${name}`,

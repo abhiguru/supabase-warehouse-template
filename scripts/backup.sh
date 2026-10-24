@@ -115,6 +115,17 @@ if [[ -e "$key_file" || -L "$key_file" ]]; then
   chmod 600 "$stage/central-jwks.json"
   optional_files+=(central-jwks.json)
 fi
+# The optional letterhead image of the document PDFs (setup.sh --letterhead-file): public/letterhead.jpg or letterhead.png.
+# compose.env names it (LETTERHEAD_FILE), so a lost-host restore must be able to put it back. Absent for plain PDFs.
+for letterhead in letterhead.jpg letterhead.png; do
+  letterhead_file="$state/public/$letterhead"
+  if [[ -e "$letterhead_file" || -L "$letterhead_file" ]]; then
+    [[ -f "$letterhead_file" && ! -L "$letterhead_file" ]] || { echo "Refusing: $letterhead_file is not a regular file." >&2; exit 1; }
+    cp "$letterhead_file" "$stage/$letterhead"
+    chmod 600 "$stage/$letterhead"
+    optional_files+=("$letterhead")
+  fi
+done
 # The tunnel credential kept by scripts/tunnel.sh, so db:restore-host can bring the
 # public address back on a new host. Only its known regular files are copied.
 tunnel_files=()
