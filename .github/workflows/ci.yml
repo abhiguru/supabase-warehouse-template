@@ -15,7 +15,7 @@ env:
   # MOBILE_REF: the one app commit the contract job checks against, always a full SHA
   # (tests/workflows.test.mjs refuses anything else). What it is for and when to move it:
   # CONTRIBUTING.md, "Mobile companion pin".
-  MOBILE_REF: 28138b0153db96e2edae1e22ba526c301f8c735d
+  MOBILE_REF: 657e6357ec265b802239d911311f6b4f4350729b
 # Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
 # ["self-hosted","linux","x64","my-label"]); operator-install takes OPERATOR_INSTALL_RUNNER instead. Without the
 # variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
