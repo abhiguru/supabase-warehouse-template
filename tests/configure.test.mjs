@@ -4,8 +4,9 @@ import { existsSync, mkdtempSync, mkdirSync, copyFileSync, readFileSync, readdir
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
+import { createServer } from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { configure, parseConfigureArgs } from '../scripts/configure.mjs';
+import { configure, parseConfigureArgs, centralKeysFault, centralKeysWarning } from '../scripts/configure.mjs';
 import { validateOperatorEnv } from '../scripts/doctor.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
 
@@ -842,5 +843,63 @@ test('a rerun rewrites PGRST_DB_SCHEMAS to public when it still holds an old def
       assert.equal(kept.graphqlSchemaKept, custom.includes('graphql_public'), `the operator is warned only while the list names graphql_public: ${custom}`);
       assert.equal(readFileSync(envPath, 'utf8'), changed, custom);
     }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('setup tries --central-jwks-url once and only warns when it does not give a key list', async () => {
+  const url = 'https://login.association.example.test/.well-known/jwks.json';
+  const answer = (body, init = {}) => async (address, options) => {
+    assert.equal(address, url);
+    assert.equal(options.redirect, 'error');
+    assert.ok(options.signal, 'the fetch has a timeout');
+    return new Response(body, init);
+  };
+
+  // A JSON answer with a keys list: no warning.
+  assert.equal(await centralKeysFault(url, answer(JSON.stringify({ keys: [] }))), null);
+  assert.equal(await centralKeysWarning(url, answer(JSON.stringify({ keys: [{ kid: 'a' }] }))), null);
+
+  // Unreachable: the warning names the cause the way the doctor does.
+  const unreachable = async () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND login.association.example.test'), { code: 'ENOTFOUND' }) }); };
+  assert.equal(await centralKeysWarning(url, unreachable),
+    `Warning: could not fetch the central keys from ${url} (fetch failed (ENOTFOUND getaddrinfo ENOTFOUND login.association.example.test)). `
+    + 'Central sign-in answers "temporarily unavailable" until this host can reach it; SMS sign-in is unaffected. See docs/TROUBLESHOOTING.md, "Tunnel and public address".');
+
+  // Other faults: an error status, a page that is not JSON, JSON without a keys list.
+  assert.match(await centralKeysWarning(url, answer('gone', { status: 404 })), /\(HTTP 404\)\. Central sign-in answers "temporarily unavailable"/);
+  assert.match(await centralKeysWarning(url, answer('<html>login</html>')), /\(the answer is not JSON\)/);
+  assert.match(await centralKeysWarning(url, answer(JSON.stringify({ issuer: 'x' }))), /\(the answer has no "keys" list\)/);
+  assert.match(await centralKeysWarning(url, answer(JSON.stringify([1, 2]))), /\(the answer has no "keys" list\)/);
+  assert.match(await centralKeysWarning(url, answer('null')), /\(the answer has no "keys" list\)/);
+
+  // The command: an address nothing listens on warns on stderr, and setup still succeeds and stores the address.
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-central-warn-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const stateDir = join(scratch, 'state');
+    assert.equal(configure(root, { stateDir, apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv }).created, true);
+    const script = new URL('../scripts/configure.mjs', import.meta.url).pathname;
+    // A port nothing listens on: bind one, then release it (fetch refuses some low ports outright).
+    const holder = createServer();
+    await new Promise(done => holder.listen(0, '127.0.0.1', done));
+    const freePort = holder.address().port;
+    await new Promise(done => holder.close(done));
+    const refused = `https://127.0.0.1:${freePort}/.well-known/jwks.json`;
+    // spawnSync would block the event loop; nothing else needs it here.
+    const run = args => spawnSync(process.execPath, [script, '--state-dir', stateDir, ...args], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: '' } });
+    const warned = run(['--central-issuer', 'https://login.association.example.test', '--central-jwks-url', refused]);
+    assert.equal(warned.status, 0, warned.stderr);
+    assert.match(warned.stdout, /Updated central sign-in settings in existing operator state\./);
+    assert.match(warned.stderr, new RegExp(`^Warning: could not fetch the central keys from ${refused.replace(/[.]/g, '\\.')} \\(fetch failed \\(ECONNREFUSED`));
+    assert.match(warned.stderr, /SMS sign-in is unaffected\. See docs\/TROUBLESHOOTING\.md, "Tunnel and public address"\./);
+    assert.equal(readEnv(join(stateDir, 'config/compose.env')).CENTRAL_JWKS_URL, refused);
+    // Turning central sign-in off tries nothing and warns about nothing.
+    const off = run(['--central-issuer', 'off']);
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(off.stderr, '');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -103,6 +103,20 @@ The operator scripts use only Node's built-in modules; `npm ci` is needed only t
 
 ## Private inputs
 
+**Gather these before running setup.** Each is explained below or in the section linked.
+
+| Input | Setup option | Notes |
+|---|---|---|
+| State directory (and its parent) | `--state-dir` (required) | Absolute path outside the checkout, mode 0700, owned by the installation user; see **State directory** below. |
+| Public API address | `--api-url` | HTTPS hostname of this facility (no path or port), such as `https://warehouse.example.com`. Required on a first install; the hostname must be routed by the tunnel below. |
+| App origin | `--app-url` (optional) | HTTPS origin (no path or port) stored as the trusted browser origin. Leave it out and it is the `--api-url` origin. |
+| Company name | `--company` | Display name of the facility, up to 120 characters. Required on a first install. |
+| Cloudflare Tunnel | `scripts/tunnel.sh adopt` (needs the state, so after setup) | A **new** tunnel for this host with a route for the `--api-url` hostname: its `config.yml` with the credentials JSON, or a dashboard token file. Not a config copied from another machine. See [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress). |
+| MSG91 provider file | `--provider-env` | Mode-0600 file with five keys; see **MSG91 provider file** below. Required on a first install. |
+| First administrator | `--admin-phone`, `--admin-name` (both required) | `91` and ten digits, and a display name; see **First administrator** below. |
+| Slack webhook file | `--alert-webhook-file` | Private file with the facility's incoming-webhook URL. `off` only for a non-production install; without the option a terminal is asked and no terminal means setup refuses. See [Setup](#setup). |
+| Central sign-in (members only) | `--central-issuer` with `--central-jwks-url` or `--central-jwks-file` | The issuer and the public key set (an address or a file) that the association gives you; see [Central sign-in](#central-sign-in). Leave out for SMS sign-in only. |
+
 **State directory.** An empty absolute path outside the checkout, not reached through a symlink, on the persistent
 filesystem, mode 0700 and owned by the installation user. The installer builds the state next to its final path
 (`<state>.installing-<random>`) and renames it into place, so the **parent** directory must belong to the installation user
@@ -134,6 +148,11 @@ be named exactly `OTP`. Do not copy a complete legacy `.env` into this file: `SM
 rejected. The OTP worker accepts a request only after MSG91 confirms it, but an accepted API response does not prove
 handset delivery, so test with an owned phone. Real credentials are mandatory: there is no fixed-OTP or local delivery
 mode. Keep the file out of shell history and version control, and include it in your encrypted off-host backups.
+
+**Notes from an older (pre-template) deployment do not apply.** This backend stores the sign-in codes itself, as an HMAC
+(the `otp_verifications` table, checked by `operator_verify_otp`), and setup writes the `public.sms_config` row from the
+provider file: do not create either by hand, and do not carry over a `.env` or SQL from the old system. `rotate-keys.sh` takes
+only `--yes` and rotates the signing keys ([Rotate signing keys](#rotate-signing-keys)); it does not set up SMS.
 
 **Test installations (CI, review fixtures).** An installation that is not a real facility never gets a real MSG91 key,
 because every accepted code request is a real SMS. It uses the sentinel `MSG91_AUTH_KEY=isolated-no-delivery-key` (any
@@ -1352,9 +1371,13 @@ start then replaces only the containers whose image changed. What to expect:
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather
   than leaving the installation half way.
-- **Setup does not check that the address answers.** A wrong or unresolvable address shows only at the first sign-in
-  ("temporarily unavailable"). Test it from this host first: `curl -fsS https://login.association.example/.well-known/jwks.json`.
-  A host resolver that cached an NXDOMAIN answer fails here too ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address)).
+- **Setup tries the address once and warns.** With `--central-jwks-url`, setup fetches it from this host (10 seconds, no
+  redirect) after it has written the state. If that fails (no connection, an error status, an answer that is not JSON or has
+  no `keys` list) it prints "Warning: could not fetch the central keys from ... (reason)" and carries on, because a host may
+  be set up before it is online. A pass proves only that **this host** can reach the address, not that the `functions`
+  container can; a wrong or unreachable address still shows at the first sign-in as "temporarily unavailable". Test it from
+  this host first: `curl -fsS https://login.association.example/.well-known/jwks.json`. A host resolver that cached an
+  NXDOMAIN answer fails here too ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address)).
 - **The app must be built for central sign-in too.** The backend setting alone leaves the app on its single "warehouse
   server" screen: build the app with `EXPO_PUBLIC_CENTRAL_ORIGIN=https://login.association.example` (the app repository's
   `.env.example`). The value is inlined when the app is bundled, so restart Metro with `--clear` after changing it.
