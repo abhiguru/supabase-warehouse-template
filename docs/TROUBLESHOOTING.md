@@ -14,9 +14,9 @@ bash scripts/compose.sh ps
 `scripts/compose.sh` selects this installation's Compose project
 (`warehouse-<instance>`, containers `warehouse-<instance>-<service>-1`) from
 `WAREHOUSE_STATE_DIR` and refuses a running project that another checkout owns.
-Name services (`db`, `kong`, `rest`, `storage`, `functions`, `pdf-renderer`, `cups`), never
+Name services (`db`, `gateway`, `rest`, `storage`, `functions`, `pdf-renderer`, `cups`), never
 containers: do not run `docker logs`, `docker exec` or `docker restart` with a
-fixed container name such as `supabase-kong`. On a host that also runs a
+fixed container name such as `supabase-rest`. On a host that also runs a
 separate Supabase deployment or a second installation, such a name belongs to
 that other project, and the command changes it instead of this one.
 
@@ -129,7 +129,7 @@ good backup exists only on this disk.
 
 ```bash
 bash scripts/compose.sh ps
-bash scripts/compose.sh logs --tail 100 db kong rest
+bash scripts/compose.sh logs --tail 100 db gateway rest
 node scripts/doctor.mjs --local
 ```
 
@@ -143,9 +143,9 @@ one that is not running (sensors, printing, pooler) shows as a `warn` line.
 ### The API answers 502 or 503
 
 ```bash
-bash scripts/compose.sh logs --tail 50 kong
+bash scripts/compose.sh logs --tail 50 gateway
 bash scripts/compose.sh logs --tail 50 rest
-bash scripts/compose.sh restart kong
+bash scripts/compose.sh restart gateway
 ```
 
 A 502 from the gateway usually means the service behind it (`rest`,
@@ -155,10 +155,18 @@ A 502 from the gateway usually means the service behind it (`rest`,
 for this operator instance" **by design** (`functions/main/index.ts`): that 503
 is not a fault ([PRINTING.md](PRINTING.md)).
 
-Public-configuration reads that take seconds, with `rest.localdomain` SERVFAIL in
-the gateway log, mean the host's DHCP search domain leaked into the gateway's
-resolver. `docker/docker-compose.yml` pins `dns_search: "."` for Kong; keep it,
-and do not change host DNS or extend client timeouts.
+A 502 with `no live upstreams` or `... could not be resolved` in the gateway log names the
+service behind the route that is down or was just replaced: the gateway looks the names up again every 5 seconds
+(`resolver 127.0.0.11 valid=5s` in `docker/nginx/nginx.conf`) and finds the new container by itself, so the 502s stop
+within about 10 seconds of the service answering; a gateway restart is not needed. The gateway asks Docker's resolver for the bare
+service names and applies no search domain, so a host DHCP search domain cannot slow it down; do not change host DNS
+or extend client timeouts.
+
+A gateway that exits at start prints the reason as its last log line: `gateway: ANON_KEY is not set` (or
+`SERVICE_ROLE_KEY`, `CORS_ALLOWED_ORIGIN`) or `... has a character that is not allowed` means `compose.env` holds an empty or odd
+value (a key is letters, digits and `. _ ~ : / -`; the origin is `https://host`, nothing else); `nginx: [emerg]` names a
+line of `docker/nginx` that nginx refused. Fix `compose.env` or the file, then
+`bash scripts/compose.sh up -d --wait gateway`.
 
 ### Database connection issues
 
@@ -272,7 +280,7 @@ did not answer twice in a row; it is killed and relaunched after five failed pro
 restarts the container) only after five failed launches in a row. The log has
 one JSON line per render with `outcome` and `code` (400 invalid input, 413 body
 too large, 503 queue full or browser restarting, 504 deadline). The renderer
-sits on the internal `renderer` network, so `storage` and `kong` cannot reach
+sits on the internal `renderer` network, so `storage` and `gateway` cannot reach
 it; only `functions` can.
 
 ## Monitoring and Slack alerts
@@ -422,7 +430,7 @@ it; only `functions` can.
 - **`api_429_rate_high` fires: users see "Too many requests".** The gateway and the sign-in functions refuse a client that
   goes over a limit (OPERATOR_INSTALL.md, "Authentication and OTP limits"; the gateway limits are in
   [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#gateway-limits-and-routes)). See who is refused: the gateway log keeps the
-  client address, `bash scripts/compose.sh logs -t --tail 3000 kong | grep ' 429 '` (the newest lines with their times; `--since 10m` returned nothing on one Docker 29 host). One address with thousands of lines is one
+  client address, `bash scripts/compose.sh logs -t --tail 3000 gateway | grep ' 429 '` (the newest lines with their times; `--since 10m` returned nothing on one Docker 29 host). One address with thousands of lines is one
   stuck client. Many phones behind **one** address are one Wi-Fi counted as one client: the per-address OTP and function limits
   apply to the whole warehouse Wi-Fi, so a wave of sign-ins (everyone's session ending the same week) can fill them.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters

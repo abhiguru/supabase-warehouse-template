@@ -217,7 +217,7 @@ test('TW-BE-010: a report with no package results fails unless its exact digest 
   const other = `sha256:${'e'.repeat(64)}`;
   const rest = `example.test/rest:v1@${digest}`;
   const empty = (name, digests = [`example.test/rest@${digest}`]) => ({ SchemaVersion: 2, ArtifactName: name, ArtifactType: 'container_image', Metadata: { RepoDigests: digests } });
-  const entry = { id: 'rest-no-package-inventory', recipe: rest, class: 'no-package-inventory', digest, compensatingControls: ['Reachable only through Kong'], owner: 'abhiguru', reason: 'Static binary; the publisher ships no SBOM for it.', reviewed: date(0), expires: date(30) };
+  const entry = { id: 'rest-no-package-inventory', recipe: rest, class: 'no-package-inventory', digest, compensatingControls: ['Reachable only through the gateway'], owner: 'abhiguru', reason: 'Static binary; the publisher ships no SBOM for it.', reviewed: date(0), expires: date(30) };
   const opts = (entries, recipe = rest) => ({ entries, recipe });
 
   assert.notEqual(check(empty(rest), rest).status, 0, 'strict mode rejects an empty report');

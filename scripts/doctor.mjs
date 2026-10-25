@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { backupToolProblems, centralKeyFault, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, gatewayPortText, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -91,6 +91,21 @@ export const listening = port => new Promise(resolve => {
   socket.once('error', () => done(false));
 });
 
+// Whether a running container of this installation's own Compose project publishes the loopback gateway port (a line of `docker ps`
+// such as `127.0.0.1:18000->8000/tcp`). The port is then the installation's own, not a stranger's. Which service it is does not
+// matter, and must not: an installation made before the nginx gateway has a `kong` container on the port and no `gateway`
+// container, and setup.sh and start.sh run this preflight from the new checkout before `up --remove-orphans` can replace it, so
+// asking for `gateway` alone stopped every such upgrade (and `compose ps -q kong` is no answer: Compose refuses a service the
+// file no longer has). A container of another project, or a process that is not a container, does not count.
+export function projectPublishesPort(project, port, run = probe) {
+  const listed = run('docker', ['ps', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Ports}}']);
+  if (!listed.ok) return false;
+  return listed.output.split(/[\r\n]+/).flatMap(line => line.split(',')).some(published => {
+    const range = /(?:^|:)(\d+)(?:-(\d+))?->/.exec(published.trim());
+    return range !== null && Number(range[1]) <= port && port <= Number(range[2] ?? range[1]);
+  });
+}
+
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
   if (env.AUTH_MODE !== 'operator' || env.APP_ENV !== 'production' || env.SMS_PROVIDER !== 'msg91' || env.SMS_PRODUCTION_MODE !== 'true') throw new Error('Operator configuration must use production mode and MSG91.');
@@ -101,8 +116,8 @@ export function validateOperatorEnv(env, stateDir) {
   const origin = canonicalOrigin(env.SUPABASE_PUBLIC_URL, 'SUPABASE_PUBLIC_URL');
   if (canonicalOrigin(env.API_EXTERNAL_URL, 'API_EXTERNAL_URL') !== origin) throw new Error('Public API origins differ.');
   if (canonicalOrigin(env.CORS_ALLOWED_ORIGIN, 'CORS_ALLOWED_ORIGIN') !== canonicalOrigin(env.SITE_URL, 'SITE_URL')) throw new Error('Trusted browser origins differ.');
-  const port = Number(env.KONG_HTTP_PORT);
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid KONG_HTTP_PORT.');
+  const port = Number(gatewayPortText(env));
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid GATEWAY_HTTP_PORT.');
   if (!/^[0-9a-f]{96}$/.test(env.JWT_SECRET || '')) throw new Error('Invalid JWT_SECRET.');
   // One password per database login (docs/CONTAINER_SECURITY.md, "Database passwords").
   validateDbValues(env);
@@ -186,10 +201,12 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const envStat = lstatSync(envPath);
   if (envStat.uid !== process.getuid() || (envStat.mode & 0o077)) throw new Error('Private configuration must be owned by this user and mode 0600.');
   const { port, origin, manifest } = validateOperatorEnv(env, state);
-  const owned = probe('bash', [resolve(root, 'scripts/compose.sh'), 'ps', '-q', 'kong']);
+  const owned = probe('bash', [resolve(root, 'scripts/compose.sh'), 'ps', '-q', 'gateway']);
   if (!owned.ok) throw new Error('Compose configuration or project ownership check failed.');
   if (preflight) {
-    if (!owned.output.trim() && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
+    // The port is the installation's own when its gateway runs, or when any other container of its project (the `kong` container
+    // of the release before the nginx gateway) publishes it; only a listener that is none of those is a stranger's.
+    if (!owned.output.trim() && !projectPublishesPort(env.WAREHOUSE_PROJECT_NAME, port) && await listening(port)) throw new Error(`Loopback gateway port ${port} is already in use.`);
     return 'Operator configuration, private paths and gateway port preflight passed.';
   }
   // Central sign-in from a key file: the file must be there, or every sign-in fails while the app still offers it.

@@ -90,10 +90,10 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     assert.ok(mainDump && !mainDump.includes('--no-owner'), 'main dump keeps owners for in-place restore');
     assert.equal(calls.includes('_supabase'), false, 'no command touches the _supabase database');
     assert.equal(calls.split('\n').filter(line => line.includes('pg_dump')).length, 1, 'one dump: the application database');
-    assert.ok(calls.indexOf('stop kong') < calls.indexOf('pg_dump'));
+    assert.ok(calls.indexOf('stop gateway') < calls.indexOf('pg_dump'));
     assert.ok(calls.indexOf('stop supavisor') < calls.indexOf('pg_dump'));
-    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
-    assert.match(calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong/);
+    assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway'));
+    assert.match(calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway/);
     assert.doesNotMatch(calls, /up -d --no-recreate --wait/, 'no restart without --no-deps');
     assert.equal(existsSync(join(destination, 'storage.tar.gz')), false, 'no tarball any more');
     writeFileSync(log, '');
@@ -104,7 +104,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     assert.match(failed.stderr, /Service storage is running \(unhealthy\)\. Its last log lines:\nfake log of storage\n/);
     assert.equal(existsSync(join(scratch, 'failed-backup')), false);
     const failureCalls = readFileSync(log, 'utf8');
-    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
+    assert.ok(failureCalls.indexOf('pg_dump') < failureCalls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway'));
     assert.equal(existsSync(join(destination, 'tunnel')), false, 'no tunnel directory without an adopted credential');
 
     // A tunnel credential adopted into the state (scripts/tunnel.sh) travels with every backup.
@@ -715,7 +715,7 @@ case "$1" in
   inspect) case "$3" in *State.Health.Status*) printf 'healthy\\n' ;; *State.Running*) printf 'true\\n' ;; esac ;;
   compose) case "$*" in
       *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
-      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
+      *' ps -q gateway') printf 'aaaaaaaaaaaa\\n' ;;
       *'exec -T db psql'*server_version_num*) printf '%s\\n' "$FAKE_SERVER" ;;
     esac ;;
 esac

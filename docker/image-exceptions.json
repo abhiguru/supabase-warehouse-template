@@ -34,7 +34,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime v1.77.4 image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through Kong.",
+      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime v1.77.4 image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through the gateway.",
       "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },
@@ -100,7 +100,7 @@
       "class": "no-package-inventory",
       "digest": "sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df",
       "compensatingControls": [
-        "No host port: outside requests reach PostgREST only through Kong, which requires the API key (key-auth), caps request bodies at 10 MB and limits each client address to 1800 requests a minute (docs/CONTAINER_SECURITY.md, REST request limit)",
+        "No host port: outside requests reach PostgREST only through the gateway (nginx), which requires the API key, caps request bodies at 10 MB and limits each client address to a burst of 1800 requests and then 30 a second (docs/CONTAINER_SECURITY.md, REST request limit)",
         "public.check_session runs before every request (PGRST_DB_PRE_REQUEST), and business data is written only through RPCs guarded by warehouse_security.authorize_rpc",
         "The image is the publisher's v16.4 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
       ],

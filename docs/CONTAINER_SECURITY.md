@@ -9,7 +9,7 @@ on the installation's host.
 
 | Service | Image or recipe | Patch boundary |
 |---|---|---|
-| `kong` (gateway) | `kong:3.9.4-ubuntu`, pulled by digest | none (no recipe of its own) |
+| `gateway` | `docker/nginx`: the official `nginx:1.30.6-alpine-slim` (the stable 1.30 branch), pinned by tag and index digest in the `FROM` line | `apk upgrade` in the recipe. Alpine-slim was chosen over the Debian-based variant for its package inventory: 21 packages and no HIGH or CRITICAL Trivy row on 1.30.6, against 60 on `1.30.6-trixie`. Runs as the `nginx` user (101) with a read-only root file system, no capability and 128 MB. Move to the next stable branch (1.32) once a year |
 | `rest` | `postgrest/postgrest:v16.4`, pulled by digest | none; static binary, see "Exceptions" |
 | `storage` | `docker/storage`: `supabase/storage-api` v1.80.2 by digest | Two stages: the locked npm manifest with same-major leaf fixes (`@fastify/busboy` 3.2.3, `fast-copy` 4.1.2, an `undici` override scoped to `undici@^7`) is built on the publisher image, then the patched `/app` is copied onto a clean `node:24.21.0-alpine3.23` (no g++, make or python3; the image is about 550 MB, was 1 GB). Keep that Node in step with the publisher's: `docker/storage/README.md` |
 | `functions` | `docker/edge-runtime`: supabase/edge-runtime v1.77.4 binary on `debian:bookworm-slim` (both by digest) | Full `apt-get upgrade` and a minimum PCRE2 version check |
@@ -35,9 +35,9 @@ The project has three networks; the table of members is in
 [ARCHITECTURE.md](ARCHITECTURE.md#containers-and-networks) and `tests/compose-networks.test.mjs` holds it against the
 rendered configuration.
 
-- `database`: the database and the services that hold a database connection (rest, storage, supavisor). Kong, the
+- `database`: the database and the services that hold a database connection (rest, storage, supavisor). The gateway, the
   function runtime, the PDF renderer, CUPS and the sensor bridge cannot open a connection to PostgreSQL at all.
-- `renderer`: `internal: true` (Docker adds no route out: no internet, no host, no Kong, no database). Only the function
+- `renderer`: `internal: true` (Docker adds no route out: no internet, no host, no gateway, no database). Only the function
   runtime and the PDF renderer are on it.
 - `default`: the gateway and everything it or a function calls.
 - Operator probes follow the same rule: `health-check.sh` and `tests/gateway-dns-check.sh` call the gateway from the
@@ -45,10 +45,10 @@ rendered configuration.
 
 All edge functions call PostgREST and Storage directly (`SUPABASE_REST_URL=http://rest:3000`, `SUPABASE_STORAGE_URL=http://storage:5000`), including
 `operator-otp`, `central-exchange`, `ingest-sensor-readings` and the profile read of `_shared/auth-helpers.ts`, so none of those calls is under
-Kong's 1800 a minute bucket or its key check; PostgREST verifies the JWT and `check_session` itself, and Storage still never sees
-`CF-Connecting-IP`. Only the client to Kong path remains.
+the gateway's REST bucket or its key check; PostgREST verifies the JWT and `check_session` itself, and Storage still never sees
+`CF-Connecting-IP`. Only the client to gateway path remains.
 
-What this does not do: services on `default` still reach each other without Kong's limits (`functions:9000`,
+What this does not do: services on `default` still reach each other without the gateway's limits (`functions:9000`,
 `storage:5000`, `rest:3000`), so PostgREST, Storage and the functions check tokens themselves. A service on `database`
 can open a connection to PostgreSQL; what it can do there is decided by the login it holds, and each has its own
 password ("Database passwords"). `database` and `default` are ordinary bridges, not `internal`. `default` needs outbound HTTPS: the OTP function calls MSG91
@@ -60,45 +60,98 @@ address pools (about 30 networks); `docker network prune` removes unused ones.
 
 ## Gateway limits and routes
 
-Only Kong publishes a host port, on loopback (`127.0.0.1:${KONG_HTTP_PORT}`, default 18000). The Cloudflare Tunnel
-connector is the only ingress: Kong reads the client address from `CF-Connecting-IP` (`KONG_REAL_IP_HEADER`) and trusts
-it only from the loopback hop and Docker's private ranges, with recursion off. Do not put another reverse proxy in front
-of it.
+The gateway is plain nginx (`docker/nginx`; Kong until 2026-10). Only it publishes a host port, on loopback
+(`127.0.0.1:${GATEWAY_HTTP_PORT}`, default 18000; `KONG_HTTP_PORT`, the name it had, is still read). The Cloudflare Tunnel
+connector is the only ingress: nginx reads the client address from `CF-Connecting-IP` (`real_ip_header`) and trusts it
+only from the loopback hop and Docker's private ranges, with recursion off. That trust is written in the public server only
+(`templates/gateway.conf.template`), never in the routes file `api-locations.conf` that a second server shares, so a server
+that is reached directly cannot be told a client address by a request header. Do not put another reverse proxy in front of it.
 
 | Route | Upstream | Limit per client address | Other |
 |---|---|---|---|
-| `/rest/v1/` | `rest:3000` | 1800 a minute, no hourly window | key-auth, 10 MB body limit, `public.check_session` before every request |
-| `/functions/v1/` | `functions:9000` | 100 a minute, 6000 an hour | 10 MB body limit; the functions check tokens themselves |
-| `/storage/v1/` | `storage:5000` | none | 50 MB body limit; `CF-Connecting-IP` is not passed on |
+| `/rest/v1/` | `rest:3000` | a bucket of 1800 that empties at 30 a second, no hourly window | `apikey` check, 10 MB body limit, `public.check_session` before every request |
+| `/functions/v1/` | `functions:9000` | a bucket of 100 that empties at 100 a minute | 10 MB body limit; the functions check tokens themselves |
+| `/storage/v1/` | `storage:5000` | none | 50 MB body limit; `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For` are not passed on |
 
-CORS is answered only by Kong, for the one configured origin; the edge functions add no CORS headers of their own (the former `cors.ts` is `security-headers.ts`). The gateway has no metrics plugin, status listener or GraphQL route. The ingest
+How the pieces map: the routes, the prefix removal (`/rest/v1/rpc/f?x=1` goes to `rest:3000/rpc/f?x=1`, the path as the client
+wrote it), the key check, CORS, the body limits, the buffers and the error bodies are `docker/nginx/api-locations.conf`; the
+limit zones, the upstreams and the preflight test are `api-http.conf`; the worker, the logs, the resolver and gzip are
+`nginx.conf`; the origin and the two keys come in through `templates/http.conf.template`. Every rule carries the reason for it
+in a comment. Order of checks on a route, as with Kong: the CORS preflight is answered first, then the key check (REST only),
+then the body size, then the rate limit, so a request refused by an earlier step does not use up the rate limit. One exception,
+nginx's own: a request whose `Content-Length` is over the route's limit gets 413 when nginx picks the route, before the
+preflight, the 404 and the key check (Kong looked at the key first); a chunked body over the limit is refused while it is read.
+A path with a dot segment (`/./` or `/../`, also written `%2e` or with the slash as `%2F`) is answered 404 on every route, so a
+`..` that an upstream might resolve never reaches it; no name the app creates has one. A body that arrives slowly is cut off
+after 20 seconds between two reads on REST and functions (`client_body_timeout`), because it is streamed to the upstream.
+`/health` answers the container's own check only; a request for it through the tunnel is a 404 like any unknown path.
+
+CORS is answered only by the gateway, for the one configured origin (`CORS_ALLOWED_ORIGIN`, always sent as the allowed origin,
+with credentials and `Vary: Origin`); the edge functions add no CORS headers of their own (the former `cors.ts` is
+`security-headers.ts`), and an upstream's own `Access-Control-*` headers are dropped so the browser never reads two values.
+The preflight is answered 204 with the methods, headers and one day of cache of the route. The gateway has no metrics plugin, status listener or GraphQL route. The ingest
 function `ingest-sensor-readings` is public at the router: it checks only the shape of the bridge's ingest key (64 hex);
 the key itself is checked inside `record_sensor_batch` against a SHA-256 in `warehouse_security.sensor_ingest_keys`.
 
-`docker/kong.yml` is filled in by a shell `eval` in the gateway entrypoint, so a double quote, backtick or backslash
-anywhere in the file, comments included, is silently altered. `tests/gateway-config.test.mjs` runs the same evaluation
-and compares the result. A running gateway keeps the limits it started with: `docker/kong.yml` is read when the
-container starts.
+The mobile app reads the 401 answer of the key check: `{"message":"Unauthorized"}` for a key the gateway does not know (what
+every installed app holds after `rotate-keys.sh`) and `{"message":"No API key found in request"}` for none; both end the app's
+session and reload the configuration (`GATEWAY_KEY_REJECTIONS` in the app's `src/config/supabaseConfig.ts`). Do not change those words.
+
+**The configuration is not filled in by a shell.** The image's entrypoint (`/docker-entrypoint.d/20-envsubst-on-templates.sh`)
+puts the three values in the two templates with `envsubst`, restricted by `NGINX_ENVSUBST_FILTER` to `CORS_ALLOWED_ORIGIN`,
+`ANON_KEY` and `SERVICE_ROLE_KEY`; every other `$` in the templates is nginx's own. Before it,
+`docker-entrypoint.d/18-require-env.sh` stops the container with a message if one of the three is empty or holds a character
+outside letters, digits and `. _ ~ : / -` (a quote, a semicolon, a dollar sign or a space would change the configuration), or
+if the origin is not `http(s)://host`. This closes the earlier open item about Kong's `eval` of `kong.yml`. A running gateway
+keeps the configuration it started with: a change to `docker/nginx` needs the image rebuilt and the container recreated
+(`bash setup.sh --operator ...`, or `bash scripts/build-images.sh` and `bash scripts/compose.sh up -d --force-recreate --wait gateway`).
+
+**Hardening.** The container runs as the `nginx` user (101) with `cap_drop: [ALL]`, `no-new-privileges`, a read-only root file
+system and two small tmpfs (`/tmp` for the pid file, and the directory the templates are rendered into), one worker, 128 MB and
+half a CPU. Request bodies are streamed to the upstream and a Storage download is passed on as it arrives, because nothing may be
+written to a file there (the tmpfs is memory, and the anon key is public). The `Server` header says `nginx` and no version.
+
+**Memory.** REST and function answers are buffered 0.5 MB at a time (32k for the headers, 16 buffers of 32k for the body); a
+larger answer is passed on as the client takes it, and the invoice-form preview (2.2 MB of JSON) is sent compressed. Kong's
+buffers (up to 10 MB a request) were sized for 512 MB. What a reader that stops reading costs is more than the buffers: the two
+sockets of the request hold up to 3 MiB of kernel buffers that count against the container's memory, and no nginx setting here
+changes that. Measured with readers that stop reading a 10 MB answer: about 4 MiB a request with these buffers (Kong's: 7 MiB), so
+20 such readers fit in 128 MB and 30 do not (`tests/gateway-nginx.test.mjs` holds 20, with swap off, and fails on Kong's buffers).
+Real answers are far smaller and compress by 90% or more; a facility with much bigger answers or many slow clients raises the
+limit in `docker/docker-compose.yml`.
+
+**Compared with Kong.** Same: the routes and upstreams, the prefix removal, the key check on REST only and the key not passed
+on, CORS lists, body limits, per-address limits on the address from `CF-Connecting-IP`, gzip, the redacted access log, loopback
+publication. Different: the rate limits are a leaky bucket (below); `Retry-After` on a 429 is always `1` (Kong sent the seconds
+until its window reset, up to 60); the preflight is 204 where Kong answered 200; 413 comes before the key check; the key is read
+from the `apikey` header only (Kong also read a query parameter, which the app never used) and its letter case is ignored
+(`templates/http.conf.template`); there are no `X-RateLimit-*`, `X-Kong-*` or `Via` headers; the upstreams get no
+`X-Forwarded-Proto`, `-Host`, `-Port`, `-Path` or `-Prefix` (nothing reads them); Storage no longer receives `X-Real-IP`
+and `X-Forwarded-For`; every route sets `CF-Connecting-IP` from the address the gateway settled on; response buffers are 0.5 MB a
+request instead of 10 MB (above, Memory); a path with a dot segment is a 404; a slow request body is cut off after 20 seconds
+between reads; upstream connections are reused for at most 15 seconds idle (Kong 60), so a request is less likely to meet a
+connection that the upstream has just closed.
 
 ### REST request limit
 
 Owner decision of 2026-10-11: the REST route (every RPC and table read of the app) allows **1800 requests a minute per
-client address and has no hourly window**.
+client address and has no hourly window**. Since the gateway became nginx (2026-10) the limit is a leaky bucket:
+`limit_req_zone ... rate=30r/s` with `limit_req ... burst=1800 nodelay` (`docker/nginx/api-http.conf`, `api-locations.conf`).
 
-- **Whose budget it is.** Kong limits by `CF-Connecting-IP`, and every phone on the facility network has the same public
-  address, so the number is the budget of the whole facility, not of one phone.
-- **The limit.** 1800 per fixed minute: 18 requests a minute for each of 100 phones working in the same minute, about 30
-  a second on average for the facility, with no per-second brake. Kong counts in fixed windows that start with each
-  clock minute, not over the last 60 seconds. No window is longer than a minute, so a
-  busy spell cannot lock anyone out afterwards: a refused request can be sent again when the next minute starts, at most 60
-  seconds later (an hourly window was dropped on purpose).
-- **What a burst can do.** The count is per minute, not per second. One address may send all 1800 requests in the first
-  second of a minute, and 1800 more as soon as the next minute starts: 3600 requests within a few seconds around the
-  turn of a minute are passed on. A ceiling per second would need a `second:` window in `docker/kong.yml`; none is set,
-  and adding one is a decision for the owner.
+- **Whose budget it is.** The gateway limits by `CF-Connecting-IP`, and every phone on the facility network has the same
+  public address, so the number is the budget of the whole facility, not of one phone.
+- **The limit.** A leaky bucket that holds a burst of 1800 requests and empties at 30 a second: 1800 a minute on average, which
+  is 18 requests a minute for each of 100 phones working in the same minute. Up to 1800 requests may arrive at once; the next
+  one is refused (HTTP 429) until the bucket has drained, which it does at 30 a second, so a refused request can be sent again
+  within a second or two. There is no hourly window (it was dropped on purpose): a busy spell cannot lock anyone out afterwards,
+  because the bucket is as full as the traffic made it and no fuller. Kong counted per clock minute; nginx has no clock minute.
+- **What a burst can do.** An address that has been quiet for a minute has an empty bucket, and may send 1800 requests in the
+  first second and then 30 a second: about 3600 in the first minute from a cold start, then 1800 a minute for as long as it keeps
+  sending. A ceiling below that rate would be a lower `rate` or a smaller `burst`; changing either is a decision for the owner.
 - **What counts.** Each request counts when it arrives, so requests answered with an error count too, and so do retries
-  while PostgREST is restarting.
-- **What it still stops.** One address sending more than 1800 requests in one minute. It is the only brake at the
+  while PostgREST is restarting. A request answered 401 (no or wrong key), 413 (body too large) or as a CORS preflight is
+  refused before the rate limit and does not count.
+- **What it still stops.** One address sending more than 30 requests a second for long. It is the only brake at the
   gateway on a signed-in client that loops and on the three RPCs that need no sign-in (`refresh_jwt_token`,
   `logout_session`, `check_session`). The OTP limits are not affected: they are counted in the database and on the
   functions route ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)).
@@ -107,10 +160,11 @@ client address and has no hourly window**.
   minute); the sensor list and a sensor detail every 60 s (1 a minute). Only the screen on top re-reads. With every phone
   on an order screen, 100 phones send 400 requests a minute (22% of 1800, leaving 14 a minute for each phone's own
   taps) and 300 phones send 1200 (67%). The limit is kept at 1800 for a facility of about 100 phones; a facility of 300
-  raises `minute` in `docker/kong.yml` and the numbers in `tests/gateway-config.test.mjs` together.
-- **The functions route: 100 a minute, 6000 an hour (owner decision of 2026-10-11).** 6000 is exactly 100 a minute for
-  sixty minutes, so the hourly window cannot refuse an address that stays within the minute limit; the minute limit is
-  the one that acts. This route is also the gateway's brake per address on OTP requests; the database has its own OTP
+  raises `rate` and `burst` in `docker/nginx` (together) and the numbers in `tests/gateway-config.test.mjs`.
+- **The functions route: a bucket of 100 that empties at 100 a minute (owner decision of 2026-10-11).** `rate=100r/m burst=100 nodelay`.
+  The earlier hourly cap of 6000 is gone: 6000 is exactly 100 a minute for sixty minutes, so a bucket that empties at 100 a minute
+  passes no more than 6000 an hour and a second, hourly rule would refuse nothing the first does not. This route is also the
+  gateway's brake per address on OTP requests; the database has its own OTP
   limits per source. They are `auth_config` keys with defaults (`otp_source_hourly_sends`, 30 codes sent an hour;
   `otp_source_hourly_failures`, 20 failed verifications an hour; `otp_trusted_source_hourly_sends`, 120 sends an hour for an address
   the operator lists in `otp_trusted_source_list`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#the-facilitys-own-wi-fi-address)), so the
@@ -118,8 +172,11 @@ client address and has no hourly window**.
 - **Storage has no limit.** A list screen loads one image per row and every phone at a facility shares one public
   address, so a limit low enough to matter could refuse ordinary use; it needs request counts from a running facility
   before a number is chosen.
+- **An answer of 429** has the body `{"message":"API rate limit exceeded"}` and `Retry-After: 1`; the access log line has status 429
+  (the checker's `api_429_rate_high` counts them). The error log is not written for a refusal (`limit_req_log_level info`).
 
-`tests/gateway-config.test.mjs` pins the table above, the per-minute arithmetic and this wording.
+`tests/gateway-config.test.mjs` pins the table above, the arithmetic and this wording; `tests/gateway-nginx.test.mjs` runs the
+real image against stand-in upstreams and checks that a burst of 1800 is passed and the next request is refused (the request that opens the bucket makes it 1801), and that another address is not affected.
 
 ## Logs
 
@@ -130,25 +187,26 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
   (`?token=`) is a credential in a query string: a retained log that holds one can replay a still-valid document link.
 - **Client addresses are allowed in the gateway log, for its rotation life** (owner decision of 2026-10-17). Nothing else
   identifies a person: no user agent, no referer, no phone number, no session.
-- **Gateway access log** (`docker/docker-compose.yml`, Kong environment): the format `warehouse_redacted` replaces Kong's
-  default, which wrote the whole request line, query string and all. A line is
+- **Gateway access log** (`docker/nginx/nginx.conf`, `log_format warehouse_redacted`, on the container's stdout): a short
+  format that replaces nginx's default `combined` one, which writes the whole request line, query string and all. A line is
   `client-address [time] "METHOD /path HTTP/x" status bytes seconds`, for example
   `203.0.113.7 [17/Oct/2026:17:43:35 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 200 478 0.034`. `$uri` is
   the path without the query. Do not add `$request`, `$request_uri`, `$args`, `$query_string`, `$http_referer` or
   `$http_user_agent`; `tests/gateway-config.test.mjs` fails if one appears, and `npm run test:gateway` sends a fictional
-  signed-link request and an `apikey` query and fails if the running gateway's log holds `token=` or `apikey=`. The
-  format is defined with `KONG_NGINX_HTTP_LOG_FORMAT` and selected with `KONG_PROXY_ACCESS_LOG`, not in `docker/kong.yml`,
-  which is `eval`ed by the entrypoint; in the Compose file `$` is written `$$`.
+  signed-link request and fails if the running gateway's log holds `token=`. The
+  format is the same one Kong wrote, so the checker (`checkApiLogs` in `scripts/watch.mjs`) reads it unchanged. The health
+  check of the container is not logged.
 - **Storage.** The storage service redacts `token` and the `X-Amz-*` signature parameters in the URL it logs. It also
-  writes two request headers into its log: `cf-connecting-ip` and `x-real-ip`. The gateway no longer passes
-  `CF-Connecting-IP` to storage (`request-transformer` on the `storage-v1` service). It cannot do the same for `X-Real-IP`
-  and `X-Forwarded-For`: Kong sets them itself from the client address after the plugins have run (checked on 3.9.3). The client
-  address therefore still reaches storage and its log, which rotates like the gateway's. Storage does not use it: its
+  writes request headers into its log: `cf-connecting-ip` and `x-real-ip`. The gateway passes none of the three client-address
+  headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`) to storage, and clears any value the client sent under those
+  names, so the client address no longer reaches storage or its log. (Kong could remove `CF-Connecting-IP` only: it added
+  `X-Real-IP` and `X-Forwarded-For` itself after its plugins had run.) Storage does not use the address: its
   image-render rate limit is off (`RATE_LIMITER_ENABLED` is unset).
 - **Residual: the gateway's error log.** nginx quotes the request line, query string included, in an error line (for
   example `upstream timed out ..., request: "GET /storage/v1/object/sign/...?token=..."`). These lines appear only while
-  a service fails, but a signed link that failed while it was valid stays in the log until it rotates out. The document
-  functions make a signed link valid for one hour, so the exposure ends then.
+  a service fails (or for a body over its size limit, which nginx also logs with the request line), but a signed link that failed while it was valid stays in the log until it rotates out. The document
+  functions make a signed link valid for one hour, so the exposure ends then. A request refused by the rate limit writes no
+  error line (it is in the access log as 429 only), so a flood cannot fill the error log.
 - **Database log** (`docker/docker-compose.yml`, the `db` command; the same 3 x 10 MB). It holds warnings and errors, lock
   waits (`log_lock_waits=on`), every statement slower than 1 s (`log_min_duration_statement=1000`), and every temporary file of
   10 MB or more (`log_temp_files=10240`, in kB). Until 2026-10 it also held one line per connection and disconnection
@@ -162,11 +220,14 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
 
 ## Image pins
 
-Kong and PostgREST are referenced in `docker/docker-compose.yml` with the index digest of their tag (the multi-platform
-manifest list), read with `docker buildx imagetools inspect`. To move one, read the new digest the same way and change
+PostgREST is referenced in `docker/docker-compose.yml` with the index digest of its tag (the multi-platform
+manifest list), and the gateway's nginx in the `FROM` line of `docker/nginx/Dockerfile` with its tag and index digest; both
+are read with `docker buildx imagetools inspect`. To move one, read the new digest the same way and change
 tag and digest together. The PostgREST image has no package inventory, so its exception is bound to this digest
-("Exceptions"). Kong has no recipe of its own, so its Ubuntu packages are as old as the pinned build; a
-`docker/kong/Dockerfile` with an `apt-get upgrade` step, as Supavisor has, would need a build and a gateway run.
+("Exceptions"). The nginx recipe runs `apk upgrade`, so its Alpine packages follow the live repository; it stays on the stable
+branch (1.30; Dependabot proposes patch releases only, `.github/dependabot.yml`), and the move to the next stable branch
+(1.32, due in 2027) is made by hand: read the nginx release notes for the changed directives, rebuild and run
+`node --test tests/gateway-nginx.test.mjs` and `npm run test:gateway`.
 
 ## Exception ledger and the image scan
 
@@ -200,7 +261,7 @@ and each rule.
 
 **Current entries** (all reviewed by the owner, expiring 2027-01-15 unless renewed): `db-os-no-fix`,
 `functions-os-no-fix`, `pdf-renderer-os-no-fix`, `supavisor-os-no-fix`, `sensor-bridge-os-no-fix` and
-`rest-no-package-inventory`. The images of Kong, Storage and CUPS need none.
+`rest-no-package-inventory`. The images of the gateway, Storage and CUPS need none.
 
 **Where to run it.** Run the scan with a throwaway operator state of its own project name, never with an installation's
 state: every image is rebuilt with `--no-cache` and gets a new image ID, so on an installation the scan would move every
@@ -230,7 +291,7 @@ before moving the digest, and plan a reindex if the collation changed.
 - **`rest-no-package-inventory`.** Trivy returns no OS or language package results for the static PostgREST image, so
   the gate cannot assess it, and a report without package results is rejected rather than counted as clean. The
   exception is bound to the image digest and lists its compensating controls: no host port; outside requests only
-  through Kong with key-auth, a 10 MB body limit and the REST rate limit; `public.check_session` before every request;
+  through the gateway with its `apikey` check, a 10 MB body limit and the REST rate limit; `public.check_session` before every request;
   business writes only through RPCs guarded by `authorize_rpc`. It does not establish that the image is free of the
   `aeson` advisory HSEC-2026-0007 (HIGH, memory exhaustion), which the publisher binaries are known to carry; it records an
   accepted, dated gap. Closing it needs an image-bound dependency inventory (for example a source build whose cabal freeze
@@ -305,8 +366,8 @@ the daily chain (`watch.mjs`, `watch-daily.sh`, `retention.sh apply`, `run_datab
 The optional `sensor-bridge` service (profile `sensors`, [SENSORS.md](SENSORS.md)) is the one container that talks to
 devices on the facility LAN. What limits it:
 
-- **Network:** `default` only, so it reaches Kong and cannot open a connection to PostgreSQL. It publishes no port. Its
-  only call into the project is `http://kong:8000/functions/v1/ingest-sensor-readings`, fixed in Compose rather than taken
+- **Network:** `default` only, so it reaches the gateway and cannot open a connection to PostgreSQL. It publishes no port. Its
+  only call into the project is `http://gateway:8000/functions/v1/ingest-sensor-readings`, fixed in Compose rather than taken
   from a variable. Outbound it needs the hubs' LAN addresses.
 - **Credential:** an ingest key of its own that opens only that function; the database keeps its SHA-256 and checks it
   inside `record_sensor_batch` (service role only). Revoking it stops the bridge without touching any other key. The bridge
@@ -464,9 +525,8 @@ then generate the value, existing ones gain it on the next setup, restores add i
 - The database has no `http`, `pg_net`, `pg_graphql` or `supabase_vault` extension and no pgjwt; the database has no way to
   send a web request. A session's access token is signed by `warehouse_security.jwt_sign_hs256` (pgcrypto's `hmac`), which
   no API role can execute. `PGRST_DB_SCHEMAS` is `public` (an old `public,storage` is rewritten by `setup.sh` and the restore scripts), so the REST API cannot reach the `storage` schema, and `PGRST_OPENAPI_MODE=disabled`: `/rest/v1/` serves no OpenAPI document.
-- `no-new-privileges`, dropped capabilities and a read-only root filesystem are set on the PDF renderer and the sensor
-  bridge. Kong's entrypoint writes `/tmp/kong.yml` and the other services have not been trialled, so they are not hardened
-  this way.
+- `no-new-privileges`, dropped capabilities and a read-only root filesystem are set on the gateway, the PDF renderer and the
+  sensor bridge. The other services have not been trialled, so they are not hardened this way.
 - **CUPS runs privileged** (optional profile). It also accepts print jobs from any container on `default` without a login;
   no function reaches it while the router refuses the printing functions.
 - Every service except CUPS has a CPU and memory limit (`docker/docker-compose.yml`) and bounded logs.
@@ -475,8 +535,6 @@ then generate the value, existing ones gain it on the next setup, restores add i
 
 - **Scheduled image scan.** No workflow runs `npm run scan:images`. The release checklist requires it before each release
   and the exceptions expire, but a scheduled workflow would catch an expiry or a new fixed advisory between releases.
-- **Gateway configuration through shell `eval`.** Replacing the entrypoint's `eval` with Kong's own environment references
-  needs Kong to load the result; the test catches a character the `eval` would alter.
 - **Storage `npm install`.** `npm ci` would fail on lock drift but deletes `node_modules` first, and the recipe keeps the
   publisher's prebuilt native modules and runs no install scripts, so they would not be rebuilt. Moving to `npm ci` needs a
   build that proves Storage still starts.

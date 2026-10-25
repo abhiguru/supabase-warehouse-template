@@ -311,8 +311,9 @@ bash setup.sh --operator --state-dir /srv/warehouse/second \
   --gateway-port 18001
 ```
 
-- Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use. The port is saved as `KONG_HTTP_PORT` in
-  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there.
+- Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use. The port is saved as `GATEWAY_HTTP_PORT` in
+  the state's `config/compose.env`; `doctor` and the smoke scripts read it from there. (A state made while the gateway was
+  Kong has the line as `KONG_HTTP_PORT`: it is still read, and the next change of the port renames it.)
 - A rerun without `--gateway-port` keeps the saved port. A rerun with another port replaces only that line, and only while
   the installation's containers are stopped (`bash stop.sh`, then setup again).
 - Each tunnel's ingress must point at its own port: change the `service:` line of that facility's `cloudflared`
@@ -787,7 +788,7 @@ administrator action (unlinking a profile) are described in
 Cloudflare Tunnel is the only supported ingress. The `cloudflared` connector on
 the host is the sole path from the internet to the gateway on
 `127.0.0.1:18000`; Cloudflare terminates TLS for the canonical origin given as
-`--api-url`, so no certificate is installed locally. Kong trusts
+`--api-url`, so no certificate is installed locally. The gateway (nginx) trusts
 `CF-Connecting-IP` only from that loopback hop and keys its per-client rate
 limits on it. Do not place another reverse proxy (Caddy, nginx, Traefik) in
 front of the gateway: it would not set the header, clients could supply their
@@ -834,7 +835,7 @@ Copy the example config to a private path (mode 0600) and replace the tunnel
 UUID, credentials path and hostname. It routes the hostname to
 `http://127.0.0.1:18000` with `httpHostHeader` set to the hostname and ends
 with an `http_status:404` catch-all; change the port only if the private
-`compose.env` sets a different `KONG_HTTP_PORT` (chosen with
+`compose.env` sets a different `GATEWAY_HTTP_PORT` (chosen with
 `--gateway-port`, see [several facilities on one host](#several-facilities-on-one-host)). `http2-origin` stays off
 because [HTTP/2 to an origin requires HTTPS](https://developers.cloudflare.com/tunnel/reference/origin-parameters/)
 and this origin is private HTTP. Validate with
@@ -1055,7 +1056,7 @@ operator lock, requires a healthy database, and then:
    deletes every refresh session and voids pending OTP challenges. The secret reaches `psql` only on standard input,
    never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
-4. recreates the running key consumers (`db kong rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
+4. recreates the running key consumers (`db gateway rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
    running) with `--force-recreate --wait`, and runs `node scripts/doctor.mjs --local`.
 
 Consequences: every signed-in device is logged out and must complete OTP login again; any copied anon key is invalid and
@@ -1139,7 +1140,7 @@ cp -r --preserve=timestamps "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-ba
 
 (Not `cp -a`: on the exFAT drive it cannot keep ownership and permissions, reports errors and exits 1 although the files were copied.)
 
-The images that Compose pulls (the gateway, PostgREST and others) are not saved; a rebuilt host pulls them by digest.
+The images that Compose pulls (PostgREST) are not saved; a rebuilt host pulls them by digest. The gateway is built from `docker/nginx`, so its image is saved with the others (it is about 13 MB).
 
 `npm run db:verify-restore -- /path/to/backup` checks every checksum and the signature first (see
 [Backup key](#backup-key)), rejects absolute paths, `..` segments and links in the
@@ -1705,7 +1706,7 @@ A rerun is the same `setup.sh --operator ...` command with the same inputs again
 regenerates nothing that already exists: identity, signing keys, database, stored files, the administrator and the provider
 lines are preserved (a different `--provider-env` file replaces only the MSG91 lines; the `--central-…` options set or
 replace only the [central sign-in](#central-sign-in) lines and its key file; `--gateway-port` replaces only
-`KONG_HTTP_PORT`, and only while the containers are stopped). A rerun also adds what an older state lacks and never replaces
+`GATEWAY_HTTP_PORT`, and only while the containers are stopped). A rerun also adds what an older state lacks and never replaces
 what exists: the per-role database passwords and the backup key. Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
@@ -1819,6 +1820,35 @@ check that line. Database migrations need no separate step: setup applies them. 
 `sudo bash scripts/watch-timer.sh install …` command, run it.
 
 </details>
+
+**What the nginx gateway release asks of you.** Nothing beyond this upgrade. The gateway used to be Kong; it is now plain nginx
+built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and routes"), so:
+
+- `setup.sh` builds the `gateway` image (it pulls the pinned nginx image and applies the Alpine updates: the host needs the
+  network once). Its `compose up --remove-orphans` removes the old `kong` container and starts `gateway` on the **same loopback
+  port**; the tunnel, its config and `cloudflared` stay as they are. The port check that `setup.sh` and `start.sh` make first
+  accepts the port while the installation's own `kong` container still holds it (any container of the installation's project
+  that publishes the port counts as its own; a process or another project's container on it is still refused; `upgrade.sh` runs
+  this setup with the stack up, so it relies on that). Expect the API
+  to be unanswered from the moment `kong` is removed, which is the first `compose up` of the run, until the last `up` of the run
+  starts `gateway`: the migrations, the role changes and Storage's start come in between, so it is seconds on an upgrade without
+  migrations and minutes on one with. Do the upgrade at a quiet hour. The service is named `gateway` now:
+  `bash scripts/compose.sh logs --tail 50 gateway`. A script of your own that names `kong` must change.
+- `compose.env` keeps working with `KONG_HTTP_PORT`. The next `--gateway-port` writes `GATEWAY_HTTP_PORT` instead and removes the old line (to go back to an older checkout after that, put `KONG_HTTP_PORT=<port>` back: the older Compose file reads only that name).
+- The rate limits are a leaky bucket (a burst of 1800 for the REST route, then 30 a second; functions a burst of 100, then 100 a
+  minute) instead of a counter per clock minute. A facility that stays within the old limits on average stays within the new
+  ones; the exception is two bursts back to back across a minute boundary, which passed under the fixed window and are now
+  mostly refused.
+- After the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu` frees about 380 MB; nothing uses the image any more.
+- **Going back to a release from before nginx** (a checkout or tag that still has Kong): run `bash stop.sh` first, with the nginx
+  checkout. The older release's `doctor` asks Compose for a container named `kong`, finds none, and sees the `gateway` container
+  holding the loopback port, so its `setup.sh` and `start.sh` stop with "Loopback gateway port ... is already in use" until
+  `stop.sh` has removed it; the older release's code cannot be changed (the way back that `upgrade.sh` prints when a step fails
+  already begins with `stop.sh`). Then check out the older release, put
+  `KONG_HTTP_PORT=<port>` in `config/compose.env` if `--gateway-port` had renamed the line (the older Compose file reads only that
+  name), and run its `start.sh` (or `setup.sh`). The older release pulls `kong:3.9.4-ubuntu` again if you removed the image, so the
+  host needs the network; the API is down from `stop.sh` until then. This covers the gateway only: a database that the newer
+  release migrated is not changed back (restore the backup taken before the upgrade if the older release needs the older schema).
 
 **What the slimming release (migration 123) asks of you.**
 
@@ -1991,7 +2021,7 @@ done < "$B/running-services.txt"
 grep -qx db "$B/old-images.txt" && cp -p "$WAREHOUSE_STATE_DIR/config/image-recipes.sha256" "$B/" && echo 'old images kept'
 (cd "$B/backup" && sha256sum -c --quiet SHA256SUMS) && npm run db:verify-restore -- "$B/backup"   # must pass before anything is stopped
 dbsql -At -c "SELECT n.nspname || '.' || c.relname || ' ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname IN ('cron','net','graphql','graphql_public','vault','supabase_functions','realtime','_realtime','warehouse_migrations','auth') AND n.nspname || '.' || c.relname NOT IN ('auth.schema_migrations','warehouse_migrations.applied')" | awk '$2 != 0'   # must print nothing
-bash scripts/compose.sh --profile '*' stop kong functions rest pdf-renderer supavisor cups sensor-bridge
+bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
 bash scripts/data-fingerprint.sh > "$B/fingerprint-before.txt"
 bash scripts/data-fingerprint.sh --all > "$B/fingerprint-all-before.txt"
 record > "$B/record-before.txt"
@@ -2233,7 +2263,7 @@ again (Storage depends on it). Step 2 therefore stops `rest` again right after t
 exec 9>"$WAREHOUSE_STATE_DIR/config/operator.lock"; flock -n 9 && echo 'operator lock held'    # stop if this prints nothing
 git rev-parse HEAD > "$B/old-commit.txt"; cat "$B/old-commit.txt"
 bash scripts/compose.sh --profile '*' ps --status running --services > "$B/running-services.txt"
-bash scripts/compose.sh --profile '*' stop kong functions rest pdf-renderer supavisor cups sensor-bridge
+bash scripts/compose.sh --profile '*' stop gateway functions rest pdf-renderer supavisor cups sensor-bridge
 bash scripts/compose.sh --profile '*' ps --status running --services     # only db and storage may remain
 ```
 

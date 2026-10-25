@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise a changed IP for this checkout's functions service, not a Kong restart.
+# Exercise a changed IP for this checkout's functions service, not a gateway restart.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { bash "$ROOT/scripts/compose.sh" "$@"; }
@@ -34,10 +34,10 @@ probe() {
   {
     cat "$ROOT/scripts/http-readiness.mjs"
     printf '\nawait waitForHttp("functions", "http://functions:9000/get-public-config", {}, {timeoutMs:30000});\n'
-    printf 'await waitForHttp("gateway", "http://kong:8000/functions/v1/get-public-config", {}, {timeoutMs:30000});\n'
+    printf 'await waitForHttp("gateway", "http://gateway:8000/functions/v1/get-public-config", {}, {timeoutMs:30000});\n'
   } | compose exec -T storage node --input-type=module # storage shares the gateway network
 }
-probe # warms the gateway cache and checks the direct upstream
+probe # warms the gateway's connection to the upstream and checks it directly
 docker network disconnect "$network" "$id"
 disconnected=true
 # The dedicated test network must reserve this exact IP.
@@ -51,4 +51,4 @@ disconnected=false
 new_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$id")
 [[ "$new_ip" != "$old_ip" ]] || { echo 'Test did not change the upstream address.' >&2; exit 1; }
 probe
-echo 'Gateway recovered after an owned upstream IP change without restarting Kong.'
+echo 'Gateway recovered after an owned upstream IP change without restarting the gateway.'

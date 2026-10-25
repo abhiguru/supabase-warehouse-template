@@ -145,7 +145,7 @@ test('the services stop only for the dump and the last copy pass: the copy start
     assert.deepEqual(readFileSync(join(result.dest, 'storage.manifest'), 'utf8').trim().split('\n').map(line => line.slice(66)), [OBJECT, 'stub/stub/documents/late.pdf/v1']);
     assert.match(result.stdout, /\(2 files copied or removed in the final pass\)/, 'the late upload was copied and the removed file deleted by the last pass');
     // Both services that were running came back, with the dependency-free restart of before.
-    assert.match(result.calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong storage/);
+    assert.match(result.calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway storage/);
   } finally { f.done(); }
 });
 
@@ -211,7 +211,7 @@ const authenticate = (f, dir) => spawnSync('bash', ['-c', 'source "$1"; WAREHOUS
 const lastLine = text => text.trim().split('\n').pop();
 // Bit rot: same size, same time, other bytes.
 function rot(path) { const fd = openSync(path, 'r+'); writeSync(fd, 'X', 3); closeSync(fd); utimesSync(path, SEVEN, SEVEN); }
-const RESTARTED = /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong storage/;
+const RESTARTED = /up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway storage/;
 // A sha256sum that fails the way a bad sector does for the file whose path ends in FAKE_UNREADABLE (it reports it and reads the
 // rest); with FAKE_UNREADABLE_SHARED=yes only while that file is shared with another backup (link count above 1), as a bad
 // sector belongs to one inode and not to a fresh copy.
@@ -491,7 +491,7 @@ eval exec ${real} $args
     assert.match(result.stderr, /Refusing: the copy of the object storage is not identical to the live storage after the final pass/);
     assert.match(result.stderr, /x/, 'the first differing entries are printed');
     assert.equal(existsSync(result.dest), false);
-    assert.match(result.calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong storage/, 'the services come back');
+    assert.match(result.calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 gateway storage/, 'the services come back');
   } finally { f.done(); }
 });
 

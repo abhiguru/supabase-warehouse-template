@@ -58,6 +58,6 @@ test('the container state template reads Health with index, which a docker CLI a
 
 test('health-check.sh is a thin wrapper: the checks live in watch.mjs, and a failure adds the service diagnostics', () => {
   assert.match(wrapper, /node "\$ROOT\/scripts\/watch\.mjs" health "\$@"/);
-  assert.match(wrapper, /scripts\/service-diagnostics\.mjs" kong functions rest/);
+  assert.match(wrapper, /scripts\/service-diagnostics\.mjs" gateway functions rest/);
   assert.ok(wrapper.split('\n').filter(line => line.trim() && !line.startsWith('#')).length <= 10, 'no check logic is left in the wrapper');
 });

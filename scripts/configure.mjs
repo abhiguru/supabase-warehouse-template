@@ -229,7 +229,14 @@ export function createBackupKey(configDir) {
   return true;
 }
 
-// --gateway-port: the loopback port of this installation's gateway (KONG_HTTP_PORT).
+// --gateway-port: the loopback port of this installation's gateway (GATEWAY_HTTP_PORT; KONG_HTTP_PORT before the gateway was nginx).
+// A compose.env that still has the old name keeps working (docker-compose.yml and the readers accept both); when the port is
+// changed the line is written under the new name and the old line is removed, so the two never disagree.
+export function withGatewayPort(text, port) {
+  const hasNew = /^GATEWAY_HTTP_PORT=/m.test(text);
+  const renamed = hasNew ? text.replace(/^KONG_HTTP_PORT=.*\n?/m, '') : text.replace(/^KONG_HTTP_PORT=.*$/m, `GATEWAY_HTTP_PORT=${port}`);
+  return replaceEnvLines(renamed, { GATEWAY_HTTP_PORT: port });
+}
 export function gatewayPortValue(value) {
   if (value === undefined) return null;
   if (!/^[0-9]{4,5}$/.test(String(value)) || Number(value) < 1024 || Number(value) > 65535) throw new Error('--gateway-port must be a whole number from 1024 to 65535.');
@@ -287,7 +294,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (appUrl && !readFileSync(envPath, 'utf8').includes(`SITE_URL=${canonicalOrigin(appUrl, '--app-url')}\n`)) throw new Error('Existing app origin differs; refusing to replace trusted browser origin.');
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
       // A rerun may replace only the SMS provider lines, the central sign-in lines (with the key file) and
-      // KONG_HTTP_PORT, add generated values that are missing (database passwords, backup key) and place the
+      // GATEWAY_HTTP_PORT, add generated values that are missing (database passwords, backup key) and place the
       // alert webhook; identity, paths and signing keys are preserved.
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
@@ -298,7 +305,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       {
         const text = readFileSync(envPath, 'utf8');
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text);
-        if (port !== null && text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1] !== port) {
+        if (port !== null && (text.match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1] || text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1]) !== port) {
           // Containers keep the published port they were created with, so the change waits for a stopped installation.
           if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
           if (!portFree(port)) throw new Error(`127.0.0.1:${port} is already in use; choose another --gateway-port.`);
@@ -367,7 +374,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       // The gateway port is written last: a refusal above (state faults, the webhook) leaves it unchanged,
       // so the rerun after the fix still reports the change and prints the tunnel reminder.
       if (newPortText !== null) {
-        replaceFileAtomically(envPath, replaceEnvLines(readFileSync(envPath, 'utf8'), { KONG_HTTP_PORT: newPortText }));
+        replaceFileAtomically(envPath, withGatewayPort(readFileSync(envPath, 'utf8'), newPortText));
         gatewayPortChanged = true;
       }
       return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
@@ -388,7 +395,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
     SITE_URL: application, CORS_ALLOWED_ORIGIN: application,
     WAREHOUSE_DB_PATH: join(state, 'data', 'db'), WAREHOUSE_STORAGE_PATH: join(state, 'data', 'storage'),
     WAREHOUSE_MANIFEST_PATH: manifestPath, WAREHOUSE_PROJECT_NAME: `warehouse-${manifest.instanceId.slice(0, 12)}`,
-    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { KONG_HTTP_PORT: port }),
+    POSTGRES_PASSWORD: randomBytes(32).toString('hex'), ...generatedDbValues(), ...generateSigningKeys(), ...(port === null ? {} : { GATEWAY_HTTP_PORT: port }),
     ...provider,
     ...(central?.values ?? {}), ...centralLocalCodeValues(centralLocalCode, central, null), ...(letterhead?.bytes ? { LETTERHEAD_FILE: letterhead.name } : {}) };
   values.CUPS_ADMIN_PASSWORD = randomBytes(32).toString('hex');
@@ -449,7 +456,7 @@ if (isMain(import.meta.url)) {
     if (result.webhook) console.log('Stored the Slack webhook for the monitoring checker (mode 0600, in the state).');
     else if (result.webhook === null) console.log('Removed the Slack webhook: the monitoring checker keeps alerts on this host only.');
     if (result.gatewayPortChanged) {
-      const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^KONG_HTTP_PORT=(.*)$/m)?.[1];
+      const gateway = readFileSync(join(result.state, 'config', 'compose.env'), 'utf8').match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1];
       console.log(`Gateway port is ${gateway}. ${GATEWAY_PORT_REMINDER.replace('<port>', gateway)}`);
     }
     if (result.backupKeyCreated) console.log(`Created the backup key ${join(result.state, 'config', 'backup.key')}. Backups are signed with it and a lost-host restore needs it: keep a copy away from this machine and from the backup drive.`);

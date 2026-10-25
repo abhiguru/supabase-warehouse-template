@@ -9,7 +9,7 @@
 // { data, error, count } with `error` set ({ message, code, details, hint }).
 // A timeout (default 60 s) is added; supabase-js had none.
 //
-// Where the calls go: `url` is the gateway address (SUPABASE_URL, Kong), whose paths are /rest/v1/... and
+// Where the calls go: `url` is the gateway address (SUPABASE_URL, the gateway), whose paths are /rest/v1/... and
 // /storage/v1/.... When SUPABASE_REST_URL and SUPABASE_STORAGE_URL are set (docker-compose.yml sets them to
 // http://rest:3000 and http://storage:5000) the calls go to those services directly, without the gateway's
 // key check, rate limit and body limits, and without its path prefix (PostgREST and Storage serve at their own

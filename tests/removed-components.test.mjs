@@ -83,12 +83,12 @@ const components = [
       ]),
     },
     checks: [
-      ['no Compose file has an auth service, and Kong has no route to one', () => {
+      ['no Compose file has an auth service, and the gateway has no route to one', () => {
         for (const file of ['docker/docker-compose.yml']) {
           assert.doesNotMatch(read(file), /^  auth:\s*$/m, file);
           assert.doesNotMatch(read(file), /GOTRUE_/, file);
         }
-        assert.doesNotMatch(read('docker/kong.yml'), /auth:9999|\/auth\/v1/);
+        assert.doesNotMatch(read('docker/nginx/api-locations.conf'), /auth:9999|\/auth\/v1/);
       }],
       ['the role supabase_auth_admin does not exist on the new image: setup touches nothing about it', () => {
         assert.doesNotMatch(read('scripts/configure-db-roles.sql'), /supabase_auth_admin/);
@@ -105,7 +105,7 @@ const components = [
     clean: [{ files: ['package.json', '.github/workflows/ci.yml', '.github/dependabot.yml', '.env.example', 'docker/image-exceptions.json'], pattern: /studio|postgres-meta/i }],
     checks: [['the Compose file defines no studio, meta or admin service, and the gateway cannot route to Studio or postgres-meta', () => {
       assert.doesNotMatch(read('docker/docker-compose.yml'), /^  (?:studio|meta|admin):/m);
-      assert.doesNotMatch(read('docker/kong.yml'), /url: http:\/\/(?:studio|meta):/);
+      assert.doesNotMatch(read('docker/nginx/api-http.conf'), /server (?:studio|meta):/);
     }]],
   },
   {
@@ -168,8 +168,7 @@ const components = [
           assert.doesNotMatch(text, /^  (?:prometheus|alertmanager|postgres-exporter|node-exporter|cadvisor):/m, `${file} defines a monitoring service`);
           assert.doesNotMatch(text, /prometheus_data|WAREHOUSE_(?:MONITORING|METRICS|ALERTMANAGER)_PATH|KONG_STATUS_LISTEN|\b8100\b/, file);
         }
-        assert.doesNotMatch(read('docker/kong.yml'), /prometheus|status_code_metrics|latency_metrics/);
-        assert.doesNotMatch(read('docker/kong.yml'), /\nplugins:\n/, 'kong.yml has no global plugin');
+        assert.doesNotMatch(read('docker/nginx/nginx.conf') + read('docker/nginx/api-http.conf') + read('docker/nginx/api-locations.conf'), /prometheus|stub_status|status_code_metrics|latency_metrics/);
       }],
       ['the checker is wired in: setup, start and restore-host print the timer command, doctor warns, CI runs one pass', () => {
         assert.ok(existsSync(root + 'scripts/watch.mjs') && existsSync(root + 'scripts/watch-timer.sh') && existsSync(root + 'scripts/watch-daily.sh'));
@@ -188,7 +187,38 @@ const components = [
   {
     name: 'Realtime (the app refreshes lists by asking, not by a socket)',
     gone: ['docker/realtime', 'LICENSES/realtime'],
-    clean: [{ files: ['docker/docker-compose.yml', 'docker/kong.yml', 'scripts/db-roles.mjs', 'scripts/configure-db-roles.sql', '.env.example'], pattern: /supabase\/realtime|supabaserealtime|REALTIME_DB_ENC_KEY|^  realtime:|\/realtime\//m }],
+    clean: [{ files: ['docker/docker-compose.yml', 'docker/nginx/api-locations.conf', 'scripts/db-roles.mjs', 'scripts/configure-db-roles.sql', '.env.example'], pattern: /supabase\/realtime|supabaserealtime|REALTIME_DB_ENC_KEY|^  realtime:|\/realtime\//m }],
+  },
+  {
+    name: 'Kong (replaced by the nginx gateway in docker/nginx)',
+    gone: ['docker/kong.yml'],
+    scan: {
+      pattern: /kong/i, lock: true,
+      // The nginx files say, rule by rule, where the behaviour is Kong's former one.
+      skipPrefix: 'docker/nginx/',
+      allowed: new Map([
+        ['CHANGELOG.md', 'history'],
+        ['docker/docker-compose.yml', 'reads KONG_HTTP_PORT as the fallback of GATEWAY_HTTP_PORT'],
+        ['.env.example', 'names the old name of the port variable'],
+        ['scripts/configure.mjs', 'renames a KONG_HTTP_PORT line when the port changes'],
+        ['scripts/doctor-common.mjs', 'reads KONG_HTTP_PORT in a state that has not been rewritten'],
+        ['scripts/doctor.mjs', 'the port preflight accepts the installation\'s own kong container (an upgrade from the Kong release)'],
+        ['tests/doctor.test.mjs', 'tests that port preflight with a kong container'],
+        ['docs/CONTAINER_SECURITY.md', 'compares the gateway with Kong'],
+        ['docs/OPERATOR_INSTALL.md', 'the upgrade note and the old port name'],
+        ['tests/compose-networks.test.mjs', 'a comment on why `dns_search` was once needed'],
+        ['tests/configure.test.mjs', 'tests the old port name'],
+        ['tests/gateway-config.test.mjs', 'asserts that Kong is gone'],
+        [SELF, 'this test'],
+      ]),
+    },
+    checks: [['no service, host name or variable of the old gateway is left', () => {
+      const compose = read('docker/docker-compose.yml');
+      assert.doesNotMatch(compose, /^  kong:/m);
+      assert.doesNotMatch(compose, /http:\/\/kong:/);
+      assert.doesNotMatch(compose, /image: kong/);
+      assert.deepEqual(compose.match(/KONG_\w+/g), ['KONG_HTTP_PORT', 'KONG_HTTP_PORT'], 'only the old port name, in a comment and in the port line');
+    }]],
   },
   {
     name: 'list refresh (materialized-view refresher and its lock 71046 went with pg_cron)',

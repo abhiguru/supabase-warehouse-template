@@ -1,0 +1,38 @@
+# The public server: the only listener of the gateway container, published on the host's loopback only
+# (docker-compose.yml) for the Cloudflare Tunnel connector, which is the only ingress.
+server {
+    listen 8000;
+    http2 on;
+    server_name _;
+
+    # Cloudflare Tunnel is the only ingress. cloudflared on this host connects to the loopback-published gateway, and Docker's
+    # userland proxy (docker-proxy) or hairpin NAT presents that connection to the gateway from the Compose bridge address
+    # (172.16/12, 10/8 or 192.168/16, depending on the daemon's address pool), never from 127.0.0.1 itself. Trust those private
+    # ranges plus loopback so the client address is the one Cloudflare sets in CF-Connecting-IP; the per-client rate limits
+    # (api-http.conf) key on that address. Recursion stays off: the header is taken as it is from the one trusted hop, so
+    # a forged X-Forwarded-For chain is ignored. Do not place another reverse proxy in front of the gateway; it would not set
+    # CF-Connecting-IP and clients could supply their own. This trust is here, in the public server, and must not move into
+    # api-locations.conf: a server reached directly (LAN mode) would let a phone choose its own address.
+    set_real_ip_from 127.0.0.1/32;
+    set_real_ip_from ::1/128;
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from 172.16.0.0/12;
+    set_real_ip_from 192.168.0.0/16;
+    real_ip_header CF-Connecting-IP;
+    real_ip_recursive off;
+
+    # The container's health check (docker-compose.yml). Not in api-locations.conf, which is shared with servers that
+    # have no use for it, and not logged: it runs every ten seconds. Only the container itself may ask: the check comes from
+    # 127.0.0.1 inside the container; a request through the tunnel carries its client's address (real_ip_header above; Cloudflare
+    # sets that header itself, so a client cannot choose it) and is answered like any path that has no route; that refusal is
+    # logged (the answer is made in @json_404, which has the access log), the container's own check is not. (Not `allow` and
+    # `deny`: those run after `return`, which would answer first.)
+    location = /health {
+        if ($remote_addr != "127.0.0.1") { return 404; }
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    include /etc/nginx/api-locations.conf;
+}

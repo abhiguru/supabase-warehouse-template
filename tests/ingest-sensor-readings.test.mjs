@@ -58,7 +58,7 @@ test('with SUPABASE_REST_URL set the RPC goes to PostgREST directly, with only a
   assert.deepEqual(Object.keys(h.calls[0].headers).sort(), ['Authorization', 'Content-Type', 'apikey']);
 });
 
-test('refuses every method but POST, a preflight included, without a database call (Kong answers the browser preflight)', async () => {
+test('refuses every method but POST, a preflight included, without a database call (the gateway answers the browser preflight)', async () => {
   const h = harness();
   const preflight = await h.call(undefined, {}, 'OPTIONS');
   assert.equal(preflight.status, 405);
@@ -135,7 +135,7 @@ test('a good batch reaches record_sensor_batch with the server key, the bearer a
   assert.deepEqual(await bodyOf(response.clone()), { status: 200, body: { success: true, accepted: 2, duplicates: 1, rejected: 0, devices: 3 } });
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(response.headers.get('Content-Type'), 'application/json');
-  assert.equal(response.headers.get('Access-Control-Allow-Origin'), null, 'CORS is Kong\'s: the function sets none');
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), null, 'CORS is the gateway\'s: the function sets none');
   assert.equal(response.headers.get('X-Content-Type-Options'), 'nosniff');
   assert.equal(h.calls.length, 1);
   const [call] = h.calls;

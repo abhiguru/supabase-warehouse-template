@@ -3,10 +3,10 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
+import { gatewayPortText, readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
 
 const env = readEnv(operatorEnvPath());
-const url = `http://127.0.0.1:${env.KONG_HTTP_PORT}/rest/v1/rpc/get_public_config`;
+const url = `http://127.0.0.1:${gatewayPortText(env)}/rest/v1/rpc/get_public_config`;
 const total = Number(process.env.LOAD_REQUESTS || 100);
 const concurrency = Number(process.env.LOAD_CONCURRENCY || 10);
 const limitMs = Number(process.env.LOAD_P95_LIMIT_MS || 5000);

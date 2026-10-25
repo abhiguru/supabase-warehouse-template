@@ -15,7 +15,7 @@ const HOUR = 3600 * 1000;
 const WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0BBBB/abcDEF123456';
 const T0 = new Date(2026, 9, 19, 10, 0, 0).getTime();
 // The default-profile services of the final compose; supavisor, cups and sensor-bridge are profile services.
-const SERVICES = ['db', 'kong', 'rest', 'storage', 'functions', 'pdf-renderer'];
+const SERVICES = ['db', 'gateway', 'rest', 'storage', 'functions', 'pdf-renderer'];
 const idOf = name => Buffer.from(name.padEnd(6, '_')).toString('hex').slice(0, 12).padEnd(12, '0');
 const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 const bad = (stderr = 'failed') => ({ status: 1, stdout: '', stderr });
@@ -25,7 +25,7 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-watch-'));
   const state = join(scratch, 'acme');
   for (const dir of ['', 'config', 'public', 'backups']) mkdirSync(join(state, dir), { recursive: true, mode: 0o700 });
-  writeFileSync(join(state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-test\nKONG_HTTP_PORT=18000\nPOSTGRES_PASSWORD=supersecretpassword123\n', { mode: 0o600 });
+  writeFileSync(join(state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-test\nGATEWAY_HTTP_PORT=18000\nPOSTGRES_PASSWORD=supersecretpassword123\n', { mode: 0o600 });
   writeFileSync(join(state, 'public/instance.json'), JSON.stringify({ schemaVersion: 1, instanceId: 'iid-1', companyName: 'Acme Cold', canonicalOrigin: 'https://acme.example.test' }));
   if (webhook) writeFileSync(join(state, 'config/slack-webhook-url'), `${WEBHOOK}\n`, { mode: 0o600 });
   const proc = join(scratch, 'proc'); mkdirSync(proc);
@@ -38,7 +38,7 @@ function harness({ webhook = true, dailyAt = '02:30', heartbeatAt = '09:00' } = 
     for (const [pattern, reply] of Object.entries(h.runs)) if (line.includes(pattern)) return typeof reply === 'function' ? reply(line) : reply;
     if (line.includes('compose.sh config --services')) return ok(h.expected.join('\n') + '\n');
     if (line.includes("compose.sh --profile * ps -a -q")) return ok(h.services.map(idOf).join('\n') + '\n');
-    if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|${h.stateOf?.[name] ?? `running|${['db', 'kong'].includes(name) ? 'healthy' : ''}`}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
+    if (command === 'docker' && args[0] === 'inspect') return ok(args.slice(3).map(id => { const name = h.services.find(s => idOf(s) === id); return `${id}|${name}|${h.stateOf?.[name] ?? `running|${['db', 'gateway'].includes(name) ? 'healthy' : ''}`}|0|false|2026-10-18T00:00:00Z|False`; }).join('\n'));
     if (command === 'docker' && args[0] === 'events') return ok('');
     if (line.includes('pg_isready')) return ok('accepting connections');
     if (line.includes('psql')) return ok('5|0|100000|100|50\n');
@@ -253,15 +253,15 @@ test('containers: memory above 90% of the limit (working set) fails; no limit me
   try {
     cgroupFor(h, 'rest', { current: 900, max: 1000 });
     cgroupFor(h, 'db', { current: 1000, max: 'max' });
-    cgroupFor(h, 'kong', { current: 1000, max: 1000, inactive: 99 });
+    cgroupFor(h, 'gateway', { current: 1000, max: 1000, inactive: 99 });
     let r = W.checkContainerMemory(h.ctx());
     assert.equal(find(r, 'container_memory:rest').ok, true);
-    assert.equal(find(r, 'container_memory:kong').ok, false);
+    assert.equal(find(r, 'container_memory:gateway').ok, false);
     assert.equal(find(r, 'container_memory:db'), undefined);
     cgroupFor(h, 'rest', { current: 901, max: 1000 });
     assert.equal(find(W.checkContainerMemory(h.ctx()), 'container_memory:rest').ok, false);
-    cgroupFor(h, 'kong', { current: 1000, max: 1000, inactive: 100 });
-    assert.equal(find(W.checkContainerMemory(h.ctx()), 'container_memory:kong').ok, true);
+    cgroupFor(h, 'gateway', { current: 1000, max: 1000, inactive: 100 });
+    assert.equal(find(W.checkContainerMemory(h.ctx()), 'container_memory:gateway').ok, true);
   } finally { clean(h); }
 });
 
@@ -275,11 +275,11 @@ test('services: a missing, stopped or unhealthy expected service fails; profile 
     const base = h.fakeRun;
     h.fakeRun = (command, args) => {
       const r = base(command, args);
-      if (command === 'docker' && args[0] === 'inspect') return ok(r.stdout.split('\n').filter(l => !l.includes('|pdf-renderer|')).map(l => l.replace('|kong|running|healthy', '|kong|running|unhealthy').replace('|rest|running|', '|rest|exited|')).join('\n'));
+      if (command === 'docker' && args[0] === 'inspect') return ok(r.stdout.split('\n').filter(l => !l.includes('|pdf-renderer|')).map(l => l.replace('|gateway|running|healthy', '|gateway|running|unhealthy').replace('|rest|running|', '|rest|exited|')).join('\n'));
       return r;
     };
     const failed = W.checkServices(h.ctx()).filter(x => !x.ok).map(x => x.id).sort();
-    assert.deepEqual(failed, ['service_down:kong', 'service_down:pdf-renderer', 'service_down:rest']);
+    assert.deepEqual(failed, ['service_down:gateway', 'service_down:pdf-renderer', 'service_down:rest']);
   } finally { clean(h); }
 });
 
@@ -341,36 +341,39 @@ test('API: local gateway probe, public HTTPS probe', async () => {
   } finally { clean(h); }
 });
 
-// The line is built from the gateway's own log format in docker/docker-compose.yml, so a change there fails this test.
-const composeText = readFileSync(join(repo, 'docker/docker-compose.yml'), 'utf8');
-const logFormat = (composeText.match(/KONG_NGINX_HTTP_LOG_FORMAT: "warehouse_redacted '([^\n]*)'"/) ?? [])[1];
-assert.ok(logFormat, 'KONG_NGINX_HTTP_LOG_FORMAT is in the compose file');
-const kongLine = (status, seconds) => {
+// The line is built from the gateway's own log format in docker/nginx/nginx.conf, so a change there fails this test.
+const nginxText = readFileSync(join(repo, 'docker/nginx/nginx.conf'), 'utf8');
+const logFormat = (nginxText.match(/^\s+log_format warehouse_redacted '([^\n]*)';$/m) ?? [])[1];
+assert.ok(logFormat, 'the warehouse_redacted log format is in docker/nginx/nginx.conf');
+const gatewayLine = (status, seconds) => {
   const values = { remote_addr: '172.18.0.1', time_local: '19/Oct/2026:10:00:00 +0000', request_method: 'GET', uri: '/rest/v1/x', server_protocol: 'HTTP/1.1', status: String(status), body_bytes_sent: '123', request_time: seconds };
-  return logFormat.replace(/\\"/g, '"').replace(/\$\$([a-z_]+)/g, (_, name) => { if (!(name in values)) throw new Error(`unknown log variable ${name}`); return values[name]; });
+  return logFormat.replace(/\$([a-z_]+)/g, (_, name) => { if (!(name in values)) throw new Error(`unknown log variable ${name}`); return values[name]; });
 };
-test('the Kong test line is in the shape the compose log format produces', () => {
-  assert.equal(kongLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100');
-  assert.equal(W.parseKongLog(kongLine(502, '1.500')).length, 1);
+test('the gateway test line is in the shape the nginx log format produces, and the checker reads it', () => {
+  assert.equal(gatewayLine(200, '0.100'), '172.18.0.1 [19/Oct/2026:10:00:00 +0000] "GET /rest/v1/x HTTP/1.1" 200 123 0.100');
+  assert.deepEqual(W.parseGatewayLog(gatewayLine(502, '1.500')), [{ status: 502, seconds: 1.5 }]);
+  assert.deepEqual(W.parseGatewayLog(gatewayLine(429, '0.000')), [{ status: 429, seconds: 0 }]);
+  // nginx's own error log lines (also on the container's output) are not request lines and are skipped.
+  assert.equal(W.parseGatewayLog('2026/10/26 10:00:00 [error] 30#30: *3 no live upstreams while connecting to upstream, client: 10.0.0.3, server: _, request: "GET /rest/v1/x HTTP/1.1", upstream: "http://rest_up/x", host: "gateway:8000"').length, 0);
 });
 test('API logs: 5xx share above 5% and p95 latency above 2 s, from the last 5 minutes; small samples are not judged', () => {
   const h = harness();
   try {
     const logs = lines => { h.runs['docker logs'] = ok(lines.join('\n')); return W.checkApiLogs(h.ctx()); };
-    const mix = (errors, slow, total = 20) => Array.from({ length: total }, (_, i) => kongLine(i < errors ? 500 : 200, i < slow ? '3.000' : '0.100'));
+    const mix = (errors, slow, total = 20) => Array.from({ length: total }, (_, i) => gatewayLine(i < errors ? 500 : 200, i < slow ? '3.000' : '0.100'));
     let r = logs(mix(1, 1));
     assert.equal(find(r, 'api_error_rate_high').ok, true, '1 of 20 is 5%');
     assert.equal(find(r, 'api_latency_p95_high').ok, true, '1 slow of 20 leaves p95 fast');
     r = logs(mix(2, 2));
     assert.equal(find(r, 'api_error_rate_high').ok, false);
     assert.equal(find(r, 'api_latency_p95_high').ok, false);
-    r = logs(Array.from({ length: 20 }, () => kongLine(200, '2.000')));
+    r = logs(Array.from({ length: 20 }, () => gatewayLine(200, '2.000')));
     assert.equal(find(r, 'api_latency_p95_high').ok, true, '2.000 s is the limit');
-    r = logs(Array.from({ length: 20 }, () => kongLine(200, '2.010')));
+    r = logs(Array.from({ length: 20 }, () => gatewayLine(200, '2.010')));
     assert.equal(find(r, 'api_latency_p95_high').ok, false);
     r = logs(mix(5, 5, 5));
     assert.equal(r.every(x => x.ok), true, 'fewer than 10 requests');
-    assert.ok(h.calls.some(c => c === `docker logs -t --tail 5000 ${idOf('kong')}`), 'the last 5000 lines with their time stamps');
+    assert.ok(h.calls.some(c => c === `docker logs -t --tail 5000 ${idOf('gateway')}`), 'the last 5000 lines with their time stamps');
     assert.ok(!h.calls.some(c => c.includes('--since')), 'no --since: it returned nothing on a Dev host (Docker 29.9.1)');
   } finally { clean(h); }
 });
@@ -385,27 +388,27 @@ test('API logs: a docker that ignores --since still gives the right window, cut 
       assert.match(command, / -t --tail 5000 /); assert.doesNotMatch(command, /--since/);
       return ok(lines.join('\n') + '\n');
     };
-    const old = Array.from({ length: 30 }, (_, i) => stamp(10 * 60000 + i, kongLine(500, '9.000')));   // 10 minutes ago: all errors, all slow
-    const recent = Array.from({ length: 20 }, (_, i) => stamp(60000 + i * 1000, kongLine(i < 1 ? 500 : 200, '0.100')));   // 1 minute ago: 1 of 20 is 5xx
+    const old = Array.from({ length: 30 }, (_, i) => stamp(10 * 60000 + i, gatewayLine(500, '9.000')));   // 10 minutes ago: all errors, all slow
+    const recent = Array.from({ length: 20 }, (_, i) => stamp(60000 + i * 1000, gatewayLine(i < 1 ? 500 : 200, '0.100')));   // 1 minute ago: 1 of 20 is 5xx
     serve([...old, ...recent]);
     let r = find(W.checkApiLogs(h.ctx()), 'api_error_rate_high');
     assert.equal(r.ok, true, JSON.stringify(r)); assert.match(r.summary, /API 5xx rate 5\.0% over 20 requests/, 'only the last 5 minutes count');
     assert.equal(find(W.checkApiLogs(h.ctx()), 'api_latency_p95_high').ok, true, 'the slow old lines are not in the window');
     // The window edge: 5 minutes exactly is in, 1 ms older is out.
-    serve([stamp(5 * 60000 + 1, kongLine(500, '0.100')), ...Array.from({ length: 10 }, () => stamp(5 * 60000, kongLine(200, '0.100')))]);
+    serve([stamp(5 * 60000 + 1, gatewayLine(500, '0.100')), ...Array.from({ length: 10 }, () => stamp(5 * 60000, gatewayLine(200, '0.100')))]);
     assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /API 5xx rate 0\.0% over 10 requests/);
     // Everything older than the window: too few requests to judge, not an error, and not the old numbers.
     serve(old);
     assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /Too few requests \(0\) to judge the error rate/);
     // 429s in the window count; 429s outside it do not.
-    serve([...Array.from({ length: 40 }, () => stamp(20 * 60000, kongLine(429, '0.100'))), ...Array.from({ length: 60 }, (_, i) => stamp(30000, kongLine(i < 3 ? 429 : 200, '0.100')))]);
+    serve([...Array.from({ length: 40 }, () => stamp(20 * 60000, gatewayLine(429, '0.100'))), ...Array.from({ length: 60 }, (_, i) => stamp(30000, gatewayLine(i < 3 ? 429 : 200, '0.100')))]);
     const limited = find(W.checkApiLogs(h.ctx()), 'api_429_rate_high');
     assert.equal(limited.ok, false); assert.match(limited.summary, /429 \(too many requests\) to 3 of 60 requests, 5\.0%/);
     // A line the stamp of which cannot be read is kept (it cannot be placed); with the stamp it carries, a plain line parses as before.
-    serve([...Array.from({ length: 10 }, () => kongLine(200, '0.100')), 'garbage T Z line']);
+    serve([...Array.from({ length: 10 }, () => gatewayLine(200, '0.100')), 'garbage T Z line']);
     assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /over 10 requests/);
-    assert.equal(W.parseKongLog(`${stamp(1000, kongLine(200, '0.100'))}\n${stamp(900000, kongLine(200, '0.100'))}`).length, 2, 'without a window every line counts');
-    assert.equal(W.parseKongLog(`${stamp(1000, kongLine(200, '0.100'))}\n${stamp(900000, kongLine(200, '0.100'))}`, { sinceMs: h.clock.t - 60000 }).length, 1);
+    assert.equal(W.parseGatewayLog(`${stamp(1000, gatewayLine(200, '0.100'))}\n${stamp(900000, gatewayLine(200, '0.100'))}`).length, 2, 'without a window every line counts');
+    assert.equal(W.parseGatewayLog(`${stamp(1000, gatewayLine(200, '0.100'))}\n${stamp(900000, gatewayLine(200, '0.100'))}`, { sinceMs: h.clock.t - 60000 }).length, 1);
   } finally { clean(h); }
 });
 
@@ -427,7 +430,7 @@ test('API logs: 429 answers above 2% of 50 or more requests, or above 20 in the 
   const h = harness();
   try {
     const logs = lines => { h.runs['docker logs'] = ok(lines.join('\n')); return find(W.checkApiLogs(h.ctx()), 'api_429_rate_high'); };
-    const mix = (limited, total) => Array.from({ length: total }, (_, i) => kongLine(i < limited ? 429 : 200, '0.100'));
+    const mix = (limited, total) => Array.from({ length: total }, (_, i) => gatewayLine(i < limited ? 429 : 200, '0.100'));
     assert.equal(logs(mix(1, 50)).ok, true, '1 of 50 is 2%, the limit');
     const two = logs(mix(2, 50));
     assert.equal(two.ok, false); assert.match(two.summary, /429 \(too many requests\) to 2 of 50 requests, 4\.0% \(limit 2% or 20 in 5 minutes\)/);
@@ -580,7 +583,7 @@ test('clock: systemd NTPSynchronized=no, or more than 10 s from the clock of the
     edge(0);
     let r = (await W.checkClock(h.ctx()))[0];
     assert.equal(r.ok, true); assert.match(r.summary, /Host clock fine \(NTPSynchronized=yes, offset 0\.0 s\)/);
-    assert.deepEqual(asked.map(a => [a.url, a.options.method, a.options.redirect]), [[`${origin}/cdn-cgi/trace`, undefined, 'error']], 'one GET to the edge, nothing through Kong');
+    assert.deepEqual(asked.map(a => [a.url, a.options.method, a.options.redirect]), [[`${origin}/cdn-cgi/trace`, undefined, 'error']], 'one GET to the edge, nothing through the gateway');
     assert.ok(asked[0].options.signal instanceof AbortSignal);
     assert.ok(h.calls.includes('timedatectl show -p NTPSynchronized --value'));
     edge(10000); assert.equal((await W.checkClock(h.ctx()))[0].ok, true, '10 s is the limit');
@@ -639,16 +642,16 @@ test('health: the services, the database, the gateway probe and the renderer all
     const report = await W.runHealth(h.deps, { waitMs: 7000 });
     assert.equal(report.ok, true, JSON.stringify(report.lines));
     assert.deepEqual(report.lines.map(line => line.text), [
-      ...SERVICES.map(name => `Service ${name} is running${['db', 'kong'].includes(name) ? ' healthy' : ''}`),
+      ...SERVICES.map(name => `Service ${name} is running${['db', 'gateway'].includes(name) ? ' healthy' : ''}`),
       'PostgreSQL accepts connections', 'REST: answers through the gateway', 'configuration: answers through the gateway', 'PDF renderer reachable from functions',
     ]);
-    // The probe runs in the storage container (a network shared with Kong), waits as long as it was told, asks the RPC get_public_config with the
+    // The probe runs in the storage container (a network shared with the gateway), waits as long as it was told, asks the RPC get_public_config with the
     // public key (the OpenAPI document at /rest/v1/ is off) and asks for the public configuration.
     assert.equal(inputs.length, 1);
     assert.match(inputs[0], /export async function waitForHttp/);
     assert.match(inputs[0], /const WAIT_MS = 7000;/);
-    assert.match(inputs[0], /http:\/\/kong:8000\/rest\/v1\/rpc\/get_public_config', \{ apikey: process\.env\.ANON_KEY, 'Content-Type': 'application\/json' \},\n    \{ method: 'POST', body: JSON\.stringify\(\{ p_environment: 'production' \}\) \}/);
-    assert.match(inputs[0], /http:\/\/kong:8000\/functions\/v1\/get-public-config/);
+    assert.match(inputs[0], /http:\/\/gateway:8000\/rest\/v1\/rpc\/get_public_config', \{ apikey: process\.env\.ANON_KEY, 'Content-Type': 'application\/json' \},\n    \{ method: 'POST', body: JSON\.stringify\(\{ p_environment: 'production' \}\) \}/);
+    assert.match(inputs[0], /http:\/\/gateway:8000\/functions\/v1\/get-public-config/);
   } finally { clean(h); }
 });
 
@@ -1763,14 +1766,14 @@ test('daily: the checker and the daily pass write different keys of the state fi
 test('daily gate: the database and the four services the backup stops; not the renderer, not optional services', async () => {
   const row = (id, ok = true) => ({ id, ok, summary: '', detail: '' });
   const pg = row('postgres_down');
-  assert.equal(W.dailyHealthy([pg, row('service_down:kong'), row('service_down:pdf-renderer', false)]), true, 'an unhealthy renderer does not stop the backup');
+  assert.equal(W.dailyHealthy([pg, row('service_down:gateway'), row('service_down:pdf-renderer', false)]), true, 'an unhealthy renderer does not stop the backup');
   for (const optional of ['supavisor', 'cups', 'sensor-bridge']) assert.equal(W.dailyHealthy([pg, row(`service_down:${optional}`, false)]), true, `${optional} stopped (not running) does not stop the backup`);
   // The pooler is stopped and restarted (with --wait) by the backup while it runs: one that runs but is unhealthy would make the backup fail.
   assert.equal(W.dailyHealthy([pg, { ...row('service_down:supavisor', false), running: true }]), false, 'a running, unhealthy pooler holds the pass back');
   assert.equal(W.dailyHealthy([pg, { ...row('service_down:supavisor', true), running: true }]), true);
   for (const optional of ['cups', 'sensor-bridge']) assert.equal(W.dailyHealthy([pg, { ...row(`service_down:${optional}`, false), running: true }]), true, `${optional} never matters`);
   assert.deepEqual(W.BACKUP_OPTIONAL_SERVICES, ['supavisor']);
-  assert.deepEqual(W.BACKUP_SERVICES, ['kong', 'functions', 'rest', 'storage']);
+  assert.deepEqual(W.BACKUP_SERVICES, ['gateway', 'functions', 'rest', 'storage']);
   for (const name of W.BACKUP_SERVICES) assert.equal(W.dailyHealthy([pg, row(`service_down:${name}`, false)]), false, name);
   assert.equal(W.dailyHealthy([pg, row('service_down:db', false)]), true, 'db is judged through postgres_down');
   assert.equal(W.dailyHealthy([row('postgres_down', false)]), false);

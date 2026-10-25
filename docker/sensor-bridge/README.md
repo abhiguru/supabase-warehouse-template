@@ -88,7 +88,7 @@ than 29 days are dropped from the queue, and it never holds more than 200,000.
 |---|---|---|
 | `SENSOR_BRIDGE_HUBS` | (required) | hub addresses, comma-separated, e.g. `192.0.2.10,192.0.2.11`; give each hub a fixed address (DHCP reservation) |
 | `TAPO_USERNAME`, `TAPO_PASSWORD` | (required) | the Tapo account the hubs belong to |
-| `SENSOR_INGEST_URL` | (required) | `https://<backend>/functions/v1/ingest-sensor-readings`; inside the warehouse stack `http://kong:8000/functions/v1/ingest-sensor-readings` |
+| `SENSOR_INGEST_URL` | (required) | `https://<backend>/functions/v1/ingest-sensor-readings`; inside the warehouse stack `http://gateway:8000/functions/v1/ingest-sensor-readings` |
 | `SENSOR_INGEST_KEY` | (required) | 64 lowercase hex characters, minted with `scripts/sensor-ingest-key.sql` |
 | `SENSOR_BRIDGE_ID` | `sensor-bridge` | names this bridge in the backend's hub table |
 | `SENSOR_BRIDGE_POLL_SECONDS` | `300` | 5 to 3600 |

@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { configure, parseConfigureArgs, centralKeysFault, centralKeysWarning } from '../scripts/configure.mjs';
 import { validateOperatorEnv } from '../scripts/doctor.mjs';
-import { readEnv } from '../scripts/doctor-common.mjs';
+import { gatewayPortText, readEnv } from '../scripts/doctor-common.mjs';
 
 test('operator state is private, outside checkout, stable on rerun, and has a public-only manifest', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-test-'));
@@ -694,7 +694,7 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
     const base = { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv };
     const hooks = { portFree: () => true, containersRunning: () => false };
     const envText = dir => readFileSync(join(dir, 'config/compose.env'), 'utf8');
-    const port = dir => readEnv(join(dir, 'config/compose.env')).KONG_HTTP_PORT;
+    const port = dir => readEnv(join(dir, 'config/compose.env')).GATEWAY_HTTP_PORT;
 
     // Without the option the template's port stays.
     const plain = join(scratch, 'plain');
@@ -715,7 +715,7 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
 
     // A rerun with another port replaces that one line and nothing else.
     assert.equal(configure(root, { stateDir: state, gatewayPort: '18002', ...hooks }).gatewayPortChanged, true);
-    assert.equal(envText(state), before.replace('KONG_HTTP_PORT=18001', 'KONG_HTTP_PORT=18002'));
+    assert.equal(envText(state), before.replace('GATEWAY_HTTP_PORT=18001', 'GATEWAY_HTTP_PORT=18002'));
     assert.equal(statSync(join(state, 'config/compose.env')).mode & 0o777, 0o600);
 
     // Refused while the project's containers run, and when the port is taken; nothing changes.
@@ -752,6 +752,50 @@ test('gateway port (--gateway-port): written on a fresh state, kept on a rerun, 
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test('a state that still has the gateway port under its old Kong name keeps working, and a changed port is written under the new name', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-old-name-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const state = join(scratch, 'state');
+    configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, gatewayPort: '18001', ...hooks });
+    const envPath = join(state, 'config/compose.env');
+    // A compose.env written before the gateway was nginx: the line has the old name.
+    writeFileSync(envPath, readFileSync(envPath, 'utf8').replace('GATEWAY_HTTP_PORT=18001', 'KONG_HTTP_PORT=18001'), { mode: 0o600 });
+    const old = readFileSync(envPath, 'utf8');
+    // The readers take either name, the new one first (docker/docker-compose.yml does the same).
+    assert.equal(gatewayPortText(readEnv(envPath)), '18001');
+    assert.equal(gatewayPortText({ GATEWAY_HTTP_PORT: '18005', KONG_HTTP_PORT: '18001' }), '18005');
+    // An empty line is unset for Compose (`${GATEWAY_HTTP_PORT:-${KONG_HTTP_PORT:-18000}}`), so the readers fall back the same way.
+    assert.equal(gatewayPortText({ GATEWAY_HTTP_PORT: '', KONG_HTTP_PORT: '18001' }), '18001');
+    writeFileSync(join(scratch, 'empty.env'), 'GATEWAY_HTTP_PORT=\nKONG_HTTP_PORT=18001\n', { mode: 0o600 });
+    assert.equal(gatewayPortText(readEnv(join(scratch, 'empty.env'))), '18001');
+    // Setup without the option, or with the same port, leaves the file byte for byte as it was.
+    assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortChanged, false);
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'the same port under the old name changes nothing');
+    assert.equal(readFileSync(envPath, 'utf8'), old);
+    // An empty new-name line over the old one: the old port is the current one, so the same port changes nothing.
+    writeFileSync(envPath, `GATEWAY_HTTP_PORT=\n${old}`, { mode: 0o600 });
+    const emptied = readFileSync(envPath, 'utf8');
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'an empty GATEWAY_HTTP_PORT line does not hide KONG_HTTP_PORT');
+    assert.equal(readFileSync(envPath, 'utf8'), emptied);
+    writeFileSync(envPath, old, { mode: 0o600 });
+    // Another port renames the line in place; the old name is gone, so the two cannot disagree.
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18002', ...hooks }).gatewayPortChanged, true);
+    assert.equal(readFileSync(envPath, 'utf8'), old.replace('KONG_HTTP_PORT=18001', 'GATEWAY_HTTP_PORT=18002'));
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, undefined);
+    // A file with both names (a hand edit) keeps the new one and loses the old line.
+    writeFileSync(envPath, `${readFileSync(envPath, 'utf8')}KONG_HTTP_PORT=18009\n`, { mode: 0o600 });
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18003', ...hooks }).gatewayPortChanged, true);
+    assert.equal(readEnv(envPath).GATEWAY_HTTP_PORT, '18003');
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, undefined);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test('a rerun whose webhook placement refuses leaves the gateway port unchanged, and the rerun after the fix reports the change', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-last-'));
   const root = join(scratch, 'checkout');
@@ -769,14 +813,14 @@ test('a rerun whose webhook placement refuses leaves the gateway port unchanged,
     writeFileSync(webhookFile, 'https://hooks.slack.com/services/' + 'T0000000/B0000000/fictionalfictionalfictional\n', { mode: 0o600 });
     mkdirSync(hook);
     const before = readFileSync(envPath, 'utf8');
-    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18000');
+    assert.equal(readEnv(envPath).GATEWAY_HTTP_PORT, '18000');
     assert.throws(() => configure(root, { stateDir: state, gatewayPort: '18003', alertWebhookFile: webhookFile, ...hooks }), /must be a regular file/);
     assert.equal(readFileSync(envPath, 'utf8'), before, 'the port line is the last write, so the refusal changed nothing');
     rmSync(hook, { recursive: true });
     const result = configure(root, { stateDir: state, gatewayPort: '18003', alertWebhookFile: webhookFile, ...hooks });
     // The CLI prints the tunnel reminder from exactly this flag.
     assert.equal(result.gatewayPortChanged, true);
-    assert.equal(readEnv(envPath).KONG_HTTP_PORT, '18003');
+    assert.equal(readEnv(envPath).GATEWAY_HTTP_PORT, '18003');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
@@ -799,7 +843,7 @@ test('the real port test refuses a loopback port that is in use and accepts a fr
     server.close();
     await new Promise(resolve => server.once('close', resolve));
     assert.equal(configure(root, { ...base, stateDir: join(scratch, 'free'), gatewayPort: String(busy) }).created, true);
-    assert.equal(readEnv(join(scratch, 'free/config/compose.env')).KONG_HTTP_PORT, String(busy));
+    assert.equal(readEnv(join(scratch, 'free/config/compose.env')).GATEWAY_HTTP_PORT, String(busy));
   } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
 });
 

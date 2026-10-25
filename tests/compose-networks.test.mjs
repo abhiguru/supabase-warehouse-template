@@ -46,7 +46,7 @@ test('the database is reachable only from the services that use it', { skip }, (
   assert.deepEqual(peers('db'), ['rest', 'storage', 'supavisor']);
   // The gateway, the function runtime and the helpers that parse outside input
   // share no network with the database.
-  for (const service of ['kong', 'functions', 'pdf-renderer', 'cups', 'sensor-bridge']) {
+  for (const service of ['gateway', 'functions', 'pdf-renderer', 'cups', 'sensor-bridge']) {
     const reachable = peers(service);
     for (const guarded of ['db']) assert.ok(!reachable.includes(guarded), `${service} can reach ${guarded}`);
   }
@@ -56,21 +56,21 @@ test('every service still shares a network with each host it is configured to ca
   const { services, names, reaches } = topology();
   const wanted = Object.fromEntries(Object.entries(services).map(([service, definition]) => [service, configuredHosts(definition, names)]));
   // Hosts that are named in mounted configuration or in code rather than in the environment.
-  for (const match of read('docker/kong.yml').matchAll(/^\s+url: http:\/\/([a-z0-9-]+):\d+/gm)) wanted.kong.add(match[1]);
+  for (const match of read('docker/nginx/api-http.conf').matchAll(/^\s+server ([a-z0-9-]+):\d+ resolve;$/gm)) wanted.gateway.add(match[1]);
   assert.match(read('docker/volumes/pooler/pooler.exs'), /"db_host" => "db"/);
   wanted.supavisor.add('db');
   wanted.functions.add('cups'); // functions/_shared/ipp-client.ts default printer address
 
-  assert.deepEqual([...wanted.kong].sort(), ['functions', 'rest', 'storage']);
+  assert.deepEqual([...wanted.gateway].sort(), ['functions', 'rest', 'storage']);
   // Storage does not use PostgREST (no depends_on rest); the function runtime calls PostgREST and Storage
   // directly (SUPABASE_REST_URL, SUPABASE_STORAGE_URL, functions/_shared/supabase-rest.ts) and keeps SUPABASE_URL for the gateway.
   assert.deepEqual([...wanted.storage].sort(), ['db']);
   assert.deepEqual(Object.keys(services.storage.depends_on ?? {}), ['db']);
-  assert.deepEqual([...wanted.functions].sort(), ['cups', 'kong', 'pdf-renderer', 'rest', 'storage']);
+  assert.deepEqual([...wanted.functions].sort(), ['cups', 'gateway', 'pdf-renderer', 'rest', 'storage']);
   assert.equal(services.functions.environment.SUPABASE_REST_URL, 'http://rest:3000');
   assert.equal(services.functions.environment.SUPABASE_STORAGE_URL, 'http://storage:5000');
   // The sensor bridge posts to the ingest function through the gateway and calls nothing else here.
-  assert.deepEqual([...wanted['sensor-bridge']].sort(), ['kong']);
+  assert.deepEqual([...wanted['sensor-bridge']].sort(), ['gateway']);
   for (const service of ['rest', 'supavisor']) assert.ok(wanted[service].has('db'), `${service} names the database`);
   for (const [service, hosts] of Object.entries(wanted)) {
     for (const host of hosts) assert.ok(reaches(service, host), `${service} cannot resolve ${host}`);
@@ -128,10 +128,10 @@ test('operator probes run in a container that shares a network with their target
   assert.match(read('scripts/watch.mjs'), /const PDF_PROBE = '[^']*\/dev\/tcp\/pdf-renderer\/3000/);
   assert.match(read('scripts/watch.mjs'), /ctx\.compose\(\['exec', '-T', 'functions', 'bash', '-c', PDF_PROBE\]\)/);
   // The health check (scripts/watch.mjs, run by health-check.sh) probes the gateway from the storage container, which shares the
-  // default network with Kong, and reads the public key under the name that container has for it.
-  assert.ok(reaches('storage', 'kong'), 'storage cannot resolve kong');
+  // default network with the gateway, and reads the public key under the name that container has for it.
+  assert.ok(reaches('storage', 'gateway'), 'storage cannot resolve gateway');
   assert.match(read('scripts/watch.mjs'), /ctx\.compose\(\['exec', '-T', 'storage', 'node', '--input-type=module'\]/);
-  assert.match(read('scripts/watch.mjs'), /'http:\/\/kong:8000\/rest\/v1\/rpc\/get_public_config'/);
+  assert.match(read('scripts/watch.mjs'), /'http:\/\/gateway:8000\/rest\/v1\/rpc\/get_public_config'/);
   assert.doesNotMatch(read('scripts/watch.mjs'), /SUPABASE_ANON_KEY/);
   assert.equal(renderedCompose().services.storage.environment.ANON_KEY.length > 20, true);
 });
@@ -158,7 +158,7 @@ test('the sensor bridge needs no variable to render, so installations that never
   const variables = [...block.matchAll(/\$\{([A-Z_]+)([^}]*)\}/g)];
   assert.ok(variables.length >= 5, 'the bridge variables were read');
   for (const [, name, modifier] of variables) assert.match(modifier, /^:-/, `${name} must have a default`);
-  assert.match(block, /\n      SENSOR_INGEST_URL: http:\/\/kong:8000\/functions\/v1\/ingest-sensor-readings\n/);
+  assert.match(block, /\n      SENSOR_INGEST_URL: http:\/\/gateway:8000\/functions\/v1\/ingest-sensor-readings\n/);
   assert.match(block, /\n    profiles: \["sensors"\]\n/);
   assert.doesNotMatch(block, /\n    (?:networks|ports|privileged):/);
 });
@@ -216,10 +216,17 @@ test('a state without a per-role value fails at compose config with a message, n
   }
 });
 
-test('kong resolves Compose names at the DNS root, so a host search domain cannot delay a lookup', { skip }, () => {
-  // TW-BE-015: a lookup through the host's search domain took about 8 s.
+test('the gateway looks its upstreams up through Docker\'s resolver at run time, so no search domain and no start-up lookup can hold it', { skip }, () => {
+  // TW-BE-015: a lookup through the host's search domain took about 8 s (Kong's resolver, which needed `dns_search: "."`).
+  // nginx asks its own resolver for the names in docker/nginx/api-http.conf (`resolve`), never getaddrinfo, and not at start,
+  // so a gateway also starts while an upstream is not up yet. The names are plain service names.
   const { services } = topology();
-  assert.deepEqual(services.kong.dns_search, ['.']);
+  assert.equal(services.gateway.dns_search, undefined, 'nothing to override: nginx applies no search list');
+  const http = read('docker/nginx/nginx.conf');
+  assert.match(http, /^\s+resolver 127\.0\.0\.11 valid=5s ipv6=off;$/m);
+  const upstreams = [...read('docker/nginx/api-http.conf').matchAll(/^\s+server (\S+) (\S+);$/gm)];
+  assert.equal(upstreams.length, 3);
+  for (const [, address, parameter] of upstreams) assert.equal(parameter, 'resolve', `${address} is looked up once at start`);
 });
 
 test('the renderer runs read-only with no capabilities, no ports and bounded memory', { skip }, () => {

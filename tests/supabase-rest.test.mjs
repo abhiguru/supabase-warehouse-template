@@ -23,11 +23,11 @@ function mockFetch(...answers) {
 test('a table read sends the filters, the key headers and the caller token', async () => {
   const mock = mockFetch({ body: [{ id: 'c1', name: 'A' }] });
   try {
-    const client = restClient('http://kong:8000/', 'anon-key', { authorization: 'Bearer caller' });
+    const client = restClient('http://gateway:8000/', 'anon-key', { authorization: 'Bearer caller' });
     const result = await client.from('customers').select('id,name').eq('id', 'c1').is('deleted_at', null).limit(5);
     assert.deepEqual(result, { data: [{ id: 'c1', name: 'A' }], error: null, count: null });
     const { url, init } = mock.calls[0];
-    assert.equal(url, 'http://kong:8000/rest/v1/customers?select=id%2Cname&id=eq.c1&deleted_at=is.null&limit=5');
+    assert.equal(url, 'http://gateway:8000/rest/v1/customers?select=id%2Cname&id=eq.c1&deleted_at=is.null&limit=5');
     assert.equal(init.method, 'GET');
     assert.equal(init.headers.apikey, 'anon-key');
     assert.equal(init.headers.Authorization, 'Bearer caller');
@@ -39,7 +39,7 @@ test('a table read sends the filters, the key headers and the caller token', asy
 test('without a caller token the key is also the bearer token', async () => {
   const mock = mockFetch({ body: [] });
   try {
-    await restClient('http://kong:8000', 'service-key').from('system_settings').select('value');
+    await restClient('http://gateway:8000', 'service-key').from('system_settings').select('value');
     assert.equal(mock.calls[0].init.headers.Authorization, 'Bearer service-key');
   } finally { mock.restore(); }
 });
@@ -47,7 +47,7 @@ test('without a caller token the key is also the bearer token', async () => {
 test('single asks for one object and reports an error when PostgREST refuses', async () => {
   const mock = mockFetch({ body: { id: 'c1' } }, { status: 406, body: { code: 'PGRST116', message: 'no rows', details: 'd', hint: null } });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const ok = await client.from('customers').select('id').eq('id', 'c1').single();
     assert.deepEqual(ok.data, { id: 'c1' });
     assert.equal(mock.calls[0].init.headers.Accept, 'application/vnd.pgrst.object+json');
@@ -61,7 +61,7 @@ test('single asks for one object and reports an error when PostgREST refuses', a
 test('maybeSingle gives null for no row, the row for one and an error for several', async () => {
   const mock = mockFetch({ body: [] }, { body: [{ id: 1 }] }, { body: [{ id: 1 }, { id: 2 }] });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     assert.deepEqual(await client.from('t').select('id').maybeSingle(), { data: null, error: null, count: null });
     assert.deepEqual((await client.from('t').select('id').maybeSingle()).data, { id: 1 });
     const many = await client.from('t').select('id').maybeSingle();
@@ -73,7 +73,7 @@ test('maybeSingle gives null for no row, the row for one and an error for severa
 test('an exact count is read from Content-Range; embedded filters and gt are passed', async () => {
   const mock = mockFetch({ body: [{ a: 1 }], headers: { 'content-range': '0-0/1234' } });
   try {
-    const result = await restClient('http://kong:8000', 'k').from('goodsreceived_trl')
+    const result = await restClient('http://gateway:8000', 'k').from('goodsreceived_trl')
       .select('item_name,goodsreceived!inner(gr_no)', { count: 'exact' }).eq('goodsreceived.customer_id', 'u').gt('stock', 0).limit(1001);
     assert.equal(result.count, 1234);
     assert.equal(mock.calls[0].init.headers.Prefer, 'count=exact');
@@ -84,7 +84,7 @@ test('an exact count is read from Content-Range; embedded filters and gt are pas
 test('insert with select and single returns the new row; update filters by id', async () => {
   const mock = mockFetch({ status: 201, body: { id: 'job1' } }, { status: 204 });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const added = await client.from('print_jobs').insert({ status: 'printing' }).select().single();
     assert.deepEqual(added.data, { id: 'job1' });
     assert.equal(mock.calls[0].init.method, 'POST');
@@ -101,10 +101,10 @@ test('insert with select and single returns the new row; update filters by id', 
 test('rpc posts the arguments and returns the JSON answer or the error code', async () => {
   const mock = mockFetch({ body: { success: true } }, { status: 403, body: { code: '42501', message: 'denied' } }, new TypeError('connection refused'));
   try {
-    const client = restClient('http://kong:8000', 'k', { authorization: 'Bearer t' });
+    const client = restClient('http://gateway:8000', 'k', { authorization: 'Bearer t' });
     const ok = await client.rpc('get_report', { from: '2026-01-01' });
     assert.deepEqual(ok.data, { success: true });
-    assert.equal(mock.calls[0].url, 'http://kong:8000/rest/v1/rpc/get_report');
+    assert.equal(mock.calls[0].url, 'http://gateway:8000/rest/v1/rpc/get_report');
     assert.equal(mock.calls[0].init.body, '{"from":"2026-01-01"}');
     const refused = await client.rpc('get_report');
     assert.equal(refused.error.code, '42501');
@@ -119,7 +119,7 @@ test('with the direct service addresses set, calls skip the gateway prefixes and
   globalThis.Deno = { env: { get: name => environment[name] } };
   const mock = mockFetch({ body: [{ id: 'c1' }] }, { body: { ok: true } }, { body: { Key: 'k' } }, { body: { signedURL: '/object/sign/documents/a.pdf?token=t' } });
   try {
-    const client = restClient('http://kong:8000', 'anon', { authorization: 'Bearer caller' });
+    const client = restClient('http://gateway:8000', 'anon', { authorization: 'Bearer caller' });
     await client.from('customers').select('id').eq('id', 'c1');
     await client.rpc('get_report', { a: 1 });
     const bucket = client.storage.from('documents');
@@ -137,32 +137,32 @@ test('with the direct service addresses set, calls skip the gateway prefixes and
       assert.equal(call.init.headers.apikey, 'anon');
     }
     // The signed URL keeps the public gateway path, which is where the app uses it.
-    assert.equal(signed.data.signedUrl, 'http://kong:8000/storage/v1/object/sign/documents/a.pdf?token=t');
+    assert.equal(signed.data.signedUrl, 'http://gateway:8000/storage/v1/object/sign/documents/a.pdf?token=t');
     // One address without the other: everything keeps going through the gateway.
   } finally { mock.restore(); delete globalThis.Deno; }
   const half = mockFetch({ body: [] });
   globalThis.Deno = { env: { get: name => ({ SUPABASE_REST_URL: 'http://rest:3000' })[name] } };
   try {
-    await restClient('http://kong:8000', 'k').from('t').select('id');
-    assert.equal(half.calls[0].url, 'http://kong:8000/rest/v1/t?select=id');
+    await restClient('http://gateway:8000', 'k').from('t').select('id');
+    assert.equal(half.calls[0].url, 'http://gateway:8000/rest/v1/t?select=id');
   } finally { half.restore(); delete globalThis.Deno; }
 });
 
 test('storage upload and signed url use the object endpoints', async () => {
   const mock = mockFetch({ body: { Key: 'documents/grn/1/a.pdf' } }, { body: { signedURL: '/object/sign/documents/grn/1/a.pdf?token=abc' } }, { status: 400, body: { message: 'Duplicate', error: 'Duplicate' } });
   try {
-    const bucket = restClient('http://kong:8000', 'service').storage.from('documents');
+    const bucket = restClient('http://gateway:8000', 'service').storage.from('documents');
     const pdf = new Uint8Array([37, 80, 68, 70]);
     const upload = await bucket.upload('grn/1/a.pdf', pdf, { contentType: 'application/pdf', upsert: false });
     assert.equal(upload.error, null);
-    assert.equal(mock.calls[0].url, 'http://kong:8000/storage/v1/object/documents/grn/1/a.pdf');
+    assert.equal(mock.calls[0].url, 'http://gateway:8000/storage/v1/object/documents/grn/1/a.pdf');
     assert.equal(mock.calls[0].init.method, 'POST');
     assert.equal(mock.calls[0].init.headers['Content-Type'], 'application/pdf');
     assert.equal(mock.calls[0].init.headers['x-upsert'], 'false');
     assert.equal(mock.calls[0].init.headers.apikey, 'service');
     assert.equal(mock.calls[0].init.body, pdf);
     const signed = await bucket.createSignedUrl('grn/1/a.pdf', 3600);
-    assert.equal(signed.data.signedUrl, 'http://kong:8000/storage/v1/object/sign/documents/grn/1/a.pdf?token=abc');
+    assert.equal(signed.data.signedUrl, 'http://gateway:8000/storage/v1/object/sign/documents/grn/1/a.pdf?token=abc');
     assert.equal(mock.calls[1].init.body, '{"expiresIn":3600}');
     const duplicate = await bucket.upload('grn/1/a.pdf', pdf, { contentType: 'application/pdf' });
     assert.equal(duplicate.error.message, 'Duplicate');
@@ -172,10 +172,10 @@ test('storage upload and signed url use the object endpoints', async () => {
 test('order follows postgrest-js: direction, nulls placement, several calls joined', async () => {
   const mock = mockFetch({ body: { provider: 'log' } }, { body: [] });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const one = await client.from('sms_config').select('production_mode,provider').order('id', { ascending: false }).limit(1).single();
     assert.deepEqual(one.data, { provider: 'log' });
-    assert.equal(mock.calls[0].url, 'http://kong:8000/rest/v1/sms_config?select=production_mode%2Cprovider&order=id.desc&limit=1');
+    assert.equal(mock.calls[0].url, 'http://gateway:8000/rest/v1/sms_config?select=production_mode%2Cprovider&order=id.desc&limit=1');
     assert.equal(mock.calls[0].init.headers.Accept, 'application/vnd.pgrst.object+json');
     await client.from('t').select('*').order('a').order('b', { ascending: false, nullsFirst: true }).order('c', { nullsFirst: false });
     assert.match(mock.calls[1].url, /\?select=\*&order=a\.asc%2Cb\.desc\.nullsfirst%2Cc\.asc\.nullslast$/);
@@ -185,7 +185,7 @@ test('order follows postgrest-js: direction, nulls placement, several calls join
 test('filter values with a comma, space, quote, null and true are encoded', async () => {
   const mock = mockFetch({ body: [] });
   try {
-    await restClient('http://kong:8000', 'k').from('t').select('id').eq('a', 'x,y z').eq('b', "it's \"q\"").eq('c', null).is('d', true).is('e', null);
+    await restClient('http://gateway:8000', 'k').from('t').select('id').eq('a', 'x,y z').eq('b', "it's \"q\"").eq('c', null).is('d', true).is('e', null);
     const params = new URL(mock.calls[0].url).searchParams;
     assert.equal(params.get('a'), 'eq.x,y z');
     assert.equal(params.get('b'), 'eq.it\'s "q"');
@@ -199,7 +199,7 @@ test('filter values with a comma, space, quote, null and true are encoded', asyn
 test('a non-JSON error body (an HTML 502 from the gateway) becomes error.message', async () => {
   const mock = mockFetch({ status: 502, body: '<html>Bad Gateway</html>' }, { status: 503 });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const html = await client.from('t').select('id');
     assert.equal(html.data, null);
     assert.equal(html.error.message, '<html>Bad Gateway</html>');
@@ -211,7 +211,7 @@ test('a non-JSON error body (an HTML 502 from the gateway) becomes error.message
 test('a non-JSON 2xx body gives data null plus an error', async () => {
   const mock = mockFetch({ body: 'oops' }, { body: 'oops' });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const table = await client.from('t').select('id');
     assert.equal(table.data, null);
     assert.ok(table.error);
@@ -226,7 +226,7 @@ test('a timeout becomes an error, not a throw', async () => {
   const mock = mockFetch(hang, hang, hang);
   const keepAlive = setInterval(() => {}, 1000); // AbortSignal.timeout does not keep the process alive
   try {
-    const client = restClient('http://kong:8000', 'k', { timeoutMs: 20 });
+    const client = restClient('http://gateway:8000', 'k', { timeoutMs: 20 });
     const table = await client.from('t').select('id');
     assert.equal(table.data, null);
     assert.match(table.error.message, /Timeout|Abort/);
@@ -240,7 +240,7 @@ test('a failed body read is an error result, not a rejection', async () => {
   const brokenFailure = () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('stream broke')); } }), { status: 500 });
   const mock = mockFetch({ response: broken() }, { response: broken() }, { response: brokenFailure() });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     const table = await client.from('t').select('id');
     assert.equal(table.data, null);
     assert.match(table.error.message, /stream broke/);
@@ -254,7 +254,7 @@ test('a failed body read is an error result, not a rejection', async () => {
 test('201 and 204 with an empty body give data null and no error', async () => {
   const mock = mockFetch({ status: 201 }, { status: 204 }, { status: 204 });
   try {
-    const client = restClient('http://kong:8000', 'k');
+    const client = restClient('http://gateway:8000', 'k');
     assert.deepEqual(await client.from('t').insert({ a: 1 }), { data: null, error: null, count: null });
     assert.deepEqual(await client.from('t').update({ a: 1 }).eq('id', 1), { data: null, error: null, count: null });
     assert.deepEqual(await client.rpc('x'), { data: null, error: null, count: null });
@@ -264,7 +264,7 @@ test('201 and 204 with an empty body give data null and no error', async () => {
 test('insert().select() with count exact sends both Prefer values', async () => {
   const mock = mockFetch({ status: 201, body: [{ id: 1 }], headers: { 'content-range': '0-0/1' } });
   try {
-    const result = await restClient('http://kong:8000', 'k').from('t').insert({ a: 1 }).select('id', { count: 'exact' });
+    const result = await restClient('http://gateway:8000', 'k').from('t').insert({ a: 1 }).select('id', { count: 'exact' });
     assert.equal(mock.calls[0].init.headers.Prefer, 'return=representation,count=exact');
     assert.equal(result.count, 1);
   } finally { mock.restore(); }
@@ -273,7 +273,7 @@ test('insert().select() with count exact sends both Prefer values', async () => 
 test('content-range with an unknown total gives count null', async () => {
   const mock = mockFetch({ body: [{ a: 1 }], headers: { 'content-range': '0-0/*' } });
   try {
-    const result = await restClient('http://kong:8000', 'k').from('t').select('a', { count: 'exact' });
+    const result = await restClient('http://gateway:8000', 'k').from('t').select('a', { count: 'exact' });
     assert.equal(result.count, null);
   } finally { mock.restore(); }
 });
@@ -281,7 +281,7 @@ test('content-range with an unknown total gives count null', async () => {
 test('maybeSingle sends Accept application/json; several rows give count null', async () => {
   const mock = mockFetch({ body: [{ id: 1 }, { id: 2 }], headers: { 'content-range': '0-1/2' } });
   try {
-    const result = await restClient('http://kong:8000', 'k').from('t').select('id', { count: 'exact' }).maybeSingle();
+    const result = await restClient('http://gateway:8000', 'k').from('t').select('id', { count: 'exact' }).maybeSingle();
     assert.equal(mock.calls[0].init.headers.Accept, 'application/json');
     assert.equal(result.error.code, 'PGRST116');
     assert.equal(result.count, null);
@@ -291,7 +291,7 @@ test('maybeSingle sends Accept application/json; several rows give count null', 
 test('storage: network error, default content type, signed url failures', async () => {
   const mock = mockFetch(new TypeError('connection refused'), { body: {} }, { status: 404, body: { message: 'Object not found' } }, { body: {} }, new TypeError('down'));
   try {
-    const bucket = restClient('http://kong:8000', 'k').storage.from('documents');
+    const bucket = restClient('http://gateway:8000', 'k').storage.from('documents');
     const down = await bucket.upload('a/b.pdf', new Uint8Array([1]));
     assert.equal(down.data, null);
     assert.match(down.error.message, /connection refused/);

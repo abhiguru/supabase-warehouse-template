@@ -1,165 +1,397 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { composeAvailable, renderedCompose } from './compose-render.mjs';
+import { composeAvailable, renderCompose, renderedCompose } from './compose-render.mjs';
+import { parseGatewayLog } from '../scripts/watch.mjs';
 
-const kong = readFileSync(new URL('../docker/kong.yml', import.meta.url), 'utf8');
-const compose = readFileSync(new URL('../docker/docker-compose.yml', import.meta.url), 'utf8');
+// The gateway is plain nginx (docker/nginx). These tests read the files as text and render the templates the way the image's
+// entrypoint does; tests/gateway-nginx.test.mjs runs the real image (nginx -t, and the routes against stand-in upstreams).
+const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const compose = read('docker/docker-compose.yml');
 const deploy = name => new URL(`../deploy/${name}`, import.meta.url);
-// One service's entry in kong.yml, up to the next service.
-const serviceBlock = name => {
-  const start = kong.indexOf(`\n  - name: ${name}\n`);
-  assert.ok(start > 0, `${name} is not a gateway service`);
-  const next = kong.slice(start + 1).search(/\n  (?:- name: |## )/);
-  return kong.slice(start, next < 0 ? undefined : start + 1 + next);
+
+const FILES = {
+  main: read('docker/nginx/nginx.conf'),
+  http: read('docker/nginx/api-http.conf'),
+  locations: read('docker/nginx/api-locations.conf'),
+  cors: read('docker/nginx/cors-headers.conf'),
+  httpTemplate: read('docker/nginx/templates/http.conf.template'),
+  gatewayTemplate: read('docker/nginx/templates/gateway.conf.template'),
 };
+const dockerfile = read('docker/nginx/Dockerfile');
+// What nginx reads: the text without its comment lines (every comment in these files is a whole line).
+const code = text => text.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+const CODE = Object.fromEntries(Object.entries(FILES).map(([name, text]) => [name, code(text)]));
 
-test('gateway uses an exact configured browser origin and payload limits', () => {
-  assert.ok(kong.includes('origins: [${CORS_ALLOWED_ORIGIN}]'));
-  assert.ok(!kong.includes('origins: [*]'));
-  assert.ok(kong.match(/name: request-size-limiting/g).length >= 3);
-  assert.ok(compose.includes('request-size-limiting'));
-  assert.ok(compose.includes('CORS_ALLOWED_ORIGIN:'));
-});
-
-test('gateway refreshes replaced Compose upstream addresses within readiness budget', () => {
-  assert.ok(compose.includes('KONG_DNS_VALID_TTL: "5"'));
-  assert.ok(compose.includes('KONG_DNS_STALE_TTL: "1"'));
-  assert.ok(compose.includes('KONG_DNS_NOT_FOUND_TTL: "1"'));
-});
-
-test('the operator gateway publishes exactly one port', () => {
-  assert.equal((compose.match(/^\s+ports:/gm) || []).length, 1);
-});
-
-test('gateway takes the client address from the tunnel hop only and limits per client IP', () => {
-  assert.ok(compose.includes('KONG_REAL_IP_HEADER: CF-Connecting-IP'));
-  assert.ok(compose.includes('KONG_REAL_IP_RECURSIVE: "off"'));
-  assert.ok(compose.includes('KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"'));
-  assert.equal((kong.match(/name: rate-limiting/g) || []).length, 2);
-  assert.equal((kong.match(/^\s+limit_by: ip$/gm) || []).length, 2);
-  // Every route that needs only the public key or no key at all is limited per
-  // client address, except storage (see docs/CONTAINER_SECURITY.md).
-  // The REST route has a per-minute limit only (null): see the next two tests.
-  const limits = { 'rest-v1': [1800, null], 'functions-v1': [100, 6000] };
-  for (const [service, [minute, hour]] of Object.entries(limits)) {
-    const rateLimit = serviceBlock(service).split('- name: rate-limiting')[1]?.split('      - name: ')[0];
-    assert.ok(rateLimit, `${service} has no rate limit`);
-    const hourLine = hour === null ? '' : `hour: ${hour}\\n\\s+`;
-    assert.match(rateLimit, new RegExp(`minute: ${minute}\\n\\s+${hourLine}policy: local\\n\\s+fault_tolerant: true\\n[\\s\\S]*limit_by: ip\\n`), `${service} rate limit`);
+// The block that starts with `header {`; braces inside a quoted string (the JSON bodies) do not count.
+function block(text, header) {
+  const start = text.indexOf(`${header} {`);
+  assert.ok(start >= 0, `no block "${header}"`);
+  let depth = 0;
+  let quote = null;
+  for (let i = start + header.length; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) { if (c === quote) quote = null; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '{') depth += 1;
+    if (c === '}') { depth -= 1; if (depth === 0) return text.slice(start, i + 1); }
   }
-  assert.doesNotMatch(serviceBlock('storage-v1'), /rate-limiting/);
-  for (const [service, megabytes] of Object.entries({ 'rest-v1': 10, 'storage-v1': 50, 'functions-v1': 10 })) {
-    assert.match(serviceBlock(service), new RegExp(`- name: request-size-limiting\\n\\s+config:\\n\\s+allowed_payload_size: ${megabytes}\\n`), `${service} payload limit`);
+  return assert.fail(`block "${header}" is not closed`);
+}
+const route = name => block(CODE.locations, `location ${name}`);
+
+// The three variables the image's entrypoint puts into the templates (NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) and the
+// way it does it: GNU envsubst replaces both forms, $NAME and the braced form, for a name the filter matches in full (checked on the
+// real image in tests/gateway-nginx.test.mjs); every other dollar sign is left alone.
+const filter = /^ENV NGINX_ENVSUBST_FILTER="\^\(([A-Z_|]+)\)\$"$/m.exec(dockerfile)?.[1].split('|');
+const VALUES = { CORS_ALLOWED_ORIGIN: 'https://app.example.test', ANON_KEY: 'unit.anon.key', SERVICE_ROLE_KEY: 'unit.service.key' };
+const render = text => text.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (all, braced, bare) => (filter.includes(braced ?? bare) ? VALUES[braced ?? bare] : all));
+const RENDERED = { http: render(FILES.httpTemplate), gateway: render(FILES.gatewayTemplate) };
+
+test('the gateway is nginx from docker/nginx: no Kong file, entrypoint override or Kong variable is left', () => {
+  assert.ok(!existsSync(new URL('../docker/kong.yml', import.meta.url)), 'docker/kong.yml is gone');
+  for (const file of ['Dockerfile', 'nginx.conf', 'api-http.conf', 'api-locations.conf', 'cors-headers.conf', 'templates/http.conf.template', 'templates/gateway.conf.template', 'docker-entrypoint.d/18-require-env.sh']) {
+    assert.ok(existsSync(new URL(`../docker/nginx/${file}`, import.meta.url)), `docker/nginx/${file}`);
   }
+  const service = compose.slice(compose.indexOf('\n  gateway:\n'), compose.indexOf('\n  rest:\n'));
+  assert.ok(service.length > 100, 'the gateway service was read');
+  assert.match(service, /\n    build:\n      context: \.\/nginx\n/);
+  // The templates are rendered by the image's own entrypoint: no `eval`, no replacement entrypoint or command.
+  assert.doesNotMatch(service, /^\s+(?:entrypoint|command):/m);
+  assert.doesNotMatch(service, /\beval\b/);
+  // The only Kong name left in the Compose file is the old port variable, read as a fallback.
+  assert.deepEqual(compose.match(/.*KONG.*/g).filter(line => !line.trim().startsWith('#')), ['      - "127.0.0.1:${GATEWAY_HTTP_PORT:-${KONG_HTTP_PORT:-18000}}:8000/tcp"']);
+  assert.match(read('.env.example'), /^GATEWAY_HTTP_PORT=18000$/m);
+  assert.doesNotMatch(read('.env.example'), /^KONG_/m);
 });
 
-test('the REST limit leaves a whole facility room to work and cannot lock it out for an hour', () => {
-  // Every phone on the facility network reaches the gateway from one public address, so the
-  // facility shares one counter (docs/CONTAINER_SECURITY.md, REST request limit; owner decision
-  // of 2026-10-11). The old limit of 300 a minute and 6000 an hour gave 100 phones 3 requests a
-  // minute each and 60 an hour each, and once the hour was used up every phone was refused
-  // until it ended.
-  const devices = 100;
-  const rateLimit = serviceBlock('rest-v1').split('- name: rate-limiting')[1].split('      - name: ')[0];
-  const minute = Number(rateLimit.match(/^\s+minute: (\d+)$/m)[1]);
-  assert.equal(minute, 1800);
-  assert.equal(minute / devices, 18, 'requests a minute for each of 100 phones working at once');
-  // The only window is the minute. Nothing longer: a refused request can be sent again when the
-  // next minute starts. Nothing shorter either: there is no per-second brake (next test).
-  assert.doesNotMatch(rateLimit, /^\s+(second|hour|day|month|year):/m);
-  assert.match(rateLimit, /^\s+limit_by: ip$/m);
+test('the templates hold exactly three variables, the image puts in only those, and no key or origin can add to the configuration', () => {
+  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY']);
+  const used = new Set();
+  for (const [name, text] of Object.entries({ http: FILES.httpTemplate, gateway: FILES.gatewayTemplate })) {
+    for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) used.add(match[1]);
+    // The entrypoint replaces $NAME as well as the braced form. A comment that wrote either would have the real key put into it,
+    // and so would a bare $NAME in the configuration itself (the templates write the braced form only).
+    const comments = text.split('\n').filter(line => line.trim().startsWith('#')).join('\n');
+    assert.doesNotMatch(comments, /\$\{?(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN)\b/, `${name}: a comment writes a variable`);
+    assert.doesNotMatch(comments, /\$\{/, `${name}: a comment writes a brace after a dollar sign`);
+    assert.doesNotMatch(code(text), /\$(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN)\b/, `${name}: a variable without braces`);
+  }
+  assert.deepEqual([...used].sort(), [...filter].sort());
+  // The values are put in as they are: the rendered templates have none left, and keep every nginx variable.
+  for (const [name, text] of Object.entries(RENDERED)) assert.doesNotMatch(text, /\$\{/, `${name}: an unreplaced variable`);
+  assert.match(RENDERED.http, /default "https:\/\/app\.example\.test";/);
+  assert.match(RENDERED.http, /"unit\.anon\.key"\s+"";/);
+  assert.match(RENDERED.http, /"unit\.service\.key"\s+"";/);
+  assert.match(code(RENDERED.http), /map \$http_apikey \$apikey_error/);
+  // The container refuses to start on a value the configuration could not hold safely (checked for real in tests/gateway-nginx.test.mjs).
+  const entry = read('docker/nginx/docker-entrypoint.d/18-require-env.sh');
+  assert.match(entry, /\*\[!A-Za-z0-9\._~:\/-\]\*\)/);
+  assert.doesNotMatch(entry, /\beval\b/);
+  assert.match(dockerfile, /^COPY --chmod=0755 docker-entrypoint\.d\/ \/docker-entrypoint\.d\/$/m);
+  // The compose environment names exactly those three and requires each.
+  for (const name of filter) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
 });
 
-test('the per-minute limits are described as a budget per fixed minute, not as a ceiling per second', () => {
-  // Kong's rate-limiting plugin counts in fixed windows. 1800 a minute is about 30 a second on
-  // average, but one address may send all 1800 in the first second of a minute and 1800 more
-  // when the next minute starts. Wording such as "stops more than 30 requests a second" promises
-  // a brake the gateway does not have.
-  const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
-  const section = (from, to) => { const start = docs.indexOf(from); assert.ok(start > 0, from); return docs.slice(start, docs.indexOf(to, start + from.length)); };
-  const restComment = serviceBlock('rest-v1').split('- name: rate-limiting')[1].split('minute: 1800')[0];
-  const texts = {
-    'docker/kong.yml, rest-v1': restComment,
-    'docs/CONTAINER_SECURITY.md, REST request limit': section('### REST request limit', '\n## '),
+test('gateway takes the client address from the tunnel hop only, in the public server only, and limits per client IP', () => {
+  const server = CODE.gatewayTemplate;
+  // One server, one listener, HTTP/2 on.
+  assert.equal((server.match(/^\s*server\s*\{/gm) || []).length, 1);
+  assert.deepEqual(server.match(/^\s*listen\s.*$/gm).map(line => line.trim()), ['listen 8000;']);
+  assert.match(server, /^\s*http2 on;$/m);
+  assert.match(server, /^\s*real_ip_header CF-Connecting-IP;$/m);
+  assert.match(server, /^\s*real_ip_recursive off;$/m);
+  assert.deepEqual([...server.matchAll(/^\s*set_real_ip_from (\S+);$/gm)].map(match => match[1]), ['127.0.0.1/32', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']);
+  assert.equal((server.match(/^\s*include \/etc\/nginx\/api-locations\.conf;$/gm) || []).length, 1, 'the routes are one shared file');
+  // The trust must not be in anything a second server (LAN mode) shares: that server would let a phone choose its own address.
+  for (const name of ['main', 'http', 'locations', 'cors', 'httpTemplate']) {
+    assert.doesNotMatch(CODE[name], /set_real_ip_from|real_ip_header|real_ip_recursive/, `${name} must not trust a client address`);
+    assert.doesNotMatch(CODE[name], /^\s*(?:server\s*\{|listen\b)/m, `${name} defines no server`);
+  }
+  // Requests are limited per client address (the one realip settled on), nothing else.
+  assert.match(CODE.http, /^limit_req_zone \$binary_remote_addr zone=rest:10m rate=30r\/s;$/m);
+  assert.match(CODE.http, /^limit_req_zone \$binary_remote_addr zone=functions:10m rate=100r\/m;$/m);
+  assert.deepEqual(CODE.http.match(/^limit_req_zone .*$/gm).length, 2, 'storage has no zone');
+  assert.match(CODE.http, /^limit_req_status 429;$/m);
+  assert.match(route('/rest/v1/'), /^\s*limit_req zone=rest burst=1800 nodelay;$/m);
+  assert.match(route('/functions/v1/'), /^\s*limit_req zone=functions burst=100 nodelay;$/m);
+  assert.doesNotMatch(route('/storage/v1/'), /limit_req/, 'storage has no rate limit (docs/CONTAINER_SECURITY.md)');
+  assert.deepEqual(CODE.locations.match(/^\s*limit_req .*$/gm).length, 2);
+});
+
+test('request bodies are limited to 10 MB for REST and functions and 50 MB for storage, and are never written to a file', () => {
+  for (const [name, size] of Object.entries({ '/rest/v1/': '10m', '/storage/v1/': '50m', '/functions/v1/': '10m' })) {
+    assert.match(route(name), new RegExp(`^\\s*client_max_body_size ${size};$`, 'm'), `${name} body limit`);
+  }
+  assert.deepEqual(CODE.locations.match(/^\s*client_max_body_size .*$/gm).length, 3);
+  // The temporary directories are on a tmpfs, so a spooled body would be memory (the anon key is public).
+  assert.match(CODE.main, /^\s*proxy_request_buffering off;$/m);
+  assert.match(route('/rest/v1/'), /^\s*proxy_max_temp_file_size 0;$/m);
+  assert.match(route('/functions/v1/'), /^\s*proxy_max_temp_file_size 0;$/m);
+  assert.match(route('/storage/v1/'), /^\s*proxy_buffering off;$/m);
+  for (const name of ['client_body_temp_path', 'proxy_temp_path', 'fastcgi_temp_path', 'uwsgi_temp_path', 'scgi_temp_path']) {
+    assert.match(CODE.main, new RegExp(`^\\s*${name}\\s+/tmp/\\w+;$`, 'm'), `${name} is under /tmp`);
+  }
+  assert.match(CODE.main, /^pid \/tmp\/nginx\.pid;$/m);
+});
+
+test('only the REST route checks the apikey, with the anon or the service key and the messages the app reads', () => {
+  const http = code(RENDERED.http);
+  const map = block(http, 'map $http_apikey $apikey_error');
+  assert.deepEqual(
+    [...map.matchAll(/^\s+("[^"]*"|default)\s+("[^"]*");$/gm)].map(match => [match[1], match[2]]),
+    [['default', '"Unauthorized"'], ['""', '"No API key found in request"'], ['"unit.anon.key"', '""'], ['"unit.service.key"', '""']],
+  );
+  assert.match(route('/rest/v1/'), /^\s*if \(\$apikey_error != ""\) \{ return 401; \}$/m);
+  for (const name of ['/storage/v1/', '/functions/v1/']) assert.doesNotMatch(route(name), /apikey_error|return 401/, `${name} has no key check`);
+  // The 401 body: the mobile app ends the session on exactly these two messages (src/config/supabaseConfig.ts, GATEWAY_KEY_REJECTIONS).
+  assert.match(block(CODE.locations, 'location @json_401'), /return 401 '\{"message":"\$apikey_error"\}';/);
+  assert.match(block(CODE.locations, 'location @json_401'), /add_header WWW-Authenticate Key always;/);
+  // The key is checked here and not passed on (Kong's hide_credentials); a client address header is never passed on as the client sent it.
+  assert.match(route('/rest/v1/'), /^\s*proxy_set_header apikey "";$/m);
+  // The check runs before the rate limit, and the preflight before the check, so a refused request does not use up the budget.
+  const rest = route('/rest/v1/');
+  assert.ok(rest.indexOf('$cors_preflight') < rest.indexOf('$apikey_error') && rest.indexOf('$apikey_error') < rest.indexOf('limit_req'));
+});
+
+test('CORS: the one configured origin, with credentials, answered at the gateway with the lists Kong sent', () => {
+  // The origin comes from the variable, as one exact value; never a wildcard.
+  assert.match(code(RENDERED.http), /^\s*default "https:\/\/app\.example\.test";$/m);
+  assert.doesNotMatch(code(FILES.httpTemplate), /default "\*"|default \*/);
+  assert.doesNotMatch(Object.values(CODE).join('\n'), /Access-Control-Allow-Origin\s+\*|Access-Control-Allow-Origin\s+"\*"/);
+  assert.match(CODE.cors, /^add_header Access-Control-Allow-Origin \$cors_allowed_origin always;$/m);
+  assert.match(CODE.cors, /^add_header Access-Control-Allow-Credentials true always;$/m);
+  assert.match(CODE.cors, /^add_header Vary Origin always;$/m);
+  assert.match(CODE.cors, /^add_header Access-Control-Expose-Headers \$cors_expose always;$/m);
+  const routes = {
+    '/rest/v1/': ['GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Authorization,Content-Type,X-Client-Info,apikey,Prefer,Range', 'Content-Range,X-Request-Id'],
+    '/storage/v1/': ['GET,POST,PUT,DELETE,OPTIONS', 'Authorization,Content-Type,X-Client-Info,apikey,Cache-Control,X-Upsert', 'Content-Range,X-Request-Id'],
+    '/functions/v1/': ['GET,POST,PUT,DELETE,OPTIONS', 'Authorization,Content-Type,X-Client-Info,apikey', 'X-Request-Id'],
   };
-  for (const [where, text] of Object.entries(texts)) {
-    const plain = text.replace(/^\s*#\s?/gm, '').replace(/\s+/g, ' ');
-    assert.match(plain, /fixed minute/, `${where} does not say the window is a fixed minute`);
-    assert.match(plain, /about 30 a second on average/, `${where} does not call 30 a second an average`);
-    assert.match(plain, /no per-second brake/, `${where} does not say there is no per-second brake`);
-    assert.doesNotMatch(plain, /(more than|faster than) 30 (requests )?a second/, `${where} promises a per-second ceiling`);
-    assert.doesNotMatch(plain, /(sent|starts) again within the minute/, `${where} says a refused request can be repeated within the same minute`);
+  for (const [name, [methods, headers, exposed]] of Object.entries(routes)) {
+    const text = route(name);
+    const preflight = block(text, 'if ($cors_preflight)');
+    assert.match(preflight, new RegExp(`add_header Access-Control-Allow-Methods "${methods}" always;`), `${name} methods`);
+    assert.match(preflight, new RegExp(`add_header Access-Control-Allow-Headers "${headers}" always;`), `${name} headers`);
+    assert.match(preflight, /add_header Access-Control-Max-Age 86400 always;/, `${name} max age`);
+    assert.match(preflight, /include \/etc\/nginx\/cors-headers\.conf;/, `${name} preflight carries the origin and credentials`);
+    assert.match(preflight, /return 204;/);
+    assert.match(text, new RegExp(`^\\s*set \\$cors_expose "${exposed}";$`, 'm'), `${name} exposed headers`);
+    // An upstream's own CORS headers would double the header the browser reads.
+    for (const header of ['Allow-Origin', 'Allow-Credentials', 'Expose-Headers']) assert.match(text, new RegExp(`^\\s*proxy_hide_header Access-Control-${header};$`, 'm'), `${name} hides the upstream's ${header}`);
   }
-  // No route has a per-second window; if one is added, the wording above has to change with it.
-  assert.doesNotMatch(kong, /^\s+second: \d+$/m);
+  // A preflight is an OPTIONS request with an Origin and a requested method; any other OPTIONS request goes upstream.
+  assert.match(CODE.http, /map "\$request_method\|\$http_origin\|\$http_access_control_request_method" \$cors_preflight \{\n\s+default 0;\n\s+"~\^OPTIONS\\\|\[\^\|\]\+\\\|\[\^\|\]\+\$" 1;/);
+  // The errors the gateway makes carry the CORS headers too, so a browser can read them.
+  for (const status of [401, 404, 413, 429, 502, 503, 504]) {
+    assert.match(block(CODE.locations, `location @json_${status}`), /include \/etc\/nginx\/cors-headers\.conf;/, `the ${status} answer`);
+    assert.match(CODE.locations, new RegExp(`^error_page ${status} @json_${status};$`, 'm'));
+  }
 });
 
-test('gateway configuration survives the entrypoint that fills in its variables', () => {
-  // The entrypoint evaluates the file as a double-quoted shell string
-  // (docker-compose.yml), so a double quote, backtick, backslash or a dollar
-  // sign outside ${NAME} in kong.yml, even in a comment, changes the result.
-  const values = { SUPABASE_ANON_KEY: 'unit.anon.key', SUPABASE_SERVICE_KEY: 'unit.service.key', CORS_ALLOWED_ORIGIN: 'https://app.example.test' };
-  assert.ok(compose.includes(String.raw`entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && `), 'entrypoint changed; revisit this test');
-  const rendered = spawnSync('bash', ['-c', 'eval "echo \\"$(cat "$1")\\""', 'render', new URL('../docker/kong.yml', import.meta.url).pathname], { encoding: 'utf8', env: { PATH: process.env.PATH, ...values } });
-  assert.equal(rendered.status, 0, rendered.stderr);
-  assert.equal(rendered.stdout, kong.replace(/\$\{([A-Z_]+)\}/g, (_, name) => values[name]).replace(/\n*$/, '\n'));
-  assert.deepEqual([...new Set([...kong.matchAll(/\$\{([A-Z_]+)\}/g)].map(match => match[1]))].sort(), Object.keys(values).sort());
+// The first line of each path map (docker/nginx/api-http.conf): a dot segment in the raw path, `.` or `..` written plainly or as
+// %2e, between slashes (or %2F), at the end of the path or in front of the query string. The query string itself is not looked at.
+const DOT_SEGMENT = String.raw`"~^[^?]*(?:/|%2[fF])(?:\.|%2[eE]){1,2}(?:/|%2[fF]|\?|$)" "";`;
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+test('each route strips its prefix as Kong did, to the same upstream, and keeps the path as the client wrote it', () => {
+  const upstreams = Object.fromEntries([...CODE.http.matchAll(/upstream (\w+) \{[^}]*?server (\S+) resolve;[^}]*?keepalive (\d+);[^}]*\}/g)].map(match => [match[1], [match[2], Number(match[3])]]));
+  assert.deepEqual(upstreams, { rest_up: ['rest:3000', 64], storage_up: ['storage:5000', 64], functions_up: ['functions:9000', 64] });
+  for (const [name, upstream, path, host] of [['/rest/v1/', 'rest_up', 'rest_path', 'rest:3000'], ['/storage/v1/', 'storage_up', 'storage_path', 'storage:5000'], ['/functions/v1/', 'functions_up', 'functions_path', 'functions:9000']]) {
+    const text = route(name);
+    assert.match(text, new RegExp(`^\\s*proxy_pass http://${upstream}\\$${path};$`, 'm'), `${name} upstream`);
+    assert.match(text, new RegExp(`^\\s*proxy_set_header Host ${host};$`, 'm'), `${name} host header`);
+    assert.match(text, new RegExp(`^\\s*if \\(\\$${path} = ""\\) \\{ return 404; \\}$`, 'm'), `${name} refuses a path whose raw form is not under the prefix`);
+    assert.match(text, /^\s*proxy_http_version 1\.1;$/m);
+    assert.match(text, /^\s*proxy_set_header Connection "";$/m, 'keepalive to the upstream');
+    // The prefix comes off the raw request URI (path and query string), with several slashes in front accepted.
+    const prefix = name.replace(/\/$/, '').replace(/\//g, '\\/');
+    // A raw dot segment comes first and gives no path (404); the prefix map follows.
+    assert.match(CODE.http, new RegExp(`map \\$request_uri \\$${path} \\{\\n\\s+default "";\\n\\s+${escapeRegExp(DOT_SEGMENT)}\\n\\s+"~\\^/\\+${name.slice(1, -1).replace('/', '/')}\\(\\?<\\w+>/\\.\\*\\)\\$" \\$\\w+;`), `${name} prefix map ${prefix}`);
+  }
+  // The route set is pinned: the locations of the routes file are exactly these, and three of them proxy (a fourth `proxy_pass`, or a
+  // proxying location of another name, would be a route nobody reviewed, with no key check, limit or CORS handling).
+  assert.deepEqual([...CODE.locations.matchAll(/^location (\S+ )?(\S+) \{/gm)].map(match => `${match[1] ?? ''}${match[2]}`),
+    ['@json_401', '@json_404', '@json_413', '@json_429', '@json_502', '@json_503', '@json_504', '/', '= /rest/v1', '= /storage/v1', '= /functions/v1', '/rest/v1/', '/storage/v1/', '/functions/v1/']);
+  assert.deepEqual([...CODE.locations.matchAll(/^\s*proxy_pass (\S+);$/gm)].map(match => match[1]), ['http://rest_up$rest_path', 'http://storage_up$storage_path', 'http://functions_up$functions_path']);
+  assert.doesNotMatch(CODE.locations, /\b(?:fastcgi_pass|uwsgi_pass|scgi_pass|grpc_pass|proxy_cache|mirror|auth_request)\b/);
+  assert.doesNotMatch(CODE.gatewayTemplate, /proxy_pass/, 'the public server proxies nothing of its own');
+  // The exact prefix without its slash and every other path have no route (nginx would redirect the first).
+  for (const name of ['/rest/v1', '/storage/v1', '/functions/v1']) assert.match(CODE.locations, new RegExp(`^location = ${name} \\{ return 404; \\}$`, 'm'));
+  assert.match(CODE.locations, /^location \/ \{ return 404; \}$/m);
+  assert.match(block(CODE.locations, 'location @json_404'), /return 404 '\{"message":"no Route matched with those values"\}';/);
 });
 
-// The Kong environment as the container sees it. Compose writes a literal dollar sign as `$$`
-// in the file, and `docker compose config` prints it that way again; the container gets one.
-const dollars = text => String(text).replaceAll('$$', '$');
+test('the client address header: set from the connection on REST and functions, cleared on storage, never taken from the request', () => {
+  for (const name of ['/rest/v1/', '/functions/v1/']) {
+    const text = route(name);
+    assert.match(text, /^\s*proxy_set_header CF-Connecting-IP \$remote_addr;$/m, `${name} sets the address`);
+    assert.match(text, /^\s*proxy_set_header X-Real-IP \$remote_addr;$/m);
+    assert.match(text, /^\s*proxy_set_header X-Forwarded-For \$remote_addr;$/m);
+  }
+  // Storage does not use the client address (its image-render limit is off) but writes these headers into its own log.
+  const storage = route('/storage/v1/');
+  for (const header of ['CF-Connecting-IP', 'X-Real-IP', 'X-Forwarded-For']) assert.match(storage, new RegExp(`^\\s*proxy_set_header ${header} "";$`, 'm'), `storage: ${header} is cleared`);
+  assert.doesNotMatch(Object.values(CODE).join('\n'), /\$http_cf_connecting_ip|\$http_x_forwarded_for|\$http_x_real_ip|\$proxy_add_x_forwarded_for/, 'a client-supplied address is never put into a header');
+});
+
+// The environment variables and the header names are fixed text, so the log line the checker parses is the format below.
 const FORBIDDEN_IN_ACCESS_LOG = [
   // The request line and anything that carries the query string.
   /\$request(?![_a-z])/, /\$request_uri/, /\$args/, /\$is_args/, /\$query_string/, /\$arg_/, /\$upstream_uri/, /\$upstream_x_forwarded_path/,
   // Fields that can carry a credential or a person.
-  /\$http_/, /\$remote_user/, /\$cookie_/,
+  /\$http_/, /\$remote_user/, /\$cookie_/, /\$sent_http_/,
 ];
-function assertRedactedAccessLog(environment, where) {
-  const format = dollars(environment.KONG_NGINX_HTTP_LOG_FORMAT);
-  assert.match(format, /^warehouse_redacted '[^']+'$/, `${where}: the format is defined under the name warehouse_redacted`);
-  assert.ok(format.includes('$uri'), `${where}: the path is logged as $uri (no query string)`);
-  assert.ok(format.includes('$remote_addr'), `${where}: the client address stays in the log (owner decision of 2026-10-17)`);
-  for (const pattern of FORBIDDEN_IN_ACCESS_LOG) assert.doesNotMatch(format, pattern, `${where}: the format must not contain ${pattern}`);
-  assert.equal(environment.KONG_PROXY_ACCESS_LOG, '/dev/stdout warehouse_redacted', `${where}: the proxy access log uses the redacted format`);
-}
 
 test('the gateway access log has no query string, so a signed link or an apikey in a URL is not kept', () => {
-  // Kong's default format logs `$request`, the whole request line with ?token= and ?apikey=.
-  const text = compose.match(/^\s+KONG_NGINX_HTTP_LOG_FORMAT: (".*")$/m);
-  assert.ok(text, 'docker-compose.yml sets KONG_NGINX_HTTP_LOG_FORMAT');
-  const [, access] = compose.match(/^\s+KONG_PROXY_ACCESS_LOG: "([^"]+)"$/m) ?? [];
-  assert.equal(access, '/dev/stdout warehouse_redacted');
-  // YAML double-quoted: \" is a quote. Compose then turns $$ into $.
-  const environment = { KONG_NGINX_HTTP_LOG_FORMAT: JSON.parse(text[1]), KONG_PROXY_ACCESS_LOG: access };
-  assertRedactedAccessLog(environment, 'docker-compose.yml');
-  // Written with $$ in the file: a single $ would be read by Compose as a variable (and warned about).
-  assert.ok(!/\$[a-z_]+/.test(environment.KONG_NGINX_HTTP_LOG_FORMAT.replaceAll('$$', '')), 'every dollar sign in the format is doubled for Compose');
-  // One definition of the format and of the access log (the single Compose file), so no second copy can put the default back.
-  assert.equal(compose.match(/KONG_NGINX_HTTP_LOG_FORMAT:/g).length, 1);
-  assert.equal(compose.match(/KONG_PROXY_ACCESS_LOG:/g).length, 1);
-  // kong.yml is evaluated by the entrypoint: no log format may be defined there.
-  assert.doesNotMatch(kong, /log_format|access_log/);
+  // Kong's default format (and nginx's) logs `$request`, the whole request line with ?token= and ?apikey=.
+  const formats = [...CODE.main.matchAll(/^\s*log_format (\w+) '([^']*)';$/gm)];
+  assert.deepEqual(formats.map(match => match[1]), ['warehouse_redacted'], 'one format, with the one name');
+  const format = formats[0][2];
+  assert.ok(format.includes('$uri'), 'the path is logged as $uri (no query string)');
+  assert.ok(format.includes('$remote_addr'), 'the client address stays in the log (owner decision of 2026-10-17)');
+  for (const pattern of FORBIDDEN_IN_ACCESS_LOG) assert.doesNotMatch(format, pattern, `the format must not contain ${pattern}`);
+  assert.equal(format, '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent $request_time');
+  // The access log is the redacted format on stdout, in one place; the health check is not logged at all; no server or route sets another.
+  assert.deepEqual(CODE.main.match(/^\s*access_log .*$/gm).map(line => line.trim()), ['access_log /dev/stdout warehouse_redacted;']);
+  assert.deepEqual(CODE.gatewayTemplate.match(/^\s*access_log .*$/gm).map(line => line.trim()), ['access_log off;']);
+  assert.doesNotMatch(CODE.locations + CODE.http + CODE.httpTemplate, /access_log|log_format/);
+  // The checker (scripts/watch.mjs, checkApiLogs) reads the line this format writes.
+  const line = format.replace('$remote_addr', '172.18.0.1').replace('$time_local', '26/Oct/2026:10:00:00 +0000').replace('$request_method', 'GET').replace('$uri', '/storage/v1/object/sign/docs/a.pdf')
+    .replace('$server_protocol', 'HTTP/1.1').replace('$status', '429').replace('$body_bytes_sent', '37').replace('$request_time', '0.001');
+  assert.equal(line, '172.18.0.1 [26/Oct/2026:10:00:00 +0000] "GET /storage/v1/object/sign/docs/a.pdf HTTP/1.1" 429 37 0.001');
+  assert.deepEqual(parseGatewayLog(line), [{ status: 429, seconds: 0.001 }]);
 });
 
-test('the rendered Kong environment selects the redacted access log', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
-  assertRedactedAccessLog(renderedCompose().services.kong.environment, 'docker compose config');
-});
-
-test('storage is not sent the CF-Connecting-IP header, and the log contract says what it cannot remove', () => {
-  const storage = serviceBlock('storage-v1');
-  assert.match(storage, /- name: request-transformer\n\s+config:\n\s+remove:\n\s+headers:\n\s+- CF-Connecting-IP\n/);
-  // Kong adds X-Real-IP and X-Forwarded-For itself after the plugins ran, so listing them would promise too much.
-  assert.doesNotMatch(storage, /^\s+- (?:X-Real-IP|X-Forwarded-For)$/im);
-  const docs = readFileSync(new URL('../docs/CONTAINER_SECURITY.md', import.meta.url), 'utf8');
+test('storage is not sent the client address, and the log contract says what the gateway keeps and what it cannot', () => {
+  const docs = read('docs/CONTAINER_SECURITY.md');
   const start = docs.indexOf('\n## Logs\n');
   assert.ok(start > 0, 'docs/CONTAINER_SECURITY.md has the Logs section');
   const section = docs.slice(start + 1, docs.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
   for (const needed of ['warehouse_redacted', 'no log line holds a token, a key, an OTP', 'X-Real-IP', 'X-Forwarded-For', 'error log', '3 x 10 MB']) {
     assert.ok(section.toLowerCase().includes(needed.toLowerCase()), `the Logs section does not mention ${needed}`);
   }
+  assert.doesNotMatch(section, /Kong sets them itself/, 'the old limit of the Kong plugin is gone');
+});
+
+test('the gateway runs one worker, hides its version, looks its upstreams up at run time, keeps its answer buffers small and compresses as Kong did', () => {
+  assert.match(CODE.main, /^worker_processes 1;$/m);
+  assert.match(CODE.main, /^\s*server_tokens off;$/m);
+  assert.match(CODE.main, /^\s*resolver 127\.0\.0\.11 valid=5s ipv6=off;$/m);
+  assert.doesNotMatch(CODE.main + CODE.http + CODE.locations, /^\s*(?:user|daemon)\b/m);
+  // Answer buffers inside a 128 MB container: REST and functions hold at most 32k + 16 x 32k = about 0.5 MB of one answer (Kong's
+  // 64 x 160k, up to 10 MB a request, cost 7 MiB for each reader that stops reading a 10 MB answer, with the socket buffers; this costs
+  // about 4 MiB), and never write a file. Storage is not buffered at all and relays through one buffer of 64k (the default would be 4k).
+  const buffers = Object.fromEntries(['/rest/v1/', '/functions/v1/'].map(name => [name, [Number(/^\s*proxy_buffer_size (\d+)k;$/m.exec(route(name))?.[1]), /^\s*proxy_buffers (\d+) (\d+)k;$/m.exec(route(name))?.slice(1).map(Number)]]));
+  assert.deepEqual(buffers, { '/rest/v1/': [32, [16, 32]], '/functions/v1/': [32, [16, 32]] });
+  for (const [size, [count, each]] of Object.values(buffers)) assert.ok(size + count * each <= 600, 'at most about 0.5 MB of buffers for one answer');
+  assert.match(route('/storage/v1/'), /^\s*proxy_buffering off;$/m);
+  assert.match(route('/storage/v1/'), /^\s*proxy_buffer_size 64k;$/m);
+  assert.match(route('/storage/v1/'), /^\s*proxy_buffers 4 64k;$/m, 'only so that nginx accepts the larger buffer; unused with buffering off');
+  // A request body that arrives slowly is cut off after 20 s between two reads (it is streamed to the upstream, not collected first).
+  for (const name of ['/rest/v1/', '/functions/v1/']) assert.match(route(name), /^\s*client_body_timeout 20s;$/m, `${name} body timeout`);
+  // Compress JSON and text answers only, as the invoice-form preview of 3,055 lines (2.2 MB of JSON) needs.
+  const main = CODE.main;
+  assert.match(main, /^\s*gzip on;$/m);
+  assert.match(main, /^\s*gzip_proxied any;$/m, 'answers that came through the tunnel proxy are compressed too');
+  assert.match(main, /^\s*gzip_min_length 1024;$/m);
+  assert.match(main, /^\s*gzip_vary on;$/m);
+  const types = main.match(/^\s*gzip_types (.*);$/m)[1].split(/\s+/);
+  for (const type of ['application/json', 'application/vnd.pgrst.object+json', 'application/vnd.pgrst.array+json', 'text/plain', 'text/csv']) assert.ok(types.includes(type), `${type} is compressed`);
+  // Images, PDFs and other downloads stay as stored; the websocket upgrade is not an answer type.
+  assert.ok(!types.some(type => /^(image|video|audio)\//.test(type) || /pdf|octet-stream|zip/.test(type)), 'no binary type is listed');
+  // Idle clients: 75 s, at most 10000 requests, as before.
+  assert.match(main, /^\s*keepalive_timeout 75s;$/m);
+  assert.match(main, /^\s*keepalive_requests 10000;$/m);
+});
+
+test('the gateway service publishes one loopback port, is read-only with no capability, and is limited to 128 MB and half a CPU', () => {
+  const service = compose.slice(compose.indexOf('\n  gateway:\n'), compose.indexOf('\n  rest:\n'));
+  assert.equal((compose.match(/^\s+ports:/gm) || []).length, 1, 'the operator stack publishes exactly one port');
+  assert.match(service, /\n    ports:\n/);
+  assert.match(service, /"127\.0\.0\.1:\$\{GATEWAY_HTTP_PORT:-\$\{KONG_HTTP_PORT:-18000\}\}:8000\/tcp"/);
+  assert.match(service, /\n    read_only: true\n/);
+  assert.match(service, /\n    cap_drop: \[ALL\]\n/);
+  assert.doesNotMatch(service, /cap_add/);
+  assert.match(service, /\n    security_opt: \["no-new-privileges:true"\]\n/);
+  assert.match(service, /\n          cpus: '0\.5'\n          memory: 128M\n/);
+  assert.match(service, /test: \["CMD", "wget", "-q", "-T", "5", "-O", "\/dev\/null", "http:\/\/127\.0\.0\.1:8000\/health"\]/);
+  // /health answers the container's own check (from 127.0.0.1) and nobody else, a tunnel client included.
+  assert.match(code(FILES.gatewayTemplate), /location = \/health \{\n\s+if \(\$remote_addr != "127\.0\.0\.1"\) \{ return 404; \}\n\s+access_log off;\n\s+default_type text\/plain;\n\s+return 200 "ok\\n";\n\s+\}/);
+  assert.match(service, /\n    depends_on:\n      db:\n        condition: service_healthy\n/);
+  assert.doesNotMatch(service, /\n    networks:/, 'the default network only');
+  assert.match(service, /- \/tmp:size=4m\n/);
+  assert.match(service, /- \/etc\/nginx\/conf\.d:uid=101,gid=101,mode=0755,size=1m\n/);
+});
+
+test('the rendered Compose gateway has the hardening, the limits, the port and the three variables', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const { services } = renderedCompose();
+  const gateway = services.gateway;
+  assert.equal(services.kong, undefined, 'there is no Kong service');
+  assert.ok(gateway.build, 'built from docker/nginx');
+  assert.equal(gateway.read_only, true);
+  assert.deepEqual(gateway.cap_drop, ['ALL']);
+  assert.equal(gateway.cap_add, undefined);
+  assert.deepEqual(gateway.security_opt, ['no-new-privileges:true']);
+  assert.ok(!gateway.entrypoint && !gateway.command, 'the image\'s own entrypoint renders the templates');
+  assert.equal(gateway.dns_search, undefined);
+  assert.deepEqual(gateway.networks, { default: null });
+  assert.equal(Number(gateway.deploy.resources.limits.memory), 128 * 1024 ** 2);
+  assert.equal(Number(gateway.deploy.resources.limits.cpus), 0.5);
+  assert.deepEqual(gateway.ports.map(({ host_ip, target, protocol }) => [host_ip, target, protocol]), [['127.0.0.1', 8000, 'tcp']]);
+  assert.match(String(gateway.ports[0].published), /^\d{4,5}$/);
+  assert.deepEqual(Object.keys(gateway.environment).sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY']);
+  assert.ok(gateway.environment.ANON_KEY.length > 20 && gateway.environment.SERVICE_ROLE_KEY.length > 20);
+  for (const key of Object.keys(gateway.environment)) assert.doesNotMatch(gateway.environment[key], /[\s"'$;{}]/, `${key} holds nothing the configuration could not hold`);
+  assert.deepEqual(Object.keys(services).filter(name => services[name].ports?.length), ['gateway']);
+});
+
+test('the published port is GATEWAY_HTTP_PORT, or KONG_HTTP_PORT in a compose.env that has the old name, or 18000', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
+  const published = edit => {
+    const result = renderCompose(edit);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout).services.gateway.ports.map(port => String(port.published));
+  };
+  assert.deepEqual(published(text => text.replace(/^GATEWAY_HTTP_PORT=.*$/m, 'GATEWAY_HTTP_PORT=18123')), ['18123']);
+  assert.deepEqual(published(text => text.replace(/^GATEWAY_HTTP_PORT=.*$/m, 'KONG_HTTP_PORT=18124')), ['18124'], 'the old name still decides the port');
+  assert.deepEqual(published(text => text.replace(/^GATEWAY_HTTP_PORT=.*$/m, 'KONG_HTTP_PORT=18124\nGATEWAY_HTTP_PORT=18125')), ['18125'], 'the new name wins');
+  assert.deepEqual(published(text => text.replace(/^GATEWAY_HTTP_PORT=.*\n/m, '')), ['18000'], 'neither name: the default of the tunnel example');
+});
+
+test('the REST limit leaves a whole facility room to work and cannot lock it out for an hour', () => {
+  // Every phone on the facility network reaches the gateway from one public address, so the facility shares one bucket
+  // (docs/CONTAINER_SECURITY.md, REST request limit; owner decision of 2026-10-11). The old limit of 300 a minute and 6000 an hour
+  // gave 100 phones 3 requests a minute each and 60 an hour each, and once the hour was used up every phone was refused until it ended.
+  const devices = 100;
+  const rate = Number(/zone=rest:10m rate=(\d+)r\/s;/.exec(CODE.http)[1]);
+  const burst = Number(/limit_req zone=rest burst=(\d+) nodelay;/.exec(route('/rest/v1/'))[1]);
+  assert.equal(rate, 30);
+  assert.equal(burst, 1800);
+  assert.equal(rate * 60, 1800, 'a minute at the refill rate is the 1800 of the owner decision');
+  assert.equal(rate * 60 / devices, 18, 'requests a minute for each of 100 phones working at once');
+  // Nothing longer than the bucket: no hourly or daily rule in the REST route or anywhere in the gateway.
+  assert.doesNotMatch(CODE.http + CODE.locations, /r\/h|r\/d|\bhour\b/);
+  // The 6000-an-hour rule of the functions route is not a second zone either: 100 a minute adds up to 6000 an hour.
+  assert.equal(CODE.http.match(/limit_req_zone/g).length, 2);
+});
+
+test('the limits are described as a leaky bucket (a burst, then a steady rate), not as a counter per fixed minute', () => {
+  // Kong's rate-limiting plugin counted in fixed windows. nginx's limit_req is a leaky bucket: 1800 requests may come at once,
+  // and then 30 a second. Wording that still promised a fixed minute, or no per-second brake, would be wrong now.
+  const docs = read('docs/CONTAINER_SECURITY.md');
+  const section = (from, to) => { const start = docs.indexOf(from); assert.ok(start > 0, from); return docs.slice(start, docs.indexOf(to, start + from.length)); };
+  const texts = {
+    'docker/nginx/api-http.conf': FILES.http.slice(0, FILES.http.indexOf('limit_req_zone $binary_remote_addr zone=rest')),
+    'docs/CONTAINER_SECURITY.md, REST request limit': section('### REST request limit', '\n## '),
+  };
+  for (const [where, text] of Object.entries(texts)) {
+    const plain = text.replace(/^\s*#\s?/gm, '').replace(/\s+/g, ' ');
+    assert.match(plain, /leaky bucket/, `${where} does not say it is a leaky bucket`);
+    assert.match(plain, /burst of 1800/, `${where} does not name the burst`);
+    assert.match(plain, /30 a second/, `${where} does not name the refill rate`);
+    assert.match(plain, /no hourly window/, `${where} does not say there is no hourly window`);
+    assert.doesNotMatch(plain, /per fixed minute|no per-second brake|(sent|starts) again within the minute/, `${where} still describes Kong's fixed window`);
+  }
+  assert.doesNotMatch(Object.values(CODE).join('\n'), /^\s*(second|minute|hour): \d+$/m);
 });
 
 test('every REST request passes the session check before its function runs', () => {
@@ -209,70 +441,33 @@ test('ingress is Cloudflare Tunnel only', () => {
   assert.ok(tunnel.includes('service: http_status:404'));
 });
 
-test('publisher images are pinned by digest and the notices name the versions in use', () => {
+test('publisher images are pinned by digest, the gateway base too, and the notices name the versions in use', () => {
   const images = [...compose.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]).filter(image => !image.endsWith(':local'));
-  assert.ok(images.some(image => /^kong:3\.9\.4-ubuntu@sha256:[0-9a-f]{64}$/.test(image)), 'Kong is not pinned by digest');
   assert.ok(images.some(image => /^postgrest\/postgrest:v[0-9.]+@sha256:[0-9a-f]{64}$/.test(image)), 'PostgREST is not pinned by digest');
   assert.deepEqual(images.filter(image => !/@sha256:[0-9a-f]{64}$/.test(image)), [], 'every pulled image is pinned by digest');
+  assert.doesNotMatch(compose, /image: kong:/);
 
-  const notices = readFileSync(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url), 'utf8');
-  const base = (recipe, image) => new RegExp(`^FROM ${image}:([^@\\s]+)@sha256:`, 'm').exec(readFileSync(new URL(`../docker/${recipe}/Dockerfile`, import.meta.url), 'utf8'))?.[1];
+  const notices = read('THIRD_PARTY_NOTICES.md');
+  const base = (recipe, image) => new RegExp(`^FROM ${image}:([^@\\s]+)@sha256:[0-9a-f]{64}(?: AS \\w+)?$`, 'm').exec(read(`docker/${recipe}/Dockerfile`))?.[1];
+  const nginxTag = base('nginx', 'nginx');
+  assert.match(nginxTag ?? '', /^1\.30\.\d+-alpine-slim$/, 'the gateway is on the nginx 1.30 stable branch, alpine-slim variant, by tag and index digest');
   const versions = {
-    Kong: /image: kong:([0-9.]+)-ubuntu/.exec(compose)[1],
+    nginx: nginxTag?.split('-')[0],
     PostgREST: /image: postgrest\/postgrest:(v[0-9.]+)/.exec(compose)[1],
     Supavisor: base('supavisor', 'supabase/supavisor'),
     'edge-runtime': base('edge-runtime', 'supabase/edge-runtime'),
     // The PDF renderer's pins: the chrome-headless-shell build and puppeteer-core (docker/pdf-renderer).
-    'Chrome for Testing': /^ARG CHS_VERSION=(\S+)$/m.exec(readFileSync(new URL('../docker/pdf-renderer/Dockerfile', import.meta.url), 'utf8'))?.[1],
-    'puppeteer-core': JSON.parse(readFileSync(new URL('../docker/pdf-renderer/package.json', import.meta.url), 'utf8')).dependencies?.['puppeteer-core'],
+    'Chrome for Testing': /^ARG CHS_VERSION=(\S+)$/m.exec(read('docker/pdf-renderer/Dockerfile'))?.[1],
+    'puppeteer-core': JSON.parse(read('docker/pdf-renderer/package.json')).dependencies?.['puppeteer-core'],
     // The sensor bridge (GPL-3.0-or-later): its base image and the GPL library it installs.
     Python: base('sensor-bridge', 'python'),
-    'python-kasa': /^python-kasa==([0-9][0-9.]*)\b/m.exec(readFileSync(new URL('../docker/sensor-bridge/requirements.txt', import.meta.url), 'utf8'))?.[1],
+    'python-kasa': /^python-kasa==([0-9][0-9.]*)\b/m.exec(read('docker/sensor-bridge/requirements.txt'))?.[1],
   };
   for (const [name, version] of Object.entries(versions)) {
     assert.ok(version, `${name} version was not read`);
     const row = notices.split('\n').find(line => line.startsWith('|') && line.includes(name) && line.includes(version));
     assert.ok(row, `THIRD_PARTY_NOTICES.md does not name ${name} ${version}`);
   }
+  assert.doesNotMatch(notices, /Kong/);
   assert.doesNotMatch(notices, /v1\.76\.2|postgrest:v14\.17|PostgREST v14\.17/);
-});
-
-test('the gateway compresses JSON and text answers only, so a large invoice-form preview is sent gzipped', () => {
-  const value = name => compose.match(new RegExp(`^\\s+${name}: "?([^"\\n]+)"?$`, 'm'))?.[1];
-  assert.equal(value('KONG_NGINX_PROXY_GZIP'), 'on');
-  assert.equal(value('KONG_NGINX_PROXY_GZIP_PROXIED'), 'any', 'answers that came through the tunnel proxy are compressed too');
-  assert.equal(Number(value('KONG_NGINX_PROXY_GZIP_MIN_LENGTH')), 1024);
-  assert.equal(value('KONG_NGINX_PROXY_GZIP_VARY'), 'on');
-  const types = (value('KONG_NGINX_PROXY_GZIP_TYPES') ?? '').split(/\s+/);
-  for (const type of ['application/json', 'application/vnd.pgrst.object+json', 'application/vnd.pgrst.array+json', 'text/plain', 'text/csv']) {
-    assert.ok(types.includes(type), `${type} is compressed`);
-  }
-  // Images, PDFs and other downloads stay as stored; the websocket upgrade is not an answer type.
-  assert.ok(!types.some(type => /^(image|video|audio)\//.test(type) || /pdf|octet-stream|zip/.test(type)), 'no binary type is listed');
-});
-
-const FIVE_PLUGINS = ['cors', 'key-auth', 'rate-limiting', 'request-size-limiting', 'request-transformer'];
-const withoutYamlComments = text => text.replace(/^\s*#.*$/gm, '');
-
-test('gateway runs one worker, loads only the plugins its routes use, and has no ACL or unused route', () => {
-  const live = withoutYamlComments(compose);
-  assert.ok(live.includes('KONG_NGINX_WORKER_PROCESSES: "1"'));
-  const plugins = live.match(/KONG_PLUGINS: (\S+)/)[1].split(',');
-  assert.deepEqual([...plugins].sort(), FIVE_PLUGINS);
-  // The plugin list and the worker count are each set once.
-  assert.equal(live.match(/KONG_PLUGINS:/g).length, 1);
-  assert.equal(live.match(/KONG_NGINX_WORKER_PROCESSES:/g).length, 1);
-  assert.doesNotMatch(compose, /DASHBOARD_(?:USERNAME|PASSWORD)/);
-  // Every plugin kong.yml really uses (per route) is loaded, and nothing else is.
-  const liveKong = withoutYamlComments(kong);
-  const used = [...new Set([...liveKong.matchAll(/^\s*- name: ([a-z-]+)\n\s+config:/gm)].map(match => match[1]))].sort();
-  assert.deepEqual(used, [...plugins].sort());
-  assert.doesNotMatch(liveKong, /\bacls?:|name: acl\b/);
-  assert.doesNotMatch(liveKong, /graphql/);
-});
-
-test('the rendered Kong environment has one worker and the five-plugin list', { skip: !composeAvailable() && !process.env.CI ? 'docker compose is not installed' : false }, () => {
-  const environment = renderedCompose().services.kong.environment;
-  assert.equal(environment.KONG_NGINX_WORKER_PROCESSES, '1');
-  assert.deepEqual(environment.KONG_PLUGINS.split(',').sort(), FIVE_PLUGINS);
 });

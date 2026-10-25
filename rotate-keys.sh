@@ -54,7 +54,7 @@ mv -f "$staged" "$live"
 # Recreate only the running key consumers so an intentionally stopped optional
 # service is not started. db is included so its environment matches on reruns.
 recreate=()
-for service in db kong rest storage functions supavisor; do
+for service in db gateway rest storage functions supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then recreate+=("$service"); fi
 done

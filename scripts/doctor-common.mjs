@@ -42,6 +42,10 @@ export function readEnv(path) {
   }
   return values;
 }
+// The loopback port of the gateway in a compose.env: GATEWAY_HTTP_PORT, or KONG_HTTP_PORT, its name while the gateway was Kong, in
+// a file that configure.mjs has not rewritten yet (docker/docker-compose.yml reads both in the same order). An empty line counts as
+// unset, as in Compose's `${GATEWAY_HTTP_PORT:-...}`: `||`, not `??`.
+export const gatewayPortText = env => env.GATEWAY_HTTP_PORT || env.KONG_HTTP_PORT;
 export function operatorEnvPath() {
   const state = process.env.WAREHOUSE_STATE_DIR;
   if (!state || !isAbsolute(state)) throw new Error('Set WAREHOUSE_STATE_DIR to the installed operator state.');
