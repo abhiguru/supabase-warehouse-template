@@ -1,6 +1,7 @@
 // The one monitoring check of an installation (replaces Prometheus, Alertmanager and the exporters).
 //
-//   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat, daily jobs (the systemd timer runs this)
+//   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat (the systemd timer runs this every 5 minutes)
+//   node scripts/watch.mjs daily                    the daily backup, verification, pruning and retention (its own systemd timer runs this)
 //   node scripts/watch.mjs test-message             post a test message to the facility's Slack webhook
 //   node scripts/watch.mjs status                   what is failing, muted, and when the daily jobs last ran
 //   node scripts/watch.mjs mute MINUTES ["ALERT"]   silence all alerts, or one alert id, for MINUTES
@@ -15,11 +16,15 @@
 // failing. The run exits 0 unless the state file cannot be written. Nothing here prints or posts a secret: all text
 // goes through redact().
 //
-// Daily jobs: once a day, between --daily-at and 6 hours later (local time), scripts/watch-daily.sh makes a backup,
-// verifies it, prunes older backups and applies retention under one operator lock. They run only when the database
-// and every service of this run are up; a failed pass is tried again after an hour, at most 3 times a day.
+// Daily jobs (`daily`, not `run`: a backup must not hold the 5-minute checks off): once a day, between --daily-at and 6
+// hours later (local time), scripts/watch-daily.sh makes a backup, verifies it, prunes older backups and applies
+// retention under one operator lock. They run only when the database and the services the backup stops are up; a failed
+// pass is tried again after an hour, at most 3 times a day. The daily timer fires at --daily-at and each of the 5 hours
+// after it, and a trigger with nothing to do exits at once. `run` and `daily` write different keys of the state file.
 // Pruning keeps the newest 7 backup directories of this installation in $STATE/backups; backups made by hand there
 // (same name pattern, same instance) count towards those 7.
+// External heartbeat: if config/heartbeat-url holds an https URL (mode 0600), every successful run of `run` fetches it
+// (5 s limit). A service such as healthchecks.io alerts when the pings stop; a failed ping is logged, never alerted.
 // Self-healing: while no operator command holds the lock, an `exited` service of the default profile is started again and
 // one `unhealthy` for 3 runs in a row is restarted, at most once an hour each (selfHeal); a muted service is left alone.
 // Mute before a deliberate stop.sh: a stopped service is an alert like any other.
@@ -42,7 +47,10 @@ export const LIMITS = {
   errorRate: 0.05, latencySeconds: 2, minRequests: 10, backupMaxAgeMs: 26 * HOUR,
   failingRuns: 2, repeatMs: 4 * HOUR, busyGiveUpMs: 2 * HOUR, keepBackups: 7,
   // A daily pass in progress older than this is taken as interrupted (the unit stops after 4 h).
-  jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3, dailyRetryMs: HOUR, dailyHardMs: 3 * HOUR + 45 * MIN,
+  jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3,
+  // "An hour" less 2 minutes: the daily timer fires on the hour, and a start a few seconds late must not push a retry
+  // to the trigger after.
+  dailyRetryMs: HOUR - 2 * MIN, dailyHardMs: 3 * HOUR + 45 * MIN,
   futureBackupMs: HOUR,
   // Self-healing: a service unhealthy in this many runs in a row is restarted; no service is acted on more than once per gap.
   healUnhealthyRuns: 3, healGapMs: HOUR,
@@ -149,8 +157,18 @@ export function writeFileAtomic(path, text, api = { openSync, writeSync, fsyncSy
     throw error;
   }
 }
-export function saveState(state, data, api) {
+// Two processes write this file: the 5-minute checker (`run`) and the daily pass (`daily`, hours long). Each owns its keys
+// and, when it saves, takes the other's from the file as it is then, so neither undoes what the other wrote meanwhile.
+export const DAILY_KEYS = ['lastDailyRun', 'dailyAttempt', 'dailyRunning', 'dailySkipped'];
+export function saveState(state, data, api, { daily = false, readText = readFileOrNull } = {}) {
   const { muteUntil, mutes, ...persisted } = data;
+  const onDisk = readText(statePath(state));
+  if (onDisk !== null) {
+    try {
+      const other = normalizeState(JSON.parse(onDisk), 0, () => {});
+      for (const key of Object.keys(persisted)) if (DAILY_KEYS.includes(key) !== daily) persisted[key] = other[key];
+    } catch { /* an unreadable file is replaced by ours */ }
+  }
   writeFileAtomic(statePath(state), `${JSON.stringify(persisted, null, 2)}\n`, api);
 }
 
@@ -977,20 +995,21 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
   const attempt = data.dailyAttempt;
   if (attempt.done || attempt.count >= LIMITS.dailyAttempts) return;
   if (attempt.lastAt !== null && now >= attempt.lastAt && now - attempt.lastAt < LIMITS.dailyRetryMs) return;
-  if (!healthy) { data.dailySkipped = { at: now, reason: 'the database or a service is not up in this run' }; return; }
+  // The gate is a function for `daily` (its checks run only when a pass would start) and a value in tests.
+  if (!(typeof healthy === 'function' ? await healthy() : healthy)) { data.dailySkipped = { at: now, reason: 'the database or a service is not up in this run' }; return; }
 
   data.dailyRunning = { job: 'daily', startedAt: now };
-  saveState(ctx.state, data, ctx.fsApi);
+  saveState(ctx.state, data, ctx.fsApi, { daily: true });
   let outcome;
   try { outcome = await runner(ctx); } catch (error) {
     outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: "retention not run: today's backup failed" } };
   }
   data.dailyRunning = null;
-  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi); return; }
+  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
   data.dailySkipped = null;
   attempt.count += 1; attempt.lastAt = now;
   attempt.done = recordDaily(ctx, data, outcome, attempt.count, webhook);
-  saveState(ctx.state, data, ctx.fsApi);
+  saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
 // The daily jobs need a running database and services in THIS run: right after a boot the first runs find them down.
@@ -1000,8 +1019,40 @@ export function dailyHealthy(results) {
   return !results.some(r => !r.ok && (r.id.startsWith('service_down:') || r.id === 'check_error:services' || r.id === 'check_error:database'));
 }
 
+// ---------------------------------------------------------------- external heartbeat
+// config/heartbeat-url: one https URL (blank lines and # comments are skipped) of a dead-man switch (healthchecks.io, or any address that alerts when its pings
+// stop), written by the operator, mode 0600 because whoever knows the URL can fake the ping. Returns { url } (empty when
+// there is no file) or { problem }.
+export const heartbeatUrlPath = state => join(state, 'config/heartbeat-url');
+export const HEARTBEAT_TIMEOUT_MS = 5000;
+export function readHeartbeatUrl(state) {
+  const path = heartbeatUrlPath(state);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return { url: '' };
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) return { problem: 'config/heartbeat-url must be a regular file owned by the installation user with mode 0600' };
+  const url = (readFileOrNull(path) ?? '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
+  if (!/^https:\/\/[^\s/]+\/?\S*$/.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
+  return { url };
+}
+// The end of every successful run: a GET with a 5 s limit. A failure is logged (never the URL, which is a secret) and
+// never alerted: if the ping cannot leave, the dead-man switch is the thing that tells the operator.
+export async function pingExternalHeartbeat(ctx) {
+  const log = ctx.log ?? stderrLog;
+  let found;
+  try { found = readHeartbeatUrl(ctx.state); } catch (error) { log(`external heartbeat not sent: ${error.message}`); return; }
+  if (found.problem) { log(`external heartbeat not sent: ${found.problem}`); return; }
+  if (!found.url) return;
+  const timeout = ctx.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS;
+  try {
+    const response = await ctx.fetch(found.url, { signal: AbortSignal.timeout(timeout), redirect: 'error' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    log(`external heartbeat ping failed: ${redact(String(error?.cause?.code ?? error?.message ?? error), ctx.env_()).split(found.url).join('[REDACTED]')}`);
+  }
+}
+
 // ---------------------------------------------------------------- the run
-export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner, heal = selfHeal } = {}) {
+export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   const now = deps.now();
   const data = loadState(deps.state, now, deps.readText, deps.log);
   Object.assign(data, loadMutes(deps.state, deps.readText));
@@ -1011,7 +1062,11 @@ export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner, heal
   if (lockIsHeld(ctx)) {
     // Backup, restore, setup and stop stop services on purpose: judge nothing while one runs, unless it hangs.
     if (data.busySince === null || data.busySince > now) data.busySince = now;
-    if (now - data.busySince < LIMITS.busyGiveUpMs) { saveState(deps.state, data, deps.fsApi); return { skipped: 'operator lock is held', data }; }
+    if (now - data.busySince < LIMITS.busyGiveUpMs) {
+      saveState(deps.state, data, deps.fsApi);
+      await pingExternalHeartbeat(ctx);   // the checker is alive; it is the operator command that is busy
+      return { skipped: 'operator lock is held', data };
+    }
     stuck = true;
   } else data.busySince = null;
   const { results, ran } = await runChecks(ctx, checks);
@@ -1029,14 +1084,26 @@ export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner, heal
   await notify(ctx, webhook, plan);
   await heartbeat(ctx, webhook);
   saveState(deps.state, data, deps.fsApi);
-  if (daily) await runDaily(ctx, data, dailyHealthy(results), daily, webhook);
-  saveState(deps.state, data, deps.fsApi);
+  await pingExternalHeartbeat(ctx);
   return { results, plan, data };
 }
 
+// `watch.mjs daily`: what the daily timer runs. The gate (the database and the services the backup stops) is judged by the
+// same two checks the checker runs, and only when a pass is about to start.
+export const DAILY_GATE_CHECKS = [['database', checkDatabase], ['services', checkServices]];
+export async function runDailyCommand(deps, { checks = DAILY_GATE_CHECKS, daily = dailyRunner } = {}) {
+  const data = loadState(deps.state, deps.now(), deps.readText, deps.log);
+  const ctx = makeContext(deps, data);
+  const webhook = readWebhook(deps.state);
+  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, webhook);
+  saveState(deps.state, data, deps.fsApi, { daily: true });
+  return { data };
+}
+
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
-  run           one pass of the checks (the systemd timer runs this every 5 minutes)
+const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+  run           one pass of the checks (the systemd timer runs this every 5 minutes); it never makes a backup
+  daily         the daily backup, verification, pruning and retention, inside the window after --daily-at (its own timer runs this)
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's Slack webhook
   status        failing alerts, mutes, the daily jobs and the time zone
@@ -1051,6 +1118,9 @@ Needs WAREHOUSE_STATE_DIR. Install the timer with: sudo bash scripts/watch-timer
 function statusLines(ctx, webhook, now) {
   const { data } = ctx;
   const lines = [`Installation: ${describe(ctx)}`, `Slack webhook: ${webhook ? 'configured' : 'none (alerts are recorded, not posted)'}`];
+  let external;
+  try { external = readHeartbeatUrl(ctx.state); } catch { external = { problem: 'cannot be read' }; }
+  lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
   lines.push(`Time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} (daily jobs start at ${ctx.dailyAt} in this zone)`);
   const firing = Object.entries(data.alerts).filter(([, a]) => a.firingSince);
   lines.push(firing.length ? `Firing: ${firing.map(([id]) => id).join(', ')}` : 'Firing: none');
@@ -1073,6 +1143,7 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
   if (!command || ['--help', '-h', 'help'].includes(command)) { out(USAGE); return command ? 0 : 1; }
   const now = deps.now();
   if (command === 'run') { await runOnce(deps); return 0; }
+  if (command === 'daily') { await runDailyCommand(deps); return 0; }
   if (command === 'health') {
     if (args.length && !(args.length === 2 && args[0] === '--wait' && /^\d{1,4}$/.test(args[1]))) { out('health takes only --wait SECONDS.'); return 1; }
     const report = await runHealth(deps, { waitMs: args.length ? Number(args[1]) * 1000 : undefined });

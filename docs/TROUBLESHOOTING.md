@@ -183,6 +183,15 @@ it; only `functions` can.
   `journalctl -u <unit>.service`, where `<unit>` is the name `bash scripts/watch-timer.sh status` prints before
   `.timer` (`warehouse-<instance>-watch`, from `WAREHOUSE_PROJECT_NAME` in `config/compose.env`), and `node scripts/watch.mjs status` (the last Slack failure is
   shown there); `node scripts/watch.mjs test-message` posts a test message to the stored webhook.
+- **No backup is made, or `backup_missing` fires, while the checks run.** The daily backup is a second timer,
+  `<project>-daily.timer`, that the checker does not start. `bash scripts/watch-timer.sh status` shows whether it is
+  installed (an install from before it existed needs `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`
+  once); `journalctl -u <project>-daily.service` shows what the last pass did, and `node scripts/watch.mjs status` shows
+  `Daily pass last skipped ...` with the reason (a service the backup stops was down, or the operator lock was held).
+- **`bash scripts/watch-timer.sh status` says the Node.js is `MISSING`.** A Node.js upgrade removed the directory the units
+  pointed at. Install Node.js again, then
+  `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node /absolute/path/to/node`; the units then name
+  the link `~/.local/opt/node-current`, and the next upgrade only needs `ln -sfn <new prefix> ~/.local/opt/node-current`.
 - **Right after install, `npm run doctor` warns "... the monitoring checker has never run ...".** Expected for the first
   few minutes: the timer runs the checker every 5 minutes, and the warning goes away after its first run. Rerun doctor after
   that; if it persists, read `journalctl -u <unit>.service` as above.

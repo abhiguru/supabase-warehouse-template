@@ -61,6 +61,14 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
    The app needs no change.
 
+10. **Run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"` again.** The 5-minute checker no longer makes
+   the daily backup: that is now `watch.mjs daily`, run by its own timer `<project>-daily.timer` (same `--daily-at` time, kept from
+   the old unit). Until you rerun `install`, the old checker unit keeps running but **no backup is made**; `start.sh` and `doctor`
+   say so, and `backup_missing` fires after 26 hours. The command also writes `<project>-stack.service` (starts the services at boot,
+   so a power cut during the backup window no longer leaves them stopped) and moves the units to a Node.js link
+   (`~/.local/opt/node-current`) so a Node.js upgrade only moves the link. Optional: `config/heartbeat-url` for an external
+   dead-man switch ([docs/MONITORING.md](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)).
+
 ### Changed
 
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a

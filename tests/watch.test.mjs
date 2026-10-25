@@ -3,7 +3,7 @@
 // scripts/watch-timer.sh against shims (no systemd).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, utimesSync, copyFileSync, chmodSync, cpSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, utimesSync, copyFileSync, chmodSync, cpSync, symlinkSync, readlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -949,7 +949,8 @@ function dailyFake(h, spec = {}) {
 }
 const dailyCalls = h => h.calls.filter(c => /scripts\/watch-daily\.sh/.test(c));
 const at = (day, hh, mm = 0) => new Date(2026, 9, day, hh, mm).getTime();
-const daily = h => W.runOnce(h.deps, { checks: HEALTHY });
+// The daily pass is its own command (the 5-minute checker does not run it): the gate checks are replaced by fakes.
+const daily = h => W.runDailyCommand(h.deps, { checks: HEALTHY });
 
 test('daily: nothing before the time or after the 6-hour window; one pass a day inside it', async () => {
   const h = harness({ dailyAt: '02:30' });
@@ -977,7 +978,7 @@ test('daily: nothing before the time or after the 6-hour window; one pass a day 
     const late = harness({ dailyAt: '22:00' });
     try {
       late.seed(); dailyFake(late);
-      late.clock.t = at(20, 1, 0); await W.runOnce(late.deps, { checks: HEALTHY });
+      late.clock.t = at(20, 1, 0); await W.runDailyCommand(late.deps, { checks: HEALTHY });
       assert.equal(dailyCalls(late).length, 1);
       assert.equal(late.state_().dailyAttempt.date, '2026-10-19');
     } finally { clean(late); }
@@ -1000,11 +1001,11 @@ test('daily: runs only when the database and every service of this run are up', 
   try {
     h.seed(); dailyFake(h);
     h.clock.t = at(19, 3, 0);
-    const run = rows => W.runOnce(h.deps, { checks: stub(...rows) });
+    const run = rows => W.runDailyCommand(h.deps, { checks: stub(...rows) });
     await run([{ id: 'postgres_down', ok: false, summary: 'db down', detail: '' }]);
     await run([{ id: 'postgres_down', ok: true, summary: '', detail: '' }, { id: 'service_down:rest', ok: false, summary: 'rest down', detail: '' }]);
-    await W.runOnce(h.deps, { checks: [] });
-    await W.runOnce(h.deps, { checks: [['services', () => { throw new Error('compose failed'); }], HEALTHY[0]] });
+    await W.runDailyCommand(h.deps, { checks: [] });
+    await W.runDailyCommand(h.deps, { checks: [['services', () => { throw new Error('compose failed'); }], HEALTHY[0]] });
     assert.equal(dailyCalls(h).length, 0);
     assert.equal(h.state_().dailyAttempt?.count ?? 0, 0, 'a skipped pass is not an attempt');
     assert.match(h.state_().dailySkipped.reason, /not up/);
@@ -1045,7 +1046,8 @@ test('daily: a failed pass is retried after an hour, at most 3 times a day; the 
   try {
     h.seed(); dailyFake(h, { backup: 'failed', backup_message: 'pg_dump: error: connection refused password=supersecretpassword123' });
     const checks = [HEALTHY[0], ['backups', W.checkBackups]];
-    const pass = () => W.runOnce(h.deps, { checks });
+    // One trigger of the daily timer, then one run of the checker (which alone reports the failure).
+    const pass = async () => { await W.runDailyCommand(h.deps, { checks: HEALTHY }); await W.runOnce(h.deps, { checks, heal: null }); };
     h.clock.t = at(19, 2, 31); await pass();
     assert.equal(h.dailyCalls, 1);
     h.advance(30 * 60000); await pass();
@@ -1140,7 +1142,7 @@ test('daily: the backup location guard, a cut-short pass and a timeout', async (
     assert.equal(W.interpretDaily(ctx, { status: 75, stdout: '', stderr: '' }, { lock: 'held', done: '1' }).skipped, 'operator lock is held');
     // And through a whole run: a crash of the runner is a failure, and dailyRunning is cleared.
     h.seed(); h.clock.t = at(19, 3, 0);
-    await W.runOnce(h.deps, { checks: HEALTHY, daily: async () => { throw new Error('spawn exploded'); } });
+    await W.runDailyCommand(h.deps, { checks: HEALTHY, daily: async () => { throw new Error('spawn exploded'); } });
     assert.match(h.state_().lastDailyRun.backup.message, /the daily run crashed: spawn exploded/);
     assert.equal(h.state_().dailyRunning, null);
   } finally { clean(h); }
@@ -1159,8 +1161,183 @@ test('daily: an interrupted pass (dailyRunning left in the state) blocks for les
     assert.equal(h.dailyCalls, 1, '4 hours or more: stale, cleared, run');
     assert.equal(h.state_().dailyRunning, null);
     h.seed({ dailyRunning: { job: 'daily', startedAt: at(19, 6, 0) + 3 * HOUR } });
-    h.clock.t = at(19, 6, 30); await W.runOnce(h.deps, { checks: HEALTHY });
+    h.clock.t = at(19, 6, 30); await W.runDailyCommand(h.deps, { checks: HEALTHY });
     assert.equal(h.state_().dailyRunning, null, 'a start time in the future is stale');
+  } finally { clean(h); }
+});
+
+test('daily: the 5-minute run never starts the backup; the daily command does, behind the real gate checks', async () => {
+  const h = harness();
+  try {
+    h.seed(); dailyFake(h);
+    h.clock.t = at(19, 3, 0);
+    await W.runOnce(h.deps, { checks: HEALTHY });
+    await W.main(['run'], h.deps);
+    assert.equal(dailyCalls(h).length, 0, 'in the window, healthy, and still no backup from run');
+    // The command goes through the same database and service checks as the checker.
+    h.stateOf = { storage: 'exited|' };
+    assert.equal(await W.main(['daily'], h.deps), 0);
+    assert.equal(dailyCalls(h).length, 0, 'a service the backup stops is down: skipped');
+    assert.match(h.state_().dailySkipped.reason, /not up/);
+    assert.ok(h.calls.some(c => c.includes('pg_isready')) && h.calls.some(c => c.includes('compose.sh config --services')));
+    h.stateOf = {}; h.advance(60 * 1000);
+    assert.equal(await W.main(['daily'], h.deps), 0);
+    assert.equal(dailyCalls(h).length, 1);
+    assert.equal(h.state_().lastDailyRun.backup.result, 'ok');
+    assert.equal(await W.main(['daily'], h.deps), 0);
+    assert.equal(dailyCalls(h).length, 1, 'a trigger after a finished day does nothing');
+    const out = [];
+    await W.main(['--help'], { now: () => 0 }, t => out.push(t));
+    assert.match(out[0], /^Usage: node scripts\/watch\.mjs run \| daily \|/);
+    assert.match(out[0], /daily {9}the daily backup, verification, pruning and retention/);
+  } finally { clean(h); }
+});
+
+test('daily: the checker and the daily pass write different keys of the state file, so neither undoes the other', async () => {
+  const h = harness();
+  try {
+    h.seed(); dailyFake(h); h.clock.t = at(19, 3, 0);
+    // A checker run happens while the daily pass is in progress: its alert and its time must survive the pass's last save.
+    await W.runDailyCommand(h.deps, { checks: HEALTHY, daily: async ctx => {
+      assert.ok(h.state_().dailyRunning, 'the start of the pass is on disk');
+      h.advance(60 * 1000);
+      await W.runOnce(h.deps, { checks: stub(failing('during_backup')), heal: null });
+      const mid = h.state_();
+      assert.ok(mid.dailyRunning, 'the checker keeps the pass marked as running');
+      assert.equal(mid.alerts.during_backup.failingRuns, 1);
+      return W.dailyRunner(ctx);
+    } });
+    let state = h.state_();
+    assert.equal(state.lastDailyRun.backup.result, 'ok');
+    assert.equal(state.dailyRunning, null);
+    assert.equal(state.alerts.during_backup.failingRuns, 1, 'the checker\'s alert is still there');
+    assert.equal(state.lastRunAt, at(19, 3, 1));
+    // The other way round: a daily pass records its result while a checker run is between its load and its saves.
+    h.clock.t = at(20, 3, 0);
+    const slow = ['slow', async () => { await W.runDailyCommand(h.deps, { checks: HEALTHY, daily: async () => ({ skipped: 'the lock is held' }) }); return []; }];
+    await W.runOnce(h.deps, { checks: [slow], heal: null });
+    state = h.state_();
+    assert.match(state.dailySkipped.reason, /lock is held/, 'the checker\'s final save keeps the daily keys it finds on disk');
+    assert.equal(state.lastDailyRun.backup.result, 'ok', 'and yesterday\'s result');
+    assert.equal(state.lastRunAt, at(20, 3, 0));
+  } finally { clean(h); }
+});
+
+test('daily: a start a few seconds early on the hourly trigger still counts as an hour after the last attempt', async () => {
+  const h = harness();
+  try {
+    h.seed(); dailyFake(h, n => (n === 1 ? { backup: 'failed', backup_message: 'disk full' } : {}));
+    h.clock.t = at(19, 2, 30); await daily(h);
+    h.clock.t = at(19, 3, 29) + 59 * 1000 + 800; await daily(h);   // 59 min 59.8 s later
+    assert.equal(h.dailyCalls, 2, 'the next hourly trigger retries');
+    assert.equal(h.state_().lastDailyRun.backup.result, 'ok');
+    const early = harness();
+    try {
+      early.seed(); dailyFake(early, { backup: 'failed', backup_message: 'disk full' });
+      early.clock.t = at(19, 2, 30); await daily(early);
+      early.clock.t = at(19, 3, 20); await daily(early);
+      assert.equal(early.dailyCalls, 1, '50 minutes is too early');
+    } finally { clean(early); }
+  } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- external heartbeat
+const HB_URL = 'https://hc-ping.example.test/3f1c2d4e-0000-4000-8000-123456789abc';
+function heartbeatFile(h, text = `${HB_URL}\n`, mode = 0o600) {
+  const file = join(h.state, 'config/heartbeat-url');
+  writeFileSync(file, text, { mode }); chmodSync(file, mode);
+}
+function heartbeatSpy(h, answer = { ok: true, status: 200 }) {
+  const seen = []; h.logs = [];
+  h.deps.log = m => h.logs.push(m);
+  h.deps.fetch = async (url, options) => { seen.push({ url, options }); if (answer instanceof Error) throw answer; return typeof answer === 'function' ? answer(options) : answer; };
+  return seen;
+}
+test('external heartbeat: a GET with a 5 s limit at the end of each successful run, only when config/heartbeat-url exists', async () => {
+  const h = harness();
+  try {
+    const seen = heartbeatSpy(h);
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(seen.length, 0, 'no file, no ping');
+    heartbeatFile(h);
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, HB_URL);
+    assert.equal(seen[0].options.method, undefined, 'a GET');
+    assert.ok(seen[0].options.signal instanceof AbortSignal && seen[0].options.signal.aborted === false);
+    assert.equal(W.HEARTBEAT_TIMEOUT_MS, 5000);
+    // It is the last thing a run does: the state is saved first, and the Slack posts are made.
+    let order = '';
+    h.deps.fetch = async () => { order = existsSync(join(h.state, 'config/watch-state.json')) ? 'state-first' : 'ping-first'; return { ok: true, status: 200 }; };
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(order, 'state-first');
+    // While another operator command holds the lock the checker is still alive: it pings.
+    const again = heartbeatSpy(h);
+    h.holdLock();
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(again.length, 1);
+    h.releaseLock();
+    // The daily command and the other commands do not ping.
+    await W.main(['daily'], h.deps); await W.main(['status'], h.deps, () => {});
+    assert.equal(again.length, 1);
+    const out = []; await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /External heartbeat: configured/); assert.ok(!out[0].includes('hc-ping'));
+  } finally { clean(h); }
+});
+
+test('external heartbeat: a failed, refused or hung ping is logged without the URL, never alerted, and does not fail the run', async () => {
+  const h = harness();
+  try {
+    heartbeatFile(h);
+    heartbeatSpy(h, new Error(`connect ECONNREFUSED ${HB_URL}`));
+    const result = await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.ok(result.results);
+    assert.match(h.logs.join('\n'), /external heartbeat ping failed: connect ECONNREFUSED \[REDACTED\]/);
+    assert.ok(!h.logs.join('\n').includes('3f1c2d4e'));
+    heartbeatSpy(h, { ok: false, status: 502 });
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.match(h.logs.join('\n'), /ping failed: HTTP 502/);
+    // A hung server: the 5 s limit (shortened here) ends the wait.
+    // (AbortSignal.timeout does not keep the process alive; a real socket does. The test keeps it alive itself.)
+    heartbeatSpy(h, options => new Promise((_, reject) => {
+      const keep = setTimeout(() => {}, 5000);
+      options.signal.addEventListener('abort', () => { clearTimeout(keep); reject(new Error('The operation was aborted due to timeout')); });
+    }));
+    h.deps.heartbeatTimeoutMs = 40;
+    const started = Date.now();
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.ok(Date.now() - started < 3000);
+    assert.match(h.logs.join('\n'), /ping failed: The operation was aborted due to timeout/);
+    // Nothing reached Slack or the state: the dead-man switch is what tells the operator.
+    assert.deepEqual(h.posts.filter(p => /heartbeat|ping/i.test(p.text) && !/alive/.test(p.text)), []);
+    assert.ok(!JSON.stringify(h.state_()).includes('hc-ping'));
+    assert.deepEqual(Object.keys(h.state_().alerts), []);
+  } finally { clean(h); }
+});
+
+test('external heartbeat: the file must be a private https URL; a run that cannot save its state does not ping', async () => {
+  const h = harness();
+  try {
+    const seen = heartbeatSpy(h);
+    heartbeatFile(h, `${HB_URL}\n`, 0o644);
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.match(h.logs.join('\n'), /external heartbeat not sent: config\/heartbeat-url must be a regular file owned by the installation user with mode 0600/);
+    heartbeatFile(h, 'http://insecure.example.test/ping\n');
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.match(h.logs.join('\n'), /must hold one https URL/);
+    heartbeatFile(h, '\n');
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(seen.length, 0);
+    const out = []; await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /External heartbeat: not sent \(config\/heartbeat-url must hold one https URL\)/);
+    heartbeatFile(h, `\n# the dead-man switch\n${HB_URL}\n`);
+    h.fsApi = { openSync: () => { throw new Error('read-only file system'); }, writeSync() {}, fsyncSync() {}, closeSync() {}, renameSync() {}, unlinkSync() {} };
+    await assert.rejects(W.runOnce(h.deps, { checks: HEALTHY, heal: null }), /read-only/);
+    assert.equal(seen.length, 0, 'the run failed: no ping, so the dead-man switch fires');
+    h.fsApi = undefined;
+    await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, HB_URL, 'blank lines and # comments are skipped');
   } finally { clean(h); }
 });
 
@@ -1517,13 +1694,15 @@ function timerFixture() {
   const log = join(scratch, 'calls.log'); writeFileSync(log, '');
   writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\necho "systemctl $*" >> "$FAKE_LOG"\nif [ "$1" = is-active ]; then [ "${FAKE_ACTIVE:-0}" = 1 ] && exit 0; exit 3; fi\nif [ "$1" = is-enabled ]; then echo enabled; exit 0; fi\nexit 0\n', { mode: 0o755 });
   writeFileSync(join(bin, 'id'), '#!/bin/sh\nif [ "$1" = -u ]; then echo "${FAKE_UID:-$(/usr/bin/id -u)}"; exit 0; fi\nexec /usr/bin/id "$@"\n', { mode: 0o755 });
-  writeFileSync(join(bin, 'getent'), '#!/bin/sh\ncase "$1" in passwd) echo "installer:x:$2:$2::/home/installer:/bin/sh" ;; group) echo "installer:x:$2:" ;; esac\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'getent'), '#!/bin/sh\ncase "$1" in passwd) echo "installer:x:$2:$2::${FAKE_HOME:-/home/installer}:/bin/sh" ;; group) echo "installer:x:$2:" ;; esac\n', { mode: 0o755 });
   writeFileSync(join(bin, 'runuser'), '#!/bin/sh\nshift 3\nexec "$@"\n', { mode: 0o755 });
   writeFileSync(join(bin, 'docker'), '#!/bin/sh\nexit "${FAKE_DOCKER_EXIT:-0}"\n', { mode: 0o755 });
   const run = (args, extra = {}) => spawnSync('bash', [TIMER, ...args], { encoding: 'utf8',
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, WAREHOUSE_WATCH_UNIT_DIR: units, FAKE_LOG: log,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, WAREHOUSE_WATCH_UNIT_DIR: units, FAKE_LOG: log, FAKE_HOME: join(scratch, 'home'),
       SUDO_UID: String(process.getuid()), SUDO_GID: String(process.getgid()), ...extra } });
-  return { scratch, state, units, nodeDir, bin, run, asRoot: (args, extra) => run(args, { FAKE_UID: '0', ...extra }), calls: () => readFileSync(log, 'utf8') };
+  // The units name the link ~/.local/opt/node-current (install makes it), not the versioned directory.
+  const link = join(scratch, 'home/.local/opt/node-current');
+  return { scratch, state, units, nodeDir, link, bin, run, asRoot: (args, extra) => run(args, { FAKE_UID: '0', ...extra }), calls: () => readFileSync(log, 'utf8') };
 }
 
 test('watch-timer.sh install writes a service and a 5-minute persistent timer for the installation user', () => {
@@ -1545,27 +1724,49 @@ test('watch-timer.sh install writes a service and a 5-minute persistent timer fo
     assert.equal(existsSync(f.units), false, 'nothing written by the refusals');
     r = f.asRoot(['install', '--node', node, '--daily-at', '03:15']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /warehouse-acme-watch\.timer is enabled: checks every 5 minutes as installer; .* at 03:15/);
+    assert.match(r.stdout, /warehouse-acme-watch\.timer is enabled: checks every 5 minutes as installer \(it never runs a backup\)/);
+    assert.match(r.stdout, /warehouse-acme-daily\.timer is enabled: the daily backup, verification and retention run at 03:15/);
     assert.match(r.stdout, /Time zone: \S+/);
+    assert.match(r.stdout, new RegExp(`Node\\.js link: ${f.link} -> ${f.nodeDir.replace(/\/bin$/, '')} \\(v22\\.18\\.0\\)`));
     const service = readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8');
     const timer = readFileSync(join(f.units, 'warehouse-acme-watch.timer'), 'utf8');
     assert.match(service, /^Type=oneshot$/m);
     assert.match(service, /^User=installer$/m); assert.match(service, /^Group=installer$/m);
     assert.match(service, new RegExp(`^Environment=WAREHOUSE_STATE_DIR=${f.state}$`, 'm'));
-    assert.match(service, /^Environment=WAREHOUSE_WATCH_DAILY_AT=03:15$/m);
-    assert.match(service, new RegExp(`^Environment=PATH=${f.nodeDir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin$`, 'm'));
-    assert.match(service, new RegExp(`^ExecStart=${f.nodeDir}/node ${repo.replace(/\/$/, '')}/scripts/watch\\.mjs run$`, 'm'));
+    assert.doesNotMatch(service, /WAREHOUSE_WATCH_DAILY_AT/, 'the checker has no daily time: it never runs the backup');
+    assert.match(service, new RegExp(`^Environment=PATH=${f.link}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin$`, 'm'));
+    assert.match(service, new RegExp(`^ExecStart=${f.link}/bin/node ${repo.replace(/\/$/, '')}/scripts/watch\\.mjs run$`, 'm'));
+    assert.doesNotMatch(service, /node-v22/, 'no versioned Node path in the unit');
     assert.match(service, /^After=network-online\.target docker\.service$/m);
-    assert.match(service, /^TimeoutStartSec=4h$/m); assert.match(service, /^TimeoutStopSec=5min$/m);
+    assert.match(service, /^TimeoutStartSec=30min$/m); assert.match(service, /^TimeoutStopSec=5min$/m);
     assert.match(timer, /^OnCalendar=\*:0\/5$/m); assert.match(timer, /^Persistent=true$/m);
     assert.match(timer, /^Unit=warehouse-acme-watch\.service$/m); assert.match(timer, /^WantedBy=timers\.target$/m);
     assert.equal(statSync(join(f.units, 'warehouse-acme-watch.timer')).mode & 0o777, 0o644);
-    assert.match(f.calls(), /systemctl daemon-reload\nsystemctl enable --now warehouse-acme-watch\.timer/);
-    // A rerun without --daily-at keeps the installed time; with it, changes it.
+    assert.match(f.calls(), /systemctl daemon-reload\nsystemctl enable --now warehouse-acme-watch\.timer\nsystemctl enable --now warehouse-acme-daily\.timer/);
+    // The daily pass has its own service and timer: the chosen time and the 5 hours after it, persistent, 4 h limit.
+    const dailyService = readFileSync(join(f.units, 'warehouse-acme-daily.service'), 'utf8');
+    const dailyTimer = readFileSync(join(f.units, 'warehouse-acme-daily.timer'), 'utf8');
+    assert.match(dailyService, /^Type=oneshot$/m); assert.match(dailyService, /^User=installer$/m);
+    assert.match(dailyService, new RegExp(`^Environment=WAREHOUSE_STATE_DIR=${f.state}$`, 'm'));
+    assert.match(dailyService, /^Environment=WAREHOUSE_WATCH_DAILY_AT=03:15$/m);
+    assert.match(dailyService, new RegExp(`^Environment=PATH=${f.link}/bin:`, 'm'));
+    assert.match(dailyService, new RegExp(`^ExecStart=${f.link}/bin/node ${repo.replace(/\/$/, '')}/scripts/watch\\.mjs daily$`, 'm'));
+    assert.match(dailyService, /^TimeoutStartSec=4h$/m);
+    assert.match(dailyTimer, /^OnCalendar=\*-\*-\* 03,04,05,06,07,08:15:00$/m);
+    assert.match(dailyTimer, /^Persistent=true$/m); assert.match(dailyTimer, /^Unit=warehouse-acme-daily\.service$/m);
+    assert.match(dailyTimer, /^WantedBy=timers\.target$/m);
+    // A rerun without --daily-at keeps the installed time; with it, changes it. A midnight-crossing window wraps the hours.
     assert.equal(f.asRoot(['install', '--node', node]).status, 0);
-    assert.match(readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8'), /^Environment=WAREHOUSE_WATCH_DAILY_AT=03:15$/m);
+    assert.match(readFileSync(join(f.units, 'warehouse-acme-daily.service'), 'utf8'), /^Environment=WAREHOUSE_WATCH_DAILY_AT=03:15$/m);
     assert.equal(f.asRoot(['install', '--node', node, '--daily-at', '04:00']).status, 0);
-    assert.match(readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8'), /^Environment=WAREHOUSE_WATCH_DAILY_AT=04:00$/m);
+    assert.match(readFileSync(join(f.units, 'warehouse-acme-daily.service'), 'utf8'), /^Environment=WAREHOUSE_WATCH_DAILY_AT=04:00$/m);
+    assert.equal(f.asRoot(['install', '--node', node, '--daily-at', '22:30']).status, 0);
+    assert.match(readFileSync(join(f.units, 'warehouse-acme-daily.timer'), 'utf8'), /^OnCalendar=\*-\*-\* 22,23,00,01,02,03:30:00$/m);
+    // An install from before the daily unit kept the time in the checker's service: a rerun still finds it.
+    rmSync(join(f.units, 'warehouse-acme-daily.service'));
+    writeFileSync(join(f.units, 'warehouse-acme-watch.service'), readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8').replace('Environment=PATH', 'Environment=WAREHOUSE_WATCH_DAILY_AT=05:45\nEnvironment=PATH'));
+    assert.equal(f.asRoot(['install', '--node', node]).status, 0);
+    assert.match(readFileSync(join(f.units, 'warehouse-acme-daily.service'), 'utf8'), /^Environment=WAREHOUSE_WATCH_DAILY_AT=05:45$/m);
     // An installed unit that names another state (same project name) is refused.
     const other = join(f.scratch, 'elsewhere/acme');
     for (const dir of ['', 'config', 'public']) mkdirSync(join(f.scratch, 'elsewhere', dir ? `acme/${dir}` : 'acme'), { recursive: true, mode: 0o700 });
@@ -1600,14 +1801,74 @@ test('watch-timer.sh also writes a boot unit that runs compose up after docker.s
     // An install from before the boot unit existed: hint asks for a refresh and says what is missing.
     rmSync(join(f.units, 'warehouse-acme-stack.service'));
     const old = f.run(['hint']).stdout;
-    assert.match(old, /unit that starts the services at boot is not[^]*power cut[^]*install --state /);
+    assert.match(old, /these are missing: the unit that starts the services at boot[^]*power cut[^]*install --state /);
+    assert.doesNotMatch(old, /daily backup timer/, 'only what is missing is named');
     assert.match(f.run(['status']).stdout, /Boot unit: warehouse-acme-stack\.service is not installed/);
     f.asRoot(['install', '--node', node]);
     const gone = f.asRoot(['uninstall']);
     assert.equal(gone.status, 0, gone.stderr);
-    assert.match(gone.stdout, /Removed warehouse-acme-watch\.timer, warehouse-acme-watch\.service and warehouse-acme-stack\.service/);
+    assert.match(gone.stdout, /Removed warehouse-acme-watch\.timer, warehouse-acme-watch\.service, warehouse-acme-daily\.timer, warehouse-acme-daily\.service and warehouse-acme-stack\.service/);
     assert.deepEqual(readdirSync(f.units), []);
     assert.match(f.calls(), /systemctl disable warehouse-acme-stack\.service/);
+    assert.match(f.calls(), /systemctl disable --now warehouse-acme-watch\.timer warehouse-acme-daily\.timer/);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('watch-timer.sh: the units name a Node.js link that install moves, so a Node upgrade needs no new unit; hint and status say when the Node.js is gone', () => {
+  const f = timerFixture();
+  try {
+    const v22 = join(f.nodeDir, 'node');
+    assert.equal(f.asRoot(['install', '--node', v22]).status, 0);
+    assert.equal(readlinkSync(f.link), f.nodeDir.replace(/\/bin$/, ''));
+    const before = readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8');
+    // Node.js 24 is unpacked next to it and install is run with it: only the link moves, the units are byte for byte the same.
+    const v24dir = join(f.scratch, 'home/.local/opt/node-v24/bin'); mkdirSync(v24dir, { recursive: true });
+    writeFileSync(join(v24dir, 'node'), '#!/bin/sh\necho v24.1.0\n', { mode: 0o755 });
+    const up = f.asRoot(['install', '--node', join(v24dir, 'node')]);
+    assert.equal(up.status, 0, up.stderr);
+    assert.equal(readlinkSync(f.link), join(f.scratch, 'home/.local/opt/node-v24'));
+    assert.match(up.stdout, /\(v24\.1\.0\)/);
+    assert.equal(readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8'), before);
+    // Naming the link itself (as an operator who knows it might) gives the same link, not a loop.
+    assert.equal(f.asRoot(['install', '--node', join(f.link, 'bin/node')]).status, 0);
+    assert.equal(readlinkSync(f.link), join(f.scratch, 'home/.local/opt/node-v24'));
+    assert.match(f.run(['status']).stdout, new RegExp(`Node\\.js: ${f.link}/bin/node \\(v24\\.1\\.0\\)`));
+    assert.equal(f.run(['hint']).stdout, '', 'link and target are fine: silent');
+    // The old Node.js directory is tidied away, and then the new one too: the link points nowhere.
+    rmSync(join(f.scratch, 'home/.local/opt/node-v22'), { recursive: true });
+    assert.equal(f.run(['hint']).stdout, '', 'the link does not point at the removed directory');
+    rmSync(join(f.scratch, 'home/.local/opt/node-v24'), { recursive: true });
+    const gone = f.run(['hint']).stdout;
+    assert.match(gone, new RegExp(`the Node\\.js it runs is gone \\(${f.link}/bin/node - the link ${f.link} points at ${join(f.scratch, 'home/.local/opt/node-v24')}, which is not there\\)`));
+    assert.match(gone, /No check, Slack alert, daily backup or retention runs[^]*install --state \S+ --node \/absolute\/path\/to\/node/);
+    assert.match(f.run(['status']).stdout, /Node\.js: \S+\/bin\/node is MISSING - the link/);
+    // A link path that is a real directory is never replaced; a node outside a bin/ directory is named as it is.
+    const dir = join(f.scratch, 'home/.local/opt/node-current'); rmSync(dir); mkdirSync(dir);
+    const v26dir = join(f.scratch, 'home/.local/opt/node-v26/bin'); mkdirSync(v26dir, { recursive: true });
+    writeFileSync(join(v26dir, 'node'), '#!/bin/sh\necho v26.0.0\n', { mode: 0o755 });
+    let r = f.asRoot(['install', '--node', join(v26dir, 'node')]);
+    assert.equal(r.status, 1); assert.match(r.stderr, /exists and is not a link/);
+    rmSync(dir, { recursive: true });
+    const flat = join(f.scratch, 'flat'); mkdirSync(flat);
+    writeFileSync(join(flat, 'node'), '#!/bin/sh\necho v22.18.0\n', { mode: 0o755 });
+    r = f.asRoot(['install', '--node', join(flat, 'node')]);
+    assert.equal(r.status, 0, r.stderr); assert.match(r.stderr, /not in a bin\/ directory/);
+    assert.match(readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8'), new RegExp(`^ExecStart=${join(flat, 'node')} `, 'm'));
+    assert.equal(existsSync(f.link), false);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('watch-timer.sh hint: an install from before the daily timer asks for a refresh, because the checker no longer makes the backup', () => {
+  const f = timerFixture();
+  try {
+    f.asRoot(['install', '--node', join(f.nodeDir, 'node')]);
+    rmSync(join(f.units, 'warehouse-acme-daily.timer')); rmSync(join(f.units, 'warehouse-acme-daily.service'));
+    const out = f.run(['hint']).stdout;
+    assert.match(out, /these are missing: the daily backup timer \(the checker no longer makes the backup, so none is made without it\)\. Refresh it/);
+    assert.doesNotMatch(out, /boot/, 'the boot unit is there');
+    assert.match(f.run(['status']).stdout, /Daily timer: warehouse-acme-daily\.timer is not installed: no backup runs/);
+    rmSync(join(f.units, 'warehouse-acme-stack.service'));
+    assert.match(f.run(['hint']).stdout, /daily backup timer[^]*; the unit that starts the services at boot/);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 

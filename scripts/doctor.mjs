@@ -24,21 +24,14 @@ export function timerBase(state) {
   return `warehouse-h${createHash('sha256').update(state).digest('hex').slice(0, 12)}-watch`;
 }
 export const timerUnit = state => `${timerBase(state)}.timer`;
+// The daily backup has its own timer next to the checker's (scripts/watch-timer.sh, unit_sibling).
+export const dailyTimerUnit = state => `${timerBase(state).replace(/-watch$/, '-daily')}.timer`;
 const unitDir = () => process.env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system';
 export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this host but not delivered, so nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or pass --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
 
-// The daily pass (backup, verification, retention) holds the checker for up to 4 hours (the unit's TimeoutStartSec),
-// and the state file is not written meanwhile: a pass that started less than 4 hours ago explains the silence.
-export const DAILY_PASS_MAX_MS = 4 * 60 * 60 * 1000;
-function dailyPassRunning(state, now) {
-  try {
-    const started = JSON.parse(readFileSync(statePath(state), 'utf8'))?.dailyRunning?.startedAt;
-    return Number.isFinite(started) && now >= started && now - started < DAILY_PASS_MAX_MS;
-  } catch { return false; }
-}
-
 // Warnings about the checker: its timer is not active, it has not run in the last 15 minutes (the mtime of its
-// state file), no Slack webhook is stored. `timerActive(unit)` and `now` are injectable for tests.
+// state file; the daily backup is a separate unit, so a backup in progress does not explain a silent checker), the daily
+// backup timer is not active, no Slack webhook is stored. `timerActive(unit)` and `now` are injectable for tests.
 export function checkerWarnings(state, {
   now = Date.now(),
   timerActive = unit => spawnSync('systemctl', ['is-active', '--quiet', unit], { timeout: 10000 }).status === 0,
@@ -46,14 +39,20 @@ export function checkerWarnings(state, {
 } = {}) {
   const out = [];
   const unit = timerUnit(state);
-  if (!timerActive(unit)) {
+  const checkerActive = timerActive(unit);
+  if (!checkerActive) {
     out.push(`The monitoring checker is not running: ${unit} is not installed or not active, so no check, alert, daily backup or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   } else if (serviceText(unit) !== null && !serviceText(unit).split('\n').includes(`Environment=WAREHOUSE_STATE_DIR=${state}`)) {
     out.push(`${unit} is active but its service does not name this state (${state}), so this facility is not being checked. Install it for this state with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   } else {
     const modified = lstatSync(statePath(state), { throwIfNoEntry: false })?.mtimeMs;
     if (modified === undefined) out.push(`${unit} is active but the monitoring checker has never run (no ${statePath(state)}): check journalctl -u ${unit.replace(/\.timer$/, '.service')}.`);
-    else if (now - modified > CHECKER_MAX_AGE_MS && !dailyPassRunning(state, now)) out.push(`The monitoring checker last ran ${Math.round((now - modified) / 60000)} minutes ago (it should run every 5): check journalctl -u ${unit.replace(/\.timer$/, '.service')} and node scripts/watch.mjs status.`);
+    else if (now - modified > CHECKER_MAX_AGE_MS) out.push(`The monitoring checker last ran ${Math.round((now - modified) / 60000)} minutes ago (it should run every 5): check journalctl -u ${unit.replace(/\.timer$/, '.service')} and node scripts/watch.mjs status.`);
+  }
+  // The checker no longer makes the backup: without the daily timer (an install from before it was added) none is made.
+  // (When the checker's timer is missing, the install command it names brings the daily one too.)
+  if (checkerActive && !timerActive(dailyTimerUnit(state))) {
+    out.push(`The daily backup timer ${dailyTimerUnit(state)} is not installed or not active, so no backup, verification or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   }
   if (!storedWebhook(state)) out.push(NO_WEBHOOK_WARNING);
   return out;

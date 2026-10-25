@@ -1,9 +1,11 @@
 # Monitoring and Slack alerts
 
 One small program, `scripts/watch.mjs` (the checker), watches an installation. A systemd timer runs it every 5 minutes.
-It checks the host, the database, the containers, the gateway and the backups, tells the facility's own Slack channel
-when something is wrong, and once a day makes and verifies a backup and applies retention. There are no dashboards, no
-metric history and no extra containers: Slack is the only way an alert leaves the host.
+It checks the host, the database, the containers, the gateway and the backups, and tells the facility's own Slack channel
+when something is wrong. A second timer runs `watch.mjs daily` once a day: it makes and verifies a backup and applies
+retention. The two are separate units, so a long backup never holds the 5-minute checks off and a broken checker does not
+stop the backups. There are no dashboards, no metric history and no extra containers: Slack is the only way an alert leaves
+the host, and the optional external heartbeat ([below](#external-heartbeat-the-dead-man-switch)) is how a dead checker is noticed.
 
 ## Install the timer
 
@@ -19,7 +21,15 @@ after a move of the checkout, a change of Node.js, or to change the time of the 
 host's local time; default 02:30). `bash scripts/watch-timer.sh status` shows whether it is installed;
 `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` removes it.
 
-It writes a second unit, `<project>-stack.service`, that runs `compose up -d` for the default profile after `docker.service`
+The command writes four units: `<project>-watch.service` and `.timer` (the 5-minute checks), `<project>-daily.service` and
+`.timer` (the daily backup, below) and `<project>-stack.service` (boot, below). The units name the Node.js through a link,
+`~/.local/opt/node-current`, that `install` points at the Node.js prefix it was given, not at a versioned directory. After a
+Node.js upgrade, unpack the new version, run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node
+<new prefix>/bin/node` (or only `ln -sfn <new prefix> ~/.local/opt/node-current`), then `node scripts/watch.mjs status`. If the
+Node.js the units run is gone, `bash scripts/watch-timer.sh status` says `MISSING`, and `start.sh`, `setup.sh` and
+`db:restore-host` print the same fix. `npm run doctor` warns when the daily timer is not active.
+
+The boot unit, `<project>-stack.service`, runs `compose up -d` for the default profile after `docker.service`
 at every boot. Docker restarts a container that exited but not one that was stopped, and the daily backup stops four
 services for a while: after a power cut inside that time they would stay stopped until someone ran `start.sh`. The unit
 is enabled, not started, by `install` (so installing never changes what is running). A reboot therefore also undoes a
@@ -91,10 +101,13 @@ alone.
 
 ## The daily backup, verify, prune and retention
 
-Once a day, inside the 6 hours after the chosen time, and only while the database and every service are up, the checker
-runs `scripts/watch-daily.sh` under one operator lock: `scripts/backup.sh`, then `scripts/verify-restore.sh` on that
-backup, then it prunes older backups, then `scripts/retention.sh apply`. A failed pass is tried again after an hour, at
-most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
+Once a day, inside the 6 hours after the chosen time, and only while the database and the services the backup stops
+(`kong`, `functions`, `rest`, `storage`) are up, `watch.mjs daily` runs `scripts/watch-daily.sh` under one operator lock:
+`scripts/backup.sh`, then `scripts/verify-restore.sh` on that backup, then it prunes older backups, then
+`scripts/retention.sh apply`. An unhealthy optional service or the PDF renderer does not hold the backup back. The daily timer
+fires at the chosen time and at each of the 5 hours after it: a trigger with nothing to do (the day is done, or the last
+attempt was under an hour ago) exits at once, and a pass that failed or found the services down is tried again at the next
+one. At most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
 by hand there, with the same name pattern and instance, count towards the 7) and removes nothing if a backup is dated in
 the future. Retention runs only after a verified backup. The USB backup drive is separate
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
@@ -115,7 +128,8 @@ service as an alert. `stop.sh` says so when it finishes. The commands need `WARE
 
 ```bash
 node scripts/watch.mjs status          # what is firing, muted, the daily jobs, the time zone, the last Slack failure
-node scripts/watch.mjs run             # one pass now (what the timer does)
+node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
+node scripts/watch.mjs daily           # the daily pass now, if the window is open and today's is not done (what the daily timer does)
 node scripts/watch.mjs test-message    # post a test message to the stored webhook
 ```
 
@@ -141,6 +155,26 @@ The URL is stored at `config/slack-webhook-url` in the state (mode 0600; never i
 command line). The URL is not in a backup, so after `db:restore-host` run setup again to give it back. It is a secret
 that `rotate-keys.sh` does not change
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
+
+## External heartbeat (the dead-man switch)
+
+The checker cannot tell anyone that it has died. For that, give it the address of a dead-man switch: a service that expects
+a ping every few minutes and alerts (by email, SMS or its own app) when the pings stop. healthchecks.io is one (create a
+check with a 10 minute period and a 5 minute grace time); any address that does this works. Put the https URL it gives you in
+a private file:
+
+```bash
+install -m 600 /dev/null "$WAREHOUSE_STATE_DIR/config/heartbeat-url"
+$EDITOR "$WAREHOUSE_STATE_DIR/config/heartbeat-url"      # one line: the https URL
+```
+
+At the end of each successful 5-minute run the checker fetches that URL (a GET with a 5 second limit); it does so also when
+an operator command holds the lock (the checker is alive then). A run that fails before it has saved its state sends no ping,
+which is the point. If the ping itself fails, or the file is not mode 0600 and a single https URL, the reason is written to
+the log (`journalctl -u <project>-watch.service`) and `node scripts/watch.mjs status` shows `External heartbeat: not sent`; it
+is never an alert, because Slack may be what is down. The URL is a secret (anyone who knows it can fake the ping), is not in
+backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
+checker that runs but cannot reach Slack the other way round.
 
 ## What it does not cover
 
