@@ -137,3 +137,29 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   const picker = readFileSync(new URL('../scripts/ci-previous-tag.sh', import.meta.url), 'utf8');
   assert.match(picker, /skip=true/);
 });
+
+test('keep-alive: a monthly timestamp commit on its own branch, with write access in this workflow only', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  const keepAlive = readFileSync(new URL('keep-alive.yml', directory), 'utf8');
+  // Monthly (day of month 1), and by hand.
+  assert.match(keepAlive, /\n  schedule:\n    - cron: '\d+ \d+ 1 \* \*'\n  workflow_dispatch:\n/);
+  assert.match(keepAlive, /\npermissions:\n  contents: write\n/);
+  // Least privilege: no other workflow may write contents, and this one runs no secret or third-party action.
+  for (const file of readdirSync(directory)) {
+    if (file === 'keep-alive.yml') continue;
+    assert.doesNotMatch(readFileSync(new URL(file, directory), 'utf8'), /contents:\s*write/, `${file} does not need write access`);
+  }
+  assert.doesNotMatch(keepAlive, /secrets\./);
+  assert.deepEqual([...keepAlive.matchAll(/uses: ([a-z0-9-]+\/[a-z0-9-]+)@/g)].map(match => match[1]), ['actions/checkout']);
+  // main is protected, so the commit goes to the keep-alive branch (an orphan with the one file), never to main.
+  assert.match(keepAlive, /git push origin keep-alive\b/);
+  assert.doesNotMatch(keepAlive, /git push[^\n]*\bmain\b|origin main\b|HEAD:main/);
+  assert.match(keepAlive, /git checkout -q --orphan keep-alive/);
+  assert.match(keepAlive, /\.github\/KEEPALIVE/);
+  // A refused push fails the run and tells the owner what to do.
+  assert.match(keepAlive, /::error title=Keep-alive push refused::[^\n]*Owner action:[^\n]*bypass actor[^\n]*\n\s+exit 1\n/);
+  // The owner action is also on the dependencies page.
+  const dependencies = readFileSync(new URL('../docs/PRODUCTION_DEPENDENCIES.md', import.meta.url), 'utf8');
+  assert.match(dependencies, /keep-alive/);
+  assert.match(dependencies, /Owner action[^\n]*keep-alive/);
+});

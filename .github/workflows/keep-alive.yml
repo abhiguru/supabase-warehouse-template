@@ -1,0 +1,52 @@
+name: Keep scheduled workflows enabled
+
+# GitHub disables the scheduled workflows of a repository after 60 days without repository activity, and this project has one
+# maintainer who can be away that long (docs/PRODUCTION_DEPENDENCIES.md, "One maintainer"). The weekly CI run, the weekly Chrome
+# for Testing check and the Dependabot-driven checks would stop without a word. Once a month this workflow commits a timestamp
+# to .github/KEEPALIVE on the branch `keep-alive`: a push, which is repository activity.
+#
+# The branch, not main: main is protected (required status checks), so the token of a workflow cannot push to it, and letting
+# it would need a ruleset bypass for the Actions app. A new branch needs no change to any setting. `keep-alive` is an orphan
+# branch holding that one file; nothing ever merges it, and a push of it starts no other workflow (the token's pushes do not,
+# and ci.yml runs for main only).
+#
+# Least privilege: `contents: write` here and in no other workflow, with the job's own GITHUB_TOKEN; no secret, no third-party action.
+# If the push is ever refused (a ruleset now covers `keep-alive`), the run fails with the owner's action in its message.
+on:
+  schedule:
+    - cron: '41 5 1 * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Commit a timestamp to the keep-alive branch
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git ls-remote --exit-code --heads origin keep-alive > /dev/null; then
+            git fetch --depth=1 origin keep-alive
+            git checkout -q -B keep-alive FETCH_HEAD
+          else
+            git checkout -q --orphan keep-alive
+            git rm -rqf --ignore-unmatch .
+          fi
+          mkdir -p .github
+          printf 'Last keep-alive: %s\nThis file exists only so that the repository sees activity once a month (.github/workflows/keep-alive.yml).\n' "$stamp" > .github/KEEPALIVE
+          git add .github/KEEPALIVE
+          git commit -q -m "Keep-alive $stamp"
+          if ! git push origin keep-alive; then
+            echo '::error title=Keep-alive push refused::GitHub refused the push to the keep-alive branch, so scheduled workflows can be disabled after 60 days without activity. Owner action: in Settings, Rules, Rulesets (and Branches), make sure no rule covers the branch keep-alive, or add the GitHub Actions app as a bypass actor for that branch only; main stays protected. Then run this workflow again (Actions, Keep scheduled workflows enabled, Run workflow).'
+            exit 1
+          fi

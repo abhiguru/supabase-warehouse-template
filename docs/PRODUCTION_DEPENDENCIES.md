@@ -10,7 +10,9 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 - **Off-host backups.** An encrypted off-host destination, key custody, schedule, retention and RTO/RPO. Closed only by a
   full host-loss recovery onto a replacement host using the off-host copies alone, with measured recovery time and point.
   An encrypted USB archive has not been through a lost-host restore on real containers.
-  Local copies and the in-place restore do not close this.
+  Local copies and the in-place restore do not close this. **Destination decided (owner, 2026-10-25): the USB drive is the
+  only off-host copy; an unattended off-site copy is not required.** The recovery point is the last time the drive was
+  plugged in. What stays open is the drill: a lost-host restore from the USB copy alone, with the time and point measured.
 - **External alerts.** A delivered test message in the facility's Slack channel
   ([MONITORING.md](MONITORING.md)); the checker's one CI pass does not establish delivery. Incident contacts and an
   escalation policy are the operator's.
@@ -26,6 +28,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   recovery objectives, each with measured evidence.
 - **Domain and ingress.** The facility's own Cloudflare hostname and tunnel, a cellular check, and the private boundary
   kept (database, CUPS, the Tapo hubs and the sensor bridge never reachable from outside).
+- **Owner action: the `keep-alive` branch.** Once `.github/workflows/keep-alive.yml` is on `main`, run it by hand (Actions, Keep scheduled workflows enabled, Run workflow) and check that the branch `keep-alive` exists; it pushes there and not to `main` (protected by required status checks) so no setting changes, and if a push is ever refused the run fails with this fix: no ruleset may cover `keep-alive`, or add the GitHub Actions app as its bypass actor.
 - **SMS provider.** Handset receipt, administrator login and a live provider-outage check on the facility's own MSG91
   account, and acceptance of the SMS account lifecycle (pending customer, approval, login after approval).
 
@@ -62,3 +65,22 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994). It is not closed:
   capture redacted diagnostics, find the cause and fix it or document why it is not a defect. It was a CI observation, not
   a device failure.
+
+## Accepted by the owner
+
+- **One maintainer (owner, 2026-10-25).** One CODEOWNER can merge, tag and publish, and a second maintainer is not planned. The
+  risk is accepted. A running facility does not depend on GitHub; what waits while the owner is away is everything that moves a
+  facility to a newer release:
+  - Dependabot pull requests (base images, npm, Actions) stay open, so no image or package moves.
+  - Security fixes: no fix, no release tag and no release note with "Security" in its title ([SECURITY.md](../SECURITY.md)), no
+    backport to the previous minor. Operators follow tags, so a fix that reached `main` does not reach them until a tag is cut.
+  - Release tags and release notes, and with them every `bash upgrade.sh vX.Y.Z` the operators would run.
+  - Image-scan exception renewals: the six entries of `docker/image-exceptions.json` expire on **2027-01-15**. After that date
+    `npm run scan:images` and the release checklist fail until the owner reviews and renews them (CI does not run the scan). End-of-life
+    dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
+    functions image 2028-06-30.
+  - Mitigation: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`, so GitHub does
+    not disable the scheduled workflows (the weekly CI run, the weekly Chrome for Testing check) after 60 days without repository
+    activity. It does not merge, release or renew anything: it only keeps the checks running and the issue they open visible.
+- **USB-only off-host copy (owner, 2026-10-25).** See "Off-host backups" above: the destination is the encrypted USB drive; the
+  stale-copy risk (a facility lost between plug-ins loses the days since) is accepted.
