@@ -48,6 +48,11 @@ SELECT pg_temp.ss_assert((SELECT value FROM warehouse_security.auth_config WHERE
   AND (SELECT value FROM warehouse_security.auth_config WHERE key='session_max_seconds')='7776000',
   'the idle time is 30 days and the absolute limit 90 days by default');
 
+SELECT pg_temp.ss_assert((SELECT bool_and(NOT has_function_privilege(r,f,'EXECUTE'))
+    FROM unnest(ARRAY['anon','authenticated','service_role']) r,
+         unnest(ARRAY['warehouse_security.session_idle_seconds()','warehouse_security.session_max_seconds()']) f),
+  'the two session helpers are for the database functions only');
+
 -- 1. A new sign-in lasts the idle time (30 days), not the old 7 days.
 SELECT warehouse_security.issue_session(:'staff_user'::uuid)->>'refresh_token' AS r1 \gset
 SELECT pg_temp.ss_assert(pg_temp.ss_near((pg_temp.ss_session(:'r1')).expires_at, interval '30 days')
@@ -150,6 +155,34 @@ SELECT pg_temp.ss_assert(pg_temp.ss_near((pg_temp.ss_session(:'o1')).expires_at,
 UPDATE public.user_profiles SET active=true WHERE auth_user_id=:'off_user'::uuid;
 SELECT pg_temp.ss_assert((SELECT count(*)=1 FROM public.user_profiles WHERE auth_user_id=:'off_user'::uuid AND enrollment_status='approved'),
   'fixture: the switched-off profile is approved again');
+
+-- 8b. Reuse detection lasts as long as the session can. The record of a replaced token ends at the latest end the session can have
+--     (sign-in + the absolute limit), not at the end the session had when the token was replaced: a session that slides would outlive
+--     the second, and a stolen token the real holder presents weeks later would be refused without ending the session.
+--     The session was signed in 1 day ago and last used 29 days ago (it ends in 1 day); a thief replaces the real holder's token.
+SELECT warehouse_security.issue_session(:'staff_user'::uuid)->>'refresh_token' AS u1 \gset
+UPDATE warehouse_security.refresh_sessions SET created_at=now()-interval '1 day', expires_at=now()+interval '1 day'
+  WHERE token_hash=encode(extensions.digest(:'u1','sha256'),'hex');
+SELECT pg_temp.ss_refresh(:'u1') AS u2 \gset
+SELECT pg_temp.ss_assert(:'u2' ~ '^[0-9a-f]{64}$', 'the thief''s refresh succeeds: '||:'u2');
+SELECT (pg_temp.ss_session(:'u2')).id AS u_session \gset
+SELECT pg_temp.ss_assert(pg_temp.ss_near((SELECT expires_at FROM warehouse_security.consumed_refresh_tokens
+    WHERE token_hash=encode(extensions.digest(:'u1','sha256'),'hex')), interval '89 days'),
+  'the record of the replaced token lasts to 90 days after sign-in, 89 days from now (the end the session had when it was replaced, 1 day, would lose it)');
+-- Forty days pass while the thief keeps the session sliding (it now ends in 29 days); the records age with it.
+UPDATE warehouse_security.refresh_sessions SET created_at=created_at-interval '40 days', expires_at=now()+interval '29 days' WHERE id=:'u_session'::uuid;
+UPDATE warehouse_security.consumed_refresh_tokens SET consumed_at=consumed_at-interval '40 days', expires_at=expires_at-interval '40 days' WHERE session_id=:'u_session'::uuid;
+SELECT pg_temp.ss_assert(pg_temp.ss_refresh(:'u1') = 'refused: Invalid refresh token', 'the real holder presents the replaced token 40 days later: refused');
+SELECT pg_temp.ss_assert((SELECT count(*)=0 FROM warehouse_security.refresh_sessions WHERE id=:'u_session'::uuid),
+  'and the session is ended for both holders (reuse is found; the old code kept the thief''s session)');
+-- A record that is older than the longest possible session is gone: the replaced token is only refused.
+SELECT warehouse_security.issue_session(:'staff_user'::uuid)->>'refresh_token' AS v1 \gset
+SELECT pg_temp.ss_refresh(:'v1') AS v2 \gset
+SELECT (pg_temp.ss_session(:'v2')).id AS v_session \gset
+UPDATE warehouse_security.consumed_refresh_tokens SET consumed_at=now()-interval '100 days', expires_at=now()-interval '10 days' WHERE session_id=:'v_session'::uuid;
+SELECT pg_temp.ss_assert(pg_temp.ss_refresh(:'v1') = 'refused: Invalid refresh token'
+  AND (SELECT count(*)=1 FROM warehouse_security.refresh_sessions WHERE id=:'v_session'::uuid),
+  'a record past its end is gone: the token is refused and the session, which no record points at, is left alone');
 
 -- 9. Disabling a user from the administrator's screen still deletes every session of the user.
 SELECT pg_temp.ss_claims(:'admin_user'::uuid) AS admin_claims \gset

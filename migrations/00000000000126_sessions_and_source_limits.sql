@@ -11,53 +11,86 @@
 --       that is not a whole number means the default). Any other active profile keeps the fixed 7 days and is never extended (check_session
 --       admits only approved profiles anyway). A refresh of a session already past the absolute limit raises 'Session expired' (P0001),
 --       which the app already treats as a definitive end (src/config/supabaseConfig.ts, isDefinitiveRefreshException). Disabling a user
---       (update_user_status(false)) and every other place that deletes sessions are unchanged. refresh_jwt_token is unchanged; its
---       consumed-token rows keep the session's end at the time of the refresh, so reuse detection works as before.
+--       (update_user_status(false)) and every other place that deletes sessions are unchanged. refresh_jwt_token keeps its reuse rule, but
+--       the record of a replaced token now lasts as long as the session can (sign-in + session_max_seconds, never less than the end the
+--       session had), not only to the session's end at the time of the refresh. A session used to end within 7 days, so a record that
+--       ended with the session lost nothing; a session that slides would outlive such records, and a stolen, replaced token would just
+--       be refused instead of ending the session. Reuse detection therefore works as before. The two clamped values are read by the
+--       helpers session_idle_seconds() and session_max_seconds().
 --  * 2. Per-source OTP limits (item 20) are auth_config keys with the old literals as defaults: otp_source_hourly_sends (30 SMS requests
 --       an hour from one address, was `hourly_count >= 30` in operator_prepare_otp) and otp_source_hourly_failures (20 failed
---       verifications an hour from one address, was `verify_failures>=20` in operator_verify_otp). An optional otp_trusted_sources
---       (comma separated addresses or CIDR ranges, for example the facility's public Wi-Fi address) gets the higher
+--       verifications an hour from one address, was `verify_failures>=20` in operator_verify_otp). An optional otp_trusted_source_list
+--       (comma separated addresses or CIDR ranges, for example the facility's public Wi-Fi address; this is not the table
+--       otp_trusted_sources, which holds the networks a phone signed in from) gets the higher
 --       otp_trusted_source_hourly_sends (default 120); the effective send limit of such an address is the larger of the two. Entries that
---       are not an address are ignored. reset_otp_limits is unchanged (it clears the per-phone counts only).
+--       are not an address are ignored; a range wider than /8 (IPv4) or /32 (IPv6) is an error where the list is read, and a trigger
+--       refuses to store such a list, so a typo such as 0.0.0.0/0 cannot make the whole internet a trusted source.
+--       reset_otp_limits is unchanged (it clears the per-phone counts only).
 --  * 3. Break-glass sign-in for an administrator while SMS does not work. warehouse_security.break_glass_code(phone) is executable by
 --       supabase_admin only (session_user is checked as well, like bootstrap_first_admin). For an existing active, approved administrator
 --       with that number it stores a one-time six-digit code valid for 10 minutes (HMAC-SHA256 keyed with the JWT secret, as the SMS codes
 --       are: warehouse_security.break_glass_codes), ends any earlier open code of that number and returns the code once. The normal
 --       operator_verify_otp accepts it, after an SMS code has been looked for and not found, so the app and the edge function's verify path
---       need no change. It works once, ends after five wrong tries (from any address), and counts against the source's failure limit like
---       any wrong code. A break-glass sign-in does not mark the number as verified and does not add the address to the phone's trusted
---       sources. Issuing and using a code each write a row to public.audit_log (table_name 'break_glass', action CODE_ISSUED or SIGN_IN,
+--       need no change. Like the issue of a code, the verify path accepts it only for a person (not a service account, not a deleted
+--       profile). It works once, ends after five wrong tries (from any address), and counts against the source's failure limit like
+--       any wrong code. Making a code also clears that number's own per-phone request counters (the two statements of
+--       reset_otp_limits): they fill while the provider refuses requests (a refused request is not given back) and would refuse the
+--       administrator's request for the code screen. Per-source and warehouse-wide counters are not touched. A break-glass sign-in does
+--       not mark the number as verified and does not add the address to the phone's trusted sources. Issuing and using a code each write a row to public.audit_log (table_name 'break_glass', action CODE_ISSUED or SIGN_IN,
 --       user_id the administrator, ip_address the source of the sign-in; the code is never written). scripts/break-glass-admin.sh is the
 --       operator command. public.operator_break_glass_open(phone) (service_role only) tells the edge function whether a code is open, so
 --       that function can let the app reach its code screen while the SMS provider refuses the request (functions/operator-otp).
 --
--- operator_prepare_otp, operator_verify_otp are patched by markers (each before-text is not contained in its after-text, so running the
--- file's blocks again raises the count error); issue_session, small and rewritten in its core, is replaced as a whole. Nothing here
--- creates, alters or drops a role.
+-- operator_prepare_otp, operator_verify_otp and refresh_jwt_token are patched by markers (each before-text is not contained in its
+-- after-text, so running the file's blocks again raises the count error); issue_session, small and rewritten in its core, is replaced as
+-- a whole. Nothing here creates, alters or drops a role.
 
 -- ===== 1. Helpers for the per-source limits =====
 CREATE FUNCTION warehouse_security.address_in_list(p_ip inet, p_list text) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
     SET search_path TO 'pg_catalog'
     AS $$
-DECLARE entry text; n integer := 0;
+DECLARE entry text; listed inet; narrowest integer; n integer := 0; found boolean := false;
 BEGIN
-  IF p_ip IS NULL OR p_list IS NULL THEN RETURN false; END IF;
+  IF p_list IS NULL THEN RETURN false; END IF;
+  -- Every entry is read, also after a match, so a bad entry is an error for every address and not only for those that reach it.
   FOREACH entry IN ARRAY string_to_array(p_list, ',') LOOP
     n := n + 1;
     EXIT WHEN n > 100;
     entry := btrim(entry, E' \t\r\n');
     CONTINUE WHEN entry = '';
     BEGIN
-      IF p_ip <<= entry::inet THEN RETURN true; END IF;
-    EXCEPTION WHEN invalid_text_representation THEN NULL;
+      listed := entry::inet;
+    EXCEPTION WHEN invalid_text_representation THEN CONTINUE;
     END;
+    -- A range that wide is a typo (0.0.0.0/0 would make the whole internet a trusted source), never a facility.
+    narrowest := CASE WHEN family(listed) = 4 THEN 8 ELSE 32 END;
+    IF masklen(listed) < narrowest THEN
+      RAISE EXCEPTION 'otp_trusted_source_list: "%" covers too many addresses (an IPv4 range may be no wider than /8, an IPv6 range no wider than /32); correct the list in warehouse_security.auth_config', entry
+        USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_ip IS NOT NULL AND p_ip <<= listed THEN found := true; END IF;
   END LOOP;
-  RETURN false;
+  RETURN found;
 END $$;
 ALTER FUNCTION warehouse_security.address_in_list(p_ip inet, p_list text) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.address_in_list(p_ip inet, p_list text) FROM PUBLIC;
-COMMENT ON FUNCTION warehouse_security.address_in_list(p_ip inet, p_list text) IS 'Migration 126: true when the address lies inside one of the comma separated addresses or CIDR ranges of the list (at most 100 entries; an entry that is not an address is ignored).';
+COMMENT ON FUNCTION warehouse_security.address_in_list(p_ip inet, p_list text) IS 'Migration 126: true when the address lies inside one of the comma separated addresses or CIDR ranges of the list (at most 100 entries; an entry that is not an address is ignored; a range wider than /8 for IPv4 or /32 for IPv6 raises an error, whatever the address).';
+
+-- The list cannot be stored with a range that wide: the operator sees the error when typing it, not when the first request fails.
+CREATE FUNCTION warehouse_security.check_trusted_source_list() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog'
+    AS $$
+BEGIN
+  PERFORM warehouse_security.address_in_list(NULL, NEW.value);
+  RETURN NEW;
+END $$;
+ALTER FUNCTION warehouse_security.check_trusted_source_list() OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.check_trusted_source_list() FROM PUBLIC;
+COMMENT ON FUNCTION warehouse_security.check_trusted_source_list() IS 'Migration 126: trigger function of auth_config; refuses an otp_trusted_source_list that holds a range wider than /8 (IPv4) or /32 (IPv6).';
+CREATE TRIGGER auth_config_check_trusted_source_list BEFORE INSERT OR UPDATE OF key, value ON warehouse_security.auth_config
+    FOR EACH ROW WHEN (NEW.key = 'otp_trusted_source_list') EXECUTE FUNCTION warehouse_security.check_trusted_source_list();
 
 CREATE FUNCTION warehouse_security.otp_source_send_cap(p_ip inet) RETURNS integer
     LANGUAGE plpgsql STABLE
@@ -67,7 +100,7 @@ DECLARE cap_text text; cap integer; listed text;
 BEGIN
   SELECT value INTO cap_text FROM warehouse_security.auth_config WHERE key='otp_source_hourly_sends';
   cap := CASE WHEN cap_text ~ '^[0-9]{1,6}$' THEN greatest(cap_text::integer,1) ELSE 30 END;
-  SELECT value INTO listed FROM warehouse_security.auth_config WHERE key='otp_trusted_sources';
+  SELECT value INTO listed FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list';
   IF p_ip IS NOT NULL AND listed IS NOT NULL AND warehouse_security.address_in_list(p_ip,listed) THEN
     SELECT value INTO cap_text FROM warehouse_security.auth_config WHERE key='otp_trusted_source_hourly_sends';
     cap := greatest(cap, CASE WHEN cap_text ~ '^[0-9]{1,6}$' THEN cap_text::integer ELSE 120 END);
@@ -76,7 +109,7 @@ BEGIN
 END $$;
 ALTER FUNCTION warehouse_security.otp_source_send_cap(p_ip inet) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.otp_source_send_cap(p_ip inet) FROM PUBLIC;
-COMMENT ON FUNCTION warehouse_security.otp_source_send_cap(p_ip inet) IS 'Migration 126: SMS requests an hour allowed from one address: otp_source_hourly_sends (default 30), or the larger otp_trusted_source_hourly_sends (default 120) for an address in otp_trusted_sources.';
+COMMENT ON FUNCTION warehouse_security.otp_source_send_cap(p_ip inet) IS 'Migration 126: SMS requests an hour allowed from one address: otp_source_hourly_sends (default 30), or the larger otp_trusted_source_hourly_sends (default 120) for an address in otp_trusted_source_list.';
 
 CREATE FUNCTION warehouse_security.otp_source_failure_cap() RETURNS integer
     LANGUAGE plpgsql STABLE
@@ -91,7 +124,34 @@ ALTER FUNCTION warehouse_security.otp_source_failure_cap() OWNER TO supabase_adm
 REVOKE ALL ON FUNCTION warehouse_security.otp_source_failure_cap() FROM PUBLIC;
 COMMENT ON FUNCTION warehouse_security.otp_source_failure_cap() IS 'Migration 126: failed verifications an hour allowed from one address: otp_source_hourly_failures (default 20).';
 
--- Seeds: the defaults of the code, so the values can be seen and changed. Existing values are kept. otp_trusted_sources is not seeded:
+-- Session lifetime, the clamped values (read by issue_session and by the patched refresh_jwt_token).
+CREATE FUNCTION warehouse_security.session_idle_seconds() RETURNS integer
+    LANGUAGE plpgsql STABLE
+    SET search_path TO 'pg_catalog'
+    AS $$
+DECLARE cfg text;
+BEGIN
+  SELECT value INTO cfg FROM warehouse_security.auth_config WHERE key = 'session_idle_seconds';
+  RETURN least(greatest(CASE WHEN cfg ~ '^[0-9]{1,9}$' THEN cfg::integer ELSE 2592000 END, 3600), 31536000);
+END $$;
+ALTER FUNCTION warehouse_security.session_idle_seconds() OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.session_idle_seconds() FROM PUBLIC;
+COMMENT ON FUNCTION warehouse_security.session_idle_seconds() IS 'Migration 126: seconds a session of an approved profile lasts after its last refresh: session_idle_seconds (default 2592000), kept between 1 hour and 365 days.';
+
+CREATE FUNCTION warehouse_security.session_max_seconds() RETURNS integer
+    LANGUAGE plpgsql STABLE
+    SET search_path TO 'pg_catalog'
+    AS $$
+DECLARE cfg text;
+BEGIN
+  SELECT value INTO cfg FROM warehouse_security.auth_config WHERE key = 'session_max_seconds';
+  RETURN least(greatest(CASE WHEN cfg ~ '^[0-9]{1,9}$' THEN cfg::integer ELSE 7776000 END, warehouse_security.session_idle_seconds()), 94608000);
+END $$;
+ALTER FUNCTION warehouse_security.session_max_seconds() OWNER TO supabase_admin;
+REVOKE ALL ON FUNCTION warehouse_security.session_max_seconds() FROM PUBLIC;
+COMMENT ON FUNCTION warehouse_security.session_max_seconds() IS 'Migration 126: seconds after sign-in that a session of an approved profile can last at most: session_max_seconds (default 7776000), never below the idle time, at most 1095 days.';
+
+-- Seeds: the defaults of the code, so the values can be seen and changed. Existing values are kept. otp_trusted_source_list is not seeded:
 -- it does not exist until the operator sets it.
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
   ('session_idle_seconds','2592000'),('session_max_seconds','7776000'),
@@ -103,16 +163,12 @@ CREATE OR REPLACE FUNCTION warehouse_security.issue_session(p_user uuid, p_sessi
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public', 'extensions'
     AS $$
-DECLARE refresh text; session_id uuid; sliding boolean; cfg text; idle_seconds integer; max_seconds integer;
+DECLARE refresh text; session_id uuid; sliding boolean; idle_seconds integer := warehouse_security.session_idle_seconds(); max_seconds integer := warehouse_security.session_max_seconds();
 BEGIN
   -- An active account is required, as before. Only an approved one slides (migration 126); any other active profile keeps the fixed
   -- 7 days of a new session and is never extended.
   SELECT p.enrollment_status = 'approved' INTO sliding FROM public.user_profiles p WHERE p.auth_user_id = p_user AND p.active;
   IF NOT FOUND THEN RAISE EXCEPTION 'Active account required' USING ERRCODE = 'P0002'; END IF;
-  SELECT value INTO cfg FROM warehouse_security.auth_config WHERE key = 'session_idle_seconds';
-  idle_seconds := least(greatest(CASE WHEN cfg ~ '^[0-9]{1,9}$' THEN cfg::integer ELSE 2592000 END, 3600), 31536000);
-  SELECT value INTO cfg FROM warehouse_security.auth_config WHERE key = 'session_max_seconds';
-  max_seconds := least(greatest(CASE WHEN cfg ~ '^[0-9]{1,9}$' THEN cfg::integer ELSE 7776000 END, idle_seconds), 94608000);
   refresh := encode(extensions.gen_random_bytes(32), 'hex');
   IF p_session IS NULL THEN
     INSERT INTO warehouse_security.refresh_sessions(user_id, token_hash, expires_at)
@@ -131,6 +187,35 @@ BEGIN
   END IF;
   RETURN warehouse_security.sign_access_token(p_user, session_id) || jsonb_build_object('refresh_token', refresh);
 END $$;
+
+-- The record of a replaced token (reuse detection) lasts as long as the session can, not only to the session's end at the time of the
+-- refresh: that end was fixed for 7 days before, so a session never outlived its records; a sliding session would. The reuse rule itself
+-- (the grace retry, the revoking of the session) is untouched.
+DO $patch$
+DECLARE
+  v_def text;
+  v_old constant text[] := ARRAY[
+    $m$VALUES (supplied_hash, session_row.id, session_row.expires_at, now());$m$
+  ];
+  v_new constant text[] := ARRAY[
+    $m$VALUES (supplied_hash, session_row.id,
+      -- Migration 126: kept as long as the session can last (it slides), so a replaced token is still recognised as reuse.
+      greatest(session_row.expires_at, session_row.created_at + make_interval(secs => warehouse_security.session_max_seconds())), now());$m$
+  ];
+  v_count integer;
+  i integer;
+BEGIN
+  v_def := pg_get_functiondef('public.refresh_jwt_token(text)'::regprocedure);
+  FOR i IN 1 .. array_length(v_old, 1) LOOP
+    v_count := (length(v_def) - length(replace(v_def, v_old[i], ''))) / length(v_old[i]);
+    IF v_count <> 1 THEN
+      RAISE EXCEPTION 'refresh_jwt_token: expected marker % once, found % times', i, v_count;
+    END IF;
+    v_def := replace(v_def, v_old[i], v_new[i]);
+  END LOOP;
+  EXECUTE v_def;
+END
+$patch$;
 
 -- ===== 3. Break-glass codes =====
 CREATE TABLE warehouse_security.break_glass_codes (
@@ -179,6 +264,12 @@ BEGIN
     WHERE phone_number=phone AND used_at IS NULL AND expires_at>now();
   INSERT INTO warehouse_security.break_glass_codes(id,user_id,phone_number,code_hash,expires_at)
   VALUES (new_id,target.auth_user_id,phone,encode(extensions.hmac(phone||':'||new_code||':'||new_id::text,secret,'sha256'),'hex'),valid_until);
+  -- The administrator's request for the code screen must not be refused by this number's own counters: they fill while the provider
+  -- refuses requests (a refused request is not given back), and an administrator who tried several times before calling is at the limit.
+  -- The two statements of warehouse_security.reset_otp_limits (this number only; per-source and warehouse-wide counts are untouched).
+  DELETE FROM warehouse_security.otp_send_log WHERE phone_number=phone;
+  UPDATE public.otp_rate_limits SET hourly_count=0,daily_count=0,last_reset_hour=now(),last_reset_day=now(),updated_at=now()
+    WHERE phone_number=phone;
   INSERT INTO public.audit_log(table_name,action,user_id,new_data)
   VALUES ('break_glass','CODE_ISSUED',target.auth_user_id,
     jsonb_build_object('mobile',phone,'name',target.name,'code_id',new_id,'expires_at',valid_until));
@@ -186,7 +277,7 @@ BEGIN
 END $$;
 ALTER FUNCTION warehouse_security.break_glass_code(p_phone text) OWNER TO supabase_admin;
 REVOKE ALL ON FUNCTION warehouse_security.break_glass_code(p_phone text) FROM PUBLIC, anon, authenticated, service_role;
-COMMENT ON FUNCTION warehouse_security.break_glass_code(p_phone text) IS 'Migration 126: for an active, approved administrator, makes a one-time six-digit sign-in code valid for 10 minutes and returns it once (jsonb: code, name, expires_at, valid_minutes). Executable by supabase_admin only; run it with scripts/break-glass-admin.sh.';
+COMMENT ON FUNCTION warehouse_security.break_glass_code(p_phone text) IS 'Migration 126: for an active, approved administrator, makes a one-time six-digit sign-in code valid for 10 minutes and returns it once (jsonb: code, name, expires_at, valid_minutes); it also clears that number''s per-phone OTP request counters, like reset_otp_limits. Executable by supabase_admin only; run it with scripts/break-glass-admin.sh.';
 
 CREATE FUNCTION public.operator_break_glass_open(p_phone_number text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -195,6 +286,7 @@ CREATE FUNCTION public.operator_break_glass_open(p_phone_number text) RETURNS bo
   SELECT EXISTS (
     SELECT 1 FROM warehouse_security.break_glass_codes b
     JOIN public.user_profiles a ON a.auth_user_id=b.user_id AND a.mobile=b.phone_number AND a.role='admin' AND a.active AND a.enrollment_status='approved'
+      AND NOT a.is_service_account AND a.deleted_at IS NULL
     WHERE b.phone_number=warehouse_security.normalize_phone(p_phone_number) AND b.used_at IS NULL AND b.expires_at>now() AND b.attempts<5);
 $$;
 ALTER FUNCTION public.operator_break_glass_open(p_phone_number text) OWNER TO supabase_admin;
@@ -252,11 +344,12 @@ $m$,
 BEGIN
 $m$,
     $m$  -- Migration 126: a break-glass code (warehouse_security.break_glass_code) is looked for only when no SMS code matched. It belongs
-  -- to an active, approved administrator with this number, works once, expires after 10 minutes and ends after five wrong tries from
-  -- any address. A wrong try is also a failed verification of the source, below.
+  -- to an active, approved administrator (a person: not a service account, not deleted) with this number, works once, expires after 10
+  -- minutes and ends after five wrong tries from any address. A wrong try is also a failed verification of the source, below.
   IF challenge.id IS NULL AND p_otp_code ~ '^[0-9]{6}$' THEN
     SELECT b.id, b.code_hash INTO glass_id, glass_hash FROM warehouse_security.break_glass_codes b
       JOIN public.user_profiles a ON a.auth_user_id=b.user_id AND a.mobile=phone AND a.role='admin' AND a.active AND a.enrollment_status='approved'
+        AND NOT a.is_service_account AND a.deleted_at IS NULL
       WHERE b.phone_number=phone AND b.used_at IS NULL AND b.expires_at>now() AND b.attempts<5
       ORDER BY b.created_at DESC LIMIT 1 FOR UPDATE OF b;
     IF glass_id IS NOT NULL THEN

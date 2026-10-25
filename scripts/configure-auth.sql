@@ -33,7 +33,7 @@ INSERT INTO warehouse_security.auth_config(key,value) VALUES
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 -- Session lifetime and the per-source OTP limits (migration 126, which seeds the same values). They are seeded once and never
 -- rewritten: unlike access_seconds above, which setup sets from JWT_EXP on every run, they have no setting in compose.env, so a rerun
--- keeps the value an operator chose and only puts back one that was removed. otp_trusted_sources is not seeded: it does not exist until
+-- keeps the value an operator chose and only puts back one that was removed. otp_trusted_source_list is not seeded: it does not exist until
 -- the operator lists the facility's public address (docs/OPERATOR_INSTALL.md, "Authentication and OTP limits").
 INSERT INTO warehouse_security.auth_config(key,value) VALUES
   ('session_idle_seconds','2592000'),('session_max_seconds','7776000'),

@@ -1,9 +1,10 @@
 -- Migration 126: the per-source OTP limits are auth_config keys (owner decision of 2026-10-25, review item 20).
 -- otp_source_hourly_sends (default 30) is how many SMS requests one address may make in an hour over all phones,
--- otp_source_hourly_failures (default 20) how many failed verifications, and an address in the optional otp_trusted_sources list
+-- otp_source_hourly_failures (default 20) how many failed verifications, and an address in the optional otp_trusted_source_list
 -- (addresses and CIDR ranges, for the facility's Wi-Fi) gets otp_trusted_source_hourly_sends (default 120) instead. Before, 30 and 20
--- were literals in operator_prepare_otp and operator_verify_otp. Fictional data; addresses are documentation ranges; runs only in
--- migrations.sh's disposable, network-disabled database; every fixture row rolls back.
+-- were literals in operator_prepare_otp and operator_verify_otp. A range wider than /8 (IPv4) or /32 (IPv6) in the list is an error.
+-- Fictional data; addresses are documentation ranges; runs only in migrations.sh's disposable, network-disabled database; every fixture
+-- row rolls back.
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE FUNCTION pg_temp.sl_assert(ok boolean, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -49,14 +50,17 @@ INSERT INTO public.user_profiles(auth_user_id,mobile,name,role,active,enrollment
 SELECT pg_temp.sl_assert((SELECT value FROM warehouse_security.auth_config WHERE key='otp_source_hourly_sends')='30'
   AND (SELECT value FROM warehouse_security.auth_config WHERE key='otp_source_hourly_failures')='20'
   AND (SELECT value FROM warehouse_security.auth_config WHERE key='otp_trusted_source_hourly_sends')='120'
-  AND NOT EXISTS (SELECT 1 FROM warehouse_security.auth_config WHERE key='otp_trusted_sources'),
+  AND NOT EXISTS (SELECT 1 FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list'),
   'the keys hold 30, 20 and 120 and there is no trusted list until the operator makes one');
 SELECT pg_temp.sl_assert(NOT has_function_privilege('anon','warehouse_security.otp_source_send_cap(inet)','EXECUTE')
   AND NOT has_function_privilege('authenticated','warehouse_security.otp_source_send_cap(inet)','EXECUTE')
   AND NOT has_function_privilege('service_role','warehouse_security.otp_source_send_cap(inet)','EXECUTE')
   AND NOT has_function_privilege('authenticated','warehouse_security.otp_source_failure_cap()','EXECUTE')
-  AND NOT has_function_privilege('authenticated','warehouse_security.address_in_list(inet,text)','EXECUTE'),
-  'the three helpers are for the database functions only');
+  AND NOT has_function_privilege('authenticated','warehouse_security.address_in_list(inet,text)','EXECUTE')
+  AND NOT has_function_privilege('anon','warehouse_security.check_trusted_source_list()','EXECUTE')
+  AND NOT has_function_privilege('authenticated','warehouse_security.check_trusted_source_list()','EXECUTE')
+  AND NOT has_function_privilege('service_role','warehouse_security.check_trusted_source_list()','EXECUTE'),
+  'the helpers and the trigger function are for the database functions only');
 
 -- 1. The helper functions, with the values the operator might type.
 SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap(NULL)=30 AND warehouse_security.otp_source_send_cap('203.0.113.1')=30
@@ -100,7 +104,7 @@ SELECT pg_temp.sl_assert(pg_temp.sl_burst('198.51.100.202',5)=3,'raising the key
 
 -- 4. Trusted addresses: a list of addresses and ranges, a higher limit; the larger of the two limits is used.
 UPDATE warehouse_security.auth_config SET value='3' WHERE key='otp_source_hourly_sends';
-INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_sources','203.0.113.0/28, 198.51.100.250 ,not-an-address, 2001:db8::/32');
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_list','203.0.113.0/28, 198.51.100.250 ,not-an-address, 2001:db8::/32');
 UPDATE warehouse_security.auth_config SET value='5' WHERE key='otp_trusted_source_hourly_sends';
 SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('203.0.113.5')=5 AND warehouse_security.otp_source_send_cap('198.51.100.250')=5
   AND warehouse_security.otp_source_send_cap('2001:db8::1')=5 AND warehouse_security.otp_source_send_cap('203.0.113.17')=3
@@ -115,11 +119,65 @@ DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_source_hourly_
 SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('203.0.113.5')=120 AND warehouse_security.otp_source_send_cap('203.0.113.17')=3,
   'without the key a listed address gets 120');
 SELECT pg_temp.sl_assert(pg_temp.sl_burst('203.0.113.6',20)=20,'a listed address makes far more than 30 requests when the ordinary limit is lower');
-DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_sources';
+DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list';
 SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('203.0.113.5')=3,'without the list nobody is trusted');
-INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_sources','');
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_list','');
 SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('203.0.113.5')=3,'an empty list trusts nobody');
 UPDATE warehouse_security.auth_config SET value='30' WHERE key='otp_source_hourly_sends';
+
+-- 4b. A typo must not turn the internet into a trusted source: a range wider than /8 (IPv4) or /32 (IPv6) is an error where the list is
+--     read, whatever the address, also when an earlier entry matches, and the list cannot be stored with one.
+-- 'ok', or the SQLSTATE and message of the error the statement raises.
+CREATE FUNCTION pg_temp.sl_error(statement text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE statement;
+  RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE||': '||SQLERRM;
+END $$;
+DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list';
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('203.0.113.5','0.0.0.0/0')$q$)
+    LIKE '22023: otp_trusted_source_list: "0.0.0.0/0" covers too many addresses%'
+  AND pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('2001:db8::1','::/0')$q$) LIKE '22023: %"::/0" covers too many addresses%'
+  AND pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('10.1.2.3','10.0.0.0/7')$q$) LIKE '22023: %"10.0.0.0/7" covers too many addresses%'
+  AND pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('2001:db8::1','2001:db8::/31')$q$) LIKE '22023: %"2001:db8::/31" covers too many addresses%',
+  'a range wider than /8 (IPv4) or /32 (IPv6) is refused with a clear error');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('10.1.2.3','10.0.0.0/8')$q$)='ok'
+  AND warehouse_security.address_in_list('10.1.2.3','10.0.0.0/8') AND warehouse_security.address_in_list('2001:db8::1','2001:db8::/32'),
+  'a /8 (IPv4) and a /32 (IPv6) are the widest ranges that are accepted');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$SELECT warehouse_security.address_in_list(NULL,'203.0.113.5, 0.0.0.0/0')$q$) LIKE '22023: %'
+  AND pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('203.0.113.5','203.0.113.5, 0.0.0.0/0')$q$) LIKE '22023: %'
+  AND pg_temp.sl_error($q$SELECT warehouse_security.address_in_list('198.51.100.9','203.0.113.5, nonsense, 0.0.0.0/0')$q$) LIKE '22023: %',
+  'the whole list is read: a wide entry is an error for a missing address, for a matching one and for one that matches nothing');
+-- Stored through the trigger: refused when typed, and the old value stays.
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_list','203.0.113.0/28, 0.0.0.0/0')$q$) LIKE '22023: %covers too many addresses%',
+  'the trigger refuses to store a list with 0.0.0.0/0');
+SELECT pg_temp.sl_assert(NOT EXISTS (SELECT 1 FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list'),'the refused list was not stored');
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_list','203.0.113.0/28');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$UPDATE warehouse_security.auth_config SET value='::/0' WHERE key='otp_trusted_source_list'$q$) LIKE '22023: %"::/0" covers%'
+  AND (SELECT value FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list')='203.0.113.0/28','the trigger refuses an update to ::/0 and the old list stays');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$UPDATE warehouse_security.auth_config SET value='203.0.113.0/24, 10.0.0.0/8' WHERE key='otp_trusted_source_list'$q$)='ok',
+  'a list of ordinary ranges is stored');
+SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('203.0.113.200')=120 AND warehouse_security.otp_source_send_cap('198.51.100.9')=30,
+  'and it works');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$UPDATE warehouse_security.auth_config SET value='0.0.0.0/0' WHERE key='otp_source_hourly_sends'$q$)='ok',
+  'the trigger looks at the list only: other keys are unaffected');
+UPDATE warehouse_security.auth_config SET value='30' WHERE key='otp_source_hourly_sends';
+-- A wide list that got into the table anyway (a restore, a trigger switched off) fails closed where it is read: the request is refused
+-- with the error, never served from a list that trusts everybody.
+SET LOCAL session_replication_role = replica;
+UPDATE warehouse_security.auth_config SET value='0.0.0.0/0' WHERE key='otp_trusted_source_list';
+RESET session_replication_role;
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$SELECT warehouse_security.otp_source_send_cap('198.51.100.9')$q$) LIKE '22023: %covers too many addresses%'
+  AND pg_temp.sl_error($q$SELECT public.operator_prepare_otp('9888700001','198.51.100.9')$q$) LIKE '22023: %covers too many addresses%',
+  'a wide list that is already stored raises where it is read, also inside operator_prepare_otp');
+SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap(NULL)=30,'a request without a source address never reads the list');
+DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list';
+SELECT pg_temp.sl_assert(warehouse_security.otp_source_send_cap('198.51.100.9')=30,'with the list removed the request is served again');
+-- A wide value cannot be moved under the list's name by renaming its key either.
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('sl_scratch','0.0.0.0/0');
+SELECT pg_temp.sl_assert(pg_temp.sl_error($q$UPDATE warehouse_security.auth_config SET key='otp_trusted_source_list' WHERE key='sl_scratch'$q$) LIKE '22023: %covers too many addresses%',
+  'renaming a key to otp_trusted_source_list is checked too');
+DELETE FROM warehouse_security.auth_config WHERE key='sl_scratch';
 
 -- 5. Failed verifications: the key decides how many an address may make an hour.
 UPDATE warehouse_security.auth_config SET value='3' WHERE key='otp_source_hourly_failures';
