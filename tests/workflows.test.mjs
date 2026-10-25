@@ -103,3 +103,37 @@ test('the renderer job runs only for a change that can move it, builds the image
   assert.match(renderer, /IMAGE=pdf-renderer:ci bash docker\/pdf-renderer\/test\/integration\.sh/);
   assert.doesNotMatch(ci, /\n  pdf-golden:/, 'the golden job is part of pdf-renderer');
 });
+
+test('operator-upgrade installs the previous release, moves it to the commit with upgrade.sh --ref, and checks the result', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = ci.slice(ci.indexOf('\n  operator-upgrade:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.ok(job.length > 100, 'the job exists');
+  assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/, 'same runner rule as operator-install');
+  assert.match(job, /\n    needs: validate\n/);
+  // Tags are needed to find the previous release.
+  assert.match(job, /\n          fetch-depth: 0\n/);
+  assert.match(job, /run: bash scripts\/ci-previous-tag\.sh \| tee -a "\$GITHUB_OUTPUT"/);
+  // When there is no usable tag the job says so and does not fail.
+  assert.match(job, /if: steps\.previous\.outputs\.skip == 'true'[^]*::notice title=Upgrade drill skipped::/);
+  for (const step of ['Install the previous release', 'Upgrade to this commit with upgrade.sh', 'The upgraded installation is healthy and the same facility']) {
+    assert.match(job, new RegExp(`- name: ${step}\\n        if: steps\\.previous\\.outputs\\.skip != 'true'\\n`), step);
+  }
+  // The previous release is installed with its own setup.sh, then the change's upgrade.sh moves it: a dry run first, then the move.
+  assert.match(job, /git -C backend worktree add --detach "\$previous" "\$PREVIOUS_TAG"/);
+  assert.match(job, /cp backend\/upgrade\.sh "\$previous\/upgrade\.sh"/);
+  assert.match(job, /bash setup\.sh --operator --state-dir "\$state"/);
+  assert.match(job, /bash upgrade\.sh --dry-run --ref "\$ref"[^]*bash upgrade\.sh --ref "\$ref"/);
+  assert.match(job, /test "\$\(git rev-parse HEAD\)" = "\$ref"/);
+  assert.match(job, /grep -q ' ok\$'/, 'the upgrades.log line says ok');
+  // Healthy after, and still the same facility.
+  assert.match(job, /node scripts\/doctor\.mjs --local/);
+  assert.match(job, /instanceId/);
+  assert.match(job, /npm run test:db-roles/);
+  assert.match(job, /node tests\/operator-api-core\.mjs/);
+  assert.match(job, /if: always\(\) && steps\.previous\.outputs\.skip != 'true'/);
+  // Hosted runners need no variable; nothing in the job names a machine.
+  assert.doesNotMatch(job, /self-hosted/);
+  // The script that picks the tag is in the repository and skips rather than fails.
+  const picker = readFileSync(new URL('../scripts/ci-previous-tag.sh', import.meta.url), 'utf8');
+  assert.match(picker, /skip=true/);
+});

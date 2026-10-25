@@ -449,5 +449,9 @@ test('setup.sh asks after the Slack webhook question and the lock, before config
   assert.match(setup, /--given "\$LETTERHEAD_ARG" --out "\$LETTERHEAD_TMP" \|\| exit 1/, 'a refusal ends setup');
   assert.match(setup, /CONFIG_ARGS\+=\(--letterhead-file "\$\(<"\$LETTERHEAD_TMP"\)"\)/);
   assert.match(setup, /trap 'rm -f "\$WEBHOOK_TMP" "\$LETTERHEAD_TMP"' EXIT/);
-  assert.equal(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8').match(/--letterhead-file off/g).length, 2, 'both CI setup calls (install and rerun) answer the question');
+  // The operator-install job; the operator-upgrade job installs an earlier release and passes the option only if that release knows it.
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const install = ci.slice(ci.indexOf('\n  operator-install:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.equal(install.match(/--letterhead-file off/g).length, 2, 'both CI setup calls (install and rerun) answer the question');
+  assert.equal(ci.match(/options\+=\(--letterhead-file off\)/g).length, 1, 'the upgrade drill answers it for a release that asks');
 });

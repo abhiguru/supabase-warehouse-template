@@ -17,7 +17,7 @@ env:
   # CONTRIBUTING.md, "Mobile companion pin".
   MOBILE_REF: 657e6357ec265b802239d911311f6b4f4350729b
 # Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
-# ["self-hosted","linux","x64","my-label"]); operator-install takes OPERATOR_INSTALL_RUNNER instead. Without the
+# ["self-hosted","linux","x64","my-label"]); operator-install and operator-upgrade take OPERATOR_INSTALL_RUNNER instead. Without the
 # variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
 # runs on the project's own machine.
 jobs:
@@ -399,3 +399,107 @@ jobs:
         if: always()
         run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
         working-directory: backend
+
+  operator-upgrade:
+    name: Upgrade from the previous release
+    # The operator's upgrade path (upgrade.sh): install the newest release tag before this change, then move that installation to
+    # this commit with `upgrade.sh --ref` (a commit is not a release tag, so --ref is the only way in CI), and check that it is
+    # healthy and still the same facility. scripts/ci-previous-tag.sh picks the tag and skips the job, with a notice, when
+    # there is none that upgrade.sh can move from (no tag; another PostgreSQL major, which is the separate "Major PostgreSQL
+    # upgrade" procedure). It runs after the install drills, not inside them: its own state, project and checkout. The runner is
+    # chosen like operator-install's, and the job is not a required check.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    needs: validate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: backend
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Choose the previous release
+        id: previous
+        run: bash scripts/ci-previous-tag.sh | tee -a "$GITHUB_OUTPUT"
+        working-directory: backend
+      - name: Upgrade drill skipped
+        if: steps.previous.outputs.skip == 'true'
+        env:
+          REASON: ${{ steps.previous.outputs.reason }}
+        run: echo "::notice title=Upgrade drill skipped::$REASON"
+      - name: Install the previous release
+        if: steps.previous.outputs.skip != 'true'
+        env:
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+        run: |
+          set -euo pipefail
+          previous="$RUNNER_TEMP/previous"
+          git -C backend worktree add --detach "$previous" "$PREVIOUS_TAG"
+          # upgrade.sh and pg-major.sh of the change under test join that tree as one local commit (a release from before them
+          # lacks them, a later one has older copies), so the tree is clean as upgrade.sh requires.
+          cp backend/upgrade.sh "$previous/upgrade.sh"
+          cp backend/scripts/pg-major.sh "$previous/scripts/pg-major.sh"
+          git -C "$previous" add upgrade.sh scripts/pg-major.sh
+          if ! git -C "$previous" diff --cached --quiet; then
+            git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and pg-major.sh of the change under test'
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-upgrade.env"
+          cat > "$RUNNER_TEMP/msg91-upgrade.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          state="$RUNNER_TEMP/upgrade-drill-state"
+          mkdir -m 700 "$state"
+          echo "WAREHOUSE_STATE_DIR=$state" >> "$GITHUB_ENV"
+          export WAREHOUSE_STATE_DIR="$state"
+          # The options that release's setup.sh knows: one from before the Slack and letterhead questions has neither.
+          options=()
+          if grep -q -- '--alert-webhook-file' "$previous/setup.sh"; then options+=(--alert-webhook-file off); fi
+          if grep -q -- '--letterhead-file' "$previous/setup.sh"; then options+=(--letterhead-file off); fi
+          cd "$previous"
+          bash setup.sh --operator --state-dir "$state" \
+            --api-url https://backend-upgrade.example.test --company 'Fictional Upgrade Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-upgrade.env" \
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            "${options[@]}"
+          node scripts/doctor.mjs --local
+          node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).instanceId' "$state/public/instance.json" > "$RUNNER_TEMP/instance-before"
+          bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres \
+            -c "SELECT mobile FROM public.user_profiles WHERE role = 'admin' ORDER BY created_at" > "$RUNNER_TEMP/admins-before"
+          test "$(cat "$RUNNER_TEMP/admins-before")" = 919888888871
+      - name: Upgrade to this commit with upgrade.sh
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          ref="$(git -C "$GITHUB_WORKSPACE/backend" rev-parse HEAD)"
+          cd "$RUNNER_TEMP/previous"
+          before="$(git rev-parse HEAD)"
+          # A dry run runs the checks and the plan and changes nothing.
+          bash upgrade.sh --dry-run --ref "$ref"
+          test "$(git rev-parse HEAD)" = "$before"
+          test ! -e "$WAREHOUSE_STATE_DIR/config/upgrades.log"
+          bash upgrade.sh --ref "$ref"
+          test "$(git rev-parse HEAD)" = "$ref"
+          tail -n 1 "$WAREHOUSE_STATE_DIR/config/upgrades.log" | grep -q ' ok$'
+      - name: The upgraded installation is healthy and the same facility
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/previous"
+          npm ci
+          node scripts/doctor.mjs --local
+          test "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).instanceId' "$WAREHOUSE_STATE_DIR/public/instance.json")" = "$(cat "$RUNNER_TEMP/instance-before")"
+          bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres \
+            -c "SELECT mobile FROM public.user_profiles WHERE role = 'admin' ORDER BY created_at" | diff -u "$RUNNER_TEMP/admins-before" -
+          npm run test:db-roles
+          node tests/operator-api-core.mjs
+      - name: Stop only the drill installation
+        if: always() && steps.previous.outputs.skip != 'true'
+        run: |
+          cd "$RUNNER_TEMP/previous" || exit 0
+          test -z "${WAREHOUSE_STATE_DIR:-}" || test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
