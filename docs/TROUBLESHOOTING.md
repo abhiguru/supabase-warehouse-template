@@ -195,6 +195,11 @@ it; only `functions` can.
 - **Right after install, `npm run doctor` warns "... the monitoring checker has never run ...".** Expected for the first
   few minutes: the timer runs the checker every 5 minutes, and the warning goes away after its first run. Rerun doctor after
   that; if it persists, read `journalctl -u <unit>.service` as above.
+- **`clock_unsynced` fires, or central sign-in is refused for everyone ("issued in the future" in the function log: the host
+  clock is more than 30 s behind the association's).** The host clock is wrong. `timedatectl` shows `System clock synchronized: yes/no`. Run `sudo timedatectl set-ntp true`, wait a minute, run it
+  again; if it stays `no`, the host cannot reach its time servers (check the router's DNS and that UDP 123 is not blocked).
+  Correct the time zone with `sudo timedatectl set-timezone Asia/Kolkata`; a wrong zone is not a wrong clock, but it moves the
+  backup time (OPERATOR_INSTALL.md, "Host time zone").
 - **Alerts for services you stopped on purpose.** Mute before a planned stop: `node scripts/watch.mjs mute 60`
   ([MONITORING.md](MONITORING.md#mute-and-unmute)).
 - **Nothing reaches Slack, but the checker runs.** `status` says `Slack webhook: none` when the install was made with
@@ -313,6 +318,12 @@ it; only `functions` can.
   the MSG91 console. The per-phone, per-source and warehouse-wide caps
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)) return an explicit
   refusal, not silence.
+- **`api_429_rate_high` fires: users see "Too many requests".** The gateway and the sign-in functions refuse a client that
+  goes over a limit (OPERATOR_INSTALL.md, "Authentication and OTP limits"; the gateway limits are in
+  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#gateway-limits-and-routes)). See who is refused: the gateway log keeps the
+  client address, `bash scripts/compose.sh logs --since 10m kong | grep ' 429 '`. One address with thousands of lines is one
+  stuck client. Many phones behind **one** address are one Wi-Fi counted as one client: the per-address OTP and function limits
+  apply to the whole warehouse Wi-Fi, so a wave of sign-ins (everyone's session ending the same week) can fill them.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters
   with `warehouse_security.reset_otp_limits` (same section).
 - **Nobody can get a code at all (MSG91 balance, DLT header or provider outage) and an administrator cannot sign in**: use the

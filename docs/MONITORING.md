@@ -65,7 +65,10 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `public_https_down` | The public HTTPS address does not answer, or answers as another installation |
 | `api_error_rate_high` | More than 5% of the gateway's requests in the last 5 minutes were 5xx (judged from 10 requests up) |
 | `api_latency_p95_high` | The gateway's p95 latency over the last 5 minutes is above 2 s (same minimum) |
+| `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
+| `sms_delivery` | Once a day, after 09:00: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, were not accepted by the SMS provider (at once; see "SMS delivery") |
+| `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the public address's `Date` header |
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
 | `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
 | `backup_failed` | The last daily backup failed; never muted |
@@ -75,6 +78,23 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
 services on purpose.
+
+## SMS delivery and the clock
+
+`sms_delivery` reads `public.otp_verifications` once a day. Every code request ends as `accepted` (MSG91 took it) or `failed`
+(MSG91 refused it: balance used up, DLT header or template rejected, wrong sender ID; or the request expired), and a request
+that is still `sending` after 5 minutes never got an answer. All of those count as "not accepted"; requests younger than
+5 minutes are left out. The alert fires at once (its next judgement is a day away) and clears at the next daily check. It sees
+refusals and lost answers. It does **not** see a code MSG91 accepted and the telecom operator then dropped (a DLT suspension
+after acceptance): that shows as users saying no code arrives, and the cure is in the MSG91 console
+([TROUBLESHOOTING.md](TROUBLESHOOTING.md#sms-codes-not-arriving)). There is no balance check: MSG91's balance endpoint needs
+a key with more rights than the sending key.
+
+`clock_unsynced` compares two things: systemd's own verdict (`timedatectl show -p NTPSynchronized`) and the difference between
+the host clock and the `Date` header of an HTTPS `HEAD` to the facility's public address (Cloudflare's clock). Central sign-in
+refuses a token when the host clock is more than 30 s off, so 10 s is the warning. When the public address does not answer,
+only the first part is judged. Fix: `timedatectl set-ntp true`; if `NTPSynchronized` stays `no`, check that the host can reach
+its time servers.
 
 ## Self-healing
 
@@ -186,4 +206,4 @@ checker that runs but cannot reach Slack the other way round.
 There is no metric history and no dashboard: the checker keeps only its state (`config/watch-state.json`,
 `config/watch-mutes.json`) and the last backup and retention results (`config/watch-backup.last`,
 `config/watch-retention.last`). Not covered: the Cloudflare tunnel process (the public-address check sees its effect),
-certificate expiry, SMS delivery failures, application errors. Email and paging are not supported by this repository.
+certificate expiry, a code the SMS provider accepted but never delivered, application errors. Email and paging are not supported by this repository.

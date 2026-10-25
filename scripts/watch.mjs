@@ -52,6 +52,11 @@ export const LIMITS = {
   // to the trigger after.
   dailyRetryMs: HOUR - 2 * MIN, dailyHardMs: 3 * HOUR + 45 * MIN,
   futureBackupMs: HOUR,
+  // Rate limiting: more than 2% of the gateway's requests in 5 minutes answered 429 (judged from 50 requests up), or more
+  // than 20 of them whatever the total. SMS: more than 20% of the last 24 hours' code requests (judged from 10 requests up)
+  // or more than 10 of them were not accepted by the provider. Clock: more than 10 s from the public address's Date header.
+  rateLimitedShare: 0.02, rateLimitedMinRequests: 50, rateLimitedCount: 20,
+  smsFailedShare: 0.2, smsFailedCount: 10, smsMinSends: 10, clockOffsetMs: 10000,
   // Self-healing: a service unhealthy in this many runs in a row is restarted; no service is acted on more than once per gap.
   healUnhealthyRuns: 3, healGapMs: HOUR,
 };
@@ -79,7 +84,7 @@ export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
   lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
-  memoryNote: null, heal: {},
+  memoryNote: null, heal: {}, lastSmsCheck: null,
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -123,6 +128,7 @@ export function normalizeState(raw, now, log = () => {}) {
   take('dailyAttempt', v => v === null || (isObj(v) && typeof v.date === 'string' && isNum(v.count) && numOrNull(v.lastAt) && typeof v.done === 'boolean'));
   take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
   take('memoryNote', v => v === null || typeof v === 'string');
+  take('lastSmsCheck', numOrNull);
   take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
@@ -505,9 +511,13 @@ export async function checkApiLocal(ctx) {
   try { await getJson(ctx, `http://127.0.0.1:${port}/functions/v1/get-public-config`); return [result('api_local', 'api_down', true, 'API gateway answers')]; }
   catch (error) { return [result('api_local', 'api_down', false, 'API gateway is not answering on this host', error.message)]; }
 }
-export async function checkApiPublic(ctx) {
+const publicManifest = ctx => {
   const manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null');
   if (!manifest?.canonicalOrigin) throw new Error('public/instance.json has no canonicalOrigin');
+  return manifest;
+};
+export async function checkApiPublic(ctx) {
+  const manifest = publicManifest(ctx);
   try {
     const json = await getJson(ctx, `${manifest.canonicalOrigin}/functions/v1/get-public-config`);
     if (json.success !== true || json.data?.instanceId !== manifest.instanceId) {
@@ -531,14 +541,22 @@ export function checkApiLogs(ctx) {
   if (logs.status !== 0) throw new Error('docker logs failed for the gateway');
   const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`);
   if (rows.length < LIMITS.minRequests) {
-    return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency')];
+    return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency'),
+      result('api_logs', 'api_429_rate_high', true, 'Too few requests to judge the rate-limit answers')];
   }
   const errors = rows.filter(r => r.status >= 500).length / rows.length;
+  // 429 is the gateway's rate limit (or the function's own, such as the OTP limit): a few are normal, a share of the
+  // traffic means a client or a whole Wi-Fi is being refused.
+  const limited = rows.filter(r => r.status === 429).length;
+  const limitedShare = limited / rows.length;
+  const limitedBad = limited > LIMITS.rateLimitedCount || (rows.length >= LIMITS.rateLimitedMinRequests && limitedShare > LIMITS.rateLimitedShare);
   const sorted = rows.map(r => r.seconds).sort((a, b) => a - b);
   const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
   return [
     result('api_logs', 'api_error_rate_high', !(errors > LIMITS.errorRate), `API 5xx rate ${(errors * 100).toFixed(1)}% over ${rows.length} requests (limit ${LIMITS.errorRate * 100}%)`),
     result('api_logs', 'api_latency_p95_high', !(p95 > LIMITS.latencySeconds), `API p95 latency ${p95.toFixed(2)} s over ${rows.length} requests (limit ${LIMITS.latencySeconds} s)`),
+    result('api_logs', 'api_429_rate_high', !limitedBad, `API answered 429 (too many requests) to ${limited} of ${rows.length} requests, ${(limitedShare * 100).toFixed(1)}% (limit ${LIMITS.rateLimitedShare * 100}% or ${LIMITS.rateLimitedCount} in 5 minutes)`,
+      'One client, or every phone on one Wi-Fi, is being refused: see "Too many requests" in docs/TROUBLESHOOTING.md.'),
   ];
 }
 // The same probe health-check.sh runs: the PDF functions reach the renderer from the function runtime. The read
@@ -660,11 +678,67 @@ export function checkBackups(ctx) {
   return out;
 }
 
+// ---------------------------------------------------------------- SMS delivery, clock
+// The sign-in codes of the last 24 hours (public.otp_verifications): `delivery_status` is 'accepted' when MSG91 took the
+// request, 'failed' when it refused it (balance, DLT header, sender ID, template) or the request expired, and 'sending' until
+// the function has an answer. A request still 'sending' after 5 minutes never got one and counts as not accepted; younger
+// ones are in flight and are left out. Alerts when more than 20% of at least 10 requests, or more than 10 of them, were not
+// accepted. This sees explicit refusals and lost answers; a code the provider accepted and then dropped (a DLT suspension
+// after acceptance) is silent here and shows as users reporting that no code arrives.
+// Once a local calendar day, after the hour of the "Monitoring is alive" message, so the alert (immediate: its next
+// judgement is a day away) comes with it; not before the first sign-in of a new installation has a chance to exist.
+const SMS_SQL = `SELECT count(*) FILTER (WHERE delivery_status IS DISTINCT FROM 'accepted'), count(*)
+  FROM public.otp_verifications
+  WHERE created_at > now() - interval '24 hours' AND NOT (delivery_status = 'sending' AND created_at > now() - interval '5 minutes')`;
+export function checkSmsDelivery(ctx) {
+  const now = ctx.now();
+  if (!heartbeatDue(now, ctx.data.lastSmsCheck, ctx.heartbeatAt)) return null;   // not due: its alert, if any, stays as it is
+  if (!databaseReady(ctx)) return null;                                        // postgres_down says so; try again next run
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SMS_SQL]);
+  if (q.status !== 0) throw new Error(`SMS delivery query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [failed, sends] = q.stdout.trim().split('\n').pop().split('|').map(Number);
+  if (!Number.isInteger(failed) || !Number.isInteger(sends)) throw new Error('unexpected SMS delivery query output');
+  ctx.data.lastSmsCheck = now;
+  const share = sends ? failed / sends : 0;
+  const bad = failed > LIMITS.smsFailedCount || (sends >= LIMITS.smsMinSends && share > LIMITS.smsFailedShare);
+  return [result('sms_delivery', 'sms_delivery', !bad,
+    `${failed} of ${sends} sign-in code requests in the last 24 hours were not accepted by the SMS provider (limit ${LIMITS.smsFailedShare * 100}% or ${LIMITS.smsFailedCount})`,
+    'Check the MSG91 balance, DLT template and sender ID: docs/TROUBLESHOOTING.md, "SMS codes not arriving".', { immediate: true })];
+}
+
+// The host clock: systemd's own verdict (NTPSynchronized) and, when the public address answers, the difference from the
+// Date header of an HTTPS HEAD to it (Cloudflare's clock). Central sign-in refuses a token when the clock is over 30 s off
+// (docs/CENTRAL_LOGIN.md); backup names and the 26 h backup rule use it too. An unreachable address or a host without
+// timedatectl is not judged here (public_https_down says the first).
+export async function checkClock(ctx) {
+  const problems = [];
+  const ntp = ctx.run('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeoutMs: 10000 });
+  if (ntp.status === 0 && ntp.stdout.trim() === 'no') problems.push('the system clock is not synchronised with a time server (timedatectl: NTPSynchronized=no)');
+  let offset = null;
+  try {
+    const origin = publicManifest(ctx).canonicalOrigin;
+    const before = ctx.now();
+    const response = await ctx.fetch(`${origin}/functions/v1/get-public-config`, { method: 'HEAD', signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const after = ctx.now();
+    const served = Date.parse(response.headers?.get?.('date') ?? '');
+    if (Number.isFinite(served)) offset = (before + after) / 2 - served;
+  } catch { /* not reachable: the public check reports it */ }
+  if (offset !== null && Math.abs(offset) > LIMITS.clockOffsetMs) {
+    problems.push(`the host clock is ${Math.round(Math.abs(offset) / 1000)} s ${offset < 0 ? 'behind' : 'ahead of'} the public address's clock`);
+  }
+  const state = [ntp.status === 0 ? `NTPSynchronized=${ntp.stdout.trim()}` : 'NTP status unknown', offset === null ? 'no offset reading' : `offset ${(offset / 1000).toFixed(1)} s`].join(', ');
+  return [result('clock', 'clock_unsynced', problems.length === 0,
+    problems.length ? `The host clock may be wrong: ${problems.join('; ')}` : `Host clock fine (${state})`,
+    'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Clock").')];
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
+  ['sms_delivery', checkSmsDelivery], ['clock', checkClock],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -676,6 +750,7 @@ export async function runChecks(ctx, checks = CHECKS) {
   for (const [name, fn] of checks) {
     try {
       const list = await fn(ctx);
+      if (list === null) continue;   // not due this run (a daily check): it did not run, so its alerts are left as they are
       for (const r of list) { r.check = r.check ?? name; results.push(r); ran.add(r.check); }
       ran.add(name);
       results.push({ check: `error:${name}`, id: `check_error:${name}`, ok: true, summary: '', detail: '' });

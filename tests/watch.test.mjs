@@ -388,6 +388,131 @@ test('PDF renderer probe runs in the functions container; the central key file i
   } finally { clean(h); }
 });
 
+test('API logs: 429 answers above 2% of 50 or more requests, or above 20 in the window, fail api_429_rate_high; fewer than 10 requests are not judged', () => {
+  const h = harness();
+  try {
+    const logs = lines => { h.runs['docker logs'] = ok(lines.join('\n')); return find(W.checkApiLogs(h.ctx()), 'api_429_rate_high'); };
+    const mix = (limited, total) => Array.from({ length: total }, (_, i) => kongLine(i < limited ? 429 : 200, '0.100'));
+    assert.equal(logs(mix(1, 50)).ok, true, '1 of 50 is 2%, the limit');
+    const two = logs(mix(2, 50));
+    assert.equal(two.ok, false); assert.match(two.summary, /429 \(too many requests\) to 2 of 50 requests, 4\.0% \(limit 2% or 20 in 5 minutes\)/);
+    assert.match(two.detail, /every phone on one Wi-Fi/);
+    assert.equal(logs(mix(5, 49)).ok, true, 'under 50 requests the share is not judged');
+    assert.equal(logs(mix(20, 2000)).ok, true, '20 of 2000: neither more than 20 nor over 2%');
+    assert.equal(logs(mix(21, 2000)).ok, false, 'more than 20 in the window, though only 1%');
+    assert.equal(logs(mix(0, 500)).ok, true);
+    const few = logs(mix(5, 5));
+    assert.equal(few.ok, true); assert.match(few.summary, /Too few requests/);
+    // The other two results of the same check are unchanged by 429s (they are not 5xx).
+    const all = (h.runs['docker logs'] = ok(mix(30, 100).join('\n')), W.checkApiLogs(h.ctx()));
+    assert.equal(find(all, 'api_error_rate_high').ok, true);
+    assert.deepEqual(all.map(r => r.id), ['api_error_rate_high', 'api_latency_p95_high', 'api_429_rate_high']);
+  } finally { clean(h); }
+});
+
+// ---------------------------------------------------------------- SMS delivery and the clock
+const smsRun = (h, row) => { h.runs.psql = ok(`${row}\n`); return W.checkSmsDelivery(h.ctx()); };
+test('SMS delivery: more than 20% (from 10 requests) or more than 10 not accepted in 24 hours fails, at once; checked once a day after 09:00', () => {
+  const h = harness();
+  try {
+    assert.equal(smsRun(h, '4|20')[0].ok, true, '20% exactly');
+    assert.equal(smsRun(h, '5|20')[0].ok, false, '25%');
+    assert.equal(smsRun(h, '10|200')[0].ok, true, '10 of 200 is neither');
+    assert.equal(smsRun(h, '11|200')[0].ok, false, 'more than 10 whatever the share');
+    assert.equal(smsRun(h, '3|5')[0].ok, true, 'under 10 requests the share is not judged');
+    assert.equal(smsRun(h, '0|0')[0].ok, true, 'a quiet day');
+    const r = smsRun(h, '12|40')[0];
+    assert.equal(r.immediate, true);
+    assert.match(r.summary, /12 of 40 sign-in code requests in the last 24 hours were not accepted by the SMS provider \(limit 20% or 10\)/);
+    assert.match(r.detail, /MSG91 balance, DLT template and sender ID/);
+    const sql = h.calls.find(c => c.includes('psql') && c.includes('otp_verifications'));
+    assert.match(sql, /delivery_status IS DISTINCT FROM 'accepted'/); assert.match(sql, /created_at > now\(\) - interval '24 hours'/);
+    assert.match(sql, /NOT \(delivery_status = 'sending' AND created_at > now\(\) - interval '5 minutes'\)/, 'requests still in flight are left out');
+    assert.match(sql, /statement_timeout=10000/);
+    // Daily: once checked today, the check does not run again until tomorrow after 09:00, and it says it did not run.
+    const ctx = h.ctx();
+    h.runs.psql = ok('0|10\n');
+    assert.equal(W.checkSmsDelivery(ctx)[0].ok, true);
+    assert.equal(ctx.data.lastSmsCheck, h.clock.t);
+    const queries = () => h.calls.filter(c => c.includes('otp_verifications')).length;
+    const before = queries();
+    h.advance(5 * 60000); assert.equal(W.checkSmsDelivery(ctx), null); assert.equal(queries(), before);
+    h.advance(24 * HOUR); assert.equal(W.checkSmsDelivery(ctx)[0].ok, true, 'next day, after 09:00');
+    h.clock.t = new Date(2026, 9, 21, 8, 30).getTime(); ctx.data.lastSmsCheck = new Date(2026, 9, 20, 9, 0).getTime();
+    assert.equal(W.checkSmsDelivery(ctx), null, 'before 09:00');
+    // A database that is down, or a query that fails.
+    h.clock.t = new Date(2026, 9, 21, 10, 0).getTime();
+    h.runs.pg_isready = bad();
+    assert.equal(W.checkSmsDelivery(h.ctx()), null, 'postgres_down reports it');
+    h.runs.pg_isready = ok(); h.runs.psql = bad('relation "public.otp_verifications" does not exist');
+    assert.throws(() => W.checkSmsDelivery(h.ctx()), /SMS delivery query failed: relation/);
+    h.runs.psql = ok('x|y\n');
+    assert.throws(() => W.checkSmsDelivery(h.ctx()), /unexpected SMS delivery query output/);
+    assert.equal(W.normalizeState({ lastSmsCheck: 'yesterday' }, 0, () => {}).lastSmsCheck, null);
+  } finally { clean(h); }
+});
+
+test('SMS delivery through the run: fires at once, stays while the daily check is not due, clears at the next daily check', async () => {
+  const h = harness();
+  try {
+    h.runs.psql = ok('12|40\n');
+    const checks = [['sms_delivery', W.checkSmsDelivery]];
+    h.seed();
+    await W.runOnce(h.deps, { checks, heal: null });
+    assert.equal(h.posts.filter(p => /^\[FIRING\]/.test(p.text) && /12 of 40 sign-in code requests/.test(p.text)).length, 1, 'one run is enough');
+    h.runs.psql = ok('0|40\n');
+    for (let i = 0; i < 3; i++) { h.advance(5 * 60000); await W.runOnce(h.deps, { checks, heal: null }); }
+    assert.equal(h.posts.filter(p => /^\[CLEARED\]/.test(p.text)).length, 0, 'not recovered by runs that did not check');
+    assert.ok(h.state_().alerts.sms_delivery.firingSince);
+    h.advance(24 * HOUR); await W.runOnce(h.deps, { checks, heal: null });
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks, heal: null });
+    assert.equal(h.posts.filter(p => /^\[CLEARED\]/.test(p.text)).length, 1);
+    assert.equal(h.state_().alerts.sms_delivery, undefined);
+  } finally { clean(h); }
+});
+
+test('clock: systemd NTPSynchronized=no, or more than 10 s from the public address\'s Date header, fails clock_unsynced; an unreachable address is not judged', async () => {
+  const h = harness();
+  try {
+    const origin = 'https://acme.example.test/functions/v1/get-public-config';
+    const headers = skewMs => ({ get: name => (name === 'date' ? new Date(h.clock.t - skewMs).toUTCString() : null) });
+    const asked = [];
+    const answer = skewMs => { h.deps.fetch = async (url, options) => { asked.push({ url, options }); return { ok: true, status: 200, headers: headers(skewMs) }; }; };
+    h.runs.timedatectl = ok('yes\n');
+    answer(0);
+    let r = (await W.checkClock(h.ctx()))[0];
+    assert.equal(r.ok, true); assert.match(r.summary, /Host clock fine \(NTPSynchronized=yes, offset 0\.0 s\)/);
+    assert.deepEqual(asked.map(a => [a.url, a.options.method, a.options.redirect]), [[origin, 'HEAD', 'error']]);
+    assert.ok(asked[0].options.signal instanceof AbortSignal);
+    assert.ok(h.calls.includes('timedatectl show -p NTPSynchronized --value'));
+    answer(10000); assert.equal((await W.checkClock(h.ctx()))[0].ok, true, '10 s is the limit');
+    answer(11000);
+    r = (await W.checkClock(h.ctx()))[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /the host clock is 11 s ahead of the public address's clock/);
+    assert.match(r.detail, /over 30 s off[^]*timedatectl set-ntp true/);
+    answer(-45000);
+    assert.match((await W.checkClock(h.ctx()))[0].summary, /45 s behind the public address's clock/);
+    answer(0); h.runs.timedatectl = ok('no\n');
+    r = (await W.checkClock(h.ctx()))[0];
+    assert.equal(r.ok, false); assert.match(r.summary, /not synchronised with a time server \(timedatectl: NTPSynchronized=no\)/);
+    answer(20000);
+    assert.match((await W.checkClock(h.ctx()))[0].summary, /not synchronised[^]*; the host clock is 20 s ahead/, 'both problems are named');
+    // The address does not answer (tunnel down), or timedatectl is missing: the part that can be judged is.
+    h.runs.timedatectl = ok('yes\n');
+    h.deps.fetch = async () => { throw new Error('connect ECONNREFUSED'); };
+    r = (await W.checkClock(h.ctx()))[0];
+    assert.equal(r.ok, true); assert.match(r.summary, /no offset reading/);
+    answer(0); h.runs.timedatectl = { status: 127, stdout: '', stderr: 'not found' };
+    r = (await W.checkClock(h.ctx()))[0];
+    assert.equal(r.ok, true); assert.match(r.summary, /NTP status unknown/);
+    // A response without a usable Date header gives no offset.
+    h.deps.fetch = async () => ({ ok: true, status: 200, headers: { get: () => 'not a date' } });
+    assert.match((await W.checkClock(h.ctx()))[0].summary, /no offset reading/);
+    assert.ok(W.CHECKS.some(([name, fn]) => name === 'clock' && fn === W.checkClock));
+    assert.ok(W.CHECKS.some(([name, fn]) => name === 'sms_delivery' && fn === W.checkSmsDelivery));
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- health
 const PROBE = 'exec -T storage node --input-type=module';
 function healthy(h) { h.runs[PROBE] = ok('OK REST\nOK configuration\n'); }
