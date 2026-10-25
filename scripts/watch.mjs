@@ -37,6 +37,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
+import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { centralKeyFault, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
@@ -1371,6 +1372,8 @@ function statusLines(ctx, webhook, now) {
   lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
   lines.push(`Time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} (daily jobs start at ${ctx.dailyAt} in this zone)`);
   if (stoppedByOperator(ctx.state)) lines.push('Stack: stopped by the operator (config/stopped-by-operator); nothing restarts it at boot or by self-healing. Run start.sh to bring it back.');
+  const interruptedUpgrade = interruptedUpgradeWarning(ctx.state);
+  if (interruptedUpgrade) lines.push(`Upgrade: ${interruptedUpgrade}`);
   if (data.alerts[LEGACY_DAILY_ALERT]) lines.push(`Daily backup: still run by the old checker unit, inside the 5-minute check. ${legacyDailyAdvice(ctx.root, ctx.state)}`);
   const firing = Object.entries(data.alerts).filter(([, a]) => a.firingSince);
   lines.push(firing.length ? `Firing: ${firing.map(([id]) => id).join(', ')}` : 'Firing: none');

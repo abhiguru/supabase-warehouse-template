@@ -10,6 +10,7 @@ import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
+import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
 import { defaultDeps, legacyDailyAdvice, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 
@@ -192,13 +193,16 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the default-profile services (an unhealthy optional
   // service only warns), the database, the gateway's public configuration, the get_public_config RPC probe and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
   const health = await runHealth(defaultDeps(process.env));
-  if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.${stoppedByOperator(state) ? ` ${stoppedWarning}` : ''}`);
+  // An upgrade that stopped half way (scripts/upgrade.sh leaves config/upgrade-in-progress): said here, healthy or not, because a
+  // facility that fails its health check after one is most likely that.
+  const upgradeWarning = interruptedUpgradeWarning(state);
+  if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.${stoppedByOperator(state) ? ` ${stoppedWarning}` : ''}${upgradeWarning ? ` ${upgradeWarning}` : ''}`);
   for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
   const checker = checkerWarnings(state);
-  const note = [usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);
