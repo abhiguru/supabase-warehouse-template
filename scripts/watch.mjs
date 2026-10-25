@@ -746,7 +746,10 @@ export function lockIsHeld(ctx) {
 }
 
 // ---------------------------------------------------------------- alerting
-export const isMuted = (data, id, now) => Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
+// A mute covers every alert but the two that say no backup exists: a facility that muted "everything" for a week while a
+// service was being repaired would otherwise also silence the only warning that its data is not being saved.
+export const NEVER_MUTED = ['backup_missing', 'backup_failed'];
+export const isMuted = (data, id, now) => !NEVER_MUTED.includes(id) && Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
 
 // Updates the per-alert counters and returns what to tell Slack. Nothing is marked as sent here.
 export function evaluate(data, results, ran, now) {
@@ -864,7 +867,12 @@ async function heartbeat(ctx, webhook) {
   const now = ctx.now();
   if (!webhook || !heartbeatDue(now, data.lastHeartbeat, ctx.heartbeatAt)) return;
   const firing = Object.values(data.alerts).filter(a => a.firingSince).length;
-  const muted = data.muteUntil && now < data.muteUntil ? ` Alerts are muted until ${new Date(data.muteUntil).toISOString()}.` : '';
+  const notes = [];
+  if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
+  const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
+  if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
+  if (notes.length) notes.push(`${NEVER_MUTED.join(' and ')} are never muted: they are posted anyway.`);
+  const muted = notes.length ? ` ${notes.join(' ')}` : '';
   const text = redact(`Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`, ctx.env_(), webhook);
   const before = data.lastHeartbeat;
   await postThenKeep(ctx, webhook, text, () => { data.lastHeartbeat = now; }, () => { data.lastHeartbeat = before; });
@@ -1012,11 +1020,14 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
   saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
-// The daily jobs need a running database and services in THIS run: right after a boot the first runs find them down.
+// The daily jobs need the database and the services the backup stops (scripts/backup.sh stops kong, functions, rest and
+// storage, and the pooler) in THIS run: right after a boot the first runs find them down. Not the optional services and not
+// the PDF renderer: a renderer that turned unhealthy after a host update must not stop the backups.
+export const BACKUP_SERVICES = ['kong', 'functions', 'rest', 'storage'];
 export function dailyHealthy(results) {
   const pg = results.find(r => r.id === 'postgres_down');
   if (!pg || !pg.ok) return false;
-  return !results.some(r => !r.ok && (r.id.startsWith('service_down:') || r.id === 'check_error:services' || r.id === 'check_error:database'));
+  return !results.some(r => !r.ok && (BACKUP_SERVICES.some(name => r.id === `service_down:${name}`) || r.id === 'check_error:services' || r.id === 'check_error:database'));
 }
 
 // ---------------------------------------------------------------- external heartbeat
@@ -1107,7 +1118,7 @@ const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECOND
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's Slack webhook
   status        failing alerts, mutes, the daily jobs and the time zone
-  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES
+  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
   unmute        end the mute (all, or one alert id)
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
 The daily backup, verification, pruning and retention run once a day inside a 6-hour window after the time chosen
@@ -1173,10 +1184,11 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     const until = now + minutes * MIN;
     if (args[1]) {
       if (!ALERT_ID.test(args[1])) { out('Not an alert id.'); return 1; }
+      if (NEVER_MUTED.includes(args[1])) { out(`${args[1]} cannot be muted: it says no backup exists.`); return 1; }
       data.mutes[args[1]] = until;
     } else data.muteUntil = until;
     saveMutes(deps.state, data);
-    out(`Muted ${args[1] ?? 'all alerts'} until ${new Date(until).toISOString()}.`);
+    out(`Muted ${args[1] ?? 'all alerts'} until ${new Date(until).toISOString()}.${args[1] ? '' : ` ${NEVER_MUTED.join(' and ')} are not muted.`}`);
     return 0;
   }
   if (command === 'unmute') {

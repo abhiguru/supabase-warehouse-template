@@ -67,8 +67,8 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `api_latency_p95_high` | The gateway's p95 latency over the last 5 minutes is above 2 s (same minimum) |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
-| `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run) |
-| `backup_failed` | The last daily backup failed |
+| `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
+| `backup_failed` | The last daily backup failed; never muted |
 | `usb_backup` | The USB backup is set up and stale or failed (the same rule as `npm run doctor`) |
 | `retention_failed` | The last retention clean-up failed |
 | `operator_lock_stuck` | A setup, backup or restore has held the operator lock for 2 hours or more |
@@ -123,6 +123,11 @@ node scripts/watch.mjs unmute "service_down:rest"
 
 **Mute before a planned `stop.sh`**: the checker keeps running while the services are stopped and reports each stopped
 service as an alert. `stop.sh` says so when it finishes. The commands need `WAREHOUSE_STATE_DIR`.
+
+**`backup_missing` and `backup_failed` are never muted.** A mute, whole or of one alert, covers every other alert; these two
+are posted anyway, and `mute 60 backup_missing` is refused. They are the only warning that the data is not being saved, and a
+week-long mute while a service was being repaired must not hide it. The daily "Monitoring is alive" message says so whenever
+a mute is active.
 
 ## Status and testing
 

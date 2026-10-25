@@ -681,6 +681,42 @@ test('mute: all alerts or one alert id; the heartbeat still goes out; unmuted al
   } finally { clean(h); }
 });
 
+test('mute never covers backup_missing or backup_failed: they post while everything is muted, and the alive message says so', async () => {
+  const h = harness();
+  try {
+    const out = [];
+    assert.equal(await W.main(['mute', '600'], h.deps, t => out.push(t)), 0);
+    assert.match(out[0], /^Muted all alerts until \S+\. backup_missing and backup_failed are not muted\.$/);
+    assert.equal(await W.main(['mute', '600', 'backup_missing'], h.deps, t => out.push(t)), 1);
+    assert.match(out[1], /^backup_missing cannot be muted: it says no backup exists\.$/);
+    assert.equal(await W.main(['mute', '600', 'backup_failed'], h.deps, t => out.push(t)), 1);
+    // An older mute file that names them is ignored too.
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + 10 * HOUR, ids: { backup_failed: h.clock.t + 10 * HOUR, other_bad: h.clock.t + 10 * HOUR } }));
+    const checks = stub(failing('backup_missing'), failing('backup_failed', { detail: 'disk full' }), failing('other_bad'), failing('service_down:rest'));
+    await W.runOnce(h.deps, { checks, heal: null });
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks, heal: null });
+    const fired = h.posts.filter(p => /^\[FIRING\]/.test(p.text));
+    assert.equal(fired.length, 1);
+    assert.match(fired[0].text, /backup_missing is bad/); assert.match(fired[0].text, /backup_failed is bad: disk full/);
+    assert.doesNotMatch(fired[0].text, /other_bad|service_down/, 'the others stay muted');
+    // The daily "alive" message names the exception, for a global mute and for a mute of single alerts.
+    h.advance(HOUR); h.clock.t = new Date(2026, 9, 20, 9, 5).getTime();
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + HOUR, ids: { other_bad: h.clock.t + HOUR } }));
+    await W.runOnce(h.deps, { checks, heal: null });
+    const alive = h.posts.filter(p => /^Monitoring is alive/.test(p.text)).pop();
+    assert.match(alive.text, /Alerts are muted until \S+\. Muted: other_bad\. backup_missing and backup_failed are never muted: they are posted anyway\./);
+    h.clock.t = new Date(2026, 9, 21, 9, 5).getTime();
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: null, ids: {} }));
+    await W.runOnce(h.deps, { checks, heal: null });
+    assert.doesNotMatch(h.posts.filter(p => /^Monitoring is alive/.test(p.text)).pop().text, /muted/i, 'nothing muted: no note');
+    // Clearing is posted too, even while a mute is active.
+    writeFileSync(join(h.state, 'config/watch-mutes.json'), JSON.stringify({ all: h.clock.t + HOUR, ids: {} }));
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks: HEALTHY, heal: null });
+    const cleared = h.posts.filter(p => /^\[CLEARED\]/.test(p.text)).pop().text;
+    assert.match(cleared, /backup_missing is bad/); assert.doesNotMatch(cleared, /other_bad/);
+  } finally { clean(h); }
+});
+
 test('a run\'s new alerts go out as one message', async () => {
   const h = harness();
   try {
@@ -1220,6 +1256,39 @@ test('daily: the checker and the daily pass write different keys of the state fi
     assert.match(state.dailySkipped.reason, /lock is held/, 'the checker\'s final save keeps the daily keys it finds on disk');
     assert.equal(state.lastDailyRun.backup.result, 'ok', 'and yesterday\'s result');
     assert.equal(state.lastRunAt, at(20, 3, 0));
+  } finally { clean(h); }
+});
+
+test('daily gate: the database and the four services the backup stops; not the renderer, not optional services', async () => {
+  const row = (id, ok = true) => ({ id, ok, summary: '', detail: '' });
+  const pg = row('postgres_down');
+  assert.equal(W.dailyHealthy([pg, row('service_down:kong'), row('service_down:pdf-renderer', false)]), true, 'an unhealthy renderer does not stop the backup');
+  for (const optional of ['supavisor', 'cups', 'sensor-bridge']) assert.equal(W.dailyHealthy([pg, row(`service_down:${optional}`, false)]), true, optional);
+  assert.deepEqual(W.BACKUP_SERVICES, ['kong', 'functions', 'rest', 'storage']);
+  for (const name of W.BACKUP_SERVICES) assert.equal(W.dailyHealthy([pg, row(`service_down:${name}`, false)]), false, name);
+  assert.equal(W.dailyHealthy([pg, row('service_down:db', false)]), true, 'db is judged through postgres_down');
+  assert.equal(W.dailyHealthy([row('postgres_down', false)]), false);
+  assert.equal(W.dailyHealthy([]), false, 'no database result: not healthy');
+  assert.equal(W.dailyHealthy([pg, row('check_error:services', false)]), false, 'a services check that could not run');
+  assert.equal(W.dailyHealthy([pg, row('check_error:database', false)]), false);
+  assert.equal(W.dailyHealthy([pg, row('check_error:pdf_renderer', false)]), true);
+  // Through the real checks: an unhealthy renderer and a stopped optional service do not hold the pass back; a stopped storage does.
+  const h = harness();
+  try {
+    h.seed(); dailyFake(h); h.clock.t = at(19, 3, 0);
+    h.services = [...SERVICES, 'cups'];
+    h.stateOf = { 'pdf-renderer': 'running|unhealthy', cups: 'exited|' };
+    await W.main(['daily'], h.deps);
+    assert.equal(dailyCalls(h).length, 1, 'the backup ran');
+    assert.equal(h.state_().lastDailyRun.backup.result, 'ok');
+    const g = harness();
+    try {
+      g.seed(); dailyFake(g); g.clock.t = at(19, 3, 0);
+      g.stateOf = { storage: 'running|unhealthy' };
+      await W.main(['daily'], g.deps);
+      assert.equal(dailyCalls(g).length, 0);
+      assert.match(g.state_().dailySkipped.reason, /not up/);
+    } finally { clean(g); }
   } finally { clean(h); }
 });
 
