@@ -488,7 +488,7 @@ jobs:
           MSG91_PE_ID=0000000000000000001
           MSG91_SENDER_ID=CITEST
           ENV
-          state="$RUNNER_TEMP/upgrade-drill-state"
+          state="$RUNNER_TEMP/core-backend-test-20261026"   # the operator-api fixtures only accept this name pattern
           mkdir -m 700 "$state"
           echo "WAREHOUSE_STATE_DIR=$state" >> "$GITHUB_ENV"
           export WAREHOUSE_STATE_DIR="$state"
