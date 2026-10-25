@@ -110,44 +110,67 @@ test('operator-upgrade installs the previous release, moves it to the commit wit
   assert.ok(job.length > 100, 'the job exists');
   assert.match(job, /\n    runs-on: \$\{\{ github\.event\.pull_request\.head\.repo\.fork && 'ubuntu-latest' \|\| fromJSON\(vars\.OPERATOR_INSTALL_RUNNER \|\| '"ubuntu-latest"'\) \}\}\n/, 'same runner rule as operator-install');
   assert.match(job, /\n    needs: validate\n/);
+  assert.doesNotMatch(job, /runs after the install drills/, 'it runs beside them, not after');
   // Tags are needed to find the previous release.
   assert.match(job, /\n          fetch-depth: 0\n/);
-  assert.match(job, /run: bash scripts\/ci-previous-tag\.sh \| tee -a "\$GITHUB_OUTPUT"/);
-  // When there is no usable tag the job says so and does not fail.
+  // The base branch is the pull request's, else the branch that was pushed (main or a release branch).
+  assert.match(job, /BASE_BRANCH: \$\{\{ github\.base_ref \|\| github\.ref_name \}\}/);
+  assert.match(job, /run: bash scripts\/ci-previous-tag\.sh "\$BASE_BRANCH" \| tee -a "\$GITHUB_OUTPUT"/);
+  // When not even the merge base can start the drill the job says so and does not fail; when it starts from the merge base it says that.
   assert.match(job, /if: steps\.previous\.outputs\.skip == 'true'[^]*::notice title=Upgrade drill skipped::/);
+  assert.match(job, /if: steps\.previous\.outputs\.kind == 'merge-base'[^]*::notice title=Upgrade drill starts from the merge base::/);
   for (const step of ['Install the previous release', 'Upgrade to this commit with upgrade.sh', 'The upgraded installation is healthy and the same facility']) {
     assert.match(job, new RegExp(`- name: ${step}\\n        if: steps\\.previous\\.outputs\\.skip != 'true'\\n`), step);
   }
-  // The previous release is installed with its own setup.sh, then the change's upgrade.sh moves it: a dry run first, then the move.
-  assert.match(job, /git -C backend worktree add --detach "\$previous" "\$PREVIOUS_TAG"/);
+  // The previous release is installed with its own setup.sh. A tag that has upgrade.sh and pg-major.sh runs its own, unchanged (the
+  // script operators of that release run); a merge base, or a tag from before them, gets this change's copies.
+  assert.match(job, /git -C backend worktree prune\n\s+git -C backend worktree add --detach "\$previous" "\$PREVIOUS_REF"/, 'a persistent runner may keep the registration of an earlier worktree');
+  assert.match(job, /if \[ "\$PREVIOUS_KIND" = tag \] && git -C "\$previous" cat-file -e HEAD:upgrade\.sh[^\n]*HEAD:scripts\/pg-major\.sh[^\n]*; then\n\s+echo "The drill runs the upgrade\.sh of \$PREVIOUS_REF, unchanged\."\n\s+else/);
   assert.match(job, /cp backend\/upgrade\.sh "\$previous\/upgrade\.sh"/);
   assert.match(job, /bash setup\.sh --operator --state-dir "\$state"/);
   assert.match(job, /bash upgrade\.sh --dry-run --ref "\$ref"[^]*bash upgrade\.sh --ref "\$ref"/);
   assert.match(job, /test "\$\(git rev-parse HEAD\)" = "\$ref"/);
   assert.match(job, /grep -q ' ok\$'/, 'the upgrades.log line says ok');
-  // Healthy after, and still the same facility.
+  assert.match(job, /test ! -e "\$WAREHOUSE_STATE_DIR\/config\/upgrade-in-progress"/, 'a finished upgrade leaves no record');
+  // Healthy after, still the same facility, and no table lost rows.
   assert.match(job, /node scripts\/doctor\.mjs --local/);
   assert.match(job, /instanceId/);
+  assert.match(job, /bash scripts\/data-fingerprint\.sh --counts > "\$RUNNER_TEMP\/counts-before"[^]*bash scripts\/data-fingerprint\.sh --counts > "\$RUNNER_TEMP\/counts-after"[^]*rows lost in/);
   assert.match(job, /npm run test:db-roles/);
   assert.match(job, /node tests\/operator-api-core\.mjs/);
   assert.match(job, /if: always\(\) && steps\.previous\.outputs\.skip != 'true'/);
   // Hosted runners need no variable; nothing in the job names a machine.
   assert.doesNotMatch(job, /self-hosted/);
-  // The script that picks the tag is in the repository and skips rather than fails.
+  // The script that picks the starting point is in the repository and skips rather than fails.
   const picker = readFileSync(new URL('../scripts/ci-previous-tag.sh', import.meta.url), 'utf8');
   assert.match(picker, /skip=true/);
+  assert.match(picker, /kind=merge-base/);
 });
 
-test('keep-alive: a monthly timestamp commit on its own branch, with write access in this workflow only', () => {
+test('the checks also run for the release branches, and a pull request into one may not change migrations', () => {
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(ci, /\n  push:\n    branches: \[main, 'release\/\*\*'\]\n  pull_request:\n    branches: \[main, 'release\/\*\*'\]\n/);
+  const validate = ci.slice(ci.indexOf('\n  validate:\n') + 1).split(/\n  [a-z-]+:\n/)[0];
+  assert.match(validate, /- name: A change to a release branch carries no migration\n        [^\n]*\n[^]*if: github\.event_name == 'pull_request' && startsWith\(github\.base_ref, 'release\/'\)/);
+  assert.match(validate, /git diff --name-only "\$BASE_SHA" HEAD -- migrations\//);
+  assert.match(validate, /exit 1\n          fi\n      - uses: actions\/setup-node/);
+  const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
+  assert.match(contributing, /Backports never carry a migration/);
+});
+
+test('keep-alive: a monthly timestamp commit on its own branch and a call that enables the scheduled workflows, with write access in this workflow only', () => {
   const directory = new URL('../.github/workflows/', import.meta.url);
   const keepAlive = readFileSync(new URL('keep-alive.yml', directory), 'utf8');
   // Monthly (day of month 1), and by hand.
   assert.match(keepAlive, /\n  schedule:\n    - cron: '\d+ \d+ 1 \* \*'\n  workflow_dispatch:\n/);
-  assert.match(keepAlive, /\npermissions:\n  contents: write\n/);
-  // Least privilege: no other workflow may write contents, and this one runs no secret or third-party action.
+  assert.match(keepAlive, /\npermissions:\n  contents: write\n  actions: write\n/);
+  // Least privilege: no other workflow may write contents or actions, and none may ask for everything.
   for (const file of readdirSync(directory)) {
     if (file === 'keep-alive.yml') continue;
-    assert.doesNotMatch(readFileSync(new URL(file, directory), 'utf8'), /contents:\s*write/, `${file} does not need write access`);
+    const text = readFileSync(new URL(file, directory), 'utf8');
+    assert.doesNotMatch(text, /contents:\s*write/, `${file} does not need write access`);
+    assert.doesNotMatch(text, /actions:\s*write/, `${file} may not enable or disable workflows`);
+    assert.doesNotMatch(text, /write-all/, `${file} may not ask for every permission`);
   }
   assert.doesNotMatch(keepAlive, /secrets\./);
   assert.deepEqual([...keepAlive.matchAll(/uses: ([a-z0-9-]+\/[a-z0-9-]+)@/g)].map(match => match[1]), ['actions/checkout']);
@@ -158,8 +181,16 @@ test('keep-alive: a monthly timestamp commit on its own branch, with write acces
   assert.match(keepAlive, /\.github\/KEEPALIVE/);
   // A refused push fails the run and tells the owner what to do.
   assert.match(keepAlive, /::error title=Keep-alive push refused::[^\n]*Owner action:[^\n]*bypass actor[^\n]*\n\s+exit 1\n/);
-  // The owner action is also on the dependencies page.
+  // The documented enable endpoint is called for every scheduled workflow other than this one, also when the push failed.
+  assert.match(keepAlive, /- name: Enable the scheduled workflows\n        [^\n]*\n        if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(keepAlive, /for workflow in ci\.yml cft-freshness\.yml; do/);
+  assert.match(keepAlive, /-X PUT[^]*actions\/workflows\/\$workflow\/enable/);
+  const scheduled = readdirSync(directory).filter(file => /\n  schedule:\n/.test(readFileSync(new URL(file, directory), 'utf8')) && file !== 'keep-alive.yml');
+  assert.deepEqual(scheduled.sort(), ['cft-freshness.yml', 'ci.yml'], 'every other scheduled workflow is enabled by the call');
+  // The owner action and the open question are on the dependencies page.
   const dependencies = readFileSync(new URL('../docs/PRODUCTION_DEPENDENCIES.md', import.meta.url), 'utf8');
   assert.match(dependencies, /keep-alive/);
   assert.match(dependencies, /Owner action[^\n]*keep-alive/);
+  assert.match(dependencies, /unverified/i);
+  assert.match(dependencies, /Actions tab/);
 });

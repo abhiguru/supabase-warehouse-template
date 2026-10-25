@@ -1,23 +1,33 @@
 name: Keep scheduled workflows enabled
 
-# GitHub disables the scheduled workflows of a repository after 60 days without repository activity, and this project has one
-# maintainer who can be away that long (docs/PRODUCTION_DEPENDENCIES.md, "One maintainer"). The weekly CI run, the weekly Chrome
-# for Testing check and the Dependabot-driven checks would stop without a word. Once a month this workflow commits a timestamp
-# to .github/KEEPALIVE on the branch `keep-alive`: a push, which is repository activity.
+# GitHub disables the scheduled workflows of a public repository after 60 days without "repository activity", and this project has
+# one maintainer who can be away that long (docs/PRODUCTION_DEPENDENCIES.md, "One maintainer"). The weekly CI run and the weekly
+# Chrome for Testing check would stop without a word. Once a month this workflow does two things:
+#   1. commits a timestamp to .github/KEEPALIVE on the branch `keep-alive`: a push;
+#   2. calls the documented REST endpoint that enables each scheduled workflow (PUT /repos/{owner}/{repo}/actions/workflows/
+#      {workflow}/enable) for ci.yml and cft-freshness.yml. Enabling a workflow that is enabled changes nothing; one that GitHub
+#      had disabled is switched on again.
+# NOT VERIFIED: GitHub does not define "repository activity", so it is unknown whether a push made with the workflow's own
+# GITHUB_TOKEN resets the 60-day clock, and whether the token may call the enable endpoint at all (the run fails loudly if it may
+# not). Neither can be checked before the 60 days have passed. The owner looks at the Actions tab after any absence longer than
+# about 45 days and re-enables what is disabled (docs/PRODUCTION_DEPENDENCIES.md, "Keep-alive"). Pushing to main through a ruleset
+# bypass would count for certain but weakens main for every workflow token, which is the owner's decision.
 #
 # The branch, not main: main is protected (required status checks), so the token of a workflow cannot push to it, and letting
 # it would need a ruleset bypass for the Actions app. A new branch needs no change to any setting. `keep-alive` is an orphan
 # branch holding that one file; nothing ever merges it, and a push of it starts no other workflow (the token's pushes do not,
-# and ci.yml runs for main only).
+# and ci.yml runs for main and release/** only).
 #
-# Least privilege: `contents: write` here and in no other workflow, with the job's own GITHUB_TOKEN; no secret, no third-party action.
-# If the push is ever refused (a ruleset now covers `keep-alive`), the run fails with the owner's action in its message.
+# Least privilege: `contents: write` (the push) and `actions: write` (the enable call) here and in no other workflow, with the
+# job's own GITHUB_TOKEN; no secret, no third-party action. If the push is ever refused (a ruleset now covers `keep-alive`), the
+# run fails with the owner's action in its message.
 on:
   schedule:
     - cron: '41 5 1 * *'
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: keep-alive
   cancel-in-progress: false
@@ -50,3 +60,20 @@ jobs:
             echo '::error title=Keep-alive push refused::GitHub refused the push to the keep-alive branch, so scheduled workflows can be disabled after 60 days without activity. Owner action: in Settings, Rules, Rulesets (and Branches), make sure no rule covers the branch keep-alive, or add the GitHub Actions app as a bypass actor for that branch only; main stays protected. Then run this workflow again (Actions, Keep scheduled workflows enabled, Run workflow).'
             exit 1
           fi
+      - name: Enable the scheduled workflows
+        # Also when the push above was refused: each call stands on its own.
+        if: ${{ !cancelled() }}
+        # Documented endpoint: PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable, the workflow file name as id.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for workflow in ci.yml cft-freshness.yml; do
+            if ! curl --silent --show-error --fail-with-body -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/enable"; then
+              echo "::error title=Enabling $workflow failed::GitHub refused the call that enables $workflow, so a disabled schedule would stay disabled. Owner action: open the Actions tab and enable the workflow there; then check Settings, Actions, General, Workflow permissions (the token needs actions: write). The branch push above did not depend on this call."
+              exit 1
+            fi
+            echo "$workflow is enabled."
+          done
