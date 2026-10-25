@@ -54,6 +54,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   // lists the Docker volumes the host still has (space-separated, as `docker volume ls -q`).
   const wrap = join(scratch, 'wrap'); mkdirSync(wrap);
   writeFileSync(join(wrap, 'docker'), `#!/bin/sh
+if [ "$1" = ps ] && [ -n "$FAKE_TAMPER_FILE" ]; then echo tampered >> "$FAKE_TAMPER_FILE"; fi
 if [ "$1" = ps ] && [ "$FAKE_PROJECT_EXISTS" = yes ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo 0123456789ab; exit 0; fi
 if [ "$1" = volume ] && [ -n "$FAKE_VOLUMES" ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\\n' $FAKE_VOLUMES; exit 0; fi
 if [ "$1" = load ]; then
@@ -129,11 +130,18 @@ test('restore-host builds the state from the backup, rewrites only the three pat
 
 // The images build-images.sh saved on the lost host (<state>/images), copied beside the backups on the drive.
 const ID = { db: `sha256:${'a'.repeat(64)}`, functions: `sha256:${'b'.repeat(64)}`, storage: `sha256:${'c'.repeat(64)}` };
-function savedImages(dir) {
+// build-images.sh signs the folder like a backup: SHA256SUMS lists every file in it, SHA256SUMS.hmac is made with the backup key.
+function signImages(dir, key = backupKey) {
+  const names = readdirSync(dir).filter(name => !name.startsWith('SHA256SUMS')).sort();
+  writeFileSync(join(dir, 'SHA256SUMS'), names.map(name => `${sha(readFileSync(join(dir, name)))}  ${name}\n`).join(''));
+  signBackup(dir, key);
+}
+function savedImages(dir, { sign = true, key = backupKey } = {}) {
   mkdirSync(dir, { recursive: true });
   for (const name of ['db.tar', 'functions.tar', 'storage.tar', 'Bad Name.tar', 'UPPER.tar', '.hidden.tar']) writeFileSync(join(dir, name), `tar ${name}\n`);
   writeFileSync(join(dir, 'notes.txt'), 'not an image\n');
   writeFileSync(join(dir, 'image-recipes.sha256'), Object.entries(ID).map(([service, id], i) => `${String(i + 1).repeat(64)}  ${service}  ${id}\n`).join(''));
+  if (sign) signImages(dir, key);
   return dir;
 }
 const dockerCalls = f => readFileSync(join(f.scratch, 'docker.log'), 'utf8').split('\n').filter(Boolean);
@@ -182,6 +190,7 @@ test('restore-host --images names the folder, and nothing is loaded when there i
     // A record with no tarball beside it (they were not copied).
     const empty = join(f.scratch, 'empty-images'); mkdirSync(empty);
     writeFileSync(join(empty, 'image-recipes.sha256'), `${'1'.repeat(64)}  db  ${ID.db}\n`);
+    signImages(empty);
     result = f.run(['--state-dir', f.state, '--yes', '--images', empty, f.backup]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /No saved image could be loaded from .*empty-images; the images are built as usual\./);
@@ -202,6 +211,83 @@ test('restore-host --images names the folder, and nothing is loaded when there i
     rmSync(f.state, { recursive: true, force: true });
     result = f.run(['--state-dir', f.state, '--yes', '--images']);
     assert.equal(result.status, 1); assert.match(result.stderr, /Usage: npm run db:restore-host -- .*\[--images DIR\]/);
+  } finally { clean(f); }
+});
+
+const loads = f => dockerCalls(f).filter(c => c.startsWith('load '));
+test('restore-host uses saved images only when they authenticate with the backup key: refused when named, ignored when found next to the backup', () => {
+  const f = fixture('warehouse-restore-host-images-signature-');
+  try {
+    const drive = join(f.scratch, 'drive', 'images');
+    const elsewhere = join(f.scratch, 'copied-from-usb');
+    const reset = () => { rmSync(f.state, { recursive: true, force: true }); rmSync(drive, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); };
+    // A tarball changed after the folder was signed.
+    savedImages(elsewhere); writeFileSync(join(elsewhere, 'db.tar'), 'a changed image\n');
+    let result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup], { FAKE_LOADED_IDS: ID.db });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Refusing: the backup does not match its SHA256SUMS\./);
+    assert.match(result.stderr, /Refusing: the saved images in .*copied-from-usb do not authenticate with the backup key/);
+    nothingCreated(f, result);
+    assert.deepEqual(loads(f), [], 'nothing was loaded');
+    // The same folder found next to the backup is ignored, with the reason; the restore goes on and builds the images.
+    reset(); savedImages(drive); writeFileSync(join(drive, 'db.tar'), 'a changed image\n');
+    result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_LOADED_IDS: ID.db });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Note: the saved images next to the backup \(.*drive\/images\) do not authenticate with the backup key \(message above\), so they are not used\. The images are built as usual\./);
+    assert.deepEqual(loads(f), []);
+    assert.ok(result.restoreCalls.includes('--relocated'));
+    assert.equal(existsSync(join(f.state, 'config/image-recipes.sha256')), false, 'no record adopted');
+    // A folder that was never signed (copied from an installation before signing), a file added after signing, another key.
+    reset(); savedImages(elsewhere, { sign: false });
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /Incomplete backup: missing SHA256SUMS/);
+    assert.match(result.stderr, /do not authenticate with the backup key/); assert.deepEqual(readdirSync(f.parent), [], 'nothing created');
+    reset(); savedImages(elsewhere); writeFileSync(join(elsewhere, 'extra.tar'), 'added later\n');
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /the files in the backup are not exactly the files its signed SHA256SUMS lists/);
+    reset(); savedImages(elsewhere, { key: 'ab'.repeat(32) });
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /the signature of this backup does not match the backup key/);
+    reset(); savedImages(elsewhere); rmSync(join(elsewhere, 'SHA256SUMS.hmac'));
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /Refusing: this backup carries no signature/);
+    assert.deepEqual(loads(f), [], 'none of them loaded anything');
+    // A genuine folder still loads.
+    reset(); savedImages(elsewhere);
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup], { FAKE_LOADED_IDS: ID.db });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(loads(f).includes(`load --input ${elsewhere}/db.tar`));
+    // Changed on the drive after the first check, before the load (docker ps, step 4, appends to the tarball): not loaded, the restore goes on.
+    reset(); savedImages(elsewhere);
+    const seen = loads(f).length;
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup], { FAKE_LOADED_IDS: ID.db, FAKE_TAMPER_FILE: join(elsewhere, 'db.tar') });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: the saved images in .*copied-from-usb no longer authenticate \(message above\); they are not loaded and the images are built as usual\./);
+    assert.equal(loads(f).length, seen, 'nothing loaded');
+    assert.ok(result.restoreCalls.includes('--relocated'));
+  } finally { clean(f); }
+});
+
+test('restore-host --allow-unsigned never uses saved images: nothing proves them genuine', () => {
+  const f = fixture('warehouse-restore-host-images-unsigned-');
+  try {
+    f.resum({ sign: false });
+    const drive = savedImages(join(f.scratch, 'drive', 'images'));   // even a folder that is signed
+    let result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], { FAKE_LOADED_IDS: ID.db }, { key: null });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /Note: --allow-unsigned was given, so the saved images in .*drive\/images are not used: nothing proves them genuine, and a loaded image runs with every secret of the rebuilt host\. The images are built as usual\./);
+    assert.deepEqual(loads(f), []);
+    assert.equal(existsSync(join(f.state, 'config/image-recipes.sha256')), false);
+    rmSync(f.state, { recursive: true, force: true });
+    // Also when the folder is named.
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', '--images', drive, f.backup], { FAKE_LOADED_IDS: ID.db }, { key: null });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /are not used: nothing proves them genuine/);
+    assert.deepEqual(loads(f), []);
+    // No images folder at all: no note.
+    rmSync(f.state, { recursive: true, force: true }); rmSync(drive, { recursive: true });
+    result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
+    assert.doesNotMatch(result.stderr, /saved images/);
   } finally { clean(f); }
 });
 

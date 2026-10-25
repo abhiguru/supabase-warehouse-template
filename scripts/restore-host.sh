@@ -16,6 +16,11 @@
 # build record (image-recipes.sha256) names are loaded with `docker load` and the record adopted before the restore starts,
 # so the db, storage, functions and PDF images are not built again (a build needs Docker Hub, Debian, npm and Chrome for Testing to answer). A tarball
 # that does not load is reported and that image is built as usual. Images that are pulled, not built, are pulled as usual.
+# A loaded image runs on the rebuilt host with every secret, so the folder must be proven genuine like a backup: its
+# SHA256SUMS.hmac, made by build-images.sh with the backup key, is checked with the key passed as --backup-key (backup_authenticate)
+# before anything is loaded. A folder named with --images that does not authenticate stops the restore before anything is
+# created; one found next to the backup is ignored (with the reason). With --allow-unsigned (no key to check with) saved images
+# are not used at all: the images are built as usual.
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
 # written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
@@ -65,12 +70,27 @@ fi
 # folder of tarballs is never fed to docker load. A folder given with --images that is not one is refused; one found next to
 # the backup is ignored.
 is_saved_images() { [[ -d "$1" && ! -L "$1" && -f "$1/image-recipes.sha256" && ! -L "$1/image-recipes.sha256" ]]; }
+images_named=false
 if [[ -n "$images" ]]; then
   is_saved_images "$images" || die "--images must be a copy of the lost host's <state>/images folder (a directory with image-recipes.sha256 and one <service>.tar per image): $images"
   images="$(realpath -e -- "$images")"
+  images_named=true
 else
   candidate="$(dirname -- "$source")/images"
   if is_saved_images "$candidate"; then images="$(realpath -e -- "$candidate")"; fi
+fi
+# Saved images are used only when the backup key proves them genuine (the signature build-images.sh made over their SHA256SUMS).
+if [[ -n "$images" && "$allow_unsigned" == true ]]; then
+  echo "Note: --allow-unsigned was given, so the saved images in $images are not used: nothing proves them genuine, and a loaded image runs with every secret of the rebuilt host. The images are built as usual." >&2
+  images=''
+elif [[ -n "$images" ]]; then
+  if ! backup_authenticate "$images" false; then
+    if [[ "$images_named" == true ]]; then
+      die "Refusing: the saved images in $images do not authenticate with the backup key (message above). Use the images folder as build-images.sh wrote it (every file in it, and its SHA256SUMS and SHA256SUMS.hmac), or leave --images out to build the images."
+    fi
+    echo "Note: the saved images next to the backup ($images) do not authenticate with the backup key (message above), so they are not used. The images are built as usual." >&2
+    images=''
+  fi
 fi
 
 # 1. The new state: an absolute, symlink-free path outside the checkout that is
@@ -250,6 +270,11 @@ if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key fil
 if [[ -n "$letterhead_restored" ]]; then echo "Restored the letterhead image public/$letterhead_restored from the backup."; fi
 # Built images saved by build-images.sh on the lost host: loaded now, and their build record adopted, so the restore below
 # (which builds a missing db image, and compose up the others) does not go to the internet for them.
+# Checked again now that the new state exists: the folder is on a drive that could have been changed since the first check.
+if [[ -n "$images" ]] && ! backup_authenticate "$images" false; then
+  echo "Warning: the saved images in $images no longer authenticate (message above); they are not loaded and the images are built as usual." >&2
+  images=''
+fi
 if [[ -n "$images" ]]; then
   loaded=0
   while read -r _ service _; do
