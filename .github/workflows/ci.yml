@@ -498,7 +498,7 @@ jobs:
           if grep -q -- '--letterhead-file' "$previous/setup.sh"; then options+=(--letterhead-file off); fi
           cd "$previous"
           bash setup.sh --operator --state-dir "$state" \
-            --api-url https://backend-upgrade.example.test --company 'Fictional Upgrade Warehouse' \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
             --provider-env "$RUNNER_TEMP/msg91-upgrade.env" \
             --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
             "${options[@]}"
