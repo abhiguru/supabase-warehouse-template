@@ -341,12 +341,12 @@ last five such sources are kept).
 | Open lane | 5 per hour per phone, and the daily cap less the trusted reserve (30 − 10 = 20) in any 24 hours, shared by all sources that are not trusted | every request that is not from a trusted source | same 429 |
 | Trusted lane | 5 per hour per phone and trusted source, up to the per-phone cap of 30; `otp_trusted_daily_reserve` (default 10) of the 30 cannot be used by other sources | known phones, from a trusted source | same 429 |
 | Resend cooldown | 60 s per phone and source | every request | 429 "Please wait before requesting another OTP." with `retry_after_seconds` |
-| Per source, sends | 30 per hour over all phones | every request with a source | 429 "Too many OTP requests. Try again later." |
+| Per source, sends | `otp_source_hourly_sends`, default 30 per hour over all phones; `otp_trusted_source_hourly_sends` (default 120) for the addresses you list in `otp_trusted_source_list` ([below](#the-facilitys-own-wi-fi-address)) | every request with a source | 429 "Too many OTP requests. Try again later." |
 | Warehouse cap | `otp_global_hourly_cap`, default 300 per hour; text `0` is the no-send switch (below) | every request | same 429 |
 | Provider requests | `otp_daily_provider_attempt_cap`, **off until you set it**: the most requests made to MSG91 in any 24 hours, a retry counted as a second request, a refused or timed-out one counted too | every request | same 429, and no SMS is sent |
 | Unknown-number share | `otp_unknown_hourly_cap`, default 60 per hour, part of the warehouse cap | phones that are not known | same 429; known phones are still served |
 | Wrong codes | 5 per issued code in all, from every source together; sources other than the one that requested the code share 2 of the 5 | every verification | 400 "Invalid or expired OTP" |
-| Per source, failed verifications | 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
+| Per source, failed verifications | `otp_source_hourly_failures`, default 20 per hour over all phones | every verification with a source | 429 "Too many OTP requests. Try again later." |
 | New access requests | 3 per source and `enrollment_daily_cap` (default 30) for the warehouse, per 24 hours | a verified number that has no profile yet | No SMS is sent for a number that would exceed it (429 "Too many OTP requests..."); a verification that exceeds it answers 429 "Too many new access requests. Try again tomorrow." |
 
 What this means in practice:
@@ -377,7 +377,9 @@ What this means in practice:
   mobile-carrier gateway) is the same source and can use up that user's
   attempts, cooldown and trusted allowance, and a flood from many addresses can
   fill the warehouse cap. If either happens, add a Cloudflare WAF rate rule on
-  `/functions/v1/operator-otp/request` and `/verify`.
+  `/functions/v1/operator-otp/request` and `/verify`. A facility whose staff
+  all sit behind one public address (the yard Wi-Fi) shares the per-source
+  limits too: list that address ([below](#the-facilitys-own-wi-fi-address)).
 
 **Clearing one phone's counters.** When a user cannot get a code because
 someone else has used up the limits of their number, run on the server (the
@@ -395,7 +397,10 @@ per-phone counts only (not the per-source or warehouse limits, and not the
 60 s cooldown), leaves codes already sent valid and keeps the phone's trusted
 sources. If the requests continue, the limits fill again within the hour: put
 the WAF rule in place first, then clear. Each clearing allows up to 30 further
-SMS to that number.
+SMS to that number. An address that has reached its per-source limit is not
+cleared by this: its hour ends by itself (the count of an address restarts one
+hour after its first request), or raise `otp_source_hourly_sends` or
+[list the address](#the-facilitys-own-wi-fi-address).
 
 - A send that MSG91 did not accept (outage, rejection) is not counted against
   the phone or the warehouse cap, so a provider outage does not lock users out.
@@ -462,14 +467,49 @@ cap. The trusted reserve can never exceed the per-phone cap; a reserve equal
 to the cap closes the open lane, so only trusted sources get codes.
 
 **Sessions.** The access token lives one hour (`JWT_EXP`); the app renews it
-with a refresh token that is replaced at every renewal and is valid for 7 days
-from sign-in. If the app repeats a renewal within 60 seconds because the answer
+with a refresh token that is replaced at every renewal. A session lasts while
+the person keeps using the app: each renewal moves its end to 30 days after the
+renewal (`session_idle_seconds`, default 2592000, kept between 1 hour and 365
+days), but never later than 90 days after the sign-in (`session_max_seconds`,
+default 7776000, never below the idle time and at most 1095 days; a value that
+is not a whole number means the default). So someone who opens the app at least
+once a month is asked for an SMS code about every three months, and a lapse of
+the SMS service (MSG91 balance, DLT header, KYC) does not sign the staff out
+within a week, as it did before migration 126, when a session ended 7 days
+after sign-in whatever the use. Someone who does not use the app for the idle
+time signs in again with a code. Only an active, approved profile is extended;
+any other active profile keeps the fixed 7 days of a new session. Sessions made
+before migration 126 become sliding at their next renewal. Change a value as
+`supabase_admin` (`UPDATE warehouse_security.auth_config SET value='1209600'
+WHERE key='session_idle_seconds'`); it applies at the next renewal, and a
+session already past a lowered absolute limit is ended then (the app signs the
+person in again). To go back to a fixed week, set both keys to `604800`. Setup
+creates the keys once and does not reset a value you set. If the app repeats a
+renewal within 60 seconds because the answer
 was lost on a slow network, it receives the same new token again
 (`refresh_grace_seconds` in `warehouse_security.auth_config`, 0 to 300). A
 replaced refresh token that is presented later, or one from an earlier
 generation, means two devices hold tokens of one session: the session is ended
 for both and the user signs in again. The database log then carries
-`Refresh token reuse: session ... revoked`.
+`Refresh token reuse: session ... revoked`. The database remembers each replaced
+token for as long as the session can last (until 90 days after sign-in at the
+longest, `session_max_seconds`; before migration 126 a session ended within 7
+days and the record with it), so a stolen token that was replaced is still
+recognised when the real holder presents it weeks later, as long as the session
+lives. The price is a few small rows per renewal, which go with the session.
+
+**A lost or stolen phone.** A session now lasts weeks, so do not wait for it to
+end: switch the person off. An administrator (a supervisor can do it for anyone
+who is not an administrator) opens Settings → Users → edit → Account Status and
+switches the user off. That deletes every session of the person at once
+(`update_user_status(false)`), so the phone is signed out on its next request,
+whichever way the person signed in. When the person has a new phone, switch them
+on again; they sign in there with a code. Nobody can switch off their own
+account, and the last administrator cannot be switched off. So if the lost phone
+is an administrator's own and no other administrator can do it, run
+`bash rotate-keys.sh --yes` ([Rotate signing keys](#rotate-signing-keys)): it
+deletes every session of the warehouse, so every user, the administrator
+included, signs in again with a code.
 
 Disabling a user (`update_user_status(false)`) revokes their sessions; enabling
 them again re-activates a disabled profile. It does not approve a request: a pending
@@ -494,6 +534,128 @@ container with the new environment and synchronizes the protected
 `public.sms_config` row. Identity, paths and signing keys are untouched; an
 unchanged provider file leaves the configuration byte-identical. Send yourself
 a code afterwards.
+
+### The facility's own Wi-Fi address
+
+Every phone on the facility's Wi-Fi reaches the internet through one public
+address, so the whole staff counts as **one source** for the per-source limits:
+30 SMS requests and 20 failed verifications an hour. On a morning when many
+people sign in together (after a [key rotation](#rotate-signing-keys), or when
+sessions end together after a long SMS outage) the thirty-first request is
+refused with "Too many OTP requests" for up to an hour. Tell the database
+which addresses are yours and they get a higher send limit (`otp_trusted_source_hourly_sends`,
+default 120 an hour; the limit that applies is the larger of it and
+`otp_source_hourly_sends`). The list is the key `otp_trusted_source_list` in
+`warehouse_security.auth_config`. It is a different thing from a phone's *trusted
+sources* above (the table `warehouse_security.otp_trusted_sources`: the networks
+a person signed in from, which only widen that one phone's allowance).
+
+Find the address: on a phone on the facility Wi-Fi, open any "what is my IP
+address" page (this is the address the Cloudflare edge sees as
+`CF-Connecting-IP`). If the facility has IPv6, a phone may show an IPv6 address:
+list the range that your provider gave you (usually a /64) as well. Then, as
+`supabase_admin`:
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+-- addresses or CIDR ranges, comma separated; something that is not an address is ignored
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_list','203.0.113.45, 2001:db8:1234:5678::/64')
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+-- optional: the limit for those addresses (default 120 an hour)
+INSERT INTO warehouse_security.auth_config(key,value) VALUES ('otp_trusted_source_hourly_sends','120')
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+SQL
+```
+
+It applies to the next request, no restart needed. Remove the list with
+`DELETE FROM warehouse_security.auth_config WHERE key='otp_trusted_source_list'`.
+A range may be no wider than /8 for an IPv4 address and /32 for an IPv6 one:
+the database refuses to store a wider one (`0.0.0.0/0` or `::/0` would make the
+whole internet a trusted source) and says so, and a wider range that got in some
+other way is an error when the list is read, so requests for a code fail until
+it is corrected.
+The phone and warehouse limits above still apply to those addresses, and so do
+the five wrong guesses per code; only the per-source send count is higher. The
+ordinary limits are keys too: `otp_source_hourly_sends` (30) and
+`otp_source_hourly_failures` (20; not higher for the listed addresses). Setup
+creates these keys once and does not reset a value you set. List only an
+address you control: anybody behind a listed address can ask for up to 120 SMS
+an hour, which MSG91 bills.
+
+### Break-glass administrator sign-in
+
+When SMS does not work (the MSG91 balance is used up, the sender header is suspended, the provider is down) and nobody can get a code, the
+operator can sign an **administrator** in without one. Once the administrator is in, they can approve or fix everything else from the app.
+Sessions that are already open keep working ([Sessions](#authentication-and-otp-limits): they are renewed while used), so this is for the
+person whose session has ended.
+
+On the server, with the stack running:
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+bash scripts/break-glass-admin.sh 9XXXXXXXXX      # the administrator's 10-digit mobile number
+```
+
+It prints a six-digit code **once**, with the name of the administrator it belongs to and this warning: *this code signs in the admin
+`<name>` on any phone within 10 minutes; use it only when SMS is down.* It refuses (and prints no code) when the number is not an active,
+approved administrator (staff, a supervisor, a customer, a switched-off or pending account, a service account, an unknown number). The
+command takes the operator lock like setup and backup do: if one of them is running it says so; wait for it and run it again. It prints the
+code only to a terminal: run it in a terminal session on the server, not through a pipe, `tee`, a redirect or a logged wrapper (it
+refuses with a message, and makes no code, when standard output is not a terminal; `--to-stdout` before the number overrides that on
+purpose).
+
+Learn it before the day it is needed: after an upgrade that changed `functions/`, the `functions` container must have been recreated
+(`bash scripts/compose.sh up -d --force-recreate functions`, [Rerun and upgrade](#rerun-and-upgrade)); an old `operator-otp` shows the
+app "SMS delivery unavailable" and never its code screen when the provider refuses, and the break-glass code cannot be typed.
+
+Give the code to that administrator in person or by a call you trust. On their phone: open the app, enter their number, ask for a code (the
+app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
+code instead of the SMS code.
+
+Making the code also clears that number's own per-phone request counters (the same two statements as `reset_otp_limits`, [above](#authentication-and-otp-limits)),
+because they fill during an SMS outage: a request the provider refused is not given back, so an administrator who tried five times before
+calling is at the hourly limit and would be refused the code screen. It does **not** clear the limits of the address or of the warehouse.
+If the code screen still answers "Too many OTP requests" ("Please wait before requesting another OTP" only means one minute between two
+requests: wait and ask again):
+
+1. **Use mobile data.** Switch the phone from the facility Wi-Fi to mobile data and ask again. On the day SMS stops, everybody on the Wi-Fi
+   retries, and the Wi-Fi's one address reaches its per-address limit (30 requests an hour) and keeps it for up to an hour. List the Wi-Fi's
+   address beforehand ([The facility's own Wi-Fi address](#the-facilitys-own-wi-fi-address)) and this is rarer.
+2. **Check the warehouse switches.** `otp_global_hourly_cap` must not be `0` (the no-send switch) and, if you set
+   `otp_daily_provider_attempt_cap`, it must not be used up (requests the provider refused count against it, and are never given back):
+
+   ```bash
+   bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT key, value FROM warehouse_security.auth_config WHERE key IN ('otp_global_hourly_cap','otp_daily_provider_attempt_cap')"
+   ```
+
+The rules:
+
+- It is valid for **10 minutes**, works **once**, and ends after **five wrong tries** from any address (run the command again for a new
+  one; a new code ends the earlier open one of that number). It belongs to that number and that administrator: if the administrator is
+  switched off or is no longer an administrator before it is used, it stops working.
+- Nobody else can make one: the database function (`warehouse_security.break_glass_code`) can be executed by `supabase_admin` alone; no
+  app role, the service role included, can call it or read its table. The code is stored only as a keyed hash (HMAC-SHA256 with the JWT
+  secret, like the SMS codes).
+- A break-glass sign-in opens a normal session (renewed like any other). It does not mark the number as verified by SMS and does not make
+  the sign-in address a trusted source of the phone.
+- Making a code and using one are each written to `public.audit_log` (kept 24 months: [audit_log retention](CONTAINER_SECURITY.md#audit_log-retention)); the code itself never is. To see them:
+
+  ```sql
+  SELECT created_at, action, new_data->>'name' AS administrator, ip_address
+  FROM public.audit_log WHERE table_name = 'break_glass' ORDER BY created_at DESC LIMIT 20;
+  -- CODE_ISSUED: an operator made a code. SIGN_IN: it was used (from ip_address).
+  ```
+
+  A `CODE_ISSUED` row with no `SIGN_IN` after it means the code expired unused; a `SIGN_IN` you did not expect means the code was shared.
+- **What it does not cover: the association's sign-in.** Break-glass replaces this facility's own SMS code only. In the app with association
+  sign-in, a facility that accepts association sign-in is reached through the association's sign-in: the app sends everyone who is not
+  signed in to it first. If the association's service cannot send codes, a break-glass code cannot be typed anywhere, and only sessions that
+  are still open (they slide, [Sessions](#authentication-and-otp-limits)) keep people in. With `--central-local-code on`, the break-glass
+  code stands in for the facility's own code after a successful association sign-in, and for nothing else. So it covers a facility that
+  uses its own SMS (MSG91) for sign-in, not an outage at the association's.
+- It does not fix the SMS service: top up or repair MSG91 ([Replacing MSG91 credentials](#authentication-and-otp-limits)) and send yourself
+  a code. Administrators who need no sign-in right now do not need a break-glass code.
 
 ## Central sign-in
 

@@ -111,7 +111,10 @@ client address and has no hourly window**.
 - **The functions route: 100 a minute, 6000 an hour (owner decision of 2026-10-11).** 6000 is exactly 100 a minute for
   sixty minutes, so the hourly window cannot refuse an address that stays within the minute limit; the minute limit is
   the one that acts. This route is also the gateway's brake per address on OTP requests; the database has its own OTP
-  limits per source (30 codes sent an hour, 20 failed verifications an hour), so the route allows no more SMS.
+  limits per source. They are `auth_config` keys with defaults (`otp_source_hourly_sends`, 30 codes sent an hour;
+  `otp_source_hourly_failures`, 20 failed verifications an hour; `otp_trusted_source_hourly_sends`, 120 sends an hour for an address
+  the operator lists in `otp_trusted_source_list`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#the-facilitys-own-wi-fi-address)), so the
+  route allows no more SMS.
 - **Storage has no limit.** A list screen loads one image per row and every phone at a facility shares one public
   address, so a limit low enough to matter could refuse ordinary use; it needs request counts from a running facility
   before a number is chosen.

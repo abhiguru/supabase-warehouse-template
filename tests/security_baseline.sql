@@ -215,4 +215,23 @@ BEGIN
 END
 $$;
 
+-- Migration 126: a break-glass administrator code can be made by the installer (supabase_admin) alone: no app role executes the function or
+-- reads or writes its table, and the function is a SECURITY DEFINER with a pinned search_path. (tests/break_glass.sql proves the behaviour.)
+DO $$
+BEGIN
+  IF has_function_privilege('anon', 'warehouse_security.break_glass_code(text)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'warehouse_security.break_glass_code(text)', 'EXECUTE')
+     OR has_function_privilege('service_role', 'warehouse_security.break_glass_code(text)', 'EXECUTE')
+     OR has_table_privilege('anon', 'warehouse_security.break_glass_codes', 'SELECT,INSERT,UPDATE,DELETE')
+     OR has_table_privilege('authenticated', 'warehouse_security.break_glass_codes', 'SELECT,INSERT,UPDATE,DELETE')
+     OR has_table_privilege('service_role', 'warehouse_security.break_glass_codes', 'SELECT,INSERT,UPDATE,DELETE') THEN
+    RAISE EXCEPTION 'an app role can reach the break-glass code function or its table';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = 'warehouse_security.break_glass_code(text)'::regprocedure AND p.prosecdef
+                 AND p.proconfig @> ARRAY['search_path=pg_catalog, public, extensions']) THEN
+    RAISE EXCEPTION 'break_glass_code is not a SECURITY DEFINER function with a pinned search_path';
+  END IF;
+END
+$$;
+
 SELECT 'security baseline passed' AS result;

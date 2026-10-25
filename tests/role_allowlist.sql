@@ -225,6 +225,16 @@ SELECT pg_temp.ra_assert((SELECT bool_and(pg_get_functiondef(p.oid) NOT LIKE '%a
 SELECT pg_temp.ra_assert((SELECT array_agg(p.proname::text ORDER BY p.proname)=ARRAY['check_session','get_public_config','logout_session','refresh_jwt_token']
   FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND has_function_privilege('anon',p.oid,'EXECUTE')),
  'the anonymous function list is the session functions and get_public_config (migration 123)');
+-- Migration 126: the break-glass sign-in code can be made by the installer (supabase_admin) alone. No signed-in or anonymous role executes it
+-- or reads its table, so it needs no row in the classification above; the edge function's question whether a code is open is for the service role only.
+SELECT pg_temp.ra_assert(NOT has_function_privilege('anon','warehouse_security.break_glass_code(text)','EXECUTE')
+  AND NOT has_function_privilege('authenticated','warehouse_security.break_glass_code(text)','EXECUTE')
+  AND NOT has_function_privilege('service_role','warehouse_security.break_glass_code(text)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.operator_break_glass_open(text)','EXECUTE')
+  AND NOT has_function_privilege('authenticated','public.operator_break_glass_open(text)','EXECUTE')
+  AND has_function_privilege('service_role','public.operator_break_glass_open(text)','EXECUTE')
+  AND NOT has_table_privilege('authenticated','warehouse_security.break_glass_codes','SELECT'),
+ 'no app role makes or reads a break-glass code (tests/break_glass.sql proves the rest)');
 -- is_admin_or_supervisor() is true for staff as well, so it keeps staff out of
 -- nothing. These are the granted functions that call it; the five that staff
 -- may run are meant to treat staff like a supervisor, and the staff sweep

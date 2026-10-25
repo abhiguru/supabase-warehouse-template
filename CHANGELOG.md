@@ -49,6 +49,17 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    objects (role and schema `pgbouncer`, database `_supabase`, three secrets) and records `POOLER_ENABLED=false`; an installation that
    ran supavisor is recorded as on. If `_supabase` holds data the clean-up is refused with a warning and asked again at the next setup.
    To use the pooler: `bash scripts/pooler.sh on` (`off`, `status`); see "Pooler (optional)" in `docs/OPERATOR_INSTALL.md`.
+12. **Migration 126 (sessions, per-source limits, break-glass) and the `functions` recreate.** This is the break-glass / functions-recreate
+   action (its number leaves room for the actions 10 and 11 that another change adds). Runs with `setup.sh`; no data is changed. Sessions
+   now slide (30 days idle, 90 days at most; before: 7 days from sign-in), so an SMS outage no longer signs everybody out within a week;
+   a lost phone is therefore ended by switching the user off (`docs/OPERATOR_INSTALL.md`, "A lost or stolen phone"). If many phones share
+   the facility Wi-Fi, list its public address once as `otp_trusted_source_list` (`docs/OPERATOR_INSTALL.md`, "The facility's own Wi-Fi
+   address"). Learn `bash scripts/break-glass-admin.sh <admin number>` ("Break-glass administrator sign-in") before the day SMS stops.
+   **After `setup.sh`, run `bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/`.**
+   Setup does not recreate the `functions` container (the functions are bind-mounted and the edge runtime keeps the modules it has loaded,
+   see "Rerun and upgrade" in `docs/OPERATOR_INSTALL.md`); without that line the old `operator-otp` keeps running, and while the SMS
+   provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
+   The app needs no change.
 
 ### Changed
 
@@ -136,6 +147,53 @@ older app build and `fas-sync`'s bulk push (named arguments, no flag) behave exa
 - Tests: `tests/duplicate_warning_124.sql` (new, registered in `tests/migrations.sh`); case 12 of `tests/concurrent_rules.sh` (two sessions: the
   second of two creates is warned and names the first; an overlapping resend gets the stored answer); `tests/grn_rates.sql` names the new last parameter.
 
+
+### Sliding sessions, per-source limits and break-glass sign-in (migration 126)
+
+New migration (`sessions_and_source_limits`), the owner decisions of 2026-10-25 for review items 2 and 20 of the production-readiness review.
+The app needs no change (it never reads the refresh token's lifetime; the one answer it treats as definitive, `Session expired`, is kept).
+
+- **Sliding sessions.** `warehouse_security.issue_session`: for an active, approved profile each refresh moves the session's end to
+  `now() + session_idle_seconds` (default 2592000, 30 days; kept between 1 hour and 365 days) but never past `refresh_sessions.created_at +
+  session_max_seconds` (default 7776000, 90 days; never below the idle time, at most 1095 days). A new sign-in ends after the idle time (was
+  a fixed 7 days). Another active profile keeps 7 days and is not extended. A session already past the absolute limit is not renewed
+  (`Session expired`, `P0001`). `update_user_status(false)` still deletes sessions. `refresh_jwt_token` keeps its reuse rule but is patched
+  (marker): the record of a replaced token now lasts until `created_at + session_max_seconds` at the latest (never less than the end the
+  session had), where it used to end with the session's end at the time of the refresh. Sessions used to end within 7 days, so the two
+  coincided; a sliding session would have outlived its records and a stolen, replaced token would have been refused without ending the
+  session. Cost: the small rows of replaced tokens stay up to 90 days instead of 7, and go with the session. The two clamps are read by
+  new helpers `session_idle_seconds()` and `session_max_seconds()`. The keys are seeded once by the migration and
+  `scripts/configure-auth.sql` (`ON CONFLICT DO NOTHING`: a rerun of setup keeps an operator's value, unlike `access_seconds`, which is
+  rewritten from `JWT_EXP`).
+- **Per-source OTP limits are `auth_config` keys.** `otp_source_hourly_sends` (30; was the literal in `operator_prepare_otp`) and
+  `otp_source_hourly_failures` (20; was the literal in `operator_verify_otp`), same defaults. New optional `otp_trusted_source_list`
+  (comma separated addresses and CIDR ranges; the facility's Wi-Fi address; named apart from the table `warehouse_security.otp_trusted_sources`,
+  which holds a phone's own trusted networks) gets `otp_trusted_source_hourly_sends` (default 120; the larger of the two limits applies).
+  A range wider than /8 (IPv4) or /32 (IPv6) is an error where the list is read (`22023`, the entry named), and a trigger on `auth_config`
+  refuses to store such a list, so a typo like `0.0.0.0/0` cannot make the whole internet a trusted source. `reset_otp_limits` is unchanged
+  (per-phone counts only). New helpers `warehouse_security.address_in_list`, `otp_source_send_cap`, `otp_source_failure_cap`,
+  `check_trusted_source_list` (trigger function), `session_idle_seconds`, `session_max_seconds` (not granted to any API role).
+- **Break-glass administrator sign-in.** `warehouse_security.break_glass_code(phone)` (`supabase_admin` only) makes a one-time six-digit code,
+  valid 10 minutes, for an existing active, approved administrator; `operator_verify_otp` accepts it after looking for an SMS code, once,
+  until five wrong tries, without marking the number verified or the address trusted, and writes `audit_log` rows (`break_glass`,
+  `CODE_ISSUED` and `SIGN_IN`). `scripts/break-glass-admin.sh <number>` runs it under the operator lock and prints the code once with a
+  warning. New table `warehouse_security.break_glass_codes` (keyed hash, RLS on, no API grants). The `operator-otp` edge function answers a
+  request as sent while a code is open for the number and the SMS provider refuses it (new service-role function
+  `operator_break_glass_open`), so the app reaches its code screen; a request the SMS provider accepted never asks. Making a code also clears
+  that number's own per-phone request counters (the two statements of `reset_otp_limits`), because they fill while the provider refuses
+  requests and would refuse the administrator's request for the code screen; per-address and warehouse-wide counts stay (use mobile
+  data if the Wi-Fi's address is at its limit, `docs/OPERATOR_INSTALL.md`). A code is issued, and accepted, only for a person (not a service
+  account, not a deleted profile). The script prints the code only to a terminal (`--to-stdout` overrides it on purpose). It does not help a
+  build that signs in through the association when the association's SMS is down (`docs/OPERATOR_INSTALL.md`, `docs/CENTRAL_LOGIN.md`).
+  The three `operator_*` and `refresh_jwt_token` bodies are patched from their latest definition with the marker-count pattern;
+  `issue_session` is replaced as a whole.
+- Tests: `tests/sessions_sliding.sql`, `tests/break_glass.sql`, `tests/otp_source_limits.sql` (new, registered in `tests/migrations.sh`, which
+  also checks that a rerun of `configure-auth.sql` keeps an operator's values); `tests/break-glass-admin.test.mjs` and a new case in
+  `tests/operator-lock.test.mjs` for the script; new cases in `tests/operator-otp-handler.test.mjs`; classification assertions in
+  `tests/role_allowlist.sql` and `tests/security_baseline.sql`. The cases cover reuse of a replaced token 40 days after a slide, the cleared
+  per-phone counters (open and trusted lane) with per-address and warehouse counts kept, a source at its failure limit before a correct
+  break-glass code is read, a live SMS code with an open break-glass code, service accounts and deleted profiles, and the refusal of
+  ranges wider than /8 or /32.
 
 ### Earlier in this release (not yet tagged)
 
