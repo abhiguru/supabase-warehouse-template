@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSync, statSync, chmodSync, symlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, statSync, chmodSync, symlinkSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,8 @@ import { makeState, scriptRoot, repo } from './backup-test-helpers.mjs';
 //   compose config --format json   prints the fixture (fails with FAKE_FAIL_CONFIG=yes)
 //   compose build [opts] SERVICE..  logged; gives every named image a new ID (fails with FAKE_FAIL_BUILD=yes)
 //   compose up -d ... SERVICE..     logged (fails with FAKE_FAIL_UP=yes)
-//   image inspect                   the stored ID, or exit 1
+//   image inspect                   the stored ID (--format {{.Size}}: 1000), or exit 1
+//   save --output FILE IMAGE        writes "image NAME id ID" to FILE (fails after a partial write with FAKE_FAIL_SAVE=yes)
 //   ps -a / ps (with --format)      the services in FAKE_CONTAINERS / FAKE_RUNNING
 //   ps -aq                          nothing (the ownership check of scripts/compose.sh)
 const PROJECT = 'warehouse-backup-test';
@@ -51,7 +52,10 @@ case "$1" in
       -a) for service in $FAKE_CONTAINERS; do echo "$service"; done ;;
       *) for service in $FAKE_RUNNING; do echo "$service"; done ;;
     esac ;;
-  image) cat "$FAKE_DIR/images/$(file "$5")" 2>/dev/null || exit 1 ;;
+  image) if [ "$4" = '{{.Size}}' ]; then echo 1000; else cat "$FAKE_DIR/images/$(file "$5")" 2>/dev/null || exit 1; fi ;;
+  save)
+    if [ "$FAKE_FAIL_SAVE" = yes ]; then echo partial > "$3"; echo 'write error: no space left on device' >&2; exit 5; fi
+    printf 'image %s id %s\n' "$4" "$(cat "$FAKE_DIR/images/$(file "$4")")" > "$3" ;;
   compose)
     case "$*" in
       *' config --format json') if [ "$FAKE_FAIL_CONFIG" = yes ]; then echo 'yaml: broken' >&2; exit 15; fi; cat "$FAKE_DIR/config.json" ;;
@@ -75,14 +79,16 @@ esac
   return { scratch, state, root, services, writeConfig, haveImages, record: join(state, 'config/image-recipes.sha256') };
 }
 
-function run({ scratch, state, root }, { args = [], containers = '', running = '', fail = '', wrap } = {}) {
+function run({ scratch, state, root }, { args = [], containers = '', running = '', fail = '', wrap, env = {} } = {}) {
   for (const log of ['build.log', 'up.log']) writeFileSync(join(scratch, log), '');
   const script = join(root, 'scripts/build-images.sh');
   const command = wrap ? ['bash', ['-c', wrap, 'wrap', script, join(state, 'config/operator.lock')]] : ['bash', [script, ...args]];
   const result = spawnSync(...command, {
     encoding: 'utf8',
     env: { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DIR: scratch,
-      FAKE_CONTAINERS: containers, FAKE_RUNNING: running, [`FAKE_FAIL_${fail.toUpperCase()}`]: 'yes' },
+      FAKE_CONTAINERS: containers, FAKE_RUNNING: running, [`FAKE_FAIL_${fail.toUpperCase()}`]: 'yes',
+      // The disk of the machine running the tests decides nothing: the 5 GiB reserve is lifted unless a test sets it.
+      WAREHOUSE_IMAGE_SAVE_RESERVE: '0', ...env },
   });
   const log = name => readFileSync(join(scratch, name), 'utf8').trim();
   return { ...result, builds: log('build.log'), ups: log('up.log') };
@@ -104,6 +110,112 @@ test('a first installation builds the core images, leaves optional services alon
     for (const [fingerprint, , id] of lines) { assert.match(fingerprint, /^[0-9a-f]{64}$/); assert.match(id, /^sha256:[0-9]{64}$/); }
     assert.equal(statSync(f.record).mode & 0o777, 0o600);
     assert.equal(result.ups, '', 'the build step starts nothing');
+  } finally { cleanup(f); }
+});
+
+const images = f => join(f.state, 'images');
+const tarballs = f => (existsSync(images(f)) ? readdirSync(images(f)).sort() : []);
+
+test('a build saves each built image to <state>/images/<service>.tar with a copy of the build record, and a later build replaces only what it rebuilt', () => {
+  const f = fixture();
+  try {
+    const first = run(f);
+    assert.equal(first.status, 0, first.stderr);
+    assert.deepEqual(tarballs(f), ['db.tar', 'functions.tar', 'image-recipes.sha256']);
+    assert.match(first.stdout, new RegExp(`Saved the db image to ${images(f)}/db\\.tar\\.`));
+    assert.match(first.stdout, /Saved the functions image to /);
+    assert.equal(readFileSync(join(images(f), 'db.tar'), 'utf8'), `image ${PROJECT}-db id sha256:${'0'.repeat(61)}101\n`);
+    assert.equal(readFileSync(join(images(f), 'image-recipes.sha256'), 'utf8'), readFileSync(f.record, 'utf8'), 'the record is kept beside the tarballs');
+    assert.equal(statSync(images(f)).mode & 0o777, 0o700);
+    for (const name of ['db.tar', 'functions.tar', 'image-recipes.sha256']) assert.equal(statSync(join(images(f), name)).mode & 0o777, 0o600, name);
+    // The records that failed or were never saved are not the tarballs' concern; a rebuild of one service replaces its tarball only.
+    const dbBefore = readFileSync(join(images(f), 'db.tar'), 'utf8');
+    writeFileSync(join(f.root, 'docker/functions/Dockerfile'), 'FROM example.invalid/functions:2\n');
+    const second = run(f);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.builds, 'functions');
+    assert.match(second.stdout, /Saved the functions image/); assert.doesNotMatch(second.stdout, /Saved the db image/);
+    assert.equal(readFileSync(join(images(f), 'db.tar'), 'utf8'), dbBefore);
+    assert.equal(readFileSync(join(images(f), 'functions.tar'), 'utf8'), `image ${PROJECT}-functions id sha256:${'0'.repeat(61)}103\n`, 'replaced by the new image');
+    assert.equal(readFileSync(join(images(f), 'image-recipes.sha256'), 'utf8'), readFileSync(f.record, 'utf8'));
+    assert.deepEqual(tarballs(f), ['db.tar', 'functions.tar', 'image-recipes.sha256'], 'no temporary file is left');
+    // An optional service that this installation uses is saved too; one without a container is not built, so not saved.
+    const third = run(f, { containers: 'db functions supavisor', args: ['--all'] });
+    assert.equal(third.status, 0, third.stderr);
+    assert.deepEqual(tarballs(f), ['db.tar', 'functions.tar', 'image-recipes.sha256', 'supavisor.tar']);
+  } finally { cleanup(f); }
+});
+
+test('a save that fails or that would fill the disk is a warning: the build stands, the old tarball stays whole, nothing is left over', () => {
+  const f = fixture();
+  try {
+    assert.equal(run(f).status, 0);
+    const before = readFileSync(join(images(f), 'functions.tar'), 'utf8');
+    writeFileSync(join(f.root, 'docker/functions/Dockerfile'), 'FROM example.invalid/functions:2\n');
+    const failed = run(f, { fail: 'save' });
+    assert.equal(failed.status, 0, failed.stderr);
+    assert.match(failed.stderr, /Warning: could not save the functions image to .*functions\.tar\. The image itself is fine\./);
+    assert.match(failed.stdout, /Built 1 image\(s\)\./);
+    assert.equal(readFileSync(join(images(f), 'functions.tar'), 'utf8'), before, 'the previous tarball is untouched');
+    assert.deepEqual(tarballs(f), ['db.tar', 'functions.tar', 'image-recipes.sha256']);
+    assert.match(readFileSync(f.record, 'utf8'), /functions/, 'the record was written before the save');
+    // No room: refused before anything is written, whatever the image size is.
+    writeFileSync(join(f.root, 'docker/functions/Dockerfile'), 'FROM example.invalid/functions:3\n');
+    const full = run(f, { env: { WAREHOUSE_IMAGE_SAVE_RESERVE: String(2 ** 60) } });
+    assert.equal(full.status, 0, full.stderr);
+    assert.match(full.stderr, /Warning: the functions image was not saved to .*: less than \d+ GiB would be left on the disk\..*build-images\.sh --save/);
+    assert.equal(readFileSync(join(images(f), 'functions.tar'), 'utf8'), before);
+    // The default reserve is 5 GiB.
+    assert.match(readFileSync(join(repo, 'scripts/build-images.sh'), 'utf8'), /WAREHOUSE_IMAGE_SAVE_RESERVE:-\$\(\(5 \* 1024 \*\* 3\)\)/);
+  } finally { cleanup(f); }
+});
+
+test('--save writes the images in use without building; with nothing to rebuild and no copy yet, a build prints the tip', () => {
+  const f = fixture();
+  try {
+    f.haveImages(...CORE, `${PROJECT}-supavisor`);
+    // An installation built before images were saved: records exist, tarballs do not.
+    assert.equal(run(f, { containers: 'db functions' }).status, 0);
+    rmSync(images(f), { recursive: true });
+    const tip = run(f, { containers: 'db functions' });
+    assert.equal(tip.builds, '');
+    assert.match(tip.stdout, /Images match their recipes; nothing to rebuild\.\nTip: no copy of the built images is kept yet\. bash scripts\/build-images\.sh --save writes one to /);
+    const saved = run(f, { args: ['--save'], containers: 'db functions' });
+    assert.equal(saved.status, 0, saved.stderr);
+    assert.equal(saved.builds, '', 'nothing is built');
+    assert.deepEqual(tarballs(f), ['db.tar', 'functions.tar', 'image-recipes.sha256']);
+    assert.equal(run(f, { containers: 'db functions' }).stdout.trim(), 'Images match their recipes; nothing to rebuild.', 'no tip once there is a copy');
+    // An optional service is saved only where this installation has a container of it.
+    assert.equal(run(f, { args: ['--save'], containers: 'db functions supavisor' }).status, 0);
+    assert.ok(tarballs(f).includes('supavisor.tar'));
+    // No image at all: nothing to save, not an error.
+    rmSync(join(f.scratch, 'images'), { recursive: true }); mkdirSync(join(f.scratch, 'images')); rmSync(images(f), { recursive: true });
+    const none = run(f, { args: ['--save'], containers: 'db functions' });
+    assert.equal(none.status, 0, none.stderr);
+    assert.match(none.stdout, /No built image of this installation exists on this host; nothing to save\./);
+    assert.equal(existsSync(images(f)), false);
+    assert.match(run(f, { args: ['--save', '--all'] }).stderr, /Usage: bash scripts\/build-images\.sh \[--all \| --no-cache \| --replace-optional \| --save\]/);
+  } finally { cleanup(f); }
+});
+
+test('image-recipes adopt: a saved record line is taken over only where the image ID exists on this host', () => {
+  const f = fixture();
+  try {
+    const line = (service, id, n = 1) => `${String(n).repeat(64)}  ${service}  ${id}\n`;
+    const ids = { db: `sha256:${'a'.repeat(64)}`, functions: `sha256:${'b'.repeat(64)}`, cups: `sha256:${'c'.repeat(64)}` };
+    for (const id of [ids.db, ids.cups]) writeFileSync(join(f.scratch, 'images', imageFile(id)), `${id}\n`);   // loaded: db and cups; not functions
+    const saved = join(f.scratch, 'saved-record');
+    writeFileSync(saved, line('db', ids.db, 1) + line('functions', ids.functions, 2) + line('cups', ids.cups, 3) + `${'4'.repeat(64)}  nosuchid\n`);
+    const target = join(f.scratch, 'new-record');
+    writeFileSync(target, line('functions', `sha256:${'d'.repeat(64)}`, 5));
+    const adopt = spawnSync('node', [join(f.root, 'scripts/image-recipes.mjs'), 'adopt', target, saved], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${join(f.scratch, 'bin')}:${process.env.PATH}`, FAKE_DIR: f.scratch } });
+    assert.equal(adopt.status, 0, adopt.stderr);
+    assert.equal(adopt.stdout, 'adopted db\nadopted cups\n');
+    assert.equal(readFileSync(target, 'utf8'), line('cups', ids.cups, 3) + line('db', ids.db, 1) + line('functions', `sha256:${'d'.repeat(64)}`, 5), 'sorted by service; functions keeps its own line');
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+    const usage = spawnSync('node', [join(f.root, 'scripts/image-recipes.mjs'), 'adopt', target], { encoding: 'utf8' });
+    assert.equal(usage.status, 2); assert.match(usage.stderr, /adopt RECORD SAVED_RECORD/);
   } finally { cleanup(f); }
 });
 

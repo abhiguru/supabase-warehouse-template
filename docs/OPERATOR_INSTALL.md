@@ -1020,6 +1020,20 @@ survive loss of that disk. Copy every retained backup to an operator-provided en
 ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) keeps off-host custody, schedule and retention open). Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
 this backup either (the bridge's volume holds only readings not yet delivered).
 
+**`$WAREHOUSE_STATE_DIR/images` is not in a backup, and the USB copy does not take it.** It holds the images this
+installation built (`db`, `functions`, `storage`, `pdf-renderer`, and any optional one in use) as `docker save` tarballs,
+written by `scripts/build-images.sh` after every successful build, with a copy of the build record. They are what lets a
+lost-host restore run without Docker Hub, Debian, npm and Chrome for Testing answering (they need about 2.5 GiB of disk;
+a save that would leave under 5 GiB free is skipped with a warning). If you want that, copy the folder with the drive
+whenever it changes (after each upgrade that rebuilt images):
+
+```bash
+bash scripts/build-images.sh --save     # once, on an installation built before images were saved
+cp -a "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-backups/<state name>/images/"
+```
+
+The images that Compose pulls (the gateway, PostgREST and others) are not saved; a rebuilt host pulls them by digest.
+
 `npm run db:verify-restore -- /path/to/backup` checks every checksum and the signature first (see
 [Backup key](#backup-key)), rejects absolute paths, `..` segments and links in the
 storage archive, proves that every catalogued object is a file in the archive
@@ -1288,7 +1302,8 @@ need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). If this facility's central sign-in reads its
 keys from a file, backups taken with this release carry that file too
 (`central-jwks.json`); for older backups keep the key set the association sent
-you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
+you (step 7). If you kept a copy of the old host's `images` folder
+([Backup and restore](#backup-and-restore)), bring it too (step 3). **Do not run `setup.sh` before the restore**: on the new host it
 would create a new, different warehouse. After `db:restore-host` has finished,
 `setup.sh` on the restored state keeps the identity. Step 7 needs it, and so
 does step 8 when the installation sent alerts to Slack; when both apply,
@@ -1321,6 +1336,13 @@ one rerun with both sets of options does.
    npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --backup-key ~/backup.key --yes \
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
+
+   The built images come from the saved tarballs when you have them: an `images` folder next to the archive (as in the
+   copy command under [Backup and restore](#backup-and-restore)) is used by itself when it holds the build record
+   `image-recipes.sha256`, or name another folder with `--images DIR`; only the tarballs that record names are loaded. They are loaded with `docker load` and their build record adopted before the restore starts, so the
+   `db`, `storage`, `functions` and `pdf-renderer` images are not built again (a build needs Docker Hub, Debian, npm and
+   Chrome for Testing); a tarball that does not load is reported and that image is built as usual, and so is every image
+   whose recipe in this checkout differs from the saved one. Without saved images the first start rebuilds all of them.
 
    `--yes` confirms that the original host is permanently off. Before it creates
    the state the command checks, in this order: the archive, unopened, against its
@@ -1575,10 +1597,13 @@ path, build target and build arguments) with a record of what it built last
 whose recipe differs or whose tag no longer names the image it built. Setup's
 start then replaces only the containers whose image changed. What to expect:
 
-- A state with no record (a new one, or one made by `restore-host`) rebuilds
+- A state with no record (a new one, or one made by `restore-host` without saved images) rebuilds
   every image in use once. That needs the network and can take a good while on
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
+- After a build, every image it built is also written to `$WAREHOUSE_STATE_DIR/images/<service>.tar` (an older tarball of
+  that service is replaced). Nothing else keeps the built images; see [Backup and restore](#backup-and-restore) for what
+  they are for and why they are not in a backup. A save that fails is a warning, not a failed build.
 - A build needs the network when a recipe changed. If it fails, setup stops
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather

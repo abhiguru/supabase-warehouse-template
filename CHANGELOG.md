@@ -74,6 +74,12 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **Built images are saved.** After a successful build `scripts/build-images.sh` writes the images it built to
+  `<state>/images/<service>.tar` (`docker save`, about 2.5 GiB in all; skipped with a warning if under 5 GiB would stay free) with a
+  copy of the build record, and `db:restore-host` loads them (`--images DIR`, or an `images` folder next to the backup) before the
+  restore, so a lost-host rebuild does not need Docker Hub, Debian, npm and Chrome for Testing. The folder is not in a backup:
+  `bash scripts/build-images.sh --save` writes it for an installation that is already built, and the operator copies it with the
+  drive ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

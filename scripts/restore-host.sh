@@ -9,7 +9,13 @@
 # central sign-in key file (public/central-jwks.json), the letterhead image (public/letterhead.jpg or .png) and a tunnel credential
 # in the backup are put back as well.
 #
-#   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes BACKUP
+#   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes [--images DIR] BACKUP
+#
+# --images DIR is a copy of the lost host's <state>/images folder (scripts/build-images.sh writes the images it builds
+# there; it is not part of a backup). Without the option, an `images` folder next to BACKUP is used. The tarballs that its
+# build record (image-recipes.sha256) names are loaded with `docker load` and the record adopted before the restore starts,
+# so the db, storage, functions and PDF images are not built again (a build needs Docker Hub, Debian, npm and Chrome for Testing to answer). A tarball
+# that does not load is reported and that image is built as usual. Images that are pulled, not built, are pulled as usual.
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
 # written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
@@ -25,15 +31,16 @@
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:restore-host -- --state-dir ABSOLUTE_NEW_STATE --backup-key KEYFILE --yes [--images DIR] BACKUP_DIR_OR_ARCHIVE   (--allow-unsigned instead of --backup-key: only for when the backup key is lost)' >&2; exit 1; }
 die() { echo "$*" >&2; exit 1; }
 
-state='' confirm=false source='' keyfile='' allow_unsigned=false
+state='' confirm=false source='' keyfile='' allow_unsigned=false images=''
 while (($#)); do
   case "$1" in
     --state-dir) (($# > 1)) || usage; state="$2"; shift 2 ;;
     --backup-key) (($# > 1)) || usage; keyfile="$2"; shift 2 ;;
     --allow-unsigned) allow_unsigned=true; shift ;;
+    --images) (($# > 1)) || usage; images="$2"; shift 2 ;;
     --yes) confirm=true; shift ;;
     -h|--help) usage ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
@@ -51,6 +58,19 @@ if [[ -n "$keyfile" ]]; then
   export WAREHOUSE_BACKUP_KEY_FILE="$(realpath -e -- "$keyfile")"
 elif [[ "$allow_unsigned" != true ]]; then
   die 'Refusing: restore-host needs the backup key of the lost installation (--backup-key FILE, your copy of its config/backup.key) to prove the backup is genuine. --allow-unsigned is only for when the backup key is lost: the backup is then used WITHOUT proof that it is genuine.'
+fi
+
+# The saved images: --images, else an `images` folder next to the backup. A saved-images folder is recognised by the build
+# record build-images.sh keeps in it (image-recipes.sha256), and only the services that record names are loaded: some other
+# folder of tarballs is never fed to docker load. A folder given with --images that is not one is refused; one found next to
+# the backup is ignored.
+is_saved_images() { [[ -d "$1" && ! -L "$1" && -f "$1/image-recipes.sha256" && ! -L "$1/image-recipes.sha256" ]]; }
+if [[ -n "$images" ]]; then
+  is_saved_images "$images" || die "--images must be a copy of the lost host's <state>/images folder (a directory with image-recipes.sha256 and one <service>.tar per image): $images"
+  images="$(realpath -e -- "$images")"
+else
+  candidate="$(dirname -- "$source")/images"
+  if is_saved_images "$candidate"; then images="$(realpath -e -- "$candidate")"; fi
 fi
 
 # 1. The new state: an absolute, symlink-free path outside the checkout that is
@@ -228,6 +248,23 @@ trap cleanup EXIT
 echo "Created $state from $name (instance $(sed -n 's/.*"instanceId": *"\([^"]*\)".*/\1/p' "$state/public/instance.json"), originally at $original)."
 if [[ "$central_key" == true ]]; then echo 'Restored the central sign-in key file public/central-jwks.json from the backup.'; fi
 if [[ -n "$letterhead_restored" ]]; then echo "Restored the letterhead image public/$letterhead_restored from the backup."; fi
+# Built images saved by build-images.sh on the lost host: loaded now, and their build record adopted, so the restore below
+# (which builds a missing db image, and compose up the others) does not go to the internet for them.
+if [[ -n "$images" ]]; then
+  loaded=0
+  while read -r _ service _; do
+    [[ "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || continue
+    tarball="$images/$service.tar"
+    [[ -f "$tarball" && ! -L "$tarball" ]] || continue
+    if docker load --input "$tarball" >/dev/null; then loaded=$((loaded + 1)); echo "Loaded the saved image $service.tar."
+    else echo "Warning: could not load $tarball; that image is built as usual." >&2; fi
+  done < "$images/image-recipes.sha256"
+  if ((loaded > 0)); then
+    node "$ROOT/scripts/image-recipes.mjs" adopt "$state/config/image-recipes.sha256" "$images/image-recipes.sha256" \
+      || echo 'Warning: the build record of the saved images could not be adopted; the images are built as usual.' >&2
+  fi
+  if ((loaded == 0)); then echo "No saved image could be loaded from $images; the images are built as usual."; fi
+fi
 # 6. The database and storage replay is the in-place restore, unchanged.
 restore_args=(--yes --relocated)
 if [[ "$allow_unsigned" == true ]]; then restore_args+=(--allow-unsigned); fi

@@ -6,6 +6,10 @@
 //     stores the fingerprint and the image ID of each image that was just built
 //   docker compose ... config --format json | node image-recipes.mjs optional
 //     prints the optional services (those behind a profile) that are running
+//   node image-recipes.mjs adopt RECORD SAVED_RECORD
+//     for each line of SAVED_RECORD (the copy build-images.sh keeps next to its saved image tarballs) whose image ID
+//     exists on this host, writes that line into RECORD; restore-host.sh runs it after `docker load`, so the loaded
+//     images count as built by this project and are not built again
 //
 // A recipe is a service's build context (every file below it), its Dockerfile
 // path, build target and build arguments. RECORD is a private file in the
@@ -25,16 +29,17 @@ import { join } from 'node:path';
 const SERVICE = '[a-zA-Z0-9][a-zA-Z0-9._-]*';
 const [mode, ...rest] = process.argv.slice(2);
 const recordPath = mode === 'optional' ? '' : rest.shift();
-if (!['plan', 'record', 'optional'].includes(mode) || (mode !== 'optional' && !recordPath)) {
-  console.error('Usage: image-recipes.mjs plan RECORD [--all] | record RECORD service=fingerprint=image ... | optional');
+const savedPath = mode === 'adopt' ? rest.shift() : '';
+if (!['plan', 'record', 'optional', 'adopt'].includes(mode) || (mode !== 'optional' && !recordPath) || (mode === 'adopt' && !savedPath)) {
+  console.error('Usage: image-recipes.mjs plan RECORD [--all] | record RECORD service=fingerprint=image ... | optional | adopt RECORD SAVED_RECORD');
   process.exit(2);
 }
 const fail = message => { console.error(message); process.exit(1); };
 
-function readRecord() {
+function readRecord(path = recordPath) {
   const record = new Map();
-  if (!existsSync(recordPath)) return record;
-  for (const line of readFileSync(recordPath, 'utf8').split('\n')) {
+  if (!existsSync(path)) return record;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
     const match = new RegExp(`^([0-9a-f]{64}) {2}(${SERVICE})(?: {2}(sha256:[0-9a-f]{64}))?$`).exec(line);
     if (match) record.set(match[2], { fingerprint: match[1], id: match[3] ?? '' });
   }
@@ -109,6 +114,16 @@ if (mode === 'record') {
     const id = imageId(match[3]);
     if (!id) fail(`The ${match[1]} image (${match[3]}) does not exist after its build.`);
     record.set(match[1], { fingerprint: match[2], id });
+  }
+  writeRecord(record);
+} else if (mode === 'adopt') {
+  // Only a line that names an image ID this host has: a tarball that failed to load, or an older one than the record,
+  // leaves its service to be built.
+  const record = readRecord();
+  for (const [service, saved] of readRecord(savedPath)) {
+    if (!saved.id || imageId(saved.id) !== saved.id) continue;
+    record.set(service, saved);
+    console.log(`adopted ${service}`);
   }
   writeRecord(record);
 } else if (mode === 'optional') {

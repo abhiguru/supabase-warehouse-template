@@ -56,6 +56,12 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
   writeFileSync(join(wrap, 'docker'), `#!/bin/sh
 if [ "$1" = ps ] && [ "$FAKE_PROJECT_EXISTS" = yes ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; echo 0123456789ab; exit 0; fi
 if [ "$1" = volume ] && [ -n "$FAKE_VOLUMES" ]; then printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"; printf '%s\\n' $FAKE_VOLUMES; exit 0; fi
+if [ "$1" = load ]; then
+  printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+  case "$3" in *functions.tar) [ "$FAKE_LOAD_FAIL" = yes ] && { echo 'archive/tar: invalid tar header' >&2; exit 1; } ;; esac
+  echo 'Loaded image: warehouse-test-image:latest'; exit 0
+fi
+if [ "$1" = image ] && [ -n "$FAKE_LOADED_IDS" ]; then case " $FAKE_LOADED_IDS " in *" $4 "*|*" $5 "*) printf '%s\\n' "$5"; exit 0 ;; esac; fi
 exec ${bin}/docker "$@"
 `, { mode: 0o755 });
   // `key` is the file passed as --backup-key; null leaves the option out.
@@ -118,6 +124,84 @@ test('restore-host builds the state from the backup, rewrites only the three pat
     assert.match(result.stdout, /alerts are local only until you run setup\.sh --operator[^\n]*--alert-webhook-file/i);
     assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`, 'the rebuilt installation keeps the backup key');
     assert.equal(statSync(join(f.state, 'config/backup.key')).mode & 0o777, 0o600);
+  } finally { clean(f); }
+});
+
+// The images build-images.sh saved on the lost host (<state>/images), copied beside the backups on the drive.
+const ID = { db: `sha256:${'a'.repeat(64)}`, functions: `sha256:${'b'.repeat(64)}`, storage: `sha256:${'c'.repeat(64)}` };
+function savedImages(dir) {
+  mkdirSync(dir, { recursive: true });
+  for (const name of ['db.tar', 'functions.tar', 'storage.tar', 'Bad Name.tar', 'UPPER.tar', '.hidden.tar']) writeFileSync(join(dir, name), `tar ${name}\n`);
+  writeFileSync(join(dir, 'notes.txt'), 'not an image\n');
+  writeFileSync(join(dir, 'image-recipes.sha256'), Object.entries(ID).map(([service, id], i) => `${String(i + 1).repeat(64)}  ${service}  ${id}\n`).join(''));
+  return dir;
+}
+const dockerCalls = f => readFileSync(join(f.scratch, 'docker.log'), 'utf8').split('\n').filter(Boolean);
+
+test('restore-host loads the images saved beside the backup, adopts their build record and does not load anything else', () => {
+  const f = fixture('warehouse-restore-host-images-');
+  try {
+    const images = savedImages(join(f.scratch, 'drive', 'images'));
+    const loaded = `${ID.db} ${ID.storage}`;   // functions.tar fails to load below, so its image ID does not exist
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_LOADED_IDS: loaded, FAKE_LOAD_FAIL: 'yes' });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(dockerCalls(f).filter(c => c.startsWith('load ')), [`load --input ${images}/db.tar`, `load --input ${images}/functions.tar`, `load --input ${images}/storage.tar`],
+      'only the <service>.tar files that the build record names, in its order; the odd names and the record itself are not loaded');
+    assert.match(result.stdout, /Loaded the saved image db\.tar\./); assert.match(result.stdout, /Loaded the saved image storage\.tar\./);
+    assert.match(result.stderr, new RegExp(`Warning: could not load ${images}/functions\\.tar; that image is built as usual\\.`));
+    // The record: the lines whose image exists on this host (db, storage), not the one that failed to load (functions).
+    const record = readFileSync(join(f.state, 'config/image-recipes.sha256'), 'utf8');
+    assert.equal(record, `${'1'.repeat(64)}  db  ${ID.db}\n${'3'.repeat(64)}  storage  ${ID.storage}\n`);
+    assert.equal(statSync(join(f.state, 'config/image-recipes.sha256')).mode & 0o777, 0o600);
+    // It all happens before restore.sh (which builds what is missing) runs.
+    assert.ok(result.restoreCalls.includes('--relocated'));
+    const out = result.stdout;
+    assert.ok(out.indexOf('Loaded the saved image db.tar') > out.indexOf('Created '), 'after the state exists');
+  } finally { clean(f); }
+});
+
+test('restore-host --images names the folder, and nothing is loaded when there is none, when it is empty or when no tarball loads', () => {
+  const f = fixture('warehouse-restore-host-images-opt-');
+  try {
+    let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(dockerCalls(f).filter(c => c.startsWith('load ')), [], 'no images folder next to the backup: no docker load');
+    assert.equal(existsSync(join(f.state, 'config/image-recipes.sha256')), false);
+    rmSync(f.state, { recursive: true, force: true });
+    const elsewhere = savedImages(join(f.scratch, 'copied-from-usb'));
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup], { FAKE_LOADED_IDS: ID.db });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(dockerCalls(f).includes(`load --input ${elsewhere}/db.tar`));
+    assert.match(readFileSync(join(f.state, 'config/image-recipes.sha256'), 'utf8'), new RegExp(`  db  ${ID.db}\\n$`));
+    rmSync(f.state, { recursive: true, force: true });
+    // Tarballs that all fail to load: said so, no record is adopted, the restore goes on.
+    result = f.run(['--state-dir', f.state, '--yes', '--images', elsewhere, f.backup], { FAKE_LOADED_IDS: 'sha256:none' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(f.state, 'config/image-recipes.sha256')) && readFileSync(join(f.state, 'config/image-recipes.sha256'), 'utf8') !== '', false, 'no ID exists on the host: nothing adopted');
+    rmSync(f.state, { recursive: true, force: true });
+    // A record with no tarball beside it (they were not copied).
+    const empty = join(f.scratch, 'empty-images'); mkdirSync(empty);
+    writeFileSync(join(empty, 'image-recipes.sha256'), `${'1'.repeat(64)}  db  ${ID.db}\n`);
+    result = f.run(['--state-dir', f.state, '--yes', '--images', empty, f.backup]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /No saved image could be loaded from .*empty-images; the images are built as usual\./);
+    rmSync(f.state, { recursive: true, force: true });
+    // A path that is not a folder is refused before anything is created.
+    result = f.run(['--state-dir', f.state, '--yes', '--images', join(f.scratch, 'nonexistent'), f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /--images must be a copy of the lost host's <state>\/images folder/);
+    assert.equal(existsSync(f.state), false);
+    // A folder of tarballs without the build record is not a saved-images folder: refused when named, ignored when found.
+    const stranger = join(f.scratch, 'drive', 'images'); mkdirSync(stranger, { recursive: true });
+    writeFileSync(join(stranger, 'db.tar'), 'some other tarball\n');
+    result = f.run(['--state-dir', f.state, '--yes', '--images', stranger, f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /--images must be a copy of the lost host's/);
+    const seen = dockerCalls(f).length;
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(dockerCalls(f).slice(seen).filter(c => c.startsWith('load ')), [], 'the unrecognised folder next to the backup was not loaded');
+    rmSync(f.state, { recursive: true, force: true });
+    result = f.run(['--state-dir', f.state, '--yes', '--images']);
+    assert.equal(result.status, 1); assert.match(result.stderr, /Usage: npm run db:restore-host -- .*\[--images DIR\]/);
   } finally { clean(f); }
 });
 
