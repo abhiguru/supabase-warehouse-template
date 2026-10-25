@@ -7,6 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
+// backup.sh refuses a backup that would leave less than a 2 GiB reserve free on the disk of the backup folder; these tests are about
+// other things and run on whatever temporary filesystem the machine has, so they run with no reserve (every spawn below inherits it).
+process.env.WAREHOUSE_BACKUP_RESERVE_MB ??= '0';
+
 test('backup refuses an unspecified operator state before using Docker', () => {
   const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname], {
     encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: '' },

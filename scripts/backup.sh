@@ -13,6 +13,10 @@
 # A shared file that no longer matches the checksum its backup recorded (bit rot, a read error) is not linked: it is copied
 # again from the live storage, the backup says so (rot_repaired= in metadata.txt, a WARNING on standard error), and it goes on.
 # A link base that fails its own signature check is not used.
+# Before anything is stopped or written, a free-space check refuses the backup when the disk of the backup directory could not
+# hold it (with a base: twice the new stored files; without one: the whole tree once plus 10%; plus the database dump and 256 MiB
+# of working room) and still keep a reserve (WAREHOUSE_BACKUP_RESERVE_MB, 2048 by default): the refusal is the last line on
+# standard error, with the numbers. A free space that cannot be read (df, then stat -f) refuses too: the guard is never off.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -94,7 +98,12 @@ fi
 
 # The link base: the earlier backup whose files this one shares as hard links. The newest backup that the daily check
 # verified (config/backups-verified.list, "name epoch" per line, written by scripts/watch.mjs prune-backups; the file may
-# not exist yet) and that keeps its storage as a tree, else the newest tree backup there is, else none (a full copy).
+# not exist yet) and that keeps its storage as a tree, as long as it was verified within the last two days; else the newest tree
+# backup there is that passes the checks below (verified or not), else none (a full copy). The age limit is what keeps a run of
+# nights whose verify fails from copying the same new photos again every night: each such backup would link from the old
+# verified one and hold every photo added since, so after two days the chain goes on from the newest backup that authenticates
+# (the rot check below compares every shared file with the base's signed manifest, so an unverified base is safe to link from).
+# The verified list keeps its other job, pruning (it protects the newest verified backup, however old).
 # A candidate is used only if it passes the signature and checksum check of its small files (database dump, manifest, ...),
 # which does not read the photos: its manifest is what the checksums of the shared files are compared with below, so a damaged
 # manifest must not be trusted, and one unusable backup must not stop every later night. A candidate that fails is named in a
@@ -128,10 +137,11 @@ usable_base() {
 }
 base_name=none
 verified_list="$state/config/backups-verified.list"
+verified_base_max_age=$((2 * 86400))
 if [[ -f "$verified_list" && ! -L "$verified_list" ]]; then
-  while read -r candidate _; do
+  while read -r candidate; do
     if usable_base "$candidate"; then base_name="$candidate"; break; fi
-  done < <(awk 'NF { print $1 }' "$verified_list" | LC_ALL=C sort -r)
+  done < <(awk -v now="$(date +%s)" -v max="$verified_base_max_age" '$2 ~ /^[0-9]+$/ && now - $2 <= max { print $1 }' "$verified_list" | LC_ALL=C sort -r)
 fi
 if [[ "$base_name" == none ]]; then
   while read -r candidate; do
@@ -162,6 +172,84 @@ pass1_options=(-rptX)
 if [[ "$base_name" != none ]]; then pass1_options+=("--link-dest=$parent/$base_name/storage"); fi
 pass2_options=("${pass1_options[@]}" "--link-dest=$pass1")
 started=$SECONDS
+
+# Free-space preflight, with the API up and before pass 1 writes anything. The disk must hold the new copy at its peak, the dump
+# next to it and a little working room (compose.env, the catalog files, the manifest, signing, 256 MiB), and still keep a reserve
+# beyond that, so that taking a backup never fills the disk the database lives on.
+#   with a base:    need = 2 x new + dump + 256 MiB. new = what pass 1 would copy, from a dry run of the same rsync (the files linked
+#                   from the base cost nothing) plus 4 KiB for each folder of the tree (folders cannot be hard links, and pass 1 and
+#                   pass 2 each build them); pass 1 and the final pass each add the new files, and the final pass can find as many
+#                   again as pass 1 in the worst case, which is cheap when only a few files are new.
+#   without a base: need = tree + 10% + dump + 256 MiB (the whole live tree is counted once, du -sb). Pass 2 links everything pass 1
+#                   copied and the Storage service never rewrites a file in place, so the peak is the tree once; the 10% is for the
+#                   folders of the second tree and for what is uploaded meanwhile. The same count is used when the dry run fails
+#                   (new files unknown, so the whole tree stands in for them).
+#   dump:           1.5 x the larger of 64 MiB and the dump of the base; with no base, the database's own size in place of the dump
+#                   (the dump is compressed, so this is generous).
+# A figure that cannot be read is counted as 0 (the dump's floor of 64 MiB still applies). The free space is the exception: it is
+# read with df, else with stat -f, and when neither answers the backup is refused (the guard is never silently off); when stat
+# had to stand in for df, a WARNING line on standard error says so, and scripts/watch-daily.sh passes it on as backup_warning.
+mib() { echo $(((${1} + 1048575) / 1048576)); }
+reserve_mb="${WAREHOUSE_BACKUP_RESERVE_MB:-2048}"
+[[ "$reserve_mb" =~ ^[0-9]{1,9}$ ]] || { echo "Refusing: WAREHOUSE_BACKUP_RESERVE_MB must be a whole number of MiB (it is '$reserve_mb'). Nothing was stopped." >&2; exit 1; }
+delta=''
+dirs=''
+counted=tree
+if [[ "$base_name" != none ]]; then
+  rc=0
+  stats="$(LC_ALL=C rsync "${pass1_options[@]}" -n --stats "$storage/" "$pass1/" 2>/dev/null)" || rc=$?
+  if ((rc == 0 || rc == 24)); then
+    delta="$(sed -n 's/^Total transferred file size: \([0-9][0-9,.]*\) bytes.*$/\1/p' <<<"$stats" | tr -d ',.' | tail -n 1)"
+    dirs="$(sed -n 's/^Number of files: .*[(, ]dir: \([0-9][0-9,.]*\)[,)].*$/\1/p' <<<"$stats" | tr -d ',.' | tail -n 1)"
+  fi
+  if [[ "$delta" =~ ^[0-9]{1,15}$ ]]; then
+    counted=new
+    [[ "$dirs" =~ ^[0-9]{1,12}$ ]] || dirs=0
+    delta=$((delta + dirs * 4096))
+  fi
+fi
+if [[ "$counted" == tree ]]; then
+  delta="$(du -sb -- "$storage" 2>/dev/null | cut -f1 || true)"
+  if ! [[ "$delta" =~ ^[0-9]{1,15}$ ]]; then echo 'Warning: could not measure the stored files; the free-space check counts them as 0.' >&2; delta=0; fi
+fi
+dump_basis=''
+if [[ "$base_name" != none && -f "$parent/$base_name/database.dump" ]]; then
+  dump_basis="$(stat -c %s -- "$parent/$base_name/database.dump" 2>/dev/null || true)"
+else
+  dump_basis="$(compose exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "SELECT pg_database_size('postgres')" 2>/dev/null | tr -d '[:space:]' || true)"
+fi
+[[ "$dump_basis" =~ ^[0-9]{1,15}$ ]] || dump_basis=0
+dump=$(((dump_basis > 67108864 ? dump_basis : 67108864) * 3 / 2))
+if [[ "$counted" == new ]]; then
+  need=$((2 * delta + dump + 268435456))
+  need_text="2 x $(mib "$delta") MiB of new stored files and folders + $(mib "$dump") MiB for the database dump + 256 MiB of working room"
+else
+  margin=$((delta / 10))
+  need=$((delta + margin + dump + 268435456))
+  need_text="$(mib "$delta") MiB of stored files, counted once + $(mib "$margin") MiB margin (10%) + $(mib "$dump") MiB for the database dump + 256 MiB of working room"
+fi
+# Free space for the user the backup runs as: df first; when it gives no number (a df without --output, an odd mount), stat -f
+# (free blocks for a non-root user x block size, which is what df reports). Neither: refuse, nothing has been stopped.
+avail="$(df -B1 --output=avail -- "$parent" 2>/dev/null | tail -n 1 | tr -d ' ' || true)"
+space_probe=df
+if ! [[ "$avail" =~ ^[0-9]{1,18}$ ]]; then
+  avail=''
+  space_probe='stat -f'
+  fs_blocks="$(stat -f -c '%a %S' -- "$parent" 2>/dev/null || true)"
+  if [[ "$fs_blocks" =~ ^([0-9]{1,12})\ ([0-9]{1,6})$ ]]; then avail=$((BASH_REMATCH[1] * BASH_REMATCH[2])); fi
+fi
+if [[ -z "$avail" ]]; then
+  echo "Refusing: could not read the free space of $parent (df and stat -f both failed), so the backup cannot be checked to fit. Nothing was stopped. See docs/TROUBLESHOOTING.md, \"backup refused: not enough free space\"." >&2
+  exit 1
+fi
+if [[ "$space_probe" != df ]]; then
+  echo "WARNING: df gave no free space for $parent, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, \"backup refused: not enough free space\")." >&2
+fi
+if ((avail < need + 10#$reserve_mb * 1048576)); then
+  echo "Refusing: not enough free space in $parent: a backup needs about $(mib "$need") MiB ($need_text) plus a reserve of $((10#$reserve_mb)) MiB, but only $((avail / 1048576)) MiB are free. Nothing was stopped. See docs/TROUBLESHOOTING.md, \"backup refused: not enough free space\"." >&2
+  exit 1
+fi
+preflight_lines="preflight_need_mb=$(mib "$need")"$'\n'"preflight_avail_mb=$((avail / 1048576))"$'\n'
 
 # Pass 1, with the API up: most of the copy. Files the Storage service writes or removes meanwhile (rsync exit 24: a file
 # vanished) are settled by pass 2 under the stop; any other failure ends the backup here, before anything is stopped.
@@ -357,7 +445,7 @@ storage_new_bytes=$storage_new_bytes
 rot_repaired=$rot_repaired
 ${rot_lines}stop_seconds=$stop_seconds
 duration_seconds=$((SECONDS - started))
-consistency=write-facing services stopped during the database dump and the final pass of the storage copy
+${preflight_lines}consistency=write-facing services stopped during the database dump and the final pass of the storage copy
 EOF
 (cd "$stage" && sha256sum database.dump storage.manifest storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt "${optional_files[@]}" "${tunnel_files[@]}" > SHA256SUMS)
 # The signature covers SHA256SUMS and so every file; the key itself is never copied into the backup.

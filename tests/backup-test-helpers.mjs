@@ -230,7 +230,9 @@ esac
 // backup.sh is filling under FAKE_STAGE_PARENT ("SNAPSHOT <call> tree=<pass1|final> files=<files in that tree> manifest=<yes|no> dump=<yes|no>"),
 // which is how a test sees what had been done at that moment. FAKE_ON_STOP is a shell snippet run when the first service is
 // stopped (the Storage service finishing a last upload before it stops). FAKE_DOCKER_FAIL=yes fails the dump,
-// FAKE_FAIL_UP=yes fails the restart, FAKE_SERVER sets the server version answer.
+// FAKE_FAIL_UP=yes fails the restart, FAKE_SERVER sets the server version answer, FAKE_DB_SIZE the answer to pg_database_size
+// (the free-space preflight reads it when there is no earlier backup to take the size of the dump from), FAKE_DUMP_MB the
+// size of the dump in MiB (zeros) instead of the one-line text.
 export function fakeBackupDocker(bin) {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   writeFileSync(join(bin, 'docker'), `#!/bin/sh
@@ -260,8 +262,9 @@ case "$1" in
       *' ps -q gateway') printf 'aaaaaaaaaaaa\\n' ;;
       *' ps -q storage') printf 'cccccccccccc\\n' ;;
       *' ps -q '*) : ;;
-      *'exec -T db pg_dump'*) snap pg_dump; if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
+      *'exec -T db pg_dump'*) snap pg_dump; if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; if [ -n "$FAKE_DUMP_MB" ]; then head -c $((FAKE_DUMP_MB * 1048576)) /dev/zero; else printf 'fake database dump\\n'; fi ;;
       *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-18|true}" ;;
+      *'exec -T db psql'*pg_database_size*) printf '%s\\n' "\${FAKE_DB_SIZE:-10485760}" ;;
       *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
       *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
       *'exec -T db psql'*) printf 'fake integrity\\n' ;;

@@ -1017,9 +1017,11 @@ installation user with `sudo`:
 
 Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
 the timers installed (see "Monitoring is not a Compose profile" in the installation section above), the daily pass (`watch.mjs daily`, run by the `<project>-daily` timer) runs `scripts/retention.sh apply`
-once a day, after a verified backup and after it has pruned the local backups to the newest 7. To stop it, do not install
-the timer, or run `sudo bash scripts/watch-timer.sh uninstall`; nothing else deletes on a schedule. Run the retention command
-yourself at any time:
+once a day, after the day's backup attempt and after it has pruned the local backups (it does not wait for the backup or its verify
+to succeed: a backup that is refused for lack of space or fails its verify is when old backups must still go; it is skipped only
+when the database is not running or not healthy). Pruning keeps the newest 7 backups, the newest verified one and the backup of an interrupted `upgrade.sh`. To stop the
+retention, do not install the timer, or run `sudo bash scripts/watch-timer.sh uninstall`; apart from the pruning of local backups
+(below), nothing else deletes on a schedule. Run the retention command yourself at any time:
 
 ```bash
 cd /path/to/installed/backend
@@ -1033,7 +1035,8 @@ It removes expired sign-in records and old security logs from the database
 7 days from the private `documents` bucket (the PDFs are removed through the
 Storage API, so the storage container must be running; see
 [PDF_GENERATION.md](PDF_GENERATION.md)). Business records and photos are never
-removed by it. The daily pass also deletes local backup directories beyond the newest 7 in `<state>/backups`
+removed by it. The daily pass also deletes local backup directories beyond the newest 7 in `<state>/backups`, except the newest one that
+passed its verify (`config/backups-verified.list`) and the backup that an interrupted `upgrade.sh` names as its way back
 ([MONITORING.md](MONITORING.md#the-daily-backup-verify-prune-and-retention)); the USB backup drive is not pruned by it.
 
 ## Rotate signing keys
@@ -1087,7 +1090,47 @@ every stored file on both sides (twice, the second time as a check that nothing 
 thousands of files, not minutes. `db:backup` prints how long the services were stopped, how long the backup took, and how many files were new
 (`metadata.txt` records `stop_seconds=`, `duration_seconds=`, `storage_files=`, `storage_bytes=`, `storage_new_bytes=` and
 `link_base=`, the backup the files were linked from). The first backup, and the first after an upgrade from a release that
-wrote `warehouse-backup-v5`, is a full copy.
+wrote `warehouse-backup-v5`, is a full copy. The backup it links from is the newest one whose daily verify passed within the last
+two days; when there is none (nights whose verify fails, so that the last verified backup is older), the newest backup that passes
+its signature check, verified or not, so that failing verifies do not make every night copy the same new photos again. Every
+shared file is compared with the signed manifest of that backup, so a backup that was not verified is safe to link from.
+
+**Free space is checked first, before anything is stopped or written.** `db:backup` works out what the backup needs on the disk
+that holds its folder, and refuses when the disk could not hold it and still keep a reserve. What it needs:
+
+- **Linking from an earlier backup** (the normal night): twice the stored files that are new since that backup (the files that
+  pass 1 would copy, counting 4 KiB for each folder of the tree, which cannot be hard-linked), plus the database dump, plus 256 MiB
+  for the rest.
+- **With no backup to link from** (the first v6 backup, or every earlier one is unusable): the whole photo tree **once** plus 10%
+  of it, plus the database dump, plus 256 MiB. The copy of a tree that is made twice in a row costs the tree only once, because the
+  second pass links to the first; the 10% covers the folders and what is uploaded meanwhile.
+- The database dump is counted as 1.5 times the dump of the backup it links from (at least 96 MiB); with no such backup, 1.5 times
+  the database's own size.
+- The disk must have all that free **plus the reserve**, `WAREHOUSE_BACKUP_RESERVE_MB` (a whole number of MiB, 2048 by default, so
+  that a backup never fills the disk the database lives on).
+
+The free space is read with `df`; when `df` gives no number, with `stat -f` (free blocks times block size), and the backup says so with a
+`WARNING` line, which the daily status shows. If **neither** can be read, the backup is **refused** (the check is never silently
+skipped): `Refusing: could not read the free space of <folder> (df and stat -f both failed), so the backup cannot be checked to fit.
+Nothing was stopped.` A refusal for lack of space is the last line on standard error, with the numbers (`Refusing: not enough free
+space in <folder>: a backup needs about N MiB (...) plus a reserve of R MiB, but only A MiB are free. Nothing was stopped.`); the app
+keeps running and no partial backup is left. Slack `backup_failed` shows the same line; see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore), "backup refused: not enough free space". A backup that goes ahead
+records the numbers it was judged by in `metadata.txt` (`preflight_need_mb=`, without the reserve, and `preflight_avail_mb=`).
+
+**The week after the update to this backup format needs the most room.** The first v6 backup has nothing to link from, and the
+older `warehouse-backup-v5` backups are never a base. If the disk was sized for the v5 scheme (seven whole-photo tarballs), it can
+have less free than the photo tree plus the 2 GiB reserve, and then every night is refused until you free the room: a refused night
+makes no new backup, so nothing ages out by itself. Delete the oldest `warehouse-backup-v5` backups by hand, after copying them to the USB
+drive if you want to keep them (each holds a whole `storage.tar.gz`, so each frees about the size of the photo volume). Check first
+with `du -sh "$WAREHOUSE_STATE_DIR/data/storage"` and `df -h "$WAREHOUSE_STATE_DIR/backups"`.
+
+To change the reserve, give the process that makes the backup the variable. For the nightly run, use the daily unit
+(`sudo systemctl edit <project>-daily.service`, then `[Service]` and `Environment=WAREHOUSE_BACKUP_RESERVE_MB=1024`); for a backup by
+hand, put it in front of the command. **Two other callers do not see that setting and keep 2048:** the fresh backup that the USB
+unit makes before it copies (`sudo systemctl edit warehouse-usb-backup@.service`, the same two lines) and the backup inside `upgrade.sh`
+(`WAREHOUSE_BACKUP_RESERVE_MB=1024 bash upgrade.sh vX.Y.Z`). Lower it in all three places or the one you forgot refuses with the
+numbers above.
 
 The directory contains:
 

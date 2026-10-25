@@ -29,13 +29,16 @@ function installation(prefix) {
       writeFileSync(join(f.live, path), body);
       if (mtime) utimesSync(join(f.live, path), mtime, mtime);
     },
-    // Runs scripts/backup.sh into state/backups/NAME; `extra` adds environment (and PATH entries in `path`).
+    // Runs scripts/backup.sh into state/backups/NAME; `extra` adds environment (and PATH entries in `path`); a value of undefined
+    // removes the variable. The free-space check keeps a 2 GiB reserve unless told otherwise, which a small temporary
+    // filesystem could not give these tests (they are about other things): they run with no reserve unless they set one.
     backup(name, extra = {}, { path = '' } = {}) {
       const log = join(scratch, `docker-${++runs}.log`);
       const dest = join(state, 'backups', name);
-      const result = spawnSync('bash', [script('backup.sh'), dest], { encoding: 'utf8', env: {
-        ...process.env, PATH: `${path ? path + ':' : ''}${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
-        FAKE_DOCKER_LOG: log, FAKE_STAGE_PARENT: join(state, 'backups'), ...extra } });
+      const env = { ...process.env, PATH: `${path ? path + ':' : ''}${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
+        FAKE_DOCKER_LOG: log, FAKE_STAGE_PARENT: join(state, 'backups'), WAREHOUSE_BACKUP_RESERVE_MB: '0', ...extra };
+      for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
+      const result = spawnSync('bash', [script('backup.sh'), dest], { encoding: 'utf8', env });
       return { ...result, dest, calls: existsSync(log) ? readFileSync(log, 'utf8') : '' };
     },
     done() { rmSync(scratch, { recursive: true, force: true }); },
@@ -108,15 +111,55 @@ test('the link base is the newest verified backup, else the newest tree backup, 
     assert.equal(meta(ok(f.backup('warehouse-20260106T000000Z')).dest).link_base, names[2]);
     // The list names the verified ones: the newest verified is chosen over the newer unverified ones, whatever else it lists.
     const list = join(f.state, 'config/backups-verified.list');
-    writeFileSync(list, `${names[0]} 1790000000\nwarehouse-20260105T000000Z 1790000001\nwarehouse-20260101T999999Z 1790000002\nnot a backup name\n`);
+    const now = Math.floor(Date.now() / 1000);
+    writeFileSync(list, `${names[0]} ${now - 3600}\nwarehouse-20260105T000000Z ${now - 3500}\nwarehouse-20260101T999999Z ${now - 3400}\nnot a backup name\n`);
     assert.equal(meta(ok(f.backup('warehouse-20260107T000000Z')).dest).link_base, names[0], 'the v5 and the missing entries are skipped');
-    writeFileSync(list, `${names[1]} 1790000000\n${names[0]} 1789999999\n`);
+    writeFileSync(list, `${names[1]} ${now - 3600}\n${names[0]} ${now - 7200}\n`);
     const based = ok(f.backup('warehouse-20260108T000000Z'));
     assert.equal(meta(based.dest).link_base, names[1]);
     assert.equal(statSync(join(based.dest, 'storage', OBJECT)).nlink >= 2, true);
     // A list that names nothing usable falls back to the newest tree backup.
-    writeFileSync(list, 'warehouse-20260101T999999Z 1\n');
+    writeFileSync(list, `warehouse-20260101T999999Z ${now}\n`);
     assert.equal(meta(ok(f.backup('warehouse-20260109T000000Z')).dest).link_base, 'warehouse-20260108T000000Z');
+    // A line without a time cannot be shown to be recent: it does not choose the base.
+    writeFileSync(list, `${names[0]}\n`);
+    assert.equal(meta(ok(f.backup('warehouse-20260110T000000Z')).dest).link_base, 'warehouse-20260109T000000Z');
+  } finally { f.done(); }
+});
+
+test('a verified backup is the link base for two days; after that the newest backup that authenticates is, so nights whose verify fails do not copy the same new photos every night', () => {
+  const f = installation('warehouse-backup-base-age-');
+  try {
+    const day = 86400;
+    const now = Math.floor(Date.now() / 1000);
+    const names = [1, 2, 3, 4].map(n => `warehouse-2026010${n}T000000Z`);
+    const list = join(f.state, 'config/backups-verified.list');
+    const newBytes = result => meta(result.dest).storage_new_bytes;
+    f.put(OBJECT, 'a'.repeat(1000));
+    ok(f.backup(names[0]));
+    // Backup 1 passed its verify, a day ago; 2 and 3 were made after it and failed theirs (they are not on the list).
+    writeFileSync(list, `${names[0]} ${now - day}\n`);
+    f.put('stub/stub/documents/b.pdf/v1', 'b'.repeat(2000));
+    const second = ok(f.backup(names[1]));
+    assert.equal(meta(second.dest).link_base, names[0]);
+    assert.equal(newBytes(second), '2000');
+    f.put('stub/stub/documents/c.pdf/v1', 'c'.repeat(3000));
+    const third = ok(f.backup(names[2]));
+    assert.equal(meta(third.dest).link_base, names[0], 'verified one day ago: still preferred to the newer backups that were not verified');
+    assert.equal(newBytes(third), '5000', 'so b is copied again');
+    // Two days have passed since that verify: the chain goes on from the newest backup that authenticates.
+    writeFileSync(list, `${names[0]} ${now - 3 * day}\n`);
+    f.put('stub/stub/documents/d.pdf/v1', 'd'.repeat(4000));
+    const fourth = ok(f.backup(names[3]));
+    assert.equal(meta(fourth.dest).link_base, names[2]);
+    assert.equal(newBytes(fourth), '4000', 'only d is copied: b and c are linked from the third');
+    assert.equal(statSync(join(fourth.dest, 'storage/stub/stub/documents/c.pdf/v1')).nlink, 2);
+    // An old verified backup that is also the newest one there is still the base (nothing newer to prefer).
+    for (const name of names.slice(1)) rmSync(join(f.state, 'backups', name), { recursive: true });
+    const fifth = ok(f.backup('warehouse-20260105T000000Z'));
+    assert.equal(meta(fifth.dest).link_base, names[0]);
+    // The list is still what pruning protects, whatever its age: this is only about the link base.
+    assert.equal(readFileSync(list, 'utf8'), `${names[0]} ${now - 3 * day}\n`, 'backup.sh never writes the list');
   } finally { f.done(); }
 });
 
@@ -343,7 +386,8 @@ test('a link base that fails its own signature check is skipped, with a warning 
     assert.equal(meta(fifth.dest).rot_repaired, '0');
     assert.equal(authenticate(f, fifth.dest).status, 0);
     // The verified list does not change that: it names the bad ones first, they are still skipped, each is named once.
-    writeFileSync(join(f.state, 'config/backups-verified.list'), `${names[3]} 1790000003\n${names[2]} 1790000002\n${names[1]} 1790000001\n`);
+    const recent = Math.floor(Date.now() / 1000) - 60;
+    writeFileSync(join(f.state, 'config/backups-verified.list'), `${names[3]} ${recent + 3}\n${names[2]} ${recent + 2}\n${names[1]} ${recent + 1}\n`);
     const sixth = ok(f.backup('warehouse-20260106T000000Z'));
     assert.equal(meta(sixth.dest).link_base, names[1]);
     assert.equal(sixth.stderr.split(`Warning: ${names[3]} is not used`).length, 2, 'warned once, although both lists name it');
@@ -864,4 +908,269 @@ eval exec ${real} $args
     assert.match(result.stderr, /The restored stored files differ from the backup after the copy/);
     assert.match(result.stderr, /Restore failed during: extract storage/);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- free-space preflight
+// Shims on PATH for the tools the preflight asks. df reports FAKE_AVAIL bytes free (FAKE_DF=fail makes it fail); stat -f answers
+// FAKE_STATFS, "FREE-BLOCKS BLOCK-SIZE" (FAKE_STATFS_FAIL=yes fails it), and every other stat is the real one; rsync is the real one
+// with every call written to FAKE_RSYNC_LOG (FAKE_RSYNC_DRYRUN_FAIL=yes fails the dry run that sizes pass 1). df and stat -f refuse
+// any arguments other than the ones backup.sh is meant to pass, so a changed invocation cannot go unnoticed.
+const realTool = name => spawnSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim();
+function spaceShims(dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'df'), [
+    '#!/bin/sh',
+    '[ "$1" = "-B1" ] && [ "$2" = "--output=avail" ] && [ "$3" = "--" ] && [ "$4" = "$FAKE_STAGE_PARENT" ] || { echo "df: unexpected arguments: $*" >&2; exit 2; }',
+    '[ "$FAKE_DF" = fail ] && { echo "df: cannot read table of mounted file systems" >&2; exit 1; }',
+    'printf "Avail\\n%s\\n" "${FAKE_AVAIL:-4096}"', ''].join('\n'), { mode: 0o755 });
+  writeFileSync(join(dir, 'stat'), [
+    '#!/bin/sh',
+    'if [ "$1" = "-f" ]; then',
+    '  [ "$2" = "-c" ] && [ "$3" = "%a %S" ] && [ "$4" = "--" ] && [ "$5" = "$FAKE_STAGE_PARENT" ] || { echo "stat: unexpected arguments: $*" >&2; exit 2; }',
+    '  [ "$FAKE_STATFS_FAIL" = yes ] && { echo "stat: cannot read file system information" >&2; exit 1; }',
+    '  printf "%s\\n" "${FAKE_STATFS:-0 4096}"',
+    '  exit 0',
+    'fi',
+    `exec ${realTool('stat')} "$@"`, ''].join('\n'), { mode: 0o755 });
+  writeFileSync(join(dir, 'rsync'), [
+    '#!/bin/sh',
+    '[ -z "$FAKE_RSYNC_LOG" ] || printf "%s\\n" "$*" >> "$FAKE_RSYNC_LOG"',
+    'dry=no; stats=no',
+    'for a; do case "$a" in -n) dry=yes ;; --stats) stats=yes ;; esac; done',
+    '[ "$dry$stats" = yesyes ] && [ "$FAKE_RSYNC_DRYRUN_FAIL" = yes ] && { echo "rsync: the dry run failed" >&2; exit 12; }',
+    `exec ${realTool('rsync')} "$@"`, ''].join('\n'), { mode: 0o755 });
+  return dir;
+}
+const MIB = 1024 * 1024;
+const mib = bytes => Math.ceil(bytes / MIB);
+const treeBytes = path => Number(spawnSync('du', ['-sb', path], { encoding: 'utf8' }).stdout.split('\t')[0]);
+// What rsync counts as "dir:" in its statistics: the folders of the tree, the top one included.
+const dirCount = path => spawnSync('find', [path, '-type', 'd'], { encoding: 'utf8' }).stdout.trim().split('\n').length;
+const rsyncCalls = log => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []);
+const isDryRun = call => /(^| )-[a-zA-Z]*n[a-zA-Z]*( |$)/.test(call);
+const nothingStopped = (result, log) => {
+  assert.doesNotMatch(result.calls, / stop |pg_dump|up -d/, 'no service was stopped, dumped or started');
+  assert.equal(existsSync(result.dest), false, 'no backup');
+  assert.deepEqual(readdirSync(dirname(result.dest)).filter(name => name.startsWith('.warehouse-backup-staging.')), [], 'no staging directory is left');
+  if (log) assert.deepEqual(rsyncCalls(log).filter(call => !isDryRun(call)), [], 'pass 1 never ran: only dry runs of rsync');
+};
+
+test('with no earlier backup the tree is counted once plus 10%: refused before any service stops or pass 1 runs when the disk could not hold it, the dump and 256 MiB plus the 2 GiB reserve; the numbers are the last line on standard error', () => {
+  const f = installation('warehouse-backup-preflight-first-');
+  try {
+    f.put(OBJECT, 'a'.repeat(5 * MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const log = join(f.scratch, 'rsync.log');
+    // No earlier backup: the stored files are the whole live tree (du -sb), once; the dump is the database's own size.
+    const delta = treeBytes(f.live);
+    assert.ok(delta >= 5 * MIB);
+    const margin = Math.floor(delta / 10);
+    const dump = 300 * MIB;                       // 200 MiB database, counted 1.5 times
+    const need = delta + margin + dump + 256 * MIB;
+    const reserve = 2048 * MIB;
+    const env = { FAKE_DB_SIZE: String(200 * MIB), WAREHOUSE_BACKUP_RESERVE_MB: undefined, FAKE_RSYNC_LOG: log };
+    const refused = f.backup('warehouse-20260101T000001Z', { ...env, FAKE_AVAIL: String(need + reserve - 1) }, { path: shim });
+    assert.equal(refused.status, 1);
+    const last = lastLine(refused.stderr);
+    assert.equal(last, `Refusing: not enough free space in ${join(f.state, 'backups')}: a backup needs about ${mib(need)} MiB (${mib(delta)} MiB of stored files, counted once + ${mib(margin)} MiB margin (10%) + 300 MiB for the database dump + 256 MiB of working room) plus a reserve of 2048 MiB, but only ${Math.floor((need + reserve - 1) / MIB)} MiB are free. Nothing was stopped. See docs/TROUBLESHOOTING.md, "backup refused: not enough free space".`);
+    assert.ok(last.length < 400, 'short enough to survive watch-daily.sh, which cuts a value at 400 characters');
+    assert.match(refused.stderr, /shares a filesystem with .*\/data/, 'the earlier warning is above the refusal, not below it');
+    assert.doesNotMatch(refused.stderr, /WARNING: df gave/, 'df answered, so stat -f was not needed');
+    assert.match(refused.calls, /pg_database_size/, 'with no earlier backup the dump is sized from the database');
+    nothingStopped(refused, log);
+    assert.deepEqual(rsyncCalls(log), [], 'with no earlier backup there is no dry run: the tree is measured with du');
+    // One byte more room and the same backup goes through, and records the numbers it was judged by.
+    const done = ok(f.backup('warehouse-20260101T000002Z', { ...env, FAKE_AVAIL: String(need + reserve) }, { path: shim }));
+    assert.equal(meta(done.dest).preflight_need_mb, String(mib(need)));
+    assert.equal(meta(done.dest).preflight_avail_mb, String(Math.floor((need + reserve) / MIB)));
+    assert.equal(meta(done.dest).link_base, 'none');
+    assert.match(done.calls, / stop /);
+    assert.doesNotMatch(done.stderr, /WARNING: df gave/);
+  } finally { f.done(); }
+});
+
+test('with an earlier backup the stored files are only what pass 1 would copy (twice, with the folders), and the dump is sized from the earlier dump', () => {
+  const f = installation('warehouse-backup-preflight-base-');
+  try {
+    f.put(OBJECT, 'a'.repeat(5 * MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const log = join(f.scratch, 'rsync.log');
+    const first = ok(f.backup('warehouse-20260101T000001Z', { FAKE_AVAIL: String(1024 ** 4) }, { path: shim }));
+    assert.equal(meta(first.dest).link_base, 'none');
+    // One new 1 MiB photo; the 5 MiB one is unchanged and is linked, so it costs nothing, but each folder of the tree is built
+    // twice (pass 1 and the final pass; folders are not hard links). The earlier dump is a few bytes, so the dump counts as the
+    // 64 MiB floor, 1.5 times.
+    f.put('stub/stub/documents/b.pdf/v1', 'b'.repeat(MIB));
+    const delta = MIB + dirCount(f.live) * 4096;
+    const need = 2 * delta + 96 * MIB + 256 * MIB;
+    const reserve = 2048 * MIB;
+    const env = { WAREHOUSE_BACKUP_RESERVE_MB: undefined, FAKE_RSYNC_LOG: log };
+    rmSync(log, { force: true });
+    const refused = f.backup('warehouse-20260101T000002Z', { ...env, FAKE_AVAIL: String(need + reserve - 1) }, { path: shim });
+    assert.equal(refused.status, 1);
+    assert.equal(lastLine(refused.stderr), `Refusing: not enough free space in ${join(f.state, 'backups')}: a backup needs about ${mib(need)} MiB (2 x ${mib(delta)} MiB of new stored files and folders + 96 MiB for the database dump + 256 MiB of working room) plus a reserve of 2048 MiB, but only ${Math.floor((need + reserve - 1) / MIB)} MiB are free. Nothing was stopped. See docs/TROUBLESHOOTING.md, "backup refused: not enough free space".`);
+    assert.doesNotMatch(refused.calls, /pg_database_size/, 'the earlier dump gives the size; the database is not asked');
+    nothingStopped(refused, log);
+    assert.equal(rsyncCalls(log).length, 1, 'one dry run sized pass 1');
+    assert.match(rsyncCalls(log)[0], / -n --stats /);
+    assert.deepEqual(readdirSync(join(f.state, 'backups')), ['warehouse-20260101T000001Z'], 'the earlier backup is untouched');
+    const done = ok(f.backup('warehouse-20260101T000002Z', { ...env, FAKE_AVAIL: String(need + reserve) }, { path: shim }));
+    assert.equal(meta(done.dest).link_base, 'warehouse-20260101T000001Z');
+    assert.equal(meta(done.dest).storage_new_bytes, String(MIB));
+    assert.equal(meta(done.dest).preflight_need_mb, String(mib(need)));
+  } finally { f.done(); }
+});
+
+test('when the dry run that sizes pass 1 fails, the whole tree stands in for the new files and is counted once', () => {
+  const f = installation('warehouse-backup-preflight-dryrun-');
+  try {
+    f.put(OBJECT, 'a'.repeat(5 * MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const log = join(f.scratch, 'rsync.log');
+    ok(f.backup('warehouse-20260101T000001Z', { FAKE_AVAIL: String(1024 ** 4) }, { path: shim }));
+    const delta = treeBytes(f.live);
+    const margin = Math.floor(delta / 10);
+    const need = delta + margin + 96 * MIB + 256 * MIB;
+    const env = { FAKE_RSYNC_DRYRUN_FAIL: 'yes', FAKE_RSYNC_LOG: log };
+    rmSync(log, { force: true });
+    const refused = f.backup('warehouse-20260101T000002Z', { ...env, FAKE_AVAIL: String(need - 1) }, { path: shim });
+    assert.equal(refused.status, 1);
+    assert.match(lastLine(refused.stderr), new RegExp(`^Refusing: not enough free space in .*: a backup needs about ${mib(need)} MiB \\(${mib(delta)} MiB of stored files, counted once \\+ ${mib(margin)} MiB margin \\(10%\\) \\+ 96 MiB for the database dump \\+ 256 MiB of working room\\) plus a reserve of 0 MiB, but only ${Math.floor((need - 1) / MIB)} MiB are free\\. Nothing was stopped\\.`));
+    assert.equal(rsyncCalls(log).length, 1, 'the failed dry run is the only rsync call');
+    nothingStopped(refused, log);
+    const done = ok(f.backup('warehouse-20260101T000002Z', { ...env, FAKE_AVAIL: String(need) }, { path: shim }));
+    assert.equal(meta(done.dest).link_base, 'warehouse-20260101T000001Z', 'the backup itself is not affected');
+    assert.equal(meta(done.dest).preflight_need_mb, String(mib(need)));
+  } finally { f.done(); }
+});
+
+test('an earlier dump larger than 64 MiB is counted as it is, 1.5 times', () => {
+  const f = installation('warehouse-backup-preflight-bigdump-');
+  try {
+    f.put(OBJECT, 'a'.repeat(MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const first = ok(f.backup('warehouse-20260101T000001Z', { FAKE_AVAIL: String(1024 ** 4), FAKE_DUMP_MB: '100' }, { path: shim }));
+    assert.equal(statSync(join(first.dest, 'database.dump')).size, 100 * MIB);
+    const delta = dirCount(f.live) * 4096;                  // nothing new to copy; only the folders of the tree
+    const need = 2 * delta + 150 * MIB + 256 * MIB;         // 100 MiB x 1.5 for the dump
+    const refused = f.backup('warehouse-20260101T000002Z', { FAKE_AVAIL: String(need - 1) }, { path: shim });
+    assert.equal(refused.status, 1);
+    assert.match(lastLine(refused.stderr), new RegExp(`a backup needs about ${mib(need)} MiB \\(2 x ${mib(delta)} MiB of new stored files and folders \\+ 150 MiB for the database dump \\+ 256 MiB`));
+    nothingStopped(refused);
+    ok(f.backup('warehouse-20260101T000002Z', { FAKE_AVAIL: String(need) }, { path: shim }));
+  } finally { f.done(); }
+});
+
+test('the reserve is WAREHOUSE_BACKUP_RESERVE_MB (a whole number of MiB, 2048 by default); a figure that is not a number refuses the backup before anything is stopped', () => {
+  const f = installation('warehouse-backup-preflight-reserve-');
+  try {
+    f.put(OBJECT, 'a'.repeat(MIB));
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const delta = treeBytes(f.live);
+    const first = delta + Math.floor(delta / 10) + 96 * MIB + 256 * MIB;   // no earlier backup: the whole tree once; a 10 MiB database counts as the 64 MiB floor, 1.5 times
+    const later = 2 * dirCount(f.live) * 4096 + 96 * MIB + 256 * MIB;      // the next backups link everything: nothing new to copy but the folders
+    let seq = 0;
+    const attempt = (reserveMb, avail) => f.backup(`warehouse-2026010${++seq}T000000Z`, { WAREHOUSE_BACKUP_RESERVE_MB: reserveMb, FAKE_AVAIL: String(avail) }, { path: shim });
+    // No reserve: exactly the need is enough, one byte less is not.
+    const short = attempt('0', first - 1);
+    assert.equal(short.status, 1);
+    assert.match(lastLine(short.stderr), /plus a reserve of 0 MiB, but only/);
+    nothingStopped(short);
+    ok(attempt('0', first), 'no reserve, exactly the need');
+    // A leading zero is a decimal number, not an octal one: 08 is 8 MiB.
+    const eight = attempt('08', later + 8 * MIB - 1);
+    assert.equal(eight.status, 1);
+    assert.match(lastLine(eight.stderr), /plus a reserve of 8 MiB, but only/);
+    ok(attempt('08', later + 8 * MIB));
+    // Not set: 2048 MiB.
+    const noVariable = f.backup('warehouse-20260108T000000Z', { WAREHOUSE_BACKUP_RESERVE_MB: undefined, FAKE_AVAIL: String(later + 2048 * MIB - 1) }, { path: shim });
+    assert.equal(noVariable.status, 1);
+    assert.match(lastLine(noVariable.stderr), /plus a reserve of 2048 MiB/);
+    assert.match(lastLine(attempt('', later + 2048 * MIB - 1).stderr), /plus a reserve of 2048 MiB/, 'an empty variable is the same as none');
+    // Not a number: refused, naming the variable, before the database is even asked.
+    for (const bad of ['abc', '1.5', '-1', '2 GiB', '99999999999']) {
+      const result = f.backup('warehouse-20260109T000000Z', { WAREHOUSE_BACKUP_RESERVE_MB: bad, FAKE_AVAIL: String(1024 ** 4) }, { path: shim });
+      assert.equal(result.status, 1, JSON.stringify(bad));
+      assert.match(lastLine(result.stderr), /^Refusing: WAREHOUSE_BACKUP_RESERVE_MB must be a whole number of MiB/, JSON.stringify(bad));
+      assert.doesNotMatch(result.calls, / stop |pg_dump/);
+    }
+  } finally { f.done(); }
+});
+
+test('when df gives no number the free space is read with stat -f (free blocks x block size); the check still decides, and a WARNING line says df failed', () => {
+  const f = installation('warehouse-backup-preflight-statfs-');
+  try {
+    f.put(OBJECT);
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const delta = treeBytes(f.live);
+    const need = delta + Math.floor(delta / 10) + 96 * MIB + 256 * MIB;
+    const blocks = bytes => String(Math.ceil(bytes / 1024));              // 1 KiB blocks: the product, not the block count, is the free space
+    const env = { FAKE_DF: 'fail' };
+    const refused = f.backup('warehouse-20260101T000001Z', { ...env, FAKE_STATFS: `${Math.ceil(need / 1024) - 1} 1024` }, { path: shim });
+    assert.equal(refused.status, 1);
+    assert.match(lastLine(refused.stderr), new RegExp(`^Refusing: not enough free space in .*: a backup needs about ${mib(need)} MiB \\(.*\\) plus a reserve of 0 MiB, but only ${Math.floor((Math.ceil(need / 1024) - 1) * 1024 / MIB)} MiB are free\\. Nothing was stopped\\.`));
+    const warning = `WARNING: df gave no free space for ${join(f.state, 'backups')}, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").`;
+    assert.ok(refused.stderr.split('\n').includes(warning), 'the warning is on standard error, above the refusal');
+    nothingStopped(refused);
+    const done = ok(f.backup('warehouse-20260101T000002Z', { ...env, FAKE_STATFS: `${blocks(need)} 1024` }, { path: shim }));
+    assert.ok(done.stderr.split('\n').includes(warning), 'and on a backup that went ahead');
+    assert.equal(meta(done.dest).preflight_need_mb, String(mib(need)));
+    assert.equal(meta(done.dest).preflight_avail_mb, String(Math.floor(Number(blocks(need)) * 1024 / MIB)), 'recorded from the stat -f answer');
+  } finally { f.done(); }
+});
+
+test('free space that neither df nor stat -f can give refuses the backup before anything is stopped: the guard is never silently off', () => {
+  const f = installation('warehouse-backup-preflight-unreadable-');
+  try {
+    f.put(OBJECT);
+    const shim = spaceShims(join(f.scratch, 'shims'));
+    const log = join(f.scratch, 'rsync.log');
+    const expected = `Refusing: could not read the free space of ${join(f.state, 'backups')} (df and stat -f both failed), so the backup cannot be checked to fit. Nothing was stopped. See docs/TROUBLESHOOTING.md, "backup refused: not enough free space".`;
+    for (const env of [{ FAKE_DF: 'fail', FAKE_STATFS_FAIL: 'yes' }, { FAKE_DF: 'fail', FAKE_STATFS: 'not numbers' }, { FAKE_DF: 'fail', FAKE_STATFS: '123' }]) {
+      const result = f.backup('warehouse-20260101T000001Z', { ...env, FAKE_RSYNC_LOG: log }, { path: shim });
+      assert.equal(result.status, 1, JSON.stringify(env));
+      assert.equal(lastLine(result.stderr), expected, JSON.stringify(env));
+      assert.doesNotMatch(result.stderr, /WARNING: df gave/, 'no warning: the backup did not go ahead');
+      nothingStopped(result, log);
+    }
+    // df answering something that is not a number (a "-" for a filesystem it has no figures for) is the same as failing.
+    writeFileSync(join(shim, 'df'), '#!/bin/sh\nprintf "Avail\\n-\\n"\n', { mode: 0o755 });
+    const dash = f.backup('warehouse-20260101T000001Z', { FAKE_STATFS_FAIL: 'yes' }, { path: shim });
+    assert.equal(lastLine(dash.stderr), expected);
+    nothingStopped(dash);
+  } finally { f.done(); }
+});
+
+test('with the real df and stat, the check reads a number: it is recorded in metadata.txt and there is no warning', () => {
+  const f = installation('warehouse-backup-preflight-real-');
+  try {
+    f.put(OBJECT);
+    const result = ok(f.backup('warehouse-20260101T000001Z'));
+    assert.match(meta(result.dest).preflight_avail_mb, /^[1-9][0-9]*$/);
+    assert.match(meta(result.dest).preflight_need_mb, /^[1-9][0-9]*$/);
+    assert.doesNotMatch(result.stderr, /WARNING|could not read the free space/);
+    // The same two answers the shims stand in for: the real df and the real stat -f accept the arguments backup.sh passes.
+    const parent = join(f.state, 'backups');
+    assert.match(spawnSync('df', ['-B1', '--output=avail', '--', parent], { encoding: 'utf8' }).stdout.trim().split('\n').pop().trim(), /^[0-9]+$/);
+    assert.match(spawnSync('stat', ['-f', '-c', '%a %S', '--', parent], { encoding: 'utf8' }).stdout.trim(), /^[0-9]+ [0-9]+$/);
+  } finally { f.done(); }
+});
+
+test('what `watch.mjs prune-backups --verified` writes is what the next backup links from: the newest verified backup, not the newest', () => {
+  const f = installation('warehouse-backup-verified-link-');
+  try {
+    f.put(OBJECT);
+    const names = [1, 2, 3].map(n => `warehouse-2026010${n}T000000Z`);
+    for (const name of names) ok(f.backup(name));
+    const list = join(f.state, 'config/backups-verified.list');
+    assert.equal(existsSync(list), false);
+    // The daily pass says the second backup passed its verify; the third (made later) failed its.
+    const pruned = spawnSync('node', [script('watch.mjs'), 'prune-backups', join(f.state, 'backups', names[2]), '--verified', join(f.state, 'backups', names[1])], {
+      encoding: 'utf8', env: { ...process.env, WAREHOUSE_STATE_DIR: f.state } });
+    assert.equal(pruned.status, 0, pruned.stderr);
+    assert.match(pruned.stdout, new RegExp(`^removed=0\\nnote=.*\\nverified_kept=${names[1]}\\n$`));
+    assert.match(readFileSync(list, 'utf8'), new RegExp(`^${names[1]} \\d{10}\\n$`));
+    assert.equal(statSync(list).mode & 0o777, 0o600);
+    assert.equal(meta(ok(f.backup('warehouse-20260104T000000Z')).dest).link_base, names[1]);
+  } finally { f.done(); }
 });

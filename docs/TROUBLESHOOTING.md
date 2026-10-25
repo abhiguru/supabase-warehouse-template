@@ -78,8 +78,13 @@ Check: `df -h /`.
 3. Free space in this order, until about 10 GiB is free:
    - Docker's build cache and untagged images (safe; never `-a`, never `--volumes`; on a host shared with other Docker
      projects they are affected too): `docker builder prune -f` and `docker image prune -f`.
-   - Old local backups, keeping the newest three, and only when the USB drive holds a recent archive
-     (`ls -1d "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n -3 | xargs -r rm -rf`).
+   - Old local backups, keeping the newest three **and the newest verified one**, and only when the USB drive holds a recent
+     archive. What one frees depends on its format: a `warehouse-backup-v5` backup (it has a `storage.tar.gz`) frees its whole
+     photo archive, which is the big saving in the weeks after the update to v6; a `warehouse-backup-v6` backup shares its photos
+     with the others, so it frees only its database dump and the photos no other backup holds (usually little). The newest verified
+     backup (`config/backups-verified.list`) is the last one known to restore: never remove it.
+     `newest=$(awk 'NF { print $1 }' "$WAREHOUSE_STATE_DIR/config/backups-verified.list" | sort | tail -n 1)`, then
+     `ls -1d "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n -3 | grep -v "/$newest\$" | xargs -r rm -rf`.
    - The saved image tarballs, about 2.5 GiB, after copying them to the drive; they come back at the next build
      (`bash scripts/build-images.sh --save`): `rm -rf "$WAREHOUSE_STATE_DIR/images"`.
    - The system journal: `sudo journalctl --vacuum-size=200M`.
@@ -113,7 +118,8 @@ good backup exists only on this disk.
 
 1. Why: `node scripts/watch.mjs status` (the "Daily backup" line has the message) and
    `journalctl -u <project>-daily.service --since yesterday` (`bash scripts/watch-timer.sh status` names the unit).
-2. The usual causes: the disk is full (the Disk full card); a service the backup stops was down (`bash scripts/compose.sh ps`,
+2. The usual causes: the disk is full or too full for a backup (`Refusing: not enough free space`: see "backup refused" under
+   Backup, USB drive and restore, and the Disk full card); a service the backup stops was down (`bash scripts/compose.sh ps`,
    then `bash start.sh`); another operator command still holds the lock (`status` says "operator lock is held"; find it with
    `fuser -v "$WAREHOUSE_STATE_DIR/config/operator.lock"` and let it finish); the database is not healthy.
 3. Make one by hand to see the error. It stops the app for a few minutes, so do it when it is quiet:
@@ -563,6 +569,50 @@ it; only `functions` can.
   PostgreSQL 17 to 18 move**: the file attributes that hold each file's content type were not kept by the restore. Run
   `npm run storage:retag` ([Content types of stored files](OPERATOR_INSTALL.md#content-types-of-stored-files-npm-run-storageretag)):
   it sets them again from the catalog, is safe to repeat, and prints how many files it changed. It needs the services running.
+- **Backup refused: not enough free space** (`db:backup` stops with `Refusing: not enough free space in <folder>: a backup needs
+  about N MiB (...) plus a reserve of R MiB, but only A MiB are free. Nothing was stopped.`; Slack `backup_failed` shows the same
+  line): `db:backup` measured the disk before it stopped a service or wrote a byte, so the app kept running and no partial backup is
+  left. The part in brackets says how N was counted. With an earlier backup to link from: `2 x D MiB of new stored files and folders +
+  P MiB for the database dump + 256 MiB of working room`, where D is what the copy would add (the photos new since that backup, and
+  4 KiB for each folder of the tree). With none (the first v6 backup, or every earlier one is unusable): `D MiB of stored files,
+  counted once + M MiB margin (10%) + P MiB for the database dump + 256 MiB of working room`, where D is the whole photo tree. P is the
+  database dump (1.5 times the dump of the backup it links from, at least 96 MiB; with none, 1.5 times the database's size). R is a
+  reserve the disk must keep beyond that so that a backup never fills the disk under the database (`WAREHOUSE_BACKUP_RESERVE_MB`, 2048
+  by default), A what the disk that holds the backup folder has free. Free at least N + R - A MiB, in this order, each step safe:
+  1. Docker leftovers: `docker image prune -f` (dangling images only; never `-a`, never `--volumes`) and `docker builder prune -f`
+     (not during a major PostgreSQL upgrade or a baseline reload that is not accepted yet).
+  2. The `data/storage.pre-restore-*` directories of earlier restores that you have accepted
+     ([In-place restore](OPERATOR_INSTALL.md#in-place-restore-of-the-same-instance)).
+  3. Old local backups. **In the weeks after the update to the v6 backup format** this is the usual fix and it frees a lot: every
+     backup that still has a `storage.tar.gz` is a `warehouse-backup-v5` backup and holds a whole copy of the photos, so deleting
+     one frees about the size of the photo volume (`du -sh data/storage`). The first v6 backup has nothing to link from and needs the
+     tree once plus 10%, and **until the v5 backups age out a refused night makes no new backup, so nothing is pruned by itself**: delete
+     the oldest v5 backups by hand (after copying them to the USB drive, if you want to keep them) until the numbers fit.
+     Which one is the newest verified (**never delete that one**: it is the last backup known to restore, and the next backup links its
+     photos from it):
+     `awk 'NF { print $1 }' "$WAREHOUSE_STATE_DIR/config/backups-verified.list" | sort | tail -n 1`
+     (`node scripts/watch.mjs status` names it too on a night whose verify failed). Delete the older backups that are not on the list
+     first (their verify failed, or they were never checked), the oldest verified ones after. A `warehouse-backup-v6` backup frees
+     only its own database dump and the photos no other backup holds: do not expect gigabytes from deleting v6 backups.
+  4. The saved image tarballs in `$WAREHOUSE_STATE_DIR/images` (about 2.5 GiB) after copying them to the drive; they come back at
+     the next build.
+  5. If the disk is small and the numbers are right but the 2 GiB reserve is what stops it, lower the reserve: for the nightly run
+     `sudo systemctl edit <project>-daily.service` and add `[Service]` and `Environment=WAREHOUSE_BACKUP_RESERVE_MB=512`
+     (`bash scripts/watch-timer.sh status` names the unit); by hand, `WAREHOUSE_BACKUP_RESERVE_MB=512 npm run db:backup`. The fresh
+     backup of the USB unit (`sudo systemctl edit warehouse-usb-backup@.service`, the same two lines) and the backup inside
+     `upgrade.sh` (`WAREHOUSE_BACKUP_RESERVE_MB=512 bash upgrade.sh vX.Y.Z`) do not see the daily unit's setting: lower it there too.
+     Do not set it to 0 on the disk that holds the database: PostgreSQL needs room for its write-ahead log. The lasting fix is a
+     bigger disk.
+  Then take the backup (`npm run db:backup`, or `sudo systemctl start --no-block <project>-daily.service` inside the window). The
+  daily pass keeps pruning (beyond the newest 7, the newest verified one and the backup of an interrupted `upgrade.sh`) and applying
+  retention on the nights the backup is refused. (If the refusal says `could not read the free space` instead of giving numbers, see
+  the next entry.)
+- **Backup refused: `could not read the free space of <folder> (df and stat -f both failed)`** (Slack `backup_failed` shows the same
+  line; nothing was stopped): `db:backup` reads the free space with `df -B1 --output=avail -- <folder>`, and when that gives no number
+  with `stat -f -c '%a %S' -- <folder>`. Run both by hand as the user the backup runs as and read the error. A `df` that is a wrapper
+  or does not know `--output` (busybox) is the usual cause: install GNU coreutils. When only `df` fails, the backup goes ahead on the
+  `stat -f` figure and the daily status line carries `df gave no free space for <folder>, so stat -f was used for the free-space check`;
+  fix `df` so that the warning goes away.
 - **`db:backup` stops with `copying the object storage failed (rsync exit 23)`**: two causes, both before anything was stopped.
   rsync could not read a file or folder of `data/storage` (a copied-in file owned by root or mode 700 is the usual cause; the
   lines above the message name it): make the folders mode 755 and the files mode 644 (`sudo chmod`), then back up again. Or the

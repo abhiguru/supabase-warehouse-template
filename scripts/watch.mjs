@@ -18,7 +18,8 @@
 //
 // Daily jobs (`daily`, not `run`: a backup must not hold the 5-minute checks off): once a day, between --daily-at and 6
 // hours later (local time), scripts/watch-daily.sh makes a backup, verifies it, prunes older backups and applies
-// retention under one operator lock. They run only when the database and the services the backup stops are up; a failed
+// retention under one operator lock; pruning and retention run whatever the backup and its verify said. A pass runs only
+// when the database and the services the backup stops are up; a failed
 // pass is tried again after an hour, at most 3 times a day. The daily timer fires at --daily-at and each of the 5 hours
 // after it, and a trigger with nothing to do exits at once. `run` and `daily` write different keys of the state file (under
 // a lock file: withStateLock). While the pass holds the operator lock `run` keeps the checks that do not need the stopped
@@ -26,7 +27,10 @@
 // An installation whose checker unit is from before the split (it sets WAREHOUSE_WATCH_DAILY_AT) still has the backup inside
 // `run`: `run` makes it as it always did, and raises daily_timer_legacy at once, naming the command that installs the daily timer.
 // Pruning keeps the newest 7 backup directories of this installation in $STATE/backups; backups made by hand there
-// (same name pattern, same instance) count towards those 7.
+// (same name pattern, same instance) count towards those 7. It also always keeps the newest backup on record as verified
+// ($STATE/config/backups-verified.list, written by `prune-backups --verified`), however old, so that nights whose verify
+// fails (or whose backup is refused) cannot push the last good backup out, and the backup that an interrupted upgrade.sh
+// recorded as its way back (config/upgrade-in-progress, read with readUpgradeRecord).
 // External heartbeat: if config/heartbeat-url holds an https URL (mode 0600), every successful run of `run` fetches it
 // (5 s limit). A service such as healthchecks.io alerts when the pings stop; a failed ping is logged, never alerted.
 // Self-healing: while no operator command holds the lock, an `exited` (or `created`) service of the default profile is started
@@ -37,7 +41,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
-import { interruptedUpgradeWarning } from './upgrade-record.mjs';
+import { interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
@@ -1096,30 +1100,102 @@ const BACKUP_STAMP = /^warehouse-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/;
 const stampMs = name => { const m = BACKUP_STAMP.exec(name); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null; };
 const instanceIdOf = path => { try { return JSON.parse(readFileSync(path, 'utf8')).instanceId ?? null; } catch { return null; } };
 
+// The backups the daily pass has verified: $STATE/config/backups-verified.list, one "NAME EPOCH" line per backup (EPOCH: seconds
+// since 1970 when its verify passed), newest last. Outside any backup, written only by `prune-backups --verified`, read by
+// the pruning below and by scripts/backup.sh (the newest backup verified within the last two days is the next night's link base). A name that no
+// longer exists as a directory is dropped when the list is written; a line that is not a backup name is ignored.
+export const verifiedListPath = state => join(state, 'config/backups-verified.list');
+export function readVerifiedList(state) {
+  const path = verifiedListPath(state);
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (!entry?.isFile()) return [];   // absent, or a link / directory in its place: no list
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch { return []; }
+  const byName = new Map();
+  for (const line of text.split('\n')) {
+    const [name, epoch] = line.trim().split(/\s+/);
+    if (name && BACKUP_DIR_PATTERN.test(name)) { byName.delete(name); byName.set(name, Number(epoch) || 0); }
+  }
+  return [...byName].map(([name, epoch]) => ({ name, epoch }));
+}
+const writeVerifiedList = (state, entries) => writeFileAtomic(verifiedListPath(state), entries.map(e => `${e.name} ${e.epoch}\n`).join(''));
+const backupDirExists = (state, name) => Boolean(lstatSync(join(state, 'backups', name), { throwIfNoEntry: false })?.isDirectory());
+// Records `name` (a backup directory in $STATE/backups) as verified now: its line goes last, any older line of the same name
+// goes, and so do the lines of backups that no longer exist. Throws when `name` is not such a directory.
+export function recordVerified(state, name, now = Date.now()) {
+  if (typeof state !== 'string' || !state.startsWith('/')) throw new Error(`the state path must be absolute: ${state}`);
+  if (!BACKUP_DIR_PATTERN.test(String(name))) throw new Error(`not a backup name: ${name}`);
+  if (!backupDirExists(state, name)) throw new Error(`${name} is not a backup directory in ${join(state, 'backups')}`);
+  const kept = readVerifiedList(state).filter(e => e.name !== name && backupDirExists(state, e.name));
+  writeVerifiedList(state, [...kept, { name, epoch: Math.floor(now / 1000) }]);
+}
+
+// A backup that is being removed is first renamed to this prefix (one atomic step): the name is then no longer a backup, so a
+// pass cut short while it removes a large tree leaves a leftover that the next pass finds and finishes instead of an
+// unrecognisable half-backup that nothing would ever prune.
+const REMOVING_PREFIX = '.warehouse-backup-removing.';
+// Directories get u+rwx first (rsync keeps the modes of the source tree, and a read-only folder cannot be emptied); files are never
+// chmodded, they may be hard links shared with other backups.
+function removeBackupTree(path) {
+  spawnSync('find', [path, '-type', 'd', '-exec', 'chmod', 'u+rwx', '{}', '+'], { stdio: 'ignore' });
+  rmSync(path, { recursive: true, force: true });
+}
+// The backup that an interrupted upgrade.sh recorded as the way back, or null (no record, an invalid one, or none that names a backup).
+function upgradeBackupName(state) {
+  try {
+    const record = readUpgradeRecord(state);
+    const name = record && !record.invalid && record.backup ? record.backup.split('/').filter(Boolean).pop() : '';
+    return name && BACKUP_DIR_PATTERN.test(name) ? name : null;
+  } catch { return null; }
+}
+
 // Keeps the newest `keep` backup directories of THIS installation in $STATE/backups and removes the older ones.
 // A directory counts only when its name is one backup.sh gives, it is a real directory holding metadata.txt, and its
 // instance.json names the same instanceId as $STATE/public/instance.json. Manual backups in that directory that meet
-// these rules count towards `keep`. `protect` (the backup just made) is never removed. Nothing at all is removed when
-// any warehouse-* name is dated more than an hour ahead of now (a clock that was wrong would otherwise make the
-// newest-first order delete good backups). Returns { removed, note }.
+// these rules count towards `keep`. Never removed, on top of the newest `keep`: `protect` (the backup just made), the
+// newest backup on the verified list that still exists, whatever its age, and the backup that an interrupted upgrade recorded
+// as its way back (config/upgrade-in-progress). When nothing newer has been verified, the verified one is therefore kept
+// through any number of nights whose verify failed. Removal order, in case the pass is cut short: backups that were never
+// verified and are older than the newest verified one first, then the rest, each newest first. Nothing at all is removed when
+// any warehouse-* name is dated more than an hour ahead of now (a clock that was wrong would otherwise make the newest-first
+// order delete good backups). Names of removed backups leave the verified list. A folder that does not exist yet has nothing to prune.
+// Returns { removed, note, verifiedKept } (verifiedKept: the name of the newest verified backup of this installation that exists, or '').
 export function pruneBackups(state, { keep = LIMITS.keepBackups, protect = null, now = Date.now() } = {}) {
   if (typeof state !== 'string' || !state.startsWith('/')) throw new Error(`the state path must be absolute: ${state}`);
   const dir = join(state, 'backups');
-  const names = readdirSync(dir);
-  const future = names.find(name => { const t = stampMs(name); return t !== null && t > now + LIMITS.futureBackupMs; });
-  if (future) return { removed: [], note: `pruning skipped: ${future} is dated in the future (check the clock)` };
+  let names;
+  try { names = readdirSync(dir); } catch (error) { if (error.code === 'ENOENT') return { removed: [], note: '', verifiedKept: '' }; throw error; }
   const mine = instanceIdOf(join(state, 'public/instance.json'));
-  if (!mine) return { removed: [], note: 'pruning skipped: public/instance.json has no instanceId' };
-  const ours = names.filter(name => {
+  const ours = !mine ? [] : names.filter(name => {
     if (!BACKUP_DIR_PATTERN.test(name)) return false;
     const s = lstatSync(join(dir, name), { throwIfNoEntry: false });
     const meta = lstatSync(join(dir, name, 'metadata.txt'), { throwIfNoEntry: false });
     return Boolean(s?.isDirectory()) && !s.isSymbolicLink() && Boolean(meta?.isFile()) && instanceIdOf(join(dir, name, 'instance.json')) === mine;
   }).sort().reverse();
+  const verified = new Set(readVerifiedList(state).map(e => e.name).filter(name => ours.includes(name)));
+  const newestVerified = [...verified].sort().at(-1) ?? null;
+  const future = names.find(name => { const t = stampMs(name); return t !== null && t > now + LIMITS.futureBackupMs; });
+  if (future) return { removed: [], note: `pruning skipped: ${future} is dated in the future (check the clock)`, verifiedKept: newestVerified ?? '' };
+  if (!mine) return { removed: [], note: 'pruning skipped: public/instance.json has no instanceId', verifiedKept: '' };
   const protectName = protect ? String(protect).split('/').pop() : null;
-  const removed = ours.slice(keep).filter(name => name !== protectName);
-  for (const name of removed) rmSync(join(dir, name), { recursive: true, force: true });
-  return { removed, note: '' };
+  const upgradeName = upgradeBackupName(state);
+  const kept = new Set([...ours.slice(0, keep), protectName, newestVerified]);
+  const doomed = ours.filter(name => !kept.has(name));
+  const notes = [];
+  if (upgradeName && doomed.includes(upgradeName)) { doomed.splice(doomed.indexOf(upgradeName), 1); notes.push(`kept ${upgradeName}, the backup of the interrupted upgrade (config/upgrade-in-progress)`); }
+  const neverVerifiedOlder = name => newestVerified !== null && !verified.has(name) && name < newestVerified;
+  const removed = [...doomed.filter(neverVerifiedOlder), ...doomed.filter(name => !neverVerifiedOlder(name))];
+  for (const name of names) if (name.startsWith(REMOVING_PREFIX)) removeBackupTree(join(dir, name));   // finish a removal that was cut short
+  for (const name of removed) {
+    const doing = join(dir, `${REMOVING_PREFIX}${name}`);
+    renameSync(join(dir, name), doing);
+    removeBackupTree(doing);
+  }
+  if (removed.length) {
+    const entries = readVerifiedList(state);
+    if (entries.some(e => removed.includes(e.name))) { try { writeVerifiedList(state, entries.filter(e => !removed.includes(e.name))); } catch { /* names that do not exist are ignored on reading */ } }
+  }
+  return { removed, note: notes.join('; '), verifiedKept: newestVerified ?? '' };
 }
 
 // ---------------------------------------------------------------- daily jobs
@@ -1141,7 +1217,7 @@ export function interpretDaily(ctx, run, fields) {
   if (fields.lock === 'held' || run.status === 75) return { skipped: 'operator lock is held' };
   if (fields.done !== '1') {
     const why = run.timedOut ? 'the daily run timed out' : `the daily run did not finish${lastLine(run.stderr) ? `: ${lastLine(run.stderr)}` : ''}`;
-    return { backup: { result: 'failed', message: why }, verify: step('verify'), prune: step('prune'), retention: { result: 'skipped', message: "retention not run: today's backup failed" } };
+    return { backup: { result: 'failed', message: why }, verify: step('verify'), prune: step('prune'), retention: fields.retention ? step('retention') : { result: 'skipped', message: 'retention not run: the daily run did not finish' } };
   }
   if (fields.backup === 'skipped') return { skipped: fields.backup_message || 'the database is not running or not healthy' };
   const backup = { ...step('backup', 'failed'), dir: fields.backup_dir ?? null, warning: fields.backup_warning ?? '' };
@@ -1149,7 +1225,7 @@ export function interpretDaily(ctx, run, fields) {
   if (backup.result === 'ok' && !(dir && BACKUP_DIR_PATTERN.test(dir.split('/').pop()) && resolve(dir, '..') === resolve(ctx.state, 'backups'))) {
     backup.result = 'failed'; backup.message = 'backup finished but its location could not be read';
   }
-  return { backup, verify: step('verify'), prune: { ...step('prune'), pruned: Number(fields.pruned) || 0 }, retention: step('retention') };
+  return { backup, verify: step('verify'), prune: { ...step('prune'), pruned: Number(fields.pruned) || 0, verifiedKept: fields.verified_kept ?? '' }, retention: step('retention') };
 }
 
 export async function dailyRunner(ctx) {
@@ -1159,6 +1235,13 @@ export async function dailyRunner(ctx) {
   const launch = ctx.runGroup ?? ((command, args, options) => ctx.run(command, args, options));
   const r = await launch('bash', [join(ctx.root, 'scripts/watch-daily.sh'), resultFile], { timeoutMs: LIMITS.dailyHardMs, env });
   return interpretDaily(ctx, r, fieldsOf(ctx.readText(resultFile)));
+}
+
+// What the pass says about the verified backup that pruning keeps, when today's backup is not it.
+// (Put before the reason of a failed verify, not after it: the status line cuts a message at 400 characters.)
+function keptNote(prune) {
+  if (prune.verifiedKept) return ` (the newest verified backup, ${prune.verifiedKept}, is kept)`;
+  return prune.result === 'ok' ? ' (no backup is on record as verified yet)' : '';
 }
 
 // Records one finished pass; returns whether today's backup is done (made and verified).
@@ -1172,7 +1255,7 @@ function recordDaily(ctx, data, outcome, attempt, webhook) {
   const backupOk = backup.result === 'ok' && verify.result === 'ok';
   let message;
   if (backup.result !== 'ok') message = backup.message.startsWith('backup') || backup.message.startsWith('the daily') ? backup.message : `backup failed: ${backup.message}`;
-  else if (verify.result !== 'ok') message = `backup ${name} was made but verification failed: ${verify.message}`;
+  else if (verify.result !== 'ok') message = `backup ${name} was made but verification failed${keptNote(outcome.prune)}: ${verify.message}`;
   else message = `backup ${name} verified${outcome.prune.pruned ? `; removed ${outcome.prune.pruned} old` : ''}${outcome.prune.message ? `; ${outcome.prune.message}` : ''}${backup.warning ? `; ${backup.warning}` : ''}`;
   message = `${clean(message)}${backupOk ? '' : ` (attempt ${attempt} of ${LIMITS.dailyAttempts})`}`;
   data.lastDailyRun.backup = { date, at: now, result: backupOk ? 'ok' : 'failed', message };
@@ -1181,7 +1264,10 @@ function recordDaily(ctx, data, outcome, attempt, webhook) {
   // Pruning belongs to the retention job: its failure is reported as a retention failure.
   const { retention, prune } = outcome;
   let retentionResult = retention.result;
-  const defaultNote = { ok: 'retention applied', skipped: "retention not run: today's backup failed" };
+  // Pruning and retention run whatever the backup and its verify said, so the retention line also tells what pruning did when
+  // today's backup is not the news (a refused or unverified backup is when old backups matter most).
+  const removedText = !backupOk && prune.result === 'ok' ? `${prune.pruned ? `; removed ${prune.pruned} old backup${prune.pruned === 1 ? '' : 's'}${keptNote(prune)}` : ''}${prune.message ? `; ${prune.message}` : ''}` : '';
+  const defaultNote = { ok: `retention applied${removedText}`, skipped: 'retention not run' };
   let retentionMessage = retention.message || defaultNote[retention.result] || '';
   if (prune.result === 'failed') { retentionResult = 'failed'; retentionMessage = `removing old backups failed: ${prune.message}`; }
   retentionMessage = clean(retentionMessage);
@@ -1213,7 +1299,7 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
   saveState(ctx.state, data, ctx.fsApi, { daily: true });
   let outcome;
   try { outcome = await runner(ctx); } catch (error) {
-    outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: "retention not run: today's backup failed" } };
+    outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: 'retention not run: the daily run crashed' } };
   }
   data.dailyRunning = null;
   if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
@@ -1361,7 +1447,8 @@ const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECOND
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
 The daily backup, verification, pruning and retention run once a day inside a 6-hour window after the time chosen
 with: sudo bash scripts/watch-timer.sh install --daily-at HH:MM (host local time; shown by status). Pruning keeps the
-newest 7 backups of this installation in $STATE/backups; backups made by hand there count towards the 7.
+newest 7 backups of this installation in $STATE/backups (backups made by hand there count towards the 7) and always the
+newest one that passed its verify; pruning and retention run even when the day's backup or verify failed.
 Needs WAREHOUSE_STATE_DIR. Install the timer with: sudo bash scripts/watch-timer.sh install`;
 
 function statusLines(ctx, webhook, now) {
@@ -1396,7 +1483,7 @@ function statusLines(ctx, webhook, now) {
   return lines;
 }
 
-export async function main(argv, deps = defaultDeps(), out = text => console.log(text)) {
+export async function main(argv, deps = defaultDeps(), out = text => console.log(text), err = text => console.error(text)) {
   const [command, ...args] = argv;
   if (!command || ['--help', '-h', 'help'].includes(command)) { out(USAGE); return command ? 0 : 1; }
   const now = deps.now();
@@ -1409,10 +1496,26 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     return report.ok ? 0 : 1;
   }
   if (command === 'prune-backups') {
-    // Used by scripts/watch-daily.sh under its lock: prints removed=N and note=TEXT.
-    if (args.length !== 1) { out('prune-backups needs the path of the backup just made.'); return 1; }
-    const { removed, note } = pruneBackups(deps.state, { protect: args[0], now });
-    out(`removed=${removed.length}\nnote=${note}`);
+    // prune-backups [PATH] [--verified NAME]. Used by scripts/watch-daily.sh under its lock: PATH is the backup just made (never
+    // pruned; none when the backup failed), NAME the backup whose verify passed (recorded in config/backups-verified.list
+    // first, so that pruning never takes it); NAME or a path to it. Prints removed=N, note=TEXT and verified_kept=NAME.
+    // Wrong arguments are said on standard error (watch-daily.sh reads the reason from there) and nothing is touched; a NAME that
+    // is not a backup of this installation is a note, and pruning goes on without recording it.
+    let protect = null;
+    let verifiedName = null;
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '--verified' && verifiedName === null && i + 1 < args.length) { verifiedName = args[i + 1].split('/').filter(Boolean).pop() ?? ''; i += 1; }
+      else if (protect === null && !args[i].startsWith('--')) protect = args[i];
+      else { err('Usage: prune-backups [PATH_OF_THE_BACKUP_JUST_MADE] [--verified NAME]'); return 1; }
+    }
+    const notes = [];
+    if (verifiedName !== null) {
+      if (!BACKUP_DIR_PATTERN.test(verifiedName) || !backupDirExists(deps.state, verifiedName)) notes.push(`--verified needs the name of a backup directory in ${join(deps.state, 'backups')} (it was '${verifiedName}'); nothing was recorded as verified`);
+      else { try { recordVerified(deps.state, verifiedName, now); } catch (error) { notes.push(`could not record ${verifiedName} as verified: ${error.message}`); } }
+    }
+    const { removed, note, verifiedKept } = pruneBackups(deps.state, { protect, now });
+    if (note) notes.push(note);
+    out(`removed=${removed.length}\nnote=${notes.join('; ')}\nverified_kept=${verifiedKept}`);
     return 0;
   }
   const ctx = makeContext(deps, Object.assign(loadState(deps.state, now, deps.readText), loadMutes(deps.state, deps.readText)));
