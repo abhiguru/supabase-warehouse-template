@@ -312,9 +312,20 @@ it; only `functions` can.
   It refuses a number that is not an active administrator, and every code made and used is in `public.audit_log`
   (`table_name = 'break_glass'`). Staff and customers wait for the SMS service to be repaired; an administrator who is signed in
   can then help from the app. Sessions that are open keep working while they are used (30 days idle, 90 days at most).
+  Three things to know. The command prints the code only to a terminal. If the administrator's app still answers "Too many OTP requests"
+  on the code screen, switch their phone from the facility Wi-Fi to mobile data (the Wi-Fi's address may be at its limit) and check
+  that `otp_global_hourly_cap` is not `0` and `otp_daily_provider_attempt_cap` is not used up. If the app shows "SMS delivery unavailable"
+  and no code screen, the `functions` container is an old one: `bash scripts/compose.sh up -d --force-recreate functions`. And it does not
+  help when the sign-in goes through the association and the association's SMS is down (OPERATOR_INSTALL.md, "Break-glass administrator
+  sign-in").
 - **Many people on the facility Wi-Fi get "Too many OTP requests" in the same hour** (after a key rotation, or a morning when sessions ended
   together): the Wi-Fi is one address and the limit is 30 requests an hour per address. List the facility's public address in
-  `otp_trusted_sources` (limit 120 an hour); see [The facility's own Wi-Fi address](OPERATOR_INSTALL.md#the-facilitys-own-wi-fi-address).
+  `otp_trusted_source_list` (limit 120 an hour); see [The facility's own Wi-Fi address](OPERATOR_INSTALL.md#the-facilitys-own-wi-fi-address).
+- **A phone is lost or stolen**: sessions now last weeks, so end the person's sessions at once. An administrator switches the user off
+  (Settings → Users → edit → Account Status), which deletes every session of that user; switch them on again when they have a new phone and
+  they sign in there with a code. An administrator cannot switch off their own account and the last administrator cannot be switched off: if
+  it is an administrator's own phone and no other administrator can do it, run `bash rotate-keys.sh --yes`, which signs every user out
+  ([Rotate signing keys](OPERATOR_INSTALL.md#rotate-signing-keys); [A lost or stolen phone](OPERATOR_INSTALL.md#authentication-and-otp-limits)).
 
 ## Backup, USB drive and restore
 

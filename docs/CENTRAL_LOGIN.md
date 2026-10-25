@@ -247,6 +247,20 @@ New people (a pending request, no code), pending profiles, rejected, disabled
 and service-account profiles never get `link_required`. The next sign-in of the
 same person asks again.
 
+**When the association's SMS is down.** The facility's break-glass sign-in
+(`scripts/break-glass-admin.sh`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#break-glass-administrator-sign-in))
+replaces this facility's own SMS code only. It cannot help a build in which
+people sign in through the association: the app sends everyone who is not signed
+in to the association's sign-in first, so if the association's service cannot
+send codes there is no screen on which a facility break-glass code could be typed.
+With `central_local_code` on, the break-glass code stands in for the facility's
+code in step 2 above, but only after an association sign-in that succeeded.
+What keeps people in during such an outage is the sessions that are already open:
+a session of an approved profile slides (30 days idle, 90 days at most, by default),
+so it keeps being renewed while it is used. A person whose session has ended has to
+wait for the association's SMS to work again. A break-glass sign-in on the
+association's side is not built (see "Built, and not built").
+
 ## What the facility administrator does
 
 - **Approve or reject** a request: Enrollment Review, as for SMS sign-ins
@@ -312,8 +326,9 @@ Built: the central identity service (the private repository [abhiguru/central-id
 a facility that asks for its own code, and this endpoint with migration 81 (the association's sign-in opens an existing
 person profile; a facility's own code only when it asks; service accounts refused).
 
-Not built: an administrator screen for `clear_user_central_identity` (call the RPC as a signed-in administrator) and
-binding a token to a device key (DPoP).
+Not built: an administrator screen for `clear_user_central_identity` (call the RPC as a signed-in administrator),
+binding a token to a device key (DPoP), and a way to sign in while the association's service cannot send codes (the
+facility's break-glass code covers the facility's own SMS only, see "A facility's own code").
 
 ## Tested, and not tested
 
