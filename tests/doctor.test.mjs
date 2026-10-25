@@ -150,7 +150,7 @@ test('doctor runs the central key file check for --local and the full run, after
 import { spawnSync } from 'node:child_process';
 import { statfsSync } from 'node:fs';
 
-function doctorWithCompose(help) {
+function doctorWithCompose(help, extraBin = {}, mode = '--host-preflight') {
   const base = mkdtempSync(join(tmpdir(), 'doctor-compose-'));
   try {
     const bin = join(base, 'bin');
@@ -163,9 +163,10 @@ case "$*" in
   *) exit 1 ;;
 esac
 `, { mode: 0o755 });
+    for (const [name, body] of Object.entries(extraBin)) writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     const state = join(base, 'state');
     mkdirSync(state, { mode: 0o700 });
-    return spawnSync(process.execPath, [new URL('../scripts/doctor.mjs', import.meta.url).pathname, '--host-preflight'], {
+    return spawnSync(process.execPath, [new URL('../scripts/doctor.mjs', import.meta.url).pathname, mode], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, NODE_TEST_CONTEXT: '' } });
   } finally { rmSync(base, { recursive: true, force: true }); }
 }
@@ -174,6 +175,50 @@ test('doctor passes the Compose check when `up --help` lists --wait-timeout', { 
   const run = doctorWithCompose('      --wait-timeout int   Maximum duration in seconds to wait for the project to be running|healthy');
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /Host prerequisites and state filesystem preflight passed/);
+});
+
+// Backups copy the stored files with rsync and unpack archives with GNU tar --xattrs (scripts/backup.sh, restore-host.sh).
+// Setup and restore-host (--host-preflight) refuse a host without them and name the install command; start.sh (--preflight) and
+// the other runs only warn, so a host that pulled this release without installing rsync can still start its services.
+const WAIT = '      --wait-timeout int   Maximum duration in seconds to wait for the project to be running|healthy';
+const SPACE = { skip: Number(statfsSync(tmpdir()).bavail) * Number(statfsSync(tmpdir()).bsize) < 10 * 1024 ** 3 && 'needs 10 GiB free in the temp directory' };
+const NO_XATTRS = 'echo "rsync  version 3.2.7  protocol version 31"; printf "Capabilities:\\n    64-bit files, socketpairs, symlinks, hardlinks, ACLs,\\n    no xattrs, iconv\\nOptimizations:\\n    SIMD-roll, no asm-roll\\n"';
+const WITH_XATTRS = 'echo "rsync  version 3.2.7  protocol version 31"; printf "Capabilities:\\n    64-bit files, socketpairs, symlinks, hardlinks, ACLs,\\n    xattrs, optional secluded-args, iconv\\nOptimizations:\\n    SIMD-roll, no asm-roll\\n"';
+const BSD_TAR = 'case "$*" in *--xattrs*) echo "tar: unrecognized option --xattrs" >&2; exit 1 ;; esac; echo "bsdtar 3.7.2"';
+
+test('doctor --host-preflight refuses a host without rsync, and names the install command', SPACE, () => {
+  const run = doctorWithCompose(WAIT, { rsync: 'exit 127' });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Doctor: Missing or unavailable prerequisite: rsync \(the package rsync\) is missing; .*Install it: sudo apt-get install rsync/);
+});
+
+test('doctor --host-preflight refuses an rsync built without extended attributes, and a tar that is not GNU tar with --xattrs', SPACE, () => {
+  let run = doctorWithCompose(WAIT, { rsync: NO_XATTRS });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Missing or unavailable prerequisite: this rsync was built without extended-attribute support .*Install the distribution's rsync: sudo apt-get install rsync/);
+  run = doctorWithCompose(WAIT, { rsync: WITH_XATTRS });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /Host prerequisites and state filesystem preflight passed/);
+  run = doctorWithCompose(WAIT, { tar: BSD_TAR });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Missing or unavailable prerequisite: GNU tar with --xattrs support is missing; .*Install it: sudo apt-get install tar/);
+  // Both missing: both are named in the one refusal.
+  run = doctorWithCompose(WAIT, { rsync: 'exit 127', tar: BSD_TAR });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /rsync \(the package rsync\) is missing[\s\S]*GNU tar with --xattrs support is missing/);
+});
+
+test('doctor --preflight and --local only warn about a missing rsync or tar: start.sh must still start the services', SPACE, () => {
+  // The run goes on past the prerequisites and stops at the state, which this fixture does not have: that is the error, not rsync.
+  for (const mode of ['--preflight', '--local']) {
+    const run = doctorWithCompose(WAIT, { rsync: 'exit 127', tar: BSD_TAR }, mode);
+    assert.match(run.stderr, /Warning: rsync \(the package rsync\) is missing; .*Install it: sudo apt-get install rsync\. The services start without it, but backups and restores need it\./, mode);
+    assert.match(run.stderr, /Warning: GNU tar with --xattrs support is missing; .*Install it: sudo apt-get install tar\./, mode);
+    assert.doesNotMatch(run.stderr, /Missing or unavailable prerequisite/, `${mode}: not a refusal`);
+    assert.match(run.stderr, /Doctor: Configuration is missing; run the documented setup first\./, `${mode}: it got as far as the configuration`);
+    const clean = doctorWithCompose(WAIT, {}, mode);
+    assert.doesNotMatch(clean.stderr, /Warning: (rsync|GNU tar)/, `${mode}: nothing to warn about on a host that has both`);
+  }
 });
 
 test('doctor refuses a Compose plugin whose `up --help` lacks --wait-timeout, and says so', () => {

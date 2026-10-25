@@ -38,6 +38,11 @@ Sections: [host prerequisites](#host-prerequisites),
     for this service and for the facility backend).
 - Network access to `storage.googleapis.com` while the pdf-renderer image is built (it downloads Chrome headless shell).
 - Node.js 22.18 or newer with npm, Git, OpenSSL, `curl` and util-linux (`flock`), and `dig` (package `dnsutils`).
+- `rsync` and GNU `tar` (Ubuntu and Debian have `tar`; `rsync` is a package of its own): backups copy the stored photos with `rsync`
+  and keep their extended attributes (the content type of each file), and `tar --xattrs` unpacks a backup archive. `setup.sh` and
+  `db:restore-host` stop with the install command (`sudo apt-get install rsync`) when either is missing or when the `rsync` was built
+  without extended attributes; `start.sh` and the other `doctor` runs only warn, so a host that has not installed `rsync` yet still
+  starts its services (backups and restores then fail until it is installed).
 - `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
   run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
@@ -76,7 +81,7 @@ current 22.x release; the checksum file comes from Node's HTTPS site, which is n
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils tmux
+sudo apt-get install -y ca-certificates curl git openssl util-linux xz-utils dnsutils tmux rsync
 NODE=v22.23.3
 mkdir -p "$HOME/.local/opt" "$HOME/.cache/warehouse-node-download"
 cd "$HOME/.cache/warehouse-node-download"
@@ -1067,26 +1072,50 @@ and the client shows load errors or empty lists. Ask every user to sign out (Set
 ## Backup and restore
 
 `npm run db:backup -- /absolute/destination` writes a private, signed
-`warehouse-backup-v5` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
-It stops ingress and every write-facing service for the capture and restarts
-only the services that were running. The directory contains:
+`warehouse-backup-v6` directory (default `$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>`).
+The stored files (photos and generated PDFs) are kept as a tree of files, not as an archive, and **a file that has not
+changed since the previous backup is a hard link to that backup's copy**: the second night costs the database dump and the new
+photos, not another copy of every photo. A photo is therefore stored once on the disk however many backups hold it, and it
+stays in the older backups after it has left the live storage. Hard links need the backup folder and the previous backups on
+one filesystem, which is the normal case (`backups/` of the state).
+
+The services are stopped only for the database dump, the catalog queries and the last pass of the file copy, then restarted;
+the first pass of the copy, the checksums and the signing happen while the app is up. The stop does not grow with the size of the
+photos or with how many are new, but it does grow with the number of files: the last pass reads the name, time and attributes of
+every stored file on both sides (twice, the second time as a check that nothing is left to copy), which takes seconds for tens of
+thousands of files, not minutes. `db:backup` prints how long the services were stopped, how long the backup took, and how many files were new
+(`metadata.txt` records `stop_seconds=`, `duration_seconds=`, `storage_files=`, `storage_bytes=`, `storage_new_bytes=` and
+`link_base=`, the backup the files were linked from). The first backup, and the first after an upgrade from a release that
+wrote `warehouse-backup-v5`, is a full copy.
+
+The directory contains:
 
 | File | Content |
 | --- | --- |
 | `database.dump` | `pg_dump --format=custom` of the `postgres` database **with owners** (needed by the in-place restore). |
-| `storage.tar.gz` | The object storage directory, sorted, with fixed owner and mtime. File contents and the catalog are captured; filesystem extended attributes are not, so restored objects are served with the metadata recorded in the catalog. |
+| `storage/` | The object storage as it was at the moment of the dump: the same folders and files, with their modes, modification times and **extended attributes** (the Storage service keeps each file's content type and cache control there; without them a restored photo or PDF is served as `application/octet-stream`). Files unchanged since the previous backup are hard links to its copy: never change a file in here, in any backup. |
+| `storage.manifest` | The SHA-256 of every file in `storage/` (`<hash>  <path>`, in byte order). It is listed in `SHA256SUMS`, so the signature covers every file of the tree through it. |
 | `storage_objects.txt` | The `storage.objects` catalog as `<bucket>/<name>/<version>`, byte-ordered. |
 | `integrity.txt` | Output of `scripts/backup-integrity.sql`: migration fingerprint, row counts, representative grants. From migration 48 on it also counts the three history tables (invoice discounts, zero charges, item prices) and records that the internal `invoice` columns are closed to the app role; from migration 95 on it also counts payments, order lines and order revisions. A backup taken earlier has no such lines and is still compared line for line. |
 | `roles.txt` | Cluster role names, so runtime-created roles can be recreated before ownership replays. |
 | `compose.env`, `instance.json` | Private configuration and public manifest at backup time. |
 | `central-jwks.json` | Only when the installation reads the central sign-in keys from a file (`--central-jwks-file`): a copy of `public/central-jwks.json`, public keys only. `db:restore-host` puts it back. |
 | `letterhead.jpg` or `letterhead.png` | Only when the installation has a letterhead image (`--letterhead-file`): a copy of `public/letterhead.jpg` or `.png`. `db:restore-host` puts it back; a backup without it restores to plain PDFs. |
-| `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit, `database_image=` (the database image the dump was taken on; restores refuse an earlier one) and checksums of every file above. |
+| `metadata.txt`, `SHA256SUMS` | Format, timestamp, source commit, `database_image=` (the database image the dump was taken on; restores refuse an earlier one), the sizes and times named above, and checksums of every file above except those inside `storage/` (the manifest covers them). |
 | `SHA256SUMS.hmac` | The signature: HMAC-SHA256 of `SHA256SUMS` under the [backup key](#backup-key). |
 
 The backup directory is **unencrypted** and contains every credential of the instance. Keep it mode 0700/0600 on protected
 storage. `db:backup` warns when the destination shares a filesystem with `data/`: a backup on the same disk does not
-survive loss of that disk. Copy every retained backup to an operator-provided encrypted off-host destination
+survive loss of that disk. A hard link does not make a second copy: if a stored file rots on the disk, every backup that
+links to it is damaged at once. `db:backup` therefore checks the signature of the backup it links from before it uses it (a
+backup that fails is skipped, with a warning, and the next older one is tried), and compares each file it links with the checksum
+that backup recorded. A file that no longer matches, or cannot be read, is not linked: it is copied again from the live storage,
+the new backup holds the good copy, and the night ends as usual with the sentence `WARNING: N files re-copied: backup <name> has a
+damaged copy` (also in the daily status line, `metadata.txt` as `rot_repaired=` and `rot_repaired_file=`). The older backups still
+hold the damaged file: check them with `db:verify-restore` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md), "storage file fails its
+checksum"). Only when the live file does not match the recorded checksum either does the night fail. Keep the copies on the USB
+drive (a full, separate copy of the photos each) for that case.
+Copy every retained backup to an operator-provided encrypted off-host destination
 ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) keeps off-host custody, schedule and retention open). Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
 this backup either (the bridge's volume holds only readings not yet delivered).
 
@@ -1114,15 +1143,21 @@ The images that Compose pulls (the gateway, PostgREST and others) are not saved;
 
 `npm run db:verify-restore -- /path/to/backup` checks every checksum and the signature first (see
 [Backup key](#backup-key)), rejects absolute paths, `..` segments and links in the
-storage archive, proves that every catalogued object is a file in the archive
-(extra files are reported as a warning), restores both dumps into a disposable
+stored files (for a v6 backup: every file of `storage/` is hashed and must be exactly the set that the signed
+`storage.manifest` names; a link or special file refuses the backup), proves that every catalogued object is a file in the
+backup (extra files are reported as a warning), restores the dump into a disposable
 `--network none` container with `--exit-on-error`, replays the archived
 ACLs, and compares the integrity report and the restored object catalog with
 the backup. Run it against every retained backup; it never touches the installed
 instance.
 
-Only format v5 is accepted: the verifier, `db:restore` and `db:restore-host`
-refuse any other with "Refusing: backup format 'warehouse-backup-vN' is no longer supported; take a new backup with this version".
+Formats v6 (the stored files as a tree, written by this release) and v5 (a `storage.tar.gz`, written by earlier releases) are
+accepted: the verifier, `db:restore` and `db:restore-host` refuse any other with "Refusing: backup format
+'warehouse-backup-vN' is no longer supported; take a new backup with this version (only warehouse-backup-v5 and -v6 are
+accepted)". The label must also agree with the signed file list (a v6 backup lists `storage.manifest` and has a `storage/`
+tree, a v5 backup lists `storage.tar.gz`); a backup where they disagree is refused after its signature has been checked.
+`db:verify-restore --no-storage-tree` leaves the hashing of the tree out and checks the rest (signature, list, manifest,
+database): it is for a copy of a backup that does not hold the tree.
 A backup whose signature is missing is refused unless you add `--allow-unsigned`,
 which prints a warning and proves nothing about where the backup came from; it
 is only for when the backup key is lost (see [Backup key](#backup-key)). If the
@@ -1130,7 +1165,7 @@ is only for when the backup key is lost (see [Backup key](#backup-key)). If the
 refuse the backup even with the flag, because the signature was taken away. Use
 another copy.
 
-The disposable database is sized from the backup: the two dumps times 10, the same again (up to 1 GiB) for the write-ahead
+The disposable database is sized from the backup: the dump times 10, the same again (up to 1 GiB) for the write-ahead
 log, plus 256 MiB, and never less than 768 MiB. It lives in memory when that much memory is available, otherwise in a
 temporary directory under `$WAREHOUSE_STATE_DIR` that is removed afterwards; the command prints the size and the place it
 chose, checks free space first, and when it does not fit it stops with the numbers. Override when needed:
@@ -1291,7 +1326,7 @@ print identical lines.
 ### In-place restore of the same instance
 
 `npm run db:restore -- --yes /path/to/backup` replaces the installed database
-and stored objects with a signed v5 backup **of the same instance** (older
+and stored objects with a signed v5 or v6 backup **of the same instance** (older
 formats are refused). For a replacement host see
 [Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive).
 
@@ -1314,18 +1349,26 @@ The restore refuses, without touching anything, unless all of the following hold
 `--yes` is given; no other operator command holds the state lock; `compose ps -q`
 is empty (run `stop.sh` first); the backup's checksums and its signature under
 this installation's `config/backup.key` are valid; the backup is
-`warehouse-backup-v5` (an older format is refused); the backup's
+`warehouse-backup-v5` or `-v6` (an older format is refused); the backup's
 `instance.json` equals `public/instance.json`; the backup's `compose.env` equals
 `config/compose.env`, or `--restore-config` is given and the backup names the
-same project and state paths; and `db:verify-restore` passes for the backup.
+same project and state paths; and `db:verify-restore` passes for the backup; and there is room: the restored files are a second copy next to the kept
+`data/storage.pre-restore-<utc>`, so the free space in `data/` must hold the size of the stored files again
+(`storage_bytes=` in `metadata.txt`, for a v5 backup the size of its tarball) plus 1 GiB. Otherwise it stops with the numbers
+before it moves anything. Free space by removing the `*.pre-restore-*` directories of earlier restores you have accepted.
 
 It then moves `data/db` and `data/storage` to `data/db.pre-restore-<utc>` and `data/storage.pre-restore-<utc>`, recreates
-both with mode 0700, extracts the storage archive, optionally replaces `config/compose.env` (keeping
+both with mode 0700, copies the stored files back (a v6 tree with `rsync -rptX`, which keeps modes, times and extended
+attributes, then a second, dry run that must find nothing left to do; a v5 tarball is unpacked with `tar`), optionally
+replaces `config/compose.env` (keeping
 `config/compose.env.pre-restore-<utc>`), starts a fresh cluster, recreates missing roles from `roles.txt` as `NOLOGIN`,
 recreates the `postgres` database from `template0` (connected to `template1`) and replays its dump with `--exit-on-error` and the
 archived owners and ACLs (as the verifier does), diffs `scripts/backup-integrity.sql` against the backup's `integrity.txt`,
 runs `scripts/migrate.sh --operator` (a no-op unless this checkout added migrations after the backup), starts every service
-with `--wait` and runs `doctor --local`. Role passwords always come from the active `compose.env`; the backup never
+with `--wait` and runs `doctor --local`. After the services are up the restore looks at up to 20 of the restored files; if any
+has no content type (a v5 backup holds no extended attributes, and neither does a v6 backup of files that had lost theirs or one
+that went through a USB archive written before archives kept them) it runs `npm run storage:retag`, which sets each file's
+content type and cache control again from the catalog (the bytes are intact either way; a failure there is a warning). Role passwords always come from the active `compose.env`; the backup never
 contains them. Pass `--restore-config` only when the keys in the backup are the ones the restored data was signed with,
 that is, when `rotate-keys.sh` ran after the backup and the restored sessions must match the old keys.
 
@@ -1352,6 +1395,31 @@ sudo rm -rf "$WAREHOUSE_STATE_DIR/data/db.pre-restore-<utc>" "$WAREHOUSE_STATE_D
 ls "$WAREHOUSE_STATE_DIR/data"   # only db and storage remain
 ```
 
+### Content types of stored files (`npm run storage:retag`)
+
+The Storage service reads each stored file's content type and cache control from extended attributes of the file. A file
+without them is served as `application/octet-stream` with `no-cache`, and its modification time shows 1970 if it was restored
+from a tarball that fixed the time. Backups before format v6 did not keep the attributes, so **every restore from such a backup
+dropped them**, and so did the [major PostgreSQL upgrade](#major-postgresql-upgrade) of earlier releases, which is an in-place
+restore. The bytes are intact and the app's image viewer recognises its content, so nothing looks broken; downloads of a PDF
+may name the wrong type. To set them again for every object the catalog knows:
+
+```bash
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+npm run storage:retag
+```
+
+It reads the catalog (`storage.objects.metadata`: `mimetype`, `cacheControl`) and sets `user.supabase.content-type` and
+`user.supabase.cache-control` of each file from inside the storage container, with the same module the Storage service
+uses. It changes nothing else, may be run at any time, and prints how many files it updated, how many were already correct,
+and how many catalogued objects have no file. Run it once on an installation that went through the PostgreSQL 17 to 18
+restore; `db:restore` (and so `db:restore-host`) runs it itself after a restore when a sample of the restored files has no
+content type. `npm run storage:retag -- --if-missing` does that look at a sample first and sets nothing when none lacks one.
+
+The change of attributes counts as a change for the next backup: it links a file to the earlier backup's copy only when the
+attributes are the same too, so **the first backup after a retag copies every photo again** (a full copy, as the first v6 backup
+does). Run it right after the update, before the first v6 backup, so that only one full copy is made.
+
 ### Recover a lost host from the USB drive
 
 Use this when the original host is gone (disk failure, reinstall, stolen or
@@ -1372,7 +1440,7 @@ its disk or keep it disconnected; if in doubt, rotate the keys afterwards
 
 Before you start you need: the new host prepared as in
 [host prerequisites](#host-prerequisites) (Node 22, Docker with a Compose plugin that accepts `up --wait-timeout`,
-`cloudflared`, your user in the `docker` group), the USB drive, and **your
+`rsync` and GNU `tar`, `cloudflared`, your user in the `docker` group), the USB drive, and **your
 copy of the [backup key](#backup-key)** in a file on the new host (for example
 `~/backup.key`, mode 0600; one line of 64 hexadecimal characters). Backups taken
 after `tunnel.sh adopt` carry the tunnel credential; for older backups you also
@@ -1390,7 +1458,9 @@ one rerun with both sets of options does.
 1. **Get the code.** Clone the repository with `umask 022` as in the Ubuntu
    sequence. Any release at least as new as the backup works (the backup's
    `metadata.txt` records `source_commit`); newer migrations are applied during
-   the restore.
+   the restore. A checkout older than the release that wrote the backup format `warehouse-backup-v6` refuses such a backup at
+   once ("backup format 'warehouse-backup-v6' is no longer supported; take a new backup with this version"), before it
+   reaches the `source_commit` hint: check out this release or a later one.
 2. **Attach the drive and choose the backup.** On VMware connect it under
    Removable Devices. The desktop usually mounts it under `/media/$USER/`;
    otherwise `udisksctl mount -b /dev/sdX1` (find it with
@@ -1436,10 +1506,12 @@ one rerun with both sets of options does.
    (only the backup folder, no links, exactly the signed files) and its own
    checksums; that this checkout contains every migration the backup applied
    (otherwise it names the `source_commit` to check out); that no container and
-   no database of this installation exists on the host; the host prerequisites; and 10 GiB of free space.
+   no database of this installation exists on the host; the host prerequisites; and 10 GiB of free space. For an archive it
+   first checks that the disk holds twice the archive plus 1 GiB (the unpacked backup, then the stored files copied into the
+   new state; an encrypted archive is also unpacked once) and stops, naming the numbers, before it writes anything.
    A backup that fails the signature check was changed after it was written or
    belongs to another installation: do not restore it. A backup of an older
-   format than v5 is refused. A v5 backup whose `SHA256SUMS.hmac` is missing is
+   format than v5 is refused (v5 and v6 are taken). A backup whose `SHA256SUMS.hmac` is missing is
    accepted only with `--allow-unsigned` and without `--backup-key`, for a drive
    that never left your custody; leave `--backup-key` out only when the key is
    really lost. The command then creates the state from the backup's `compose.env`
@@ -1960,7 +2032,7 @@ The files in `data/storage` stay where they are; the reload does not touch them.
 
 If you copy files into `data/storage` by hand (for example to bring over the photos of another server), make the folders
 mode 755 and the files mode 644, whatever the source had. Files that keep a source mode such as 700, or that belong to
-root, make `db:backup` fail with `tar: ./stub/stub/<bucket>: Cannot open: Permission denied`.
+root, make `db:backup` fail with `rsync: ... opendir "<state>/data/storage/stub/stub/<bucket>" failed: Permission denied` (rsync exit 23).
 
 **Step 5. Check out this release, build the new database, apply the baseline, let Storage migrate.**
 

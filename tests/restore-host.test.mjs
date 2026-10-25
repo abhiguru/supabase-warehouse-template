@@ -8,8 +8,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
+import { join, dirname } from 'node:path';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
@@ -18,7 +18,7 @@ const migrations = { '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select
 const ledger = (names = Object.keys(migrations)) =>
   `migration_count=${names.length}\nmigration_fingerprint=${sha(names.map(n => `${n}:${sha(migrations[n])}`).join('\n'))}\n`;
 
-function fixture(prefix, { integrity = ledger(), env } = {}) {
+function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {} } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), prefix));
   const root = scriptRoot(scratch);
   mkdirSync(join(root, 'migrations'));
@@ -35,7 +35,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
 `);
   const original = '/srv/warehouse/lost-host';
   const backup = makeBackup(join(scratch, 'drive', NAME), {
-    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity });
+    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity, format, xattrs });
   // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
   const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '', databaseImage = currentDatabaseImage() } = {}) => {
     writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n${databaseImage === null ? "" : `database_image=${databaseImage}\n`}`);
@@ -43,7 +43,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
     assert.equal(sums.status, 0);
     if (sign) signBackup(backup); else rmSync(join(backup, 'SHA256SUMS.hmac'), { force: true });
   };
-  resum();
+  if (format === 'warehouse-backup-v5') resum();
   // The operator's own copy of the lost installation's backup key.
   const keyFile = writeKey(join(scratch, 'operator-key-copy.txt'));
   const parent = join(scratch, 'srv'); mkdirSync(parent, { mode: 0o755 });
@@ -73,16 +73,17 @@ exec ${bin}/docker "$@"
     return { ...result, restoreCalls: readFileSync(log, 'utf8'), keyPending: existsSync(`${log}.pending`) ? readFileSync(`${log}.pending`, 'utf8') : null };
   };
   const signArchive = file => writeFileSync(`${file}.hmac`, `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${file}.sha256`))}\n`);
-  const tarball = ({ sign = true } = {}) => {
+  // `xattrs` packs the extended attributes of a v6 tree too, as an archive written for a USB drive does.
+  const tarball = ({ sign = true, xattrs = false } = {}) => {
     const tar = join(scratch, 'drive', `${NAME}.tar`);
-    assert.equal(spawnSync('tar', ['-C', join(scratch, 'drive'), '-cf', tar, NAME]).status, 0);
+    assert.equal(spawnSync('tar', [...(xattrs ? ['--xattrs', "--xattrs-include=user.*", '--format=posix'] : []), '-C', join(scratch, 'drive'), '-cf', tar, NAME]).status, 0);
     writeFileSync(`${tar}.sha256`, spawnSync('sha256sum', [`${NAME}.tar`], { cwd: join(scratch, 'drive'), encoding: 'utf8' }).stdout);
     if (sign) signArchive(tar);
     return tar;
   };
   // The encrypted form backup-usb.sh writes, produced with the script's own cipher.
-  const encrypted = () => {
-    const tar = tarball({ sign: false });
+  const encrypted = ({ xattrs = false } = {}) => {
+    const tar = tarball({ sign: false, xattrs });
     const enc = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; backup_key_load "$2"; backup_encrypt "$BACKUP_KEY" < "$3" > "$3.enc"', 'sh', join(root, 'scripts/backup-key.sh'), keyFile, tar], { encoding: 'utf8' });
     assert.equal(enc.status, 0, enc.stderr);
     rmSync(tar); rmSync(`${tar}.sha256`);
@@ -90,7 +91,7 @@ exec ${bin}/docker "$@"
     signArchive(`${tar}.enc`);
     return `${tar}.enc`;
   };
-  return { scratch, root, backup, parent, run, tarball, encrypted, signArchive, resum, keyFile, original, state: join(parent, 'acme') };
+  return { scratch, root, backup, parent, run, tarball, encrypted, signArchive, resum, keyFile, original, wrap, state: join(parent, 'acme') };
 }
 const clean = f => rmSync(f.scratch, { recursive: true, force: true });
 const nothingCreated = (f, result) => {
@@ -330,9 +331,9 @@ test('restore-host refuses a v4 backup, with --backup-key or with --allow-unsign
   try {
     f.resum({ format: 'warehouse-backup-v4', sign: false });
     let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
-    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/); nothingCreated(f, result);
+    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version \(only warehouse-backup-v5 and -v6 are accepted\)\./); nothingCreated(f, result);
     result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
-    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/); nothingCreated(f, result);
+    assert.equal(result.status, 1); assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version \(only warehouse-backup-v5 and -v6 are accepted\)\./); nothingCreated(f, result);
     assert.equal(existsSync(join(f.state, 'config/backup.key')), false);
   } finally { clean(f); }
 });
@@ -354,7 +355,7 @@ test('restore-host refuses a v5 backup whose signature file was removed, even wi
     assert.equal(existsSync(join(f.backup, 'SHA256SUMS.hmac')), false);
     let result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /a v5 or v6 backup must be signed; its signature file was removed/);
     assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
     assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
     nothingCreated(f, result);
@@ -362,7 +363,7 @@ test('restore-host refuses a v5 backup whose signature file was removed, even wi
     // The refusal comes before the checksums.
     writeFileSync(join(f.backup, 'database.dump'), 'damaged after the signature was removed\n');
     result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup]);
-    assert.equal(result.status, 1); assert.match(result.stderr, /a v5 backup must be signed/); assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
+    assert.equal(result.status, 1); assert.match(result.stderr, /a v5 or v6 backup must be signed/); assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
     nothingCreated(f, result);
   } finally { clean(f); }
 });
@@ -374,7 +375,7 @@ test('restore-host takes the same v5 backup with --allow-unsigned and no --backu
     const result = f.run(['--state-dir', f.state, '--yes', '--allow-unsigned', f.backup], {}, { key: null });
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /a v5 or v6 backup must be signed/);
     assert.match(result.stderr, /the backup key was missing/, 'the banner says why no signature was required');
     assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated --allow-unsigned ${join(f.state, 'backups', NAME)}\n`);
   } finally { clean(f); }
@@ -824,4 +825,94 @@ test('restore-host refuses a backup made on the supabase/postgres image, or with
       assert.equal(result.status, 1, label); assert.match(result.stderr, /migrations-pre-baseline/, label); nothingCreated(f, result);
     } finally { clean(f); }
   }
+});
+
+// ---- format v6: the object storage as a tree --------------------------------------------------------------------------
+
+const OBJECT = 'stub/stub/documents/a.pdf/v1';
+
+test('restore-host rebuilds from a v6 backup directory and keeps its tree under backups/ for restore.sh to copy', () => {
+  const f = fixture('warehouse-restore-host-v6-dir-', { format: 'warehouse-backup-v6' });
+  try {
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(readFileSync(join(f.state, 'backups', NAME, 'storage', OBJECT), 'utf8'), `bytes of ${OBJECT}`);
+    assert.ok(existsSync(join(f.state, 'backups', NAME, 'storage.manifest')));
+    assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
+    assert.equal(readFileSync(join(f.state, 'config/backup.key'), 'utf8'), `${backupKey}\n`);
+  } finally { clean(f); }
+});
+
+test('restore-host refuses a v6 backup whose tree was changed, and one whose label and signed list disagree, before creating anything', () => {
+  const f = fixture('warehouse-restore-host-v6-refuse-', { format: 'warehouse-backup-v6' });
+  try {
+    writeFileSync(join(f.backup, 'storage', OBJECT), 'planted bytes');
+    let result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /a file of the backup storage\/ tree does not match storage\.manifest/); nothingCreated(f, result);
+    writeFileSync(join(f.backup, 'storage', OBJECT), `bytes of ${OBJECT}`);
+    // Labelled v5 but listed as v6, signed by the key holder: refused after authentication.
+    writeFileSync(join(f.backup, 'metadata.txt'), readFileSync(join(f.backup, 'metadata.txt'), 'utf8').replace('warehouse-backup-v6', 'warehouse-backup-v5'));
+    writeFileSync(join(f.backup, 'storage.tar.gz'), 'not a tarball');
+    spawnSync('sh', ['-c', 'sha256sum database.dump storage.tar.gz storage.manifest storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS'], { cwd: f.backup });
+    signBackup(f.backup);
+    result = f.run(['--state-dir', f.state, '--yes', f.backup]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /labelled warehouse-backup-v5, but its signed file list does not describe that layout|not exactly the files/); nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host unpacks a v6 archive, plain or encrypted, with the stored files\' attributes', { skip: xattrSkip() }, () => {
+  const xattrs = { [OBJECT]: { 'user.supabase.content-type': 'application/pdf', 'user.supabase.cache-control': 'max-age=3600' } };
+  for (const kind of ['tar', 'enc']) {
+    const f = fixture(`warehouse-restore-host-v6-${kind}-`, { format: 'warehouse-backup-v6', xattrs });
+    try {
+      assert.equal(xattrTool().get(join(f.backup, 'storage', OBJECT), 'user.supabase.content-type'), 'application/pdf', 'the fixture carries the attribute');
+      const modeOf = path => statSync(path).mode & 0o777;
+      const fileMode = modeOf(join(f.backup, 'storage', OBJECT)), folderMode = modeOf(dirname(join(f.backup, 'storage', OBJECT)));
+      assert.ok(fileMode !== 0o600 && folderMode !== 0o700, 'the fixture has modes that an unpacking under umask 077 would not give');
+      const archive = kind === 'tar' ? f.tarball({ xattrs: true }) : f.encrypted({ xattrs: true });
+      const result = f.run(['--state-dir', f.state, '--yes', archive]);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      const unpacked = join(f.state, 'backups', NAME, 'storage', OBJECT);
+      assert.equal(readFileSync(unpacked, 'utf8'), `bytes of ${OBJECT}`);
+      assert.equal(xattrTool().get(unpacked, 'user.supabase.content-type'), 'application/pdf', `${kind}: the content type came through the archive`);
+      assert.equal(xattrTool().get(unpacked, 'user.supabase.cache-control'), 'max-age=3600');
+      // The script runs under umask 077; the stored file and its folders keep the modes they had in the backup (restore.sh
+      // copies them on), not 0600 and 0700.
+      assert.equal(modeOf(unpacked), fileMode, `${kind}: the mode of the stored file`);
+      assert.equal(modeOf(dirname(unpacked)), folderMode, `${kind}: and of its folder`);
+      assert.deepEqual(readdirSync(f.parent), ['acme'], 'no scratch directory is left');
+    } finally { clean(f); }
+  }
+});
+
+test('restore-host checks the room for an archive before it writes anything: twice the archive plus 1 GiB', () => {
+  const f = fixture('warehouse-restore-host-space-', { format: 'warehouse-backup-v6' });
+  try {
+    const archive = f.tarball();
+    const shim = join(f.scratch, 'shim'); mkdirSync(shim);
+    writeFileSync(join(shim, 'df'), '#!/bin/sh\nprintf "Avail\\n%s\\n" "${FAKE_AVAIL:-4096}"\n', { mode: 0o755 });
+    const env = { PATH: `${shim}:${f.wrap}:${process.env.PATH}` };
+    const result = f.run(['--state-dir', f.state, '--yes', archive], env);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`Refusing: unpacking ${NAME}\\.tar and restoring from it needs about \\d+ MiB in ${f.parent} \\(twice the archive plus 1 GiB\\), but only 0 MiB are free\\. .*Nothing was created\\.`));
+    nothingCreated(f, result);
+    // With room, the same archive is taken.
+    const enough = f.run(['--state-dir', f.state, '--yes', archive], { ...env, FAKE_AVAIL: String(50 * 1024 ** 3) });
+    assert.equal(enough.status, 0, enough.stderr + enough.stdout);
+  } finally { clean(f); }
+});
+
+test('restore-host checks the room for a backup folder before it copies it: twice its size plus 1 GiB', () => {
+  const f = fixture('warehouse-restore-host-dirspace-', { format: 'warehouse-backup-v6' });
+  try {
+    const shim = join(f.scratch, 'shim'); mkdirSync(shim);
+    writeFileSync(join(shim, 'df'), '#!/bin/sh\nprintf "Avail\\n%s\\n" "${FAKE_AVAIL:-4096}"\n', { mode: 0o755 });
+    const env = { PATH: `${shim}:${f.wrap}:${process.env.PATH}` };
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], env);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`Refusing: copying ${NAME} into the new state and restoring from it needs about \\d+ MiB in ${f.parent} \\(twice the backup plus 1 GiB\\), but only 0 MiB are free\\. .*Nothing was created\\.`));
+    nothingCreated(f, result);
+    const enough = f.run(['--state-dir', f.state, '--yes', f.backup], { ...env, FAKE_AVAIL: String(50 * 1024 ** 3) });
+    assert.equal(enough.status, 0, enough.stderr + enough.stdout);
+  } finally { clean(f); }
 });

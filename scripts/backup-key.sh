@@ -10,8 +10,10 @@
 #   backup_hmac KEY LABEL < data      HMAC-SHA256 as hexadecimal
 #   backup_sign_dir DIR KEY           write SHA256SUMS.hmac for a backup directory
 #   backup_authenticate DIR ALLOW     verify signature, then checksums; ALLOW=true accepts a backup only when
-#                                     the backup key is lost; never a v5 backup whose signature file is
-#                                     missing while the key is available
+#                                     the backup key is lost; never a v5 or v6 backup whose signature file is
+#                                     missing while the key is available. A backup whose signed list names
+#                                     storage.manifest (format v6) also has its storage/ tree checked against that
+#                                     manifest; BACKUP_TREE=skip checks the chain only (signature, list, manifest)
 #   backup_sign_archive FILE KEY      write FILE.hmac over FILE.sha256
 #   backup_check_archive FILE KEY     verify FILE.hmac
 #   backup_encrypt KEY / backup_decrypt KEY   stdin to stdout, AES-256-CTR
@@ -99,6 +101,8 @@ MSG
 
 # Runs SHA256SUMS over a backup directory. The list is made to name only files
 # inside the backup first: `sha256sum -c` opens whatever path a line gives it.
+# A backup whose list names storage.manifest (format v6, the object storage as a tree) also has that tree
+# checked against the manifest, unless BACKUP_TREE=skip (the chain only: signature, list, manifest).
 backup_checksums() {
   local dir="$1"
   if grep -Evq '^[0-9a-f]{64}  [^/]' "$dir/SHA256SUMS" || grep -Eq '^[0-9a-f]{64}  (.*/)?\.\.(/|$)' "$dir/SHA256SUMS"; then
@@ -108,6 +112,32 @@ backup_checksums() {
     echo 'Refusing: the backup contains a link or special file.' >&2; return 1
   fi
   (cd "$dir" && sha256sum -c --quiet SHA256SUMS) || { echo 'Refusing: the backup does not match its SHA256SUMS.' >&2; return 1; }
+  if grep -Eq '^[0-9a-f]{64}  storage\.manifest$' "$dir/SHA256SUMS" && [[ "${BACKUP_TREE:-check}" != skip ]]; then
+    backup_check_tree "$dir" || return 1
+  fi
+}
+
+# The storage/ tree of a v6 backup against storage.manifest (a line "<sha256>  <path relative to storage/>" per file,
+# which the signature already vouches for through SHA256SUMS). The manifest is made to name only paths inside the
+# tree first, as for SHA256SUMS; the tree must hold exactly the files it names (an extra or a missing file is a
+# fault, the same rule as for the top-level files); then every file is hashed.
+backup_check_tree() {
+  local dir="$1" listed present
+  if [[ ! -d "$dir/storage" || -L "$dir/storage" || ! -f "$dir/storage.manifest" || -L "$dir/storage.manifest" ]]; then
+    echo 'Refusing: the backup has no storage/ tree or no storage.manifest.' >&2; return 1
+  fi
+  if grep -Evq '^[0-9a-f]{64}  [^/]' "$dir/storage.manifest" || grep -Eq '^[0-9a-f]{64}  (.*/)?\.\.(/|$)' "$dir/storage.manifest"; then
+    echo 'Refusing: storage.manifest names a path outside the storage tree, or has a line that is not a checksum.' >&2; return 1
+  fi
+  listed="$(sed -n 's/^[0-9a-f]\{64\}  //p' "$dir/storage.manifest" | LC_ALL=C sort)"
+  present="$(cd "$dir/storage" && find . -type f -printf '%P\n' | LC_ALL=C sort)"
+  if [[ "$listed" != "$present" || "$(wc -l < "$dir/storage.manifest")" != "$(grep -c . <<<"$listed" || true)" ]]; then
+    echo 'Refusing: the files in the backup storage/ tree are not exactly the files its signed storage.manifest lists.' >&2; return 1
+  fi
+  # An empty manifest (a storage tree with no files) has nothing to hash; sha256sum -c refuses an empty list.
+  if [[ -s "$dir/storage.manifest" ]]; then
+    (cd "$dir/storage" && sha256sum -c --quiet ../storage.manifest) || { echo 'Refusing: a file of the backup storage/ tree does not match storage.manifest.' >&2; return 1; }
+  fi
 }
 
 # Checks the signature made with the backup key over SHA256SUMS, then that the
@@ -115,7 +145,7 @@ backup_checksums() {
 # signature comes first: SHA256SUMS is not used, and nothing in the backup is
 # parsed, loaded or executed by the callers, before it passes. Only a backup
 # accepted without a signature (ALLOW=true) has its checksums run unauthenticated.
-# ALLOW=true is for a lost key (the signature cannot be checked). It does not accept a v5 backup whose signature
+# ALLOW=true is for a lost key (the signature cannot be checked). It does not accept a v5 or v6 backup whose signature
 # file is gone while the key is available: that signature was taken away.
 backup_authenticate() {
   local dir="$1" allow="${2:-false}" keyfile recorded expected listed present
@@ -125,7 +155,7 @@ backup_authenticate() {
     # Before any checksum is run: the answer does not depend on the contents, and a large backup takes long to hash.
     if keyfile="$(backup_key_path)" && [[ -e "$keyfile" ]]; then
       cat >&2 <<MSG
-Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE), and a v5 backup must be signed; its signature file was removed.
+Refusing: this backup carries no signature ($BACKUP_SIGNATURE_FILE), and a v5 or v6 backup must be signed; its signature file was removed.
 --allow-unsigned is only for when the backup key is lost.
 The backup key $keyfile is available here. Use another copy of this backup.
 MSG
@@ -172,7 +202,13 @@ MSG
     echo 'Refusing: the backup contains a link or special file.' >&2; return 1
   fi
   listed="$(sed -n 's/^[0-9a-f]\{64\}  //p' "$dir/SHA256SUMS" | LC_ALL=C sort)"
-  present="$(cd "$dir" && find . -type f ! -path ./SHA256SUMS ! -path "./$BACKUP_SIGNATURE_FILE" -printf '%P\n' | LC_ALL=C sort)"
+  # A v6 backup (the list names storage.manifest) keeps the object storage as a storage/ tree: the files in it are
+  # covered by the manifest, not by this list, so the comparison leaves ./storage/ out.
+  if grep -Eq '^[0-9a-f]{64}  storage\.manifest$' "$dir/SHA256SUMS"; then
+    present="$(cd "$dir" && find . -type f ! -path ./SHA256SUMS ! -path "./$BACKUP_SIGNATURE_FILE" ! -path './storage/*' -printf '%P\n' | LC_ALL=C sort)"
+  else
+    present="$(cd "$dir" && find . -type f ! -path ./SHA256SUMS ! -path "./$BACKUP_SIGNATURE_FILE" -printf '%P\n' | LC_ALL=C sort)"
+  fi
   if [[ "$listed" != "$present" || "$(wc -l < "$dir/SHA256SUMS")" != "$(grep -c . <<<"$listed")" ]]; then
     echo 'Refusing: the files in the backup are not exactly the files its signed SHA256SUMS lists.' >&2; return 1
   fi

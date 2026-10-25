@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Restore a backup into a disposable, network-isolated database and compare integrity.
-#   npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP
+#   npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] PATH_TO_BACKUP
 # The backup signature is checked first with the backup key
 # (WAREHOUSE_BACKUP_KEY_FILE, else $WAREHOUSE_STATE_DIR/config/backup.key).
 # --allow-unsigned is only for when the backup key is lost.
+# Formats v5 (storage.tar.gz) and v6 (a storage/ tree with a signed storage.manifest) are accepted. For v6 every file of
+# the tree is hashed against the manifest; --no-storage-tree leaves that out and checks the chain only (signature, list,
+# manifest), for a backup copy that does not hold the tree (the USB check unpacks only the small files).
 # Optional environment:
 #   WAREHOUSE_VERIFY_DATA_MB      size of the disposable data directory (default: from the dump sizes, at least 768)
 #   WAREHOUSE_VERIFY_SIZE_FACTOR  restored size estimate per dump byte (default 10)
@@ -16,12 +19,14 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Same image, by digest, as docker/postgres/Dockerfile builds the production database from.
 IMAGE="$(bash "$ROOT/scripts/db-image.sh")"
-usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
+usage() { echo 'Usage: npm run db:verify-restore -- [--allow-unsigned] [--no-storage-tree] PATH_TO_BACKUP   (--allow-unsigned: only for when the backup key is lost)' >&2; exit 1; }
 allow_unsigned=false
+BACKUP_TREE=check
 backup=''
 while (($#)); do
   case "$1" in
     --allow-unsigned) allow_unsigned=true ;;
+    --no-storage-tree) BACKUP_TREE=skip ;;
     -h|--help) usage ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
     *) [[ -z "$backup" ]] || usage; backup="$1" ;;
@@ -30,20 +35,25 @@ while (($#)); do
 done
 [[ -n "$backup" ]] || backup="${WAREHOUSE_BACKUP_DIR:-}"
 [[ -n "$backup" && -d "$backup" ]] || usage
-for file in database.dump storage.tar.gz integrity.txt metadata.txt SHA256SUMS; do
+for file in database.dump integrity.txt metadata.txt SHA256SUMS; do
   [[ -f "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
-# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
-[[ ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt")"
-[[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)." >&2; exit 1; }
 # shellcheck source=scripts/backup-image.sh
 source "$ROOT/scripts/backup-image.sh"
+# Formats v5 and v6 are accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
+[[ ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
+backup_check_format "$backup" || exit 1
+if [[ "$BACKUP_FORMAT" == warehouse-backup-v5 ]]; then
+  [[ -f "$backup/storage.tar.gz" ]] || { echo 'Incomplete backup: missing storage.tar.gz' >&2; exit 1; }
+else
+  [[ -f "$backup/storage.manifest" ]] || { echo 'Incomplete backup: missing storage.manifest' >&2; exit 1; }
+fi
 backup_check_database_image "$backup" || exit 1
-# Signature, then checksums: nothing below reads the backup before this passes.
+# Signature, then checksums (and, for v6, the storage tree against the manifest): nothing below reads the backup before this passes.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
+backup_check_layout "$backup" || exit 1
 for file in compose.env instance.json roles.txt storage_objects.txt; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
   grep -Fq "  $file" "$backup/SHA256SUMS" || { echo "Backup checksum missing for $file" >&2; exit 1; }
@@ -119,19 +129,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The storage archive is listed, never unpacked: restore.sh does the extraction,
-# and SHA256SUMS already vouches for its bytes. Each listing is read to its end.
-# A `tar | grep -q` pipeline under pipefail answers "no match" when grep stops at
-# an early match and tar dies of SIGPIPE, which let a link through.
-tar -tzf "$backup/storage.tar.gz" > "$scratch/archive_names.txt"
-if grep -Eq '(^/|(^|/)\.\.(/|$))' "$scratch/archive_names.txt"; then
-  echo 'Unsafe path in storage archive.' >&2
-  exit 1
-fi
-entry_types="$(tar -tvzf "$backup/storage.tar.gz" | cut -c1 | LC_ALL=C sort -u | tr -d '\n')"
-if [[ -n "${entry_types//[d-]/}" ]]; then
-  echo 'Storage archive contains a link or special file; refusing unsafe extraction.' >&2
-  exit 1
+# The storage is listed, never copied: restore.sh does the extraction. v5: SHA256SUMS already vouches for the
+# archive's bytes; each listing is read to its end. A `tar | grep -q` pipeline under pipefail answers "no match" when
+# grep stops at an early match and tar dies of SIGPIPE, which let a link through.
+# v6: backup_authenticate proved the tree (no links or special files, exactly the files storage.manifest lists, every
+# hash), so the manifest is the listing.
+if [[ "$BACKUP_FORMAT" == warehouse-backup-v5 ]]; then
+  tar -tzf "$backup/storage.tar.gz" > "$scratch/archive_names.txt"
+  if grep -Eq '(^/|(^|/)\.\.(/|$))' "$scratch/archive_names.txt"; then
+    echo 'Unsafe path in storage archive.' >&2
+    exit 1
+  fi
+  entry_types="$(tar -tvzf "$backup/storage.tar.gz" | cut -c1 | LC_ALL=C sort -u | tr -d '\n')"
+  if [[ -n "${entry_types//[d-]/}" ]]; then
+    echo 'Storage archive contains a link or special file; refusing unsafe extraction.' >&2
+    exit 1
+  fi
+  sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
+  rm -f -- "$scratch/archive_names.txt"
+  storage_what='storage.tar.gz'
+  storage_safety='storage archive safety'
+else
+  sed -n 's/^[0-9a-f]\{64\}  //p' "$backup/storage.manifest" > "$scratch/archive_files.txt"
+  storage_what='the storage tree (storage.manifest)'
+  storage_safety='storage tree'
 fi
 
 # Size the disposable database from the backup. The restored cluster holds the
@@ -180,10 +201,9 @@ fi
 if [[ -n "${WAREHOUSE_VERIFY_MEMORY_MB:-}" ]]; then natural WAREHOUSE_VERIFY_MEMORY_MB "$WAREHOUSE_VERIFY_MEMORY_MB"; memory_mb="$WAREHOUSE_VERIFY_MEMORY_MB"; fi
 echo "Restore verification: disposable database of $data_mb MiB ($sized) on $storage, memory limit $memory_mb MiB."
 
-# Every catalogued object must be present in the archive. Storage keeps files
+# Every catalogued object must be present in the archive or tree. Storage keeps files
 # under a tenant prefix, so a catalog entry is matched as a path suffix.
 # Archive files without a catalog entry are reported but do not fail.
-sed -n 's#^\./##; /[^/]$/p' "$scratch/archive_names.txt" > "$scratch/archive_files.txt"
 awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt" '
   FILENAME == ARGV[1] { if (length($0)) want[$0] = 1; next }
   {
@@ -197,7 +217,7 @@ awk -v missing="$scratch/missing_objects.txt" -v extra="$scratch/extra_files.txt
   END { for (entry in want) if (!(entry in found)) print entry > missing }
 ' "$backup/storage_objects.txt" "$scratch/archive_files.txt"
 if [[ -s "$scratch/missing_objects.txt" ]]; then
-  echo 'Catalogued storage objects are missing from storage.tar.gz:' >&2
+  echo "Catalogued storage objects are missing from $storage_what:" >&2
   sort "$scratch/missing_objects.txt" >&2
   exit 1
 fi
@@ -205,7 +225,6 @@ if [[ -s "$scratch/extra_files.txt" ]]; then
   echo "Warning: $(wc -l < "$scratch/extra_files.txt") archived storage file(s) have no catalog entry (first 20 shown):" >&2
   sort "$scratch/extra_files.txt" | head -n 20 >&2
 fi
-rm -f -- "$scratch/archive_names.txt"
 
 if [[ "$storage" == disk ]]; then
   disk_dir="$(mktemp -d "$scratch_parent/.verify-restore.XXXXXX")"
@@ -299,13 +318,13 @@ docker exec -i -e PGPASSWORD=disposable-restore-only "$container" \
   < "$ROOT/scripts/backup-integrity.sql" > "$scratch/integrity.txt"
 diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 # The restored catalog must list exactly what the backup catalogued, and the
-# archive listing above already proved every entry has a file.
+# storage listing above already proved every entry has a file.
 docker exec -e PGPASSWORD=disposable-restore-only "$container" \
   psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d warehouse_restore \
   -c "$catalog_query" > "$scratch/storage_objects.txt"
 diff -u "$backup/storage_objects.txt" "$scratch/storage_objects.txt"
 if [[ "$BACKUP_SIGNED" == true ]]; then
-  echo 'Backup signature, checksums, storage archive safety, database restore, and integrity comparison passed.'
+  echo "Backup signature, checksums, $storage_safety, database restore, and integrity comparison passed."
 else
-  echo 'Backup checksums, storage archive safety, database restore, and integrity comparison passed. The backup is UNSIGNED: its origin was not proven.'
+  echo "Backup checksums, $storage_safety, database restore, and integrity comparison passed. The backup is UNSIGNED: its origin was not proven."
 fi

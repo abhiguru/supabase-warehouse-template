@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild a lost installation on a new host from one of its warehouse-backup-v5
+# Rebuild a lost installation on a new host from one of its warehouse-backup-v5 or -v6
 # backups: the same instance identity, origin, keys, users and data, as at the
 # moment of the backup. It never runs setup (which would mint a new identity):
 # it creates a new state directory from the backup's own compose.env and
@@ -29,10 +29,12 @@
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. --allow-unsigned is only for a
 # lost backup key (then --backup-key is left out and nothing proves the backup
-# genuine). Only backup format v5 is accepted; an older format is refused, and so is a backup made on the earlier
-# supabase/postgres image (scripts/backup-image.sh). A v5 backup
+# genuine). Backup formats v5 and v6 are accepted; an older format is refused, and so is a backup made on the earlier
+# supabase/postgres image (scripts/backup-image.sh). A backup
 # whose signature file is missing is refused while --backup-key is given. Nothing
-# outside the new state is changed; the source backup is only read.
+# outside the new state is changed; the source backup is only read. A v6 backup keeps the object storage as a
+# tree with its extended attributes (content type, cache control): the archive is unpacked with tar --xattrs and
+# rsync is needed on the host.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -141,6 +143,14 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   elif [[ "$allow_unsigned" != true ]]; then
     die "Refusing: the archive $file has no signature file ($file.hmac), so it cannot be checked before it is unpacked. Copy the .hmac file from the drive together with the archive. An archive you packed yourself has none: for that pass --allow-unsigned as well (a signed backup inside it is still checked against the key)."
   fi
+  # The unpacked backup is a second copy of the archive next to it (a decrypted .tar.enc is a third while it is being
+  # unpacked), and the restore then copies the stored files once more into the new state. Check the room now, before
+  # anything is written, and say what is needed.
+  need_bytes=$(( $(stat -c %s -- "$archive") * 2 + 1073741824 ))
+  free_bytes="$(df -B1 --output=avail -- "$parent" | tail -n 1 | tr -d ' ')"
+  if [[ "$free_bytes" =~ ^[0-9]+$ ]] && ((free_bytes < need_bytes)); then
+    die "Refusing: unpacking $file and restoring from it needs about $((need_bytes / 1048576)) MiB in $parent (twice the archive plus 1 GiB), but only $((free_bytes / 1048576)) MiB are free. Free space there, or use a larger disk. Nothing was created."
+  fi
   scratch="$(mktemp -d -- "$parent/.restore-host.XXXXXX")"
   if [[ "$file" == *.enc ]]; then
     [[ -n "$BACKUP_KEY" ]] || die "An encrypted archive ($file) cannot be opened without --backup-key."
@@ -150,27 +160,37 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
   # Only regular files and directories under <name>/, no absolute paths or '..'.
   bad="$(tar -tvf "$archive" | awk -v n="$name" '{ t = substr($1, 1, 1); p = $NF } t != "-" && t != "d" { print; next } p != n && p != n "/" && index(p, n "/") != 1 { print; next } p ~ /(^|\/)\.\.(\/|$)/ { print }' | head -n 3)"
   [[ -z "$bad" ]] || die "Refusing an archive with unexpected entries: $bad"
-  tar --no-same-owner -xf "$archive" -C "$scratch"
+  # --xattrs keeps the extended attributes of a v6 tree (content type and cache control of each stored file); -p keeps the
+  # modes against the umask above, as restore.sh copies them on into data/storage.
+  tar --no-same-owner -p --xattrs --xattrs-include='user.*' -xf "$archive" -C "$scratch"
   [[ "$file" != *.enc ]] || rm -f -- "$scratch/$name.tar"
   backup="$scratch/$name"
 elif [[ -d "$source" && ! -L "$source" ]]; then
   backup="$(realpath -e -- "$source")"
   name="$(basename -- "$backup")"
+  # The folder is copied into the new state, and restore.sh then copies the stored files once more into data/storage: twice its
+  # size, and a gigabyte to spare. Checked before anything is written, as for an archive.
+  folder_bytes="$(du -sb -- "$backup" | cut -f1)"
+  need_bytes=$(( ${folder_bytes:-0} * 2 + 1073741824 ))
+  free_bytes="$(df -B1 --output=avail -- "$parent" | tail -n 1 | tr -d ' ')"
+  if [[ "$free_bytes" =~ ^[0-9]+$ ]] && ((free_bytes < need_bytes)); then
+    die "Refusing: copying $name into the new state and restoring from it needs about $((need_bytes / 1048576)) MiB in $parent (twice the backup plus 1 GiB), but only $((free_bytes / 1048576)) MiB are free. Free space there, or use a larger disk. Nothing was created."
+  fi
 else
   die "Backup not found (a backup directory, a warehouse-<utc>.tar or a warehouse-<utc>.tar.enc): $source"
 fi
 for file in metadata.txt compose.env instance.json integrity.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || die "Incomplete backup: missing $file"
 done
-# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
-[[ "$format" == warehouse-backup-v5 ]] || { format="${format//[^[:print:]]/?}"; die "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)."; }
-# A backup made on the earlier supabase/postgres image (or with no image line) is refused: scripts/backup-image.sh.
+# Formats v5 and v6 are accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
 # shellcheck source=scripts/backup-image.sh
 source "$ROOT/scripts/backup-image.sh"
+backup_check_format "$backup" || exit 1
+# A backup made on the earlier supabase/postgres image (or with no image line) is refused: scripts/backup-image.sh.
 backup_check_database_image "$backup" || exit 1
 # Signature and checksums first: compose.env from the backup becomes this host's configuration.
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
+backup_check_layout "$backup" || exit 1
 env_get() { sed -n "s/^$1=//p" "$backup/compose.env" | head -n 1; }
 project="$(env_get WAREHOUSE_PROJECT_NAME)"
 [[ "$project" =~ ^warehouse-[a-z0-9-]+$ ]] || die 'The backup configuration has no valid WAREHOUSE_PROJECT_NAME.'

@@ -9,6 +9,28 @@ export function probe(command, args = [], timeoutMs = 15000) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   return { ok: result.status === 0, output: result.status === 0 ? result.stdout : '' };
 }
+// What backups and restores need besides Docker: rsync built with extended-attribute support (scripts/backup.sh and
+// scripts/restore.sh copy the stored files with `rsync -X`, which carries each file's content type and cache control) and GNU
+// tar with --xattrs (db:restore-host unpacks a backup archive with it). One message per missing tool, each with the command
+// that installs it. `run` is probe, replaceable for a test.
+export function backupToolProblems(run = probe) {
+  const problems = [];
+  const rsync = run('rsync', ['--version']);
+  if (!rsync.ok) {
+    problems.push('rsync (the package rsync) is missing; backups and restores copy the stored files with it. Install it: sudo apt-get install rsync');
+  } else {
+    // The "Capabilities:" part of the version text lists "xattrs", or "no xattrs" for a build without them. No such part
+    // (a very old rsync) tells nothing, and a backup would then say what is wrong.
+    const capabilities = /Capabilities:([\s\S]*?)(?:Optimizations:|Checksum list:|$)/.exec(rsync.output)?.[1];
+    if (capabilities !== undefined && !/(?<!no )\bxattrs\b/.test(capabilities)) {
+      problems.push('this rsync was built without extended-attribute support (its version text lists no "xattrs"), so backups would lose the content type of every stored file. Install the distribution\'s rsync: sudo apt-get install rsync');
+    }
+  }
+  if (!/GNU tar/.test(run('tar', ['--xattrs', '--version']).output)) {
+    problems.push('GNU tar with --xattrs support is missing; db:restore-host unpacks a backup archive with it. Install it: sudo apt-get install tar');
+  }
+  return problems;
+}
 export function readEnv(path) {
   if (!existsSync(path)) throw new Error('Configuration is missing; run the documented setup first.');
   const stat = lstatSync(path);

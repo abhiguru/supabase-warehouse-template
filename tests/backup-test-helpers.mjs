@@ -1,9 +1,10 @@
 // Shared fixtures for the backup, verify-restore and in-place restore tests.
 // Everything runs against a fake `docker` on PATH; no container is started.
-import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { createHmac } from 'node:crypto';
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, readdirSync, readFileSync, mkdtempSync, rmSync, statSync, lstatSync } from 'node:fs';
+import { createHmac, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const repo = fileURLToPath(new URL('..', import.meta.url));
@@ -52,30 +53,105 @@ export function makeState(scratch, { env } = {}) {
   return state;
 }
 
+// Extended attributes for the tests, with whatever the host has: setfattr/getfattr (package attr), else python3's os module.
+// xattrTool() is null when neither works on the temporary directory's filesystem (some tmpfs and overlay mounts refuse
+// user.* attributes): a test that needs attributes then skips itself.
+function xattrTools() {
+  const probe = mkdtempSync(join(tmpdir(), 'warehouse-xattr-probe-'));
+  try {
+    const file = join(probe, 'f');
+    writeFileSync(file, 'x');
+    const candidates = [
+      {
+        kind: 'attr',
+        set: (path, name, value) => spawnSync('setfattr', ['-n', name, '-v', value, path], { encoding: 'utf8' }),
+        get: (path, name) => spawnSync('getfattr', ['-n', name, '--only-values', path], { encoding: 'utf8' }),
+        // The same operation as text for a shell (a test hands it to the fake docker as FAKE_ON_STOP).
+        shell: (path, name, value) => `setfattr -n ${name} -v '${value}' '${path}'`,
+      },
+      {
+        kind: 'python3',
+        set: (path, name, value) => spawnSync('python3', ['-I', '-c', 'import os, sys; os.setxattr(sys.argv[1], sys.argv[2], sys.argv[3].encode())', path, name, value], { encoding: 'utf8' }),
+        get: (path, name) => spawnSync('python3', ['-I', '-c', 'import os, sys; sys.stdout.write(os.getxattr(sys.argv[1], sys.argv[2]).decode())', path, name], { encoding: 'utf8' }),
+        shell: (path, name, value) => `python3 -I -c 'import os, sys; os.setxattr(sys.argv[1], sys.argv[2], sys.argv[3].encode())' '${path}' '${name}' '${value}'`,
+      },
+    ];
+    for (const tool of candidates) {
+      const set = tool.set(file, 'user.supabase.probe', 'yes');
+      if (set.error || set.status !== 0) continue;
+      const got = tool.get(file, 'user.supabase.probe');
+      if (!got.error && got.status === 0 && got.stdout === 'yes') {
+        return {
+          kind: tool.kind,
+          set: (path, name, value) => { const r = tool.set(path, name, value); if (r.status !== 0) throw new Error(`setting ${name} on ${path}: ${r.stderr}`); },
+          get: (path, name) => { const r = tool.get(path, name); return r.status === 0 ? r.stdout : null; },
+          shell: tool.shell,
+        };
+      }
+    }
+    return null;
+  } finally { rmSync(probe, { recursive: true, force: true }); }
+}
+let xattrToolCache;
+export const xattrTool = () => (xattrToolCache === undefined ? (xattrToolCache = xattrTools()) : xattrToolCache);
+// The reason to give node:test's `skip` option when extended attributes cannot be used here, else false.
+export const xattrSkip = () => (xattrTool() ? false : 'no tool (setfattr, getfattr, python3) or no user.* extended attributes on the temporary directory');
+
+// Every file under `root` as sorted relative paths.
+export function filesUnder(root) {
+  const found = [];
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path); else found.push(relative(root, path));
+    }
+  };
+  walk(root);
+  return found.sort();
+}
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+// The manifest text scripts/backup.sh writes for a tree: "<sha256>  <path>" per file in byte order of the path.
+export function manifestOf(root) {
+  return filesUnder(root).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+    .map(path => `${sha256(readFileSync(join(root, path)))}  ${path}\n`).join('');
+}
+
 // A backup directory as scripts/backup.sh writes it. `objects` are catalog
 // entries (<bucket>/<name>/<version>); `files` are archive paths relative to
 // the storage root, defaulting to the tenant-prefixed layout of every object.
-// v5 backups are signed with `key`; pass `key: null` for a v5 backup without a signature.
+// v5 (the default) keeps them in storage.tar.gz; `format: 'warehouse-backup-v6'` keeps them as a storage/ tree with a
+// storage.manifest in the list instead (`xattrs` maps a file path to { 'user.supabase.content-type': 'application/pdf' } and is
+// applied when this host can set attributes; `storageBytes` overrides the size metadata.txt records).
+// v5 and v6 backups are signed with `key`; pass `key: null` for one without a signature.
 // `centralKey` adds the optional central-jwks.json (text), checksummed like the rest; `letterhead` ({ name, bytes }) adds letterhead.jpg or .png.
 // `legacyPooler` adds _supabase.dump, which backups from before the pooler became optional carry (restores skip it).
 export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, letterhead = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
-  legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n' } = {}) {
+  legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n', xattrs = {}, storageBytes = null } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tree = join(dir, '.tree');
-  mkdirSync(tree, { mode: 0o700 });
+  const v6 = format === 'warehouse-backup-v6';
+  const tree = v6 ? join(dir, 'storage') : join(dir, '.tree');
+  mkdirSync(tree, { mode: 0o755 });
   for (const file of files) {
     mkdirSync(join(tree, file, '..'), { recursive: true });
     writeFileSync(join(tree, file), `bytes of ${file}`);
   }
-  const tar = spawnSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-C', tree, '-czf', join(dir, 'storage.tar.gz'), '.'], { encoding: 'utf8' });
-  if (tar.status !== 0) throw new Error(tar.stderr);
-  spawnSync('rm', ['-rf', tree]);
+  if (v6) {
+    const tool = xattrTool();
+    for (const [file, attributes] of Object.entries(xattrs)) for (const [name, value] of Object.entries(attributes)) if (tool) tool.set(join(tree, file), name, value);
+  } else {
+    const tar = spawnSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-C', tree, '-czf', join(dir, 'storage.tar.gz'), '.'], { encoding: 'utf8' });
+    if (tar.status !== 0) throw new Error(tar.stderr);
+    spawnSync('rm', ['-rf', tree]);
+  }
+  const totalBytes = v6 ? files.reduce((sum, file) => sum + statSync(join(tree, file)).size, 0) : 0;
   const content = {
     'database.dump': 'fake database dump\n', 'integrity.txt': integrity,
-    'metadata.txt': `format=${format}\ncreated_at_utc=20260101T000000Z\n${databaseImage === null ? '' : `database_image=${databaseImage}\n`.repeat(imageLines)}`,
+    'metadata.txt': `format=${format}\ncreated_at_utc=20260101T000000Z\n${databaseImage === null ? '' : `database_image=${databaseImage}\n`.repeat(imageLines)}` +
+      (v6 ? `link_base=none\nstorage_files=${files.length}\nstorage_bytes=${storageBytes ?? totalBytes}\nstorage_new_bytes=${totalBytes}\nstop_seconds=1\nduration_seconds=2\n` : ''),
     'compose.env': env, 'instance.json': instance, 'roles.txt': roles,
   };
-  if (format === 'warehouse-backup-v4' || format === 'warehouse-backup-v5') {
+  if (v6) content['storage.manifest'] = manifestOf(tree);
+  if (format === 'warehouse-backup-v4' || format === 'warehouse-backup-v5' || v6) {
     // A backup made before the pooler became optional also holds the pooler's metadata database (legacyPooler: true).
     if (legacyPooler) content['_supabase.dump'] = 'fake supabase dump\n';
     content['storage_objects.txt'] = objects.length ? objects.join('\n') + '\n' : '';
@@ -83,11 +159,11 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage 
   if (centralKey !== null) content['central-jwks.json'] = centralKey;
   if (letterhead !== null) content[letterhead.name] = letterhead.bytes;
   for (const [name, body] of Object.entries(content)) writeFileSync(join(dir, name), body, { mode: 0o600 });
-  const listed = ['storage.tar.gz', ...Object.keys(content)];
+  const listed = [v6 ? 'storage.manifest' : 'storage.tar.gz', ...Object.keys(content).filter(name => name !== 'storage.manifest')];
   const sums = spawnSync('sha256sum', listed, { cwd: dir, encoding: 'utf8' });
   if (sums.status !== 0) throw new Error(sums.stderr);
   writeFileSync(join(dir, 'SHA256SUMS'), sums.stdout, { mode: 0o600 });
-  if (format === 'warehouse-backup-v5' && key) signBackup(dir, key);
+  if ((format === 'warehouse-backup-v5' || v6) && key) signBackup(dir, key);
   return dir;
 }
 
@@ -95,6 +171,9 @@ export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage 
 // verify-restore.sh; `docker compose` serves compose.sh callers. The catalog
 // query returns FAKE_CATALOG_FILE, psql reads of the restored databases return
 // the fixed integrity text, and the final full `up` fails when FAKE_FAIL_START=yes;
+// the storage container's script (scripts/retag-storage-metadata.cjs) is called as `node -e SCRIPT probe|all`: each call logs
+// "RETAG-CALL <mode>"; the probe answers FAKE_PROBE_RC (10, "some file has no content type", by default; 0 means none lacks one)
+// and keeps the catalog it was fed in FAKE_PROBE_STDIN, the full run in FAKE_RETAG_STDIN;
 // `compose ps --all` then lists one unhealthy service, whose log has one line.
 // FAKE_FAIL_CREATEDB=yes makes the disposable createdb fail the way a busy template does.
 // What scripts/db-roles.sh sends to the database container on standard input is
@@ -132,8 +211,60 @@ case "$1" in
       *' ps --all --format '*) printf 'db running healthy\\nrest running \\nstorage running unhealthy\\nfunctions exited \\n' ;;
       *' logs --no-color --tail 30 '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | sed 's/.* //')" ;;
       *' up -d --wait --wait-timeout 180') if [ "$FAKE_FAIL_START" = yes ]; then exit 7; fi ;;
+      *'exec -T storage node'*)
+        for last; do :; done
+        printf 'RETAG-CALL %s\\n' "$last" >> "$FAKE_DOCKER_LOG"
+        if [ "$last" = probe ]; then cat >> "\${FAKE_PROBE_STDIN:-/dev/null}"; exit "\${FAKE_PROBE_RC:-10}"; fi
+        cat >> "\${FAKE_RETAG_STDIN:-/dev/null}" ;;
+      *'exec -T db psql'*jsonb_build_object*) cat "\${FAKE_RETAG_CATALOG:-/dev/null}" ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
       *'exec -T db psql'*' -d postgres') printf 'fake integrity\\n' ;;
+    esac ;;
+esac
+`, { mode: 0o700 });
+  return bin;
+}
+
+// Fake docker for scripts/backup.sh: the commands it runs against the database and the services, answered with fixed text.
+// Every `stop`, `pg_dump` and `up` is logged to FAKE_DOCKER_LOG together with a snapshot of the staging directory that
+// backup.sh is filling under FAKE_STAGE_PARENT ("SNAPSHOT <call> tree=<pass1|final> files=<files in that tree> manifest=<yes|no> dump=<yes|no>"),
+// which is how a test sees what had been done at that moment. FAKE_ON_STOP is a shell snippet run when the first service is
+// stopped (the Storage service finishing a last upload before it stops). FAKE_DOCKER_FAIL=yes fails the dump,
+// FAKE_FAIL_UP=yes fails the restart, FAKE_SERVER sets the server version answer.
+export function fakeBackupDocker(bin) {
+  mkdirSync(bin, { recursive: true, mode: 0o700 });
+  writeFileSync(join(bin, 'docker'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+snap() {
+  stage=$(ls -d "$FAKE_STAGE_PARENT"/.warehouse-backup-staging.* 2>/dev/null | head -n 1)
+  if [ -n "$stage" ]; then
+    # tree=pass1: the first pass's copy is all there is (storage-pass1/); tree=final: the last pass has made storage/.
+    if [ -d "$stage/storage" ]; then tree=final; dir="$stage/storage"; else tree=pass1; dir="$stage/storage-pass1"; fi
+    printf 'SNAPSHOT %s tree=%s files=%s manifest=%s dump=%s\\n' "$1" "$tree" "$(find "$dir" -type f 2>/dev/null | wc -l | tr -d ' ')" "$([ -e "$stage/storage.manifest" ] && echo yes || echo no)" "$([ -s "$stage/database.dump" ] && echo yes || echo no)" >> "$FAKE_DOCKER_LOG"
+  fi
+}
+case "$1" in
+  ps) exit 0 ;;
+  inspect)
+    case "$3" in
+      *State.Health.Status*) printf 'healthy\\n' ;;
+      *State.Running*) printf 'true\\n' ;;
+    esac ;;
+  compose)
+    case "$*" in
+      *' up -d --no-recreate'*) snap up; if [ "$FAKE_FAIL_UP" = yes ]; then exit 1; fi ;;
+      *' stop '*) snap stop; if [ -n "$FAKE_ON_STOP" ] && [ ! -e "$FAKE_DOCKER_LOG.on-stop-ran" ]; then : > "$FAKE_DOCKER_LOG.on-stop-ran"; sh -c "$FAKE_ON_STOP"; fi ;;
+      *'ps --all --format'*) if [ "$FAKE_FAIL_UP" = yes ]; then printf 'storage running unhealthy\\n'; fi ;;
+      *' logs '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | awk '{print $NF}')" ;;
+      *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
+      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
+      *' ps -q storage') printf 'cccccccccccc\\n' ;;
+      *' ps -q '*) : ;;
+      *'exec -T db pg_dump'*) snap pg_dump; if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
+      *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-18|true}" ;;
+      *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
+      *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
+      *'exec -T db psql'*) printf 'fake integrity\\n' ;;
     esac ;;
 esac
 `, { mode: 0o700 });
@@ -147,7 +278,7 @@ export function scriptRoot(scratch) {
   mkdirSync(join(root, 'scripts'), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, 'docker/volumes/db'), { recursive: true, mode: 0o700 });
   for (const name of readdirSync(join(repo, 'scripts'))) {
-    if (/\.(sh|sql|mjs)$/.test(name)) copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
+    if (/\.(sh|sql|mjs|cjs)$/.test(name)) copyFileSync(join(repo, 'scripts', name), join(root, 'scripts', name));
   }
   copyFileSync(join(repo, 'docker/volumes/db/00-bootstrap.sql'), join(root, 'docker/volumes/db/00-bootstrap.sql'));
   mkdirSync(join(root, 'docker/postgres'), { recursive: true, mode: 0o700 });

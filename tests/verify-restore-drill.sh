@@ -8,6 +8,8 @@
 #   2. With the disk-backed data directory, which must be gone afterwards.
 #   2b. With the _supabase.dump that backups from before the pooler became optional also hold:
 #      verified, with a note that it is skipped.
+#   2c. The same dump as a warehouse-backup-v6 fixture (the storage as a storage/ tree with a signed storage.manifest, which
+#      scripts/backup.sh writes): verified, and refused when one file of the tree is not the one the manifest names.
 #   3. With an integrity report that claims one more price-history row than the
 #      dump holds: the verification must fail on exactly that line. Before, the
 #      three append-only histories were in no comparison, so a restore that lost
@@ -132,6 +134,31 @@ rm -f "$backup/_supabase.dump"
 (cd "$backup" && sha256sum database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
 backup_sign_dir "$backup" "$BACKUP_KEY"
 echo 'Restore drill 2b passed: a backup from before the pooler became optional verifies, and its _supabase.dump is skipped with a note.'
+
+# 2c. The v6 form of the same backup: the object files as a tree (cp -a keeps their modes and times) and the manifest of their
+#     hashes in the signed list instead of the tarball.
+backup6="$work/warehouse-20260102T000000Z"
+mkdir "$backup6"
+cp "$backup/database.dump" "$backup/storage_objects.txt" "$backup/integrity.txt" "$backup/roles.txt" "$backup/compose.env" "$backup/instance.json" "$backup6/"
+cp -a "$work/objects" "$backup6/storage"
+(cd "$backup6/storage" && find . -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r sha256sum --) > "$backup6/storage.manifest"
+printf 'format=warehouse-backup-v6\ncreated_at_utc=20260102T000000Z\nsource_commit=drill\ndatabase_image=%s\nlink_base=none\nstorage_files=%s\nstorage_bytes=%s\nstorage_new_bytes=%s\n' \
+  "$(bash "$ROOT/scripts/db-image.sh")" "$(wc -l < "$backup6/storage.manifest")" "$(find "$backup6/storage" -type f -printf '%s\n' | awk '{ b += $1 } END { print b + 0 }')" "$(find "$backup6/storage" -type f -printf '%s\n' | awk '{ b += $1 } END { print b + 0 }')" > "$backup6/metadata.txt"
+(cd "$backup6" && sha256sum database.dump storage.manifest storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt > SHA256SUMS)
+backup_sign_dir "$backup6" "$BACKUP_KEY"
+verify6() {
+  env -u WAREHOUSE_STATE_DIR WAREHOUSE_BACKUP_KEY_FILE="$work/backup.key" WAREHOUSE_DIAGNOSTICS_DIR="$work/diagnostics" \
+    WAREHOUSE_VERIFY_SCRATCH_DIR="$work/scratch" "$@" bash "$ROOT/scripts/verify-restore.sh" "$backup6"
+}
+six="$(verify6 WAREHOUSE_VERIFY_STORAGE=tmpfs 2>&1)" || { echo "Restore drill: a v6 backup was refused: $six" >&2; exit 1; }
+grep -q 'Backup signature, checksums, storage tree, database restore, and integrity comparison passed.' <<<"$six" || { echo "Restore drill: the v6 verification did not report the storage tree: $six" >&2; exit 1; }
+if [[ -s "$backup6/storage_objects.txt" ]]; then
+  victim="$(find "$backup6/storage" -type f | head -n 1)"
+  printf 'another object\n' > "$victim"
+  if damaged="$(verify6 WAREHOUSE_VERIFY_STORAGE=tmpfs 2>&1)"; then echo 'Restore drill: a v6 backup with a file that is not the one its manifest names was verified.' >&2; exit 1; fi
+  grep -q 'does not match storage.manifest' <<<"$damaged" || { echo "Restore drill: the damaged v6 tree was refused for another reason: $damaged" >&2; exit 1; }
+fi
+echo 'Restore drill 2c passed: a v6 backup (storage tree and manifest) verifies, and a tree file that differs from its manifest is refused.'
 
 # 3. A history row fewer than the backup recorded is a failed verification.
 recorded="$(sed -n 's/^item_price_history_count=//p' "$backup/integrity.txt")"
