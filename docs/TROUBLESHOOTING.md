@@ -60,7 +60,11 @@ themselves (the host must be set to power on after a cut: the BIOS option "resto
   is not healthy, `bash start.sh`, and read `bash scripts/compose.sh ps` and `bash scripts/compose.sh logs --tail 50 db`.
 - **If the cut came at night,** the backup may have been interrupted: `node scripts/watch.mjs status` shows the last backup. A
   folder `.warehouse-backup-staging.*` left in `$WAREHOUSE_STATE_DIR/backups` is from the interrupted run; delete it with
-  `rm -rf` once `status` shows no pass running. The next daily pass makes a new backup.
+  `rm -rf` once `systemctl is-active <project>-daily.service` says `inactive` (`status` also shows a `Daily pass: running since`
+  line while one is going on, or `marked running ... but cut short` after a cut). The next daily trigger notices the cut pass and
+  makes a new backup at once.
+- **A stack you stopped with `stop.sh` stays stopped through a power cut or a reboot** (`config/stopped-by-operator`): `status` and
+  `doctor` say "stopped by the operator". Run `bash start.sh` when you want it back.
 - Do not delete anything under `$WAREHOUSE_STATE_DIR/data`. Sign in on one phone and open the latest receipt to be sure.
 - The cure is a UPS (a battery) that shuts the host down cleanly; without one every cut is a small risk to the database.
 
@@ -85,7 +89,7 @@ Check: `df -h /`.
 
 ### SMS codes not arriving
 
-**You see:** users say no code arrives. Slack `sms_delivery` (the provider refused requests or never answered) or
+**You see:** users say no code arrives. Slack `sms_delivery` (checked every hour: the provider refused requests or never answered) or
 `api_429_rate_high` ("Too many OTP requests").
 
 1. One number or everyone? One number: its limits are used up; clear them with `warehouse_security.reset_otp_limits`
@@ -281,7 +285,8 @@ it; only `functions` can.
 - **No backup is made, or `backup_missing` fires, while the checks run.** The daily backup is a second timer,
   `<project>-daily.timer`, that the checker does not start. `bash scripts/watch-timer.sh status` shows whether it is
   installed (an install from before it existed needs `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`
-  once); `journalctl -u <project>-daily.service` shows what the last pass did, and `node scripts/watch.mjs status` shows
+  once; until then its old checker unit keeps making the backup inside the 5-minute run, and Slack says `daily_timer_legacy` with
+  that command); `journalctl -u <project>-daily.service` shows what the last pass did, and `node scripts/watch.mjs status` shows
   `Daily pass last skipped ...` with the reason (a service the backup stops was down, or the operator lock was held).
 - **`bash scripts/watch-timer.sh status` says the Node.js is `MISSING`.** A Node.js upgrade removed the directory the units
   pointed at. Install Node.js again, then
@@ -416,7 +421,7 @@ it; only `functions` can.
 - **`api_429_rate_high` fires: users see "Too many requests".** The gateway and the sign-in functions refuse a client that
   goes over a limit (OPERATOR_INSTALL.md, "Authentication and OTP limits"; the gateway limits are in
   [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#gateway-limits-and-routes)). See who is refused: the gateway log keeps the
-  client address, `bash scripts/compose.sh logs --since 10m kong | grep ' 429 '`. One address with thousands of lines is one
+  client address, `bash scripts/compose.sh logs -t --tail 3000 kong | grep ' 429 '` (the newest lines with their times; `--since 10m` returned nothing on one Docker 29 host). One address with thousands of lines is one
   stuck client. Many phones behind **one** address are one Wi-Fi counted as one client: the per-address OTP and function limits
   apply to the whole warehouse Wi-Fi, so a wave of sign-ins (everyone's session ending the same week) can fill them.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters

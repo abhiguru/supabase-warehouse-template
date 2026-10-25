@@ -340,8 +340,8 @@ for it. Limits enforced by the database:
 - A resend does not void the earlier code: every delivered code stays valid
   until its own expiry, and a successful verification consumes all of them.
 - Expired OTP rows are not removed on a database timer, and not when a new code is issued. The 7-day `ephemeral_auth` retention
-  rule deletes expired OTP rows older than 7 days (see [Retention](#retention)). That pass runs once a day from the checker's daily run
-  when the checker timer is installed; without the timer, run `npm run retention:apply` yourself. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
+  rule deletes expired OTP rows older than 7 days (see [Retention](#retention)). That pass runs once a day from the daily timer
+  (`watch.mjs daily`) when the timers are installed; without them, run `npm run retention:apply` yourself. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
 
 Anyone can ask for a code for any number. The limits therefore have a fixed
 order of priority: first, a code cannot be guessed more than five times;
@@ -882,7 +882,7 @@ zone, by someone who never touches the warehouse server, is enough.
   that the rule is ordered above any rule that raises the level.
 - Rate-limiting and firewall rules are optional ([Authentication and OTP limits](#authentication-and-otp-limits)); a rule that
   uses the action "Managed Challenge" or "Interactive Challenge" on this hostname does the same harm.
-- **How you notice:** `public_https_down` fires with a message that the answer is not JSON, `node scripts/doctor.mjs --local`
+- **How you notice:** `public_https_down` fires with `HTTP 403` (a challenge is answered with status 403, which the check reports as it is), `node scripts/doctor.mjs --local`
   is healthy while `node scripts/doctor.mjs` fails, and
   `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
   or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
@@ -950,8 +950,9 @@ bash stop.sh
 ```
 
 `compose ps` shows every service `Up (healthy)` except `rest`, which defines no healthcheck and appears as plain `Up`; the
-doctor, not the status column, is the health verdict. Start and stop the tunnel service separately through its systemd
-unit. Do not run `down -v`, a broad Docker prune, or delete state as a restart procedure.
+doctor, not the status column, is the health verdict. `stop.sh` leaves the file `config/stopped-by-operator`, so the stack stays
+down through a reboot and the monitoring checker does not start it again until `start.sh` removes the file. Start and stop the
+tunnel service separately through its systemd unit. Do not run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 To look at the data, open a SQL prompt inside the database container:
 
@@ -1004,7 +1005,7 @@ installation user with `sudo`:
 ## Retention
 
 Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
-the checker timer installed (see "Monitoring is not a Compose profile" in the installation section above), the checker's daily pass runs `scripts/retention.sh apply`
+the timers installed (see "Monitoring is not a Compose profile" in the installation section above), the daily pass (`watch.mjs daily`, run by the `<project>-daily` timer) runs `scripts/retention.sh apply`
 once a day, after a verified backup and after it has pruned the local backups to the newest 7. To stop it, do not install
 the timer, or run `sudo bash scripts/watch-timer.sh uninstall`; nothing else deletes on a schedule. Run the retention command
 yourself at any time:
@@ -1088,13 +1089,21 @@ this backup either (the bridge's volume holds only readings not yet delivered).
 installation built (`db`, `functions`, `storage`, `pdf-renderer`, and any optional one in use) as `docker save` tarballs,
 written by `scripts/build-images.sh` after every successful build, with a copy of the build record. They are what lets a
 lost-host restore run without Docker Hub, Debian, npm and Chrome for Testing answering (they need about 2.5 GiB of disk;
-a save that would leave under 5 GiB free is skipped with a warning). If you want that, copy the folder with the drive
-whenever it changes (after each upgrade that rebuilt images):
+a save that would leave under 5 GiB free, or less than the size of the newest backup when that is larger, is skipped with a
+warning, and the tarball of that service is removed because the record then names a newer image than it holds; tarballs of
+services the record no longer names are removed too). The folder is **signed like a backup**: `SHA256SUMS` lists every file in it and
+`SHA256SUMS.hmac` is made with the [backup key](#backup-key), because a loaded image runs on the rebuilt host with every
+secret. `db:restore-host` loads nothing from a folder whose signature does not check out with the key you give it
+(`--backup-key`), and never with `--allow-unsigned`. Copy the folder whole, as it is, and add no file of your own. If you want
+that, copy the folder with the drive whenever it changes (after each upgrade that rebuilt images):
 
 ```bash
 bash scripts/build-images.sh --save     # once, on an installation built before images were saved
-cp -a "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-backups/<state name>/images/"
+mkdir -p "$DRIVE/warehouse-backups/<state name>/images"
+cp -r --preserve=timestamps "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-backups/<state name>/images/"
 ```
+
+(Not `cp -a`: on the exFAT drive it cannot keep ownership and permissions, reports errors and exits 1 although the files were copied.)
 
 The images that Compose pulls (the gateway, PostgREST and others) are not saved; a rebuilt host pulls them by digest.
 
@@ -1403,7 +1412,10 @@ one rerun with both sets of options does.
 
    The built images come from the saved tarballs when you have them: an `images` folder next to the archive (as in the
    copy command under [Backup and restore](#backup-and-restore)) is used by itself when it holds the build record
-   `image-recipes.sha256`, or name another folder with `--images DIR`; only the tarballs that record names are loaded. They are loaded with `docker load` and their build record adopted before the restore starts, so the
+   `image-recipes.sha256`, or name another folder with `--images DIR`; only the tarballs that record names are loaded, and only
+   when the folder's signature (`SHA256SUMS.hmac`) checks out with your backup key: a folder named with `--images` that does not
+   is refused before anything is created, one found next to the archive is ignored with the reason, and with `--allow-unsigned`
+   saved images are not used at all. They are loaded with `docker load` and their build record adopted before the restore starts, so the
    `db`, `storage`, `functions` and `pdf-renderer` images are not built again (a build needs Docker Hub, Debian, npm and
    Chrome for Testing); a tarball that does not load is reported and that image is built as usual, and so is every image
    whose recipe in this checkout differs from the saved one. Without saved images the first start rebuilds all of them.
@@ -1666,7 +1678,7 @@ start then replaces only the containers whose image changed. What to expect:
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
 - After a build, every image it built is also written to `$WAREHOUSE_STATE_DIR/images/<service>.tar` (an older tarball of
-  that service is replaced). Nothing else keeps the built images; see [Backup and restore](#backup-and-restore) for what
+  that service is replaced) and the folder is signed with the backup key. Nothing else keeps the built images; see [Backup and restore](#backup-and-restore) for what
   they are for and why they are not in a backup. A save that fails is a warning, not a failed build.
 - A build needs the network when a recipe changed. If it fails, setup stops
   before it starts or stops anything and records nothing as built. Running
@@ -1840,9 +1852,11 @@ a partition that the baseline lacks must make the load fail, not re-route rows. 
 them), `warehouse_migrations` is the ledger (the baseline run writes it), and `auth` holds GoTrue tables that nothing uses.
 The `_supabase` database (the pooler's tenant) is no longer in backups at all; while `POOLER_ENABLED=true`, setup recreates it with the pooler's role and schema.
 
-**Step 4. Move the old data directory aside. Never delete it.**
+**Step 4. Move the old data directory aside. Never delete it.** First mark the stack as stopped by you, so that a reboot or the
+checker cannot start it on the empty directory (`start.sh` and `setup.sh` remove the mark when they bring the stack up):
 
 ```bash
+touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"
 bash scripts/compose.sh --profile '*' down --remove-orphans
 D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.pre-baseline" && mv -T "$D" "$D.pre-baseline" && mkdir -m 700 "$D"
 ```

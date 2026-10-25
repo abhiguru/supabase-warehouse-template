@@ -18,7 +18,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   (the in-place restore). Redacted diagnostics for a failed upgrade.
 - **Retention policy.** The operator or legal owner approves retention, deletion and legal-hold rules for business
   documents, invoices, PDFs, images and backups. The owner approved the sign-in rows and generated PDFs older than 7 days (2026-10-19);
-  the checker's daily pass applies exactly that with `retention:apply` when its timer is installed, and never touches business
+  the daily pass (`watch.mjs daily`) applies exactly that with `retention:apply` when the daily timer is installed, and never touches business
   records or photos ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#retention)). Anything beyond that still needs approval.
 - **Billing and accounting.** The business owner signs off rates, taxes, rounding and reconciliation examples against
   [INVOICE_RULES.md](INVOICE_RULES.md). Payment requirements and a provider only if payments are in scope.

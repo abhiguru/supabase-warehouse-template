@@ -14,6 +14,8 @@ operator_lock "$STATE"
 bash "$ROOT/scripts/network-preflight.sh"
 # Before the db container is recreated: a PostgreSQL 15 database must go through the baseline reload.
 bash "$ROOT/scripts/db-version-preflight.sh"
+# The operator wants the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
+rm -f -- "$STATE/config/stopped-by-operator"
 # --remove-orphans removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.

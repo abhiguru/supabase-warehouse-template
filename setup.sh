@@ -109,6 +109,8 @@ bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
 # an upgraded checkout does not keep the images of the first installation.
 bash "$ROOT/scripts/build-images.sh"
+# Setup brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
+rm -f -- "$STATE/config/stopped-by-operator"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.
 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180 db
 bash "$ROOT/scripts/migrate.sh" --operator
@@ -151,10 +153,10 @@ bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
 node "$ROOT/scripts/doctor.mjs" --local
-# The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts, the daily backup and retention) runs
-# from a systemd timer. Installing a unit needs root, which setup never uses: like the tunnel service and the USB backup,
-# the operator runs the printed command. It also runs without a Slack webhook (--alert-webhook-file off): the checks
-# and the daily backup still run, only the Slack posts are off.
+# The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts) and the daily backup and retention run
+# from systemd timers (two: the checker's and the daily one). Installing a unit needs root, which setup never uses: like the
+# tunnel service and the USB backup, the operator runs the printed command. They also run without a Slack webhook
+# (--alert-webhook-file off): the checks and the daily backup still run, only the Slack posts are off.
 echo
 # hint prints the install command when the timer is missing and "refresh" when it runs another checkout.
 WAREHOUSE_STATE_DIR="$STATE" bash "$ROOT/scripts/watch-timer.sh" hint || true

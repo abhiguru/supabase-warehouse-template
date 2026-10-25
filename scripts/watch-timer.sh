@@ -16,10 +16,16 @@
 #   <project>-daily.service/.timer         the daily backup, verification, pruning and retention (watch.mjs daily), at the
 #                                          chosen time and each of the 5 hours after it (a pass that failed, or found the
 #                                          services down, is tried again at the next one; one that is done does nothing)
-#   <project>-stack.service                boot: `compose up -d` for the default profile after docker.service. It is enabled,
-#                                          not started, by install (so install never changes what is running). A reboot
-#                                          therefore also undoes a deliberate stop.sh; to keep the stack down:
-#                                          sudo systemctl disable <project>-stack.service
+#   <project>-stack.service                boot: `compose up -d --no-build --no-recreate` for the default profile after docker.service
+#                                          (Wants=, not Requires=: a restart of Docker does not run it again). It starts stopped
+#                                          containers and creates missing ones; it never recreates or builds, so a checkout that
+#                                          was pulled but not yet set up is not applied by a reboot. It is enabled, not started,
+#                                          by install (so install never changes what is running), and does nothing while
+#                                          <state>/config/stopped-by-operator exists: stop.sh writes that file and start.sh,
+#                                          setup.sh and restore.sh remove it, so a stack the operator stopped stays stopped
+#                                          through a reboot (also in the middle of a manual procedure).
+# The checker and daily units are ordered After=<project>-stack.service, so at boot neither starts a backup or a self-heal
+# against containers the boot unit is still starting.
 # --daily-at is the host's local time (the time zone is printed by install and status); a rerun without it keeps the
 # installed time. The daily backup, verification, pruning and retention may run up to 6 hours after it (a missed time
 # is caught up inside that window, never later), and not more than 3 times a day.
@@ -122,11 +128,13 @@ link_node() {
   fi
   safe_path "$link" 'The Node.js link'
   [[ ! -e "$link" || -L "$link" ]] || die "$link exists and is not a link; move it away or set WAREHOUSE_NODE_LINK."
+  # The prefix must give a usable Node.js before the link is moved: a link that already points at something unusable would
+  # break the installed units, and `die` below would leave it that way.
+  version="$(runuser -u "$user" -- "$prefix/bin/node" --version 2>/dev/null || true)"
+  node_at_least_22_18 "$version" || die "$prefix/bin/node does not give Node.js 22.18 or newer (${version:-nothing}); the Node.js link $link was not changed."
   runuser -u "$user" -- mkdir -p -- "$(dirname -- "$link")" || die "Cannot create $(dirname -- "$link") as $user."
   runuser -u "$user" -- ln -s -- "$prefix" "$link.new.$$" && runuser -u "$user" -- mv -T -f -- "$link.new.$$" "$link" \
     || { runuser -u "$user" -- rm -f -- "$link.new.$$" 2>/dev/null; die "Cannot make the Node.js link $link."; }
-  version="$(runuser -u "$user" -- "$link/bin/node" --version 2>/dev/null || true)"
-  node_at_least_22_18 "$version" || die "The Node.js link $link does not give Node.js 22.18 or newer (${version:-nothing})."
   echo "Node.js link: $link -> $prefix ($version)"
   NODE_UNIT_PATH="$link/bin/node"
 }
@@ -164,9 +172,15 @@ cmd_install() {
   base="$(unit_base "$state")"
   existing="$UNITS/$base.service"
   daily_name="$(unit_sibling "$base" daily)"
+  stack="$(unit_sibling "$base" stack)"
   if [[ -f "$existing" ]]; then
     [[ "$(unit_setting "$existing" WAREHOUSE_STATE_DIR)" == "$state" ]] \
       || die "$existing already belongs to another state ($(unit_setting "$existing" WAREHOUSE_STATE_DIR)); the unit name comes from the facility's Compose project. Uninstall it first."
+    # A checker unit from before the daily timer runs the backup inside its own run, which may be going on now: the install
+    # re-reads the unit's time limit (the new 30 minutes), which can cut that backup short.
+    if [[ -n "$(unit_setting "$existing" WAREHOUSE_WATCH_DAILY_AT)" ]] && systemctl is-active --quiet "$base.service" 2>/dev/null; then
+      echo "Warning: $base.service is running now, and this old unit makes the daily backup inside its run. Installing now can cut that backup short. If it is the backup (a pass at $(unit_setting "$existing" WAREHOUSE_WATCH_DAILY_AT) or in the 6 hours after), wait until: systemctl is-active $base.service says inactive; the next daily trigger makes it again." >&2
+    fi
     # The time lives in the daily unit; an install from before that unit kept it in the checker's.
     [[ -n "$daily" ]] || daily="$(unit_setting "$UNITS/$daily_name.service" WAREHOUSE_WATCH_DAILY_AT)"
     [[ -n "$daily" ]] || daily="$(unit_setting "$existing" WAREHOUSE_WATCH_DAILY_AT)"
@@ -183,7 +197,7 @@ cmd_install() {
 [Unit]
 Description=Warehouse monitoring check for $state
 Wants=network-online.target
-After=network-online.target docker.service
+After=network-online.target docker.service $stack.service
 
 [Service]
 Type=oneshot
@@ -221,7 +235,7 @@ UNIT
 [Unit]
 Description=Warehouse daily backup and retention for $state
 Wants=network-online.target
-After=network-online.target docker.service
+After=network-online.target docker.service $stack.service
 
 [Service]
 Type=oneshot
@@ -254,17 +268,22 @@ Unit=$daily_name.service
 WantedBy=timers.target
 UNIT
   chmod 0644 "$tmp"; mv -f -- "$tmp" "$UNITS/$daily_name.timer"
-  stack="$(unit_sibling "$base" stack)"
   tmp="$(mktemp "$UNITS/.$stack.service.XXXXXX")"
   cat > "$tmp" <<UNIT
 # Managed by scripts/watch-timer.sh: starts the services of $state at boot.
 # Docker does not restart a container that was stopped (only one that exited), and the daily backup stops four services
 # for a while: a power cut inside that time leaves them stopped, and nothing else starts them before someone runs start.sh.
-# --no-build: a boot never builds an image (a missing one is a job for setup.sh or db:restore-host).
+# --no-build --no-recreate: a boot starts stopped containers and creates missing ones, nothing more. It never builds or recreates
+# (a changed compose file, image or database command is applied by setup.sh, with its preflights and under the operator lock),
+# so a checkout that was pulled but not set up yet is not applied by a reboot. Wants=, not Requires=: restarting Docker (an
+# apt upgrade of docker-ce) does not run this unit again.
+# ConditionPathExists=!...: stop.sh writes config/stopped-by-operator and start.sh, setup.sh and restore.sh remove it; while it
+# exists a reboot leaves the stack down (a stop the operator asked for, or a manual procedure in the middle).
 [Unit]
 Description=Warehouse services for $state at boot
-Requires=docker.service
+Wants=docker.service
 After=docker.service
+ConditionPathExists=!$state/config/stopped-by-operator
 
 [Service]
 Type=oneshot
@@ -274,7 +293,7 @@ Group=$group
 WorkingDirectory=$ROOT
 Environment=WAREHOUSE_STATE_DIR=$state
 Environment=PATH=$path
-ExecStart=/bin/bash $ROOT/scripts/compose.sh up -d --no-build
+ExecStart=/bin/bash $ROOT/scripts/compose.sh up -d --no-build --no-recreate
 TimeoutStartSec=10min
 
 [Install]
@@ -320,6 +339,11 @@ cmd_uninstall() {
   echo "The Node.js link (~/.local/opt/node-current) is left in place."
 }
 
+# A checker unit written before the daily backup got its own timer carries the daily time (WAREHOUSE_WATCH_DAILY_AT): its
+# run still makes the backup, inside the 5-minute check. The unit written now does not carry it.
+legacy_checker() { [[ -n "$(unit_setting "$1" WAREHOUSE_WATCH_DAILY_AT)" ]]; }
+# True while stop.sh's marker exists: the operator stopped the stack and start.sh has not brought it back.
+stopped_by_operator() { [[ -e "$1/config/stopped-by-operator" || -L "$1/config/stopped-by-operator" ]]; }
 # The Node.js path the checker unit runs (its ExecStart), and a note when that path is a link that points nowhere.
 unit_node() { sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' "$1" 2>/dev/null | head -n 1 || true; }
 node_gone_note() {
@@ -339,13 +363,21 @@ cmd_status() {
     node="$(unit_node "$UNITS/$base.service")"
     if [[ -n "$node" && ! -x "$node" ]]; then echo "Node.js: $node is MISSING$(node_gone_note "$node"): run sudo bash scripts/watch-timer.sh install --state $state --node /absolute/path/to/node"
     elif [[ -n "$node" ]]; then echo "Node.js: $node ($("$node" --version 2>/dev/null || echo 'does not run'))"; fi
+    if legacy_checker "$UNITS/$base.service"; then
+      echo "Daily backup: still made by the old checker unit, inside its 5-minute run (at $(unit_setting "$UNITS/$base.service" WAREHOUSE_WATCH_DAILY_AT)); backups continue, but a long one holds the checks off. Run: sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+    fi
   else
     echo "Timer: $base.timer is not installed. Run: sudo bash scripts/watch-timer.sh install --state $state"
   fi
   if [[ -f "$UNITS/$daily.timer" ]]; then
     echo "Daily timer: $daily.timer is installed (at $(unit_setting "$UNITS/$daily.service" WAREHOUSE_WATCH_DAILY_AT), state: $(systemctl is-active "$daily.timer" 2>/dev/null || true))."
+  elif [[ -f "$UNITS/$base.service" ]] && legacy_checker "$UNITS/$base.service"; then
+    echo "Daily timer: $daily.timer is not installed; the backup runs from the old checker unit until: sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
   else
     echo "Daily timer: $daily.timer is not installed: no backup runs. Run: sudo bash scripts/watch-timer.sh install --state $state"
+  fi
+  if stopped_by_operator "$state"; then
+    echo "Stack: stopped by the operator (config/stopped-by-operator); the boot unit does nothing until start.sh removes that file. Run: bash start.sh"
   fi
   if [[ -f "$UNITS/$stack.service" ]]; then
     echo "Boot unit: $stack.service is installed ($(systemctl is-enabled "$stack.service" 2>/dev/null || echo 'not enabled')); it starts the services after a boot."
@@ -357,6 +389,9 @@ cmd_status() {
 cmd_hint() {
   local state base svc stack daily node missing=()
   state="$(state_shape)"; base="$(unit_base "$state")"; svc="$UNITS/$base.service"; stack="$(unit_sibling "$base" stack)"; daily="$(unit_sibling "$base" daily)"
+  if stopped_by_operator "$state"; then
+    echo "The stack was stopped by the operator (config/stopped-by-operator): nothing restarts it, not even a reboot, until you run start.sh."
+  fi
   if [[ -f "$UNITS/$base.timer" ]] && grep -qxF -- "Environment=WAREHOUSE_STATE_DIR=$state" "$svc" 2>/dev/null; then
     # Installed for this state: say so only when something is wrong: the Node.js is gone, it runs another checkout (a moved
     # or replaced checkout), or a unit that a later release added is missing (an install from before it).
@@ -368,6 +403,13 @@ cmd_hint() {
     fi
     if ! grep -qxF -- "WorkingDirectory=$ROOT" "$svc" 2>/dev/null || [[ "$(sed -n 's/^ExecStart=[^ ]* //p' "$svc" | head -n 1)" != "$ROOT/scripts/watch.mjs run" ]]; then
       echo "The monitoring checker timer is installed for $state but runs another checkout of this software. Refresh it (needs sudo):"
+      echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+      return 0
+    fi
+    # A checker unit from before the split still makes the backup, inside its own run: nothing is lost, but it is the old design
+    # (a long backup holds the checks off, and there is no boot unit). Say which command ends that.
+    if legacy_checker "$svc"; then
+      echo "The monitoring checker unit for $state is from before the daily backup got its own timer. The backup still runs from it, so backups continue, but a long backup holds the 5-minute checks off, and the services do not start at boot. Refresh it (needs sudo):"
       echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
       return 0
     fi
