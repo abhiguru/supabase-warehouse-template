@@ -187,9 +187,10 @@ bash scripts/compose.sh restart functions
 
 The functions are mounted read-only from the checkout's `functions/`
 directory. When an upgrade changed only that code, the container itself is
-unchanged and is not recreated, so restart `functions` after the upgrade
-([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)) for the workers
-to load the new code.
+unchanged, so the workers keep the code they loaded: `setup.sh` (and so
+`upgrade.sh`) recreates `functions` on every run for that reason
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)). After a hand-made
+checkout without a setup run, restart it as above.
 
 ### Slow API responses
 
@@ -435,7 +436,7 @@ it; only `functions` can.
   Three things to know. The command prints the code only to a terminal. If the administrator's app still answers "Too many OTP requests"
   on the code screen, switch their phone from the facility Wi-Fi to mobile data (the Wi-Fi's address may be at its limit) and check
   that `otp_global_hourly_cap` is not `0` and `otp_daily_provider_attempt_cap` is not used up. If the app shows "SMS delivery unavailable"
-  and no code screen, the `functions` container is an old one: `bash scripts/compose.sh up -d --force-recreate functions`. And it does not
+  and no code screen, the `functions` container is an old one: `setup.sh` recreates it on every run (a rerun fixes it); an installation last set up by an older release needs `bash scripts/compose.sh up -d --force-recreate functions`. And it does not
   help when the sign-in goes through the association and the association's SMS is down (OPERATOR_INSTALL.md, "Break-glass administrator
   sign-in").
 - **Many people on the facility Wi-Fi get "Too many OTP requests" in the same hour** (after a key rotation, or a morning when sessions ended

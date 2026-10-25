@@ -43,11 +43,19 @@ operator_lock() {
 }
 
 # For a command that other operator commands run as one of their steps
-# (scripts/migrate.sh from setup.sh and restore.sh). The caller's lock arrives as
+# (scripts/migrate.sh and setup.sh from upgrade.sh, setup.sh and restore.sh). The caller's lock arrives as
 # the inherited descriptor 9; run alone, the command takes the lock itself.
+# A descriptor 9 that merely names the lock file is not proof: an operator who opened it by hand and ignored a
+# refused `flock -n 9` would otherwise run beside the real holder. `flock -n 9` succeeds at once on the open file
+# description that already holds the lock (an inherited one), takes the lock if nobody holds it, and fails while
+# another description holds it.
 operator_lock_or_inherited() {
   local state="${1:-}"
   if [[ -z "$state" ]]; then state="$(operator_state)" || return 1; fi
-  if [[ -e "/proc/$$/fd/9" && "/proc/$$/fd/9" -ef "$state/config/operator.lock" ]]; then return 0; fi
+  if [[ -e "/proc/$$/fd/9" && "/proc/$$/fd/9" -ef "$state/config/operator.lock" ]]; then
+    if flock -n 9; then return 0; fi
+    echo 'Another operator command (setup, start, stop, backup, restore, rotation or check) is running for this state.' >&2
+    return 1
+  fi
   operator_lock "$state"
 }

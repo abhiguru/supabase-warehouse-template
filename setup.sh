@@ -153,6 +153,12 @@ bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180
 # Optional services (printing, sensors, pooler) are not part of that start.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
+# The edge functions (functions/, including functions/_shared/) are bind-mounted into the functions container and the edge
+# runtime keeps the modules it has loaded, so a new checkout reaches neither through the `up` above (it recreates a container
+# only when its definition changed) nor through the image: new SQL would run under old function code. Recreate the container on
+# every run (a few seconds; --no-deps leaves the other services alone) so that the code on disk is the code that runs. Doing it
+# here, not in upgrade.sh, means the release being moved to decides how, and a hand-made upgrade gets it too.
+bash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
 node "$ROOT/scripts/doctor.mjs" --local
 # The monitoring checker (scripts/watch.mjs: checks every 5 minutes, Slack alerts) and the daily backup and retention run
 # from systemd timers (two: the checker's and the daily one). Installing a unit needs root, which setup never uses: like the

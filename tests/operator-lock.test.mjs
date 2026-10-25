@@ -110,3 +110,30 @@ exit 0
     assert.doesNotMatch(nested.stderr, /Another operator/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('a descriptor 9 that only names the lock file does not count: it must hold the lock', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-lock-inherited-'));
+  const state = fakeState(scratch);
+  const lockfile = join(state, 'config/operator.lock');
+  const lib = join(root, 'scripts/operator-lock.sh');
+  // Opens descriptor 9 like the manual procedures do, then runs the helper as setup.sh and migrate.sh do.
+  const probe = (open) => spawnSync('bash', ['-c', `. "$1"; ${open}; operator_lock_or_inherited "$2" && echo accepted`, '_', lib, state], { encoding: 'utf8' });
+  let holder;
+  try {
+    // Nobody holds the lock: a descriptor that does not hold it is fine, and the call takes the lock.
+    assert.match(probe(`exec 9>"${lockfile}"`).stdout, /accepted/);
+    // The caller holds it (upgrade.sh, setup.sh): accepted, and the caller keeps it.
+    const held = spawnSync('bash', ['-c', `. "$1"; exec 9>"$2/config/operator.lock"; flock -n 9; bash -c '. "$1"; operator_lock_or_inherited "$2" && echo accepted' _ "$1" "$2"`, '_', lib, state], { encoding: 'utf8' });
+    assert.match(held.stdout, /accepted/, held.stderr);
+    // Someone else holds it and this shell only opened the file (the manual step's `flock -n 9` printed nothing): refused.
+    holder = holdLock(lockfile);
+    const stray = probe(`exec 9>"${lockfile}"`);
+    assert.doesNotMatch(stray.stdout, /accepted/);
+    assert.match(stray.stderr, /Another operator/);
+    // Without a descriptor 9 it takes the lock itself, and is refused the same way.
+    assert.match(probe(':').stderr, /Another operator/);
+  } finally {
+    try { process.kill(-holder.pid, 'SIGKILL'); } catch { /* gone */ }
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
