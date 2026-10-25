@@ -252,6 +252,9 @@ jobs:
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
         working-directory: backend
+      - name: API role statement timeouts (anon is cut at 3 s through PostgREST, service_role is not)
+        run: npm run test:anon-timeout
+        working-directory: backend
       - name: Gateway upstream IP replacement
         run: npm run test:gateway-dns
         working-directory: backend
@@ -263,13 +266,13 @@ jobs:
         working-directory: backend
       - name: Monitoring checker (one pass and its status, no systemd timer)
         # The CI install has no Slack webhook (--alert-webhook-file off), so the pass records its state and posts
-        # nothing. The daily backup time is moved out of the 6-hour window that contains now, so this pass makes no
-        # backup of its own (the backup steps below do). The deleted state file also blocks a daily pass: a new state
-        # waits for the next window (watch.mjs, runDaily), the same as the +7 hours shift does.
+        # nothing. `run` never makes a backup (that is `watch.mjs daily`, which this job does not call; the backup steps
+        # below make theirs). WAREHOUSE_WATCH_DAILY_AT must stay unset here: a `run` that sees it takes itself for the
+        # checker unit of an installation from before the daily timer and makes the daily pass inside itself.
         # The pass must find the installation healthy: any check error or any down alert of the database, a service
         # or the gateway fails the step (host alerts such as disk, cpu and memory depend on the runner and do not).
         run: |
-          export WAREHOUSE_WATCH_DAILY_AT="$(date -d '+7 hours' +%H:%M)"
+          unset WAREHOUSE_WATCH_DAILY_AT
           rm -f "$WAREHOUSE_STATE_DIR/config/watch-state.json"
           node scripts/watch.mjs run
           test -s "$WAREHOUSE_STATE_DIR/config/watch-state.json"

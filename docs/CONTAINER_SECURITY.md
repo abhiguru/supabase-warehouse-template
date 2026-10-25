@@ -149,6 +149,14 @@ What a service log may hold, for the 3 x 10 MB of `json-file` log each service k
   example `upstream timed out ..., request: "GET /storage/v1/object/sign/...?token=..."`). These lines appear only while
   a service fails, but a signed link that failed while it was valid stays in the log until it rotates out. The document
   functions make a signed link valid for one hour, so the exposure ends then.
+- **Database log** (`docker/docker-compose.yml`, the `db` command; the same 3 x 10 MB). It holds warnings and errors, lock
+  waits (`log_lock_waits=on`), every statement slower than 1 s (`log_min_duration_statement=1000`), and every temporary file of
+  10 MB or more (`log_temp_files=10240`, in kB). Until 2026-10 it also held one line per connection and disconnection
+  (`log_connections` and `log_disconnections` on) and every temporary file (`log_temp_files=0`), which filled the 30 MB with
+  noise and pushed out the lines that explain an incident; both connection settings are now `off`. **`log_parameter_max_length=0`
+  keeps parameter values out of the slow-statement log.** PostgREST sends the request body as a parameter, and a sign-in request
+  carries the code: without this setting a slow `operator_verify_otp` would log it. The statement text is logged with `$1`,
+  `$2` in place of values. `log_statement` stays `none`. How to read it: [MONITORING.md](MONITORING.md#finding-a-slow-query).
 - The function logs, the sensor bridge (replaces any query with `***`) and the PDF functions follow the rules in their
   own sections.
 
@@ -350,8 +358,17 @@ and `tests/baseline_roles.sql` asserts exactly this set after the baseline is ap
 | `authenticator` | yes | no | **no** (NOINHERIT) | PostgREST's login; member of `anon`, `authenticated`, `service_role`, which it takes with `SET ROLE` |
 | `supabase_storage_admin` | yes | no | **no** (NOINHERIT) | Storage's login; member of `authenticator`; owns the schema `storage`; no `CREATEROLE` |
 | `pgbouncer` | yes | no | yes | Supavisor's pool user; exists only while the pooler is on (`pooler.sh on`), not created by the bootstrap |
-| `anon`, `authenticated` | no | no | yes | API roles; statement timeouts 3 s and 8 s |
+| `anon`, `authenticated` | no | no | yes | API roles; statement timeouts 3 s and 8 s (applied by PostgREST: `PGRST_DB_CONFIG: "true"`, see below) |
 | `service_role` | no | no | yes | `BYPASSRLS`; the edge functions' role |
+
+**The two statement timeouts only work with `PGRST_DB_CONFIG: "true"`** (`docker/docker-compose.yml`, `rest`). PostgREST logs in
+as `authenticator` and switches to `anon` or `authenticated` with `SET ROLE`, which does not apply the role's own `ALTER ROLE ...
+SET` values; with the option off it never reads them, so an anonymous call ran under the `authenticator`'s 8 s and a change to
+the two API roles' settings did nothing. Measured on PostgREST v16.4 and PostgreSQL 18 with a function that sleeps: `pg_sleep(5)`
+as `anon` took 5.0 s with the option off and was cut at 3.0 s with `canceling statement due to statement timeout` (SQLSTATE
+57014) with it on; as `authenticated` it stays at 8 s either way. No `pgrst.*` setting is stored in the database, so the option
+changes nothing else. The `db` container also gets `shm_size: 256m` (Docker's default `/dev/shm` is 64 MB, which a parallel
+query at a larger `work_mem` can fill; it counts against the 1 GiB limit only when used).
 
 No `ALTER DEFAULT PRIVILEGES` is made by the bootstrap: the baseline's grants are written relative to the built-in
 defaults, and a default privilege would widen them. `service_role` keeps `ALL` on the business tables as before; the image has no `pg-safeupdate`, so nothing stops an

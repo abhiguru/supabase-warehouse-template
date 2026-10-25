@@ -24,6 +24,105 @@ that other project, and the command changes it instead of this one.
 `node scripts/doctor.mjs` adds the external checks through the tunnel
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation)).
 
+For the five events most likely to hit a facility (internet down, power cut, disk full, SMS codes not arriving, a failed
+backup) start with the [incident cards](#incident-cards) below.
+
+## Incident cards
+
+Five things that will happen. Each card is for the person at the host, not a database expert: what you see, what to do in
+order, and what not to do. The commands run from the checkout with `WAREHOUSE_STATE_DIR` exported, as above.
+
+### Internet down
+
+**You see:** every phone says it cannot reach the server; no Slack message arrives (it cannot leave either);
+`node scripts/doctor.mjs --local` still says healthy.
+
+1. Do not restart anything on the host. The server is fine; the road to it is down.
+2. Look at the router (lights; restart it once and wait three minutes). If a phone on mobile data cannot sign in either, the
+   problem is the warehouse's line: call the internet provider.
+3. From the host: `ping -c 3 1.1.1.1` (the line) and `ping -c 3 cloudflare.com` (name lookup). The first fails: the line. The
+   second fails alone: the router's DNS (set `1.1.1.1` in the router).
+4. When the line is back, wait two minutes. The tunnel reconnects by itself. Check `bash scripts/tunnel.sh status` and
+   `node scripts/doctor.mjs`. If the public check still fails: `sudo systemctl restart warehouse-<state name>-tunnel.service`.
+5. The app cannot save a receipt, dispatch or invoice meanwhile. Write them on paper and enter them afterwards in the order of
+   the paper numbers; check the number the app suggests against the paper before saving.
+6. Alerts that could not be sent are not sent later. After the outage run `node scripts/watch.mjs status`.
+
+### Power cut
+
+**You see:** the host was off or restarted; phones fail until it is back. After it is on again, most things return by
+themselves (the host must be set to power on after a cut: the BIOS option "restore on AC power loss").
+
+- **Comes back by itself:** Docker, the database (it repairs itself from its log; give it a minute), the gateway, the other
+  services (the boot unit `<project>-stack.service`, installed by `watch-timer.sh install`; `bash scripts/watch-timer.sh status`
+  shows it), the tunnel, the monitoring timers.
+- **Needs you:** the host's power button if it stayed off. Then, after five minutes: `node scripts/doctor.mjs --local`. If it
+  is not healthy, `bash start.sh`, and read `bash scripts/compose.sh ps` and `bash scripts/compose.sh logs --tail 50 db`.
+- **If the cut came at night,** the backup may have been interrupted: `node scripts/watch.mjs status` shows the last backup. A
+  folder `.warehouse-backup-staging.*` left in `$WAREHOUSE_STATE_DIR/backups` is from the interrupted run; delete it with
+  `rm -rf` once `systemctl is-active <project>-daily.service` says `inactive` (`status` also shows a `Daily pass: running since`
+  line while one is going on, or `marked running ... but cut short` after a cut). The next daily trigger notices the cut pass and
+  makes a new backup at once.
+- **A stack you stopped with `stop.sh` stays stopped through a power cut or a reboot** (`config/stopped-by-operator`): `status` and
+  `doctor` say "stopped by the operator". Run `bash start.sh` when you want it back.
+- Do not delete anything under `$WAREHOUSE_STATE_DIR/data`. Sign in on one phone and open the latest receipt to be sure.
+- The cure is a UPS (a battery) that shuts the host down cleanly; without one every cut is a small risk to the database.
+
+### Disk full
+
+**You see:** Slack `disk_root_low` (under 20% free) weeks before; at 0% PostgreSQL stops and the app fails on every save.
+Check: `df -h /`.
+
+1. Never delete anything under `$WAREHOUSE_STATE_DIR/data` (the database and the photos) or `config`.
+2. What is big: `du -sh "$WAREHOUSE_STATE_DIR"/{data,backups,images}` and `sudo du -xh --max-depth=2 /var/lib/docker | sort -h | tail`.
+3. Free space in this order, until about 10 GiB is free:
+   - Docker's build cache and untagged images (safe; never `-a`, never `--volumes`; on a host shared with other Docker
+     projects they are affected too): `docker builder prune -f` and `docker image prune -f`.
+   - Old local backups, keeping the newest three, and only when the USB drive holds a recent archive
+     (`ls -1d "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n -3 | xargs -r rm -rf`).
+   - The saved image tarballs, about 2.5 GiB, after copying them to the drive; they come back at the next build
+     (`bash scripts/build-images.sh --save`): `rm -rf "$WAREHOUSE_STATE_DIR/images"`.
+   - The system journal: `sudo journalctl --vacuum-size=200M`.
+4. If the database stopped ("No space left on device" in `bash scripts/compose.sh logs --tail 50 db`): free space first, then
+   `bash start.sh`. `start.sh` refuses only below 2 GiB free and warns below 10.
+5. The lasting fix is a bigger disk. Photos are never deleted by the app and backups multiply them.
+
+### SMS codes not arriving
+
+**You see:** users say no code arrives. Slack `sms_delivery` (checked every hour: the provider refused requests or never answered) or
+`api_429_rate_high` ("Too many OTP requests").
+
+1. One number or everyone? One number: its limits are used up; clear them with `warehouse_security.reset_otp_limits`
+   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)).
+2. Everyone: ask the holder of the MSG91 account to open the console and check, in this order: the balance, the status of the
+   flow (the DLT template must be approved), the sender ID (header), and the delivery report of one recent number.
+3. What the server saw in the last day:
+   `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c "SELECT delivery_status, msg91_status, count(*) FROM public.otp_verifications WHERE created_at > now() - interval '24 hours' GROUP BY 1, 2 ORDER BY 3 DESC"`
+   `accepted | success` means MSG91 took the request. `failed | provider_auth` is a wrong or expired key,
+   `provider_rejected` or `provider_validation` a refused template or sender, `provider_rate_limited` too many requests,
+   `provider_unavailable` or `provider_ambiguous` MSG91 did not answer.
+4. All `accepted` and still nothing on the phones: the telecom operator is dropping the messages (a suspended DLT header or
+   template). Only MSG91 support can fix that. A new key is applied as in
+   [Replacing MSG91 credentials](OPERATOR_INSTALL.md#authentication-and-otp-limits).
+5. Phones that are signed in keep working until their session ends; do not sign anyone out meanwhile.
+
+### Backup failed
+
+**You see:** Slack `backup_failed` or `backup_missing`. These two are never muted. Until it is fixed, the data since the last
+good backup exists only on this disk.
+
+1. Why: `node scripts/watch.mjs status` (the "Daily backup" line has the message) and
+   `journalctl -u <project>-daily.service --since yesterday` (`bash scripts/watch-timer.sh status` names the unit).
+2. The usual causes: the disk is full (the Disk full card); a service the backup stops was down (`bash scripts/compose.sh ps`,
+   then `bash start.sh`); another operator command still holds the lock (`status` says "operator lock is held"; find it with
+   `fuser -v "$WAREHOUSE_STATE_DIR/config/operator.lock"` and let it finish); the database is not healthy.
+3. Make one by hand to see the error. It stops the app for a few minutes, so do it when it is quiet:
+   `npm run db:backup`, then `npm run db:verify-restore -- <the folder it printed>`. A good backup made by hand also clears
+   both alerts.
+4. After the cause is gone the daily timer tries again within the hour, up to three times a day; inside the window,
+   `sudo systemctl start --no-block <project>-daily.service` does it now (`journalctl -u <project>-daily.service -f` shows it).
+5. Copy the newest good backup to the USB drive (plug it in; [USB backup drive](OPERATOR_INSTALL.md#usb-backup-drive)).
+
 ## Services
 
 ### Services won't start
@@ -183,9 +282,24 @@ it; only `functions` can.
   `journalctl -u <unit>.service`, where `<unit>` is the name `bash scripts/watch-timer.sh status` prints before
   `.timer` (`warehouse-<instance>-watch`, from `WAREHOUSE_PROJECT_NAME` in `config/compose.env`), and `node scripts/watch.mjs status` (the last Slack failure is
   shown there); `node scripts/watch.mjs test-message` posts a test message to the stored webhook.
+- **No backup is made, or `backup_missing` fires, while the checks run.** The daily backup is a second timer,
+  `<project>-daily.timer`, that the checker does not start. `bash scripts/watch-timer.sh status` shows whether it is
+  installed (an install from before it existed needs `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"`
+  once; until then its old checker unit keeps making the backup inside the 5-minute run, and Slack says `daily_timer_legacy` with
+  that command); `journalctl -u <project>-daily.service` shows what the last pass did, and `node scripts/watch.mjs status` shows
+  `Daily pass last skipped ...` with the reason (a service the backup stops was down, or the operator lock was held).
+- **`bash scripts/watch-timer.sh status` says the Node.js is `MISSING`.** A Node.js upgrade removed the directory the units
+  pointed at. Install Node.js again, then
+  `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node /absolute/path/to/node`; the units then name
+  the link `~/.local/opt/node-current`, and the next upgrade only needs `ln -sfn <new prefix> ~/.local/opt/node-current`.
 - **Right after install, `npm run doctor` warns "... the monitoring checker has never run ...".** Expected for the first
   few minutes: the timer runs the checker every 5 minutes, and the warning goes away after its first run. Rerun doctor after
   that; if it persists, read `journalctl -u <unit>.service` as above.
+- **`clock_unsynced` fires, or central sign-in is refused for everyone ("issued in the future" in the function log: the host
+  clock is more than 30 s behind the association's).** The host clock is wrong. `timedatectl` shows `System clock synchronized: yes/no`. Run `sudo timedatectl set-ntp true`, wait a minute, run it
+  again; if it stays `no`, the host cannot reach its time servers (check the router's DNS and that UDP 123 is not blocked).
+  Correct the time zone with `sudo timedatectl set-timezone Asia/Kolkata`; a wrong zone is not a wrong clock, but it moves the
+  backup time (OPERATOR_INSTALL.md, "Host time zone").
 - **Alerts for services you stopped on purpose.** Mute before a planned stop: `node scripts/watch.mjs mute 60`
   ([MONITORING.md](MONITORING.md#mute-and-unmute)).
 - **Nothing reaches Slack, but the checker runs.** `status` says `Slack webhook: none` when the install was made with
@@ -304,6 +418,12 @@ it; only `functions` can.
   the MSG91 console. The per-phone, per-source and warehouse-wide caps
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)) return an explicit
   refusal, not silence.
+- **`api_429_rate_high` fires: users see "Too many requests".** The gateway and the sign-in functions refuse a client that
+  goes over a limit (OPERATOR_INSTALL.md, "Authentication and OTP limits"; the gateway limits are in
+  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#gateway-limits-and-routes)). See who is refused: the gateway log keeps the
+  client address, `bash scripts/compose.sh logs -t --tail 3000 kong | grep ' 429 '` (the newest lines with their times; `--since 10m` returned nothing on one Docker 29 host). One address with thousands of lines is one
+  stuck client. Many phones behind **one** address are one Wi-Fi counted as one client: the per-address OTP and function limits
+  apply to the whole warehouse Wi-Fi, so a wave of sign-ins (everyone's session ending the same week) can fill them.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters
   with `warehouse_security.reset_otp_limits` (same section).
 - **Nobody can get a code at all (MSG91 balance, DLT header or provider outage) and an administrator cannot sign in**: use the

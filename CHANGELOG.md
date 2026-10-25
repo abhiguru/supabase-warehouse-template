@@ -44,7 +44,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    `DB_PASSWORD_AUTH` and `DB_PASSWORD_MONITORING` itself); the Slack webhook moves to `config/slack-webhook-url`; take a new
    backup (a backup from before the reload restores only with the tag `migrations-pre-baseline`); remove the network
    `<project>_admin`, the volumes `<project>_db-config` and `<project>_prometheus_data` and the images of removed services.
-8. The daily pass of the checker (`scripts/watch.mjs`) applies the retention in `docs/OPERATOR_INSTALL.md`, "Retention".
+8. The daily pass (`watch.mjs daily`, run by its own timer, see item 10) applies the retention in `docs/OPERATOR_INSTALL.md`, "Retention".
 9. **The pooler is off unless you turn it on.** On an existing installation `setup.sh` runs a one-time clean-up of the unused pooler
    objects (role and schema `pgbouncer`, database `_supabase`, three secrets) and records `POOLER_ENABLED=false`; an installation that
    ran supavisor is recorded as on. If `_supabase` holds data the clean-up is refused with a warning and asked again at the next setup.
@@ -61,8 +61,49 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
    The app needs no change.
 
+10. **Run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"` again.** The daily backup is no longer inside the
+   5-minute checker: it is `watch.mjs daily`, run by its own timer `<project>-daily.timer` (same `--daily-at` time, kept from the old
+   unit). **Until you rerun `install`, the backup keeps running** from the old checker unit: that unit sets `WAREHOUSE_WATCH_DAILY_AT`,
+   and a `run` that sees it makes the pass inside itself, as before, so an update never leaves a gap in the backups. The old design
+   holds the 5-minute checks off during a long backup and has no boot unit, so the checker raises `daily_timer_legacy` at once in Slack
+   (never muted), and `start.sh`, `status` and `doctor` print the command to run. Installing while the old unit is running warns first: it
+   may be in the middle of the backup. The command also writes `<project>-stack.service` (starts the stopped services at boot, never
+   recreating or building, so a power cut during the backup window no longer leaves them stopped and a reboot cannot apply a release that
+   `setup.sh` has not) and moves the units to a Node.js link (`~/.local/opt/node-current`) so a Node.js upgrade only moves the link.
+   Optional: `config/heartbeat-url` for an external dead-man switch
+   ([docs/MONITORING.md](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)).
+11. **`setup.sh` recreates the `db` and `rest` containers** (a few seconds of downtime): `PGRST_DB_CONFIG` is now `true`, so anonymous API
+    calls are cut at 3 s (they ran under 8 s); the database gets `shm_size: 256m`, logs statements slower than 1 s without their
+    parameter values, and no longer logs connections ([docs/MONITORING.md](docs/MONITORING.md#finding-a-slow-query)).
+
 ### Changed
 
+- **Built images are saved, and signed.** After a successful build `scripts/build-images.sh` writes the images it built to
+  `<state>/images/<service>.tar` (`docker save`, about 2.5 GiB in all; skipped with a warning if under 5 GiB, or the size of the newest
+  backup when larger, would stay free) with a copy of the build record, and `db:restore-host` loads them (`--images DIR`, or an `images`
+  folder next to the backup) before the restore, so a lost-host rebuild does not need Docker Hub, Debian, npm and Chrome for Testing.
+  The folder is signed like a backup (`SHA256SUMS` over every file, `SHA256SUMS.hmac` with the backup key) and `db:restore-host` loads
+  nothing that does not authenticate with the key it is given: a folder named with `--images` is refused, one found next to the backup is
+  ignored, and `--allow-unsigned` never uses saved images. A tarball whose save was skipped or failed, or that the record no longer
+  names, is removed. The folder is not in a backup: `bash scripts/build-images.sh --save` writes it for an installation that is
+  already built, and the operator copies it with the drive ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
+- **`stop.sh` survives a reboot.** It writes `<state>/config/stopped-by-operator`; `start.sh`, `setup.sh` and `restore.sh` remove it.
+  While it exists the boot unit does nothing, the checker does not self-heal, and `status`, `doctor` and the `start.sh` hint say
+  "stopped by the operator; run start.sh". A reboot in the middle of a manual procedure (Baseline reload, Major PostgreSQL upgrade,
+  restore) no longer starts the stack on an empty data directory.
+- **Self-healing is narrower.** It starts `exited` and `created` services with `up -d --no-build --no-recreate --no-deps --pull never`
+  (it can neither build, pull, recreate nor start dependencies) and does so at most 6 times per service in 24 hours; after that
+  `service_healed` says the service needs a person.
+- **The 5-minute checks go on during the daily pass.** The host, disk, database and backup-file checks keep running while the pass
+  holds the operator lock, and `operator_lock_stuck` fires after 4 hours for the pass (its own limit), not 2. A pass cut off by a power
+  cut is recognised at the next trigger and made again at once (it used to wait 4 hours). The checker's and the pass's writes to
+  `config/watch-state.json` are serialised with a lock file. The pass also waits for a running pooler that is unhealthy (`supavisor`).
+- **New and changed alerts.** `sms_delivery` is checked every hour (it was once a day), with a second rule for the last hour;
+  `break_glass_used` fires at once when `public.audit_log` holds a break-glass row (`CODE_ISSUED` or `SIGN_IN`) from the last 24 hours;
+  `clock_unsynced` compares with Cloudflare's own clock (`/cdn-cgi/trace`) and falls back to the `Date` header;
+  `daily_timer_legacy` (item 10). The gateway-log checks (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) read
+  `docker logs -t --tail 5000` and cut to 5 minutes by the time stamps: `docker logs --since` returned nothing for any window up to
+  an hour on a Docker 29.9.1 host, which would have kept them at "too few requests" for good (`tests/gateway-smoke.mjs` likewise).
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

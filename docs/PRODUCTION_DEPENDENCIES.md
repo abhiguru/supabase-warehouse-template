@@ -18,7 +18,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   (the in-place restore). Redacted diagnostics for a failed upgrade.
 - **Retention policy.** The operator or legal owner approves retention, deletion and legal-hold rules for business
   documents, invoices, PDFs, images and backups. The owner approved the sign-in rows and generated PDFs older than 7 days (2026-10-19);
-  the checker's daily pass applies exactly that with `retention:apply` when its timer is installed, and never touches business
+  the daily pass (`watch.mjs daily`) applies exactly that with `retention:apply` when the daily timer is installed, and never touches business
   records or photos ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#retention)). Anything beyond that still needs approval.
 - **Billing and accounting.** The business owner signs off rates, taxes, rounding and reconciliation examples against
   [INVOICE_RULES.md](INVOICE_RULES.md). Payment requirements and a provider only if payments are in scope.
@@ -48,6 +48,11 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   `docker/image-exceptions.json`; the PostgREST image still has no package inventory
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#exception-ledger-and-the-image-scan)). Findings are not waived to make a
   scan green.
+  **Dated (2026-10-26): the six scan exceptions in `docker/image-exceptions.json` all expire on 2027-01-15.** From that day the
+  manual scan and the release checklist fail until the owner (`abhiguru`) has reviewed each entry again and renewed it (a new
+  `reviewed` date, `expires` at most 90 days later, the reason updated with that day's scan counts) or removed it. CI does not
+  notice: it checks the ledger at the date of the newest review, not at today's date (`tests/image-scan.test.mjs`). Put the
+  renewal in the owner's calendar for early January 2027.
 - **Secrets without a procedure.** `SECRET_KEY_BASE` and `VAULT_ENC_KEY` (generated only by `pooler.sh on`) have no rotation procedure
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
 - **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled

@@ -19,6 +19,7 @@
     "test:db-roles": "bash scripts/db-roles.sh check",
     "test:rotation": "node tests/operator-api-rotation.mjs",
     "test:gateway": "node tests/gateway-smoke.mjs",
+    "test:anon-timeout": "node tests/anon-timeout-check.mjs",
     "test:gateway-dns": "bash tests/gateway-dns-check.sh",
     "test:load": "node tests/load-smoke.mjs",
     "test:cups": "bash tests/cups-check.sh",

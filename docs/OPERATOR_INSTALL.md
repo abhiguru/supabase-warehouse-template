@@ -39,8 +39,9 @@ Sections: [host prerequisites](#host-prerequisites),
 - `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
   run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
-- At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data; the doctor enforces
-  the minimum.
+- At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
+  to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
+  up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
   it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
@@ -48,6 +49,23 @@ Sections: [host prerequisites](#host-prerequisites),
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
 runtime is never removed by accident.
+
+### Host time zone
+
+Set the host's time zone before installing the monitoring timer. The time of the daily backup (`--daily-at`, default 02:30)
+and the "Monitoring is alive" message after 09:00 are **host local time**, and a server image is usually set to UTC: the
+backup would then start at 08:00 in India, in the middle of the working morning, with the API stopped while it runs.
+
+```bash
+timedatectl                                  # Time zone, and "System clock synchronized: yes"
+timedatectl list-timezones | grep -i kolkata
+sudo timedatectl set-timezone Asia/Kolkata   # the facility's zone
+sudo timedatectl set-ntp true                # keep the clock right (central sign-in refuses a clock over 30 s off)
+```
+
+The timers follow the host zone without being installed again (`bash scripts/watch-timer.sh status` prints the zone). Check
+the daily time after any change of zone, and tell the app's users nothing: only the backup time, the Slack lines and the
+checker's dates move.
 
 ### Ubuntu 24.04 sequence
 
@@ -322,8 +340,8 @@ for it. Limits enforced by the database:
 - A resend does not void the earlier code: every delivered code stays valid
   until its own expiry, and a successful verification consumes all of them.
 - Expired OTP rows are not removed on a database timer, and not when a new code is issued. The 7-day `ephemeral_auth` retention
-  rule deletes expired OTP rows older than 7 days (see [Retention](#retention)). That pass runs once a day from the checker's daily run
-  when the checker timer is installed; without the timer, run `npm run retention:apply` yourself. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
+  rule deletes expired OTP rows older than 7 days (see [Retention](#retention)). That pass runs once a day from the daily timer
+  (`watch.mjs daily`) when the timers are installed; without them, run `npm run retention:apply` yourself. Sessions are HS256 JWTs signed with the instance's `JWT_SECRET`.
 
 Anyone can ask for a code for any number. The limits therefore have a fixed
 order of priority: first, a code cannot be guessed more than five times;
@@ -848,6 +866,27 @@ restore on a new host then needs your private copy or a new tunnel.
 If the LAN router cannot hairpin to the public hostname, configure local DNS
 for the same name; the app must always use the same HTTPS origin.
 
+### Cloudflare zone settings
+
+The API hostname is an ordinary hostname in a Cloudflare zone, and the zone's security settings apply to it. The phones run a
+native app: it cannot solve a browser challenge, so a setting that challenges requests turns **every** app call into an HTML
+page instead of JSON, and the whole facility stops until someone finds the setting. A change made for a website in the same
+zone, by someone who never touches the warehouse server, is enough.
+
+- **Best: give the API hostname a zone that serves nothing else**, so a change made for a website cannot reach it.
+- **Bot Fight Mode must be off** (Security, Bots). On the free plan it can challenge API and mobile traffic, and a custom
+  rule cannot skip it. If the zone must keep it on, move the API hostname to another zone.
+- **"I'm Under Attack" mode breaks the app.** It challenges every visitor. If the zone needs it for a website, do not leave it
+  on for the API hostname: add a **Configuration Rule** (Rules, Configuration Rules) for the hostname
+  `warehouse-api.example.com` that sets Security Level to "Essentially Off" and Browser Integrity Check to off, and check
+  that the rule is ordered above any rule that raises the level.
+- Rate-limiting and firewall rules are optional ([Authentication and OTP limits](#authentication-and-otp-limits)); a rule that
+  uses the action "Managed Challenge" or "Interactive Challenge" on this hostname does the same harm.
+- **How you notice:** `public_https_down` fires with `HTTP 403` (a challenge is answered with status 403, which the check reports as it is), `node scripts/doctor.mjs --local`
+  is healthy while `node scripts/doctor.mjs` fails, and
+  `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
+  or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
+
 ## External doctor
 
 ```bash
@@ -911,8 +950,9 @@ bash stop.sh
 ```
 
 `compose ps` shows every service `Up (healthy)` except `rest`, which defines no healthcheck and appears as plain `Up`; the
-doctor, not the status column, is the health verdict. Start and stop the tunnel service separately through its systemd
-unit. Do not run `down -v`, a broad Docker prune, or delete state as a restart procedure.
+doctor, not the status column, is the health verdict. `stop.sh` leaves the file `config/stopped-by-operator`, so the stack stays
+down through a reboot and the monitoring checker does not start it again until `start.sh` removes the file. Start and stop the
+tunnel service separately through its systemd unit. Do not run `down -v`, a broad Docker prune, or delete state as a restart procedure.
 
 To look at the data, open a SQL prompt inside the database container:
 
@@ -936,10 +976,36 @@ A second command for the same state fails immediately with "Another operator com
 for the first to finish and never delete the lock file. The automatic USB backup is the one exception that waits: it
 retries for up to 15 minutes, then records a failure.
 
+### Monthly host maintenance
+
+The host's own software is not updated by this repository, and the packages that matter most are outside Ubuntu's automatic
+updates: `cloudflared` comes from Cloudflare's repository (Cloudflare supports only versions within a year of its newest release,
+and the tunnel service runs with `--no-autoupdate`) and Docker from Docker's. Once a month, in a quiet window (after closing, never in the backup window), as the
+installation user with `sudo`:
+
+1. **Look first.** `node scripts/watch.mjs status` shows nothing firing and "Daily backup: ok" for today;
+   `bash scripts/watch-timer.sh status` shows the units and the Node.js; `df -h /` has room.
+2. **Mute the checker for the window:** `node scripts/watch.mjs mute 60` (the backup alerts are never muted).
+3. **Update the packages:** `sudo apt-get update && apt list --upgradable`, read the list, then `sudo apt-get upgrade`. An
+   upgrade of `docker-ce` or `containerd.io` restarts every container (about a minute of downtime); an upgrade of
+   `cloudflared` does not restart the tunnel service that is already running: `sudo systemctl restart
+   warehouse-<state name>-tunnel.service` and `bash scripts/tunnel.sh status`. Check `cloudflared --version`.
+4. **Node.js minor/patch:** when nodejs.org lists a newer 22.x (or the next LTS before Node 22 ends on 2027-04-30), unpack it
+   next to the old one as in the [Ubuntu sequence](#ubuntu-2404-sequence), then
+   `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node ~/.local/opt/node-$NODE-linux-x64/bin/node`
+   (this moves the `~/.local/opt/node-current` link the timers use) and `node scripts/watch.mjs status`. Keep the old
+   directory until the next month.
+5. **Reboot** when `/var/run/reboot-required` exists or the kernel was updated: `sudo reboot`. After the boot the services
+   start by themselves (`<project>-stack.service`); wait three minutes.
+6. **Prove it:** `node scripts/doctor.mjs --local && node scripts/doctor.mjs`, sign in on one phone, then
+   `node scripts/watch.mjs unmute`. The next morning check that the "Monitoring is alive" line arrived and that
+   `node scripts/watch.mjs status` shows the night's backup as ok.
+7. Write the date and the versions (`docker --version`, `cloudflared --version`, `node --version`) in your own notes.
+
 ## Retention
 
 Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
-the checker timer installed (see "Monitoring is not a Compose profile" in the installation section above), the checker's daily pass runs `scripts/retention.sh apply`
+the timers installed (see "Monitoring is not a Compose profile" in the installation section above), the daily pass (`watch.mjs daily`, run by the `<project>-daily` timer) runs `scripts/retention.sh apply`
 once a day, after a verified backup and after it has pruned the local backups to the newest 7. To stop it, do not install
 the timer, or run `sudo bash scripts/watch-timer.sh uninstall`; nothing else deletes on a schedule. Run the retention command
 yourself at any time:
@@ -1018,6 +1084,28 @@ storage. `db:backup` warns when the destination shares a filesystem with `data/`
 survive loss of that disk. Copy every retained backup to an operator-provided encrypted off-host destination
 ([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) keeps off-host custody, schedule and retention open). Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
 this backup either (the bridge's volume holds only readings not yet delivered).
+
+**`$WAREHOUSE_STATE_DIR/images` is not in a backup, and the USB copy does not take it.** It holds the images this
+installation built (`db`, `functions`, `storage`, `pdf-renderer`, and any optional one in use) as `docker save` tarballs,
+written by `scripts/build-images.sh` after every successful build, with a copy of the build record. They are what lets a
+lost-host restore run without Docker Hub, Debian, npm and Chrome for Testing answering (they need about 2.5 GiB of disk;
+a save that would leave under 5 GiB free, or less than the size of the newest backup when that is larger, is skipped with a
+warning, and the tarball of that service is removed because the record then names a newer image than it holds; tarballs of
+services the record no longer names are removed too). The folder is **signed like a backup**: `SHA256SUMS` lists every file in it and
+`SHA256SUMS.hmac` is made with the [backup key](#backup-key), because a loaded image runs on the rebuilt host with every
+secret. `db:restore-host` loads nothing from a folder whose signature does not check out with the key you give it
+(`--backup-key`), and never with `--allow-unsigned`. Copy the folder whole, as it is, and add no file of your own. If you want
+that, copy the folder with the drive whenever it changes (after each upgrade that rebuilt images):
+
+```bash
+bash scripts/build-images.sh --save     # once, on an installation built before images were saved
+mkdir -p "$DRIVE/warehouse-backups/<state name>/images"
+cp -r --preserve=timestamps "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-backups/<state name>/images/"
+```
+
+(Not `cp -a`: on the exFAT drive it cannot keep ownership and permissions, reports errors and exits 1 although the files were copied.)
+
+The images that Compose pulls (the gateway, PostgREST and others) are not saved; a rebuilt host pulls them by digest.
 
 `npm run db:verify-restore -- /path/to/backup` checks every checksum and the signature first (see
 [Backup key](#backup-key)), rejects absolute paths, `..` segments and links in the
@@ -1287,7 +1375,8 @@ need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). If this facility's central sign-in reads its
 keys from a file, backups taken with this release carry that file too
 (`central-jwks.json`); for older backups keep the key set the association sent
-you (step 7). **Do not run `setup.sh` before the restore**: on the new host it
+you (step 7). If you kept a copy of the old host's `images` folder
+([Backup and restore](#backup-and-restore)), bring it too (step 3). **Do not run `setup.sh` before the restore**: on the new host it
 would create a new, different warehouse. After `db:restore-host` has finished,
 `setup.sh` on the restored state keeps the identity. Step 7 needs it, and so
 does step 8 when the installation sent alerts to Slack; when both apply,
@@ -1320,6 +1409,16 @@ one rerun with both sets of options does.
    npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --backup-key ~/backup.key --yes \
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
    ```
+
+   The built images come from the saved tarballs when you have them: an `images` folder next to the archive (as in the
+   copy command under [Backup and restore](#backup-and-restore)) is used by itself when it holds the build record
+   `image-recipes.sha256`, or name another folder with `--images DIR`; only the tarballs that record names are loaded, and only
+   when the folder's signature (`SHA256SUMS.hmac`) checks out with your backup key: a folder named with `--images` that does not
+   is refused before anything is created, one found next to the archive is ignored with the reason, and with `--allow-unsigned`
+   saved images are not used at all. They are loaded with `docker load` and their build record adopted before the restore starts, so the
+   `db`, `storage`, `functions` and `pdf-renderer` images are not built again (a build needs Docker Hub, Debian, npm and
+   Chrome for Testing); a tarball that does not load is reported and that image is built as usual, and so is every image
+   whose recipe in this checkout differs from the saved one. Without saved images the first start rebuilds all of them.
 
    `--yes` confirms that the original host is permanently off. Before it creates
    the state the command checks, in this order: the archive, unopened, against its
@@ -1574,10 +1673,13 @@ path, build target and build arguments) with a record of what it built last
 whose recipe differs or whose tag no longer names the image it built. Setup's
 start then replaces only the containers whose image changed. What to expect:
 
-- A state with no record (a new one, or one made by `restore-host`) rebuilds
+- A state with no record (a new one, or one made by `restore-host` without saved images) rebuilds
   every image in use once. That needs the network and can take a good while on
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
+- After a build, every image it built is also written to `$WAREHOUSE_STATE_DIR/images/<service>.tar` (an older tarball of
+  that service is replaced) and the folder is signed with the backup key. Nothing else keeps the built images; see [Backup and restore](#backup-and-restore) for what
+  they are for and why they are not in a backup. A save that fails is a warning, not a failed build.
 - A build needs the network when a recipe changed. If it fails, setup stops
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather
@@ -1750,9 +1852,11 @@ a partition that the baseline lacks must make the load fail, not re-route rows. 
 them), `warehouse_migrations` is the ledger (the baseline run writes it), and `auth` holds GoTrue tables that nothing uses.
 The `_supabase` database (the pooler's tenant) is no longer in backups at all; while `POOLER_ENABLED=true`, setup recreates it with the pooler's role and schema.
 
-**Step 4. Move the old data directory aside. Never delete it.**
+**Step 4. Move the old data directory aside. Never delete it.** First mark the stack as stopped by you, so that a reboot or the
+checker cannot start it on the empty directory (`start.sh` and `setup.sh` remove the mark when they bring the stack up):
 
 ```bash
+touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"
 bash scripts/compose.sh --profile '*' down --remove-orphans
 D="$WAREHOUSE_STATE_DIR/data/db"; test ! -e "$D.pre-baseline" && mv -T "$D" "$D.pre-baseline" && mkdir -m 700 "$D"
 ```

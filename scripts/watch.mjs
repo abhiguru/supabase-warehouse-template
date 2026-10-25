@@ -1,6 +1,7 @@
 // The one monitoring check of an installation (replaces Prometheus, Alertmanager and the exporters).
 //
-//   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat, daily jobs (the systemd timer runs this)
+//   node scripts/watch.mjs run                      one pass: checks, alerts, heartbeat (the systemd timer runs this every 5 minutes)
+//   node scripts/watch.mjs daily                    the daily backup, verification, pruning and retention (its own systemd timer runs this)
 //   node scripts/watch.mjs test-message             post a test message to the facility's Slack webhook
 //   node scripts/watch.mjs status                   what is failing, muted, and when the daily jobs last ran
 //   node scripts/watch.mjs mute MINUTES ["ALERT"]   silence all alerts, or one alert id, for MINUTES
@@ -15,11 +16,22 @@
 // failing. The run exits 0 unless the state file cannot be written. Nothing here prints or posts a secret: all text
 // goes through redact().
 //
-// Daily jobs: once a day, between --daily-at and 6 hours later (local time), scripts/watch-daily.sh makes a backup,
-// verifies it, prunes older backups and applies retention under one operator lock. They run only when the database
-// and every service of this run are up; a failed pass is tried again after an hour, at most 3 times a day.
+// Daily jobs (`daily`, not `run`: a backup must not hold the 5-minute checks off): once a day, between --daily-at and 6
+// hours later (local time), scripts/watch-daily.sh makes a backup, verifies it, prunes older backups and applies
+// retention under one operator lock. They run only when the database and the services the backup stops are up; a failed
+// pass is tried again after an hour, at most 3 times a day. The daily timer fires at --daily-at and each of the 5 hours
+// after it, and a trigger with nothing to do exits at once. `run` and `daily` write different keys of the state file (under
+// a lock file: withStateLock). While the pass holds the operator lock `run` keeps the checks that do not need the stopped
+// services going (PASS_SAFE_CHECKS) and calls the lock stuck only after the pass's own 4 hours (jobStaleMs).
+// An installation whose checker unit is from before the split (it sets WAREHOUSE_WATCH_DAILY_AT) still has the backup inside
+// `run`: `run` makes it as it always did, and raises daily_timer_legacy at once, naming the command that installs the daily timer.
 // Pruning keeps the newest 7 backup directories of this installation in $STATE/backups; backups made by hand there
 // (same name pattern, same instance) count towards those 7.
+// External heartbeat: if config/heartbeat-url holds an https URL (mode 0600), every successful run of `run` fetches it
+// (5 s limit). A service such as healthchecks.io alerts when the pings stop; a failed ping is logged, never alerted.
+// Self-healing: while no operator command holds the lock, an `exited` (or `created`) service of the default profile is started
+// again and one `unhealthy` for 3 runs in a row is restarted, at most once an hour and 6 times in 24 hours each (selfHeal); a
+// muted service is left alone, and nothing is done while config/stopped-by-operator exists (stop.sh writes it, start.sh removes it).
 // Mute before a deliberate stop.sh: a stopped service is an alert like any other.
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
@@ -32,6 +44,7 @@ import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mj
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 // Thresholds are those of the Prometheus alert rules this checker replaced (docs/MONITORING.md lists them).
 export const LIMITS = {
   cpuPercent: 80, memoryPercent: 85, diskRootFreePercent: 20, diskOtherFreePercent: 10,
@@ -40,8 +53,25 @@ export const LIMITS = {
   errorRate: 0.05, latencySeconds: 2, minRequests: 10, backupMaxAgeMs: 26 * HOUR,
   failingRuns: 2, repeatMs: 4 * HOUR, busyGiveUpMs: 2 * HOUR, keepBackups: 7,
   // A daily pass in progress older than this is taken as interrupted (the unit stops after 4 h).
-  jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3, dailyRetryMs: HOUR, dailyHardMs: 3 * HOUR + 45 * MIN,
+  jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3,
+  // "An hour" less 2 minutes: the daily timer fires on the hour, and a start a few seconds late must not push a retry
+  // to the trigger after.
+  dailyRetryMs: HOUR - 2 * MIN, dailyHardMs: 3 * HOUR + 45 * MIN,
   futureBackupMs: HOUR,
+  // Rate limiting: more than 2% of the gateway's requests in 5 minutes answered 429 (judged from 50 requests up), or more
+  // than 20 of them whatever the total. SMS, checked every hour: more than 20% of the last 24 hours' code requests (judged from
+  // 10 requests up) or more than 10 of them were not accepted by the provider, or at least half of the last hour's (from 5
+  // requests up). Clock: more than 10 s from the public address's own clock.
+  rateLimitedShare: 0.02, rateLimitedMinRequests: 50, rateLimitedCount: 20,
+  // The gateway log read: the last gatewayLogTail lines, cut to the last gatewayLogWindowMs by their time stamps.
+  gatewayLogTail: 5000, gatewayLogWindowMs: 5 * MIN,
+  smsFailedShare: 0.2, smsFailedCount: 10, smsMinSends: 10, smsHourShare: 0.5, smsHourMinSends: 5, smsEveryMs: HOUR - 2 * MIN,
+  clockOffsetMs: 10000,
+  // Self-healing: a service unhealthy in this many runs in a row is restarted; no service is acted on more than once per gap,
+  // nor more than healMaxPerDay times in any 24 hours (after that the checker only alerts).
+  healUnhealthyRuns: 3, healGapMs: HOUR, healMaxPerDay: 6,
+  // The state file's lock: how long a save waits for the other process, and when a lock file left by a crash is taken over.
+  stateLockWaitMs: 10000, stateLockStaleMs: MIN,
 };
 export const OPTIONAL_SERVICES = ['supavisor', 'cups', 'sensor-bridge'];
 export const BACKUP_DIR_PATTERN = /^warehouse-\d{8}T\d{6}Z$/;
@@ -49,6 +79,11 @@ const TIME_OF_DAY = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DEFAULT_DAILY_AT = '02:30';
 const DEFAULT_HEARTBEAT_AT = '09:00';
 const ALERT_ID = /^[a-z_]+(:[\w/. -]+)?$/;
+// An installation updated from before the daily backup got its own timer still has a checker unit that sets
+// WAREHOUSE_WATCH_DAILY_AT (the time of the pass that then ran inside `run`). Only such a unit sets it for `run`: the checker
+// unit written now does not (the daily unit does, for `watch.mjs daily`). The text names the one command that ends this state.
+export const LEGACY_DAILY_ALERT = 'daily_timer_legacy';
+export const legacyDailyAdvice = (root, state) => `Run: sudo bash ${join(root, 'scripts/watch-timer.sh')} install --state ${state}`;
 
 // ---------------------------------------------------------------- redaction
 export function redact(text, env = {}, webhook = null) {
@@ -67,7 +102,7 @@ export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
   lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
-  memoryNote: null,
+  memoryNote: null, heal: {}, lastSmsCheck: null,
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -111,6 +146,9 @@ export function normalizeState(raw, now, log = () => {}) {
   take('dailyAttempt', v => v === null || (isObj(v) && typeof v.date === 'string' && isNum(v.count) && numOrNull(v.lastAt) && typeof v.done === 'boolean'));
   take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
   take('memoryNote', v => v === null || typeof v === 'string');
+  take('lastSmsCheck', numOrNull);
+  take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'
+    && (x.actions === undefined || (Array.isArray(x.actions) && x.actions.every(isNum)))));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
   else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
@@ -144,9 +182,56 @@ export function writeFileAtomic(path, text, api = { openSync, writeSync, fsyncSy
     throw error;
   }
 }
-export function saveState(state, data, api) {
+// Two processes write this file: the 5-minute checker (`run`) and the daily pass (`daily`, hours long). Each owns its keys
+// and, when it saves, takes the other's from the file as it is then, so neither undoes what the other wrote meanwhile.
+// The read, the merge and the rename (with its fsync, which can take seconds while a backup is writing) happen under a lock
+// file, config/watch-state.lock, made with O_EXCL: without it a save that read the file just before the other process renamed
+// its own would write the old values of the other's keys back (a lost `dailyRunning` clear blocks the next passes for 4 hours;
+// a lost alert mark posts a message twice). The holder's pid is in the file; a lock whose process is gone, or that is older
+// than stateLockStaleMs, is taken over. A save that cannot get the lock in stateLockWaitMs, or where no lock file can be made,
+// goes ahead without it: monitoring must not stop because of a lock file.
+export const stateLockPath = state => join(state, 'config/watch-state.lock');
+const sleepSync = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function lockIsStale(path, staleMs) {
+  try {
+    if (Date.now() - lstatSync(path).mtimeMs > staleMs) return true;
+    const pid = Number.parseInt(readFileSync(path, 'utf8'), 10);
+    if (Number.isInteger(pid) && pid > 0) { try { process.kill(pid, 0); } catch (error) { return error.code === 'ESRCH'; } }
+    return false;
+  } catch { return false; }   // gone or unreadable: the next attempt takes it or waits
+}
+export function withStateLock(state, fn, { waitMs = LIMITS.stateLockWaitMs, staleMs = LIMITS.stateLockStaleMs, sleep = sleepSync } = {}) {
+  const path = stateLockPath(state);
+  const started = Date.now();
+  let held = false;
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx', 0o600);
+      held = true;
+      try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
+      break;
+    } catch (error) {
+      if (held || error.code !== 'EEXIST') break;   // no lock file is possible here (read-only, no directory): go ahead without one
+    }
+    if (lockIsStale(path, staleMs)) { try { unlinkSync(path); } catch { /* the other process was quicker */ } continue; }
+    if (Date.now() - started >= waitMs) break;
+    sleep(25);
+  }
+  try { return fn(); } finally { if (held) { try { unlinkSync(path); } catch { /* already taken over */ } } }
+}
+export const DAILY_KEYS = ['lastDailyRun', 'dailyAttempt', 'dailyRunning', 'dailySkipped'];
+export function saveState(state, data, api, { daily = false, readText = readFileOrNull, lock = {} } = {}) {
   const { muteUntil, mutes, ...persisted } = data;
-  writeFileAtomic(statePath(state), `${JSON.stringify(persisted, null, 2)}\n`, api);
+  withStateLock(state, () => {
+    const onDisk = readText(statePath(state));
+    if (onDisk !== null) {
+      try {
+        const other = normalizeState(JSON.parse(onDisk), 0, () => {});
+        for (const key of Object.keys(persisted)) if (DAILY_KEYS.includes(key) !== daily) persisted[key] = other[key];
+      } catch { /* an unreadable file is replaced by ours */ }
+    }
+    writeFileAtomic(statePath(state), `${JSON.stringify(persisted, null, 2)}\n`, api);
+  }, lock);
 }
 
 // Mutes are changed by the mute command while a run is going, so they have a file of their own: a mute never
@@ -466,7 +551,7 @@ export function checkServices(ctx) {
     const c = by.get(name);
     const state = c ? `${c.status}${c.health ? ` ${c.health}` : ''}` : 'missing';
     const ok = Boolean(c) && c.status === 'running' && !['unhealthy', 'starting'].includes(c.health);
-    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`);
+    return result('services', `service_down:${name}`, ok, `Service ${name} is ${state}`, '', { running: c?.status === 'running' });
   });
 }
 
@@ -482,9 +567,13 @@ export async function checkApiLocal(ctx) {
   try { await getJson(ctx, `http://127.0.0.1:${port}/functions/v1/get-public-config`); return [result('api_local', 'api_down', true, 'API gateway answers')]; }
   catch (error) { return [result('api_local', 'api_down', false, 'API gateway is not answering on this host', error.message)]; }
 }
-export async function checkApiPublic(ctx) {
+const publicManifest = ctx => {
   const manifest = JSON.parse(ctx.readText(join(ctx.state, 'public/instance.json')) ?? 'null');
   if (!manifest?.canonicalOrigin) throw new Error('public/instance.json has no canonicalOrigin');
+  return manifest;
+};
+export async function checkApiPublic(ctx) {
+  const manifest = publicManifest(ctx);
   try {
     const json = await getJson(ctx, `${manifest.canonicalOrigin}/functions/v1/get-public-config`);
     if (json.success !== true || json.data?.instanceId !== manifest.instanceId) {
@@ -493,29 +582,48 @@ export async function checkApiPublic(ctx) {
     return [result('api_public', 'public_https_down', true, 'Public HTTPS address works')];
   } catch (error) { return [result('api_public', 'public_https_down', false, 'The public HTTPS address does not work (tunnel or DNS)', error.message)]; }
 }
-export function parseKongLog(text) {
+// `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
+// RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
+export function parseKongLog(text, { sinceMs = null } = {}) {
   const rows = [];
   for (const line of text.split('\n')) {
     const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)\s*$/);
-    if (m) rows.push({ status: Number(m[1]), seconds: Number(m[2]) });
+    if (!m) continue;
+    if (sinceMs !== null) {
+      const stamp = Date.parse((/^(\d{4}-\d{2}-\d{2}T\S+) /.exec(line) ?? [])[1] ?? '');
+      if (Number.isFinite(stamp) && stamp < sinceMs) continue;
+    }
+    rows.push({ status: Number(m[1]), seconds: Number(m[2]) });
   }
   return rows;
 }
+// The gateway's last 5 minutes. `docker logs --since` is not used: on a Dev host (Docker 29.9.1) it returned no line at all for
+// any window up to an hour while `--tail` and `--since 24h` worked, which would have made every rate below read "too few requests"
+// for good. The last gatewayLogTail lines are read with their time stamps (-t) and cut to the window here. A gateway busier than
+// about 16 requests a second fills the tail with less than 5 minutes, and the rates are then those of the newest lines.
 export function checkApiLogs(ctx) {
   const kong = ctx.containers().find(c => c.service === 'kong');
   if (!kong) return [];
-  const logs = ctx.run('docker', ['logs', '--since', '5m', kong.id]);
+  const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), kong.id]);
   if (logs.status !== 0) throw new Error('docker logs failed for the gateway');
-  const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`);
+  const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs });
   if (rows.length < LIMITS.minRequests) {
-    return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency')];
+    return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency'),
+      result('api_logs', 'api_429_rate_high', true, 'Too few requests to judge the rate-limit answers')];
   }
   const errors = rows.filter(r => r.status >= 500).length / rows.length;
+  // 429 is the gateway's rate limit (or the function's own, such as the OTP limit): a few are normal, a share of the
+  // traffic means a client or a whole Wi-Fi is being refused.
+  const limited = rows.filter(r => r.status === 429).length;
+  const limitedShare = limited / rows.length;
+  const limitedBad = limited > LIMITS.rateLimitedCount || (rows.length >= LIMITS.rateLimitedMinRequests && limitedShare > LIMITS.rateLimitedShare);
   const sorted = rows.map(r => r.seconds).sort((a, b) => a - b);
   const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
   return [
     result('api_logs', 'api_error_rate_high', !(errors > LIMITS.errorRate), `API 5xx rate ${(errors * 100).toFixed(1)}% over ${rows.length} requests (limit ${LIMITS.errorRate * 100}%)`),
     result('api_logs', 'api_latency_p95_high', !(p95 > LIMITS.latencySeconds), `API p95 latency ${p95.toFixed(2)} s over ${rows.length} requests (limit ${LIMITS.latencySeconds} s)`),
+    result('api_logs', 'api_429_rate_high', !limitedBad, `API answered 429 (too many requests) to ${limited} of ${rows.length} requests, ${(limitedShare * 100).toFixed(1)}% (limit ${LIMITS.rateLimitedShare * 100}% or ${LIMITS.rateLimitedCount} in 5 minutes)`,
+      'One client, or every phone on one Wi-Fi, is being refused: see "Too many requests" in docs/TROUBLESHOOTING.md.'),
   ];
 }
 // The same probe health-check.sh runs: the PDF functions reach the renderer from the function runtime. The read
@@ -637,11 +745,113 @@ export function checkBackups(ctx) {
   return out;
 }
 
+// ---------------------------------------------------------------- SMS delivery, break-glass, clock
+// The sign-in codes of the last 24 hours (public.otp_verifications): `delivery_status` is 'accepted' when MSG91 took the
+// request, 'failed' when it refused it (balance, DLT header, sender ID, template) or the request expired, and 'sending' until
+// the function has an answer. A request still 'sending' after 5 minutes never got one and counts as not accepted; younger
+// ones are in flight and are left out. Alerts when more than 20% of at least 10 requests of the last 24 hours, or more than 10
+// of them, were not accepted, or when at least half of at least 5 requests of the last hour were not. This sees explicit
+// refusals and lost answers; a code the provider accepted and then dropped (a DLT suspension after acceptance) is silent here
+// and shows as users reporting that no code arrives.
+// Once an hour (not once a day: a balance that lapsed during the Monday sign-in wave must be told in the hour, not the next
+// morning), and the alert is immediate: its next judgement is an hour away.
+const SMS_SQL = `SELECT count(*) FILTER (WHERE delivery_status IS DISTINCT FROM 'accepted'), count(*),
+  count(*) FILTER (WHERE delivery_status IS DISTINCT FROM 'accepted' AND created_at > now() - interval '1 hour'),
+  count(*) FILTER (WHERE created_at > now() - interval '1 hour')
+  FROM public.otp_verifications
+  WHERE created_at > now() - interval '24 hours' AND NOT (delivery_status = 'sending' AND created_at > now() - interval '5 minutes')`;
+export function smsCheckDue(now, last) {
+  return last === null || last === undefined || now < last || now - last >= LIMITS.smsEveryMs;
+}
+export function checkSmsDelivery(ctx) {
+  const now = ctx.now();
+  if (!smsCheckDue(now, ctx.data.lastSmsCheck)) return null;   // not due: its alert, if any, stays as it is
+  if (!databaseReady(ctx)) return null;                       // postgres_down says so; try again next run
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', SMS_SQL]);
+  if (q.status !== 0) throw new Error(`SMS delivery query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [failed, sends, hourFailed, hourSends] = q.stdout.trim().split('\n').pop().split('|').map(Number);
+  if (![failed, sends, hourFailed, hourSends].every(Number.isInteger)) throw new Error('unexpected SMS delivery query output');
+  ctx.data.lastSmsCheck = now;
+  const share = sends ? failed / sends : 0;
+  const dayBad = failed > LIMITS.smsFailedCount || (sends >= LIMITS.smsMinSends && share > LIMITS.smsFailedShare);
+  const hourBad = hourSends >= LIMITS.smsHourMinSends && hourFailed / hourSends >= LIMITS.smsHourShare;
+  const summary = hourBad && !dayBad
+    ? `${hourFailed} of ${hourSends} sign-in code requests in the last hour were not accepted by the SMS provider (limit ${LIMITS.smsHourShare * 100}% from ${LIMITS.smsHourMinSends} requests)`
+    : `${failed} of ${sends} sign-in code requests in the last 24 hours were not accepted by the SMS provider (limit ${LIMITS.smsFailedShare * 100}% or ${LIMITS.smsFailedCount})`;
+  return [result('sms_delivery', 'sms_delivery', !(dayBad || hourBad), summary,
+    'Check the MSG91 balance, DLT template and sender ID: docs/TROUBLESHOOTING.md, "SMS codes not arriving".', { immediate: true })];
+}
+
+// The break-glass administrator sign-in (migration 126, scripts/break-glass-admin.sh): issuing a code and signing in with one
+// each write a public.audit_log row with table_name 'break_glass' and the action CODE_ISSUED or SIGN_IN (the code is never
+// written; new_data holds the number, which this check does not read). It is a way past the SMS code, so any use of it in the
+// last 24 hours is told at once. A database without that migration has no such rows: the check passes.
+const BREAK_GLASS_SQL = `SELECT count(*), COALESCE(string_agg(DISTINCT action, ',' ORDER BY action), ''),
+  COALESCE(to_char(max(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '')
+  FROM public.audit_log
+  WHERE table_name = 'break_glass' AND action IN ('CODE_ISSUED', 'SIGN_IN') AND created_at > now() - interval '24 hours'`;
+export function checkBreakGlass(ctx) {
+  if (!databaseReady(ctx)) return null;   // postgres_down says so
+  const q = ctx.compose(['exec', '-T', '-e', 'PGOPTIONS=-c statement_timeout=10000', 'db', 'psql', '-X', '-qAt', '-F', '|',
+    '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', BREAK_GLASS_SQL]);
+  if (q.status !== 0) throw new Error(`break-glass query failed: ${clip(q.stderr.trim(), 200)}`);
+  const [count, actions = '', latest = ''] = q.stdout.trim().split('\n').pop().split('|');
+  if (!/^\d+$/.test(count ?? '')) throw new Error('unexpected break-glass query output');
+  const rows = Number(count);
+  return [result('break_glass', 'break_glass_used', rows === 0,
+    rows ? `A break-glass administrator sign-in was used in the last 24 hours (${rows} audit row${rows === 1 ? '' : 's'}: ${actions.replaceAll(',', ', ')}; latest ${latest || 'unknown'})`
+      : 'No break-glass sign-in in the last 24 hours',
+    'Someone with shell access made a one-time administrator code (scripts/break-glass-admin.sh) or signed in with one. Check that it was you or your staff: docs/MONITORING.md, "Break-glass sign-in".', { immediate: true })];
+}
+
+// The host clock: systemd's own verdict (NTPSynchronized) and, when the public address answers, the difference from the
+// clock of the address's edge. Central sign-in refuses a token when the clock is over 30 s off (docs/CENTRAL_LOGIN.md); backup
+// names and the 26 h backup rule use it too. The reference is Cloudflare's own `ts=` line of <origin>/cdn-cgi/trace, which the
+// edge answers itself (the request never reaches Kong: no log line, no rate-limit budget, and the answer does not come from
+// this host's clock). An address that is not behind Cloudflare has no such page: the Date header of a HEAD to the function
+// route is the fallback (it may be passed through from the origin, so it can hide a wrong clock). An unreachable address or
+// a host without timedatectl is not judged here (public_https_down says the first).
+async function publicClockOffset(ctx, origin) {
+  try {
+    const before = ctx.now();
+    const response = await ctx.fetch(`${origin}/cdn-cgi/trace`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const after = ctx.now();
+    if (response.ok) {
+      const ts = Number(/^ts=(\d+(?:\.\d+)?)$/m.exec(String(await response.text?.() ?? ''))?.[1]);
+      if (Number.isFinite(ts)) return (before + after) / 2 - ts * 1000;
+    }
+  } catch { /* not behind Cloudflare, or not reachable: the Date header is tried */ }
+  try {
+    const before = ctx.now();
+    const response = await ctx.fetch(`${origin}/functions/v1/get-public-config`, { method: 'HEAD', signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const after = ctx.now();
+    const served = Date.parse(response.headers?.get?.('date') ?? '');
+    if (Number.isFinite(served)) return (before + after) / 2 - served;
+  } catch { /* not reachable: the public check reports it */ }
+  return null;
+}
+export async function checkClock(ctx) {
+  const problems = [];
+  const ntp = ctx.run('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeoutMs: 10000 });
+  if (ntp.status === 0 && ntp.stdout.trim() === 'no') problems.push('the system clock is not synchronised with a time server (timedatectl: NTPSynchronized=no)');
+  let offset = null;
+  try { offset = await publicClockOffset(ctx, publicManifest(ctx).canonicalOrigin); } catch { /* no manifest: the public check reports it */ }
+  if (offset !== null && Math.abs(offset) > LIMITS.clockOffsetMs) {
+    problems.push(`the host clock is ${Math.round(Math.abs(offset) / 1000)} s ${offset < 0 ? 'behind' : 'ahead of'} the public address's clock`);
+  }
+  const state = [ntp.status === 0 ? `NTPSynchronized=${ntp.stdout.trim()}` : 'NTP status unknown', offset === null ? 'no offset reading' : `offset ${(offset / 1000).toFixed(1)} s`].join(', ');
+  return [result('clock', 'clock_unsynced', problems.length === 0,
+    problems.length ? `The host clock may be wrong: ${problems.join('; ')}` : `Host clock fine (${state})`,
+    'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Monitoring and Slack alerts").')];
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
+  ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -653,6 +863,7 @@ export async function runChecks(ctx, checks = CHECKS) {
   for (const [name, fn] of checks) {
     try {
       const list = await fn(ctx);
+      if (list === null) continue;   // not due this run (a daily check): it did not run, so its alerts are left as they are
       for (const r of list) { r.check = r.check ?? name; results.push(r); ran.add(r.check); }
       ran.add(name);
       results.push({ check: `error:${name}`, id: `check_error:${name}`, ok: true, summary: '', detail: '' });
@@ -662,6 +873,61 @@ export async function runChecks(ctx, checks = CHECKS) {
     }
   }
   return { results, ran };
+}
+
+// ---------------------------------------------------------------- self-healing
+// Docker restarts a container that exited, but not one that was stopped, and the backup stops four services for a while: a
+// power cut then leaves them stopped, and the daemon does not start them again. A service of the default profile that is
+// `exited` (or `created`: a power cut during `up`) is started again; one that stays `unhealthy` for 3 runs in a row is
+// restarted; each at most once an hour and at most 6 times in any 24 hours (after that the checker only alerts: a service that
+// never recovers needs a person). Only while no operator command holds the lock (those stop services on purpose), not while
+// the service's alert is muted (a planned stop), not while config/stopped-by-operator exists (stop.sh wrote it: the operator
+// stopped the stack and start.sh has not brought it back), and never the database for being unhealthy: a database in crash
+// recovery reports unhealthy too, and a restart only begins the recovery again. The start touches that one container and
+// nothing else: --no-recreate keeps it, --no-deps leaves its dependencies alone, --no-build and --pull never keep `up` from
+// building or pulling anything. Applying a changed compose file or image is the operator's job (setup.sh), not the checker's.
+// Every action is reported as the alert service_healed:<name>, held for an hour like an OOM kill.
+export const holdPath = state => join(state, 'config/stopped-by-operator');
+export const stoppedByOperator = state => lstatSync(holdPath(state), { throwIfNoEntry: false }) !== undefined;
+export function selfHeal(ctx) {
+  const now = ctx.now();
+  const out = [];
+  const by = new Map();
+  let expected;
+  if (stoppedByOperator(ctx.state)) return out;
+  try {
+    for (const c of ctx.containers()) if (!by.has(c.service) || c.status === 'running') by.set(c.service, c);
+    expected = ctx.expectedServices();
+  } catch { return out; }   // the services check reports why it cannot see them
+  for (const name of expected) {
+    const c = by.get(name);
+    const h = ctx.data.heal[name] ??= { unhealthyRuns: 0, lastAt: null, lastAction: '', actions: [] };
+    h.actions = (h.actions ?? []).filter(t => t <= now && now - t < DAY);   // a time in the future is a clock that went back
+    const stopped = c?.status === 'exited' || c?.status === 'created';
+    const unhealthy = c?.status === 'running' && c.health === 'unhealthy';
+    if (unhealthy) h.unhealthyRuns += 1; else if (c?.health !== 'starting') h.unhealthyRuns = 0;
+    const idle = h.lastAt === null || h.lastAt > now || now - h.lastAt >= LIMITS.healGapMs;
+    let act = null;
+    if (stopped) act = { args: ['up', '-d', '--no-build', '--no-recreate', '--no-deps', '--pull', 'never', name], what: `was ${c.status}`, did: 'started it again' };
+    else if (unhealthy && name !== 'db' && h.unhealthyRuns >= LIMITS.healUnhealthyRuns) {
+      act = { args: ['restart', name], what: `was unhealthy for ${h.unhealthyRuns} runs`, did: 'restarted it' };
+    }
+    const capped = Boolean(act) && h.actions.length >= LIMITS.healMaxPerDay;
+    if (act && !isMuted(ctx.data, `service_down:${name}`, now) && !lockIsHeld(ctx)) {
+      if (capped) {
+        h.lastAction = `${act.what}; the checker has already tried ${h.actions.length} times in the last 24 hours and stops here: it needs a person (docs/MONITORING.md, "Self-healing")`;
+      } else if (idle) {
+        const r = ctx.compose(act.args, { timeoutMs: 180000 });
+        h.lastAt = now; h.unhealthyRuns = 0; h.actions.push(now);
+        h.lastAction = r.status === 0 ? `${act.what}; the checker ${act.did}`
+          : `${act.what}; the checker could not do it: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_()), 200)}`;
+      }
+    }
+    if ((h.lastAt !== null && h.lastAt <= now && now - h.lastAt < LIMITS.healGapMs) || (capped && h.lastAction)) {
+      out.push(result('self_heal', `service_healed:${name}`, false, `Service ${name} ${h.lastAction}`, 'See docs/MONITORING.md, "Self-healing".', { immediate: true }));
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- the operator lock
@@ -680,7 +946,12 @@ export function lockIsHeld(ctx) {
 }
 
 // ---------------------------------------------------------------- alerting
-export const isMuted = (data, id, now) => Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
+// A mute covers every alert but the ones that say no backup exists, or that the backup depends on a unit that is out of date: a
+// facility that muted "everything" for a week while a service was being repaired would otherwise also silence the only
+// warning that its data is not being saved.
+export const NEVER_MUTED = ['backup_missing', 'backup_failed', LEGACY_DAILY_ALERT];
+const listIds = ids => (ids.length > 1 ? `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}` : ids.join(''));
+export const isMuted = (data, id, now) => !NEVER_MUTED.includes(id) && Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
 
 // Updates the per-alert counters and returns what to tell Slack. Nothing is marked as sent here.
 export function evaluate(data, results, ran, now) {
@@ -798,7 +1069,12 @@ async function heartbeat(ctx, webhook) {
   const now = ctx.now();
   if (!webhook || !heartbeatDue(now, data.lastHeartbeat, ctx.heartbeatAt)) return;
   const firing = Object.values(data.alerts).filter(a => a.firingSince).length;
-  const muted = data.muteUntil && now < data.muteUntil ? ` Alerts are muted until ${new Date(data.muteUntil).toISOString()}.` : '';
+  const notes = [];
+  if (data.muteUntil && now < data.muteUntil) notes.push(`Alerts are muted until ${new Date(data.muteUntil).toISOString()}.`);
+  const mutedIds = Object.entries(data.mutes ?? {}).filter(([, until]) => now < until).map(([id]) => id);
+  if (mutedIds.length) notes.push(`Muted: ${mutedIds.join(', ')}.`);
+  if (notes.length) notes.push(`${listIds(NEVER_MUTED)} are never muted: they are posted anyway.`);
+  const muted = notes.length ? ` ${notes.join(' ')}` : '';
   const text = redact(`Monitoring is alive - ${describe(ctx)}\n${firing ? `${firing} alert(s) firing.` : 'No alerts firing.'}${muted}`, ctx.env_(), webhook);
   const before = data.lastHeartbeat;
   await postThenKeep(ctx, webhook, text, () => { data.lastHeartbeat = now; }, () => { data.lastHeartbeat = before; });
@@ -929,64 +1205,157 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
   const attempt = data.dailyAttempt;
   if (attempt.done || attempt.count >= LIMITS.dailyAttempts) return;
   if (attempt.lastAt !== null && now >= attempt.lastAt && now - attempt.lastAt < LIMITS.dailyRetryMs) return;
-  if (!healthy) { data.dailySkipped = { at: now, reason: 'the database or a service is not up in this run' }; return; }
+  // The gate is a function for `daily` (its checks run only when a pass would start) and a value in tests.
+  if (!(typeof healthy === 'function' ? await healthy() : healthy)) { data.dailySkipped = { at: now, reason: 'the database or a service is not up in this run' }; return; }
 
   data.dailyRunning = { job: 'daily', startedAt: now };
-  saveState(ctx.state, data, ctx.fsApi);
+  saveState(ctx.state, data, ctx.fsApi, { daily: true });
   let outcome;
   try { outcome = await runner(ctx); } catch (error) {
     outcome = { backup: { result: 'failed', message: `the daily run crashed: ${error.message}` }, verify: { result: 'skipped' }, prune: { result: 'skipped' }, retention: { result: 'skipped', message: "retention not run: today's backup failed" } };
   }
   data.dailyRunning = null;
-  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi); return; }
+  if (outcome.skipped) { data.dailySkipped = { at: now, reason: redact(outcome.skipped, ctx.env_(), webhook) }; saveState(ctx.state, data, ctx.fsApi, { daily: true }); return; }
   data.dailySkipped = null;
   attempt.count += 1; attempt.lastAt = now;
   attempt.done = recordDaily(ctx, data, outcome, attempt.count, webhook);
-  saveState(ctx.state, data, ctx.fsApi);
+  saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
-// The daily jobs need a running database and services in THIS run: right after a boot the first runs find them down.
+// The daily jobs need the database and the services the backup stops (scripts/backup.sh stops kong, functions, rest and
+// storage, and the pooler when it runs) in THIS run: right after a boot the first runs find them down. The pooler counts only
+// while it is running (a running one that is unhealthy would make the backup fail when it restarts it with --wait; one that was
+// stopped on purpose is left alone by the backup). Not the other optional services and not the PDF renderer: a renderer that
+// turned unhealthy after a host update must not stop the backups.
+export const BACKUP_SERVICES = ['kong', 'functions', 'rest', 'storage'];
+export const BACKUP_OPTIONAL_SERVICES = ['supavisor'];
 export function dailyHealthy(results) {
   const pg = results.find(r => r.id === 'postgres_down');
   if (!pg || !pg.ok) return false;
-  return !results.some(r => !r.ok && (r.id.startsWith('service_down:') || r.id === 'check_error:services' || r.id === 'check_error:database'));
+  return !results.some(r => !r.ok && (BACKUP_SERVICES.some(name => r.id === `service_down:${name}`)
+    || (r.running && BACKUP_OPTIONAL_SERVICES.some(name => r.id === `service_down:${name}`))
+    || r.id === 'check_error:services' || r.id === 'check_error:database'));
+}
+
+// ---------------------------------------------------------------- external heartbeat
+// config/heartbeat-url: one https URL (blank lines and # comments are skipped) of a dead-man switch (healthchecks.io, or any address that alerts when its pings
+// stop), written by the operator, mode 0600 because whoever knows the URL can fake the ping. Returns { url } (empty when
+// there is no file) or { problem }.
+export const heartbeatUrlPath = state => join(state, 'config/heartbeat-url');
+export const HEARTBEAT_TIMEOUT_MS = 5000;
+export function readHeartbeatUrl(state) {
+  const path = heartbeatUrlPath(state);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return { url: '' };
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) return { problem: 'config/heartbeat-url must be a regular file owned by the installation user with mode 0600' };
+  const url = (readFileOrNull(path) ?? '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? '';
+  if (!/^https:\/\/[^\s/]+\/?\S*$/.test(url)) return { problem: 'config/heartbeat-url must hold one https URL' };
+  return { url };
+}
+// The end of every successful run: a GET with a 5 s limit. A failure is logged (never the URL, which is a secret) and
+// never alerted: if the ping cannot leave, the dead-man switch is the thing that tells the operator.
+export async function pingExternalHeartbeat(ctx) {
+  const log = ctx.log ?? stderrLog;
+  let found;
+  try { found = readHeartbeatUrl(ctx.state); } catch (error) { log(`external heartbeat not sent: ${error.message}`); return; }
+  if (found.problem) { log(`external heartbeat not sent: ${found.problem}`); return; }
+  if (!found.url) return;
+  const timeout = ctx.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS;
+  try {
+    const response = await ctx.fetch(found.url, { signal: AbortSignal.timeout(timeout), redirect: 'error' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    log(`external heartbeat ping failed: ${redact(String(error?.cause?.code ?? error?.message ?? error), ctx.env_()).split(found.url).join('[REDACTED]')}`);
+  }
 }
 
 // ---------------------------------------------------------------- the run
-export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner } = {}) {
+// The checks that need none of the services the backup stops (kong, functions, rest, storage, the pooler): while the daily pass
+// holds the operator lock these keep running. The others would only report the stop.
+export const PASS_SAFE_CHECKS = ['cpu', 'memory', 'disk', 'database', 'backups', 'break_glass'];
+// A pass the state calls running and younger than jobStaleMs (the daily unit's own limit): the holder of the lock, if it is held.
+const dailyPassRunning = (data, now) => Boolean(data.dailyRunning) && data.dailyRunning.startedAt <= now && now - data.dailyRunning.startedAt < LIMITS.jobStaleMs;
+
+export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
   const now = deps.now();
   const data = loadState(deps.state, now, deps.readText, deps.log);
   Object.assign(data, loadMutes(deps.state, deps.readText));
   const ctx = makeContext(deps, data);
   const webhook = readWebhook(deps.state);
+  // A checker unit from before the split still carries the daily time: the backup then runs below, inside this run.
+  const legacy = Boolean(deps.env?.WAREHOUSE_WATCH_DAILY_AT);
   let stuck = false;
+  let passHolds = false;
   if (lockIsHeld(ctx)) {
-    // Backup, restore, setup and stop stop services on purpose: judge nothing while one runs, unless it hangs.
+    // Backup, restore, setup and stop stop services on purpose: judge nothing while one runs, unless it hangs. The daily pass
+    // is such a command that runs for hours by design: the checks that do not need the stopped services go on, and the lock
+    // is called stuck only after the pass's own limit (jobStaleMs, 4 h, the daily unit's TimeoutStartSec) instead of 2 hours.
+    // Any other command: after 2 hours. Either way the lock cannot stay unnoticed for longer than 4 hours.
     if (data.busySince === null || data.busySince > now) data.busySince = now;
-    if (now - data.busySince < LIMITS.busyGiveUpMs) { saveState(deps.state, data, deps.fsApi); return { skipped: 'operator lock is held', data }; }
-    stuck = true;
+    passHolds = dailyPassRunning(data, now);
+    if (now - data.busySince >= (passHolds ? LIMITS.jobStaleMs : LIMITS.busyGiveUpMs)) { stuck = true; passHolds = false; }
+    else if (!passHolds) {
+      saveState(deps.state, data, deps.fsApi);
+      await pingExternalHeartbeat(ctx);   // the checker is alive; it is the operator command that is busy
+      return { skipped: 'operator lock is held', data };
+    }
   } else data.busySince = null;
-  const { results, ran } = await runChecks(ctx, checks);
+  const { results, ran } = await runChecks(ctx, passHolds ? checks.filter(([name]) => PASS_SAFE_CHECKS.includes(name)) : checks);
+  // Not while an operator command holds the lock (it stops services on purpose), nor while it is stuck.
+  if (heal && !stuck && !passHolds) {
+    const healed = await runChecks(ctx, [['self_heal', heal]]);
+    results.push(...healed.results);
+    for (const name of healed.ran) ran.add(name);
+  }
   const heldHours = stuck ? Math.floor((now - data.busySince) / HOUR) : 0;
   results.push(result('operator_lock', 'operator_lock_stuck', !stuck, `An operator command has held the lock for ${heldHours} h or more`, 'Look for a hung setup, backup or restore: node scripts/watch.mjs status'));
   ran.add('operator_lock');
+  // Immediate, and listed among NEVER_MUTED: the backup goes on, but a long pass now holds the 5-minute checks off, and an
+  // installation that cannot run sudo (an agent-driven update) would otherwise never be told.
+  if (legacy) {
+    results.push(result('daily_timer', LEGACY_DAILY_ALERT, false, 'The daily backup still runs from the old checker unit',
+      `Backups continue, but the checks wait while a backup runs. ${legacyDailyAdvice(deps.root ?? checkoutRoot, deps.state)}`, { immediate: true }));
+  }
+  ran.add('daily_timer');   // every run, so the alert clears once the unit is replaced
   data.lastRunAt = now;
   const plan = evaluate(data, results, ran, now);
   await notify(ctx, webhook, plan);
   await heartbeat(ctx, webhook);
   saveState(deps.state, data, deps.fsApi);
-  if (daily) await runDaily(ctx, data, dailyHealthy(results), daily, webhook);
-  saveState(deps.state, data, deps.fsApi);
+  await pingExternalHeartbeat(ctx);
+  // The old unit's pass, as it always ran (the old unit allows it 4 hours): after the checks, the alert and the ping, so none
+  // of them waits for it and a crash of the pass loses nothing already saved.
+  if (legacy && !stuck && !passHolds) {
+    await runDaily(ctx, data, dailyHealthy(results), dailyRunner, webhook);
+    saveState(deps.state, data, deps.fsApi, { daily: true });
+  }
   return { results, plan, data };
 }
 
+// `watch.mjs daily`: what the daily timer runs. The gate (the database and the services the backup stops) is judged by the
+// same two checks the checker runs, and only when a pass is about to start.
+export const DAILY_GATE_CHECKS = [['database', checkDatabase], ['services', checkServices]];
+export async function runDailyCommand(deps, { checks = DAILY_GATE_CHECKS, daily = dailyRunner } = {}) {
+  const data = loadState(deps.state, deps.now(), deps.readText, deps.log);
+  const ctx = makeContext(deps, data);
+  const webhook = readWebhook(deps.state);
+  // This unit never runs twice at once (systemd does not start an active oneshot), so a pass the state calls running while
+  // nothing holds the operator lock was cut off (a power cut, a killed unit): clear the mark now instead of after 4 hours,
+  // or the day's backup waits for the next trigger after that.
+  if (data.dailyRunning && !lockIsHeld(ctx)) data.dailyRunning = null;
+  await runDaily(ctx, data, async () => dailyHealthy((await runChecks(ctx, checks)).results), daily, webhook);
+  saveState(deps.state, data, deps.fsApi, { daily: true });
+  return { data };
+}
+
 // ---------------------------------------------------------------- commands
-const USAGE = `Usage: node scripts/watch.mjs run | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
-  run           one pass of the checks (the systemd timer runs this every 5 minutes)
+const USAGE = `Usage: node scripts/watch.mjs run | daily | health [--wait SECONDS] | test-message | status | mute MINUTES ["ALERT ID"] | unmute ["ALERT ID"]
+  run           one pass of the checks (the systemd timer runs this every 5 minutes); it makes no backup, except under an old checker unit that sets WAREHOUSE_WATCH_DAILY_AT (daily_timer_legacy)
+  daily         the daily backup, verification, pruning and retention, inside the window after --daily-at (its own timer runs this)
   health        the operator health check now: services, database, gateway, get_public_config RPC probe, PDF renderer (exit 1 on a fault; --wait: seconds to wait for the gateway, default 90)
   test-message  post a test message to the facility's Slack webhook
   status        failing alerts, mutes, the daily jobs and the time zone
-  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES
+  mute          silence all alerts (or one alert id, quoted when it has spaces) for MINUTES; backup_missing and backup_failed are never muted
   unmute        end the mute (all, or one alert id)
 Mute before a deliberate stop.sh (or any planned stop): a stopped service is an alert like any other.
 The daily backup, verification, pruning and retention run once a day inside a 6-hour window after the time chosen
@@ -997,7 +1366,12 @@ Needs WAREHOUSE_STATE_DIR. Install the timer with: sudo bash scripts/watch-timer
 function statusLines(ctx, webhook, now) {
   const { data } = ctx;
   const lines = [`Installation: ${describe(ctx)}`, `Slack webhook: ${webhook ? 'configured' : 'none (alerts are recorded, not posted)'}`];
+  let external;
+  try { external = readHeartbeatUrl(ctx.state); } catch { external = { problem: 'cannot be read' }; }
+  lines.push(`External heartbeat: ${external.problem ? `not sent (${external.problem})` : external.url ? 'configured (pinged at the end of each run)' : 'none (config/heartbeat-url)'}`);
   lines.push(`Time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone} (daily jobs start at ${ctx.dailyAt} in this zone)`);
+  if (stoppedByOperator(ctx.state)) lines.push('Stack: stopped by the operator (config/stopped-by-operator); nothing restarts it at boot or by self-healing. Run start.sh to bring it back.');
+  if (data.alerts[LEGACY_DAILY_ALERT]) lines.push(`Daily backup: still run by the old checker unit, inside the 5-minute check. ${legacyDailyAdvice(ctx.root, ctx.state)}`);
   const firing = Object.entries(data.alerts).filter(([, a]) => a.firingSince);
   lines.push(firing.length ? `Firing: ${firing.map(([id]) => id).join(', ')}` : 'Firing: none');
   const failing = Object.entries(data.alerts).filter(([, a]) => !a.firingSince && a.failingRuns);
@@ -1005,6 +1379,11 @@ function statusLines(ctx, webhook, now) {
   if (data.muteUntil && now < data.muteUntil) lines.push(`All alerts muted until ${new Date(data.muteUntil).toISOString()}`);
   for (const [id, until] of Object.entries(data.mutes ?? {})) if (now < until) lines.push(`Muted until ${new Date(until).toISOString()}: ${id}`);
   for (const [job, run] of Object.entries(data.lastDailyRun)) lines.push(`Daily ${job}: ${run.result} on ${run.date} - ${run.message}`);
+  if (data.dailyRunning) {
+    const since = new Date(data.dailyRunning.startedAt).toISOString();
+    lines.push(dailyPassRunning(data, now) ? `Daily pass: running since ${since} (it may take up to 4 hours; systemctl is-active <project>-daily.service says whether the unit is still working)`
+      : `Daily pass: marked running since ${since} but cut short (the next daily trigger clears the mark)`);
+  }
   const attempt = data.dailyAttempt;
   if (attempt) lines.push(`Daily pass ${attempt.date}: ${attempt.count} of ${LIMITS.dailyAttempts} attempts${attempt.done ? ', done' : ''}`);
   if (data.dailySkipped) lines.push(`Daily pass last skipped at ${new Date(data.dailySkipped.at).toISOString()}: ${data.dailySkipped.reason}`);
@@ -1019,6 +1398,7 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
   if (!command || ['--help', '-h', 'help'].includes(command)) { out(USAGE); return command ? 0 : 1; }
   const now = deps.now();
   if (command === 'run') { await runOnce(deps); return 0; }
+  if (command === 'daily') { await runDailyCommand(deps); return 0; }
   if (command === 'health') {
     if (args.length && !(args.length === 2 && args[0] === '--wait' && /^\d{1,4}$/.test(args[1]))) { out('health takes only --wait SECONDS.'); return 1; }
     const report = await runHealth(deps, { waitMs: args.length ? Number(args[1]) * 1000 : undefined });
@@ -1048,10 +1428,11 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     const until = now + minutes * MIN;
     if (args[1]) {
       if (!ALERT_ID.test(args[1])) { out('Not an alert id.'); return 1; }
+      if (NEVER_MUTED.includes(args[1])) { out(`${args[1]} cannot be muted: ${args[1] === LEGACY_DAILY_ALERT ? 'it says the daily backup is kept running by an out-of-date unit' : 'it says no backup exists'}.`); return 1; }
       data.mutes[args[1]] = until;
     } else data.muteUntil = until;
     saveMutes(deps.state, data);
-    out(`Muted ${args[1] ?? 'all alerts'} until ${new Date(until).toISOString()}.`);
+    out(`Muted ${args[1] ?? 'all alerts'} until ${new Date(until).toISOString()}.${args[1] ? '' : ` ${listIds(NEVER_MUTED)} are not muted.`}`);
     return 0;
   }
   if (command === 'unmute') {

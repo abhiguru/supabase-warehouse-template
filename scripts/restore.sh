@@ -282,6 +282,8 @@ bash "$ROOT/scripts/migrate.sh" --operator
 phase='database logins'
 bash "$ROOT/scripts/db-roles.sh" apply
 phase='start services'
+# The restore brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
+rm -f -- "$state/config/stopped-by-operator"
 compose up -d --wait --wait-timeout 180
 phase='doctor'
 # --restore-config can bring back a compose.env that names a central key file (CENTRAL_JWKS_FILE) which this

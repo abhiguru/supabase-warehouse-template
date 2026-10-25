@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, timerUnit } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, stoppedWarning, timerUnit, dailyTimerUnit, freeSpaceVerdict } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -247,17 +247,64 @@ test('doctor warns when the installed service names another state, and stays sil
   } finally { rmSync(f.base, { recursive: true, force: true }); }
 });
 
-test('doctor does not report a stale checker while a daily pass that started under 4 hours ago is running', () => {
+test('doctor reports a silent checker even while a daily backup is in progress: the backup is a separate unit now', () => {
   const now = Date.now();
-  const ran = now - 3 * 60 * 60 * 1000;
-  const running = checkerState({ ran, daily: now - 3 * 60 * 60 * 1000 });
-  const stuck = checkerState({ ran: now - 5 * 60 * 60 * 1000, daily: now - 5 * 60 * 60 * 1000 });
+  const silent = checkerState({ ran: now - 3 * 60 * 60 * 1000, daily: now - 3 * 60 * 60 * 1000 });
   try {
-    assert.deepEqual(checkerWarnings(running.state, { now, timerActive: () => true }), []);
-    const out = checkerWarnings(stuck.state, { now, timerActive: () => true });
+    const out = checkerWarnings(silent.state, { now, timerActive: () => true });
     assert.equal(out.length, 1);
-    assert.match(out[0], /last ran 300 minutes ago/);
-  } finally { for (const f of [running, stuck]) rmSync(f.base, { recursive: true, force: true }); }
+    assert.match(out[0], /last ran 180 minutes ago/);
+  } finally { rmSync(silent.base, { recursive: true, force: true }); }
+});
+
+test('doctor warns, naming the unit and the install command, when the daily backup timer is not active', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const asked = [];
+    const out = checkerWarnings(f.state, { now, timerActive: unit => { asked.push(unit); return unit.endsWith('-watch.timer'); } });
+    assert.deepEqual(asked, ['warehouse-acme-watch.timer', 'warehouse-acme-daily.timer']);
+    assert.equal(dailyTimerUnit(f.state), 'warehouse-acme-daily.timer');
+    assert.equal(out.length, 1);
+    assert.match(out[0], /daily backup timer warehouse-acme-daily\.timer is not installed or not active, so no backup, verification or retention runs/);
+    assert.ok(out[0].includes(`sudo bash scripts/watch-timer.sh install --state ${f.state}`));
+    // Without the checker's timer one warning is enough: its install command brings the daily timer too.
+    assert.equal(checkerWarnings(f.state, { now, timerActive: () => false }).length, 1);
+    // A hash-named unit (no readable project) gets the same sibling name.
+    assert.match(dailyTimerUnit(join(f.base, 'gone/state')), /^warehouse-h[0-9a-f]{12}-daily\.timer$/);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor says that the backup still runs from an old checker unit (one that carries the daily time), with the command, and not that no backup runs', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    const old = `[Service]\nEnvironment=WAREHOUSE_STATE_DIR=${f.state}\nEnvironment=WAREHOUSE_WATCH_DAILY_AT=02:30\nExecStart=/n/node /r/scripts/watch.mjs run\n`;
+    const out = checkerWarnings(f.state, { now, timerActive: unit => unit.endsWith('-watch.timer'), serviceText: () => old });
+    assert.equal(out.length, 1, 'one warning: the daily timer is missing because the old unit still does the work');
+    assert.match(out[0], /The daily backup still runs from the old monitoring checker unit warehouse-acme-watch\.service, inside its 5-minute run: backups continue, but a long backup holds the checks off and the services do not start at boot\./);
+    assert.match(out[0], /Run: sudo bash \S+\/scripts\/watch-timer\.sh install --state /);
+    assert.ok(out[0].includes(`--state ${f.state}`));
+    assert.doesNotMatch(out[0], /no backup, verification or retention runs/);
+    // The unit written now carries no daily time: a missing daily timer then does mean no backup.
+    const fresh = checkerWarnings(f.state, { now, timerActive: unit => unit.endsWith('-watch.timer'), serviceText: () => `[Service]\nEnvironment=WAREHOUSE_STATE_DIR=${f.state}\n` });
+    assert.match(fresh[0], /so no backup, verification or retention runs/);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor says the stack was stopped by the operator while config/stopped-by-operator exists, and adds it to a failing health check', () => {
+  const now = Date.now();
+  const f = checkerState({ ran: now - 60 * 1000 });
+  try {
+    assert.deepEqual(checkerWarnings(f.state, { now, timerActive: () => true }), []);
+    writeFileSync(join(f.state, 'config/stopped-by-operator'), 'stopped by stop.sh\n');
+    const out = checkerWarnings(f.state, { now, timerActive: () => true });
+    assert.equal(out.length, 1);
+    assert.equal(out[0], stoppedWarning);
+    assert.match(out[0], /stopped by the operator \(config\/stopped-by-operator, written by stop\.sh\): the boot unit and self-healing leave it down, also after a reboot\. Run start\.sh to bring it back\./);
+    // doctor.mjs adds the same sentence to the failure of a local health check.
+    assert.match(readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8'), /Local service health check failed: .*\$\{stoppedByOperator\(state\) \? ` \$\{stoppedWarning\}` : ''\}/);
+  } finally { rmSync(f.base, { recursive: true, force: true }); }
 });
 
 test('doctor warns when an active timer has not produced a run for 15 minutes, or ever', () => {
@@ -289,4 +336,19 @@ test('doctor keeps the no-webhook warning, also with --alert-webhook-file off, a
     const all = checkerState({ webhook: false });
     try { assert.equal(checkerWarnings(all.state, { now, timerActive: () => false }).length, 2, 'timer and webhook'); } finally { rmSync(all.base, { recursive: true, force: true }); }
   } finally { for (const f of [off, legacy]) rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('free space: a new installation needs 10 GiB; a start only warns below 10 GiB and refuses below 2 GiB', () => {
+  const GiB = 1024 ** 3;
+  assert.deepEqual(freeSpaceVerdict(10 * GiB, { newInstall: true }), {});
+  assert.match(freeSpaceVerdict(10 * GiB - 1, { newInstall: true }).error, /At least 10 GiB free space is required/);
+  assert.deepEqual(freeSpaceVerdict(10 * GiB), {});
+  const warn = freeSpaceVerdict(7.5 * GiB);
+  assert.equal(warn.error, undefined);
+  assert.match(warn.warning, /Only 7\.5 GiB is free[^]*less than 10 GiB[^]*Disk full/);
+  assert.deepEqual(Object.keys(freeSpaceVerdict(2 * GiB)), ['warning'], '2 GiB exactly still starts');
+  assert.match(freeSpaceVerdict(2 * GiB - 1).error, /At least 2 GiB free space is required[^]*\(2\.0 GiB is free\)/);
+  // The scripts use the right mode: only setup's host preflight is strict.
+  const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
 });

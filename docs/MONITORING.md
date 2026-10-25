@@ -1,9 +1,12 @@
 # Monitoring and Slack alerts
 
 One small program, `scripts/watch.mjs` (the checker), watches an installation. A systemd timer runs it every 5 minutes.
-It checks the host, the database, the containers, the gateway and the backups, tells the facility's own Slack channel
-when something is wrong, and once a day makes and verifies a backup and applies retention. There are no dashboards, no
-metric history and no extra containers: Slack is the only way an alert leaves the host.
+It checks the host, the database, the containers, the gateway and the backups, and tells the facility's own Slack channel
+when something is wrong. A second timer runs `watch.mjs daily` once a day: it makes and verifies a backup and applies
+retention. The two are separate units, so a broken checker does not stop the backups and a long backup does not stop the
+checks: while it runs, the host, disk and database checks go on, and only the checks that need the services the backup
+stops wait ([below](#what-it-checks)). There are no dashboards, no metric history and no extra containers: Slack is the only way an alert leaves
+the host, and the optional external heartbeat ([below](#external-heartbeat-the-dead-man-switch)) is how a dead checker is noticed.
 
 ## Install the timer
 
@@ -18,6 +21,36 @@ sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"
 after a move of the checkout, a change of Node.js, or to change the time of the daily pass (`--daily-at HH:MM`, the
 host's local time; default 02:30). `bash scripts/watch-timer.sh status` shows whether it is installed;
 `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` removes it.
+
+The command writes five unit files: `<project>-watch.service` and `.timer` (the 5-minute checks), `<project>-daily.service`
+and `.timer` (the daily backup, below) and `<project>-stack.service` (boot, below). The units name the Node.js through a link,
+`~/.local/opt/node-current`, that `install` points at the Node.js prefix it was given, not at a versioned directory. After a
+Node.js upgrade, unpack the new version, run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node
+<new prefix>/bin/node` (or only `ln -sfn <new prefix> ~/.local/opt/node-current`), then `node scripts/watch.mjs status`. If the
+Node.js the units run is gone, `bash scripts/watch-timer.sh status` says `MISSING`, and `start.sh` and `setup.sh` print the same fix. `npm run doctor` warns when the daily timer is not active.
+
+**An installation updated from before the daily timer existed keeps making its backup** from its old checker unit (the one that
+sets `WAREHOUSE_WATCH_DAILY_AT`): that `run` makes the pass as it always did, so an update never leaves a gap in the backups.
+It is the old design (a long backup holds the checks off, and there is no boot unit), so the checker raises `daily_timer_legacy`
+at once, in Slack, `status`, `doctor` and the `start.sh` hint, with the command to run: the `install` above. That alert is never muted.
+Installing while the old unit is running warns first: it may be in the middle of the backup, and the install re-reads the unit's
+time limit.
+
+The boot unit, `<project>-stack.service`, runs `compose up -d --no-build --no-recreate` for the default profile after
+`docker.service` at every boot. Docker restarts a container that exited but not one that was stopped, and the daily backup
+stops four services for a while: after a power cut inside that time they would stay stopped until someone ran `start.sh`.
+The unit starts stopped containers and creates missing ones, and nothing more: it never recreates a container or builds an
+image, so a checkout that was pulled but not yet set up is not applied by a reboot (that is `setup.sh`, with its preflights and
+the operator lock; a missing image is a job for `setup.sh` or `db:restore-host`). It `Wants=` Docker rather than requiring it, so
+restarting Docker (an `apt` upgrade of docker-ce) does not run it again, and the checker and daily units run after it
+(`After=<project>-stack.service`), so at boot neither heals nor backs up against containers it is still starting. The unit is
+enabled, not started, by `install` (so installing never changes what is running).
+
+**`stop.sh` survives a reboot.** It writes `<state>/config/stopped-by-operator`; `start.sh`, `setup.sh` and `restore.sh` remove it
+when they bring the stack up. While the file exists the boot unit does nothing (`ConditionPathExists=!`), the checker does not
+self-heal, and `status`, `doctor` and the `start.sh` hint say "stopped by the operator; run start.sh". So a reboot in the middle
+of a manual procedure (the Baseline reload, the Major PostgreSQL upgrade, a restore) does not start the stack on an empty or half-replaced
+data directory. If you stop the containers some other way, create the file yourself (`touch "$WAREHOUSE_STATE_DIR/config/stopped-by-operator"`).
 
 The timer runs without a Slack webhook too (`--alert-webhook-file off`): the checks still run and record their state,
 and the daily backup and retention still run. Only the Slack posts are off. `npm run doctor` warns when the timer is
@@ -40,6 +73,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
 | `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`) |
+| `service_healed:<name>` | The checker started or restarted that service itself, or has done so 6 times in 24 hours and stopped (see "Self-healing"; at once; stays for an hour, or while it is stopped trying) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
 | `container_restarts:<name>` | More than 3 restarts in the last hour |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |
@@ -47,16 +81,83 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `public_https_down` | The public HTTPS address does not answer, or answers as another installation |
 | `api_error_rate_high` | More than 5% of the gateway's requests in the last 5 minutes were 5xx (judged from 10 requests up) |
 | `api_latency_p95_high` | The gateway's p95 latency over the last 5 minutes is above 2 s (same minimum) |
+| `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
 | `pdf_renderer_down` | The function runtime cannot reach the PDF renderer |
+| `sms_delivery` | Checked every hour: more than 20% of the last 24 hours' sign-in code requests (judged from 10 requests up), or more than 10, or at least half of the last hour's (from 5 requests up), were not accepted by the SMS provider (at once; see "SMS delivery") |
+| `break_glass_used` | A break-glass administrator code was made or used in the last 24 hours (at once; see "Break-glass sign-in") |
+| `clock_unsynced` | `timedatectl` says the clock is not synchronised, or the host clock is more than 10 s from the clock of the public address's Cloudflare edge |
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
-| `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run) |
-| `backup_failed` | The last daily backup failed |
+| `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
+| `backup_failed` | The last daily backup failed; never muted |
 | `usb_backup` | The USB backup is set up and stale or failed (the same rule as `npm run doctor`) |
 | `retention_failed` | The last retention clean-up failed |
-| `operator_lock_stuck` | A setup, backup or restore has held the operator lock for 2 hours or more |
+| `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
+| `operator_lock_stuck` | A setup or restore (or any command but the daily pass) has held the operator lock for 2 hours or more; the daily pass, 4 hours or more |
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
-services on purpose.
+services on purpose. The daily pass is the exception, because it takes hours by design: while it holds the lock the checker keeps
+running the checks that need none of the services the backup stops (`cpu`, `memory`, `disk`, the database, the backup files and
+the break-glass check) and posts their alerts, and leaves the service, gateway and PDF checks and self-healing alone until the
+pass is over. The lock counts as stuck after 2 hours, or after 4 hours when the state says the daily pass is the one running
+(the daily unit's own time limit; a pass the state still calls running after 4 hours is taken as cut short). A stuck lock turns
+every check, but not self-healing, back on.
+
+The gateway rates (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) are read from the last 5000 lines of the gateway
+log with their time stamps, cut to the last 5 minutes (`docker logs --since` is not used: on one Docker 29 host it returned nothing for
+any window up to an hour).
+
+## SMS delivery and the clock
+
+`sms_delivery` reads `public.otp_verifications` every hour. Every code request ends as `accepted` (MSG91 took it) or `failed`
+(MSG91 refused it: balance used up, DLT header or template rejected, wrong sender ID; or the request expired), and a request
+that is still `sending` after 5 minutes never got an answer. All of those count as "not accepted"; requests younger than
+5 minutes are left out. Two rules: more than 20% of the last 24 hours' requests (from 10 requests up) or more than 10 of them, and
+at least half of the last hour's (from 5 requests up), so a balance that lapses during the Monday sign-in wave is told in the hour.
+The alert fires at once (its next judgement is an hour away) and clears at the next hourly check. It sees
+refusals and lost answers. It does **not** see a code MSG91 accepted and the telecom operator then dropped (a DLT suspension
+after acceptance): that shows as users saying no code arrives, and the cure is in the MSG91 console
+([TROUBLESHOOTING.md](TROUBLESHOOTING.md#sms-codes-not-arriving)). There is no balance check: MSG91's balance endpoint needs
+a key with more rights than the sending key.
+
+`clock_unsynced` compares two things: systemd's own verdict (`timedatectl show -p NTPSynchronized`) and the difference between
+the host clock and the clock of the facility's public address. The reference is the `ts=` line of `<public address>/cdn-cgi/trace`,
+which the Cloudflare edge answers itself: the request never reaches the gateway (no log line, no rate-limit budget), and the
+answer does not come from this host's clock. An address that is not behind Cloudflare has no such page; the check then uses the
+`Date` header of an HTTPS `HEAD` to the function route, which the gateway may pass through from this host (it then shows a wrong
+clock less well). Central sign-in
+refuses a token when the host clock is more than 30 s off, so 10 s is the warning. When the public address does not answer,
+only the first part is judged. Fix: `timedatectl set-ntp true`; if `NTPSynchronized` stays `no`, check that the host can reach
+its time servers.
+
+## Break-glass sign-in
+
+`scripts/break-glass-admin.sh` (migration 126) prints a one-time sign-in code for an administrator while SMS does not work. Making
+a code and signing in with one each write a row to `public.audit_log` (`table_name` `break_glass`, `action` `CODE_ISSUED` or
+`SIGN_IN`; the code itself is never written). It is a way past the SMS code, so `break_glass_used` fires **at once** when such a
+row is younger than 24 hours, and stays until the last one is a day old. The alert names the actions and the time of the latest
+row, not the number. If it was you or your staff, nothing is wrong; if not, a person with shell access to the host did it: look
+at `select created_at, action, user_id, ip_address from public.audit_log where table_name = 'break_glass' order by created_at desc`
+(as `supabase_admin`, through `bash scripts/compose.sh exec db psql -U supabase_admin -d postgres`), end the sessions of that
+administrator, and change who has access to the host. A database without migration 126 has no such rows, so the check passes.
+
+## Self-healing
+
+Each run, while no operator command holds the lock, the checker looks at the services of the default profile:
+
+- a service that is `exited`, or `created` (a power cut during `up`), is started again
+  (`compose up -d --no-build --no-recreate --no-deps --pull never <service>`: that one container, nothing built, pulled or recreated,
+  none of its dependencies touched);
+- a service that is `unhealthy` for 3 runs in a row (15 minutes) is restarted (`compose restart <service>`), except the
+  database: a database in crash recovery also reports unhealthy, and a restart only begins the recovery again.
+
+At most once an hour per service and **at most 6 times in any 24 hours**: after that the checker stops, and `service_healed:<name>`
+says "it needs a person" until the service is back (a service that never recovers is not restarted for ever). The action is
+reported as the alert `service_healed:<name>`. Nothing is done to a
+service whose `service_down:<name>` alert is muted: **mute before a planned stop of one service**, as before a `stop.sh`
+(`stop.sh` removes the containers, which the checker never recreates). Nothing is done while `config/stopped-by-operator` exists
+(see "Install the timer"). The checker never recreates a container, so a
+changed compose file or image is applied only by `setup.sh`. The optional `supavisor`, `cups` and `sensor-bridge` are left
+alone.
 
 ## How alerts behave
 
@@ -69,10 +170,16 @@ services on purpose.
 
 ## The daily backup, verify, prune and retention
 
-Once a day, inside the 6 hours after the chosen time, and only while the database and every service are up, the checker
-runs `scripts/watch-daily.sh` under one operator lock: `scripts/backup.sh`, then `scripts/verify-restore.sh` on that
-backup, then it prunes older backups, then `scripts/retention.sh apply`. A failed pass is tried again after an hour, at
-most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
+Once a day, inside the 6 hours after the chosen time, and only while the database and the services the backup stops
+(`kong`, `functions`, `rest`, `storage`) are up, `watch.mjs daily` runs `scripts/watch-daily.sh` under one operator lock:
+`scripts/backup.sh`, then `scripts/verify-restore.sh` on that backup, then it prunes older backups, then
+`scripts/retention.sh apply`. The PDF renderer, a stopped or unhealthy `cups` or `sensor-bridge`, and a pooler that was stopped
+on purpose do not hold the backup back; a pooler that runs but is unhealthy does (the backup restarts it and waits for it).
+A pass that a power cut or a kill cut short is recognised at the next trigger (the operator lock is free while the state still
+says "running") and made again at once. The daily timer
+fires at the chosen time and at each of the 5 hours after it: a trigger with nothing to do (the day is done, or the last
+attempt was under an hour ago) exits at once, and a pass that failed or found the services down is tried again at the next
+one. At most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
 by hand there, with the same name pattern and instance, count towards the 7) and removes nothing if a backup is dated in
 the future. Retention runs only after a verified backup. The USB backup drive is separate
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
@@ -89,13 +196,23 @@ node scripts/watch.mjs unmute "service_down:rest"
 **Mute before a planned `stop.sh`**: the checker keeps running while the services are stopped and reports each stopped
 service as an alert. `stop.sh` says so when it finishes. The commands need `WAREHOUSE_STATE_DIR`.
 
+**`backup_missing`, `backup_failed` and `daily_timer_legacy` are never muted.** A mute, whole or of one alert, covers every other alert; these
+are posted anyway, and `mute 60 backup_missing` is refused. They are the only warning that the data is not being saved (or that
+the backup hangs on an out-of-date unit), and a
+week-long mute while a service was being repaired must not hide it. The daily "Monitoring is alive" message says so whenever
+a mute is active.
+
 ## Status and testing
 
 ```bash
-node scripts/watch.mjs status          # what is firing, muted, the daily jobs, the time zone, the last Slack failure
-node scripts/watch.mjs run             # one pass now (what the timer does)
+node scripts/watch.mjs status          # what is firing, muted, the daily jobs and whether a pass is running, the time zone, the last Slack failure
+node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
+node scripts/watch.mjs daily           # the daily pass, if the window is open and today's is not done (what the daily timer does)
 node scripts/watch.mjs test-message    # post a test message to the stored webhook
 ```
+
+The window of `daily` is computed from `WAREHOUSE_WATCH_DAILY_AT`, which only the unit sets: to run the pass now with the installed
+time, use `sudo systemctl start --no-block <project>-daily.service` and read it with `journalctl -u <project>-daily.service`.
 
 `test-message` prints the HTTP status Slack answered and exits 0 only for a 2xx. Keep the evidence that a real message
 arrived before relying on alerts.
@@ -120,9 +237,45 @@ command line). The URL is not in a backup, so after `db:restore-host` run setup 
 that `rotate-keys.sh` does not change
 ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
 
+## External heartbeat (the dead-man switch)
+
+The checker cannot tell anyone that it has died. For that, give it the address of a dead-man switch: a service that expects
+a ping every few minutes and alerts (by email, SMS or its own app) when the pings stop. healthchecks.io is one (create a
+check with a 10 minute period and a 5 minute grace time); any address that does this works. Put the https URL it gives you in
+a private file:
+
+```bash
+install -m 600 /dev/null "$WAREHOUSE_STATE_DIR/config/heartbeat-url"
+$EDITOR "$WAREHOUSE_STATE_DIR/config/heartbeat-url"      # one line: the https URL
+```
+
+At the end of each successful 5-minute run the checker fetches that URL (a GET with a 5 second limit); it does so also when
+an operator command holds the lock (the checker is alive then). A run that fails before it has saved its state sends no ping,
+which is the point. If the ping itself fails, or the file is not mode 0600 and a single https URL, the reason is written to
+the log (`journalctl -u <project>-watch.service`) and `node scripts/watch.mjs status` shows `External heartbeat: not sent`; it
+is never an alert, because Slack may be what is down. The URL is a secret (anyone who knows it can fake the ping), is not in
+backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
+checker that runs but cannot reach Slack the other way round.
+
+## Finding a slow query
+
+The database logs every statement slower than 1 second (and every temporary file of 10 MB or more), with its text and no
+parameter values; connections are not logged. The log is the `db` container's, 3 x 10 MB, and starts empty when the container is
+recreated. To see the slow ones of the last day, newest last:
+
+```bash
+bash scripts/compose.sh logs --since 24h db | grep -A2 'duration:'
+```
+
+A line reads `duration: 1523.419 ms  execute <unnamed>: SELECT ... WHERE id = $1`. `$1` stays `$1` on purpose (a value could be a
+sign-in code). The same statements, summed, are in `pg_stat_statements` (`bash scripts/compose.sh exec db psql -U supabase_admin -d
+postgres -c "SELECT calls, round(total_exec_time) AS ms, left(query, 80) FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10"`).
+The API roles are cut off by the database itself: `anon` after
+3 seconds, `authenticated` after 8 (an answer with `canceling statement due to statement timeout`; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-roles)).
+
 ## What it does not cover
 
 There is no metric history and no dashboard: the checker keeps only its state (`config/watch-state.json`,
 `config/watch-mutes.json`) and the last backup and retention results (`config/watch-backup.last`,
 `config/watch-retention.last`). Not covered: the Cloudflare tunnel process (the public-address check sees its effect),
-certificate expiry, SMS delivery failures, application errors. Email and paging are not supported by this repository.
+certificate expiry, a code the SMS provider accepted but never delivered, application errors. Email and paging are not supported by this repository.

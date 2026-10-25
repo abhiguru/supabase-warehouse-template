@@ -11,7 +11,7 @@ import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.
 import { isMain } from './is-main.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
-import { defaultDeps, runHealth, statePath } from './watch.mjs';
+import { defaultDeps, legacyDailyAdvice, runHealth, statePath, stoppedByOperator } from './watch.mjs';
 
 export const CHECKER_MAX_AGE_MS = 15 * 60 * 1000;
 // The unit is named from the facility's Compose project (WAREHOUSE_PROJECT_NAME in config/compose.env), not from the
@@ -24,21 +24,17 @@ export function timerBase(state) {
   return `warehouse-h${createHash('sha256').update(state).digest('hex').slice(0, 12)}-watch`;
 }
 export const timerUnit = state => `${timerBase(state)}.timer`;
+// The daily backup has its own timer next to the checker's (scripts/watch-timer.sh, unit_sibling).
+export const dailyTimerUnit = state => `${timerBase(state).replace(/-watch$/, '-daily')}.timer`;
 const unitDir = () => process.env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system';
+export const stoppedWarning = `The stack was stopped by the operator (config/stopped-by-operator, written by stop.sh): the boot unit and self-healing leave it down, also after a reboot. Run start.sh to bring it back.`;
 export const NO_WEBHOOK_WARNING = 'No Slack webhook: alerts are recorded on this host but not delivered, so nobody is told when a backup fails or the database stops. That is acceptable only for a test install. For a real facility, rerun setup.sh --operator with your usual inputs, leaving out --alert-webhook-file off (it then asks for the URL on a terminal), or pass --alert-webhook-file <a private file holding the URL> (docs/MONITORING.md, "Alert delivery").';
 
-// The daily pass (backup, verification, retention) holds the checker for up to 4 hours (the unit's TimeoutStartSec),
-// and the state file is not written meanwhile: a pass that started less than 4 hours ago explains the silence.
-export const DAILY_PASS_MAX_MS = 4 * 60 * 60 * 1000;
-function dailyPassRunning(state, now) {
-  try {
-    const started = JSON.parse(readFileSync(statePath(state), 'utf8'))?.dailyRunning?.startedAt;
-    return Number.isFinite(started) && now >= started && now - started < DAILY_PASS_MAX_MS;
-  } catch { return false; }
-}
-
 // Warnings about the checker: its timer is not active, it has not run in the last 15 minutes (the mtime of its
-// state file), no Slack webhook is stored. `timerActive(unit)` and `now` are injectable for tests.
+// state file; the daily backup is a separate unit, so a backup in progress does not explain a silent checker), the daily
+// backup timer is not active (or the checker unit is the old one that still makes the backup inside its own run), no Slack
+// webhook is stored, the operator stopped the stack (stop.sh) and has not started it again. `timerActive(unit)` and `now` are
+// injectable for tests.
 export function checkerWarnings(state, {
   now = Date.now(),
   timerActive = unit => spawnSync('systemctl', ['is-active', '--quiet', unit], { timeout: 10000 }).status === 0,
@@ -46,17 +42,44 @@ export function checkerWarnings(state, {
 } = {}) {
   const out = [];
   const unit = timerUnit(state);
-  if (!timerActive(unit)) {
+  const checkerActive = timerActive(unit);
+  // A checker unit from before the daily timer sets WAREHOUSE_WATCH_DAILY_AT: its run still makes the backup.
+  const legacy = checkerActive && /^Environment=WAREHOUSE_WATCH_DAILY_AT=/m.test(serviceText(unit) ?? '');
+  if (stoppedByOperator(state)) out.push(stoppedWarning);
+  if (!checkerActive) {
     out.push(`The monitoring checker is not running: ${unit} is not installed or not active, so no check, alert, daily backup or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   } else if (serviceText(unit) !== null && !serviceText(unit).split('\n').includes(`Environment=WAREHOUSE_STATE_DIR=${state}`)) {
     out.push(`${unit} is active but its service does not name this state (${state}), so this facility is not being checked. Install it for this state with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   } else {
     const modified = lstatSync(statePath(state), { throwIfNoEntry: false })?.mtimeMs;
     if (modified === undefined) out.push(`${unit} is active but the monitoring checker has never run (no ${statePath(state)}): check journalctl -u ${unit.replace(/\.timer$/, '.service')}.`);
-    else if (now - modified > CHECKER_MAX_AGE_MS && !dailyPassRunning(state, now)) out.push(`The monitoring checker last ran ${Math.round((now - modified) / 60000)} minutes ago (it should run every 5): check journalctl -u ${unit.replace(/\.timer$/, '.service')} and node scripts/watch.mjs status.`);
+    else if (now - modified > CHECKER_MAX_AGE_MS) out.push(`The monitoring checker last ran ${Math.round((now - modified) / 60000)} minutes ago (it should run every 5): check journalctl -u ${unit.replace(/\.timer$/, '.service')} and node scripts/watch.mjs status.`);
+  }
+  // The checker no longer makes the backup itself: without the daily timer (and with no old unit that still makes it) none is made.
+  // (When the checker's timer is missing, the install command it names brings the daily one too.)
+  if (legacy) {
+    out.push(`The daily backup still runs from the old monitoring checker unit ${unit.replace(/\.timer$/, '.service')}, inside its 5-minute run: backups continue, but a long backup holds the checks off and the services do not start at boot. ${legacyDailyAdvice(root, state)} (docs/MONITORING.md).`);
+  } else if (checkerActive && !timerActive(dailyTimerUnit(state))) {
+    out.push(`The daily backup timer ${dailyTimerUnit(state)} is not installed or not active, so no backup, verification or retention runs for this facility. Install it with: sudo bash scripts/watch-timer.sh install --state ${state} (docs/MONITORING.md).`);
   }
   if (!storedWebhook(state)) out.push(NO_WEBHOOK_WARNING);
   return out;
+}
+
+// Free space on the state's filesystem. A new installation (--host-preflight) needs 10 GiB. A start after a power cut does
+// not: refusing it on a disk that has filled up past that point only keeps the facility down, so below 10 GiB every
+// other mode prints a warning and refuses only below 2 GiB (PostgreSQL stops on a full disk).
+export const MIN_FREE_NEW_BYTES = 10 * 1024 ** 3;
+export const MIN_FREE_RUNNING_BYTES = 2 * 1024 ** 3;
+export function freeSpaceVerdict(freeBytes, { newInstall = false } = {}) {
+  const gib = (freeBytes / 1024 ** 3).toFixed(1);
+  if (freeBytes < (newInstall ? MIN_FREE_NEW_BYTES : MIN_FREE_RUNNING_BYTES)) {
+    return { error: `At least ${newInstall ? 10 : 2} GiB free space is required for database and storage (${gib} GiB is free).` };
+  }
+  if (!newInstall && freeBytes < MIN_FREE_NEW_BYTES) {
+    return { warning: `Only ${gib} GiB is free on the state's disk (less than 10 GiB): the next backup, image build or upgrade may not fit. Free space or add disk soon (docs/TROUBLESHOOTING.md, "Disk full").` };
+  }
+  return {};
 }
 
 export const listening = port => new Promise(resolve => {
@@ -145,7 +168,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const state = process.env.WAREHOUSE_STATE_DIR;
   const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);
-  if (Number(fs.bavail) * Number(fs.bsize) < 10 * 1024 ** 3) throw new Error('At least 10 GiB free space is required for database and storage.');
+  const space = freeSpaceVerdict(Number(fs.bavail) * Number(fs.bsize), { newInstall: hostPreflight });
+  if (space.error) throw new Error(space.error);
+  if (space.warning) console.error(`Warning: ${space.warning}`);
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
   const envPath = resolve(state, 'config/compose.env');
   const env = readEnv(envPath);
@@ -167,7 +192,7 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   // The same check health-check.sh runs (scripts/watch.mjs, runHealth): the default-profile services (an unhealthy optional
   // service only warns), the database, the gateway's public configuration, the get_public_config RPC probe and the PDF renderer, waiting up to 90 s for the gateway after a recreate.
   const health = await runHealth(defaultDeps(process.env));
-  if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.`);
+  if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.${stoppedByOperator(state) ? ` ${stoppedWarning}` : ''}`);
   for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
