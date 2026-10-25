@@ -730,7 +730,7 @@ export async function checkClock(ctx) {
   const state = [ntp.status === 0 ? `NTPSynchronized=${ntp.stdout.trim()}` : 'NTP status unknown', offset === null ? 'no offset reading' : `offset ${(offset / 1000).toFixed(1)} s`].join(', ');
   return [result('clock', 'clock_unsynced', problems.length === 0,
     problems.length ? `The host clock may be wrong: ${problems.join('; ')}` : `Host clock fine (${state})`,
-    'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Clock").')];
+    'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Monitoring and Slack alerts").')];
 }
 
 export const CHECKS = [

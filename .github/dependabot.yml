@@ -52,7 +52,9 @@ updates:
           - "version-update:semver-major"
       # A new PostgreSQL major needs a planned dump and reload of every
       # installation's data directory, not a changed line in a recipe. Minor and
-      # patch releases of the pinned 17 line (tag and digest) are taken.
+      # patch releases of the pinned 18 line (postgres:18.x-trixie, tag and digest)
+      # are taken; docker/postgres/Dockerfile fails the build when such a bump
+      # changes the base image's glibc or locales (a collation change).
       - dependency-name: postgres
         update-types:
           - "version-update:semver-major"

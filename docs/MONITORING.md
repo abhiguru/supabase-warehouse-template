@@ -21,13 +21,12 @@ after a move of the checkout, a change of Node.js, or to change the time of the 
 host's local time; default 02:30). `bash scripts/watch-timer.sh status` shows whether it is installed;
 `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` removes it.
 
-The command writes four units: `<project>-watch.service` and `.timer` (the 5-minute checks), `<project>-daily.service` and
-`.timer` (the daily backup, below) and `<project>-stack.service` (boot, below). The units name the Node.js through a link,
+The command writes five unit files: `<project>-watch.service` and `.timer` (the 5-minute checks), `<project>-daily.service`
+and `.timer` (the daily backup, below) and `<project>-stack.service` (boot, below). The units name the Node.js through a link,
 `~/.local/opt/node-current`, that `install` points at the Node.js prefix it was given, not at a versioned directory. After a
 Node.js upgrade, unpack the new version, run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node
 <new prefix>/bin/node` (or only `ln -sfn <new prefix> ~/.local/opt/node-current`), then `node scripts/watch.mjs status`. If the
-Node.js the units run is gone, `bash scripts/watch-timer.sh status` says `MISSING`, and `start.sh`, `setup.sh` and
-`db:restore-host` print the same fix. `npm run doctor` warns when the daily timer is not active.
+Node.js the units run is gone, `bash scripts/watch-timer.sh status` says `MISSING`, and `start.sh` and `setup.sh` print the same fix. `npm run doctor` warns when the daily timer is not active.
 
 The boot unit, `<project>-stack.service`, runs `compose up -d` for the default profile after `docker.service`
 at every boot. Docker restarts a container that exited but not one that was stopped, and the daily backup stops four
@@ -154,9 +153,12 @@ a mute is active.
 ```bash
 node scripts/watch.mjs status          # what is firing, muted, the daily jobs, the time zone, the last Slack failure
 node scripts/watch.mjs run             # one pass of the checks now (what the 5-minute timer does)
-node scripts/watch.mjs daily           # the daily pass now, if the window is open and today's is not done (what the daily timer does)
+node scripts/watch.mjs daily           # the daily pass, if the window is open and today's is not done (what the daily timer does)
 node scripts/watch.mjs test-message    # post a test message to the stored webhook
 ```
+
+The window of `daily` is computed from `WAREHOUSE_WATCH_DAILY_AT`, which only the unit sets: to run the pass now with the installed
+time, use `sudo systemctl start --no-block <project>-daily.service` and read it with `journalctl -u <project>-daily.service`.
 
 `test-message` prints the HTTP status Slack answered and exits 0 only for a 2xx. Keep the evidence that a real message
 arrived before relying on alerts.

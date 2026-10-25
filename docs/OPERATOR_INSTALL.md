@@ -50,6 +50,23 @@ Sections: [host prerequisites](#host-prerequisites),
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
 runtime is never removed by accident.
 
+### Host time zone
+
+Set the host's time zone before installing the monitoring timer. The time of the daily backup (`--daily-at`, default 02:30)
+and the "Monitoring is alive" message after 09:00 are **host local time**, and a server image is usually set to UTC: the
+backup would then start at 08:00 in India, in the middle of the working morning, with the API stopped while it runs.
+
+```bash
+timedatectl                                  # Time zone, and "System clock synchronized: yes"
+timedatectl list-timezones | grep -i kolkata
+sudo timedatectl set-timezone Asia/Kolkata   # the facility's zone
+sudo timedatectl set-ntp true                # keep the clock right (central sign-in refuses a clock over 30 s off)
+```
+
+The timers follow the host zone without being installed again (`bash scripts/watch-timer.sh status` prints the zone). Check
+the daily time after any change of zone, and tell the app's users nothing: only the backup time, the Slack lines and the
+checker's dates move.
+
 ### Ubuntu 24.04 sequence
 
 Ubuntu's packaged Node 18 is too old. Install a user-owned Node 22 without replacing the OS package (substitute the
@@ -849,6 +866,27 @@ restore on a new host then needs your private copy or a new tunnel.
 If the LAN router cannot hairpin to the public hostname, configure local DNS
 for the same name; the app must always use the same HTTPS origin.
 
+### Cloudflare zone settings
+
+The API hostname is an ordinary hostname in a Cloudflare zone, and the zone's security settings apply to it. The phones run a
+native app: it cannot solve a browser challenge, so a setting that challenges requests turns **every** app call into an HTML
+page instead of JSON, and the whole facility stops until someone finds the setting. A change made for a website in the same
+zone, by someone who never touches the warehouse server, is enough.
+
+- **Best: give the API hostname a zone that serves nothing else**, so a change made for a website cannot reach it.
+- **Bot Fight Mode must be off** (Security, Bots). On the free plan it can challenge API and mobile traffic, and a custom
+  rule cannot skip it. If the zone must keep it on, move the API hostname to another zone.
+- **"I'm Under Attack" mode breaks the app.** It challenges every visitor. If the zone needs it for a website, do not leave it
+  on for the API hostname: add a **Configuration Rule** (Rules, Configuration Rules) for the hostname
+  `warehouse-api.example.com` that sets Security Level to "Essentially Off" and Browser Integrity Check to off, and check
+  that the rule is ordered above any rule that raises the level.
+- Rate-limiting and firewall rules are optional ([Authentication and OTP limits](#authentication-and-otp-limits)); a rule that
+  uses the action "Managed Challenge" or "Interactive Challenge" on this hostname does the same harm.
+- **How you notice:** `public_https_down` fires with a message that the answer is not JSON, `node scripts/doctor.mjs --local`
+  is healthy while `node scripts/doctor.mjs` fails, and
+  `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
+  or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
+
 ## External doctor
 
 ```bash
@@ -936,6 +974,32 @@ Every operator command (`setup.sh`, `start.sh`, `stop.sh`, `rotate-keys.sh`, `db
 A second command for the same state fails immediately with "Another operator command ... is running for this state."; wait
 for the first to finish and never delete the lock file. The automatic USB backup is the one exception that waits: it
 retries for up to 15 minutes, then records a failure.
+
+### Monthly host maintenance
+
+The host's own software is not updated by this repository, and the packages that matter most are outside Ubuntu's automatic
+updates: `cloudflared` comes from Cloudflare's repository (Cloudflare supports only versions within a year of its newest release,
+and the tunnel service runs with `--no-autoupdate`) and Docker from Docker's. Once a month, in a quiet window (after closing, never in the backup window), as the
+installation user with `sudo`:
+
+1. **Look first.** `node scripts/watch.mjs status` shows nothing firing and "Daily backup: ok" for today;
+   `bash scripts/watch-timer.sh status` shows the units and the Node.js; `df -h /` has room.
+2. **Mute the checker for the window:** `node scripts/watch.mjs mute 60` (the backup alerts are never muted).
+3. **Update the packages:** `sudo apt-get update && apt list --upgradable`, read the list, then `sudo apt-get upgrade`. An
+   upgrade of `docker-ce` or `containerd.io` restarts every container (about a minute of downtime); an upgrade of
+   `cloudflared` does not restart the tunnel service that is already running: `sudo systemctl restart
+   warehouse-<state name>-tunnel.service` and `bash scripts/tunnel.sh status`. Check `cloudflared --version`.
+4. **Node.js minor/patch:** when nodejs.org lists a newer 22.x (or the next LTS before Node 22 ends on 2027-04-30), unpack it
+   next to the old one as in the [Ubuntu sequence](#ubuntu-2404-sequence), then
+   `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR" --node ~/.local/opt/node-$NODE-linux-x64/bin/node`
+   (this moves the `~/.local/opt/node-current` link the timers use) and `node scripts/watch.mjs status`. Keep the old
+   directory until the next month.
+5. **Reboot** when `/var/run/reboot-required` exists or the kernel was updated: `sudo reboot`. After the boot the services
+   start by themselves (`<project>-stack.service`); wait three minutes.
+6. **Prove it:** `node scripts/doctor.mjs --local && node scripts/doctor.mjs`, sign in on one phone, then
+   `node scripts/watch.mjs unmute`. The next morning check that the "Monitoring is alive" line arrived and that
+   `node scripts/watch.mjs status` shows the night's backup as ok.
+7. Write the date and the versions (`docker --version`, `cloudflared --version`, `node --version`) in your own notes.
 
 ## Retention
 

@@ -48,6 +48,11 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   `docker/image-exceptions.json`; the PostgREST image still has no package inventory
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#exception-ledger-and-the-image-scan)). Findings are not waived to make a
   scan green.
+  **Dated (2026-10-26): the six scan exceptions in `docker/image-exceptions.json` all expire on 2027-01-15.** From that day the
+  manual scan and the release checklist fail until the owner (`abhiguru`) has reviewed each entry again and renewed it (a new
+  `reviewed` date, `expires` at most 90 days later, the reason updated with that day's scan counts) or removed it. CI does not
+  notice: it checks the ledger at the date of the newest review, not at today's date (`tests/image-scan.test.mjs`). Put the
+  renewal in the owner's calendar for early January 2027.
 - **Secrets without a procedure.** `SECRET_KEY_BASE` and `VAULT_ENC_KEY` (generated only by `pooler.sh on`) have no rotation procedure
   ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#secrets-that-rotate-keys-does-not-change)).
 - **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled
