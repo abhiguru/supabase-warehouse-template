@@ -161,6 +161,7 @@ test_files=(
   "$ROOT/tests/duplicate_warning_124.sql" "$ROOT/tests/dispatch_sort_key_grant_125.sql"
   "$ROOT/tests/report_stock_ist_day.sql" "$ROOT/tests/report_dispatch_weight.sql" "$ROOT/tests/report_grn_weight.sql"
   "$ROOT/tests/report_grn_invoices.sql"
+  "$ROOT/tests/sessions_sliding.sql" "$ROOT/tests/break_glass.sql" "$ROOT/tests/otp_source_limits.sql"
 )
 for test_sql in "${test_files[@]}"; do
   docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$test_sql"
@@ -304,6 +305,18 @@ SQL
 done
 [[ "$(anon_secret_setting)" = '' && "$(secret_settings_held)" = 0 ]] || {
   echo 'scripts/configure-auth.sql must remove the signing secret setting from the database and from every role.' >&2; exit 1; }
+# Migration 126: the session and per-source limit keys are seeded once. A rerun of the configuration keeps an operator's value (unlike
+# access_seconds, which setup rewrites from JWT_EXP every time) and puts back a key that was removed.
+auth_value() { docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -qAt -U supabase_admin -d postgres -c "SELECT COALESCE((SELECT value FROM warehouse_security.auth_config WHERE key='$1'),'absent')"; }
+[[ "$(auth_value session_idle_seconds)/$(auth_value session_max_seconds)/$(auth_value otp_source_hourly_sends)/$(auth_value otp_source_hourly_failures)/$(auth_value otp_trusted_source_hourly_sends)/$(auth_value otp_trusted_sources)" == '2592000/7776000/30/20/120/absent' ]] || {
+  echo 'The session lifetime and per-source limit keys do not hold their defaults after the migrations and configure-auth.sql.' >&2; exit 1; }
+docker exec -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+  -c "UPDATE warehouse_security.auth_config SET value='86400' WHERE key='session_idle_seconds'" \
+  -c "UPDATE warehouse_security.auth_config SET value='200' WHERE key='otp_source_hourly_sends'" \
+  -c "DELETE FROM warehouse_security.auth_config WHERE key='otp_source_hourly_failures'"
+docker exec -i -e PGPASSWORD=disposable-test-database-only "$container" psql -X -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 < "$ROOT/scripts/configure-auth.sql"
+[[ "$(auth_value session_idle_seconds)/$(auth_value otp_source_hourly_sends)/$(auth_value otp_source_hourly_failures)" == '86400/200/20' ]] || {
+  echo 'scripts/configure-auth.sql must keep an operator value of the session and limit keys and put back a removed one.' >&2; exit 1; }
 
 # scripts/configure-central.sql: the trusted issuer is the psql variable
 # setup.sh passes from compose.env; absent or empty turns central sign-in off,

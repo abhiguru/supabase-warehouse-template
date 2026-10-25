@@ -41,7 +41,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regna
 -- The edge functions: called with the service key (or, for get_public_config, the anon key).
 SELECT pg_temp.rc_assert(count(*) = 0, 'an edge function calls a function that is gone: ' || string_agg(n, ', ' ORDER BY n))
 FROM unnest(ARRAY[
-  'operator_central_exchange','operator_enrollment_signout','operator_enrollment_status','operator_finish_otp','operator_prepare_otp',
+  'operator_break_glass_open','operator_central_exchange','operator_enrollment_signout','operator_enrollment_status','operator_finish_otp','operator_prepare_otp',
   'operator_sms_config','operator_verify_otp','get_dispatch_range_for_print','get_grn_range_for_print','get_invoice_range_for_print',
   'get_public_config','record_sensor_batch']) AS n
 WHERE NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = n
