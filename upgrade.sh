@@ -135,8 +135,9 @@ changelog_between() {
 
 # 0 when setup would find a Slack webhook in the state, 3 when none is stored, 4 when this checkout cannot tell.
 webhook_stored() {
-  node -e 'import(require("url").pathToFileURL(process.argv[1]).href).then(m => process.exit(m.storedWebhook(process.argv[2]) === null ? 3 : 0), () => process.exit(4))' \
-    "$ROOT/scripts/alert-webhook.mjs" "$STATE"
+  # Paths go in the environment, not in argv: a module that finds its own path in argv[1] would run as a command.
+  UPGRADE_MODULE="$ROOT/scripts/alert-webhook.mjs" UPGRADE_STATE="$STATE" \
+    node -e 'import(require("url").pathToFileURL(process.env.UPGRADE_MODULE).href).then(m => process.exit(m.storedWebhook(process.env.UPGRADE_STATE) === null ? 3 : 0), () => process.exit(4))'
 }
 
 db_query() {

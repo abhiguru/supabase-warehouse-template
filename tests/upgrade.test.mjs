@@ -7,8 +7,8 @@ import { join, dirname } from 'node:path';
 
 // upgrade.sh against a scratch "origin" with release tags and an installed checkout of it. The operator scripts that
 // upgrade.sh calls (backup, verify-restore, compose, setup, doctor) are stubs that append what they were given, and
-// whether the operator lock was held while they ran, to one log; upgrade.sh, scripts/operator-lock.sh,
-// scripts/pg-major.sh, scripts/db-image.sh and scripts/checkout-permissions.sh are the real files.
+// whether the operator lock was held while they ran, to one log; upgrade.sh, scripts/operator-lock.sh, scripts/pg-major.sh,
+// scripts/db-image.sh, scripts/checkout-permissions.sh, scripts/ci-previous-tag.sh and scripts/alert-webhook.mjs are the real files.
 const root = new URL('..', import.meta.url).pathname;
 const gitEnv = {
   GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
@@ -55,9 +55,6 @@ echo "setup $* | lock=${LOG_LOCK} version=$(cat "$(dirname "$0")/VERSION")" >> "
 appendFileSync(process.env.FAKE_LOG, 'doctor ' + process.argv.slice(2).join(' ') + '\\n');
 if (process.env.FAKE_FAIL === 'doctor') { console.error('doctor failed (fake)'); process.exit(1); }
 `,
-  'scripts/alert-webhook.mjs': `import { existsSync } from 'node:fs';
-export const storedWebhook = state => existsSync(state + '/config/slack-webhook-url') ? 'stored' : null;
-`,
 };
 const statModeOf = path => parseInt(spawnSync('stat', ['-c', '%a', path], { encoding: 'utf8' }).stdout.trim(), 8);
 const dockerfile = major => `FROM postgres:${major}.6-trixie@sha256:${'ab'.repeat(32)}\n`;
@@ -77,7 +74,7 @@ function world() {
   const base = (version, extra = {}) => {
     put(src, 'VERSION', `${version}\n`);
     for (const [path, text] of Object.entries(stubs)) put(src, path, text, path.endsWith('.sh') ? 0o755 : 0o644);
-    for (const path of ['scripts/operator-lock.sh', 'scripts/pg-major.sh', 'scripts/db-image.sh', 'scripts/checkout-permissions.sh', 'scripts/ci-previous-tag.sh']) {
+    for (const path of ['scripts/operator-lock.sh', 'scripts/pg-major.sh', 'scripts/db-image.sh', 'scripts/checkout-permissions.sh', 'scripts/ci-previous-tag.sh', 'scripts/alert-webhook.mjs', 'scripts/is-main.mjs']) {
       mkdirSync(dirname(join(src, path)), { recursive: true });
       copyFileSync(join(root, path), join(src, path));
     }
@@ -210,6 +207,7 @@ test('the upgrade runs every step in order under the lock, on the new release, a
     const r = w.run(['v0.2.0']);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.equal(r.head, w.tag('v0.2.0'), 'the checkout is on the tag');
+    assert.doesNotMatch(r.stderr, /Slack webhook:|Usage: alert-webhook/, 'the webhook probe imports the module quietly');
     const [backup, verify, setup, compose, doctor, ...rest] = r.log;
     assert.deepEqual(rest, []);
     assert.equal(backup, 'backup lock=held version=v0.1.0', 'backup runs on the OLD release, under the lock');
@@ -240,7 +238,7 @@ test('the upgrade runs every step in order under the lock, on the new release, a
 test('a stored Slack webhook is left to setup; options after -- go to setup and replace the defaults; --admin-* are used as given', () => {
   const w = world();
   try {
-    writeFileSync(join(w.state, 'config/slack-webhook-url'), 'https://hooks.slack.com/services/T0/B0/x\n', { mode: 0o600 });
+    writeFileSync(join(w.state, 'config/slack-webhook-url'), 'https://hooks.slack.com/services/T0000000/B0000000/fictionalfictional\n', { mode: 0o600 });
     const r = w.run(['--admin-phone', '919000000001', '--admin-name', 'Given Name', 'v0.2.0', '--', '--gateway-port', '18001', '--letterhead-file', 'off']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.log[2], `setup --operator --state-dir ${w.state} --admin-phone 919000000001 --admin-name Given Name --gateway-port 18001 --letterhead-file off | lock=held version=v0.2.0`);
