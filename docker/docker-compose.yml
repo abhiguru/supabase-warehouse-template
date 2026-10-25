@@ -134,7 +134,11 @@ services:
     environment:
       PGRST_DB_POOL: "20"
       PGRST_DB_POOL_ACQUISITION_TIMEOUT: "10"
-      PGRST_DB_CONFIG: "false"
+      # "true" so that PostgREST applies the settings of the role it switches to (anon 3 s, authenticated 8 s statement_timeout,
+      # volumes/db/00-bootstrap.sql). With "false" it never reads them: ALTER ROLE ... SET is applied only to the login role,
+      # so anon ran under the authenticator's 8 s and changing the two API roles' settings did nothing. No pgrst.* setting
+      # exists in the database, so the environment variables below stay the only configuration.
+      PGRST_DB_CONFIG: "true"
       PGRST_DB_PREPARED_STATEMENTS: "true"
       PGRST_DB_URI: postgres://authenticator:${DB_PASSWORD_AUTHENTICATOR:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS}
@@ -271,6 +275,10 @@ services:
     networks: [database]
     logging: *default-logging
     stop_grace_period: 30s
+    # Docker gives a container 64 MB of /dev/shm; a parallel hash join allocates its shared memory there, and a larger
+    # work_mem or several parallel plans at once fail with "could not resize shared memory segment". It counts against the
+    # memory limit below only when used.
+    shm_size: 256m
     deploy:
       resources:
         limits:
@@ -324,6 +332,10 @@ services:
       MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:?MSG91 Flow ID required}
       MSG91_PE_ID: ${MSG91_PE_ID:?MSG91 PE ID required}
       MSG91_SENDER_ID: ${MSG91_SENDER_ID:?MSG91 sender ID required}
+    # Logging (docs/MONITORING.md, "Finding a slow query"): the log shares its 3 x 10 MB with everything else, so it carries what
+    # a diagnosis needs and not one line per connection. A statement slower than 1 s is logged with its text but never its
+    # parameter values (log_parameter_max_length=0: PostgREST sends the request body as a parameter, and a sign-in code is in
+    # it); temporary files of 10 MB or more are logged (log_temp_files is in kB); connections and disconnections are not.
     # PostgreSQL performance tuning. timezone and log_timezone are set to UTC (the facilities ran Etc/UTC, the same offset):
     # the SQL code and its tests assume the time zone is named UTC. extra_float_digits is not set: the facilities ran the
     # server default of 1 and the official image starts the same way.
@@ -338,12 +350,13 @@ services:
       -c random_page_cost=1.1
       -c effective_io_concurrency=200
       -c log_min_messages=warning
-      -c log_connections=on
-      -c log_disconnections=on
+      -c log_connections=off
+      -c log_disconnections=off
       -c log_statement=none
-      -c log_min_duration_statement=-1
+      -c log_min_duration_statement=1000
+      -c log_parameter_max_length=0
       -c log_lock_waits=on
-      -c log_temp_files=0
+      -c log_temp_files=10240
       -c wal_level=replica
       -c archive_mode=off
       -c shared_buffers=128MB

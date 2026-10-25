@@ -68,6 +68,9 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    so a power cut during the backup window no longer leaves them stopped) and moves the units to a Node.js link
    (`~/.local/opt/node-current`) so a Node.js upgrade only moves the link. Optional: `config/heartbeat-url` for an external
    dead-man switch ([docs/MONITORING.md](docs/MONITORING.md#external-heartbeat-the-dead-man-switch)).
+11. **`setup.sh` recreates the `db` and `rest` containers** (a few seconds of downtime): `PGRST_DB_CONFIG` is now `true`, so anonymous API
+    calls are cut at 3 s (they ran under 8 s); the database gets `shm_size: 256m`, logs statements slower than 1 s without their
+    parameter values, and no longer logs connections ([docs/MONITORING.md](docs/MONITORING.md#finding-a-slow-query)).
 
 ### Changed
 

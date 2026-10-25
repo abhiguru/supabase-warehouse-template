@@ -201,6 +201,22 @@ is never an alert, because Slack may be what is down. The URL is a secret (anyon
 backups, and has to be put back after `db:restore-host`. The daily "Monitoring is alive" Slack line stays: it covers a
 checker that runs but cannot reach Slack the other way round.
 
+## Finding a slow query
+
+The database logs every statement slower than 1 second (and every temporary file of 10 MB or more), with its text and no
+parameter values; connections are not logged. The log is the `db` container's, 3 x 10 MB, and starts empty when the container is
+recreated. To see the slow ones of the last day, newest last:
+
+```bash
+bash scripts/compose.sh logs --since 24h db | grep -A2 'duration:'
+```
+
+A line reads `duration: 1523.419 ms  execute <unnamed>: SELECT ... WHERE id = $1`. `$1` stays `$1` on purpose (a value could be a
+sign-in code). The same statements, summed, are in `pg_stat_statements` (`bash scripts/compose.sh exec db psql -U supabase_admin -d
+postgres -c "SELECT calls, round(total_exec_time) AS ms, left(query, 80) FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10"`).
+The API roles are cut off by the database itself: `anon` after
+3 seconds, `authenticated` after 8 (an answer with `canceling statement due to statement timeout`; [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#database-roles)).
+
 ## What it does not cover
 
 There is no metric history and no dashboard: the checker keeps only its state (`config/watch-state.json`,
