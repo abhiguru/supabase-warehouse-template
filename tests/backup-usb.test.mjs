@@ -774,3 +774,19 @@ test('the doctor warning asks for the key copy when archives are encrypted and t
     assert.equal(usbBackupWarning(state, { etc, now }), null, 'readable archives need no key copy');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('a drive for readable archives, with --no-encrypt typed, is enrolled without a key copy confirmation', () => {
+  const f = fixture('warehouse-usb-plainenroll-', { escrow: false });
+  try {
+    const result = f.asRoot(['setup', '--state', f.state, '--no-encrypt', '--enroll', '/dev/sdb1']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Archives are NOT encrypted \(you typed --no-encrypt\)/);
+    assert.doesNotMatch(result.stdout, /ACTION NEEDED/);
+    assert.equal(readFileSync(join(f.etc, 'warehouse-usb-backup.drives'), 'utf8'), `${UUID} ${PART}\n`);
+    assert.ok(existsSync(f.markerPath));
+    // A later plain `enroll` follows the stored choice.
+    rmSync(f.markerPath);
+    assert.equal(f.asRoot(['enroll', '--device', 'sdb1']).status, 0);
+    assert.doesNotMatch(f.run(['status']).stdout, /key copy is not confirmed/);
+  } finally { f.cleanup(); }
+});
