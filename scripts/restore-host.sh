@@ -24,7 +24,11 @@
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
 # written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
-# an archive without a `.hmac` is unpacked only with --allow-unsigned).
+# an archive without a `.hmac` is unpacked only with --allow-unsigned). The archive is one self-contained tar of the backup
+# folder (scripts/backup-archive.sh), encrypted with the backup key unless the operator typed --no-encrypt: this script is all
+# that is needed to rebuild a host from a drive alone, key copy in hand. A v6 archive is read as follows: the checksum and
+# signature of the archive, the decryption, the safety listing of every member, the unpacking with the stored files' attributes,
+# then the signature of the unpacked backup, its file list and its storage.manifest against the tree (backup_authenticate).
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. --allow-unsigned is only for a

@@ -412,6 +412,29 @@ jobs:
           npm run db:backup -- /tmp/warehouse-ci-lost-host-backup
           # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
           install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
+          # The key escrow record (scripts/backup-key-escrow.sh): a USB drive is not enrolled and an encrypted archive is not written
+          # until the operator has confirmed a copy of the key. No record yet; a wrong copy is refused; the right one is recorded.
+          if bash scripts/backup-key-escrow.sh check; then echo 'a key copy counted as confirmed with no record' >&2; exit 1; fi
+          if bash scripts/backup-key-escrow.sh confirm --last8 00000000; then echo 'a wrong key copy was accepted' >&2; exit 1; fi
+          test ! -e "$WAREHOUSE_STATE_DIR/config/backup-key.escrow"
+          bash scripts/backup-key-escrow.sh confirm --last8 "$(tail -c 9 "$RUNNER_TEMP/backup-key-copy" | head -c 8)"
+          bash scripts/backup-key-escrow.sh check
+          test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/backup-key.escrow")" = 600
+          # What a USB drive holds: one encrypted archive of the backup, written with the functions backup-usb.sh uses, with the
+          # checksum and signature files next to it. The drive is a folder here; the lost host gets nothing but this and the key copy.
+          usb="$RUNNER_TEMP/usb-drive"; usb_name=warehouse-20260930T000000Z
+          install -d -m 700 "$usb" "$RUNNER_TEMP/usb-source"
+          cp -a /tmp/warehouse-ci-lost-host-backup "$RUNNER_TEMP/usb-source/$usb_name"
+          (
+            source scripts/backup-key.sh
+            source scripts/backup-archive.sh
+            backup_key_load "$RUNNER_TEMP/backup-key-copy"
+            hash="$(backup_archive_write "$RUNNER_TEMP/usb-source/$usb_name" "$usb/$usb_name.tar.enc" encrypt)"
+            printf '%s  %s\n' "$hash" "$usb_name.tar.enc" > "$usb/$usb_name.tar.enc.sha256"
+            backup_sign_archive "$usb/$usb_name.tar.enc" "$BACKUP_KEY"
+          )
+          if grep -aq 'JWT_SECRET\|database.dump' "$usb/$usb_name.tar.enc"; then echo 'the archive on the drive is readable' >&2; exit 1; fi
+          rm -rf "$RUNNER_TEMP/usb-source"
           bash scripts/data-fingerprint.sh > /tmp/warehouse-ci-fingerprint.txt
           # Lose the host: no containers of this installation remain;
           # only the backup is carried over. The old state stays where it is, unused.
@@ -421,7 +444,17 @@ jobs:
             echo 'restore-host accepted a backup without the backup key' >&2; exit 1
           fi
           test ! -e "$restored"
-          npm run db:restore-host -- --state-dir "$restored" --backup-key "$RUNNER_TEMP/backup-key-copy" --yes /tmp/warehouse-ci-lost-host-backup
+          # The encrypted archive cannot be opened without the key, nor with another one.
+          if npm run db:restore-host -- --state-dir "$restored" --yes "$usb/$usb_name.tar.enc"; then
+            echo 'restore-host accepted an encrypted archive without the backup key' >&2; exit 1
+          fi
+          openssl rand -hex 32 > "$RUNNER_TEMP/wrong-key"; chmod 600 "$RUNNER_TEMP/wrong-key"
+          if npm run db:restore-host -- --state-dir "$restored" --backup-key "$RUNNER_TEMP/wrong-key" --yes "$usb/$usb_name.tar.enc"; then
+            echo 'restore-host opened an encrypted archive with the wrong key' >&2; exit 1
+          fi
+          test ! -e "$restored"
+          # The lost-host restore from the drive alone: the encrypted archive and the operator's copy of the key.
+          npm run db:restore-host -- --state-dir "$restored" --backup-key "$RUNNER_TEMP/backup-key-copy" --yes "$usb/$usb_name.tar.enc"
           echo "WAREHOUSE_STATE_DIR=$restored" >> "$GITHUB_ENV"
           export WAREHOUSE_STATE_DIR="$restored"
           cmp "$RUNNER_TEMP/backup-key-copy" "$restored/config/backup.key"
