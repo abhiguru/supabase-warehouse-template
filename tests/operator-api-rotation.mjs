@@ -80,7 +80,7 @@ assert.equal(staleKey.status, 401, `old apikey must be rejected by the gateway: 
 const staleToken = await api(after.base, after.anon, '/rest/v1/customers?select=id', session.access_token);
 assert.equal(staleToken.status, 401, `old access token must fail signature verification: HTTP ${staleToken.status}`);
 // The anon role may execute refresh_jwt_token, so HTTP 200 here proves the new
-// apikey passes Kong's key-auth and the new anon JWT verifies under the new
+// apikey passes the gateway's key check and the new anon JWT verifies under the new
 // secret; the payload proves the old refresh token is refused.
 const replay = await api(after.base, after.anon, '/rest/v1/rpc/refresh_jwt_token', after.anon, { p_refresh_token: session.refresh_token });
 assert.equal(replay.status, 200, `new apikey and anon token must pass the gateway and PostgREST: HTTP ${replay.status} ${JSON.stringify(replay.data).slice(0, 200)}`);

@@ -162,7 +162,7 @@ test('not configured: either setting empty, or not an operator production instan
   }
 });
 
-test('refuses other methods (a preflight too: Kong answers it) and bodies without a token', async () => {
+test('refuses other methods (a preflight too: the gateway answers it) and bodies without a token', async () => {
   const h = harness();
   const preflight = await handle(new Request('http://edge.test/central-exchange', { method: 'OPTIONS' }), { env: () => undefined });
   assert.equal(preflight.status, 405);

@@ -33,7 +33,7 @@ key="$(printf 'ab%.0s' $(seq 32))"   # 64 hex characters, the form of a real key
 set +e
 output=$(run -e SENSOR_BRIDGE_HUBS=192.0.2.10,192.0.2.11 -e TAPO_USERNAME=bridge-check@example.test \
   -e TAPO_PASSWORD="$password" -e SENSOR_INGEST_KEY="$key" -e SENSOR_BRIDGE_ID=bridge-check \
-  -e SENSOR_INGEST_URL=http://kong:8000/functions/v1/ingest-sensor-readings \
+  -e SENSOR_INGEST_URL=http://gateway:8000/functions/v1/ingest-sensor-readings \
   --entrypoint python "$image" -m sensor_bridge --check-config 2>&1)
 status=$?
 set -e

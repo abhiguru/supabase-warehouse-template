@@ -1,4 +1,4 @@
-// Headers every response of the edge functions carries. CORS is not here: Kong's cors plugin (docker/kong.yml, the /functions/v1 route)
+// Headers every response of the edge functions carries. CORS is not here: the gateway (docker/nginx/api-locations.conf, the /functions/v1 route)
 // answers the browser preflight itself and adds the allowed origin to every response, so the functions set no Access-Control-* header.
 export const securityHeaders = {
   'X-Content-Type-Options': 'nosniff',

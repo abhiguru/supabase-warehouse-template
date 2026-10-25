@@ -175,7 +175,7 @@ fi
 # Stop ingress first, then all services that can write the database or object
 # storage. Capture only running services so the cleanup never starts an optional
 # service the operator had intentionally stopped.
-for service in kong functions rest storage supavisor; do
+for service in gateway functions rest storage supavisor; do
   id=$(compose ps -q "$service")
   if [[ -n "$id" && "$(docker inspect --format '{{.State.Running}}' "$id")" == true ]]; then restart+=("$service"); fi
 done

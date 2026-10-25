@@ -65,6 +65,14 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+      # The gateway's base (docker/nginx/Dockerfile) is nginx's stable branch (1.30, even minors), alpine-slim variant,
+      # by tag and digest. Patch updates of that branch come; the mainline releases (1.31, 1.33) are not the stable branch,
+      # and the move to the next stable branch (1.32 in 2027) is a planned change that reads the release notes and runs
+      # tests/gateway-nginx.test.mjs, not a changed line in a recipe.
+      - dependency-name: nginx
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   # The PDF renderer (docker/pdf-renderer): puppeteer-core is pinned exactly and goes with
   # the pinned chrome-headless-shell (CHS_VERSION in its Dockerfile, which Dependabot
   # cannot see; the weekly cft-freshness workflow watches it). Take a puppeteer-core

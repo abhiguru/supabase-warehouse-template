@@ -61,13 +61,13 @@ test('the unhealthy-service listing skips healthy services and redacts the last 
   showUnhealthyServices({
     run: (command, args) => {
       calls.push(args);
-      if (args.includes('ps')) return { status: 0, stdout: 'db running healthy\nrest running\nkong exited \nfunctions running unhealthy\n' };
+      if (args.includes('ps')) return { status: 0, stdout: 'db running healthy\nrest running\ngateway exited \nfunctions running unhealthy\n' };
       return { status: 0, stdout: `log of ${args.at(-1)} fictional-secret` };
     },
     env: () => ({ JWT_SECRET: 'fictional-secret' }),
     report: line => output.push(line),
   });
-  assert.deepEqual(output.filter(line => line.startsWith('Service')), ['Service kong is exited. Its last log lines:', 'Service functions is running (unhealthy). Its last log lines:']);
+  assert.deepEqual(output.filter(line => line.startsWith('Service')), ['Service gateway is exited. Its last log lines:', 'Service functions is running (unhealthy). Its last log lines:']);
   assert.ok(output.every(line => !line.includes('fictional-secret')));
   assert.ok(calls.filter(args => args.includes('logs')).every(args => args.includes('--tail') && args.includes('30')));
   assert.equal(calls.filter(args => args.includes('logs')).length, 2);

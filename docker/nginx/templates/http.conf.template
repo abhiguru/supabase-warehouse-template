@@ -1,0 +1,30 @@
+# The parts of the http configuration that hold the three environment variables the gateway is started with. The image's
+# entrypoint (envsubst, filtered by NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile) puts the three values in wherever a
+# dollar sign stands in front of one of the three names, with or without braces around it, and replaces nothing else in
+# this file or in any other; docker-entrypoint.d/18-require-env.sh has already refused a missing value or one with a
+# character that could change this configuration. No comment in a template may write a dollar sign in front of one of
+# those names: the value would be put into the comment too, a key included (tests/gateway-config.test.mjs checks both
+# forms). Write the name alone, as here.
+# Every server that serves the API (api-locations.conf) uses the two nginx variables defined here, $cors_allowed_origin and
+# $apikey_error.
+
+# The one browser origin that may call the API (the application URL, SITE_URL), exactly as configured and never a
+# pattern. Kong's cors plugin set it on every answer when only one plain origin was configured, and so does the gateway.
+map $server_name $cors_allowed_origin {
+    default "${CORS_ALLOWED_ORIGIN}";
+}
+
+# The apikey header of /rest/v1/ (the route that checks it): the anon key or the service-role key passes, as Kong's key-auth
+# consumers did. The value is the message of the 401 answer, with the wording Kong 3 used and the mobile app recognizes (src/config/
+# supabaseConfig.ts, GATEWAY_KEY_REJECTIONS): after rotate-keys.sh an installed app holds the old key and must read
+# "Unauthorized" to end its session and reload the configuration. Empty means the key is good.
+# A map matches a string key without regard to letter case (nginx lower-cases the input and the keys), so a key written in
+# other letters passes this check too. That opens nothing: the anon key is public, a key that is not one of the two still
+# fails, and PostgREST checks the user's token in Authorization by itself. Kong compared exactly; the difference is
+# listed in CHANGELOG.md.
+map $http_apikey $apikey_error {
+    default                 "Unauthorized";
+    ""                      "No API key found in request";
+    "${ANON_KEY}"           "";
+    "${SERVICE_ROLE_KEY}"   "";
+}

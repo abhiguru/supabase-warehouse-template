@@ -11,7 +11,7 @@ before_env=$(sha256sum "$state/config/compose.env" "$state/public/instance.json"
 before_data=$(compose exec -T db psql -X -qAt -U supabase_admin -d postgres \
   -c "SELECT count(*)||':'||COALESCE(max(gr_no),'') FROM public.goodsreceived")
 
-compose restart rest storage functions kong >/dev/null
+compose restart rest storage functions gateway >/dev/null
 healthy=false
 for ((i=0; i<60; i++)); do
   if node "$ROOT/scripts/watch.mjs" health --wait 10 >/dev/null 2>&1; then healthy=true; break; fi

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { lstatSync, realpathSync, readFileSync } from 'node:fs';
 import { basename, isAbsolute, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readEnv, root } from '../scripts/doctor-common.mjs';
+import { gatewayPortText, readEnv, root } from '../scripts/doctor-common.mjs';
 
 export function operatorFixture() {
   const state = process.env.WAREHOUSE_STATE_DIR;
@@ -28,7 +28,7 @@ export function operatorFixture() {
   assert.equal(manifest.companyName, 'Fictional Core Warehouse');
   assert.equal(manifest.canonicalOrigin, env.SUPABASE_PUBLIC_URL);
   assert.equal(env.WAREHOUSE_PROJECT_NAME, `warehouse-${manifest.instanceId.slice(0, 12)}`);
-  const port = Number(env.KONG_HTTP_PORT);
+  const port = Number(gatewayPortText(env));
   assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535, 'Invalid fixture port');
   const owned = spawnSync('bash', [resolve(root, 'scripts/compose.sh'), 'ps', '-q', 'db'],
     { encoding: 'utf8', timeout: 30000 });

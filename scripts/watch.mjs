@@ -38,7 +38,7 @@ import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, r
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
-import { centralKeyFault, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
+import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
@@ -563,8 +563,8 @@ async function getJson(ctx, url) {
   return response.json();
 }
 export async function checkApiLocal(ctx) {
-  const port = ctx.env_().KONG_HTTP_PORT;
-  if (!/^\d+$/.test(port ?? '')) throw new Error('KONG_HTTP_PORT is not set in compose.env');
+  const port = gatewayPortText(ctx.env_());
+  if (!/^\d+$/.test(port ?? '')) throw new Error('GATEWAY_HTTP_PORT is not set in compose.env');
   try { await getJson(ctx, `http://127.0.0.1:${port}/functions/v1/get-public-config`); return [result('api_local', 'api_down', true, 'API gateway answers')]; }
   catch (error) { return [result('api_local', 'api_down', false, 'API gateway is not answering on this host', error.message)]; }
 }
@@ -585,7 +585,7 @@ export async function checkApiPublic(ctx) {
 }
 // `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
 // RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
-export function parseKongLog(text, { sinceMs = null } = {}) {
+export function parseGatewayLog(text, { sinceMs = null } = {}) {
   const rows = [];
   for (const line of text.split('\n')) {
     const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)\s*$/);
@@ -603,11 +603,11 @@ export function parseKongLog(text, { sinceMs = null } = {}) {
 // for good. The last gatewayLogTail lines are read with their time stamps (-t) and cut to the window here. A gateway busier than
 // about 16 requests a second fills the tail with less than 5 minutes, and the rates are then those of the newest lines.
 export function checkApiLogs(ctx) {
-  const kong = ctx.containers().find(c => c.service === 'kong');
-  if (!kong) return [];
-  const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), kong.id]);
+  const gateway = ctx.containers().find(c => c.service === 'gateway');
+  if (!gateway) return [];
+  const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), gateway.id]);
   if (logs.status !== 0) throw new Error('docker logs failed for the gateway');
-  const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs });
+  const rows = parseGatewayLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs });
   if (rows.length < LIMITS.minRequests) {
     return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency'),
       result('api_logs', 'api_429_rate_high', true, 'Too few requests to judge the rate-limit answers')];
@@ -638,15 +638,15 @@ export function checkPdfRenderer(ctx) {
 
 // The operator health check, one source for health-check.sh, doctor --local and recovery-check.sh: the services, the database and
 // the PDF renderer with the check functions the 5-minute checker also runs, and the gateway probed from inside the project (a
-// container that shares a network with Kong: the intended project is probed, never an unrelated server on the host port). The
+// container that shares a network with the gateway: the intended project is probed, never an unrelated server on the host port). The
 // gateway probe is a public-configuration call and the anon-callable RPC get_public_config (it reads the database, and answers 200 with
 // null when the environment is not seeded; PostgREST's OpenAPI document at /rest/v1/ is off, PGRST_OPENAPI_MODE=disabled); a container can be healthy before the gateway answers after a recreate, so it retries for
 // up to waitMs. Returns { ok, lines: [{ ok, text }] }.
 const GATEWAY_PROBES = `
 for (const [name, url, headers, init] of [
-  ['REST', 'http://kong:8000/rest/v1/rpc/get_public_config', { apikey: process.env.ANON_KEY, 'Content-Type': 'application/json' },
+  ['REST', 'http://gateway:8000/rest/v1/rpc/get_public_config', { apikey: process.env.ANON_KEY, 'Content-Type': 'application/json' },
     { method: 'POST', body: JSON.stringify({ p_environment: 'production' }) }],
-  ['configuration', 'http://kong:8000/functions/v1/get-public-config', {}, {}],
+  ['configuration', 'http://gateway:8000/functions/v1/get-public-config', {}, {}],
 ]) {
   try { await waitForHttp(name, url, headers, { timeoutMs: WAIT_MS, init }); console.log('OK ' + name); }
   catch (error) { console.log('FAILED ' + error.message); process.exitCode = 1; }
@@ -809,7 +809,7 @@ export function checkBreakGlass(ctx) {
 // The host clock: systemd's own verdict (NTPSynchronized) and, when the public address answers, the difference from the
 // clock of the address's edge. Central sign-in refuses a token when the clock is over 30 s off (docs/CENTRAL_LOGIN.md); backup
 // names and the 26 h backup rule use it too. The reference is Cloudflare's own `ts=` line of <origin>/cdn-cgi/trace, which the
-// edge answers itself (the request never reaches Kong: no log line, no rate-limit budget, and the answer does not come from
+// edge answers itself (the request never reaches the gateway: no log line, no rate-limit budget, and the answer does not come from
 // this host's clock). An address that is not behind Cloudflare has no such page: the Date header of a HEAD to the function
 // route is the fallback (it may be passed through from the origin, so it can hide a wrong clock). An unreachable address or
 // a host without timedatectl is not judged here (public_https_down says the first).
@@ -1223,12 +1223,12 @@ export async function runDaily(ctx, data, healthy, runner = dailyRunner, webhook
   saveState(ctx.state, data, ctx.fsApi, { daily: true });
 }
 
-// The daily jobs need the database and the services the backup stops (scripts/backup.sh stops kong, functions, rest and
+// The daily jobs need the database and the services the backup stops (scripts/backup.sh stops the gateway, functions, rest and
 // storage, and the pooler when it runs) in THIS run: right after a boot the first runs find them down. The pooler counts only
 // while it is running (a running one that is unhealthy would make the backup fail when it restarts it with --wait; one that was
 // stopped on purpose is left alone by the backup). Not the other optional services and not the PDF renderer: a renderer that
 // turned unhealthy after a host update must not stop the backups.
-export const BACKUP_SERVICES = ['kong', 'functions', 'rest', 'storage'];
+export const BACKUP_SERVICES = ['gateway', 'functions', 'rest', 'storage'];
 export const BACKUP_OPTIONAL_SERVICES = ['supavisor'];
 export function dailyHealthy(results) {
   const pg = results.find(r => r.id === 'postgres_down');
@@ -1271,7 +1271,7 @@ export async function pingExternalHeartbeat(ctx) {
 }
 
 // ---------------------------------------------------------------- the run
-// The checks that need none of the services the backup stops (kong, functions, rest, storage, the pooler): while the daily pass
+// The checks that need none of the services the backup stops (the gateway, functions, rest, storage, the pooler): while the daily pass
 // holds the operator lock these keep running. The others would only report the stop.
 export const PASS_SAFE_CHECKS = ['cpu', 'memory', 'disk', 'database', 'backups', 'break_glass'];
 // A pass the state calls running and younger than jobStaleMs (the daily unit's own limit): the holder of the lock, if it is held.

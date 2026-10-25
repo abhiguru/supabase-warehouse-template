@@ -3,7 +3,7 @@
 # Run it only through scripts/compose.sh (it checks the operator state, which owns the data paths and the
 # environment file); setup.sh, start.sh and stop.sh do. For example:
 #   bash scripts/compose.sh ps
-#   bash scripts/compose.sh logs --tail 50 kong
+#   bash scripts/compose.sh logs --tail 50 gateway
 #   bash scripts/compose.sh --profile '*' config
 
 name: warehouse-template
@@ -18,14 +18,25 @@ x-logging: &default-logging
 
 services:
 
-  kong:
-    image: kong:3.9.4-ubuntu@sha256:aa4a4687b1330e427ad0d3b27a0606b833894297c78abf1a212edc9ba73c8620
+  # gateway - plain nginx from the official image (docker/nginx, replaced Kong 2026-10): the routes, the key check, the
+  # rate limits, CORS and the body limits of docs/CONTAINER_SECURITY.md, "Gateway limits and routes". The configuration is
+  # in docker/nginx; the image's entrypoint puts the three values below into its templates. It publishes the one host
+  # port, on loopback, for the Cloudflare Tunnel connector.
+  gateway:
+    build:
+      context: ./nginx
     restart: unless-stopped
     logging: *default-logging
-    # Kong's resolver can wait on an inherited, unavailable search domain even
-    # when Docker has answered the bare service alias. Resolve Compose aliases
-    # at the DNS root; do not inherit a VM's LAN search suffix.
-    dns_search: "."
+    # nginx runs as the user `nginx` (101) of the image: no capability is needed for port 8000, the root file system is
+    # read-only, and the only writable places are two small tmpfs: /tmp (the pid file and nginx's temporary paths, which
+    # stay empty: request bodies and answers are never written to a file, docker/nginx/nginx.conf) and the directory
+    # the entrypoint renders the templates into.
+    read_only: true
+    tmpfs:
+      - /tmp:size=4m
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0755,size=1m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     ulimits:
       nofile:
         soft: 65535
@@ -34,85 +45,31 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 512M
+          memory: 128M
         reservations:
           cpus: '0.25'
-          memory: 256M
+          memory: 64M
+    # /health is answered by nginx itself (docker/nginx/templates/gateway.conf.template). The image has busybox wget, not curl.
     healthcheck:
-      test: ["CMD-SHELL", "kong health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 10s
     ports:
-      - "127.0.0.1:${KONG_HTTP_PORT}:8000/tcp"
-    volumes:
-      - ./kong.yml:/tmp/temp.yml:ro,z
+      # GATEWAY_HTTP_PORT, or the name it had while the gateway was Kong (KONG_HTTP_PORT) in a compose.env that has not been
+      # rewritten yet; scripts/configure.mjs writes the new name when it changes the port.
+      - "127.0.0.1:${GATEWAY_HTTP_PORT:-${KONG_HTTP_PORT:-18000}}:8000/tcp"
     depends_on:
       db:
         condition: service_healthy
     environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
-      KONG_DNS_ORDER: "LAST,A"
-      # Compose can replace upstream IPs during setup/recovery. Do not retain
-      # a dead address for an hour after a healthy replacement is available.
-      KONG_DNS_VALID_TTL: "5"
-      KONG_DNS_STALE_TTL: "1"
-      KONG_DNS_NOT_FOUND_TTL: "1"
-      KONG_DNS_ERROR_TTL: "1"
-      KONG_UPSTREAM_KEEPALIVE_POOL_SIZE: "512"
-      # The container is limited to 0.5 CPU (deploy.resources above), but
-      # nginx "auto" starts one worker per host core: 8 workers use about 590 MB
-      # on an 8-core host, over the 512M limit.
-      KONG_NGINX_WORKER_PROCESSES: "1"
-      KONG_PLUGINS: request-transformer,cors,key-auth,rate-limiting,request-size-limiting
-      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
-      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
-      # Compress JSON and text answers (an invoice-form preview of 3,055 lines is
-      # 2.2 MB of JSON after migration 101; the tunnel uploads at about 3 MB/s). Only the types
-      # below are compressed: images, PDFs, other storage downloads and
-      # websocket upgrades are not listed, nginx never recompresses an
-      # answer that already has Content-Encoding (get-public-config is gzip
-      # from the functions container), and it skips range answers.
-      KONG_NGINX_PROXY_GZIP: "on"
-      KONG_NGINX_PROXY_GZIP_PROXIED: any
-      KONG_NGINX_PROXY_GZIP_MIN_LENGTH: "1024"
-      KONG_NGINX_PROXY_GZIP_COMP_LEVEL: "5"
-      KONG_NGINX_PROXY_GZIP_VARY: "on"
-      KONG_NGINX_PROXY_GZIP_TYPES: application/json application/vnd.pgrst.object+json application/vnd.pgrst.array+json application/openapi+json application/geo+json text/plain text/csv
-      KONG_NGINX_HTTP2: "on"
-      KONG_UPSTREAM_KEEPALIVE: "320"
-      KONG_NGINX_KEEPALIVE_REQUESTS: "10000"
-      KONG_NGINX_KEEPALIVE_TIMEOUT: "75s"
-      KONG_NGINX_HTTP_KEEPALIVE_TIMEOUT: "75s"
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      # Put into docker/nginx/templates by the image's entrypoint (envsubst), and only these three
+      # (NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile). The entrypoint refuses to start on a missing value or on a
+      # character that could change the configuration (docker/nginx/docker-entrypoint.d/18-require-env.sh).
+      ANON_KEY: ${ANON_KEY:?Set the anon key}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
-      # Cloudflare Tunnel is the only ingress. cloudflared on this host connects
-      # to the loopback-published gateway, and Docker's userland proxy
-      # (docker-proxy) or hairpin NAT presents that connection to Kong from the
-      # Compose bridge gateway address (172.16/12, 10/8 or 192.168/16, depending
-      # on the daemon's address pool), never from 127.0.0.1 itself. Trust those
-      # private ranges plus loopback so Kong reads the client address that
-      # Cloudflare sets in CF-Connecting-IP; the per-IP rate limits in kong.yml
-      # key on that address. Recursion stays off: the header is taken as-is
-      # from the one trusted hop, so a forged X-Forwarded-For chain is ignored.
-      # Do not place another reverse proxy in front of the gateway; it would
-      # not set CF-Connecting-IP and clients could supply their own.
-      KONG_REAL_IP_HEADER: CF-Connecting-IP
-      KONG_REAL_IP_RECURSIVE: "off"
-      KONG_TRUSTED_IPS: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-      # Access log without the query string (docs/CONTAINER_SECURITY.md, "Logs"):
-      # Kong's default format writes the whole request line, so a storage
-      # signed-URL `?token=` stayed in the log for
-      # its 3 x 10 MB of life. `$$uri` is the path alone. The client address
-      # stays (owner decision of 2026-10-17); Referer, User-Agent and the
-      # credential fields of the default format are left out. `$$` is Compose's
-      # escape for `$`. Do not move this into kong.yml, which is `eval`ed below.
-      KONG_NGINX_HTTP_LOG_FORMAT: "warehouse_redacted '$$remote_addr [$$time_local] \"$$request_method $$uri $$server_protocol\" $$status $$body_bytes_sent $$request_time'"
-      KONG_PROXY_ACCESS_LOG: "/dev/stdout warehouse_redacted"
-    entrypoint: bash -c 'eval "echo \"$$(cat /tmp/temp.yml)\"" > /tmp/kong.yml && /docker-entrypoint.sh kong docker-start'
 
   rest:
     # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".
@@ -237,8 +194,8 @@ services:
         condition: service_healthy
     environment:
       JWT_SECRET: ${JWT_SECRET}
-      SUPABASE_URL: http://kong:8000
-      # PostgREST and Storage are called directly, not through Kong (functions/_shared/supabase-rest.ts): no key
+      SUPABASE_URL: http://gateway:8000
+      # PostgREST and Storage are called directly, not through the gateway (functions/_shared/supabase-rest.ts): no key
       # check, rate limit or body limit of the gateway on this path. Both are on `default`, as functions is. Storage
       # never receives CF-Connecting-IP from here: the client sends only apikey and Authorization.
       SUPABASE_REST_URL: http://rest:3000
@@ -461,7 +418,7 @@ services:
   # Polls the facility's Tapo hubs on the LAN and posts readings to the
   # ingest-sensor-readings function through the gateway (docs/SENSORS.md).
   # GPL-3.0-or-later code in its own directory (docker/sensor-bridge/LICENSE).
-  # On `default` only: it calls Kong and nothing else in the project, and it
+  # On `default` only: it calls the gateway and nothing else in the project, and it
   # cannot reach the database. Every variable has a
   # default, so `compose config` keeps working on an installation that never
   # set them; an unconfigured bridge exits 78 when started.
@@ -489,7 +446,7 @@ services:
       SENSOR_BRIDGE_HUBS: ${SENSOR_BRIDGE_HUBS:-}
       TAPO_USERNAME: ${TAPO_USERNAME:-}
       TAPO_PASSWORD: ${TAPO_PASSWORD:-}
-      SENSOR_INGEST_URL: http://kong:8000/functions/v1/ingest-sensor-readings
+      SENSOR_INGEST_URL: http://gateway:8000/functions/v1/ingest-sensor-readings
       SENSOR_INGEST_KEY: ${SENSOR_INGEST_KEY:-}
       SENSOR_BRIDGE_ID: ${SENSOR_BRIDGE_ID:-}
       SENSOR_BRIDGE_POLL_SECONDS: ${SENSOR_BRIDGE_POLL_SECONDS:-300}
@@ -508,7 +465,7 @@ services:
   # pdf-renderer - HTML to PDF conversion (chrome-headless-shell driven by puppeteer-core;
   # docker/pdf-renderer, API in its README). It sits on the internal `renderer` network
   # with `functions` and nothing else: no ports, no route to the internet, the database
-  # or Kong. `functions` does not depend_on it, so a renderer restart never
+  # or gateway. `functions` does not depend_on it, so a renderer restart never
   # restarts or blocks the function runtime.
   pdf-renderer:
     build: ./pdf-renderer

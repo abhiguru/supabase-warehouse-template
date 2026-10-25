@@ -227,6 +227,110 @@ test('doctor refuses a Compose plugin whose `up --help` lacks --wait-timeout, an
   assert.match(run.stderr, /does not accept `up --wait-timeout`/);
 });
 
+// H1 (review of the nginx gateway): the port preflight of setup.sh and start.sh must accept a port that the installation's own `kong`
+// container (the release before the nginx gateway) still holds, or the documented upgrade stops before `up --remove-orphans` can
+// replace it; and it must still refuse a port that a stranger holds. A real operator state (scripts/configure.mjs) and a real
+// listener, with a fake docker that answers as the Docker of a host whose project has the containers the test names.
+import { createServer } from 'node:net';
+import { spawn } from 'node:child_process';
+import { copyFileSync } from 'node:fs';
+import { configure } from '../scripts/configure.mjs';
+import { projectPublishesPort } from '../scripts/doctor.mjs';
+
+const FAKE_DOCKER = `#!/bin/sh
+case "$*" in
+  'compose version') echo 'Docker Compose version v2.40.3' ;;
+  'info --format {{.ServerVersion}}') echo 29.9.1 ;;
+  'compose up --help') echo '      --wait-timeout int   Maximum duration in seconds to wait for the project to be running|healthy' ;;
+  'ps -aq --filter label=com.docker.compose.project='*) ;;
+  "ps --filter label=com.docker.compose.project=$FAKE_PROJECT --format {{.Ports}}") printf '%s\\n' "$FAKE_PORTS" ;;
+  'ps --filter label=com.docker.compose.project='*' --format {{.Ports}}') ;;
+  *' ps -q gateway') printf '%s' "$FAKE_GATEWAY" ;;
+  *) exit 1 ;;
+esac
+`;
+
+async function gatewayPreflight({ holdPort, ports = '', gateway = '', project = null }) {
+  const scratch = mkdtempSync(join(tmpdir(), 'doctor-port-'));
+  const server = createServer();
+  try {
+    const checkout = join(scratch, 'checkout');
+    mkdirSync(checkout);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(checkout, '.env.example'));
+    const providerEnv = join(scratch, 'provider.env');
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=real-provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const state = join(scratch, 'state');
+    configure(checkout, { stateDir: state, apiUrl: 'https://api.example.com', appUrl: 'https://app.example.com', company: 'Acme Stores', providerEnv });
+    // A free port, which a listener takes when the case has a process holding it.
+    await new Promise(done => server.listen(0, '127.0.0.1', done));
+    const port = server.address().port;
+    if (!holdPort) await new Promise(done => server.close(done));
+    const envPath = join(state, 'config/compose.env');
+    // The installation made before the nginx gateway: its port line has the old name.
+    writeFileSync(envPath, readFileSync(envPath, 'utf8').replace(/^GATEWAY_HTTP_PORT=.*$/m, `KONG_HTTP_PORT=${port}`), { mode: 0o600 });
+    const projectName = /^WAREHOUSE_PROJECT_NAME=(.*)$/m.exec(readFileSync(envPath, 'utf8'))[1];
+    const bin = join(scratch, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'docker'), FAKE_DOCKER, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, NODE_TEST_CONTEXT: '',
+      FAKE_PROJECT: project ?? projectName, FAKE_PORTS: ports.replaceAll('{port}', String(port)), FAKE_GATEWAY: gateway };
+    const child = spawn(process.execPath, [new URL('../scripts/doctor.mjs', import.meta.url).pathname, '--preflight'], { env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const status = await new Promise(done => child.on('close', done));
+    return { status, stdout, stderr, port };
+  } finally { server.close(); rmSync(scratch, { recursive: true, force: true }); }
+}
+const enoughSpace = Number(statfsSync(tmpdir()).bavail) * Number(statfsSync(tmpdir()).bsize) >= 3 * 1024 ** 3;
+const portSkip = !enoughSpace && 'needs 3 GiB free in the temp directory (doctor refuses below 2 GiB)';
+
+test('port preflight: the old kong container of this project holds the gateway port, and the upgrade is let through', { skip: portSkip }, async () => {
+  const run = await gatewayPreflight({ holdPort: true, ports: '127.0.0.1:{port}->8000/tcp' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /gateway port preflight passed/);
+});
+
+test('port preflight: the nginx gateway container of this project holds the port, and a free port passes', { skip: portSkip }, async () => {
+  const running = await gatewayPreflight({ holdPort: true, ports: '127.0.0.1:{port}->8000/tcp', gateway: 'abc123' });
+  assert.equal(running.status, 0, running.stderr);
+  const free = await gatewayPreflight({ holdPort: false });
+  assert.equal(free.status, 0, free.stderr);
+});
+
+test('port preflight: a process or a container of another project on the port is still refused', { skip: portSkip }, async () => {
+  // Nothing of the project publishes the port: a stranger holds it.
+  const foreign = await gatewayPreflight({ holdPort: true });
+  assert.equal(foreign.status, 1);
+  assert.match(foreign.stderr, new RegExp(`Loopback gateway port ${foreign.port} is already in use`));
+  // A container of another Compose project publishes it (the fake answers the question for that project only).
+  const other = await gatewayPreflight({ holdPort: true, ports: '127.0.0.1:{port}->8000/tcp', project: 'warehouse-someoneelse' });
+  assert.equal(other.status, 1);
+  assert.match(other.stderr, /is already in use/);
+  // A container of this project that publishes some other port does not make this one its own.
+  const elsewhere = await gatewayPreflight({ holdPort: true, ports: '127.0.0.1:1->5432/tcp' });
+  assert.equal(elsewhere.status, 1);
+  assert.match(elsewhere.stderr, /is already in use/);
+});
+
+test('port preflight: the way docker prints published ports is read in each form', () => {
+  const answer = ports => (_command, _args) => ({ ok: true, output: `${ports}\n` });
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('127.0.0.1:18000->8000/tcp')), true);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('5432/tcp, 127.0.0.1:18000->8000/tcp, [::1]:18000->8000/tcp')), true);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('[::1]:18000->8000/tcp')), true);
+  assert.equal(projectPublishesPort('warehouse-x', 18001, answer('127.0.0.1:18000-18002->8000-8002/tcp')), true);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('5432/tcp\n3000/tcp')), false, 'exposed but not published');
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('127.0.0.1:118000->8000/tcp')), false);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('127.0.0.1:1800->8000/tcp')), false);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, answer('')), false);
+  assert.equal(projectPublishesPort('warehouse-x', 18000, () => ({ ok: false, output: '' })), false, 'docker could not answer');
+  // The question is asked of this project's containers only.
+  let asked;
+  projectPublishesPort('warehouse-x', 18000, (command, args) => { asked = [command, ...args]; return { ok: true, output: '' }; });
+  assert.deepEqual(asked.slice(0, 4), ['docker', 'ps', '--filter', 'label=com.docker.compose.project=warehouse-x']);
+});
+
 // The monitoring checker (scripts/watch.mjs, a systemd timer) replaced the Alertmanager warning.
 const HOOK = 'https://hooks.slack.com/services/' + 'T0000000/B0000000/fictionalfictionalfictional';
 function checkerState({ webhook = true, ran = null, daily = null } = {}) {

@@ -33,7 +33,7 @@ recorded separately before anyone is told the screen works.
 ## How a reading travels
 
 ```
- T310 ──▶ H200 hub ◀── poll every 5 min ─ sensor-bridge ── post every 60 s ──▶ Kong ──▶ ingest-sensor-readings
+ T310 ──▶ H200 hub ◀── poll every 5 min ─ sensor-bridge ── post every 60 s ──▶ gateway ──▶ ingest-sensor-readings
                                           (queue in /data)                          │ service key
                                                                                     ▼
                          sensor_readings (history) ◀── record_sensor_batch ──▶ sensor_latest ◀── app re-reads
@@ -151,8 +151,8 @@ configuration, recreate the bridge, then revoke the old label.
 
 The bridge is the optional Compose service `sensor-bridge` (profile `sensors`,
 image `<project>-sensor-bridge` built from `docker/sensor-bridge/`). It is on
-the `default` network only: it calls Kong at
-`http://kong:8000/functions/v1/ingest-sensor-readings` and cannot reach the
+the `default` network only: it calls the gateway at
+`http://gateway:8000/functions/v1/ingest-sensor-readings` and cannot reach the
 database. It needs the hubs' LAN addresses to be
 reachable from the host. `setup.sh` and `start.sh` start the core services
 only; once a bridge container exists they replace it when its image or

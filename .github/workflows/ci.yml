@@ -278,7 +278,7 @@ jobs:
           node tests/operator-api-core.mjs
           node tests/operator-api-final.mjs
         working-directory: backend
-      - name: Gateway CORS, payload and local TLS
+      - name: Gateway CORS, payload, key check, rate limits and log
         run: npm run test:gateway
         working-directory: backend
       - name: API role statement timeouts (anon is cut at 3 s through PostgREST, service_role is not)

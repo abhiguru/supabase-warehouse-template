@@ -5,7 +5,7 @@
 # replace every <placeholder> with the values confirmed in
 # docs/OPERATOR_INSTALL.md ("Cloudflare Tunnel ingress"), then validate it with
 #   cloudflared --config /private/path/config.yml tunnel ingress validate
-# Kong trusts the CF-Connecting-IP header that this connector delivers and
+# The gateway (nginx) trusts the CF-Connecting-IP header that this connector delivers and
 # keys its per-client rate limits on it; do not put another reverse proxy
 # between cloudflared and the gateway.
 tunnel: <confirmed-tunnel-uuid>
@@ -13,7 +13,7 @@ credentials-file: /private/path/<confirmed-tunnel-uuid>.json
 ingress:
   - hostname: <confirmed-hostname>
     # The Compose stack publishes the gateway on loopback only. 18000 is the
-    # default KONG_HTTP_PORT; use the value in the private compose.env.
+    # default GATEWAY_HTTP_PORT; use the value in the private compose.env.
     service: http://127.0.0.1:18000
     originRequest:
       # The origin is private HTTP, so http2-origin is intentionally absent

@@ -107,9 +107,51 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    it by itself when any has no content type, which also covers a USB copy made before the USB archive kept them. **Run it before the
    first v6 backup, not after:** a backup links a file to the earlier copy only when its attributes are equal too, so the first backup
    after a retag copies every photo again; run first, only one full copy is made.
+15. **The gateway is nginx, not Kong: nothing to do beyond the normal upgrade.** `setup.sh` builds the new `gateway` image from
+    `docker/nginx` (it pulls the pinned nginx image and applies the Alpine updates, so it needs the network once), and its
+    `compose up --remove-orphans` removes the old `kong` container and starts `gateway` on the same loopback port: the tunnel
+    and its config stay as they are. The API is unanswered from the moment `kong` is removed (the first `up` of the run) until the
+    last `up` of the run starts `gateway`, with the migrations, the role changes and Storage's start in between: seconds on an
+    upgrade without migrations, minutes on one with. The port check that setup and `start.sh` make before that accepts the port
+    while the old `kong` container of the installation still holds it. `compose.env` keeps working
+    with `KONG_HTTP_PORT`; `--gateway-port` writes the new name `GATEWAY_HTTP_PORT`. The container and service name is now
+    `gateway` (`bash scripts/compose.sh logs --tail 50 gateway`; a script of your own that names `kong` must change). The
+    rate limits behave differently, see "Changed" below. Once the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu`
+    gives back about 380 MB. To go back to a release from before nginx, run `bash stop.sh` first (see "What the nginx gateway
+    release asks of you" in `docs/OPERATOR_INSTALL.md`).
 
 ### Changed
 
+- **The gateway is plain nginx from the official image; Kong is gone.** `docker/nginx` replaces `docker/kong.yml` and the
+  `eval` entrypoint: nginx 1.30 (alpine-slim variant, pinned by tag and digest, no HIGH or CRITICAL finding at the time of the
+  change), the routes, key check, CORS, body limits and the redacted access log as before, 128 MB instead of 512 MB, a read-only
+  root file system, no capability and a non-root user. The configuration is plain nginx files plus two templates in which
+  the image's own envsubst puts the origin and the two API keys (only those three variables, and the container refuses to start
+  on a value that could change the configuration); the old `eval` of a shell string over `kong.yml` is gone, which closes the open item
+  in `docs/CONTAINER_SECURITY.md`. Real-IP trust is in the public server block only, in front of a routes file shared with the
+  LAN server that a later change adds. Upstream names are looked up again every 5 seconds without a reload. The Compose service
+  is `gateway`, the in-network name `http://gateway:8000`, and the variable `GATEWAY_HTTP_PORT` (`KONG_HTTP_PORT` still works).
+- **Rate limits are a leaky bucket, not a counter per clock minute.** REST: 30 requests a second per client address with a burst
+  of 1800 (`rate=30r/s burst=1800 nodelay`), which is the same 1800 a minute on average and 18 a minute for each of 100 phones,
+  but 1800 may now come at once and the next is refused until the bucket drains at 30 a second (HTTP 429 with the same JSON
+  body and a `Retry-After: 1`). Functions: 100 a minute with a burst of 100; the hourly cap of 6000 is gone, since 100 a minute
+  adds up to 6000 an hour. Storage still has no limit. The gateway no longer sends the `X-RateLimit-*` headers.
+  `tests/gateway-smoke.mjs` checks the new behaviour per client address.
+- **Differences from Kong that a client can see.** A preflight is answered 204 (Kong: 200); a request whose `Content-Length` is
+  over the body limit is answered 413 before the key is looked at (Kong: 401 first); the API key is read from the `apikey` header
+  only, not also from a query parameter, and its letter case is ignored (nginx matches the keys of a map that way; the anon key
+  is public and PostgREST checks the user's token itself); `Retry-After` on a 429 is always `1` (Kong sent the seconds until its
+  window reset, up to 60, and the app counts down from it on a 429 from a function); Storage no longer receives `X-Real-IP` and
+  `X-Forwarded-For` (Kong could not remove them); the upstreams receive no `X-Forwarded-Proto`, `-Host`, `-Port`, `-Path` or
+  `-Prefix` (checked: no function, SQL or app path uses them); every route sets `CF-Connecting-IP` from the address the
+  gateway settled on; the `Server` header reads `nginx` without a version; no `X-Kong-*` or `Via` headers.
+- **New at the gateway.** A path with a dot segment (`/./`, `/../`, also written `%2e` or with the slash as `%2F`) is answered
+  404 on every route, so a `..` that an upstream might resolve never reaches it (the app creates no such names). A request body
+  that arrives slowly is cut off after 20 seconds between two reads on REST and functions. `/health` answers the container's
+  own check only; through the tunnel it is a 404. Response buffers are 0.5 MB a request (Kong: up to 10 MB) so that slow readers fit
+  the 128 MB of the container; a larger answer is passed on as the client takes it (`docs/CONTAINER_SECURITY.md`, Memory).
+- **Request bodies are streamed to the upstream** instead of being written to a file first, and a Storage download is passed on as it
+  arrives, because the gateway's only writable place is a small memory-backed `/tmp`.
 - **Built images are saved, and signed.** After a successful build `scripts/build-images.sh` writes the images it built to
   `<state>/images/<service>.tar` (`docker save`, about 2.5 GiB in all; skipped with a warning if under 5 GiB, or the size of the newest
   backup when larger, would stay free) with a copy of the build record, and `db:restore-host` loads them (`--images DIR`, or an `images`

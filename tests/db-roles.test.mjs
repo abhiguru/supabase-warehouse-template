@@ -51,7 +51,7 @@ test('missing values are added, present ones never replaced, an empty line is fi
   const full = Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
   assert.deepEqual(addMissingDbValues(full), { text: full, added: [] });
   // A state written by the previous release: only POSTGRES_PASSWORD and other lines.
-  const older = `POSTGRES_PASSWORD=${superuser}\nKONG_HTTP_PORT=18000\n`;
+  const older = `POSTGRES_PASSWORD=${superuser}\nGATEWAY_HTTP_PORT=18000\n`;
   const upgraded = addMissingDbValues(older);
   assert.deepEqual(upgraded.added, GENERATED_DB_NAMES);
   assert.ok(upgraded.text.startsWith(older), 'existing lines stay where they were');
@@ -125,7 +125,7 @@ test('staging a rotation replaces only the role lines (and the superuser pair on
     const live = join(scratch, 'compose.env');
     const staged = join(scratch, 'compose.env.rotating-db');
     const values = env();
-    const text = `JWT_SECRET=${'a'.repeat(96)}\n${Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n')}\nKONG_HTTP_PORT=18000\n`;
+    const text = `JWT_SECRET=${'a'.repeat(96)}\n${Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n')}\nGATEWAY_HTTP_PORT=18000\n`;
     writeFileSync(live, text, { mode: 0o600 });
     const changed = path => {
       const before = text.split('\n');
@@ -236,7 +236,7 @@ test('the pooler login counts only while the pooler is on', () => {
 });
 
 test('turning the pooler on adds its secrets once; off keeps them; forget removes them and nothing else', () => {
-  const base = `POSTGRES_PASSWORD=${superuser}\nPOOLER_ENABLED=false\nPOOLER_TENANT_ID=my-tenant\nKONG_HTTP_PORT=18000\n`;
+  const base = `POSTGRES_PASSWORD=${superuser}\nPOOLER_ENABLED=false\nPOOLER_TENANT_ID=my-tenant\nGATEWAY_HTTP_PORT=18000\n`;
   const on = poolerEnvText(base, 'on');
   assert.deepEqual(on.changed, [...POOLER_SECRET_NAMES, 'POOLER_DEFAULT_POOL_SIZE', 'POOLER_MAX_CLIENT_CONN', 'POOLER_DB_POOL_SIZE']);
   assert.match(on.text, /^POOLER_ENABLED=true$/m);
@@ -272,7 +272,7 @@ test('pooler-stage and pooler-state work on a private file and leave the live fi
     const live = join(scratch, 'compose.env');
     const staged = join(scratch, 'compose.env.pooler');
     const cli = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/db-roles.mjs', import.meta.url)), ...args], { encoding: 'utf8' });
-    const text = `POSTGRES_PASSWORD=${superuser}\nKONG_HTTP_PORT=18000\n`;
+    const text = `POSTGRES_PASSWORD=${superuser}\nGATEWAY_HTTP_PORT=18000\n`;
     writeFileSync(live, text, { mode: 0o600 });
     assert.equal(cli('pooler-state', live).stdout.trim(), 'unset');
     const run = cli('pooler-stage', live, staged, 'on');

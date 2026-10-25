@@ -70,7 +70,7 @@ test('is unavailable unless AUTH_MODE is operator and APP_ENV is production', as
   }
 });
 
-test('refuses other methods (a preflight too: Kong answers it) and unknown operations', async () => {
+test('refuses other methods (a preflight too: the gateway answers it) and unknown operations', async () => {
   const { calls, call } = harness();
   const preflight = await call('request', undefined, {}, 'OPTIONS');
   assert.equal(preflight.status, 405);

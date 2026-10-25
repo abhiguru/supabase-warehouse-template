@@ -20,7 +20,7 @@ export function diagnoseService(service, {
   report = message => console.error(message),
 } = {}) {
   try {
-    if (!['supavisor', 'kong', 'functions', 'rest'].includes(service)) throw new Error();
+    if (!['supavisor', 'gateway', 'functions', 'rest'].includes(service)) throw new Error();
     // The ownership wrapper must succeed before inspecting any container.
     const profile = service === 'supavisor' ? ['--profile', 'pooler'] : [];
     const found = run('bash', [root + '/scripts/compose.sh', ...profile, 'ps', '-a', '-q', service]);

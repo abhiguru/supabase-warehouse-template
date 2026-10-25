@@ -27,7 +27,7 @@ case "$1" in
       # The health check of scripts/watch.mjs (INSPECT_FORMAT): one line per container id given.
       *com.docker.compose.service*) shift 3
         for id in "$@"; do
-          case "$id" in a00000000001) n=db ;; a00000000002) n=kong ;; a00000000003) n=rest ;; a00000000004) n=storage ;; a00000000005) n=functions ;; *) n=pdf-renderer ;; esac
+          case "$id" in a00000000001) n=db ;; a00000000002) n=gateway ;; a00000000003) n=rest ;; a00000000004) n=storage ;; a00000000005) n=functions ;; *) n=pdf-renderer ;; esac
           printf '%s|%s|running|healthy|0|false|2026-10-18T00:00:00Z|False\\n' "$id" "$n"
         done ;;
       *State.Status*) printf 'running healthy\\n' ;;
@@ -38,7 +38,7 @@ case "$1" in
     case "$*" in
       'compose version') printf 'Docker Compose version v2.39.0\\n' ;;
       'compose up --help') printf '      --wait-timeout int   Maximum duration to wait\\n' ;;
-      *' config --services') printf 'db\\nkong\\nrest\\nstorage\\nfunctions\\npdf-renderer\\n' ;;
+      *' config --services') printf 'db\\ngateway\\nrest\\nstorage\\nfunctions\\npdf-renderer\\n' ;;
       *' ps -a -q') printf 'a00000000001\\na00000000002\\na00000000003\\na00000000004\\na00000000005\\na00000000006\\n' ;;
       *' exec -T storage node '*) cat >/dev/null; printf 'OK REST\\nOK configuration\\n' ;;
       *' ps -q supavisor') : ;;
@@ -119,7 +119,7 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.equal(calls.includes(after.JWT_SECRET), false, 'secret never appears in Docker arguments');
     assert.equal(calls.includes(before.JWT_SECRET), false);
     assert.ok(calls.indexOf('exec -T db psql') < calls.indexOf('--force-recreate'), 'SQL before recreation');
-    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db kong rest storage functions\n/);
+    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db gateway rest storage functions\n/);
     assert.equal(/--force-recreate[^\n]*supavisor/.test(calls), false, 'stopped optional consumer is not started');
     assert.ok(calls.indexOf('--force-recreate') < calls.indexOf('pg_isready'), 'doctor runs after recreation');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }

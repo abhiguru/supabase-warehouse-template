@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
+import { gatewayPortText, readEnv, operatorEnvPath } from '../scripts/doctor-common.mjs';
 
 const env = readEnv(operatorEnvPath());
-const httpBase = `http://127.0.0.1:${env.KONG_HTTP_PORT}`;
+const httpBase = `http://127.0.0.1:${gatewayPortText(env)}`;
 const allowed = env.CORS_ALLOWED_ORIGIN;
 
 const preflight = async origin => fetch(`${httpBase}/functions/v1/get-public-config`, {
@@ -18,10 +18,15 @@ const accepted = await preflight(allowed);
 if (!accepted.ok || accepted.headers.get('access-control-allow-origin') !== allowed || accepted.headers.get('access-control-allow-credentials') !== 'true') {
   throw new Error(`Trusted CORS preflight failed: HTTP ${accepted.status}`);
 }
+// The preflight of the functions route lists its methods and headers and is cached for a day.
+if (accepted.headers.get('access-control-allow-methods') !== 'GET,POST,PUT,DELETE,OPTIONS' || accepted.headers.get('access-control-max-age') !== '86400') {
+  throw new Error(`The CORS preflight lacks the route's methods or its cache time: ${accepted.headers.get('access-control-allow-methods')} / ${accepted.headers.get('access-control-max-age')}.`);
+}
 const denied = await preflight('https://untrusted.invalid');
-if (denied.headers.get('access-control-allow-origin') === 'https://untrusted.invalid') throw new Error('Untrusted browser origin received CORS permission.');
-// CORS is Kong's alone (the edge functions set no Access-Control-* header): the preflight above is answered by
-// Kong itself, and an ordinary response carries Kong's configured origin, never the wildcard a function used to add.
+// The configured origin is sent whatever the request says; an untrusted origin is never named.
+if (denied.headers.get('access-control-allow-origin') === 'https://untrusted.invalid' || denied.headers.get('access-control-allow-origin') === '*') throw new Error('Untrusted browser origin received CORS permission.');
+// CORS is the gateway's alone (the edge functions set no Access-Control-* header): the preflight above is answered by
+// the gateway itself, and an ordinary response carries its configured origin, never the wildcard a function used to add.
 const ordinary = async origin => {
   const response = await fetch(`${httpBase}/functions/v1/get-public-config`, { headers: { Origin: origin }, redirect: 'error', signal: AbortSignal.timeout(15000) });
   await response.body?.cancel();
@@ -43,27 +48,75 @@ const oversized = await fetch(`${httpBase}/functions/v1/get-public-config`, {
 });
 if (oversized.status !== 413) throw new Error(`Oversized request was not rejected: HTTP ${oversized.status}`);
 
-// Kong keys the functions rate limit on CF-Connecting-IP (KONG_REAL_IP_HEADER):
-// two requests from one client address consume one budget and a second address
-// starts its own. The sequence is retried once if the minute window rolls over
-// between the first two requests.
-const remainingFor = async ip => {
-  const response = await fetch(`${httpBase}/functions/v1/get-public-config`, {
-    headers: { 'CF-Connecting-IP': ip },
-    redirect: 'error',
-    signal: AbortSignal.timeout(15000),
-  });
-  await response.body?.cancel();
-  const remaining = Number(response.headers.get('x-ratelimit-remaining-minute'));
-  if (!response.ok || !Number.isInteger(remaining)) throw new Error(`Functions route did not report a per-minute rate limit: HTTP ${response.status}`);
-  return remaining;
+// The limits are a leaky bucket per client address, and the address is CF-Connecting-IP (this request comes from the loopback
+// hop, which the gateway trusts). Each check uses an address of its own, drawn at random from the documentation range
+// 2001:db8::/32, so a rerun a moment later meets an empty bucket and no real client's budget is touched.
+const address = () => `2001:db8:5eed::${randomBytes(2).toString('hex')}`;
+const status = async (path, ip, init = {}) => {
+  const response = await fetch(`${httpBase}${path}`, { redirect: 'error', signal: AbortSignal.timeout(30000), ...init, headers: { 'CF-Connecting-IP': ip, ...init.headers } });
+  const text = await response.text();
+  return { status: response.status, headers: response.headers, text };
 };
-let counts = [];
-for (let attempt = 0; attempt < 2 && counts[1] !== counts[0] - 1; attempt += 1) {
-  counts = [await remainingFor('198.51.100.10'), await remainingFor('198.51.100.10'), await remainingFor('198.51.100.11')];
+// The functions route: a bucket of 100 that empties at 100 a minute. Requests one after the other from one address: the first
+// 429 comes after about 100 answers (101 with the request that opens the bucket, and the 1 per 0.6 s that drained meanwhile),
+// the JSON body and Retry-After are the documented ones, and another address is not affected.
+{
+  const ip = address();
+  const started = Date.now();
+  let passed = 0;
+  let refused = null;
+  while (!refused && passed < 160) {
+    const answer = await status('/functions/v1/get-public-config', ip);
+    if (answer.status === 429) refused = answer; else if (answer.status === 200) passed += 1; else throw new Error(`Functions route answered HTTP ${answer.status} before its limit.`);
+  }
+  const seconds = (Date.now() - started) / 1000;
+  if (!refused) throw new Error(`The functions route passed ${passed} requests from one address in ${seconds.toFixed(1)} s without a 429.`);
+  const most = 101 + Math.ceil(seconds * 100 / 60) + 2;
+  if (passed < 100 || passed > most) throw new Error(`The functions bucket passed ${passed} requests in ${seconds.toFixed(1)} s (expected 100 to ${most}).`);
+  if (refused.text !== '{"message":"API rate limit exceeded"}' || refused.headers.get('retry-after') !== '1' || !/^application\/json/.test(refused.headers.get('content-type') ?? '')) {
+    throw new Error(`The 429 answer is not the documented one: ${refused.text.slice(0, 80)} / retry-after ${refused.headers.get('retry-after')}.`);
+  }
+  const other = await status('/functions/v1/get-public-config', address());
+  if (other.status !== 200) throw new Error(`Another client address was refused (HTTP ${other.status}) after ${ip} used its bucket: the limit is not keyed by client address.`);
 }
-const [first, second, third] = counts;
-if (second !== first - 1 || third !== first) throw new Error(`Rate limit is not keyed by client IP (remaining-minute ${first}, ${second}, ${third}).`);
+
+// The REST route: a bucket of 1800 that empties at 30 a second. The root endpoint is the cheapest call (PostgREST answers 404
+// PGRST126 for it, below). Batches of 100 at once from one address until a 429; the number answered otherwise is what the
+// gateway let in: the burst of 1800 (1801 with the request that opens the bucket) plus what drained at 30 a second meanwhile.
+{
+  const ip = address();
+  const started = Date.now();
+  let admitted = 0;
+  let limited = 0;
+  let sent = 0;
+  while (!limited && sent < 6000 && Date.now() - started < 60000) {
+    const batch = await Promise.all(Array.from({ length: 100 }, () => status('/rest/v1/', ip, { headers: { apikey: env.ANON_KEY } })));
+    sent += batch.length;
+    for (const answer of batch) { if (answer.status === 429) limited += 1; else admitted += 1; }
+  }
+  const seconds = (Date.now() - started) / 1000;
+  if (!limited) throw new Error(`The REST route passed ${admitted} requests from one address in ${seconds.toFixed(1)} s without a 429.`);
+  const most = 1801 + Math.ceil(seconds * 30) + 10;
+  if (admitted < 1800 || admitted > most) throw new Error(`The REST bucket passed ${admitted} requests in ${seconds.toFixed(1)} s (expected 1800 to ${most}).`);
+  const other = await status('/rest/v1/', address(), { headers: { apikey: env.ANON_KEY } });
+  if (other.status === 429) throw new Error('Another client address was refused on the REST route after one used its bucket: the limit is not keyed by client address.');
+}
+
+// The key check of the REST route (and of it alone): the two answers the mobile app reads, and the right key goes through. These
+// are refused before the rate limit, so they use no budget.
+{
+  const ip = address();
+  const missing = await status('/rest/v1/rpc/get_public_config', ip, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  if (missing.status !== 401 || missing.text !== '{"message":"No API key found in request"}') throw new Error(`No apikey: HTTP ${missing.status} ${missing.text.slice(0, 80)}.`);
+  const wrong = await status('/rest/v1/rpc/get_public_config', ip, { method: 'POST', headers: { 'content-type': 'application/json', apikey: 'not-a-key' }, body: '{}' });
+  if (wrong.status !== 401 || wrong.text !== '{"message":"Unauthorized"}') throw new Error(`Wrong apikey: HTTP ${wrong.status} ${wrong.text.slice(0, 80)}.`);
+  const good = await status('/rest/v1/rpc/get_public_config', ip, { method: 'POST', headers: { 'content-type': 'application/json', apikey: env.ANON_KEY }, body: JSON.stringify({ p_environment: 'production' }) });
+  if (good.status === 401) throw new Error('The anon key was refused by the key check.');
+  const open = await status('/functions/v1/get-public-config', ip);
+  if (open.status !== 200) throw new Error(`The functions route needs no key but answered HTTP ${open.status}.`);
+  // nginx names itself and no version.
+  if (open.headers.get('server') !== 'nginx') throw new Error(`The Server header is "${open.headers.get('server')}", not "nginx".`);
+}
 
 // The access log keeps the path, not the query string (docs/CONTAINER_SECURITY.md, "Logs"): a signed
 // storage link carries ?token=. Send one with a
@@ -76,7 +129,7 @@ for (const path of [`/storage/v1/object/sign/documents/smoke-${marker}.pdf?token
   await response.body?.cancel();
 }
 const gatewayLog = () => {
-  const result = spawnSync('bash', [fileURLToPath(new URL('../scripts/compose.sh', import.meta.url)), 'logs', '--no-color', '--no-log-prefix', '--tail', '5000', 'kong'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync('bash', [fileURLToPath(new URL('../scripts/compose.sh', import.meta.url)), 'logs', '--no-color', '--no-log-prefix', '--tail', '5000', 'gateway'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`Could not read the gateway log: ${result.stderr.trim().split('\n').pop()}`);
   return `${result.stdout}\n${result.stderr}`;
 };
@@ -112,4 +165,4 @@ for (const [label, call] of [
 const root = await restCall('');
 if (root.status !== 404 || root.body?.code !== 'PGRST126' || /swagger|openapi|definitions/i.test(root.text)) throw new Error(`/rest/v1/ still serves an OpenAPI document: HTTP ${root.status} ${root.text.slice(0, 120)}`);
 
-console.log('Exact-origin CORS, request-size limit, per-client rate limit, a query-free gateway log, the storage schema off REST and no OpenAPI document passed on the loopback gateway.');
+console.log('Exact-origin CORS, request-size limit, per-client rate limits (functions and REST), the key check, a query-free gateway log, the storage schema off REST and no OpenAPI document passed on the loopback gateway.');

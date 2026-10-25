@@ -37,7 +37,7 @@ function fixture() {
   recipe('cups', { profiles: ['printing'] });
   // No `image:`: Compose tags every built image `<project>-<service>`, the sensor bridge included.
   recipe('sensor-bridge', { profiles: ['sensors'] });
-  services.kong = { image: 'kong:3.9.4-ubuntu' };
+  services.rest = { image: 'postgrest/postgrest:v16.4' };
   const config = join(scratch, 'config.json');
   const writeConfig = () => writeFileSync(config, JSON.stringify({ name: PROJECT, services }));
   writeConfig();
@@ -306,7 +306,7 @@ test('an installation from before the record rebuilds once what it uses; an imag
     // The image scan and the checks build optional images that are never started:
     // The sensor bridge and CUPS have an image here, but only the pooler has a container.
     f.haveImages(...CORE, `${PROJECT}-supavisor`, `${PROJECT}-cups`, `${PROJECT}-sensor-bridge`);
-    const containers = 'db functions supavisor kong';
+    const containers = 'db functions supavisor rest';
     const first = run(f, { containers });
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.builds, 'db functions supavisor');
@@ -412,7 +412,7 @@ test('--all and --no-cache rebuild every image in use; anything else is refused'
 
 // What setup.sh leaves behind: every image built from this checkout and recorded.
 const builtAll = f => {
-  const containers = 'db functions supavisor sensor-bridge kong';
+  const containers = 'db functions supavisor sensor-bridge rest';
   assert.equal(run(f, { containers }).status, 0);
   return containers;
 };
@@ -421,10 +421,10 @@ test('--replace-optional starts only the optional services that are running, and
   const f = fixture();
   try {
     const containers = builtAll(f);
-    const none = run(f, { args: ['--replace-optional'], containers, running: 'db functions kong' });
+    const none = run(f, { args: ['--replace-optional'], containers, running: 'db functions rest' });
     assert.equal(none.status, 0, none.stderr);
     assert.equal(none.ups, '');
-    const some = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge kong' });
+    const some = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge rest' });
     assert.equal(some.status, 0, some.stderr);
     assert.equal(some.ups, '--wait --wait-timeout 180 sensor-bridge supavisor');
     assert.equal(some.builds, '');
@@ -447,7 +447,7 @@ test('--replace-optional leaves a running optional service alone when its image 
     const containers = builtAll(f);
     // An upgrade renamed the image (a shared tag became `<project>-sensor-bridge`), or it was removed.
     rmSync(join(f.scratch, 'images', imageFile(`${PROJECT}-sensor-bridge`)));
-    const result = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge kong' });
+    const result = run(f, { args: ['--replace-optional'], containers, running: 'db supavisor sensor-bridge rest' });
     assert.equal(result.status, 1, 'start.sh turns this into a warning');
     assert.equal(result.builds, '');
     assert.equal(result.ups, '--wait --wait-timeout 180 supavisor', 'the others are still replaced');

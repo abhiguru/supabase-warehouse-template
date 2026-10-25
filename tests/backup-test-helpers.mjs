@@ -257,7 +257,7 @@ case "$1" in
       *'ps --all --format'*) if [ "$FAKE_FAIL_UP" = yes ]; then printf 'storage running unhealthy\\n'; fi ;;
       *' logs '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | awk '{print $NF}')" ;;
       *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
-      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
+      *' ps -q gateway') printf 'aaaaaaaaaaaa\\n' ;;
       *' ps -q storage') printf 'cccccccccccc\\n' ;;
       *' ps -q '*) : ;;
       *'exec -T db pg_dump'*) snap pg_dump; if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;

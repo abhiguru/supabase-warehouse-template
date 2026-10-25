@@ -171,7 +171,7 @@ alone.
 ## The daily backup, verify, prune and retention
 
 Once a day, inside the 6 hours after the chosen time, and only while the database and the services the backup stops
-(`kong`, `functions`, `rest`, `storage`) are up, `watch.mjs daily` runs `scripts/watch-daily.sh` under one operator lock:
+(`gateway`, `functions`, `rest`, `storage`) are up, `watch.mjs daily` runs `scripts/watch-daily.sh` under one operator lock:
 `scripts/backup.sh`, then `scripts/verify-restore.sh` on that backup, then it prunes older backups, then
 `scripts/retention.sh apply`. The PDF renderer, a stopped or unhealthy `cups` or `sensor-bridge`, and a pooler that was stopped
 on purpose do not hold the backup back; a pooler that runs but is unhealthy does (the backup restarts it and waits for it).
