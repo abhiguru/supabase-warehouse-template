@@ -68,22 +68,29 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    a lost phone is therefore ended by switching the user off (`docs/OPERATOR_INSTALL.md`, "A lost or stolen phone"). If many phones share
    the facility Wi-Fi, list its public address once as `otp_trusted_source_list` (`docs/OPERATOR_INSTALL.md`, "The facility's own Wi-Fi
    address"). Learn `bash scripts/break-glass-admin.sh <admin number>` ("Break-glass administrator sign-in") before the day SMS stops.
-   **After `setup.sh`, run `bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/`.**
-   Setup does not recreate the `functions` container (the functions are bind-mounted and the edge runtime keeps the modules it has loaded,
-   see "Rerun and upgrade" in `docs/OPERATOR_INSTALL.md`); without that line the old `operator-otp` keeps running, and while the SMS
+   **`setup.sh` recreates the `functions` container since this release** (the functions are bind-mounted and the edge runtime keeps the
+   modules it has loaded, so a new checkout alone never reloaded them; see "Rerun and upgrade" in `docs/OPERATOR_INSTALL.md`). Releases
+   before this one did not: after the pull they needed `bash scripts/compose.sh up -d --force-recreate functions` by hand. Running the
+   `setup.sh` of this release does it, so nothing more is needed. Without the recreate the old `operator-otp` keeps running, and while the SMS
    provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
    The app needs no change.
 13. **Follow release tags, and upgrade with `bash upgrade.sh vX.Y.Z`.** `main` is no longer the operator channel; a release is a tag
    (`vMAJOR.MINOR.PATCH`) with a GitHub release note. `upgrade.sh` takes the operator lock, backs up and verifies the backup, checks the tag
    out (detached HEAD), reruns `setup.sh --operator` with your installation's own values (the administrator is read from the database;
-   nothing else needs repeating), recreates the `functions` container, runs `doctor --local` and prints the operator actions of this
-   file between your release and the new one. `bash upgrade.sh --dry-run vX.Y.Z` runs the checks and prints the plan. It refuses a
-   dirty checkout, a name that is not a release tag on origin, a release on another PostgreSQL major (that stays the separate
-   "Major PostgreSQL upgrade" procedure) and a database that recorded migrations the release does not contain. **The first move to a
-   release that contains `upgrade.sh` uses the manual sequence** in `docs/OPERATOR_INSTALL.md` ("Rerun and upgrade", "What upgrade.sh
-   does"): your checkout has no `upgrade.sh` yet. Security fixes are supported for the current and the previous minor release
-   (`SECURITY.md`). `setup.sh` now accepts the operator lock when its caller already holds it (`upgrade.sh` does), as `migrate.sh` and
-   `backup.sh` already did.
+   nothing else needs repeating; setup also recreates the `functions` container and runs `doctor --local`) and prints the operator actions of this
+   file between your release and the new one. `bash upgrade.sh --dry-run vX.Y.Z` runs the checks and prints the plan. It refuses to run as
+   root, a dirty checkout, a name that is not a release tag on origin, a release the checkout is already past (it only moves forward), a
+   release on another PostgreSQL major (that stays the separate "Major PostgreSQL upgrade" procedure) and a database that recorded
+   migrations the release does not contain. Run it inside `tmux` or `screen` over SSH. **If it stops, the same command finishes it:**
+   before its first change it writes `config/upgrade-in-progress` (the old commit, the target, the step, then the verified backup), a rerun
+   reuses that backup and takes no new one of the half-upgraded database (and works with the database down), `doctor`, `start.sh` and the
+   status commands report the interrupted upgrade while the file exists, and a failed step prints the complete way back (old commit,
+   `stop.sh`, `npm run db:restore -- --yes --restore-config <backup>`, the old release's `setup.sh`, the `functions` recreate, `doctor`; again
+   with `node scripts/upgrade-record.mjs rollback`). **The first move to a release that contains `upgrade.sh` uses the manual sequence** in
+   `docs/OPERATOR_INSTALL.md` ("Rerun and upgrade", "What upgrade.sh does"): your checkout has no `upgrade.sh` yet. Security fixes are
+   supported for the current and the previous minor release (`SECURITY.md`); a backport never carries a migration (`CONTRIBUTING.md`).
+   `setup.sh` now accepts the operator lock when its caller already holds it (`upgrade.sh` does), as `migrate.sh` and `backup.sh` already
+   did; a descriptor 9 that only names the lock file no longer counts as holding it.
 
 ### Changed
 
@@ -113,16 +120,27 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   `daily_timer_legacy` (item 10). The gateway-log checks (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) read
   `docker logs -t --tail 5000` and cut to 5 minutes by the time stamps: `docker logs --since` returned nothing for any window up to
   an hour on a Docker 29.9.1 host, which would have kept them at "too few requests" for good (`tests/gateway-smoke.mjs` likewise).
-- **Release channel, support window and `upgrade.sh`.** `upgrade.sh` (operator action 13), `scripts/pg-major.sh` (the PostgreSQL major of
-  a tree or a tag, which `upgrade.sh` and CI compare), `SECURITY.md` (the current and the previous minor receive security fixes, the previous
-  one for 6 months after the next minor; a fix is announced in a GitHub release note with "Security" in its title), `SUPPORT.md`,
-  `CONTRIBUTING.md` (release flow) and `docs/RELEASE_CHECKLIST.md` (the release note template, the `upgrade.sh` rehearsal from the
-  previous tag). A new baseline must list the migration names it replaces (`CONTRIBUTING.md`), because `upgrade.sh` refuses a release
-  whose migrations lack a name the database recorded.
-- **CI.** A new `operator-upgrade` job installs the newest release tag before the change and moves it to the commit with
-  `upgrade.sh --ref` (`scripts/ci-previous-tag.sh` picks the tag; skipped with a notice until a tag on the same PostgreSQL major exists).
-  `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`, so GitHub does not disable the
-  scheduled workflows after 60 days without activity (`docs/PRODUCTION_DEPENDENCIES.md`, "Accepted by the owner").
+- **Release channel, support window and `upgrade.sh`.** `upgrade.sh` (operator action 13) with its upgrade record
+  (`scripts/upgrade-record.mjs`), `scripts/pg-major.sh` (the PostgreSQL major of a tree or a tag, which `upgrade.sh` and CI compare),
+  `SECURITY.md` (the current line gets a patch from `main` when `main` holds nothing unreleased beyond the fix, else the next minor; the
+  previous minor gets a backport of a code-only fix for 6 months after the next minor; a fix that needs SQL is never backported; a fix is
+  announced in a GitHub release note with "Security" in its title), `SUPPORT.md`, `CONTRIBUTING.md` (release flow, how a security fix ships,
+  what belongs in `setup.sh`) and `docs/RELEASE_CHECKLIST.md` (the release note template, the `upgrade.sh` rehearsal on a release candidate
+  `vX.Y.Z-rc.N` before the same commit is tagged `vX.Y.Z`). A new baseline must list the migration names it replaces (`CONTRIBUTING.md`),
+  because `upgrade.sh` refuses a release whose migrations lack a name the database recorded. `release.yml` also runs
+  `scripts/check-release-contents.sh` (the `CHANGELOG.md` section, `upgrade.sh`, `scripts/pg-major.sh`, the inherited lock and the
+  functions recreate in `setup.sh`).
+- **`setup.sh` recreates the `functions` container** after its full start (`up -d --force-recreate --no-deps --wait`), so the code on disk
+  is the code that runs, whether the move was made by `upgrade.sh` or by hand. `upgrade.sh` no longer recreates it or runs the doctor
+  itself: after the checkout it is the old release's script, so everything that depends on the release moved to is a step of that release's
+  `setup.sh`.
+- **CI.** A new `operator-upgrade` job installs the newest release tag before the change (its own `upgrade.sh`, unchanged), or, when no
+  tag on the same PostgreSQL major exists, the merge base with the target branch (with this change's `upgrade.sh` added), and moves it to
+  the commit with `upgrade.sh --ref`; it checks the record is gone, the doctor, the identity, the administrator and that no table lost
+  rows. `ci.yml` runs for `release/**` branches and fails a pull request into one that changes `migrations/`.
+  `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive` and calls the documented endpoint
+  that enables the scheduled workflows (`actions: write`, this workflow only). That this keeps GitHub from disabling them after 60 days is
+  unverified; the owner checks the Actions tab after a long absence (`docs/PRODUCTION_DEPENDENCIES.md`).
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

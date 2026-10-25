@@ -64,28 +64,40 @@ fresh build and scan before each release instead). Before every release tag:
 - [ ] Every operator action of the release is in that section's "Operator actions" list, numbered, each with the exact command.
 - [ ] If the release changes the PostgreSQL major, the section says so at the top and links the "Major PostgreSQL upgrade" procedure
       (`upgrade.sh` refuses such a move). If the migrations were squashed, the section lists the migration names the new baseline replaces.
-- [ ] The release contains `upgrade.sh`, `scripts/pg-major.sh` and, in `setup.sh`, `operator_lock_or_inherited`.
+- [ ] The release contains `upgrade.sh`, `scripts/pg-major.sh` and, in `setup.sh`, `operator_lock_or_inherited` and the recreate of
+      the `functions` container (the steps that depend on the release live in its `setup.sh`: `CONTRIBUTING.md`, "Releases").
+      `scripts/check-release-contents.sh` checks these and the `CHANGELOG.md` section when the tag is pushed.
 
 ## Tag validation
 
-A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), `npm test`, `npm audit`, the
+A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), the release contents gate
+(`scripts/check-release-contents.sh`: the `CHANGELOG.md` section, `upgrade.sh`, `scripts/pg-major.sh`, the inherited lock and the
+functions recreate in `setup.sh`), `npm test`, `npm audit`, the
 Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs`; a Chrome more than 14 days
 behind Stable blocks the release) and a Compose validation against generated operator state. Wait for it to pass before the
 next two sections.
 
 ## Upgrade rehearsal from the previous tag
 
-The `operator-upgrade` CI job runs `upgrade.sh --ref` from the previous tag to the change, but it cannot run the tag itself (a
-commit is not a release tag). Once the tag is pushed and `release.yml` is green:
+The `operator-upgrade` CI job runs `upgrade.sh --ref` from the previous tag (or the merge base) to the change, but it cannot run
+the new tag itself (a commit is not a release tag). So the rehearsal runs on a release candidate, and the final tag goes on the same
+commit afterwards: a failed rehearsal never leaves a published `vX.Y.Z` that has to be moved.
 
+- [ ] Tag the release commit `vX.Y.Z-rc.N` (`git tag -a vX.Y.Z-rc.N <commit>`, push it) and wait for `release.yml` to pass. The
+      `CHANGELOG.md` section is `## vX.Y.Z (date)`; `upgrade.sh` prints it for the candidate too.
 - [ ] On a **throwaway** installation of the previous release (its own state and project name; never a facility's), with some data
-      in it, run `bash upgrade.sh --dry-run vX.Y.Z` and then `bash upgrade.sh vX.Y.Z`. Both must end well; the last line of
-      `$WAREHOUSE_STATE_DIR/config/upgrades.log` must end in `ok`, and `node scripts/doctor.mjs` must pass.
-- [ ] Read what `upgrade.sh` printed under "What vX.Y.Z asks of the operator": it must be the operator actions of this release and
+      in it, run `bash upgrade.sh --dry-run vX.Y.Z-rc.N` and then `bash upgrade.sh vX.Y.Z-rc.N`. Both must end well; the last line of
+      `$WAREHOUSE_STATE_DIR/config/upgrades.log` must end in `ok`, `config/upgrade-in-progress` must be gone, and
+      `node scripts/doctor.mjs` must pass.
+- [ ] Read what `upgrade.sh` printed under "What vX.Y.Z-rc.N asks of the operator": it must be the operator actions of this release and
       no other release's.
 - [ ] If the previous release is on another PostgreSQL major, `upgrade.sh` must refuse and name the "Major PostgreSQL upgrade"
       section; rehearse that procedure instead.
-- [ ] Record in the release pull request or the release note: the previous tag, the tag, the date and the result.
+- [ ] Once, for the first release that has the upgrade record: stop a rehearsal in the middle (`kill -9` of `upgrade.sh` while `setup.sh`
+      runs), check that `node scripts/doctor.mjs --local` reports the interrupted upgrade, and finish it with the same command.
+- [ ] Rehearsal passed: tag the same commit `vX.Y.Z` (`git tag -a vX.Y.Z vX.Y.Z-rc.N^{commit}`), push it, wait for `release.yml`.
+      Failed: fix on `main` and start again with `-rc.N+1`; do not move a tag.
+- [ ] Record in the release pull request or the release note: the previous tag, the candidate, the tag, the date and the result.
 
 ## Release note
 
@@ -120,9 +132,19 @@ bash upgrade.sh vX.Y.Z            (from vA.B.C or later in the same PostgreSQL m
 - Supported lines now: X.Y (current) and P.Q (until <date, 6 months after the X.Y.0 release>)
 ```
 
-## Backport of a security fix
+## A security fix: which line, which tag
 
-- [ ] The fix is on `main` with its test. If the previous minor line is still supported (6 months after the current minor's first
-      release), cherry-pick it onto `release/MAJOR.MINOR` of that line (create the branch from its last tag if it does not exist),
-      add the `CHANGELOG.md` section, and run the checks above for the backport tag too.
-- [ ] Two releases, two notes, both titled "... Security: ...", each naming the other.
+The rules and their reasons are in [CONTRIBUTING.md](../CONTRIBUTING.md), "How a security fix ships".
+
+- [ ] The fix is on `main` with its test.
+- [ ] **Current line.** If `main` holds nothing unreleased beyond the fix, tag the next patch from `main`. Otherwise ship the fix as the
+      next minor release from `main` (all of the checklist above applies). There is no release branch for the current line.
+- [ ] **Previous line, still supported** (6 months after the current minor's first release), and the fix is **code only**: no file under
+      `migrations/` is part of it. Cherry-pick it onto `release/MAJOR.MINOR` of that line (create the branch from its last tag if it
+      does not exist; the pull request runs CI, which refuses a change to `migrations/`), write the `CHANGELOG.md` section of the patch
+      release on the branch **and add the same section to `main`'s `CHANGELOG.md`**, tag the patch on the branch, and run the checks
+      above for that tag too.
+- [ ] **The fix needs SQL: no backport.** The previous line's release note (a new patch release of it, if it needs one for the
+      notice) tells its operators to upgrade to the next minor release. Never put a migration on a `release/*` branch.
+- [ ] Two releases (one when there is no backport), each titled "... Security: ..." and naming the other.
+- [ ] Owner action, once: a ruleset for `release/*` like `main`'s (docs/PRODUCTION_DEPENDENCIES.md).

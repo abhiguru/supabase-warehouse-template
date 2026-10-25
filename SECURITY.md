@@ -5,9 +5,12 @@
 Facilities run tagged releases (`vMAJOR.MINOR.PATCH`), not `main`: `main` is development and can hold changes that were never
 released. Security fixes are provided for:
 
-- the **current minor release line** (for example 0.7.x): the fix ships in a new patch release of that line;
-- the **previous minor release line** (for example 0.6.x) for **6 months after the next minor release** (0.7.0) came out: the fix is
-  backported and ships as a patch release of that line.
+- the **current minor release line** (for example 0.7.x): the fix ships from `main`, as the next patch release when `main` holds
+  nothing unreleased beyond the fix, otherwise as the **next minor release** (0.8.0). The current line gets no release branch;
+- the **previous minor release line** (for example 0.6.x) for **6 months after the next minor release** (0.7.0) came out: a fix that is
+  code only (functions, scripts, images, documents) is backported and ships as a patch release of that line (0.6.x). **A fix that needs
+  SQL is never backported** (backports never carry a migration): that line's release note then says to upgrade to the next minor
+  release (0.7.x or later).
 
 Earlier lines get no fix; move to a supported line. A move between releases is `bash upgrade.sh vX.Y.Z`
 ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "Rerun and upgrade"); a release on another PostgreSQL major is the separate
@@ -19,8 +22,10 @@ Earlier lines get no fix; move to a supported line. A move between releases is `
 A security fix is published as a **GitHub release with "Security" in its title** (for example "v0.7.2 Security: sign-in codes in
 logs"). The release note names the affected versions, what an attacker could do, the fixed releases and anything the operator has
 to do besides `bash upgrade.sh vX.Y.Z`. A published advisory (GitHub Security tab) accompanies it when the issue needs a CVE.
-Watch the repository's releases to be told (Watch, Custom, Releases). Fixes land on `main` first and are tagged from there; a backport
-is tagged from the branch `release/MAJOR.MINOR` of its line.
+Watch the repository's releases to be told (Watch, Custom, Releases). Fixes land on `main` first and are tagged from there; a backport of
+a code-only fix is tagged from the branch `release/MAJOR.MINOR` of its line (rules: [CONTRIBUTING.md](CONTRIBUTING.md), "How a security
+fix ships"). Nothing on the facility itself tells an operator about a new release yet (a backlog item in
+[docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md)); the release notes on GitHub are the channel.
 
 This project has one maintainer ([docs/PRODUCTION_DEPENDENCIES.md](docs/PRODUCTION_DEPENDENCIES.md), "Accepted by the owner"):
 answers and fixes are best effort and slow down when the maintainer is away.

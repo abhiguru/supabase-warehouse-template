@@ -28,7 +28,24 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   recovery objectives, each with measured evidence.
 - **Domain and ingress.** The facility's own Cloudflare hostname and tunnel, a cellular check, and the private boundary
   kept (database, CUPS, the Tapo hubs and the sensor bridge never reachable from outside).
-- **Owner action: the `keep-alive` branch.** Once `.github/workflows/keep-alive.yml` is on `main`, run it by hand (Actions, Keep scheduled workflows enabled, Run workflow) and check that the branch `keep-alive` exists; it pushes there and not to `main` (protected by required status checks) so no setting changes, and if a push is ever refused the run fails with this fix: no ruleset may cover `keep-alive`, or add the GitHub Actions app as its bypass actor.
+- **Owner action: the `keep-alive` workflow and the Actions tab.** Once `.github/workflows/keep-alive.yml` is on `main`, run it by hand
+  (Actions, Keep scheduled workflows enabled, Run workflow) and check both steps: the branch `keep-alive` exists (the workflow pushes there
+  and not to `main`, which is protected by required status checks, so no setting changes), and "Enable the scheduled workflows" is
+  green for `ci.yml` and `cft-freshness.yml` (it calls the documented `PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable`
+  with the workflow's own token, which has `actions: write` in this workflow only). If a push is refused the run fails with this fix: no
+  ruleset may cover `keep-alive`, or add the GitHub Actions app as its bypass actor. **Unverified: GitHub does not define "repository
+  activity", so it is not known whether a push made with the workflow's own token resets the 60-day idle clock, nor whether the enable call
+  revives a schedule GitHub has already disabled.** Until that is known, after any absence longer than about 45 days open the repository's
+  Actions tab, look for "This scheduled workflow is disabled because there hasn't been activity in this repository for at least 60 days"
+  on CI and on Chrome for Testing freshness, and enable them there.
+- **Owner action: cut `v0.7.0`.** Operators and the CI upgrade drill start from release tags, and none exists on the PostgreSQL 18 line
+  (the newest, `v0.6.1`, is from before the PostgreSQL 18 move). When the production-readiness work has merged: finish the `CHANGELOG.md` section, tag
+  `v0.7.0-rc.1`, rehearse, tag the same commit `v0.7.0`, publish the release note ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)). Until
+  a tag exists the drill starts from the merge base with `main`, and a facility that runs a commit of `main` (Dev included) cannot use
+  `upgrade.sh` to move to `v0.7.0` when it is already past it: it is refused with "already past".
+- **Owner action: protect `release/*` like `main`.** A ruleset (Settings, Rules) for the branches `release/*` with the required status
+  checks of `main`. `ci.yml` runs for them, and a pull request into one that changes `migrations/` fails (backports never carry a
+  migration, [CONTRIBUTING.md](../CONTRIBUTING.md)). No release branch exists yet; set the ruleset before the first.
 - **SMS provider.** Handset receipt, administrator login and a live provider-outage check on the facility's own MSG91
   account, and acceptance of the SMS account lifecycle (pending customer, approval, login after approval).
 
@@ -61,6 +78,13 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 - **Printing functions.** `npm:ipp@2.0.1` is imported on demand; vendor it before printing is enabled
   ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#edge-function-modules-and-image)).
 - **Scheduled image scan.** No workflow runs the scan between releases.
+- **Telling facilities about releases (backlog, owner decision 2026-10-26: not now).** Operators learn of a release only from the GitHub
+  release notes (Watch, Custom, Releases), and a facility whose operator has no GitHub account hears nothing. A daily-pass step could
+  run `git ls-remote --tags origin`, post once to the facility's Slack ("vX.Y.Z is available; this facility runs vA.B.C") and show the
+  same line in `doctor`; mark a security release (the public releases API returns the titles that carry "Security") and say
+  "your line 0.6 is out of support since <date>". Not built.
+- **`upgrade.sh --rollback` (backlog, owner decision 2026-10-26: not now).** A failed `upgrade.sh` prints the complete way back and
+  `node scripts/upgrade-record.mjs rollback` prints it again from the record; a single command that runs those steps is not built.
 - **CI HTTP 500 investigation.** The fresh loopback config bootstrap answered HTTP 500 on attempt 2 of backend-main CI run
   [35842102994](https://github.com/abhiguru/supabase-warehouse-template/actions/runs/35842102994). It is not closed:
   capture redacted diagnostics, find the cause and fix it or document why it is not a defect. It was a CI observation, not
@@ -79,8 +103,10 @@ they go in the operator's secret store. Nothing here authorizes production deplo
     `npm run scan:images` and the release checklist fail until the owner reviews and renews them (CI does not run the scan). End-of-life
     dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
     functions image 2028-06-30.
-  - Mitigation: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`, so GitHub does
-    not disable the scheduled workflows (the weekly CI run, the weekly Chrome for Testing check) after 60 days without repository
-    activity. It does not merge, release or renew anything: it only keeps the checks running and the issue they open visible.
+  - Mitigation, **unverified**: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`
+    and calls the documented endpoint that enables the weekly CI run and the weekly Chrome for Testing check, to keep GitHub from
+    disabling them after 60 days without repository activity. GitHub does not say what counts as activity, so whether this works is not
+    known; the owner looks at the Actions tab after any long absence (see the owner action above). It does not merge, release or renew
+    anything: it only keeps the checks running and the issue they open visible.
 - **USB-only off-host copy (owner, 2026-10-25).** See "Off-host backups" above: the destination is the encrypted USB drive; the
   stale-copy risk (a facility lost between plug-ins loses the days since) is accepted.
