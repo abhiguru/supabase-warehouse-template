@@ -23,6 +23,11 @@ test('PostgREST reads the API roles\' own settings, so anon\'s 3 s and authentic
   assert.match(read('docs/CONTAINER_SECURITY.md'), /statement timeouts 3 s and 8 s/);
   // No pgrst.* setting is kept in the database, so turning the option on cannot change any other PostgREST setting.
   assert.doesNotMatch(bootstrap + read('scripts/configure-db-roles.sql'), /pgrst\./);
+  // The behaviour itself is proved on a live installation by the operator-install drill (needs Docker, so not here).
+  assert.match(read('.github/workflows/ci.yml'), /run: npm run test:anon-timeout/);
+  assert.match(read('package.json'), /"test:anon-timeout": "node tests\/anon-timeout-check\.mjs"/);
+  const live = read('tests/anon-timeout-check.mjs');
+  assert.match(live, /ci_timeout_probe/); assert.match(live, /57014/); assert.match(live, /DROP FUNCTION IF EXISTS public\.ci_timeout_probe/);
 });
 
 test('the database container has 256 MB of shared memory and logs slow statements, not connections', () => {

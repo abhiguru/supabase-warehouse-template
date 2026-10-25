@@ -252,6 +252,9 @@ jobs:
       - name: Gateway CORS, payload and local TLS
         run: npm run test:gateway
         working-directory: backend
+      - name: API role statement timeouts (anon is cut at 3 s through PostgREST, service_role is not)
+        run: npm run test:anon-timeout
+        working-directory: backend
       - name: Gateway upstream IP replacement
         run: npm run test:gateway-dns
         working-directory: backend

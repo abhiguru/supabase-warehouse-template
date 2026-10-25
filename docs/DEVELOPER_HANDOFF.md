@@ -17,7 +17,7 @@ Orientation for changing this backend. Operator instructions are in [OPERATOR_IN
 - Shell syntax is checked by `npm test` (`tests/shell-syntax.test.mjs`); there is no separate CI step.
 - `node scripts/check-mobile-contract.mjs <mobile checkout>` — static name inventory against the app (needs the app's `node_modules`); the pin it runs against is described in [CONTRIBUTING.md](../CONTRIBUTING.md#mobile-companion-pin-mobile_ref). The `contract` job also runs `tests/rpc-callers.test.mjs` with `MOBILE_CHECKOUT` set, which compares the app's RPC names with `tests/rpc_callers_exist.sql`.
 - Sensor bridge: `cd docker/sensor-bridge && python3 -m unittest discover -s tests -t .` (Python 3.15 with `requirements.txt` installed; CI job `bridge`), and `npm run test:sensors` on an installed state (builds the image; `--check-config` must exit 0 with fictional values and 78 without; the unit tests run inside the image). Without `docker/sensor-bridge/Dockerfile` it fails.
-- Everything else (`npm run test:gateway`, `test:rotation`, `db:backup`, ...) needs an installed operator state; CI exercises them in the `operator-install` job.
+- Everything else (`npm run test:gateway`, `test:rotation`, `test:anon-timeout` (the 3 s limit of `anon` through PostgREST), `db:backup`, ...) needs an installed operator state; CI exercises them in the `operator-install` job.
 
 ## Backup key, signing and the restore verifier
 
