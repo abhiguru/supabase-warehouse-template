@@ -16,6 +16,9 @@ bash "$ROOT/scripts/network-preflight.sh"
 bash "$ROOT/scripts/db-version-preflight.sh"
 # The operator wants the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
 rm -f -- "$STATE/config/stopped-by-operator"
+# An upgrade that stopped half way (upgrade.sh leaves config/upgrade-in-progress) is said before anything starts: this start brings up
+# whatever is installed, which may be a mixture of the old and the new release.
+node "$ROOT/scripts/upgrade-record.mjs" message || true
 # --remove-orphans removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.

@@ -19,6 +19,9 @@ jobs:
         # Semantic version tags only (vMAJOR.MINOR.PATCH[-prerelease][+build]);
         # anything else is refused before the checks run.
         run: bash scripts/check-release.sh
+      - name: Release contents (CHANGELOG section, upgrade.sh, setup.sh)
+        # What operators need to move to this tag with upgrade.sh (docs/RELEASE_CHECKLIST.md, "Changelog before the tag").
+        run: bash scripts/check-release-contents.sh
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'

@@ -69,7 +69,9 @@ The contract (token, endpoint, answers, what is stored) is [docs/CENTRAL_LOGIN.m
 ## How it works today
 
 - Operator install and upgrades: [docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md)
-  (`setup.sh --operator`, one Cloudflare Tunnel per installation, MSG91 SMS).
+  (`setup.sh --operator`, one Cloudflare Tunnel per installation, MSG91 SMS). Operators follow release tags, not `main`:
+  `bash upgrade.sh vX.Y.Z` is the upgrade, and a release keeps `upgrade.sh` and the inherited operator lock in `setup.sh`
+  ([CONTRIBUTING.md](CONTRIBUTING.md), "Releases").
 - Every business RPC is guarded by `warehouse_security.authorize_rpc` (latest version in
   the baseline until a migration after it redefines it, then in the newest such migration), and business data is written only through
   those RPCs: no app role, administrator included, can insert, update or delete a

@@ -344,6 +344,12 @@ cmd_uninstall() {
 legacy_checker() { [[ -n "$(unit_setting "$1" WAREHOUSE_WATCH_DAILY_AT)" ]]; }
 # True while stop.sh's marker exists: the operator stopped the stack and start.sh has not brought it back.
 stopped_by_operator() { [[ -e "$1/config/stopped-by-operator" || -L "$1/config/stopped-by-operator" ]]; }
+# One paragraph when an upgrade (scripts/upgrade.sh) stopped half way and left config/upgrade-in-progress; nothing otherwise, and nothing
+# while upgrade.sh itself runs (it sets WAREHOUSE_UPGRADE_RUNNING).
+upgrade_interrupted() {
+  command -v node >/dev/null 2>&1 || return 0
+  WAREHOUSE_STATE_DIR="$1" node "$ROOT/scripts/upgrade-record.mjs" message 2>/dev/null || true
+}
 # The Node.js path the checker unit runs (its ExecStart), and a note when that path is a link that points nowhere.
 unit_node() { sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' "$1" 2>/dev/null | head -n 1 || true; }
 node_gone_note() {
@@ -379,6 +385,7 @@ cmd_status() {
   if stopped_by_operator "$state"; then
     echo "Stack: stopped by the operator (config/stopped-by-operator); the boot unit does nothing until start.sh removes that file. Run: bash start.sh"
   fi
+  upgrade_interrupted "$state"
   if [[ -f "$UNITS/$stack.service" ]]; then
     echo "Boot unit: $stack.service is installed ($(systemctl is-enabled "$stack.service" 2>/dev/null || echo 'not enabled')); it starts the services after a boot."
   else
@@ -392,6 +399,7 @@ cmd_hint() {
   if stopped_by_operator "$state"; then
     echo "The stack was stopped by the operator (config/stopped-by-operator): nothing restarts it, not even a reboot, until you run start.sh."
   fi
+  upgrade_interrupted "$state"
   if [[ -f "$UNITS/$base.timer" ]] && grep -qxF -- "Environment=WAREHOUSE_STATE_DIR=$state" "$svc" 2>/dev/null; then
     # Installed for this state: say so only when something is wrong: the Node.js is gone, it runs another checkout (a moved
     # or replaced checkout), or a unit that a later release added is missing (an install from before it).

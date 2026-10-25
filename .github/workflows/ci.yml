@@ -1,9 +1,11 @@
 name: CI
 on:
+  # release/** : a backport to the previous minor line (CONTRIBUTING.md, "Releases") is tested like main: the tag's own release.yml runs
+  # neither test:migrations nor the install and upgrade drills. The branches need the same ruleset as main (docs/PRODUCTION_DEPENDENCIES.md).
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   # Weekly, and on demand: docker/pdf-renderer/Dockerfile installs fonts and Chrome libraries from the live Debian mirrors, so the
   # golden pages can move with no change in the repository. A scheduled run executes every job, the renderer job always.
   schedule:
@@ -17,7 +19,7 @@ env:
   # CONTRIBUTING.md, "Mobile companion pin".
   MOBILE_REF: 657e6357ec265b802239d911311f6b4f4350729b
 # Where a job runs is the repository variable CI_RUNNER (a JSON value for runs-on, for example
-# ["self-hosted","linux","x64","my-label"]); operator-install takes OPERATOR_INSTALL_RUNNER instead. Without the
+# ["self-hosted","linux","x64","my-label"]); operator-install and operator-upgrade take OPERATOR_INSTALL_RUNNER instead. Without the
 # variable, and always for a pull request from a fork, a job runs on a GitHub-hosted runner: code from a fork never
 # runs on the project's own machine.
 jobs:
@@ -27,6 +29,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: A change to a release branch carries no migration
+        # Backports never carry a migration (CONTRIBUTING.md, "Releases"): a security fix that needs SQL ships as the next minor from
+        # main. A file name that exists only on the release branch would strand the line, because the next minor does not contain it.
+        if: github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          changed="$(git diff --name-only "$BASE_SHA" HEAD -- migrations/)"
+          if [ -n "$changed" ]; then
+            echo "::error title=Backports never carry a migration::A pull request into $BASE_REF changes migrations/. A security fix that needs SQL ships as the next minor release from main; the previous line's release note then tells its operators to upgrade."
+            echo "$changed"
+            exit 1
+          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
@@ -399,3 +416,136 @@ jobs:
         if: always()
         run: test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down
         working-directory: backend
+
+  operator-upgrade:
+    name: Upgrade from the previous release
+    # The operator's upgrade path (upgrade.sh): install what scripts/ci-previous-tag.sh chooses, then move that installation to this
+    # commit with `upgrade.sh --ref` (a commit is not a release tag, so --ref is the only way in CI), and check that it is healthy and
+    # still the same facility, with no table that lost rows. The starting point is the newest release tag before this change on the
+    # same PostgreSQL major, and that tag's own upgrade.sh runs, unchanged: it is the script operators of that release run. Where no
+    # tag can start the drill (none yet, or a tag on another major, which is the separate "Major PostgreSQL upgrade" procedure) it
+    # starts from the merge base with the target branch (the commit before it on a push), with this change's upgrade.sh added, so the
+    # drill runs on every change and also proves that the change applies on top of an installation of the branch. It skips, with a
+    # notice, only when not even that commit can start it. It runs in parallel with the install drills, not inside them: its own state,
+    # project and checkout. The runner is chosen like operator-install's, and the job is not a required check.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.OPERATOR_INSTALL_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    needs: validate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: backend
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Choose the starting point
+        id: previous
+        env:
+          BASE_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: bash scripts/ci-previous-tag.sh "$BASE_BRANCH" | tee -a "$GITHUB_OUTPUT"
+        working-directory: backend
+      - name: Upgrade drill skipped
+        if: steps.previous.outputs.skip == 'true'
+        env:
+          REASON: ${{ steps.previous.outputs.reason }}
+        run: echo "::notice title=Upgrade drill skipped::$REASON"
+      - name: Upgrade drill starts from a commit
+        if: steps.previous.outputs.kind == 'merge-base'
+        env:
+          NOTE: ${{ steps.previous.outputs.note }}
+        run: echo "::notice title=Upgrade drill starts from the merge base::$NOTE"
+      - name: Install the previous release
+        if: steps.previous.outputs.skip != 'true'
+        env:
+          PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
+          PREVIOUS_KIND: ${{ steps.previous.outputs.kind }}
+        run: |
+          set -euo pipefail
+          previous="$RUNNER_TEMP/previous"
+          # A persistent runner keeps the registration of an earlier run's worktree after RUNNER_TEMP was wiped.
+          git -C backend worktree prune
+          git -C backend worktree add --detach "$previous" "$PREVIOUS_REF"
+          # A release that has upgrade.sh and pg-major.sh runs its own, unchanged: the script operators of that release run. A merge
+          # base, or a tag from before them, gets this change's copies as one local commit (so the tree is clean, as upgrade.sh requires).
+          if [ "$PREVIOUS_KIND" = tag ] && git -C "$previous" cat-file -e HEAD:upgrade.sh 2>/dev/null && git -C "$previous" cat-file -e HEAD:scripts/pg-major.sh 2>/dev/null; then
+            echo "The drill runs the upgrade.sh of $PREVIOUS_REF, unchanged."
+          else
+            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF."
+            cp backend/upgrade.sh "$previous/upgrade.sh"
+            cp backend/scripts/pg-major.sh "$previous/scripts/pg-major.sh"
+            git -C "$previous" add upgrade.sh scripts/pg-major.sh
+            if ! git -C "$previous" diff --cached --quiet; then
+              git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and pg-major.sh of the change under test'
+            fi
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-upgrade.env"
+          cat > "$RUNNER_TEMP/msg91-upgrade.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          state="$RUNNER_TEMP/core-backend-test-20261026"   # the operator-api fixtures only accept this name pattern
+          mkdir -m 700 "$state"
+          echo "WAREHOUSE_STATE_DIR=$state" >> "$GITHUB_ENV"
+          export WAREHOUSE_STATE_DIR="$state"
+          # The options that release's setup.sh knows: one from before the Slack and letterhead questions has neither.
+          options=()
+          if grep -q -- '--alert-webhook-file' "$previous/setup.sh"; then options+=(--alert-webhook-file off); fi
+          if grep -q -- '--letterhead-file' "$previous/setup.sh"; then options+=(--letterhead-file off); fi
+          cd "$previous"
+          bash setup.sh --operator --state-dir "$state" \
+            --api-url https://backend-core.example.test --company 'Fictional Core Warehouse' \
+            --provider-env "$RUNNER_TEMP/msg91-upgrade.env" \
+            --admin-phone 919888888871 --admin-name 'Core Demo Administrator' \
+            "${options[@]}"
+          node scripts/doctor.mjs --local
+          node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).instanceId' "$state/public/instance.json" > "$RUNNER_TEMP/instance-before"
+          bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres \
+            -c "SELECT mobile FROM public.user_profiles WHERE role = 'admin' ORDER BY created_at" > "$RUNNER_TEMP/admins-before"
+          test "$(cat "$RUNNER_TEMP/admins-before")" = 919888888871
+          # Row counts of every business table, to compare after the move (a release before --counts has none to compare).
+          if grep -q -- '--counts' scripts/data-fingerprint.sh; then bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-before"; fi
+      - name: Upgrade to this commit with upgrade.sh
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          ref="$(git -C "$GITHUB_WORKSPACE/backend" rev-parse HEAD)"
+          cd "$RUNNER_TEMP/previous"
+          before="$(git rev-parse HEAD)"
+          # A dry run runs the checks and the plan and changes nothing.
+          bash upgrade.sh --dry-run --ref "$ref"
+          test "$(git rev-parse HEAD)" = "$before"
+          test ! -e "$WAREHOUSE_STATE_DIR/config/upgrades.log"
+          test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+          bash upgrade.sh --ref "$ref"
+          test "$(git rev-parse HEAD)" = "$ref"
+          tail -n 1 "$WAREHOUSE_STATE_DIR/config/upgrades.log" | grep -q ' ok$'
+          # A finished upgrade leaves no record of an interrupted one.
+          test ! -e "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"
+      - name: The upgraded installation is healthy and the same facility
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/previous"
+          npm ci
+          node scripts/doctor.mjs --local
+          test "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).instanceId' "$WAREHOUSE_STATE_DIR/public/instance.json")" = "$(cat "$RUNNER_TEMP/instance-before")"
+          bash scripts/compose.sh exec -T db psql -X -qAt -U supabase_admin -d postgres \
+            -c "SELECT mobile FROM public.user_profiles WHERE role = 'admin' ORDER BY created_at" | diff -u "$RUNNER_TEMP/admins-before" -
+          # No table that existed before the move has fewer rows after it (a migration may add tables and seed rows).
+          if test -s "$RUNNER_TEMP/counts-before"; then
+            bash scripts/data-fingerprint.sh --counts > "$RUNNER_TEMP/counts-after"
+            test -s "$RUNNER_TEMP/counts-after"
+            awk 'NR == FNR { before[$1] = $2; next } ($1 in before) && $2 + 0 < before[$1] + 0 { print "rows lost in " $1 ": " before[$1] " -> " $2; lost = 1 } END { exit lost }' "$RUNNER_TEMP/counts-before" "$RUNNER_TEMP/counts-after"
+          fi
+          npm run test:db-roles
+          node tests/operator-api-core.mjs
+      - name: Stop only the drill installation
+        if: always() && steps.previous.outputs.skip != 'true'
+        run: |
+          cd "$RUNNER_TEMP/previous" || exit 0
+          test -z "${WAREHOUSE_STATE_DIR:-}" || test ! -f "$WAREHOUSE_STATE_DIR/config/compose.env" || bash scripts/compose.sh --profile '*' down

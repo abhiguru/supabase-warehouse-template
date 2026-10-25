@@ -4,7 +4,9 @@ One warehouse per installation: a fresh Linux x86-64 host or VM owns its
 database, document storage, credentials and canonical HTTPS origin. The
 installer writes every private file to a state directory outside the Git
 checkout and never touches another installation. This guide is current for
-`main`. What is still open before production use is listed in
+`main`; an installation runs a release tag, not `main` ([Rerun and upgrade](#rerun-and-upgrade)), so read the copy of this guide that
+belongs to the tag you install (`git show vX.Y.Z:docs/OPERATOR_INSTALL.md`, or the file in the checkout after you have checked the tag
+out). What is still open before production use is listed in
 [PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md). When something goes wrong,
 see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
@@ -115,6 +117,7 @@ private state and provider files. A checkout cloned under 077 makes PostgreSQL f
 ```bash
 (umask 022; git clone https://github.com/abhiguru/supabase-warehouse-template.git backend)
 cd backend
+(umask 022; git checkout --detach vX.Y.Z)    # the newest release tag, from the GitHub releases page; main is development, not a release
 ```
 
 The operator scripts use only Node's built-in modules; `npm ci` is needed only to run the test suite.
@@ -623,9 +626,11 @@ code only to a terminal: run it in a terminal session on the server, not through
 refuses with a message, and makes no code, when standard output is not a terminal; `--to-stdout` before the number overrides that on
 purpose).
 
-Learn it before the day it is needed: after an upgrade that changed `functions/`, the `functions` container must have been recreated
-(`bash scripts/compose.sh up -d --force-recreate functions`, [Rerun and upgrade](#rerun-and-upgrade)); an old `operator-otp` shows the
-app "SMS delivery unavailable" and never its code screen when the provider refuses, and the break-glass code cannot be typed.
+Learn it before the day it is needed: the `functions` container must be running the code of this checkout. `setup.sh` recreates it on
+every run (since the release that moved this step into setup; after an upgrade with `upgrade.sh` it has been done), and an installation
+whose last setup was by an older release needs the command by hand (`bash scripts/compose.sh up -d --force-recreate functions`,
+[Rerun and upgrade](#rerun-and-upgrade)); an old `operator-otp` shows the app "SMS delivery unavailable" and never its code screen when
+the provider refuses, and the break-glass code cannot be typed.
 
 Give the code to that administrator in person or by a call you trust. On their phone: open the app, enter their number, ask for a code (the
 app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
@@ -1632,26 +1637,116 @@ replace only the [central sign-in](#central-sign-in) lines and its key file; `--
 what exists: the per-role database passwords and the backup key. Run it a second time right after installation and compare
 `public/instance.json` and the administrator record before and after.
 
-To upgrade to a newer `main` within one PostgreSQL major (an installation built before the PostgreSQL 17 release needs the
+**Operators follow release tags (`vMAJOR.MINOR.PATCH`), not `main`.** `main` is where development happens, and a commit on it
+can carry changes that were never released. A release is a tag with a GitHub release note; a security fix is announced in a
+release note with "Security" in its title, and is supported for the current and the previous minor line ([SECURITY.md](../SECURITY.md)).
+Read the release note, then upgrade within one PostgreSQL major (an installation built before the PostgreSQL 17 release needs the
 [Baseline reload](#baseline-reload) once; one that runs PostgreSQL 17 needs the [Major PostgreSQL upgrade](#major-postgresql-upgrade) once):
 
 ```bash
 cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-npm run db:backup                      # prints the backup directory
-npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
-(umask 022; git pull --ff-only)
-bash setup.sh --operator ...           # the same inputs as the installation
-bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/
-node scripts/doctor.mjs --local && node scripts/doctor.mjs
+bash upgrade.sh --dry-run vX.Y.Z       # optional: runs every check, prints the plan, changes nothing
+bash upgrade.sh vX.Y.Z
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
-The last line keeps the USB choices of your earlier setup (`--encrypt`, `--daily`, `--no-fresh-backup`); it prints them, so
-check that line. The `--force-recreate functions` line is needed because the edge functions (`functions/`, including
-`functions/_shared/`) are bind-mounted into the `functions` container and the edge runtime keeps the modules it has loaded:
-a setup rerun neither rebuilds an image for them nor recreates the container. Database migrations need no such step: setup
-applies them. If setup prints a `sudo bash scripts/watch-timer.sh install …` command, run it.
+`upgrade.sh` holds the operator lock from start to end (the monitoring checker judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours) and prints the operator actions
+of `CHANGELOG.md` between your release and the new one at the end. The facility is unavailable for part of the run: the backup pauses
+the API and setup restarts services. **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
+half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
+**It refuses, and changes nothing,** when: it runs as root, or the checkout belongs to another user; the checkout has uncommitted changes
+to tracked files, or untracked files stand where the release has files of its own; the
+argument is not a release tag that exists on `origin` (`--ref COMMIT_OR_BRANCH` opts out, with a warning, for tests and development;
+only tags are supported); the local tag differs from origin's (a moved tag); the release does not contain `upgrade.sh`; the checkout is
+already past the release (it contains it, or sits on a higher release number: `upgrade.sh` only moves forward, wait for the next release);
+the release runs another PostgreSQL major, or the database server does (follow [Major PostgreSQL upgrade](#major-postgresql-upgrade);
+`upgrade.sh` then works again for later releases); the database recorded migrations the release does not contain (a new baseline, or an
+older release: [Baseline reload](#baseline-reload)); `--admin-phone` is not the facility's administrator; the stored Slack webhook file
+is not a Slack URL; the database is not answering (unless an interrupted upgrade is recorded, below). The checkout ends detached at the
+tag, whatever branch it was on; that is expected.
+
+*The setup arguments.* You do not repeat them: `setup.sh --operator` needs `--state-dir`, `--admin-phone` and `--admin-name`, and every other
+option keeps what the state holds on a rerun (identity, URLs, provider lines, central sign-in, gateway port, letterhead, signing keys).
+`upgrade.sh` passes `--state-dir "$WAREHOUSE_STATE_DIR"` and reads the administrator from the database (any active approved administrator
+satisfies setup's check; the name is only used when none exists). The one thing a state cannot show is "no Slack webhook": when none
+is stored it passes `--alert-webhook-file off` again, so setup does not stop to ask. To change something in the same step, or to
+give another administrator, add `--admin-phone 91XXXXXXXXXX --admin-name NAME` before the tag, and options for setup after `--`, for
+example `bash upgrade.sh v0.8.0 -- --alert-webhook-file /secure/slack.txt --gateway-port 18001`.
+
+*If it stops.* Before its first change `upgrade.sh` writes `$WAREHOUSE_STATE_DIR/config/upgrade-in-progress` (mode 0600): the old
+commit, the target, the setup inputs and the current step; once the backup has been proved to restore, also the path of that backup.
+The file is deleted when the upgrade succeeds, and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
+`node scripts/watch.mjs status` say "an upgrade from X to Y was interrupted at step Z" (a run killed by a power cut or a lost SSH
+connection leaves it too). A failed step prints the same facts, then both ways out.
+
+- *Finish it.* Fix the cause shown above and run **the same command again** (it prints it). The rerun reads the record, reuses the
+  verified backup and **takes no new one** (a backup of a half-upgraded database is not a way back), takes the old commit from the
+  record, and goes on with the checkout (skipped if it was done) and setup. It also works when the database is down: setup starts it,
+  and the administrator comes from the record. A different release is refused while the record exists.
+- *Go back to the old release.* Everything the facility recorded after the backup is lost. In the checkout, in this order (it prints
+  them with your values, and `node scripts/upgrade-record.mjs rollback` prints them again from the record):
+
+  ```bash
+  (umask 022; git checkout --detach <old commit>)
+  bash stop.sh
+  npm run db:restore -- --yes --restore-config <the backup>
+  bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name NAME    # the old release's setup
+  bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
+  node scripts/doctor.mjs --local
+  rm -f "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"          # only when the facility is healthy on the old release
+  ```
+
+  `--restore-config` is needed because the new release's setup usually rewrote `compose.env`, and the restore refuses a `compose.env`
+  that differs from the backup's. `start.sh` never builds images, so the old code would run on the images the new release built: the
+  old release's `setup.sh` rebuilds them and removes the containers of services only the new release has. Older releases' `setup.sh`
+  does not recreate `functions`: the command after it is for them. Add `--alert-webhook-file off` to the setup line when the facility has
+  no Slack webhook (the printed line does).
+
+Every run that gets past the checks adds a line to `$WAREHOUSE_STATE_DIR/config/upgrades.log` (UTC time, from, to, the old commit,
+the backup, `resumed` for a rerun, then `ok` or the step it failed at).
+
+*The first time.* A checkout from before `upgrade.sh` has no such file, and `git pull` would move it to `main`. Move it once with the
+manual sequence below, to the first release that contains `upgrade.sh`; use `bash upgrade.sh` from then on.
+
+<details>
+<summary>What upgrade.sh does (the manual sequence, for the first time or when you want each step by hand)</summary>
+
+```bash
+cd /path/to/installed/backend
+export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
+git status --short                     # must print nothing for tracked files
+git fetch --tags origin
+npm run db:backup                      # prints the backup directory
+npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
+(umask 022; git checkout --detach vX.Y.Z)
+bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
+  --alert-webhook-file off             # the same inputs as the installation; leave the --alert-webhook-file line out when a Slack webhook is stored
+node scripts/doctor.mjs                # the public check; setup has just run the local one
+sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
+```
+
+1. `git fetch --tags origin` (the script fetches first, so that it checks the tag against origin).
+2. Take the operator lock, so that no other operator command and no checker pass interleaves (`upgrade.sh` holds it for all of the steps).
+3. Refuse if the checkout is dirty, if the tag is not on origin, if the checkout is already past it, if the release changes the PostgreSQL
+   major, or if the ledger holds migrations the release lacks. Write `config/upgrade-in-progress`.
+4. `db:backup`, then `db:verify-restore` of that backup. Both run on the OLD release: a backup of the new code on an old database
+   would carry the wrong image label.
+5. A detached checkout of the tag under `umask 022`.
+6. `setup.sh --operator` of the NEW release: rebuilds the images whose recipes changed, applies the new migrations, applies the roles and
+   configuration, restarts the services whose definition changed, **recreates the `functions` container** and runs
+   `node scripts/doctor.mjs --local`. The edge functions (`functions/`, including `functions/_shared/`) are bind-mounted into the
+   `functions` container and the edge runtime keeps the modules it has loaded, so neither a checkout nor a start reloads them; forgetting
+   the recreate used to be the usual way to run new SQL under old function code. Setup does it on every run since the release that
+   moved it there; a move from an older release used to need `bash scripts/compose.sh up -d --force-recreate functions` by hand.
+7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
+8. A line in `upgrades.log`, and the record deleted.
+
+The last manual line keeps the USB choices of your earlier setup (`--encrypt`, `--daily`, `--no-fresh-backup`); it prints them, so
+check that line. Database migrations need no separate step: setup applies them. If setup prints a
+`sudo bash scripts/watch-timer.sh install …` command, run it.
+
+</details>
 
 **What the slimming release (migration 123) asks of you.**
 
@@ -1947,7 +2042,8 @@ the data you loaded. Migration 123 refuses to drop a table or column that holds 
 setup stops with `Migration 123 would drop data: ...` and nothing of 123 is applied (the database stays at the migrations before it). Check
 that the named data is not needed, export it if it is, empty those objects (`dbsql -c 'TRUNCATE <table>'`, or set the named
 column to NULL), and run the same setup command again. If you cannot decide, go to step 9: the old database is untouched. It is idempotent, sets the role passwords and the
-configuration, and starts the core services. Release the lock first (setup takes it again), then start the optional
+configuration, and starts the core services. Release the lock first (setup takes it again; it also accepts a lock this shell still holds,
+checking that it really holds it), then start the optional
 services that ran before. The pooler exists only while it is turned on, and the new cluster has no `_supabase` database, so setup
 keeps the pooler secrets and records it off (it prints the path of a saved copy of `compose.env`). If `supavisor` was in
 `running-services.txt`, turn the pooler on with `pooler.sh on` instead of starting it with `up`:
@@ -2024,6 +2120,10 @@ release stop before they build or recreate anything (`scripts/db-version-preflig
 ```
 Refusing: the data directory <path> holds a PostgreSQL 17 database (PG_VERSION). This release runs PostgreSQL 18 and cannot start on PostgreSQL 17 data. No database, container or image was changed. The data moves with a major upgrade: back up with the checkout that runs PostgreSQL 17, then restore on this one (docs/OPERATOR_INSTALL.md, "Major PostgreSQL upgrade").
 ```
+
+`bash upgrade.sh` refuses a release that runs another PostgreSQL major than the checkout (it compares `scripts/db-image.sh` of both trees, changes
+nothing and points here), so this procedure stays manual; it checks the release out itself in step 4. Once the installation runs the new major,
+`upgrade.sh` moves it to later releases as usual.
 
 The way forward is the ordinary backup and in-place restore ([In-place restore of the same instance](#in-place-restore-of-the-same-instance)),
 taken across the two releases: a backup made by the PostgreSQL 17 checkout restores on this one (the restore builds a new 18 cluster and

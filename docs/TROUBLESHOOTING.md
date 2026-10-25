@@ -187,9 +187,10 @@ bash scripts/compose.sh restart functions
 
 The functions are mounted read-only from the checkout's `functions/`
 directory. When an upgrade changed only that code, the container itself is
-unchanged and is not recreated, so restart `functions` after the upgrade
-([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)) for the workers
-to load the new code.
+unchanged, so the workers keep the code they loaded: `setup.sh` (and so
+`upgrade.sh`) recreates `functions` on every run for that reason
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)). After a hand-made
+checkout without a setup run, restart it as above.
 
 ### Slow API responses
 
@@ -318,8 +319,8 @@ it; only `functions` can.
 - **`... is group- or world-writable` from `backup-usb.sh setup`**: the checkout was updated (`git pull`, `git checkout`)
   under a umask other than `022`; Ubuntu's default `0002` does this. As the
   installation user run `bash scripts/checkout-permissions.sh` (or rerun
-  `setup.sh`), then repeat the command. Update with `(umask 022; git pull
-  --ff-only)` from then on.
+  `setup.sh`), then repeat the command. Update with `bash upgrade.sh vX.Y.Z`, which checks the tag out under `umask 022`
+  ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)).
 - **PostgreSQL restarts with `Permission denied` on first start**: the
   checkout was cloned under `umask 077`. Re-clone with `umask 022` into a new
   directory and use a fresh empty state; keep the failed state for diagnosis.
@@ -435,7 +436,7 @@ it; only `functions` can.
   Three things to know. The command prints the code only to a terminal. If the administrator's app still answers "Too many OTP requests"
   on the code screen, switch their phone from the facility Wi-Fi to mobile data (the Wi-Fi's address may be at its limit) and check
   that `otp_global_hourly_cap` is not `0` and `otp_daily_provider_attempt_cap` is not used up. If the app shows "SMS delivery unavailable"
-  and no code screen, the `functions` container is an old one: `bash scripts/compose.sh up -d --force-recreate functions`. And it does not
+  and no code screen, the `functions` container is an old one: `setup.sh` recreates it on every run (a rerun fixes it); an installation last set up by an older release needs `bash scripts/compose.sh up -d --force-recreate functions`. And it does not
   help when the sign-in goes through the association and the association's SMS is down (OPERATOR_INSTALL.md, "Break-glass administrator
   sign-in").
 - **Many people on the facility Wi-Fi get "Too many OTP requests" in the same hour** (after a key rotation, or a morning when sessions ended
