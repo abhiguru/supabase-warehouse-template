@@ -1,158 +1,72 @@
-// scripts/backup-usb.sh against fake device tools on PATH. No test touches a real device, mount,
-// udev rule or systemd unit: /etc, /usr/local/libexec and /run are redirected into a scratch tree.
+// scripts/backup-usb.sh against fake device tools on PATH (tests/usb-test-helpers.mjs). No test touches a real device, mount,
+// udev rule or systemd unit: /etc, /usr/local/libexec and /run are redirected into a scratch tree. The rules of the drive's
+// contents (which backup is copied, what is deleted, the key escrow gate) are in tests/backup-usb-drive.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync, copyFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, backupKey, hmacHex, writeKey } from './backup-test-helpers.mjs';
+import { makeBackup, composeEnv, backupKey, hmacHex, writeKey, writeEscrow, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
+import { fixture, UUID, PART, marker, devRow } from './usb-test-helpers.mjs';
 import { usbBackupWarning } from '../scripts/usb-backup-status.mjs';
 
-const UUID = '6A38-179A';
-const PART = 'a1b2c3d4-01';
-const INSTANCE = '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f';
-const devRow = ({ fstype = 'exfat', ro = '0', part = PART } = {}) => `NAME="sdb1" TYPE="part" FSTYPE="${fstype}" UUID="${UUID}" RO="${ro}" PKNAME="sdb" PARTUUID="${part}"\n`;
-// The marker `enroll` writes onto a drive: an HMAC under the backup key over the drive and the instance.
-const marker = ({ uuid = UUID, part = PART, instance = INSTANCE, key = backupKey } = {}) =>
-  `warehouse-usb-enrolment-v1\nfs_uuid=${uuid}\npart_uuid=${part}\ninstance_id=${instance}\nhmac=${hmacHex(key, 'warehouse-usb-enrolment-v1', `${uuid}\n${part}\n${instance}\n`)}\n`;
-const shims = {
-  lsblk: String.raw`#!/bin/sh
-d="$FAKE_DIR"
-for last; do :; done
-b=$(basename "$last")
-case "$*" in
-  "-dnP -o NAME,TYPE,FSTYPE,UUID,RO,PKNAME,PARTUUID "*) cat "$d/dev.$b" 2>/dev/null || exit 32; exit 0 ;;
-  "-dn -o TRAN "*) cat "$d/tran.$b" 2>/dev/null; exit 0 ;;
-  "-nr -o NAME,UUID") cat "$d/uuids" 2>/dev/null; exit 0 ;;
-esac
-echo "unexpected lsblk: $*" >&2; exit 2
-`,
-  findmnt: String.raw`#!/bin/sh
-d="$FAKE_DIR"
-for last; do :; done
-case "$*" in
-  "-n -o TARGET -S "*) cat "$d/target.$(basename "$last")" 2>/dev/null || exit 1; exit 0 ;;
-  "-n -o FSTYPE --mountpoint "*) cat "$d/fstype" 2>/dev/null || echo exfat; exit 0 ;;
-  "-n -o TARGET --mountpoint "*) cat "$d/ours" 2>/dev/null || exit 1; exit 0 ;;
-  "-n -o MAJ:MIN -T "*) case "$last" in "$FAKE_MOUNT"*) cat "$d/majmin.mount" ;; *) echo "  8:2  " ;; esac; exit 0 ;;
-esac
-echo "unexpected findmnt: $*" >&2; exit 2
-`,
-  mount: '#!/bin/sh\necho "mount $*" >> "$FAKE_LOG"\nexit 0\n',
-  umount: '#!/bin/sh\necho "umount $*" >> "$FAKE_LOG"\nexit 0\n',
-  chown: '#!/bin/sh\necho "chown $*" >> "$FAKE_LOG"\nexit 0\n',
-  systemctl: '#!/bin/sh\necho "systemctl $*" >> "$FAKE_LOG"\nexit 0\n',
-  udevadm: '#!/bin/sh\necho "udevadm $*" >> "$FAKE_LOG"\nexit 0\n',
-  // The root helper drops to the installation user with setpriv; the stand-in makes `id -u` answer that uid.
-  setpriv: String.raw`#!/bin/sh
-uid=''
-while [ $# -gt 0 ] && [ "$1" != -- ]; do if [ "$1" = --reuid ]; then uid="$2"; fi; shift; done
-shift
-echo "setpriv reuid=$uid" >> "$FAKE_LOG"
-FAKE_UID="$uid" exec "$@"
-`,
-  id: String.raw`#!/bin/sh
-if [ "$1" = -u ]; then echo "$FAKE_UID"; exit 0; fi
-exec /usr/bin/id "$@"
-`,
-  getent: String.raw`#!/bin/sh
-case "$1" in
-  passwd) echo "installer:x:$2:$2::/home/installer:/bin/sh" ;;
-  group) echo "installer:x:$2:" ;;
-esac
-`,
+const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const PLAIN = { WAREHOUSE_BACKUP_ENCRYPT: '0' };
+// The archive as a tar listing, decrypted with the key when it is an .enc file.
+const listing = (f, archive) => {
+  const result = archive.endsWith('.enc')
+    ? spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; backup_key_load "$2"; backup_decrypt "$BACKUP_KEY" < "$3" | tar -tvf -', 'sh', join(f.root, 'scripts/backup-key.sh'), join(f.state, 'config/backup.key'), archive], { encoding: 'utf8' })
+    : spawnSync('tar', ['-tvf', archive], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
 };
 
-function fixture(prefix) {
-  const scratch = mkdtempSync(join(tmpdir(), prefix));
-  const state = makeState(scratch);
-  const root = scriptRoot(scratch);
-  chmodSync(join(root, 'scripts'), 0o755);
-  for (const name of readdirSync(join(root, 'scripts'))) chmodSync(join(root, 'scripts', name), 0o755);
-  const fake = join(scratch, 'fake'); mkdirSync(fake);
-  const bin = join(scratch, 'shims'); mkdirSync(bin);
-  for (const [name, body] of Object.entries(shims)) writeFileSync(join(bin, name), body, { mode: 0o755 });
-  const dockerBin = fakeDocker(join(scratch, 'dockerbin'));
-  const etc = join(scratch, 'etc'); mkdirSync(etc);
-  const libexec = join(scratch, 'libexec');
-  const runDir = join(scratch, 'run');
-  const drive = join(scratch, 'media/drive'); mkdirSync(drive, { recursive: true });
-  writeFileSync(join(drive, 'holiday-photos.zip'), 'not ours');
-  const log = join(scratch, 'tools.log'); writeFileSync(log, '');
-  const dockerLog = join(scratch, 'docker.log'); writeFileSync(dockerLog, '');
-  const put = (name, body) => writeFileSync(join(fake, name), body);
-  // An exFAT partition on a USB stick, desktop-mounted at `drive`.
-  put('dev.sdb1', devRow());
-  put('tran.sdb', 'usb\n');
-  put('uuids', `sda2 210f776f\nsdb1 ${UUID}\n`);
-  put('target.sdb1', `${drive}\n`);
-  put('majmin.mount', '  8:17 \n');
-  // What `enroll` leaves behind: the root-only list entry and the signed marker on the drive.
-  const markerPath = join(drive, 'warehouse-backups', '.drive-enrolment');
-  const writeMarker = (options = {}) => { mkdirSync(join(drive, 'warehouse-backups'), { recursive: true }); writeFileSync(markerPath, marker(options)); };
-  const enroll = () => { writeFileSync(join(etc, 'warehouse-usb-backup.drives'), `${UUID} ${PART}\n`); writeMarker(); };
-  const env = (extra = {}) => ({
-    ...process.env, PATH: `${bin}:${dockerBin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state,
-    WAREHOUSE_USB_BACKUP_ETC: etc, WAREHOUSE_USB_BACKUP_LIBEXEC: libexec, WAREHOUSE_USB_BACKUP_RUN: runDir,
-    WAREHOUSE_USB_BACKUP_SETTLE: '0', WAREHOUSE_USB_BACKUP_FRESH: 'no', WAREHOUSE_USB_BACKUP_LOCK_WAIT: '1',
-    FAKE_DIR: fake, FAKE_LOG: log, FAKE_MOUNT: drive, FAKE_UID: String(process.getuid()), FAKE_DOCKER_LOG: dockerLog,
-    SUDO_UID: String(process.getuid()), SUDO_GID: String(process.getgid()), ...extra,
-  });
-  const run = (args, extra = {}) => spawnSync('bash', [join(root, 'scripts/backup-usb.sh'), ...args], { encoding: 'utf8', env: env(extra) });
-  const asRoot = (args, extra = {}) => run(args, { FAKE_UID: '0', ...extra });
-  const calls = () => readFileSync(log, 'utf8');
-  const dockerCalls = () => readFileSync(dockerLog, 'utf8');
-  const dest = join(drive, 'warehouse-backups', 'state');
-  const last = () => readFileSync(join(state, 'config/usb-backup.last'), 'utf8');
-  const backups = (count = 1) => {
-    const names = [];
-    for (let i = 1; i <= count; i += 1) {
-      const name = `warehouse-2026010${i}T000000Z`;
-      makeBackup(join(state, 'backups', name), { env: composeEnv(state) });
-      names.push(name);
-    }
-    return names;
-  };
-  const verifyEnv = () => ({ FAKE_CATALOG_FILE: join(state, 'backups', readdirSync(join(state, 'backups')).sort()[0], 'storage_objects.txt') });
-  return { scratch, state, root, fake, etc, libexec, runDir, drive, dest, run, asRoot, calls, dockerCalls, put, enroll, writeMarker, markerPath, last, backups, verifyEnv,
-    cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
-}
-
-const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-test('run copies each backup as a verified tar, verifies the restore, records the result and leaves other files alone', () => {
+test('run copies the newest backup as one encrypted, signed, self-contained archive, checks it from the drive and leaves other files alone', () => {
   const f = fixture('warehouse-usb-ok-');
   try {
     f.enroll();
-    const names = f.backups(2);
+    const [older, newest] = f.backups(2);
     const result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
     assert.equal(result.status, 0, result.stderr + result.stdout);
-    for (const name of names) {
-      const archive = join(f.dest, `${name}.tar`);
-      assert.ok(existsSync(archive), `${name} archived`);
-      assert.equal(spawnSync('sha256sum', ['-c', '--quiet', `${name}.tar.sha256`], { cwd: f.dest }).status, 0);
-      assert.equal(readFileSync(`${archive}.hmac`, 'utf8'), `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${archive}.sha256`))}\n`, 'the archive checksum is signed with the backup key');
-      const listing = spawnSync('tar', ['-tvf', archive], { encoding: 'utf8' }).stdout;
-      assert.match(listing, /^-rw------- .*compose\.env$/m, 'file modes are kept inside the archive');
-    }
+    // Encrypted by default (nothing was typed), and only the newest backup is copied: the drive keeps a few archives, not every
+    // local backup. The older backup is not on the drive.
+    assert.deepEqual(f.archives(), [`${newest}.tar.enc`]);
+    assert.ok(!existsSync(join(f.dest, `${older}.tar.enc`)) && !existsSync(join(f.dest, `${older}.tar`)));
+    const archive = join(f.dest, `${newest}.tar.enc`);
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', `${newest}.tar.enc.sha256`], { cwd: f.dest }).status, 0);
+    assert.equal(readFileSync(`${archive}.hmac`, 'utf8'), `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${archive}.sha256`))}\n`, 'the archive checksum is signed with the backup key');
+    const bytes = readFileSync(archive, 'latin1');
+    assert.match(bytes, /^Salted__/, 'openssl salted format');
+    for (const plain of ['compose.env', 'WAREHOUSE_PROJECT_NAME', 'fake database dump', newest, 'bytes of stub']) assert.ok(!bytes.includes(plain), `${plain} is not readable on the drive`);
+    // One self-contained tar of the backup folder: the signed list and the small files first, then the manifest, then the whole tree.
+    const text = listing(f, archive);
+    assert.match(text, /^-rw------- .*compose\.env$/m, 'file modes are kept inside the archive');
+    const names = text.split('\n').filter(Boolean).map(line => line.split(/\s+/).slice(5).join(' '));
+    const at = name => names.indexOf(`${newest}/${name}`);
+    const tree = names.findIndex(name => name.startsWith(`${newest}/storage/`));
+    assert.ok(at('SHA256SUMS') >= 0 && at('SHA256SUMS') < at('SHA256SUMS.hmac') && at('SHA256SUMS.hmac') < at('database.dump'), names.join('\n'));
+    assert.ok(at('database.dump') < at('storage.manifest') && at('storage.manifest') < tree, 'small files, then the manifest, then the tree');
+    assert.ok(names.includes(`${newest}/storage/stub/stub/documents/a.pdf/v1`), 'the stored files are in the archive');
     assert.deepEqual(readdirSync(f.dest).filter(n => n.endsWith('.partial')), [], 'no partial file left');
     assert.equal(readFileSync(join(f.drive, 'holiday-photos.zip'), 'utf8'), 'not ours');
-    assert.match(f.dockerCalls(), /run /, 'verify-restore ran on the copy from the drive');
-    assert.match(result.stdout, /copied=2 already-present=0 failed=0/);
-    assert.match(result.stdout, /not encrypted and contain every credential/);
+    assert.match(f.dockerCalls(), /^run -d /m, 'restore verification ran on the copy from the drive');
+    assert.match(result.stdout, /copied=1 already-present=0 failed=0 pruned=0/);
+    assert.match(result.stdout, /encrypted with the backup key/);
     assert.match(f.last(), /^result=ok$/m);
     assert.match(f.last(), new RegExp(`^drive_uuid=${UUID}$`, 'm'));
-    assert.match(readFileSync(join(f.dest, 'LAST-RESULT.txt'), 'utf8'), /result=ok[\s\S]*NOT encrypted/);
+    const report = readFileSync(join(f.dest, 'LAST-RESULT.txt'), 'utf8');
+    assert.match(report, /result=ok[\s\S]*encrypted with the backup key[\s\S]*keeps the newest 3 valid archives/);
+    assert.doesNotMatch(report, /These archives are NOT encrypted/);
     assert.equal(statSync(join(f.state, 'config/usb-backup.last')).mode & 0o077, 0, 'result file is private');
     assert.equal(readdirSync(f.state).filter(n => n.startsWith('.usb-verify')).length, 0, 'verify directory removed');
     assert.doesNotMatch(f.calls(), /^(mount|umount) /m, 'run never mounts or unmounts');
 
-    const before = statSync(join(f.dest, `${names[0]}.tar`)).mtimeMs;
+    const before = statSync(archive).mtimeMs;
     const again = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
     assert.equal(again.status, 0, again.stderr);
-    assert.match(again.stdout, /copied=0 already-present=2 failed=0/);
-    assert.equal(statSync(join(f.dest, `${names[0]}.tar`)).mtimeMs, before, 'an existing archive is not rewritten');
+    assert.match(again.stdout, /copied=0 already-present=1 failed=0/);
+    assert.equal(statSync(archive).mtimeMs, before, 'an existing archive is not rewritten');
   } finally { f.cleanup(); }
 });
 
@@ -200,48 +114,88 @@ test('run never overwrites a corrupt archive, skips a tampered source and remove
   const f = fixture('warehouse-usb-corrupt-');
   try {
     f.enroll();
-    const [first, second] = f.backups(2);
+    const [, second] = f.backups(2);
     assert.equal(f.run(['run', '--device', 'sdb1'], f.verifyEnv()).status, 0);
-    writeFileSync(join(f.dest, `${first}.tar`), 'damaged');
+    const archive = join(f.dest, `${second}.tar.enc`);
+    assert.ok(existsSync(archive));
+    writeFileSync(archive, 'damaged');
     writeFileSync(join(f.dest, '.warehouse-old.tar.partial'), 'interrupted');
-    makeBackup(join(f.state, 'backups', 'warehouse-20260109T000000Z'), { env: composeEnv(f.state) });
-    writeFileSync(join(f.state, 'backups', 'warehouse-20260109T000000Z', 'database.dump'), 'tampered');
+    const tampered = f.bname(9);
+    f.localBackup(tampered);
+    writeFileSync(join(f.state, 'backups', tampered, 'database.dump'), 'tampered');
     const result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
     assert.equal(result.status, 1);
-    assert.match(result.stderr, new RegExp(`archive of ${first} on the drive does not match its checksum or signature; it was not overwritten`));
-    assert.match(result.stderr, /source backup warehouse-20260109T000000Z fails its checksums/);
-    assert.equal(readFileSync(join(f.dest, `${first}.tar`), 'utf8'), 'damaged');
-    assert.equal(existsSync(join(f.dest, 'warehouse-20260109T000000Z.tar')), false);
+    // The newest backup fails its own check, so the next older one is tried: its archive is on the drive and damaged.
+    assert.match(result.stderr, new RegExp(`source backup ${tampered} fails its checksums or signature, nothing copied`));
+    assert.match(result.stderr, new RegExp(`archive of ${second} on the drive does not match its checksum or signature; it was not overwritten`));
+    assert.match(result.stderr, new RegExp(`restore verification of ${second} from the drive failed`));
+    assert.equal(readFileSync(archive, 'utf8'), 'damaged');
+    assert.equal(existsSync(join(f.dest, `${tampered}.tar.enc`)), false);
     assert.equal(existsSync(join(f.dest, '.warehouse-old.tar.partial')), false, 'leftover removed under the lock');
-    assert.match(result.stdout, new RegExp(`already-present=1 failed=2`));
+    assert.match(result.stdout, /already-present=0 failed=3/);
     assert.match(f.last(), /^result=failed$/m);
     assert.match(f.last(), /^last_success_epoch=\d+$/m, 'the earlier success is kept');
-    assert.ok(second);
   } finally { f.cleanup(); }
 });
 
-test('run takes a fresh backup first and still copies existing backups when it fails', () => {
+test('run takes a fresh backup first and still copies the newest existing backup when it fails', () => {
   const f = fixture('warehouse-usb-fresh-');
   try {
     f.enroll();
-    f.backups(1);
+    const [first] = f.backups(1);
     // Stand-in for scripts/backup.sh: copies the fixture backup under a new name.
     writeFileSync(join(f.root, 'scripts/backup.sh'), `#!/usr/bin/env bash
 set -e
 [ "$FAKE_BACKUP_FAIL" = yes ] && { echo 'backup failed' >&2; exit 1; }
-cp -a "$WAREHOUSE_STATE_DIR/backups/warehouse-20260101T000000Z" "$WAREHOUSE_STATE_DIR/backups/warehouse-20260102T000000Z"
+cp -a "$WAREHOUSE_STATE_DIR/backups/${first}" "$WAREHOUSE_STATE_DIR/backups/${f.bname(2)}"
 `, { mode: 0o755 });
     const ok = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), WAREHOUSE_USB_BACKUP_FRESH: 'yes' });
     assert.equal(ok.status, 0, ok.stderr);
     assert.match(ok.stdout, /Taking a fresh backup/);
-    assert.ok(existsSync(join(f.dest, 'warehouse-20260102T000000Z.tar')), 'the fresh backup was copied');
+    assert.deepEqual(f.archives(), [`${f.bname(2)}.tar.enc`], 'the fresh backup was copied, and only it');
 
     const failed = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), WAREHOUSE_USB_BACKUP_FRESH: 'yes', FAKE_BACKUP_FAIL: 'yes' });
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /fresh backup failed; existing backups are still copied/);
-    assert.match(failed.stdout, /already-present=2 failed=1/);
+    assert.match(failed.stdout, /already-present=1 failed=1/);
     assert.match(f.last(), /^result=failed$/m);
   } finally { f.cleanup(); }
+});
+
+test('run takes a fresh backup only when the newest verified backup is 20 hours old or more, and copies a verified one, not a newer unverified one', () => {
+  const f = fixture('warehouse-usb-freshage-');
+  try {
+    f.enroll();
+    const stamp = hours => new Date(Date.now() - hours * 3600e3).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const calls = join(f.scratch, 'backup-calls');
+    writeFileSync(join(f.root, 'scripts/backup.sh'), `#!/usr/bin/env bash\necho called >> "${calls}"\n`, { mode: 0o755 });
+    const old = `warehouse-${stamp(30)}`, recent = `warehouse-${stamp(5)}`;
+    f.localBackup(old); f.localBackup(recent);
+    const fresh = { ...f.verifyEnv(), WAREHOUSE_USB_BACKUP_FRESH: 'yes' };
+    // Without a verified list the newest signed backup counts as verified: it is 5 hours old, so no stop window is spent.
+    let result = f.run(['run', '--device', 'sdb1'], fresh);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(existsSync(calls), false, 'no fresh backup');
+    assert.match(result.stdout, /newest verified backup \(warehouse-\d{8}T\d{6}Z\) is 5 hours old; no fresh backup is taken/);
+    assert.deepEqual(f.archives(), [`${recent}.tar.enc`]);
+    // The daily check verified only the 30-hour-old backup: the newer one is not verified, so a fresh backup is due (the stand-in
+    // makes none) and then the newest signed backup, which has not been verified by anyone, is the one copied.
+    writeFileSync(join(f.state, 'config/backups-verified.list'), `${old} 1\n`);
+    result = f.run(['run', '--device', 'sdb1'], fresh);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(readFileSync(calls, 'utf8'), 'called\n', 'a fresh backup was taken');
+    assert.match(result.stdout, /Taking a fresh backup/);
+  } finally { f.cleanup(); }
+  // Without a fresh backup the verified list decides which backup is copied: the newest verified one, not a newer unverified one.
+  const g = fixture('warehouse-usb-verified-');
+  try {
+    g.enroll();
+    const names = g.backups(3);
+    writeFileSync(join(g.state, 'config/backups-verified.list'), `${names[0]} 1\n${names[1]} 2\nwarehouse-20250101T000000Z 3\n`);
+    const result = g.run(['run', '--device', 'sdb1'], g.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(g.archives(), [`${names[1]}.tar.enc`], 'the newest verified backup that still exists');
+  } finally { g.cleanup(); }
 });
 
 test('run waits for the operator lock and records a failure when it stays busy', () => {
@@ -307,9 +261,11 @@ test('setup is root-only through sudo and installs the helper, units, rule and c
     assert.match(f.calls(), new RegExp(`^chown root:root ${drives}`, 'm'));
     assert.equal(readFileSync(f.markerPath, 'utf8'), marker(), 'the drive carries the marker signed with the backup key');
     assert.doesNotMatch(f.calls(), /^(mount|umount) /m, 'the existing mount was used to write the marker');
-    assert.match(conf, /^ENCRYPT=no$/m);
-    assert.match(unit, /^Environment=WAREHOUSE_BACKUP_ENCRYPT=0$/m);
-    assert.match(result.stdout, /Archives are NOT encrypted/);
+    assert.match(conf, /^ENCRYPT=yes\nENCRYPT_SET=default\nKEEP=3$/m, 'encrypted by default, 3 archives kept');
+    assert.match(unit, /^Environment=WAREHOUSE_BACKUP_ENCRYPT=1$/m);
+    assert.match(unit, /^Environment=WAREHOUSE_USB_KEEP=3$/m);
+    assert.match(result.stdout, /Archives are encrypted with the backup key/);
+    assert.doesNotMatch(result.stdout, /NOTICE/, 'a new installation has nothing to be told about');
     assert.match(f.calls(), /^systemctl daemon-reload$/m);
     assert.match(f.calls(), /^udevadm control --reload-rules$/m);
     assert.match(f.calls(), /^systemctl disable --now warehouse-usb-backup\.timer$/m);
@@ -324,6 +280,7 @@ test('setup is root-only through sudo and installs the helper, units, rule and c
     assert.match(readFileSync(join(f.etc, 'warehouse-usb-backup.conf'), 'utf8'), /^ENCRYPT=yes$/m);
     assert.match(readFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), 'utf8'), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=1$/m);
     assert.match(encrypted.stdout, /cannot be restored after the host is lost/);
+    assert.match(readFileSync(join(f.etc, 'warehouse-usb-backup.conf'), 'utf8'), /^ENCRYPT_SET=typed$/m);
 
     const other = f.asRoot(['setup', '--state', f.root]);
     assert.equal(other.status, 1);
@@ -511,89 +468,70 @@ test('mount refuses a drive enrolled by serial only or with another partition UU
   } finally { f.cleanup(); }
 });
 
-test('run with WAREHOUSE_BACKUP_ENCRYPT=1 writes encrypted, signed archives that restore verification can open', () => {
-  const f = fixture('warehouse-usb-encrypt-');
-  const on = extra => ({ ...f.verifyEnv(), WAREHOUSE_BACKUP_ENCRYPT: '1', ...extra });
+test('run with --no-encrypt typed (WAREHOUSE_BACKUP_ENCRYPT=0) writes readable signed archives and needs no key copy confirmation', () => {
+  const f = fixture('warehouse-usb-plain-', { escrow: false });
   try {
     f.enroll();
-    const [first, second] = f.backups(2);
-    // The first backup is already on the drive, unencrypted, from before the switch.
-    assert.equal(f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), WAREHOUSE_USB_BACKUP_VERIFY_RESTORE: 'no' }).status, 0);
-    rmSync(join(f.dest, `${second}.tar`)); rmSync(join(f.dest, `${second}.tar.sha256`)); rmSync(join(f.dest, `${second}.tar.hmac`));
-    const result = f.run(['run', '--device', 'sdb1'], on());
+    const [, newest] = f.backups(2);
+    const result = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), ...PLAIN });
     assert.equal(result.status, 0, result.stderr + result.stdout);
-    assert.match(result.stdout, /copied=1 already-present=1 failed=0/);
-    const enc = join(f.dest, `${second}.tar.enc`);
-    assert.ok(existsSync(enc) && !existsSync(join(f.dest, `${second}.tar`)), 'only the encrypted archive is written');
-    const bytes = readFileSync(enc, 'latin1');
-    assert.match(bytes, /^Salted__/, 'openssl salted format');
-    for (const plain of ['compose.env', 'WAREHOUSE_PROJECT_NAME', 'fake database dump', second]) assert.ok(!bytes.includes(plain), `${plain} is not readable on the drive`);
-    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', `${second}.tar.enc.sha256`], { cwd: f.dest }).status, 0);
-    assert.equal(readFileSync(`${enc}.hmac`, 'utf8'), `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${enc}.sha256`))}\n`);
-    // Decrypting with the key gives back the backup, file modes included.
-    const listing = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; backup_key_load "$2"; backup_decrypt "$BACKUP_KEY" < "$3" | tar -tvf -', 'sh', join(f.root, 'scripts/backup-key.sh'), join(f.state, 'config/backup.key'), enc], { encoding: 'utf8' });
-    assert.equal(listing.status, 0, listing.stderr);
-    assert.match(listing.stdout, new RegExp(`^-rw------- .*${second}/compose\\.env$`, 'm'));
-    assert.match(f.dockerCalls(), /^run -d /m, 'restore verification ran on the decrypted copy');
-    assert.match(result.stdout, new RegExp(`Restore verification of the copy on the drive passed: ${second}`));
-    assert.match(result.stdout, /still holds unencrypted \.tar archives/, 'the earlier plain archive is called out');
-    assert.match(readFileSync(join(f.dest, 'LAST-RESULT.txt'), 'utf8'), /encrypted with the backup key[\s\S]*\.tar \(not \.tar\.enc\) are NOT encrypted/);
-    assert.equal(readdirSync(f.state).filter(n => n.startsWith('.usb-verify')).length, 0, 'the decrypted copy is removed');
-    assert.ok(first);
-
-    const again = f.run(['run', '--device', 'sdb1'], on());
-    assert.equal(again.status, 0, again.stderr);
-    assert.match(again.stdout, /copied=0 already-present=2 failed=0/);
-    // A wrong key cannot produce the signature, and the archive is then not trusted.
-    writeFileSync(`${enc}.hmac`, `warehouse-backup-hmac-v1 ${'0'.repeat(64)}\n`);
-    const forged = f.run(['run', '--device', 'sdb1'], on());
-    assert.equal(forged.status, 1);
-    assert.match(forged.stderr, new RegExp(`archive of ${second} on the drive matches its checksum but was not signed with the current backup key; it was not overwritten.*otherwise the archive was changed on the drive`));
-    rmSync(`${enc}.hmac`);
-    assert.equal(f.run(['run', '--device', 'sdb1'], on()).status, 1, 'an encrypted archive without a signature is not accepted');
+    assert.deepEqual(f.archives(), [`${newest}.tar`]);
+    const archive = join(f.dest, `${newest}.tar`);
+    assert.equal(spawnSync('sha256sum', ['-c', '--quiet', `${newest}.tar.sha256`], { cwd: f.dest }).status, 0);
+    assert.equal(readFileSync(`${archive}.hmac`, 'utf8'), `warehouse-backup-hmac-v1 ${hmacHex(backupKey, 'warehouse-backup-archive-v1', readFileSync(`${archive}.sha256`))}\n`);
+    assert.match(listing(f, archive), /^-rw------- .*compose\.env$/m);
+    assert.match(result.stdout, /WARNING: the archives are not encrypted and contain every credential/);
+    assert.match(readFileSync(join(f.dest, 'LAST-RESULT.txt'), 'utf8'), /result=ok[\s\S]*NOT encrypted/);
+    assert.match(f.dockerCalls(), /^run -d /m, 'restore verification ran on the readable copy');
   } finally { f.cleanup(); }
 });
 
-test('run reports an unsigned newest backup instead of verifying it', () => {
+test('run copies nothing when no local backup is signed, and says so', () => {
   const f = fixture('warehouse-usb-unsigned-');
   try {
     f.enroll();
     makeBackup(join(f.state, 'backups', 'warehouse-20251201T000000Z'), { env: composeEnv(f.state), key: null });
     const result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
     assert.equal(result.status, 1);
-    assert.ok(existsSync(join(f.dest, 'warehouse-20251201T000000Z.tar')), 'it is still copied');
-    assert.match(result.stderr, /newest backup on the drive \(warehouse-20251201T000000Z\) is unsigned.*take a new backup/);
+    assert.deepEqual(f.archives(), []);
+    assert.match(result.stderr, /there is no verified or signed backup to copy; take one with npm run db:backup/);
     assert.equal(f.dockerCalls(), '', 'no restore verification ran');
   } finally { f.cleanup(); }
 });
 
-test('setup run again without options keeps encryption, the daily timer and the fresh-backup choice', () => {
+test('setup run again without options keeps what was typed, the daily timer and the fresh-backup choice', () => {
   const f = fixture('warehouse-usb-rerun-');
   const conf = () => readFileSync(join(f.etc, 'warehouse-usb-backup.conf'), 'utf8');
   const unit = () => readFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), 'utf8');
   try {
     assert.equal(f.asRoot(['setup', '--state', f.state, '--encrypt', '--daily', '--no-fresh-backup']).status, 0);
-    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=yes$/m);
+    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=yes\nENCRYPT_SET=typed\nKEEP=3$/m);
     // The documented upgrade step: setup again with nothing but the state.
     writeFileSync(join(f.scratch, 'tools.log'), '');
     const again = f.asRoot(['setup', '--state', f.state]);
     assert.equal(again.status, 0, again.stderr);
-    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=yes$/m, 'the stored choices survive');
+    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=yes\nENCRYPT_SET=typed\nKEEP=3$/m, 'the stored choices survive');
     assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=1$/m, 'archives stay encrypted');
     assert.match(unit(), /^Environment=WAREHOUSE_USB_BACKUP_FRESH=no$/m);
     assert.match(f.calls(), /^systemctl enable --now warehouse-usb-backup\.timer$/m);
     assert.doesNotMatch(f.calls(), /^systemctl disable/m, 'the daily timer is not switched off');
     assert.match(again.stdout, /fresh backup on attach: no, daily timer: yes, encrypted archives: yes/);
-    // Each choice is switched back only by naming it.
-    const off = f.asRoot(['setup', '--state', f.state, '--no-encrypt', '--no-daily', '--fresh-backup']);
+    // Each choice is switched back only by naming it; a typed --no-encrypt then survives a plain rerun.
+    const off = f.asRoot(['setup', '--state', f.state, '--no-encrypt', '--no-daily', '--fresh-backup', '--keep', '5']);
     assert.equal(off.status, 0, off.stderr);
-    assert.match(conf(), /^FRESH_BACKUP=yes\nDAILY=no\nENCRYPT=no$/m);
+    assert.match(conf(), /^FRESH_BACKUP=yes\nDAILY=no\nENCRYPT=no\nENCRYPT_SET=typed\nKEEP=5$/m);
     assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=0$/m);
+    assert.match(unit(), /^Environment=WAREHOUSE_USB_KEEP=5$/m);
     assert.match(f.calls(), /^systemctl disable --now warehouse-usb-backup\.timer$/m);
-    // A configuration written before the encryption setting existed has no ENCRYPT line.
+    assert.match(off.stdout, /Archives are NOT encrypted \(you typed --no-encrypt\)/);
+    const rerun = f.asRoot(['setup', '--state', f.state]);
+    assert.equal(rerun.status, 0, rerun.stderr);
+    assert.match(conf(), /^ENCRYPT=no\nENCRYPT_SET=typed\nKEEP=5$/m, 'a typed --no-encrypt is kept');
+    assert.doesNotMatch(rerun.stdout, /NOTICE/);
+    // A configuration written before the encryption setting existed has no ENCRYPT line: the default, encrypted, applies.
     writeFileSync(join(f.etc, 'warehouse-usb-backup.conf'), `STATE=${f.state}\nFRESH_BACKUP=no\nDAILY=yes\n`);
     assert.equal(f.asRoot(['setup', '--state', f.state]).status, 0);
-    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=no$/m);
+    assert.match(conf(), /^FRESH_BACKUP=no\nDAILY=yes\nENCRYPT=yes\nENCRYPT_SET=default\nKEEP=3$/m);
   } finally { f.cleanup(); }
 });
 
@@ -659,15 +597,25 @@ test('an archive signed with a replaced backup key is reported as such, apart fr
     f.enroll();
     const [first, second] = f.backups(2);
     assert.equal(f.run(['run', '--device', 'sdb1'], f.verifyEnv()).status, 0);
-    // The first archive carries the signature of the key that was in use before it was replaced.
-    const archive = join(f.dest, `${first}.tar`);
-    writeFileSync(`${archive}.hmac`, `warehouse-backup-hmac-v1 ${hmacHex('d4'.repeat(32), 'warehouse-backup-archive-v1', readFileSync(`${archive}.sha256`))}\n`);
-    const result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    const archive = join(f.dest, `${second}.tar.enc`);
+    // An older archive that carries the signature of the key in use before it was replaced is not this installation's any more:
+    // reported, not counted, never deleted, and not a failure of the run.
+    const oldArchive = join(f.dest, `${first}.tar.enc`);
+    copyFileSync(archive, oldArchive);
+    writeFileSync(`${oldArchive}.sha256`, readFileSync(`${archive}.sha256`, 'utf8').replace(second, first));
+    const oldSignature = file => writeFileSync(`${file}.hmac`, `warehouse-backup-hmac-v1 ${hmacHex('d4'.repeat(32), 'warehouse-backup-archive-v1', readFileSync(`${file}.sha256`))}\n`);
+    oldSignature(oldArchive);
+    let result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stdout, new RegExp(`Not counted and not deleted \\(damaged, unsigned, or signed with another key\\): ${first}\\.tar\\.enc`));
+    assert.ok(existsSync(oldArchive) && existsSync(`${oldArchive}.hmac`), 'never deleted');
+    // The archive of the backup being copied carries such a signature: it is not overwritten and the run says what to do.
+    oldSignature(archive);
+    result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
     assert.equal(result.status, 1);
-    assert.match(result.stderr, new RegExp(`archive of ${first} on the drive matches its checksum but was not signed with the current backup key.*move the archives written before`));
+    assert.match(result.stderr, new RegExp(`archive of ${second} on the drive matches its checksum but was not signed with the current backup key.*move the archives written before`));
     assert.doesNotMatch(result.stderr, /does not match its checksum or signature/);
-    assert.match(result.stdout, new RegExp(`Restore verification of the copy on the drive passed: ${second}`));
-    assert.match(result.stdout, /already-present=1 failed=1/);
+    assert.match(result.stderr, /carries no valid signature of this installation's backup key; it was not opened/);
   } finally { f.cleanup(); }
 });
 
@@ -676,7 +624,7 @@ test('run never opens an archive without a valid signature, and still verifies t
   try {
     f.enroll();
     const [genuine] = f.backups(1);
-    assert.equal(f.run(['run', '--device', 'sdb1'], f.verifyEnv()).status, 0);
+    assert.equal(f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), ...PLAIN }).status, 0);
     // Someone with the drive adds a later-dated archive with a matching checksum and no signature.
     const planted = 'warehouse-99991231T000000Z';
     const tree = join(f.scratch, 'planted', planted); mkdirSync(tree, { recursive: true });
@@ -687,12 +635,142 @@ test('run never opens an archive without a valid signature, and still verifies t
     const opened = join(f.scratch, 'tar-extractions.log'); writeFileSync(opened, '');
     const wrap = join(f.scratch, 'tarwrap'); mkdirSync(wrap);
     writeFileSync(join(wrap, 'tar'), `#!/bin/sh\ncase " $* " in *" -xf "*) printf '%s\\n' "$*" >> "${opened}" ;; esac\nexec /usr/bin/tar "$@"\n`, { mode: 0o755 });
-    const result = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), PATH: `${wrap}:${join(f.scratch, 'shims')}:${join(f.scratch, 'dockerbin')}:${process.env.PATH}` });
+    const result = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), ...PLAIN, PATH: `${wrap}:${join(f.scratch, 'shims')}:${join(f.scratch, 'dockerbin')}:${process.env.PATH}` });
     assert.equal(result.status, 1, 'the run reports the foreign archive');
     assert.match(result.stderr, new RegExp(`${planted}\\.tar on the drive carries no valid signature of this installation's backup key; it was not opened`));
     assert.doesNotMatch(readFileSync(opened, 'utf8'), /99991231/, 'the planted archive was never unpacked');
     assert.match(readFileSync(opened, 'utf8'), new RegExp(`${genuine}\\.tar`), 'the genuine archive was');
     assert.match(result.stdout, new RegExp(`Restore verification of the copy on the drive passed: ${genuine}`));
     assert.match(f.last(), /^result=failed$/m);
+    assert.ok(existsSync(join(f.dest, `${planted}.tar`)), 'and it was not deleted');
   } finally { f.cleanup(); }
+});
+
+test('setup switches an installation set up before encryption became the default to encrypted archives, with a notice, and keeps a typed --no-encrypt', () => {
+  const f = fixture('warehouse-usb-flip-');
+  const conf = () => readFileSync(join(f.etc, 'warehouse-usb-backup.conf'), 'utf8');
+  const unit = () => readFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), 'utf8');
+  // The configuration the previous release wrote: no ENCRYPT_SET, ENCRYPT=no because that was the default.
+  const previous = lines => writeFileSync(join(f.etc, 'warehouse-usb-backup.conf'),
+    `STATE=${f.state}\nCHECKOUT=${f.root}\nUSER=installer\nUID=${process.getuid()}\nGID=${process.getgid()}\nFRESH_BACKUP=yes\nDAILY=no\n${lines}`);
+  try {
+    previous('ENCRYPT=no\n');
+    const before = f.run(['status']);
+    assert.match(before.stdout, /WARNING: archives are still written unencrypted, which was the default of earlier releases\. Run setup again/);
+    const flipped = f.asRoot(['setup', '--state', f.state]);
+    assert.equal(flipped.status, 0, flipped.stderr);
+    assert.match(conf(), /^ENCRYPT=yes\nENCRYPT_SET=default$/m);
+    assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=1$/m);
+    assert.match(flipped.stdout, /NOTICE: this installation had USB backup set up with unencrypted archives[\s\S]*switched them to encrypted ones[\s\S]*unencrypted archives on enrolled drives are deleted[\s\S]*--no-encrypt/);
+    assert.doesNotMatch(f.run(['status']).stdout, /still written unencrypted/);
+    // The notice is for the switch only.
+    assert.doesNotMatch(f.asRoot(['setup', '--state', f.state]).stdout, /NOTICE/);
+    // A `no` the operator typed is a choice, and stays.
+    previous('ENCRYPT=no\nENCRYPT_SET=typed\n');
+    const kept = f.asRoot(['setup', '--state', f.state]);
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.match(conf(), /^ENCRYPT=no\nENCRYPT_SET=typed$/m);
+    assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=0$/m);
+    assert.doesNotMatch(kept.stdout, /NOTICE/);
+    // A `yes` stays a `yes`, typed or not.
+    previous('ENCRYPT=yes\n');
+    assert.equal(f.asRoot(['setup', '--state', f.state]).status, 0);
+    assert.match(conf(), /^ENCRYPT=yes\nENCRYPT_SET=default$/m);
+  } finally { f.cleanup(); }
+});
+
+test('the key copy must be confirmed before a drive is enrolled or an encrypted archive is written: refused without a record, with another key\'s record, and after the key changed', () => {
+  const f = fixture('warehouse-usb-escrow-', { escrow: false });
+  const record = join(f.state, 'config/backup-key.escrow');
+  const drives = join(f.etc, 'warehouse-usb-backup.drives');
+  const refusal = /backup key copy is not confirmed \(.*\)\. Archives on the drive are encrypted with the backup key[\s\S]*bash scripts\/backup-key-escrow\.sh show/;
+  try {
+    // setup --enroll stops before it installs anything.
+    let result = f.asRoot(['setup', '--state', f.state, '--enroll', '/dev/sdb1']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, refusal);
+    assert.match(result.stderr, /there is no key escrow record/);
+    assert.equal(existsSync(join(f.etc, 'warehouse-usb-backup.conf')), false, 'nothing installed by a refused setup');
+    assert.equal(existsSync(drives), false);
+    assert.equal(existsSync(f.markerPath), false, 'no marker on the drive');
+    // setup alone installs, and tells what is missing; status says so too.
+    result = f.asRoot(['setup', '--state', f.state]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /ACTION NEEDED: the backup key copy is not confirmed \(there is no key escrow record\)[\s\S]*backup-key-escrow\.sh show/);
+    assert.match(f.run(['status']).stdout, /WARNING: the backup key copy is not confirmed[\s\S]*backup-key-escrow\.sh show/);
+    // enroll is refused the same way, and leaves the list empty.
+    result = f.asRoot(['enroll', '--device', 'sdb1']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, refusal);
+    assert.equal(readFileSync(drives, 'utf8'), '');
+    assert.equal(existsSync(f.markerPath), false);
+    // A record for another key (the key was replaced, or the record copied from another installation) is no confirmation.
+    writeEscrow(f.state, 'd4'.repeat(32));
+    result = f.asRoot(['enroll', '--device', 'sdb1']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /the key escrow record is for another backup key/);
+    // A damaged record is not one either.
+    writeFileSync(record, 'warehouse-backup-key-escrow-v1\nkey_fingerprint=nothex\n');
+    assert.match(f.asRoot(['enroll', '--device', 'sdb1']).stderr, /the key escrow record has no key fingerprint/);
+    // The matching record: the drive is enrolled.
+    writeEscrow(f.state);
+    result = f.asRoot(['enroll', '--device', 'sdb1']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(f.run(['status']).stdout, /Backup key copy: confirmed\./);
+
+    // run: an encrypted write needs the confirmation, and nothing happens before it (no fresh backup, no folder on the drive).
+    f.backups(1);
+    writeFileSync(join(f.root, 'scripts/backup.sh'), '#!/usr/bin/env bash\necho called >> "$WAREHOUSE_STATE_DIR/backup-called"\n', { mode: 0o755 });
+    rmSync(record);
+    result = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), WAREHOUSE_USB_BACKUP_FRESH: 'yes' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, refusal);
+    assert.match(result.stderr, /Nothing was written to the drive/);
+    assert.equal(existsSync(f.dest), false, 'nothing written to the drive');
+    assert.equal(existsSync(join(f.state, 'backup-called')), false, 'no fresh backup was taken for a run that cannot write');
+    assert.match(f.last(), /^result=failed$/m);
+    assert.match(f.last(), /^message=The backup key copy is not confirmed \(there is no key escrow record\)/m);
+    assert.match(usbBackupWarning(f.state, { etc: f.etc }), /archives are encrypted but the backup key copy is not confirmed .*backup-key-escrow\.sh show/);
+    // A run for readable archives, which the operator typed --no-encrypt for, needs none.
+    result = f.run(['run', '--device', 'sdb1'], { ...f.verifyEnv(), ...PLAIN });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    // The key is replaced after the copy was confirmed: the record no longer matches, and the new key needs its own confirmation.
+    writeEscrow(f.state);
+    assert.equal(f.run(['run', '--device', 'sdb1'], f.verifyEnv()).status, 0, 'confirmed: an encrypted run writes');
+    const newKey = 'c3'.repeat(32);
+    writeKey(join(f.state, 'config/backup.key'), newKey);
+    f.writeMarker({ key: newKey });   // the drive is enrolled again with the new key
+    f.localBackup(f.bname(5), { key: newKey });
+    result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /the key escrow record is for another backup key \(the key was replaced since the copy was confirmed\)/);
+    assert.equal(f.archives().includes(`${f.bname(5)}.tar.enc`), false);
+    writeEscrow(f.state, newKey);
+    result = f.run(['run', '--device', 'sdb1'], f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.ok(f.archives().includes(`${f.bname(5)}.tar.enc`));
+  } finally { f.cleanup(); }
+});
+
+test('the doctor warning asks for the key copy when archives are encrypted and the record is missing or for another key', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-usb-doctor-escrow-'));
+  try {
+    const state = join(scratch, 'state'); mkdirSync(join(state, 'config'), { recursive: true });
+    const etc = join(scratch, 'etc'); mkdirSync(etc);
+    writeKey(join(state, 'config/backup.key'));
+    const now = Date.UTC(2026, 9, 9);
+    writeFileSync(join(state, 'config/usb-backup.last'), `result=ok\nfinished_utc=x\nlast_success_epoch=${Math.floor(now / 1000) - 86400}\nmessage=copied 1\n`);
+    const conf = lines => writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${state}\n${lines}`);
+    conf('ENCRYPT=yes\n');
+    assert.match(usbBackupWarning(state, { etc, now }), /archives are encrypted but the backup key copy is not confirmed \(there is no key escrow record\)/);
+    writeEscrow(state, 'd4'.repeat(32));
+    assert.match(usbBackupWarning(state, { etc, now }), /record is for another backup key/);
+    writeFileSync(join(state, 'config/backup-key.escrow'), 'not a record\n');
+    assert.match(usbBackupWarning(state, { etc, now }), /the key escrow record is not valid/);
+    writeEscrow(state);
+    assert.equal(usbBackupWarning(state, { etc, now }), null, 'confirmed for the key in use');
+    rmSync(join(state, 'config/backup-key.escrow'));
+    conf('ENCRYPT=no\nENCRYPT_SET=typed\n');
+    assert.equal(usbBackupWarning(state, { etc, now }), null, 'readable archives need no key copy');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
