@@ -294,6 +294,14 @@ test('--ref opts out of the tag rule with a warning; a branch of origin works', 
     const nope = w.run(['--ref', 'no-such-branch']);
     assert.notEqual(nope.status, 0);
     assert.match(nope.stderr, /neither a commit nor a branch/);
+    // Without a reachable origin a commit that is already here still works (CI, offline), a tag does not.
+    git(w.install, 'remote', 'set-url', 'origin', join(w.scratch, 'gone.git'));
+    const offline = w.run(['--ref', sha]);
+    assert.equal(offline.status, 0, offline.stdout + offline.stderr);
+    assert.match(offline.stderr, /could not fetch from origin; going on with the local/);
+    const noTag = w.run(['v0.2.0']);
+    assert.notEqual(noTag.status, 0);
+    assert.match(noTag.stderr, /could not fetch from origin/);
   } finally { w.cleanup(); }
 });
 
