@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Replace this instance's database and stored objects in place from a
-# warehouse-backup-v5 directory created by scripts/backup.sh on the same instance.
+# warehouse-backup-v5 or -v6 directory created by scripts/backup.sh on the same instance.
 # Destructive by design: requires --yes, stopped services and a backup that passes
 # scripts/verify-restore.sh, signature included. The replaced data directories are
-# kept for rollback. Only format v5 is accepted; an older format is refused, and so is a
-# backup made on the earlier supabase/postgres image (scripts/backup-image.sh).
-# --allow-unsigned is only for a lost backup key; a v5 backup whose signature file
+# kept for rollback. Formats v5 (storage.tar.gz) and v6 (a storage/ tree) are accepted; an older
+# format is refused, and so is a backup made on the earlier supabase/postgres image
+# (scripts/backup-image.sh). The stored files keep their modes and, from v6 on, their extended
+# attributes (the Storage service keeps content type and cache control in user.supabase.*); a v5
+# backup holds none, and neither may a v6 one, so once the services run a sample of the restored
+# files is looked at and, when any has no content type, the attributes are set again from the
+# catalog (scripts/storage-retag.sh --if-missing).
+# --allow-unsigned is only for a lost backup key; a backup whose signature file
 # is missing is refused while this installation's key is available.
 set -euo pipefail
 umask 077
@@ -40,16 +45,11 @@ if [[ "$confirm" != true ]]; then
 fi
 [[ -d "$backup" && ! -L "$backup" ]] || { echo "Backup directory not found: $backup" >&2; exit 1; }
 backup="$(realpath -e "$backup")"
-# Only format v5 is accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
-[[ -f "$backup/metadata.txt" && ! -L "$backup/metadata.txt" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; exit 1; }
-format="$(sed -n 's/^format=//p' "$backup/metadata.txt" 2>/dev/null || true)"
-if [[ "$format" != warehouse-backup-v5 ]]; then
-  format="${format//[^[:print:]]/?}"
-  echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 is accepted)." >&2
-  exit 1
-fi
 # shellcheck source=scripts/backup-image.sh
 source "$ROOT/scripts/backup-image.sh"
+# Formats v5 and v6 are accepted. A refusal needs no trust in metadata.txt, so this comes before the signature check.
+backup_check_format "$backup" || exit 1
+format="$BACKUP_FORMAT"
 backup_check_database_image "$backup" || exit 1
 
 # shellcheck source=scripts/operator-lock.sh
@@ -73,8 +73,14 @@ fi
 # shellcheck source=scripts/backup-key.sh
 source "$ROOT/scripts/backup-key.sh"
 [[ -n "${WAREHOUSE_BACKUP_KEY_FILE:-}" ]] || export WAREHOUSE_BACKUP_KEY_FILE="$state/config/backup.key"
+# The files of a v6 storage/ tree are hashed by scripts/verify-restore.sh in step 3, before anything is moved; hashing them
+# here as well would read the whole tree twice.
+BACKUP_TREE=skip
 backup_authenticate "$backup" "$allow_unsigned" || exit 1
-for file in database.dump storage.tar.gz storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
+backup_check_layout "$backup" || exit 1
+BACKUP_TREE=check
+if [[ "$format" == warehouse-backup-v5 ]]; then storage_part=storage.tar.gz; else storage_part=storage.manifest; fi
+for file in database.dump "$storage_part" storage_objects.txt integrity.txt metadata.txt compose.env instance.json roles.txt SHA256SUMS; do
   [[ -f "$backup/$file" && ! -L "$backup/$file" ]] || { echo "Incomplete backup: missing $file" >&2; exit 1; }
 done
 # A backup made before the pooler became optional also holds _supabase.dump (the pooler's own metadata). It is not
@@ -184,15 +190,42 @@ MSG
 }
 trap finish EXIT
 
+# The restored files are a second copy next to the replaced ones, which stay for rollback: the free space has to hold the
+# stored files again (the size the backup recorded, else the size of its tarball) with a gigabyte to spare. Checked while
+# nothing has been moved.
+if [[ "$format" == warehouse-backup-v6 ]]; then
+  tree_bytes="$(sed -n 's/^storage_bytes=//p' "$backup/metadata.txt" | head -n 1)"
+else
+  tree_bytes="$(stat -c %s -- "$backup/storage.tar.gz")"
+fi
+[[ "$tree_bytes" =~ ^[0-9]{1,15}$ ]] || { echo 'Refusing: the backup records no usable size for its stored files (storage_bytes= in metadata.txt). Nothing was moved.' >&2; exit 1; }
+free_bytes="$(df -B1 --output=avail -- "$state/data" | tail -n 1 | tr -d ' ')"
+if [[ "$free_bytes" =~ ^[0-9]+$ ]] && ((free_bytes < tree_bytes + 1073741824)); then
+  echo "Refusing: restoring the stored files needs about $((tree_bytes / 1048576)) MiB plus 1 GiB of free space in $state/data, but only $((free_bytes / 1048576)) MiB are free. The earlier restores' kept data/storage.pre-restore-* directories hold space you can free once you have accepted them (docs/OPERATOR_INSTALL.md, \"In-place restore\"). Nothing was moved." >&2
+  exit 1
+fi
+
 echo "Restoring $backup into $state (format $format, created $(sed -n 's/^created_at_utc=//p' "$backup/metadata.txt"))."
 phase='move current data aside'
 mv "$state/data/db" "$old_db"
 mv "$state/data/storage" "$old_storage"
 mkdir -m 700 "$state/data/db" "$state/data/storage"
 phase='extract storage'
-# Archive safety (no absolute paths, no .., no links) was proven by verify-restore.sh.
-# -p keeps the archived modes so the storage container reads the files exactly as before.
-tar --no-same-owner -p -xzf "$backup/storage.tar.gz" -C "$state/data/storage"
+if [[ "$format" == warehouse-backup-v6 ]]; then
+  # Safety (no links, exactly the manifest's files, every hash) was proven by verify-restore.sh. -p keeps the modes and -X the
+  # extended attributes (content type, cache control), -t the modification times; the owner is the user running this restore.
+  # The backup's files may be hard links shared with other backups: the restore copies, it never links the live storage.
+  rsync -rptX --no-owner --no-group "$backup/storage/" "$state/data/storage/"
+  # A second, dry run must find nothing to do: the copy is complete and kept every attribute.
+  leftover="$(rsync -rptXn --no-owner --no-group --itemize-changes "$backup/storage/" "$state/data/storage/")"
+  [[ -z "$leftover" ]] || { echo "The restored stored files differ from the backup after the copy (the disk may not keep extended attributes). First differences:" >&2; head -n 5 <<<"$leftover" >&2; exit 1; }
+else
+  # Archive safety (no absolute paths, no .., no links) was proven by verify-restore.sh.
+  # -p keeps the archived modes so the storage container reads the files exactly as before. A v5 archive holds no extended
+  # attributes (the earlier tar never saved them); --xattrs is passed so that an archive that does is restored whole, and the
+  # attributes are set again from the catalog once the services run.
+  tar --no-same-owner -p --xattrs --xattrs-include='user.*' -xzf "$backup/storage.tar.gz" -C "$state/data/storage"
+fi
 if [[ "$restore_config" == true ]]; then
   phase='restore configuration'
   cp "$state/config/compose.env" "$old_config"
@@ -285,6 +318,15 @@ phase='start services'
 # The restore brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
 rm -f -- "$state/config/stopped-by-operator"
 compose up -d --wait --wait-timeout 180
+# Whatever the format, the restored files may carry no content type: a v5 backup holds no extended attributes, and neither
+# does a v6 backup of files that had lost theirs, or a copy of one that went through a USB archive written before archives kept
+# them. Such files would be served as application/octet-stream and no-cache. Look at up to 20 files; if any has none, set the
+# attributes of every file again from the catalog (scripts/storage-retag.sh). The bytes are intact either way, so a failure
+# here is a warning, not a failed restore (npm run storage:retag repeats it).
+phase='storage metadata'
+if ! bash "$ROOT/scripts/storage-retag.sh" --if-missing; then
+  echo 'Warning: the storage metadata (content type, cache control) could not be checked or set again. The files are intact. Run: npm run storage:retag' >&2
+fi
 phase='doctor'
 # --restore-config can bring back a compose.env that names a central key file (CENTRAL_JWKS_FILE) which this
 # state no longer has: setup deletes public/central-jwks.json when central sign-in moves to an address or off,

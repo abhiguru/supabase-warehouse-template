@@ -1,12 +1,57 @@
 #!/usr/bin/env bash
 # Sourced by scripts/restore.sh, scripts/restore-host.sh and scripts/verify-restore.sh.
-# A backup (format v5) records the database image it was dumped from on a database_image= line in
+# A backup (format v5 or v6) records the database image it was dumped from on a database_image= line in
 # metadata.txt (scripts/backup.sh). The database runs the official PostgreSQL image of the pin in
 # docker/postgres/Dockerfile (scripts/db-image.sh) with one baseline migration. A backup from the same major or
 # from PostgreSQL 17 restores; one from a newer major than the pin does not (a dump cannot go back to an older server). A backup made on the earlier supabase/postgres image holds the old schema, the
 # old roles and the old migration chain, so it cannot be replayed here: it restores only with the
 # release tagged migrations-pre-baseline, and its data is then reloaded (docs/OPERATOR_INSTALL.md,
 # "Baseline reload"). A refusal needs no trust in metadata.txt, so callers run it before the signature check.
+#
+# The two formats differ only in how the object storage is kept (scripts/backup.sh writes v6, restores read both):
+#   warehouse-backup-v5  storage.tar.gz, one gzip tar of the whole object storage, named in SHA256SUMS.
+#   warehouse-backup-v6  storage/, a tree of files (hard-linked to the previous backup where unchanged, extended
+#                        attributes kept), and storage.manifest, the sorted sha256 of every file in it, named in SHA256SUMS.
+
+# backup_check_format BACKUP_DIR: accepts warehouse-backup-v5 and warehouse-backup-v6 and sets BACKUP_FORMAT to the
+# label; otherwise prints the reason on standard error and returns 1. Reads only the format= line of metadata.txt, so
+# like the image check it runs before the signature check.
+BACKUP_FORMAT=''
+backup_check_format() {
+  local metadata="$1/metadata.txt" format
+  BACKUP_FORMAT=''
+  [[ -f "$metadata" && ! -L "$metadata" ]] || { echo 'Incomplete backup: missing metadata.txt' >&2; return 1; }
+  format="$(sed -n 's/^format=//p' "$metadata" 2>/dev/null || true)"
+  if [[ "$format" != warehouse-backup-v5 && "$format" != warehouse-backup-v6 ]]; then
+    format="${format//[^[:print:]]/?}"
+    echo "Refusing: backup format '${format:-unknown}' is no longer supported; take a new backup with this version (only warehouse-backup-v5 and -v6 are accepted)." >&2
+    return 1
+  fi
+  BACKUP_FORMAT="$format"
+}
+
+# backup_check_layout BACKUP_DIR: run after backup_authenticate. The label of metadata.txt must agree with the
+# files the signed SHA256SUMS lists: v6 names storage.manifest and has a storage/ tree and no tarball; v5 names
+# storage.tar.gz and has no manifest and no tree. A label and a list that disagree are refused, so a backup cannot
+# be read as the other format. Needs BACKUP_FORMAT from backup_check_format.
+backup_check_layout() {
+  local dir="$1" has_manifest=false has_tarball=false
+  grep -Eq '^[0-9a-f]{64}  storage\.manifest$' "$dir/SHA256SUMS" && has_manifest=true
+  grep -Eq '^[0-9a-f]{64}  storage\.tar\.gz$' "$dir/SHA256SUMS" && has_tarball=true
+  if [[ "$BACKUP_FORMAT" == warehouse-backup-v6 ]]; then
+    if [[ "$has_manifest" != true || "$has_tarball" == true || -e "$dir/storage.tar.gz" || -L "$dir/storage.tar.gz" ]]; then
+      echo 'Refusing: the backup is labelled warehouse-backup-v6, but its signed file list does not describe that layout (v6 lists storage.manifest and has a storage/ tree, and no storage.tar.gz).' >&2
+      return 1
+    fi
+    if [[ "${BACKUP_TREE:-check}" != skip && ( ! -d "$dir/storage" || -L "$dir/storage" ) ]]; then
+      echo 'Incomplete backup: missing the storage/ directory' >&2
+      return 1
+    fi
+  elif [[ "$has_tarball" != true || "$has_manifest" == true || -e "$dir/storage.manifest" || -e "$dir/storage" || -L "$dir/storage" ]]; then
+    echo 'Refusing: the backup is labelled warehouse-backup-v5, but its signed file list does not describe that layout (v5 lists storage.tar.gz and has no storage.manifest and no storage/ tree).' >&2
+    return 1
+  fi
+}
 
 # backup_check_database_image BACKUP_DIR: returns 0 for a backup made on the official postgres image;
 # otherwise prints the reason on standard error and returns 1.

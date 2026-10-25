@@ -1144,7 +1144,7 @@ export function interpretDaily(ctx, run, fields) {
     return { backup: { result: 'failed', message: why }, verify: step('verify'), prune: step('prune'), retention: { result: 'skipped', message: "retention not run: today's backup failed" } };
   }
   if (fields.backup === 'skipped') return { skipped: fields.backup_message || 'the database is not running or not healthy' };
-  const backup = { ...step('backup', 'failed'), dir: fields.backup_dir ?? null };
+  const backup = { ...step('backup', 'failed'), dir: fields.backup_dir ?? null, warning: fields.backup_warning ?? '' };
   const dir = backup.dir;
   if (backup.result === 'ok' && !(dir && BACKUP_DIR_PATTERN.test(dir.split('/').pop()) && resolve(dir, '..') === resolve(ctx.state, 'backups'))) {
     backup.result = 'failed'; backup.message = 'backup finished but its location could not be read';
@@ -1173,7 +1173,7 @@ function recordDaily(ctx, data, outcome, attempt, webhook) {
   let message;
   if (backup.result !== 'ok') message = backup.message.startsWith('backup') || backup.message.startsWith('the daily') ? backup.message : `backup failed: ${backup.message}`;
   else if (verify.result !== 'ok') message = `backup ${name} was made but verification failed: ${verify.message}`;
-  else message = `backup ${name} verified${outcome.prune.pruned ? `; removed ${outcome.prune.pruned} old` : ''}${outcome.prune.message ? `; ${outcome.prune.message}` : ''}`;
+  else message = `backup ${name} verified${outcome.prune.pruned ? `; removed ${outcome.prune.pruned} old` : ''}${outcome.prune.message ? `; ${outcome.prune.message}` : ''}${backup.warning ? `; ${backup.warning}` : ''}`;
   message = `${clean(message)}${backupOk ? '' : ` (attempt ${attempt} of ${LIMITS.dailyAttempts})`}`;
   data.lastDailyRun.backup = { date, at: now, result: backupOk ? 'ok' : 'failed', message };
   try { writeJobStatus(ctx, 'backup', backupOk, message, name && backup.result === 'ok' ? { backup: name } : {}); } catch { /* the state file carries the result */ }

@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { centralKeyFault, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -164,6 +164,14 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   for (const [command, args] of [['npm', ['--version']], ['openssl', ['version']], ['flock', ['--version']], ['docker', ['compose', 'version']], ['docker', ['info', '--format', '{{.ServerVersion}}']]]) {
     if (!probe(command, args).ok) throw new Error(`Missing or unavailable prerequisite: ${command}${args[0] === 'compose' ? ' Compose' : ''}.`);
   }
+  // Backups keep the stored files as a tree with their extended attributes (content type, cache control): rsync copies it, and
+  // a backup archive from a USB drive is unpacked with GNU tar --xattrs (scripts/backup.sh, restore.sh, restore-host.sh).
+  // Setup and restore-host (--host-preflight) refuse a host without them. Every other run only warns: a host that pulled this
+  // release without installing rsync must still start its services after a reboot (start.sh --preflight), and only backups
+  // and restores need the tools.
+  const toolProblems = backupToolProblems();
+  if (hostPreflight && toolProblems.length) throw new Error(`Missing or unavailable prerequisite: ${toolProblems.join(' ')}`);
+  for (const problem of toolProblems) console.error(`Warning: ${problem}. The services start without it, but backups and restores need it.`);
   // The requirement is a capability, not a version: the scripts wait with `up --wait --wait-timeout`.
   if (!/--wait-timeout/.test(probe('docker', ['compose', 'up', '--help']).output)) throw new Error('This Docker Compose plugin does not accept `up --wait-timeout`; install a Compose plugin that does (see the host prerequisites).');
   const state = process.env.WAREHOUSE_STATE_DIR;

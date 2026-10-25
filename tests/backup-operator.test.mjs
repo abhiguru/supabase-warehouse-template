@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, truncateSync, symlinkSync } from 'node:fs';
-import { makeBackup, fakeDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
+import { makeBackup, fakeDocker, fakeBackupDocker, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead } from './backup-test-helpers.mjs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 test('backup refuses an unspecified operator state before using Docker', () => {
   const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname], {
@@ -44,33 +45,7 @@ test('backup pauses owned writers, preserves credentials and resumes writers', (
     writeFileSync(join(state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-backup-test\nWAREHOUSE_DB_PATH=${state}/data/db\nWAREHOUSE_STORAGE_PATH=${state}/data/storage\n`, { mode: 0o600 });
     writeFileSync(join(state, 'public/instance.json'), '{"schemaVersion":1}\n');
     writeFileSync(join(state, 'data/storage/object'), 'object data');
-    writeFileSync(join(bin, 'docker'), `#!/bin/sh
-printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
-case "$1" in
-  ps) exit 0 ;;
-  inspect)
-    case "$3" in
-      *State.Health.Status*) printf 'healthy\\n' ;;
-      *State.Running*) printf 'true\\n' ;;
-    esac ;;
-  compose)
-    case "$*" in
-      *' up -d --no-recreate'*) if [ "$FAKE_FAIL_UP" = yes ]; then exit 1; fi ;;
-      *'ps --all --format'*) if [ "$FAKE_FAIL_UP" = yes ]; then printf 'storage running unhealthy\\n'; fi ;;
-      *' logs '*) printf 'fake log of %s\\n' "$(printf '%s' "$*" | awk '{print $NF}')" ;;
-      *' ps -q db') printf 'bbbbbbbbbbbb\\n' ;;
-      *' ps -q kong') printf 'aaaaaaaaaaaa\\n' ;;
-      *' ps -q storage') printf 'cccccccccccc\\n' ;;
-      *' ps -q '*) : ;;
-      *'exec -T db pg_dump'*' -d _supabase '*) printf 'fake supabase dump\\n' ;;
-      *'exec -T db pg_dump'*) if [ "$FAKE_DOCKER_FAIL" = yes ]; then exit 42; fi; printf 'fake database dump\\n' ;;
-      *'exec -T db psql'*server_version_num*) printf '%s\\n' "\${FAKE_SERVER:-18|true}" ;;
-      *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
-      *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
-      *'exec -T db psql'*) printf 'fake integrity\\n' ;;
-    esac ;;
-esac
-`, { mode: 0o700 });
+    fakeBackupDocker(bin);
     const result = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, destination], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log },
     });
@@ -80,7 +55,13 @@ esac
     assert.equal(existsSync(join(destination, '_supabase.dump')), false);
     assert.equal(readFileSync(join(destination, 'storage_objects.txt'), 'utf8'), 'documents/a.pdf/v1\n');
     assert.equal(readFileSync(join(destination, 'compose.env'), 'utf8').includes('WAREHOUSE_PROJECT_NAME='), true);
-    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /format=warehouse-backup-v5/);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^format=warehouse-backup-v6$/m);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^link_base=none$/m, 'the first backup is a full copy');
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^storage_files=1$/m);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^storage_bytes=11$/m);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^storage_new_bytes=11$/m, 'nothing to link to: every byte is new');
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^stop_seconds=\d+$/m);
+    assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^duration_seconds=\d+$/m);
     assert.equal(readFileSync(join(destination, 'metadata.txt'), 'utf8').match(/^database_image=(.*)$/m)?.[1], currentDatabaseImage(), 'the image line is the Dockerfile pin');
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^database_image=postgres:18\.\S+@sha256:[0-9a-f]{64}$/m);
     assert.match(readFileSync(join(destination, 'metadata.txt'), 'utf8'), /^source_commit=([0-9a-f]{40}|unknown)$/m);
@@ -96,8 +77,12 @@ esac
     for (const name of readdirSync(destination)) if (statSync(join(destination, name)).isFile()) assert.ok(!readFileSync(join(destination, name), 'latin1').includes(key), `${name} does not contain the key`);
     assert.match(readFileSync(join(destination, 'roles.txt'), 'utf8'), /supabase_admin/);
     const sums = readFileSync(join(destination, 'SHA256SUMS'), 'utf8');
-    for (const file of ['database.dump', 'storage.tar.gz', 'storage_objects.txt', 'integrity.txt', 'metadata.txt', 'compose.env', 'instance.json', 'roles.txt'])
+    for (const file of ['database.dump', 'storage.manifest', 'storage_objects.txt', 'integrity.txt', 'metadata.txt', 'compose.env', 'instance.json', 'roles.txt'])
       assert.match(sums, new RegExp(`^[0-9a-f]{64}  ${file.replace('.', '\\.')}$`, 'm'), `${file} is checksummed`);
+    assert.doesNotMatch(sums, /storage\.tar\.gz|storage\//, 'the tree is covered by the manifest, not listed file by file');
+    assert.equal(readFileSync(join(destination, 'storage.manifest'), 'utf8'), `${createHash('sha256').update('object data').digest('hex')}  object\n`);
+    assert.equal(readFileSync(join(destination, 'storage/object'), 'utf8'), 'object data');
+    assert.equal(spawnSync('bash', ['-c', 'source "$1"; WAREHOUSE_BACKUP_KEY_FILE="$2" backup_authenticate "$3" false', 'x', new URL('../scripts/backup-key.sh', import.meta.url).pathname, join(state, 'config/backup.key'), destination], { encoding: 'utf8' }).status, 0, 'the tree authenticates against its manifest');
     assert.equal(spawnSync('sha256sum', ['-c', '--quiet', 'SHA256SUMS'], { cwd: destination, encoding: 'utf8' }).status, 0, 'SHA256SUMS verifies');
     assert.match(result.stderr, /shares a filesystem with .*\/data/, 'same-filesystem destination warns');
     const calls = readFileSync(log, 'utf8');
@@ -110,7 +95,7 @@ esac
     assert.ok(calls.indexOf('pg_dump') < calls.indexOf('up -d --no-recreate --no-deps --wait --wait-timeout 180 kong'));
     assert.match(calls, /up -d --no-recreate --no-deps --wait --wait-timeout 180 kong/);
     assert.doesNotMatch(calls, /up -d --no-recreate --wait/, 'no restart without --no-deps');
-    assert.equal(existsSync(join(destination, 'storage.tar.gz')), true);
+    assert.equal(existsSync(join(destination, 'storage.tar.gz')), false, 'no tarball any more');
     writeFileSync(log, '');
     const failed = spawnSync('bash', [new URL('../scripts/backup.sh', import.meta.url).pathname, join(scratch, 'failed-backup')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_DOCKER_FAIL: 'yes', FAKE_FAIL_UP: 'yes' },
@@ -483,7 +468,7 @@ test('restore verifier refuses a v5 backup whose signature file was removed, eve
     // verify() points WAREHOUSE_BACKUP_KEY_FILE at a key file by default.
     let result = verify(stripped, scratch, {}, ['--allow-unsigned']);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /a v5 or v6 backup must be signed; its signature file was removed/);
     assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
     assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/);
     assert.equal(result.calls, '', 'docker is never invoked');
@@ -491,7 +476,7 @@ test('restore verifier refuses a v5 backup whose signature file was removed, eve
     writeFileSync(join(stripped, 'database.dump'), 'damaged after the signature was removed\n');
     result = verify(stripped, scratch);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /carries no signature[\s\S]*a v5 backup must be signed/);
+    assert.match(result.stderr, /carries no signature[\s\S]*a v5 or v6 backup must be signed/);
     assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
     assert.equal(result.calls, '');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
@@ -504,7 +489,7 @@ test('restore verifier takes the same v5 backup with --allow-unsigned once the k
     let result = verify(stripped, scratch, { WAREHOUSE_BACKUP_KEY_FILE: join(scratch, 'absent.key') }, ['--allow-unsigned']);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /a v5 or v6 backup must be signed/);
     assert.match(result.stdout, /UNSIGNED/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
@@ -516,13 +501,13 @@ test('restore verifier refuses a v4 backup, with or without --allow-unsigned, an
     for (const args of [[], ['--allow-unsigned']]) {
       const refused = verify(backup, scratch, {}, args);
       assert.notEqual(refused.status, 0, args.join(' '));
-      assert.match(refused.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/);
+      assert.match(refused.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version \(only warehouse-backup-v5 and -v6 are accepted\)\./);
       assert.equal(refused.calls, '');
     }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
-test('restore verifier refuses format labels that are not exactly warehouse-backup-v5, with no calls', () => {
+test('restore verifier refuses format labels that are not exactly warehouse-backup-v5 or -v6, with no calls', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-label-'));
   try {
     const backup = makeBackup(join(scratch, 'backup'));
@@ -530,13 +515,15 @@ test('restore verifier refuses format labels that are not exactly warehouse-back
       'carriage return': 'format=warehouse-backup-v5\r\ncreated_at_utc=20260101T000000Z\n',
       'v50': 'format=warehouse-backup-v50\ncreated_at_utc=20260101T000000Z\n',
       'two format lines': 'format=warehouse-backup-v5\nformat=warehouse-backup-v5\n',
+      'v60': 'format=warehouse-backup-v60\ncreated_at_utc=20260101T000000Z\n',
+      'v5 then v6': 'format=warehouse-backup-v5\nformat=warehouse-backup-v6\n',
       'no format line': 'created_at_utc=20260101T000000Z\n',
     };
     for (const [name, body] of Object.entries(cases)) {
       writeFileSync(join(backup, 'metadata.txt'), body);
       const refused = verify(backup, scratch);
       assert.notEqual(refused.status, 0, name);
-      assert.match(refused.stderr, /Refusing: backup format '.*' is no longer supported/, name);
+      assert.match(refused.stderr, /Refusing: backup format '.*' is no longer supported; take a new backup with this version \(only warehouse-backup-v5 and -v6 are accepted\)\./, name);
       assert.equal(refused.calls, '', name);
     }
   } finally { rmSync(scratch, { recursive: true, force: true }); }

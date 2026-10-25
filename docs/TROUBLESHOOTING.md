@@ -514,7 +514,61 @@ it; only `functions` can.
   empty`: choose a new state path; restore-host never overwrites an
   installation. `Missing checksum file` or `does not match`: use another
   archive from the drive.
-- **A backup is refused as `no longer supported`**: only format v5 is accepted. Take a new backup with this version.
+- **A backup is refused as `no longer supported`**: only formats v5 and v6 are accepted. Take a new backup with this version.
+  A checkout older than the release that added format v6 gives the same message for a v6 backup (before it reaches the
+  `source_commit` hint): check out this release or a later one.
+- **A backup is refused: `labelled warehouse-backup-vN, but its signed file list does not describe that layout`**: the label in
+  `metadata.txt` and the files the signed list names disagree (v6 lists `storage.manifest` and has a `storage/` tree; v5 lists
+  `storage.tar.gz`). Do not edit either: use another copy of the backup.
+- **`db:backup` ends with `WARNING: N files re-copied: backup warehouse-<utc> has a damaged copy`** (also in the daily status
+  line of `node scripts/watch.mjs status`, and as `rot_repaired=` in the new backup's `metadata.txt`): the new backup is good, and
+  the night counted as ok. The older backup it names holds a damaged copy of N stored files (bit rot, or a disk error: a
+  hard link shares one copy of a file between backups, so one damaged file is damaged in every backup that links it). The
+  backup found the file no longer matching the checksum that backup recorded, did not link it, and copied it again from the live
+  storage. Nothing is needed for the new backup. To see how far the damage reaches, run `npm run db:verify-restore --
+  backups/warehouse-<utc>` on the named backup and on the ones before it: they fail with `a file of the backup storage/ tree
+  does not match storage.manifest` until they age out (they are removed by the usual retention), or until you repair them as
+  below. Repeated warnings, or a read error in `dmesg`, mean the backup disk is failing: replace it and keep the USB copies.
+- **A storage file fails its checksum** (`db:verify-restore` with `a file of the backup storage/ tree does not match
+  storage.manifest`, or `db:backup` stops with `Files shared with warehouse-<utc> no longer have the checksum recorded for
+  them there, and the live storage does not give a good copy of them either`): a photo or PDF in the backups changed on the
+  disk (bit rot, a failing disk, a write into a backup). The second message means the live file does not match what that
+  backup recorded either, so one of the two is damaged; the next `db:backup` then copies every stored file instead of linking
+  (it prints a note that it does not use that backup as the base). For each file named (up to ten):
+  0. **Check the backup first**: `npm run db:verify-restore -- backups/warehouse-<utc>`. If its signature or `SHA256SUMS`
+     fails, or `storage.manifest` itself is damaged, the manifest is wrong and not the photo: do not conclude that the photo is
+     lost from the checksum recorded in a damaged manifest. Use another backup (`db:backup` already skips a base whose signature
+     fails, with a warning).
+  1. Take the checksum recorded for the file: `awk -v p='<path>' 'substr($0, 67) == p' backups/warehouse-<utc>/storage.manifest`,
+     with the `<path>` below `storage/` (this compares the whole name, so a name with `.`, `*`, `+`, `(` or `$` in it is read
+     literally).
+  2. If the live file `data/storage/<path>` has that checksum (`sha256sum`), it is the good copy: overwrite the damaged one
+     in place, `cp --preserve=mode,timestamps,xattr data/storage/<path> backups/warehouse-<utc>/storage/<path>` (the same file as in every
+     backup that links to it, so one copy repairs them all), then take a new backup.
+  3. If the live file does not have it either, **restore the file from the newest USB archive** of this installation:
+     extract that archive into a temporary folder and use `warehouse-<utc>/storage/<path>` there after checking its
+     checksum against the same line of the manifest; put it into the live storage (stop the services first) and into the
+     backup as above.
+  4. If no copy has the recorded checksum (and the manifest passed step 0), the photo is lost in this installation; tell the
+     maintainers, and replace the disk that damaged it.
+- **Stored files are served as `application/octet-stream` and `no-cache` after a restore, or an installation went through the
+  PostgreSQL 17 to 18 move**: the file attributes that hold each file's content type were not kept by the restore. Run
+  `npm run storage:retag` ([Content types of stored files](OPERATOR_INSTALL.md#content-types-of-stored-files-npm-run-storageretag)):
+  it sets them again from the catalog, is safe to repeat, and prints how many files it changed. It needs the services running.
+- **`db:backup` stops with `copying the object storage failed (rsync exit 23)`**: two causes, both before anything was stopped.
+  rsync could not read a file or folder of `data/storage` (a copied-in file owned by root or mode 700 is the usual cause; the
+  lines above the message name it): make the folders mode 755 and the files mode 644 (`sudo chmod`), then back up again. Or the
+  disk that holds `backups/` does not keep `user.*` extended attributes or hard links (FAT, exFAT, some NFS mounts: rsync prints
+  `lsetxattr ... Operation not supported` or `link ... failed`): put `backups/` on a Linux filesystem such as ext4 or xfs and
+  copy backups to other media afterwards.
+- **`db:backup` stops with `the copy of the object storage is not identical to the live storage after the final pass`**: the
+  disk that holds `backups/` does not keep extended attributes or modification times (a FAT or exFAT disk, an NFS mount without
+  attribute support). The backup folder must be on a Linux filesystem such as ext4 or xfs; copy backups to other media
+  afterwards. The services were restarted.
+- **`setup.sh` or `db:restore-host` stops with `Missing or unavailable prerequisite: rsync ...` or `GNU tar with --xattrs`**, or
+  `start.sh` / `doctor` warn about them: install the packages (`sudo apt-get install rsync tar`); `node scripts/doctor.mjs
+  --host-preflight` checks both. `start.sh` only warns, so the services start, but `db:backup` and `db:restore` fail until
+  `rsync` is installed.
 - **`db:rotate-passwords` stopped half-way**: run it again; it works out which values the database has
   ([Rotating the database passwords](OPERATOR_INSTALL.md#rotating-the-database-passwords)).
 

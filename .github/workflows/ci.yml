@@ -208,6 +208,18 @@ jobs:
           node-version: '22'
       - run: npm ci
         working-directory: backend
+      - name: Backup tools (rsync, and attr for the attribute checks)
+        # Backups copy the stored files with rsync and keep their extended attributes; the restore drill reads them with
+        # getfattr. The hosted runner image has rsync; a self-hosted runner must provide both (docs/DEVELOPER_HANDOFF.md).
+        run: |
+          if command -v rsync >/dev/null && command -v setfattr >/dev/null && command -v getfattr >/dev/null; then exit 0; fi
+          if sudo -n true 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends rsync attr
+          else
+            echo 'This runner needs the packages rsync and attr (docs/DEVELOPER_HANDOFF.md, "A self-hosted runner for operator-install").' >&2
+            exit 1
+          fi
       - name: Prepare private operator state
         run: |
           mkdir -m 700 "$RUNNER_TEMP/core-backend-test-20260929"
@@ -302,7 +314,30 @@ jobs:
           node scripts/watch.mjs status
         working-directory: backend
       - name: Backup
-        run: npm run db:backup -- /tmp/warehouse-ci-backup
+        run: |
+          npm run db:backup -- /tmp/warehouse-ci-backup
+          # Two backups in the default place: nothing was stored in between, so the second links every file to the first
+          # (hard links, no new bytes), and the attributes that carry each file's content type are in the copy.
+          npm run db:backup
+          sleep 1
+          npm run db:backup
+          backups="$(ls -1d "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | sort)"
+          test "$(wc -l <<<"$backups")" -eq 2
+          first="$(head -n 1 <<<"$backups")"; second="$(tail -n 1 <<<"$backups")"
+          grep -qx 'link_base=none' "$first/metadata.txt"
+          grep -qx "link_base=$(basename "$first")" "$second/metadata.txt"
+          grep -qx 'storage_new_bytes=0' "$second/metadata.txt"
+          grep -qx 'rot_repaired=0' "$second/metadata.txt"
+          test "$(sed -n 's/^storage_files=//p' "$second/metadata.txt")" -ge 1
+          test -z "$(find "$second/storage" -type f -links 1 -print -quit)"
+          sample="$(cd "$second/storage" && find . -type f -print -quit)"
+          test "$(stat -c %i "$first/storage/$sample")" = "$(stat -c %i "$second/storage/$sample")"
+          sed -n 's/^\(stop_seconds\|duration_seconds\|storage_files\|storage_bytes\)=/\1 /p' "$second/metadata.txt"
+          # A stored PDF carries its content type in the extended attribute the Storage service reads.
+          pdf="$(cd "$second/storage" && grep -m1 -- '\.pdf/' <<<"$(find . -type f)" || true)"
+          test -n "$pdf"
+          test "$(getfattr -n user.supabase.content-type --only-values "$second/storage/$pdf")" = application/pdf
+          npm run db:verify-restore -- "$second"
         working-directory: backend
       # restore.sh verifies the backup in an isolated database before it touches the instance.
       - name: In-place restore drill
@@ -316,6 +351,26 @@ jobs:
           diff -u /tmp/warehouse-ci-backup/integrity.txt /tmp/warehouse-ci-restored-integrity.txt
           node tests/operator-api-restore.mjs /tmp/warehouse-ci-backup
           npm run test:db-roles
+        working-directory: backend
+      # scripts/storage-retag.sh runs scripts/retag-storage-metadata.cjs inside the storage container, with the module fs-xattr of the
+      # image (the one the Storage service reads the attributes with). The unit tests stand that module in; this runs the real one.
+      # The restored files belong to the runner user, so the host can take the attribute off them.
+      - name: Content types set again from the catalog (real storage image)
+        run: |
+          stored="$WAREHOUSE_STATE_DIR/data/storage"
+          pdf="$(cd "$stored" && grep -m1 -- '\.pdf/' <<<"$(find . -type f)" || true)"
+          test -n "$pdf"
+          test "$(getfattr -n user.supabase.content-type --only-values "$stored/$pdf")" = application/pdf
+          # What a restore from an older backup or USB copy leaves: no content type on any file.
+          find "$stored" -type f -exec setfattr -x user.supabase.content-type {} + 2>/dev/null || true
+          if getfattr -n user.supabase.content-type --only-values "$stored/$pdf" 2>/dev/null; then echo 'the attribute is still there' >&2; exit 1; fi
+          npm run storage:retag -- --if-missing | tee /tmp/warehouse-ci-retag.txt
+          grep -q 'Some stored files have no content type' /tmp/warehouse-ci-retag.txt
+          grep -Eq 'Storage metadata set from the catalog: [1-9][0-9]* files updated, [0-9]+ already correct, [0-9]+ catalogued but not on disk, [0-9]+ without catalog metadata, 0 errors\.' /tmp/warehouse-ci-retag.txt
+          test "$(getfattr -n user.supabase.content-type --only-values "$stored/$pdf")" = application/pdf
+          # Again: nothing is left to set, the look at a sample says so, and the plain run changes nothing.
+          npm run storage:retag -- --if-missing | grep -q 'nothing to set'
+          npm run storage:retag | grep -Eq 'Storage metadata set from the catalog: 0 files updated, .* 0 errors\.'
         working-directory: backend
       - name: Pooler session and transaction authentication
         run: |

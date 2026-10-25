@@ -1542,6 +1542,41 @@ test('daily: retention and pruning failures are retention failures; the backup s
   } finally { clean(h); }
 });
 
+test('daily: a backup that re-copied files from a damaged earlier copy stays ok, and the warning is in the daily state and the status line', async () => {
+  const h = harness();
+  try {
+    h.seed();
+    const warning = '2 files re-copied: backup warehouse-20261018T022000Z has a damaged copy';
+    dailyFake(h, { backup_warning: warning });
+    h.clock.t = at(19, 3, 0); await daily(h);
+    const last = h.state_().lastDailyRun.backup;
+    assert.equal(last.result, 'ok', 'the daily pass is ok');
+    assert.match(last.message, /^backup warehouse-\d{8}T\d{6}Z verified; 2 files re-copied: backup warehouse-20261018T022000Z has a damaged copy$/);
+    assert.equal(h.state_().dailyAttempt.done, true);
+    assert.match(readFileSync(join(h.state, 'config/watch-backup.last'), 'utf8'), /^result=ok$/m);
+    assert.match(readFileSync(join(h.state, 'config/watch-backup.last'), 'utf8'), /^message=backup .* verified; 2 files re-copied: backup warehouse-20261018T022000Z has a damaged copy$/m);
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Daily backup: ok on .* - backup warehouse-\d{8}T\d{6}Z verified; 2 files re-copied: backup warehouse-20261018T022000Z has a damaged copy/);
+    assert.equal(h.posts.filter(p => /FAILED|FIRING/.test(p.text)).length, 0, 'no failure alert');
+    // Without a warning the message is as before.
+    const quiet = harness();
+    try {
+      quiet.seed(); dailyFake(quiet);
+      quiet.clock.t = at(19, 3, 0); await daily(quiet);
+      assert.match(quiet.state_().lastDailyRun.backup.message, /^backup warehouse-\d{8}T\d{6}Z verified$/);
+    } finally { clean(quiet); }
+    // And the warning is not shown for a backup that failed verification (the message is about the failure then).
+    const failed = harness();
+    try {
+      failed.seed(); dailyFake(failed, { backup_warning: warning, verify: 'failed', verify_message: 'bad' });
+      failed.clock.t = at(19, 3, 0); await daily(failed);
+      assert.doesNotMatch(failed.state_().lastDailyRun.backup.message, /re-copied/);
+      assert.equal(failed.state_().lastDailyRun.backup.result, 'failed');
+    } finally { clean(failed); }
+  } finally { clean(h); }
+});
+
 test('daily: the backup location guard, a cut-short pass and a timeout', async () => {
   const h = harness();
   try {
@@ -1933,6 +1968,13 @@ case "\${FAKE_BACKUP:-ok}" in
   ok) d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d" ;;
   unhealthy) echo 'Database service is not healthy.' >&2; exit 1 ;;
   fail) echo 'pg_dump: error: boom' >&2; exit 1 ;;
+  warn|warn1|other-warning)
+    d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d"
+    case "$FAKE_BACKUP" in
+      warn) echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
+      warn1) echo 'WARNING: 1 file re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
+      other-warning) echo 'WARNING: something else entirely' >&2; echo 'WARNING: 3 files re-copied: backup not-a-backup has a damaged copy.' >&2 ;;
+    esac ;;
   hang) sleep 30 ;;
 esac`,
     'verify-restore.sh': `echo "verify $1" >> "$LOG"
@@ -1967,6 +2009,26 @@ test('watch-daily.sh: backup, verify, prune and retention in that order, all und
     assert.equal(r.fields.pruned, '2', 'the 9 of this installation (8 + the new one) are cut to 7');
     assert.ok(existsSync(join(f.state, 'backups/warehouse-20261001T020000Z')), 'another installation\'s directory is untouched');
     assert.ok(!existsSync(join(f.state, 'backups/warehouse-20261010T020000Z')));
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('watch-daily.sh: the sentence backup.sh prints when it re-copied files from a damaged earlier backup is passed on as backup_warning, and the pass stays ok', () => {
+  const f = dailyScriptFixture();
+  try {
+    let r = f.run({ FAKE_BACKUP: 'warn' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.retention, r.fields.done], ['ok', 'ok', 'ok', '1']);
+    assert.equal(r.fields.backup_warning, '2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy');
+    assert.match(r.stderr, /WARNING: 2 files re-copied/, 'and still on standard error for the journal');
+    // One file: the singular form. A warning of another shape, or none, is not passed on.
+    fs.writeFileSync(join(f.scratch, 'order.log'), '');
+    r = f.run({ FAKE_BACKUP: 'warn1' });
+    assert.equal(r.fields.backup_warning, '1 file re-copied: backup warehouse-20261018T020000Z has a damaged copy');
+    r = f.run({ FAKE_BACKUP: 'other-warning' });
+    assert.equal(r.fields.backup, 'ok');
+    assert.equal('backup_warning' in r.fields, false);
+    r = f.run();
+    assert.equal('backup_warning' in r.fields, false);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 

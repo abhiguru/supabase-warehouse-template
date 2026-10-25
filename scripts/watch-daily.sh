@@ -6,11 +6,14 @@
 #
 # RESULT_FILE (absolute) is rewritten as key=value lines that watch.mjs reads:
 #   lock=held|acquired
-#   backup=ok|failed|skipped    backup_message=...   backup_dir=...
+#   backup=ok|failed|skipped    backup_message=...   backup_dir=...   backup_warning=...
 #   verify=ok|failed|skipped    verify_message=...
 #   prune=ok|failed|skipped     prune_message=...    pruned=N
 #   retention=ok|failed|skipped retention_message=...
 #   done=1                      (last line; missing means the pass was cut short)
+# backup_warning is set when the backup succeeded but found a damaged copy of stored files in the earlier backup it links
+# from and re-copied them (the sentence scripts/backup.sh prints as "WARNING: N files re-copied: backup NAME has a damaged
+# copy"); the pass stays ok, the message goes into the daily state and the status line.
 # "skipped" for the backup means the database was not running or not healthy yet (a boot, a deliberate stop): not a
 # failure. Each step has its own time limit, below the systemd unit's, enforced with `timeout -k`.
 # Exit codes: 0 finished (see the file), 75 another operator command holds the lock, 2 bad usage.
@@ -58,6 +61,8 @@ if ((RC == 0)); then
   if [[ "$dir" == "$state/backups/"* && "$name" =~ ^warehouse-[0-9]{8}T[0-9]{6}Z$ && "$dir" == "$state/backups/$name" ]]; then
     put backup ok; put backup_dir "$dir"
     backup_ok=true
+    warning="$(sed -n 's/^WARNING: \([0-9][0-9]* files\{0,1\} re-copied: backup warehouse-[0-9]\{8\}T[0-9]\{6\}Z has a damaged copy\)\..*$/\1/p' "$ERR" | tail -n 1)"
+    [[ -z "$warning" ]] || put backup_warning "$warning"
   else
     put backup failed; put backup_message 'backup finished but its location could not be read'
   fi

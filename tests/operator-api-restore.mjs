@@ -1,7 +1,8 @@
 // Post-restore acceptance against the restored fictional installation. Run after
 // scripts/restore.sh with the backup directory as the argument: a customer approved
 // before the backup logs in, a receipt saved before the backup renders a document,
-// and a document stored before the backup downloads again from restored storage.
+// and a document stored before the backup downloads again from restored storage with its content type
+// (application/pdf, kept in the file's extended attributes by backup and restore).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -48,6 +49,9 @@ function login(phone, name) {
 async function pdf(url, label) {
   const download = await fetch(url, { signal: AbortSignal.timeout(30000) });
   assert.equal(download.status, 200, `${label}: HTTP ${download.status}`);
+  // The Storage service keeps the content type in an extended attribute of the file. A restore that dropped the attributes
+  // (every restore before backup format v6) serves the same bytes as application/octet-stream.
+  assert.match(download.headers.get('content-type') ?? '', /^application\/pdf\b/, `${label}: content type after the restore`);
   const bytes = new Uint8Array(await download.arrayBuffer());
   assert.equal(new TextDecoder().decode(bytes.slice(0, 5)), '%PDF-', `${label}: valid PDF bytes`);
 }

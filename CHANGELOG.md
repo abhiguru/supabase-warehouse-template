@@ -91,6 +91,22 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    supported for the current and the previous minor release (`SECURITY.md`); a backport never carries a migration (`CONTRIBUTING.md`).
    `setup.sh` now accepts the operator lock when its caller already holds it (`upgrade.sh` does), as `migrate.sh` and `backup.sh` already
    did; a descriptor 9 that only names the lock file no longer counts as holding it.
+14. **Backups keep the photos as files that later backups share (format `warehouse-backup-v6`); install `rsync` before `setup.sh`; if
+   the installation ever went through a restore, run `npm run storage:retag` right after `setup.sh` and before the first backup.**
+   Install the package `rsync` (`sudo apt-get install rsync`) before you run `setup.sh`: `setup.sh` and `db:restore-host`
+   now refuse a host without it or without GNU `tar` (`node scripts/doctor.mjs --host-preflight` checks both), while `start.sh`
+   only warns, so a host that has not installed it yet still starts its services, but `db:backup` fails until it has. The first backup
+   after the update is a full copy of the photos as a tree; each later one costs the database dump and the new photos, because an
+   unchanged file is a hard link to the previous backup's copy, and the API is stopped only for the dump and the last pass of the
+   copy (`db:backup` prints how long). Disk: the new tree is a second copy of the photos next to the v5 tarballs until those age
+   out (the seven newest backups are kept); the older `warehouse-backup-v5` backups are left alone and restore as before. Backups
+   now also keep each stored file's content type and cache control, which every earlier restore dropped, including the
+   PostgreSQL 17 to 18 upgrade (an in-place restore): after such a restore the files are served as `application/octet-stream`.
+   `npm run storage:retag` sets them again from the catalog (safe to repeat; see "Content types of stored files" in
+   `docs/OPERATOR_INSTALL.md`); every restore (`db:restore`, `db:restore-host`) now looks at a sample of the restored files and runs
+   it by itself when any has no content type, which also covers a USB copy made before the USB archive kept them. **Run it before the
+   first v6 backup, not after:** a backup links a file to the earlier copy only when its attributes are equal too, so the first backup
+   after a retag copies every photo again; run first, only one full copy is made.
 
 ### Changed
 
@@ -141,6 +157,25 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive` and calls the documented endpoint
   that enables the scheduled workflows (`actions: write`, this workflow only). That this keeps GitHub from disabling them after 60 days is
   unverified; the owner checks the Actions tab after a long absence (`docs/PRODUCTION_DEPENDENCIES.md`).
+- **Backup format v6: the stored files as a hard-linked tree with a signed manifest, and a short stop.** `db:backup` copies
+  `data/storage` with `rsync -rptX --link-dest=<previous backup>/storage` into `storage/` (first pass with the API up, then the
+  services stop for `pg_dump`, the catalog queries and a last `--delete` pass, then restart), instead of a gzip tar of every
+  photo each night; `storage.manifest` (sha256 of every file) replaces `storage.tar.gz` in the signed `SHA256SUMS`, and
+  `metadata.txt` records `link_base=`, `storage_files=`, `storage_bytes=`, `storage_new_bytes=`, `stop_seconds=` and
+  `duration_seconds=`. The backup it links from must pass its own signature check (else the next older one is used, with a
+  warning); a shared file whose bytes no longer match that backup's manifest, or cannot be read, is not linked: it is copied
+  again from the live storage, the night ends ok with `WARNING: N files re-copied: backup <name> has a damaged copy` (daily status
+  line, `rot_repaired=` in `metadata.txt`), and only a live file that does not match the recorded checksum either fails the night.
+  The last pass of the copy goes into a new directory, so a change of extended attributes or mode made while the services are stopped
+  never reaches a file that earlier backups share. `db:verify-restore`, `db:restore` and `db:restore-host` accept v5 and v6 (`backup_check_format`); the label must
+  agree with the signed list; `db:verify-restore --no-storage-tree` checks everything except the hashing of the tree. `db:restore`
+  copies a v6 tree with `rsync -rptX` and checks free space first; a v5 restore keeps `tar` (now with `--xattrs`). After either restore,
+  once the services run, it looks at up to 20 restored files and, when any has no content type, runs the new `scripts/storage-retag.sh`
+  (`npm run storage:retag`, `scripts/retag-storage-metadata.cjs` inside the storage container; `-- --if-missing` is the look at a
+  sample first). `db:restore-host` checks the disk for an archive or a backup folder before copying it, and unpacks with
+  `tar -p --xattrs` (modes kept). `doctor` checks for
+  `rsync` (built with extended-attribute support) and GNU tar `--xattrs`: a refusal for `setup.sh` and `db:restore-host`, a warning
+  for `start.sh`. The USB copy still archives the whole backup folder; its archive form changes in a later release.
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

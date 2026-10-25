@@ -62,7 +62,7 @@ test('restore refuses a v4 backup, with or without --allow-unsigned', () => {
     for (const args of [['--yes', backup], ['--yes', '--allow-unsigned', backup]]) {
       const result = restore(scratch, args);
       assert.notEqual(result.status, 0, args.join(' '));
-      assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version/);
+      assert.match(result.stderr, /backup format 'warehouse-backup-v4' is no longer supported; take a new backup with this version \(only warehouse-backup-v5 and -v6 are accepted\)\./);
       assert.doesNotMatch(result.calls, /run |up -d| cp /);
       assert.equal(result.calls, '', 'no container call at all');
       assert.equal(existsSync(join(state, 'config/operator.lock')), false, 'no lock was taken');
@@ -303,7 +303,7 @@ test('restore refuses a v5 backup whose signature file was removed, even with --
     assert.equal(existsSync(join(state, 'config/backup.key')), true, 'this installation still has its key');
     let result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /a v5 backup must be signed; its signature file was removed/);
+    assert.match(result.stderr, /a v5 or v6 backup must be signed; its signature file was removed/);
     assert.match(result.stderr, /--allow-unsigned is only for when the backup key is lost/);
     assert.doesNotMatch(result.stderr, /WARNING|WITHOUT proof/, 'no banner: nothing was accepted');
     // restore.sh asks Compose whether services run before it looks at the backup; no container is run, started or copied into.
@@ -312,12 +312,12 @@ test('restore refuses a v5 backup whose signature file was removed, even with --
     // Without the flag it is refused as well, and the message does not send the operator to the flag.
     result = restore(scratch, ['--yes', backup]);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /carries no signature[\s\S]*a v5 backup must be signed/);
+    assert.match(result.stderr, /carries no signature[\s\S]*a v5 or v6 backup must be signed/);
     assert.doesNotMatch(result.calls, /run |up -d| cp /);
     // The refusal does not wait for the checksums: a damaged file does not change the answer.
     writeFileSync(join(backup, 'database.dump'), 'damaged after the signature was removed\n');
     result = restore(scratch, ['--yes', '--allow-unsigned', backup]);
-    assert.match(result.stderr, /a v5 backup must be signed/);
+    assert.match(result.stderr, /a v5 or v6 backup must be signed/);
     assert.doesNotMatch(result.stderr, /does not match its SHA256SUMS/);
     untouched(state);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
@@ -329,7 +329,7 @@ test('restore takes the same v5 backup with --allow-unsigned and a loud warning 
     rmSync(join(state, 'config/backup.key'));
     const result = restore(scratch, ['--yes', '--allow-unsigned', backup], { FAKE_CATALOG_FILE: join(backup, 'storage_objects.txt'), FAKE_FAIL_START: 'yes' });
     assert.match(result.stderr, /WARNING: this backup carries no signature[\s\S]*WITHOUT proof/);
-    assert.doesNotMatch(result.stderr, /a v5 backup must be signed/);
+    assert.doesNotMatch(result.stderr, /a v5 or v6 backup must be signed/);
     assert.match(result.calls, /^run -d --pull missing/m, 'the verifier ran');
     assert.match(result.calls, /DROP DATABASE postgres WITH \(FORCE\)/, 'and the replay started');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
