@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# The systemd timer for scripts/watch.mjs, the installation's one monitoring check: every 5 minutes it runs the
+# The systemd units for scripts/watch.mjs, the installation's one monitoring check: every 5 minutes it runs the
 # checks and posts to the facility's Slack webhook; once a day it also makes and verifies a backup and applies retention.
+# A second unit starts the services at boot, so the ones a power cut left stopped come back by themselves.
 #
 #   sudo bash scripts/watch-timer.sh install [--state DIR] [--node PATH] [--daily-at HH:MM]
 #   sudo bash scripts/watch-timer.sh uninstall [--state DIR]
 #   bash scripts/watch-timer.sh status
 #   bash scripts/watch-timer.sh hint
 #
-# hint is what setup.sh, start.sh and restore-host.sh run: silent when the timer is installed for this state, else
+# hint is what setup.sh, start.sh and restore-host.sh run: silent when the units are installed for this state, else
 # it prints the install command. Those scripts never run sudo themselves (like tunnel.sh and backup-usb.sh).
+#
+# Units written (<base> is <Compose project>-watch):
+#   <base>.service/.timer                  the 5-minute checks
+#   <project>-stack.service                boot: `compose up -d` for the default profile after docker.service. It is enabled,
+#                                          not started, by install (so install never changes what is running). A reboot
+#                                          therefore also undoes a deliberate stop.sh; to keep the stack down:
+#                                          sudo systemctl disable <project>-stack.service
 # --daily-at is the host's local time (the time zone is printed by install and status); a rerun without it keeps the
 # installed time. The daily backup, verification, pruning and retention may run up to 6 hours after it (a missed time
 # is caught up inside that window, never later), and not more than 3 times a day.
@@ -77,8 +85,11 @@ unit_base() {
   fi
 }
 
+# The other units of the same installation share the base name: <project>-watch -> <project>-stack.
+unit_sibling() { printf '%s-%s\n' "${1%-watch}" "$2"; }
+
 cmd_install() {
-  local state='' node='' daily='' uid gid user group base tmp home path existing version
+  local state='' node='' daily='' uid gid user group base stack tmp home path existing version
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -156,15 +167,45 @@ Unit=$base.service
 WantedBy=timers.target
 UNIT
   chmod 0644 "$tmp"; mv -f -- "$tmp" "$UNITS/$base.timer"
+  stack="$(unit_sibling "$base" stack)"
+  tmp="$(mktemp "$UNITS/.$stack.service.XXXXXX")"
+  cat > "$tmp" <<UNIT
+# Managed by scripts/watch-timer.sh: starts the services of $state at boot.
+# Docker does not restart a container that was stopped (only one that exited), and the daily backup stops four services
+# for a while: a power cut inside that time leaves them stopped, and nothing else starts them before someone runs start.sh.
+# --no-build: a boot never builds an image (a missing one is a job for setup.sh or db:restore-host).
+[Unit]
+Description=Warehouse services for $state at boot
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=$user
+Group=$group
+WorkingDirectory=$ROOT
+Environment=WAREHOUSE_STATE_DIR=$state
+Environment=PATH=$path
+ExecStart=/bin/bash $ROOT/scripts/compose.sh up -d --no-build
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  chmod 0644 "$tmp"; mv -f -- "$tmp" "$UNITS/$stack.service"
   systemctl daemon-reload
   systemctl enable --now "$base.timer" >/dev/null
+  # Enabled, not started: install must not change what is running (a stack stopped with stop.sh stays stopped until a boot).
+  systemctl enable "$stack.service" >/dev/null
   echo "$base.timer is enabled: checks every 5 minutes as $user; the daily backup, verification and retention run at $daily."
+  echo "$stack.service is enabled: the services start at boot (after a power cut or a reboot)."
   echo "Time zone: $(host_zone) (the daily time is local to it; a pass may run up to 6 hours after $daily)."
   echo "Check it with: bash scripts/watch-timer.sh status   and   node scripts/watch.mjs status"
 }
 
 cmd_uninstall() {
-  local state='' base
+  local state='' base stack
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -174,20 +215,22 @@ cmd_uninstall() {
   [[ "$(id -u)" == 0 ]] || die 'uninstall removes systemd units: run it with sudo.'
   # The shape of the path is enough: the state directory may already be gone.
   state="$(state_shape "$state")"
-  base="$(unit_base "$state")"
+  base="$(unit_base "$state")"; stack="$(unit_sibling "$base" stack)"
   systemctl disable --now "$base.timer" >/dev/null 2>&1 || true
   if systemctl is-active --quiet "$base.service" 2>/dev/null; then
     systemctl stop "$base.service" || echo "Warning: $base.service is still running and could not be stopped; a daily pass may be in progress." >&2
   fi
-  rm -f -- "$UNITS/$base.timer" "$UNITS/$base.service"
+  # The boot unit only ran `compose up`: disabling it leaves the containers as they are.
+  systemctl disable "$stack.service" >/dev/null 2>&1 || true
+  rm -f -- "$UNITS/$base.timer" "$UNITS/$base.service" "$UNITS/$stack.service"
   systemctl daemon-reload
-  systemctl reset-failed "$base.service" "$base.timer" >/dev/null 2>&1 || true
-  echo "Removed $base.timer and $base.service."
+  systemctl reset-failed "$base.service" "$base.timer" "$stack.service" >/dev/null 2>&1 || true
+  echo "Removed $base.timer, $base.service and $stack.service."
 }
 
 cmd_status() {
-  local state base
-  state="$(state_dir)"; base="$(unit_base "$state")"
+  local state base stack
+  state="$(state_dir)"; base="$(unit_base "$state")"; stack="$(unit_sibling "$base" stack)"
   [[ -z "${WAREHOUSE_WATCH_UNIT_DIR:-}" ]] || echo "Test override: WAREHOUSE_WATCH_UNIT_DIR=$UNITS"
   echo "Time zone: $(host_zone)"
   if [[ -f "$UNITS/$base.timer" ]]; then
@@ -197,16 +240,26 @@ cmd_status() {
   else
     echo "Timer: $base.timer is not installed. Run: sudo bash scripts/watch-timer.sh install --state $state"
   fi
+  if [[ -f "$UNITS/$stack.service" ]]; then
+    echo "Boot unit: $stack.service is installed ($(systemctl is-enabled "$stack.service" 2>/dev/null || echo 'not enabled')); it starts the services after a boot."
+  else
+    echo "Boot unit: $stack.service is not installed: after a power cut the services stay stopped until start.sh is run. Run: sudo bash scripts/watch-timer.sh install --state $state"
+  fi
 }
 
 cmd_hint() {
-  local state base svc
-  state="$(state_shape)"; base="$(unit_base "$state")"; svc="$UNITS/$base.service"
+  local state base svc stack
+  state="$(state_shape)"; base="$(unit_base "$state")"; svc="$UNITS/$base.service"; stack="$(unit_sibling "$base" stack)"
   if [[ -f "$UNITS/$base.timer" ]] && grep -qxF -- "Environment=WAREHOUSE_STATE_DIR=$state" "$svc" 2>/dev/null; then
-    # Installed for this state: say so only when it runs another checkout (a moved or replaced checkout).
-    if grep -qxF -- "WorkingDirectory=$ROOT" "$svc" 2>/dev/null && [[ "$(sed -n 's/^ExecStart=[^ ]* //p' "$svc" | head -n 1)" == "$ROOT/scripts/watch.mjs run" ]]; then return 0; fi
-    echo "The monitoring checker timer is installed for $state but runs another checkout of this software. Refresh it (needs sudo):"
-    echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+    # Installed for this state: say so only when it runs another checkout (a moved or replaced checkout), or when a unit
+    # that a later release added is missing (an install from before it).
+    if ! grep -qxF -- "WorkingDirectory=$ROOT" "$svc" 2>/dev/null || [[ "$(sed -n 's/^ExecStart=[^ ]* //p' "$svc" | head -n 1)" != "$ROOT/scripts/watch.mjs run" ]]; then
+      echo "The monitoring checker timer is installed for $state but runs another checkout of this software. Refresh it (needs sudo):"
+      echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+    elif ! grep -qxF -- "Environment=WAREHOUSE_STATE_DIR=$state" "$UNITS/$stack.service" 2>/dev/null; then
+      echo "The monitoring checker timer is installed for $state, but the unit that starts the services at boot is not: after a power cut they stay stopped until start.sh is run. Refresh it (needs sudo):"
+      echo "  sudo bash $ROOT/scripts/watch-timer.sh install --state $state"
+    fi
     return 0
   fi
   echo "The monitoring checker timer is not installed for $state: no check, Slack alert, daily backup or retention runs until it is. Install it (needs sudo):"

@@ -19,6 +19,13 @@ after a move of the checkout, a change of Node.js, or to change the time of the 
 host's local time; default 02:30). `bash scripts/watch-timer.sh status` shows whether it is installed;
 `sudo bash scripts/watch-timer.sh uninstall --state "$WAREHOUSE_STATE_DIR"` removes it.
 
+It writes a second unit, `<project>-stack.service`, that runs `compose up -d` for the default profile after `docker.service`
+at every boot. Docker restarts a container that exited but not one that was stopped, and the daily backup stops four
+services for a while: after a power cut inside that time they would stay stopped until someone ran `start.sh`. The unit
+is enabled, not started, by `install` (so installing never changes what is running). A reboot therefore also undoes a
+deliberate `stop.sh`; to keep the stack down after reboots run `sudo systemctl disable <project>-stack.service`. It never
+builds an image (`--no-build`): a missing image is a job for `setup.sh` or `db:restore-host`.
+
 The timer runs without a Slack webhook too (`--alert-webhook-file off`): the checks still run and record their state,
 and the daily backup and retention still run. Only the Slack posts are off. `npm run doctor` warns when the timer is
 not installed or not active, when the checker has not run in the last 15 minutes (the age of
@@ -40,6 +47,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
 | `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`) |
+| `service_healed:<name>` | The checker started or restarted that service itself (see "Self-healing"; at once; stays for an hour) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
 | `container_restarts:<name>` | More than 3 restarts in the last hour |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |
@@ -57,6 +65,20 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 
 While an operator command (setup, backup, restore, stop) holds the lock, the checker judges nothing: those commands stop
 services on purpose.
+
+## Self-healing
+
+Each run, while no operator command holds the lock, the checker looks at the services of the default profile:
+
+- a service that is `exited` is started again (`compose up -d --no-recreate <service>`);
+- a service that is `unhealthy` for 3 runs in a row (15 minutes) is restarted (`compose restart <service>`), except the
+  database: a database in crash recovery also reports unhealthy, and a restart only begins the recovery again.
+
+At most once an hour per service, and the action is reported as the alert `service_healed:<name>`. Nothing is done to a
+service whose `service_down:<name>` alert is muted: **mute before a planned stop of one service**, as before a `stop.sh`
+(`stop.sh` removes the containers, which the checker never recreates). The checker never recreates a container, so a
+changed compose file or image is applied only by `setup.sh`. The optional `supavisor`, `cups` and `sensor-bridge` are left
+alone.
 
 ## How alerts behave
 

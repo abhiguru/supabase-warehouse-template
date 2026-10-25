@@ -15,7 +15,7 @@ test('operator configuration requires canonical HTTPS origins and supported Node
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, timerUnit } from '../scripts/doctor.mjs';
+import { checkStatePlacement, checkerWarnings, CHECKER_MAX_AGE_MS, NO_WEBHOOK_WARNING, timerUnit, freeSpaceVerdict } from '../scripts/doctor.mjs';
 
 test('a fresh install refuses a state whose parent is not writable, naming the fix', { skip: process.getuid() === 0 && 'root can write anywhere' }, () => {
   const base = mkdtempSync(join(tmpdir(), 'state-parent-'));
@@ -289,4 +289,19 @@ test('doctor keeps the no-webhook warning, also with --alert-webhook-file off, a
     const all = checkerState({ webhook: false });
     try { assert.equal(checkerWarnings(all.state, { now, timerActive: () => false }).length, 2, 'timer and webhook'); } finally { rmSync(all.base, { recursive: true, force: true }); }
   } finally { for (const f of [off, legacy]) rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('free space: a new installation needs 10 GiB; a start only warns below 10 GiB and refuses below 2 GiB', () => {
+  const GiB = 1024 ** 3;
+  assert.deepEqual(freeSpaceVerdict(10 * GiB, { newInstall: true }), {});
+  assert.match(freeSpaceVerdict(10 * GiB - 1, { newInstall: true }).error, /At least 10 GiB free space is required/);
+  assert.deepEqual(freeSpaceVerdict(10 * GiB), {});
+  const warn = freeSpaceVerdict(7.5 * GiB);
+  assert.equal(warn.error, undefined);
+  assert.match(warn.warning, /Only 7\.5 GiB is free[^]*less than 10 GiB[^]*Disk full/);
+  assert.deepEqual(Object.keys(freeSpaceVerdict(2 * GiB)), ['warning'], '2 GiB exactly still starts');
+  assert.match(freeSpaceVerdict(2 * GiB - 1).error, /At least 2 GiB free space is required[^]*\(2\.0 GiB is free\)/);
+  // The scripts use the right mode: only setup's host preflight is strict.
+  const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
 });

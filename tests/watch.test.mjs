@@ -1368,6 +1368,101 @@ test('prune-backups command prints removed= and note= and protects the path it i
   } finally { clean(h); }
 });
 
+// ---------------------------------------------------------------- self-healing
+const healCalls = h => h.calls.filter(c => /compose\.sh (up|restart) /.test(c)).map(c => c.replace(/^bash \S+\/scripts\//, ''));
+const healRun = h => W.runOnce(h.deps, { checks: HEALTHY, ...NO_JOBS });
+test('self-heal: an exited service is started again (no recreate), at most once an hour, and the action is an alert that fires at once', async () => {
+  const h = harness();
+  try {
+    h.seed(); h.stateOf = { rest: 'exited|' };
+    h.runs['compose.sh up -d --no-recreate rest'] = ok();
+    await healRun(h);
+    assert.deepEqual(healCalls(h), ['compose.sh up -d --no-recreate rest']);
+    const fired = h.posts.filter(p => /^\[FIRING\]/.test(p.text));
+    assert.equal(fired.length, 1, 'fires at the first run, not after two');
+    assert.match(fired[0].text, /Service rest was exited; the checker started it again/);
+    assert.equal(h.state_().heal.rest.lastAt, h.clock.t);
+    h.advance(5 * 60000); await healRun(h);
+    h.advance(50 * 60000); await healRun(h);
+    assert.equal(healCalls(h).length, 1, 'not again within an hour');
+    assert.equal(h.posts.filter(p => /service_healed|started it again/.test(p.text)).length, 1, 'no repeat post within 4 hours');
+    h.advance(10 * 60000); await healRun(h);
+    assert.equal(healCalls(h).length, 2, 'an hour later it is tried again');
+    // The service is back: the held alert clears an hour after the last action.
+    h.stateOf = {};
+    h.advance(61 * 60000); await healRun(h);
+    h.advance(5 * 60000); await healRun(h);
+    assert.ok(h.posts.some(p => /^\[CLEARED\]/.test(p.text) && /Service rest/.test(p.text)));
+  } finally { clean(h); }
+});
+
+test('self-heal: a service unhealthy for 3 runs in a row is restarted; the database never is for that, but is started when exited', async () => {
+  const h = harness();
+  try {
+    h.seed(); h.stateOf = { rest: 'running|unhealthy', db: 'running|unhealthy' };
+    h.runs['compose.sh restart rest'] = ok();
+    for (let i = 0; i < 2; i++) { await healRun(h); h.advance(5 * 60000); }
+    assert.deepEqual(healCalls(h), [], '2 runs are not enough');
+    await healRun(h);
+    assert.deepEqual(healCalls(h), ['compose.sh restart rest'], '3 runs: rest is restarted, db is left alone');
+    assert.match(h.posts.map(p => p.text).join('\n'), /Service rest was unhealthy for 3 runs; the checker restarted it/);
+    // A healthy run resets the count: unhealthy, healthy, unhealthy, unhealthy does not restart.
+    const g = harness();
+    try {
+      g.seed(); g.runs['compose.sh restart rest'] = ok();
+      for (const state of ['running|unhealthy', 'running|unhealthy', 'running|', 'running|unhealthy', 'running|unhealthy']) {
+        g.stateOf = { rest: state }; await healRun(g); g.advance(5 * 60000);
+      }
+      assert.deepEqual(healCalls(g), []);
+    } finally { clean(g); }
+    const d = harness();
+    try {
+      d.seed(); d.stateOf = { db: 'exited|' }; d.runs['compose.sh up -d --no-recreate db'] = ok();
+      await healRun(d);
+      assert.deepEqual(healCalls(d), ['compose.sh up -d --no-recreate db']);
+    } finally { clean(d); }
+  } finally { clean(h); }
+});
+
+test('self-heal: nothing while an operator command holds the lock, while the service alert is muted, or for an optional service', async () => {
+  const h = harness();
+  try {
+    h.seed(); h.stateOf = { rest: 'exited|' };
+    h.holdLock(); await healRun(h);
+    h.releaseLock();
+    await W.main(['mute', '30', 'service_down:rest'], h.deps, () => {});
+    await healRun(h);
+    assert.deepEqual(healCalls(h), [], 'locked, then muted');
+    await W.main(['unmute', 'service_down:rest'], h.deps, () => {});
+    await W.main(['mute', '30'], h.deps, () => {});
+    await healRun(h);
+    assert.deepEqual(healCalls(h), [], 'all alerts muted');
+    h.services = [...SERVICES, 'supavisor', 'cups'];
+    h.stateOf = { supavisor: 'exited|', cups: 'exited|' };
+    await W.main(['unmute'], h.deps, () => {});
+    await healRun(h);
+    assert.deepEqual(healCalls(h), [], 'profile services are not started by the checker');
+  } finally { clean(h); }
+});
+
+test('self-heal: a failing start is reported with its reason and is not retried within the hour; bad heal state is reset', async () => {
+  const h = harness();
+  try {
+    h.seed(); h.stateOf = { storage: 'exited|' };
+    h.runs['compose.sh up -d --no-recreate storage'] = bad('no such image password=supersecretpassword123');
+    await healRun(h);
+    const text = h.posts.map(p => p.text).join('\n');
+    assert.match(text, /Service storage was exited; the checker could not do it: no such image/);
+    assert.ok(!text.includes('supersecretpassword123'));
+    h.advance(5 * 60000); await healRun(h);
+    assert.equal(healCalls(h).length, 1);
+    const logs = [];
+    const fixed = W.normalizeState({ heal: { rest: { unhealthyRuns: 'x' } } }, 0, m => logs.push(m));
+    assert.deepEqual(fixed.heal, {});
+    assert.match(logs[0], /"heal" had the wrong type/);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- command line
 test('the usage text is printed for --help and an unknown command, with the mute-before-stop note and quoted ids', async () => {
   const out = [];
@@ -1420,7 +1515,7 @@ function timerFixture() {
   const nodeDir = join(scratch, 'home/.local/opt/node-v22/bin'); mkdirSync(nodeDir, { recursive: true });
   writeFileSync(join(nodeDir, 'node'), '#!/bin/sh\necho "v${FAKE_NODE_VERSION:-22.18.0}"\n', { mode: 0o755 });
   const log = join(scratch, 'calls.log'); writeFileSync(log, '');
-  writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\necho "systemctl $*" >> "$FAKE_LOG"\nif [ "$1" = is-active ]; then [ "${FAKE_ACTIVE:-0}" = 1 ] && exit 0; exit 3; fi\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\necho "systemctl $*" >> "$FAKE_LOG"\nif [ "$1" = is-active ]; then [ "${FAKE_ACTIVE:-0}" = 1 ] && exit 0; exit 3; fi\nif [ "$1" = is-enabled ]; then echo enabled; exit 0; fi\nexit 0\n', { mode: 0o755 });
   writeFileSync(join(bin, 'id'), '#!/bin/sh\nif [ "$1" = -u ]; then echo "${FAKE_UID:-$(/usr/bin/id -u)}"; exit 0; fi\nexec /usr/bin/id "$@"\n', { mode: 0o755 });
   writeFileSync(join(bin, 'getent'), '#!/bin/sh\ncase "$1" in passwd) echo "installer:x:$2:$2::/home/installer:/bin/sh" ;; group) echo "installer:x:$2:" ;; esac\n', { mode: 0o755 });
   writeFileSync(join(bin, 'runuser'), '#!/bin/sh\nshift 3\nexec "$@"\n', { mode: 0o755 });
@@ -1478,6 +1573,41 @@ test('watch-timer.sh install writes a service and a 5-minute persistent timer fo
     r = f.asRoot(['install', '--node', node, '--state', other]);
     assert.equal(r.status, 1); assert.match(r.stderr, /already belongs to another state/);
     assert.match(readFileSync(join(f.units, 'warehouse-acme-watch.service'), 'utf8'), new RegExp(`STATE_DIR=${f.state}$`, 'm'));
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('watch-timer.sh also writes a boot unit that runs compose up after docker.service; status, hint and uninstall know it', () => {
+  const f = timerFixture();
+  try {
+    const node = join(f.nodeDir, 'node');
+    const r = f.asRoot(['install', '--node', node]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /warehouse-acme-stack\.service is enabled: the services start at boot/);
+    const stack = readFileSync(join(f.units, 'warehouse-acme-stack.service'), 'utf8');
+    assert.match(stack, /^Requires=docker\.service$/m); assert.match(stack, /^After=docker\.service$/m);
+    assert.match(stack, /^Type=oneshot$/m); assert.match(stack, /^RemainAfterExit=yes$/m);
+    assert.match(stack, /^User=installer$/m); assert.match(stack, /^Group=installer$/m);
+    assert.match(stack, new RegExp(`^Environment=WAREHOUSE_STATE_DIR=${f.state}$`, 'm'));
+    assert.match(stack, new RegExp(`^WorkingDirectory=${repo.replace(/\/$/, '')}$`, 'm'));
+    assert.match(stack, new RegExp(`^ExecStart=/bin/bash ${repo.replace(/\/$/, '')}/scripts/compose\\.sh up -d --no-build$`, 'm'));
+    assert.match(stack, /^WantedBy=multi-user\.target$/m);
+    assert.doesNotMatch(stack, /--profile|--remove-orphans/, 'the default profile only');
+    assert.equal(statSync(join(f.units, 'warehouse-acme-stack.service')).mode & 0o777, 0o644);
+    assert.match(f.calls(), /systemctl enable warehouse-acme-stack\.service\n/);
+    assert.doesNotMatch(f.calls(), /enable --now warehouse-acme-stack/, 'install does not start the stack');
+    assert.match(f.run(['status']).stdout, /Boot unit: warehouse-acme-stack\.service is installed \(enabled\)/);
+    assert.equal(f.run(['hint']).stdout, '', 'complete: silent');
+    // An install from before the boot unit existed: hint asks for a refresh and says what is missing.
+    rmSync(join(f.units, 'warehouse-acme-stack.service'));
+    const old = f.run(['hint']).stdout;
+    assert.match(old, /unit that starts the services at boot is not[^]*power cut[^]*install --state /);
+    assert.match(f.run(['status']).stdout, /Boot unit: warehouse-acme-stack\.service is not installed/);
+    f.asRoot(['install', '--node', node]);
+    const gone = f.asRoot(['uninstall']);
+    assert.equal(gone.status, 0, gone.stderr);
+    assert.match(gone.stdout, /Removed warehouse-acme-watch\.timer, warehouse-acme-watch\.service and warehouse-acme-stack\.service/);
+    assert.deepEqual(readdirSync(f.units), []);
+    assert.match(f.calls(), /systemctl disable warehouse-acme-stack\.service/);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 

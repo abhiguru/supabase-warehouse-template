@@ -20,6 +20,8 @@
 // and every service of this run are up; a failed pass is tried again after an hour, at most 3 times a day.
 // Pruning keeps the newest 7 backup directories of this installation in $STATE/backups; backups made by hand there
 // (same name pattern, same instance) count towards those 7.
+// Self-healing: while no operator command holds the lock, an `exited` service of the default profile is started again and
+// one `unhealthy` for 3 runs in a row is restarted, at most once an hour each (selfHeal); a muted service is left alone.
 // Mute before a deliberate stop.sh: a stopped service is an alert like any other.
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
@@ -42,6 +44,8 @@ export const LIMITS = {
   // A daily pass in progress older than this is taken as interrupted (the unit stops after 4 h).
   jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3, dailyRetryMs: HOUR, dailyHardMs: 3 * HOUR + 45 * MIN,
   futureBackupMs: HOUR,
+  // Self-healing: a service unhealthy in this many runs in a row is restarted; no service is acted on more than once per gap.
+  healUnhealthyRuns: 3, healGapMs: HOUR,
 };
 export const OPTIONAL_SERVICES = ['supavisor', 'cups', 'sensor-bridge'];
 export const BACKUP_DIR_PATTERN = /^warehouse-\d{8}T\d{6}Z$/;
@@ -67,7 +71,7 @@ export const mutesPath = state => join(state, 'config/watch-mutes.json');
 export const freshState = now => ({
   version: 1, firstRun: now, alerts: {}, containers: {}, cpu: null, lastRunAt: null, lastHeartbeat: null,
   lastDailyRun: {}, dailyAttempt: null, dailyRunning: null, dailySkipped: null, busySince: null, lastPostError: null,
-  memoryNote: null,
+  memoryNote: null, heal: {},
   // Mutes live in their own file (loadMutes) and are filled in from it; they are never part of the run state.
   muteUntil: null, mutes: {},
 });
@@ -111,6 +115,7 @@ export function normalizeState(raw, now, log = () => {}) {
   take('dailyAttempt', v => v === null || (isObj(v) && typeof v.date === 'string' && isNum(v.count) && numOrNull(v.lastAt) && typeof v.done === 'boolean'));
   take('lastPostError', v => v === null || (isObj(v) && isNum(v.at) && typeof v.message === 'string'));
   take('memoryNote', v => v === null || typeof v === 'string');
+  take('heal', v => isObj(v) && Object.values(v).every(x => isObj(x) && isNum(x.unhealthyRuns) && numOrNull(x.lastAt) && typeof x.lastAction === 'string'));
   take('lastDailyRun', v => isObj(v) && Object.values(v).every(x => isObj(x) && typeof x.date === 'string' && typeof x.result === 'string'));
   if (isObj(raw.alerts)) for (const [id, a] of Object.entries(raw.alerts)) out.alerts[id] = normalizeAlert(id, a, log);
   else if ('alerts' in raw) log('state field "alerts" had the wrong type and was reset');
@@ -664,6 +669,49 @@ export async function runChecks(ctx, checks = CHECKS) {
   return { results, ran };
 }
 
+// ---------------------------------------------------------------- self-healing
+// Docker restarts a container that exited, but not one that was stopped, and the backup stops four services for a while: a
+// power cut then leaves them stopped, and the daemon does not start them again. A service of the default profile that is
+// `exited` is started again; one that stays `unhealthy` for 3 runs in a row is restarted; each at most once an hour. Only
+// while no operator command holds the lock (those stop services on purpose), not while the service's alert is muted (a planned
+// stop), and never the database for being unhealthy: a database in crash recovery reports unhealthy too, and a restart only
+// begins the recovery again. The start keeps the existing container (--no-recreate): applying a changed compose file or image
+// is the operator's job (setup.sh), not the checker's. Every action is reported as the alert service_healed:<name>, held for
+// an hour like an OOM kill.
+export function selfHeal(ctx) {
+  const now = ctx.now();
+  const out = [];
+  const by = new Map();
+  let expected;
+  try {
+    for (const c of ctx.containers()) if (!by.has(c.service) || c.status === 'running') by.set(c.service, c);
+    expected = ctx.expectedServices();
+  } catch { return out; }   // the services check reports why it cannot see them
+  for (const name of expected) {
+    const c = by.get(name);
+    const h = ctx.data.heal[name] ??= { unhealthyRuns: 0, lastAt: null, lastAction: '' };
+    const exited = c?.status === 'exited';
+    const unhealthy = c?.status === 'running' && c.health === 'unhealthy';
+    if (unhealthy) h.unhealthyRuns += 1; else if (c?.health !== 'starting') h.unhealthyRuns = 0;
+    const idle = h.lastAt === null || h.lastAt > now || now - h.lastAt >= LIMITS.healGapMs;
+    let act = null;
+    if (exited) act = { args: ['up', '-d', '--no-recreate', name], what: `was ${c.status}`, did: 'started it again' };
+    else if (unhealthy && name !== 'db' && h.unhealthyRuns >= LIMITS.healUnhealthyRuns) {
+      act = { args: ['restart', name], what: `was unhealthy for ${h.unhealthyRuns} runs`, did: 'restarted it' };
+    }
+    if (act && idle && !isMuted(ctx.data, `service_down:${name}`, now) && !lockIsHeld(ctx)) {
+      const r = ctx.compose(act.args, { timeoutMs: 180000 });
+      h.lastAt = now; h.unhealthyRuns = 0;
+      h.lastAction = r.status === 0 ? `${act.what}; the checker ${act.did}`
+        : `${act.what}; the checker could not do it: ${clip(redact(String(r.stderr ?? '').trim(), ctx.env_()), 200)}`;
+    }
+    if (h.lastAt !== null && h.lastAt <= now && now - h.lastAt < LIMITS.healGapMs) {
+      out.push(result('self_heal', `service_healed:${name}`, false, `Service ${name} ${h.lastAction}`, 'See docs/MONITORING.md, "Self-healing".', { immediate: true }));
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- the operator lock
 // True while another process holds the flock on config/operator.lock. /proc/locks is read instead of trying the
 // lock: taking it, even for an instant, could make a real operator command fail.
@@ -953,7 +1001,7 @@ export function dailyHealthy(results) {
 }
 
 // ---------------------------------------------------------------- the run
-export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner } = {}) {
+export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner, heal = selfHeal } = {}) {
   const now = deps.now();
   const data = loadState(deps.state, now, deps.readText, deps.log);
   Object.assign(data, loadMutes(deps.state, deps.readText));
@@ -967,6 +1015,12 @@ export async function runOnce(deps, { checks = CHECKS, daily = dailyRunner } = {
     stuck = true;
   } else data.busySince = null;
   const { results, ran } = await runChecks(ctx, checks);
+  // Not while the lock is stuck (an operator command is still running, stopping services on purpose).
+  if (heal && !stuck) {
+    const healed = await runChecks(ctx, [['self_heal', heal]]);
+    results.push(...healed.results);
+    for (const name of healed.ran) ran.add(name);
+  }
   const heldHours = stuck ? Math.floor((now - data.busySince) / HOUR) : 0;
   results.push(result('operator_lock', 'operator_lock_stuck', !stuck, `An operator command has held the lock for ${heldHours} h or more`, 'Look for a hung setup, backup or restore: node scripts/watch.mjs status'));
   ran.add('operator_lock');

@@ -59,6 +59,22 @@ export function checkerWarnings(state, {
   return out;
 }
 
+// Free space on the state's filesystem. A new installation (--host-preflight) needs 10 GiB. A start after a power cut does
+// not: refusing it on a disk that has filled up past that point only keeps the facility down, so below 10 GiB every
+// other mode prints a warning and refuses only below 2 GiB (PostgreSQL stops on a full disk).
+export const MIN_FREE_NEW_BYTES = 10 * 1024 ** 3;
+export const MIN_FREE_RUNNING_BYTES = 2 * 1024 ** 3;
+export function freeSpaceVerdict(freeBytes, { newInstall = false } = {}) {
+  const gib = (freeBytes / 1024 ** 3).toFixed(1);
+  if (freeBytes < (newInstall ? MIN_FREE_NEW_BYTES : MIN_FREE_RUNNING_BYTES)) {
+    return { error: `At least ${newInstall ? 10 : 2} GiB free space is required for database and storage (${gib} GiB is free).` };
+  }
+  if (!newInstall && freeBytes < MIN_FREE_NEW_BYTES) {
+    return { warning: `Only ${gib} GiB is free on the state's disk (less than 10 GiB): the next backup, image build or upgrade may not fit. Free space or add disk soon (docs/TROUBLESHOOTING.md, "Disk full").` };
+  }
+  return {};
+}
+
 export const listening = port => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
   const done = value => { socket.destroy(); resolve(value); };
@@ -145,7 +161,9 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const state = process.env.WAREHOUSE_STATE_DIR;
   const parent = checkStatePlacement(state);
   const fs = statfsSync(parent);
-  if (Number(fs.bavail) * Number(fs.bsize) < 10 * 1024 ** 3) throw new Error('At least 10 GiB free space is required for database and storage.');
+  const space = freeSpaceVerdict(Number(fs.bavail) * Number(fs.bsize), { newInstall: hostPreflight });
+  if (space.error) throw new Error(space.error);
+  if (space.warning) console.error(`Warning: ${space.warning}`);
   if (hostPreflight) return 'Host prerequisites and state filesystem preflight passed.';
   const envPath = resolve(state, 'config/compose.env');
   const env = readEnv(envPath);

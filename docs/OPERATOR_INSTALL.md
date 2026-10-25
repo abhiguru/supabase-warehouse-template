@@ -39,8 +39,9 @@ Sections: [host prerequisites](#host-prerequisites),
 - `tmux` (or another way to keep a process running after you log out) for the Expo development server of the app, if you
   run one on this host. The backend itself needs it for nothing.
 - A non-root user in the `docker` group. Do not run setup as root or make the Docker socket world-writable.
-- At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data; the doctor enforces
-  the minimum.
+- At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
+  to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
+  up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
   it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
