@@ -1,10 +1,30 @@
 // Doctor warning for the USB backup drive (scripts/backup-usb.sh). Returns null when
-// USB backup is not set up for this state or the last copy is recent and successful.
+// USB backup is not set up for this state or the last copy is recent and successful and,
+// when archives are encrypted, the operator has confirmed a copy of the backup key.
 import { readFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 
 const fields = text => Object.fromEntries(text.split('\n').filter(line => line.includes('=')).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
 const read = path => { try { return readFileSync(path, 'utf8'); } catch { return null; } };
+
+// The fingerprint scripts/backup-key.sh (backup_key_fingerprint) records: the first 16 hexadecimal characters of the
+// HMAC-SHA256 of the label under the key. It is not the key and cannot be turned back into it.
+export const keyFingerprint = key => createHmac('sha256', Buffer.from(key, 'hex')).update('warehouse-backup-key-fingerprint-v1\n').digest('hex').slice(0, 16);
+
+// null when a copy of the backup key was confirmed (scripts/backup-key-escrow.sh) for the key in use, else the reason.
+export function escrowProblem(state) {
+  const keyText = read(resolve(state, 'config/backup.key'));
+  const key = (keyText ?? '').split('\n')[0].replace(/\r$/, '');
+  if (!/^[0-9a-f]{64}$/.test(key)) return null; // no usable key here: the backup commands say so themselves
+  const record = read(resolve(state, 'config/backup-key.escrow'));
+  if (record === null) return 'there is no key escrow record';
+  const lines = record.split('\n');
+  const recorded = fields(record).key_fingerprint;
+  if (lines[0] !== 'warehouse-backup-key-escrow-v1' || !/^[0-9a-f]{16}$/.test(recorded ?? '')) return 'the key escrow record is not valid';
+  if (recorded !== keyFingerprint(key)) return 'the key escrow record is for another backup key (the key was replaced since the copy was confirmed)';
+  return null;
+}
 
 export function usbBackupWarning(state, {
   now = Date.now(),
@@ -14,6 +34,12 @@ export function usbBackupWarning(state, {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
   const last = read(resolve(state, 'config/usb-backup.last'));
   if (!last && (!conf || fields(conf).STATE !== resolve(state))) return null;
+  // Archives are encrypted with the backup key, which lives only on this machine's disk: without a confirmed copy kept
+  // elsewhere, the loss of the host is also the loss of every archive. Runs and enrolment are refused until it is confirmed.
+  if (conf && fields(conf).STATE === resolve(state) && fields(conf).ENCRYPT === 'yes') {
+    const problem = escrowProblem(state);
+    if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
+  }
   if (!last) return 'USB backup is set up but no copy has been made yet: attach the enrolled USB drive.';
   const run = fields(last);
   if (run.result !== 'ok') return `The last USB backup failed at ${run.finished_utc || 'an unknown time'}: ${run.message || 'no detail'}. Run bash scripts/backup-usb.sh status.`;
