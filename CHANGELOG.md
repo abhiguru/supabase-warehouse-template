@@ -49,18 +49,6 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    objects (role and schema `pgbouncer`, database `_supabase`, three secrets) and records `POOLER_ENABLED=false`; an installation that
    ran supavisor is recorded as on. If `_supabase` holds data the clean-up is refused with a warning and asked again at the next setup.
    To use the pooler: `bash scripts/pooler.sh on` (`off`, `status`); see "Pooler (optional)" in `docs/OPERATOR_INSTALL.md`.
-12. **Migration 126 (sessions, per-source limits, break-glass) and the `functions` recreate.** This is the break-glass / functions-recreate
-   action (its number leaves room for the actions 10 and 11 that another change adds). Runs with `setup.sh`; no data is changed. Sessions
-   now slide (30 days idle, 90 days at most; before: 7 days from sign-in), so an SMS outage no longer signs everybody out within a week;
-   a lost phone is therefore ended by switching the user off (`docs/OPERATOR_INSTALL.md`, "A lost or stolen phone"). If many phones share
-   the facility Wi-Fi, list its public address once as `otp_trusted_source_list` (`docs/OPERATOR_INSTALL.md`, "The facility's own Wi-Fi
-   address"). Learn `bash scripts/break-glass-admin.sh <admin number>` ("Break-glass administrator sign-in") before the day SMS stops.
-   **After `setup.sh`, run `bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/`.**
-   Setup does not recreate the `functions` container (the functions are bind-mounted and the edge runtime keeps the modules it has loaded,
-   see "Rerun and upgrade" in `docs/OPERATOR_INSTALL.md`); without that line the old `operator-otp` keeps running, and while the SMS
-   provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
-   The app needs no change.
-
 10. **Run `sudo bash scripts/watch-timer.sh install --state "$WAREHOUSE_STATE_DIR"` again.** The daily backup is no longer inside the
    5-minute checker: it is `watch.mjs daily`, run by its own timer `<project>-daily.timer` (same `--daily-at` time, kept from the old
    unit). **Until you rerun `install`, the backup keeps running** from the old checker unit: that unit sets `WAREHOUSE_WATCH_DAILY_AT`,
@@ -75,6 +63,27 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 11. **`setup.sh` recreates the `db` and `rest` containers** (a few seconds of downtime): `PGRST_DB_CONFIG` is now `true`, so anonymous API
     calls are cut at 3 s (they ran under 8 s); the database gets `shm_size: 256m`, logs statements slower than 1 s without their
     parameter values, and no longer logs connections ([docs/MONITORING.md](docs/MONITORING.md#finding-a-slow-query)).
+12. **Migration 126 (sessions, per-source limits, break-glass) and the `functions` recreate.** Runs with `setup.sh`; no data is changed. Sessions
+   now slide (30 days idle, 90 days at most; before: 7 days from sign-in), so an SMS outage no longer signs everybody out within a week;
+   a lost phone is therefore ended by switching the user off (`docs/OPERATOR_INSTALL.md`, "A lost or stolen phone"). If many phones share
+   the facility Wi-Fi, list its public address once as `otp_trusted_source_list` (`docs/OPERATOR_INSTALL.md`, "The facility's own Wi-Fi
+   address"). Learn `bash scripts/break-glass-admin.sh <admin number>` ("Break-glass administrator sign-in") before the day SMS stops.
+   **After `setup.sh`, run `bash scripts/compose.sh up -d --force-recreate functions   # needed when the pull changed anything under functions/`.**
+   Setup does not recreate the `functions` container (the functions are bind-mounted and the edge runtime keeps the modules it has loaded,
+   see "Rerun and upgrade" in `docs/OPERATOR_INSTALL.md`); without that line the old `operator-otp` keeps running, and while the SMS
+   provider refuses requests the app shows "SMS delivery unavailable" instead of its code screen, so a break-glass code cannot be typed.
+   The app needs no change.
+13. **Follow release tags, and upgrade with `bash upgrade.sh vX.Y.Z`.** `main` is no longer the operator channel; a release is a tag
+   (`vMAJOR.MINOR.PATCH`) with a GitHub release note. `upgrade.sh` takes the operator lock, backs up and verifies the backup, checks the tag
+   out (detached HEAD), reruns `setup.sh --operator` with your installation's own values (the administrator is read from the database;
+   nothing else needs repeating), recreates the `functions` container, runs `doctor --local` and prints the operator actions of this
+   file between your release and the new one. `bash upgrade.sh --dry-run vX.Y.Z` runs the checks and prints the plan. It refuses a
+   dirty checkout, a name that is not a release tag on origin, a release on another PostgreSQL major (that stays the separate
+   "Major PostgreSQL upgrade" procedure) and a database that recorded migrations the release does not contain. **The first move to a
+   release that contains `upgrade.sh` uses the manual sequence** in `docs/OPERATOR_INSTALL.md` ("Rerun and upgrade", "What upgrade.sh
+   does"): your checkout has no `upgrade.sh` yet. Security fixes are supported for the current and the previous minor release
+   (`SECURITY.md`). `setup.sh` now accepts the operator lock when its caller already holds it (`upgrade.sh` does), as `migrate.sh` and
+   `backup.sh` already did.
 
 ### Changed
 
@@ -104,6 +113,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   `daily_timer_legacy` (item 10). The gateway-log checks (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) read
   `docker logs -t --tail 5000` and cut to 5 minutes by the time stamps: `docker logs --since` returned nothing for any window up to
   an hour on a Docker 29.9.1 host, which would have kept them at "too few requests" for good (`tests/gateway-smoke.mjs` likewise).
+- **Release channel, support window and `upgrade.sh`.** `upgrade.sh` (operator action 13), `scripts/pg-major.sh` (the PostgreSQL major of
+  a tree or a tag, which `upgrade.sh` and CI compare), `SECURITY.md` (the current and the previous minor receive security fixes, the previous
+  one for 6 months after the next minor; a fix is announced in a GitHub release note with "Security" in its title), `SUPPORT.md`,
+  `CONTRIBUTING.md` (release flow) and `docs/RELEASE_CHECKLIST.md` (the release note template, the `upgrade.sh` rehearsal from the
+  previous tag). A new baseline must list the migration names it replaces (`CONTRIBUTING.md`), because `upgrade.sh` refuses a release
+  whose migrations lack a name the database recorded.
+- **CI.** A new `operator-upgrade` job installs the newest release tag before the change and moves it to the commit with
+  `upgrade.sh --ref` (`scripts/ci-previous-tag.sh` picks the tag; skipped with a notice until a tag on the same PostgreSQL major exists).
+  `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`, so GitHub does not disable the
+  scheduled workflows after 60 days without activity (`docs/PRODUCTION_DEPENDENCIES.md`, "Accepted by the owner").
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

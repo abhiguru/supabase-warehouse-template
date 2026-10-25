@@ -318,8 +318,8 @@ it; only `functions` can.
 - **`... is group- or world-writable` from `backup-usb.sh setup`**: the checkout was updated (`git pull`, `git checkout`)
   under a umask other than `022`; Ubuntu's default `0002` does this. As the
   installation user run `bash scripts/checkout-permissions.sh` (or rerun
-  `setup.sh`), then repeat the command. Update with `(umask 022; git pull
-  --ff-only)` from then on.
+  `setup.sh`), then repeat the command. Update with `bash upgrade.sh vX.Y.Z`, which checks the tag out under `umask 022`
+  ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)).
 - **PostgreSQL restarts with `Permission denied` on first start**: the
   checkout was cloned under `umask 077`. Re-clone with `umask 022` into a new
   directory and use a fresh empty state; keep the failed state for diagnosis.

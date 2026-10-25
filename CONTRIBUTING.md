@@ -42,6 +42,26 @@ RPC names with `tests/rpc_callers_exist.sql`. The live comparison before a relea
 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md#mobile-contract-before-a-release). Do not merge a backend change that
 needs a mobile change until the mobile commit exists and the pin points at it.
 
+## Releases
+
+Operators follow release tags, not `main` ([SECURITY.md](SECURITY.md) has the support window). The flow, step by step in
+[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md): finish `CHANGELOG.md` (the `## Unreleased` section becomes
+`## vX.Y.Z (date)`; `upgrade.sh` prints the sections by that heading), tag `vX.Y.Z` on `main` (`release.yml` validates the tag),
+rehearse `bash upgrade.sh vX.Y.Z` from the previous tag on a test install, publish the GitHub release note, and operators run
+`bash upgrade.sh vX.Y.Z`. A security fix is tagged first on `main`, then backported to `release/MAJOR.MINOR` of the previous
+minor while it is supported, with a release note that has "Security" in its title.
+
+Rules that keep `upgrade.sh` working for the installed base:
+
+- **Every release line keeps `upgrade.sh` and the inherited operator lock in `setup.sh`** (`operator_lock_or_inherited`); `upgrade.sh`
+  refuses a release without `upgrade.sh`.
+- **A new baseline names what it replaces.** If the migrations are squashed again, the new baseline file and the release note list the
+  names of the migration files it replaces. `upgrade.sh` refuses to move a database that recorded a migration the release lacks, and
+  points to the Baseline reload; without the list an operator cannot tell a squash from a downgrade. Tell the owner first: a squash
+  strands every installed facility behind the manual reload.
+- **A release changes the PostgreSQL major only on purpose.** `upgrade.sh` refuses it; the release note must say so and link the
+  "Major PostgreSQL upgrade" procedure.
+
 ## Pull Request Process
 
 1. Update `CHANGELOG.md` with your changes
