@@ -370,7 +370,42 @@ test('API logs: 5xx share above 5% and p95 latency above 2 s, from the last 5 mi
     assert.equal(find(r, 'api_latency_p95_high').ok, false);
     r = logs(mix(5, 5, 5));
     assert.equal(r.every(x => x.ok), true, 'fewer than 10 requests');
-    assert.ok(h.calls.some(c => c.includes('docker logs --since 5m ' + idOf('kong'))));
+    assert.ok(h.calls.some(c => c === `docker logs -t --tail 5000 ${idOf('kong')}`), 'the last 5000 lines with their time stamps');
+    assert.ok(!h.calls.some(c => c.includes('--since')), 'no --since: it returned nothing on a Dev host (Docker 29.9.1)');
+  } finally { clean(h); }
+});
+
+test('API logs: a docker that ignores --since still gives the right window, cut by the -t time stamps; old lines and lines without a stamp', () => {
+  const h = harness();
+  try {
+    // The fake behaves like the host where --since returned nothing: it ignores every window option and answers with the
+    // tail it is asked for, each line stamped as `docker logs -t` does (RFC 3339 with nanoseconds, UTC).
+    const stamp = (agoMs, line) => `${new Date(h.clock.t - agoMs).toISOString().replace(/Z$/, '456789Z')} ${line}`;
+    const serve = lines => h.runs['docker logs'] = command => {
+      assert.match(command, / -t --tail 5000 /); assert.doesNotMatch(command, /--since/);
+      return ok(lines.join('\n') + '\n');
+    };
+    const old = Array.from({ length: 30 }, (_, i) => stamp(10 * 60000 + i, kongLine(500, '9.000')));   // 10 minutes ago: all errors, all slow
+    const recent = Array.from({ length: 20 }, (_, i) => stamp(60000 + i * 1000, kongLine(i < 1 ? 500 : 200, '0.100')));   // 1 minute ago: 1 of 20 is 5xx
+    serve([...old, ...recent]);
+    let r = find(W.checkApiLogs(h.ctx()), 'api_error_rate_high');
+    assert.equal(r.ok, true, JSON.stringify(r)); assert.match(r.summary, /API 5xx rate 5\.0% over 20 requests/, 'only the last 5 minutes count');
+    assert.equal(find(W.checkApiLogs(h.ctx()), 'api_latency_p95_high').ok, true, 'the slow old lines are not in the window');
+    // The window edge: 5 minutes exactly is in, 1 ms older is out.
+    serve([stamp(5 * 60000 + 1, kongLine(500, '0.100')), ...Array.from({ length: 10 }, () => stamp(5 * 60000, kongLine(200, '0.100')))]);
+    assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /API 5xx rate 0\.0% over 10 requests/);
+    // Everything older than the window: too few requests to judge, not an error, and not the old numbers.
+    serve(old);
+    assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /Too few requests \(0\) to judge the error rate/);
+    // 429s in the window count; 429s outside it do not.
+    serve([...Array.from({ length: 40 }, () => stamp(20 * 60000, kongLine(429, '0.100'))), ...Array.from({ length: 60 }, (_, i) => stamp(30000, kongLine(i < 3 ? 429 : 200, '0.100')))]);
+    const limited = find(W.checkApiLogs(h.ctx()), 'api_429_rate_high');
+    assert.equal(limited.ok, false); assert.match(limited.summary, /429 \(too many requests\) to 3 of 60 requests, 5\.0%/);
+    // A line the stamp of which cannot be read is kept (it cannot be placed); with the stamp it carries, a plain line parses as before.
+    serve([...Array.from({ length: 10 }, () => kongLine(200, '0.100')), 'garbage T Z line']);
+    assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /over 10 requests/);
+    assert.equal(W.parseKongLog(`${stamp(1000, kongLine(200, '0.100'))}\n${stamp(900000, kongLine(200, '0.100'))}`).length, 2, 'without a window every line counts');
+    assert.equal(W.parseKongLog(`${stamp(1000, kongLine(200, '0.100'))}\n${stamp(900000, kongLine(200, '0.100'))}`, { sinceMs: h.clock.t - 60000 }).length, 1);
   } finally { clean(h); }
 });
 

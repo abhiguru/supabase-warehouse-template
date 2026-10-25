@@ -56,6 +56,8 @@ export const LIMITS = {
   // than 20 of them whatever the total. SMS: more than 20% of the last 24 hours' code requests (judged from 10 requests up)
   // or more than 10 of them were not accepted by the provider. Clock: more than 10 s from the public address's Date header.
   rateLimitedShare: 0.02, rateLimitedMinRequests: 50, rateLimitedCount: 20,
+  // The gateway log read: the last gatewayLogTail lines, cut to the last gatewayLogWindowMs by their time stamps.
+  gatewayLogTail: 5000, gatewayLogWindowMs: 5 * MIN,
   smsFailedShare: 0.2, smsFailedCount: 10, smsMinSends: 10, clockOffsetMs: 10000,
   // Self-healing: a service unhealthy in this many runs in a row is restarted; no service is acted on more than once per gap.
   healUnhealthyRuns: 3, healGapMs: HOUR,
@@ -526,20 +528,31 @@ export async function checkApiPublic(ctx) {
     return [result('api_public', 'public_https_down', true, 'Public HTTPS address works')];
   } catch (error) { return [result('api_public', 'public_https_down', false, 'The public HTTPS address does not work (tunnel or DNS)', error.message)]; }
 }
-export function parseKongLog(text) {
+// `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
+// RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
+export function parseKongLog(text, { sinceMs = null } = {}) {
   const rows = [];
   for (const line of text.split('\n')) {
     const m = line.match(/\[[^\]]+\] "[A-Z]+ \S+ [^"]*" (\d{3}) \d+ ([\d.]+)\s*$/);
-    if (m) rows.push({ status: Number(m[1]), seconds: Number(m[2]) });
+    if (!m) continue;
+    if (sinceMs !== null) {
+      const stamp = Date.parse((/^(\d{4}-\d{2}-\d{2}T\S+) /.exec(line) ?? [])[1] ?? '');
+      if (Number.isFinite(stamp) && stamp < sinceMs) continue;
+    }
+    rows.push({ status: Number(m[1]), seconds: Number(m[2]) });
   }
   return rows;
 }
+// The gateway's last 5 minutes. `docker logs --since` is not used: on a Dev host (Docker 29.9.1) it returned no line at all for
+// any window up to an hour while `--tail` and `--since 24h` worked, which would have made every rate below read "too few requests"
+// for good. The last gatewayLogTail lines are read with their time stamps (-t) and cut to the window here. A gateway busier than
+// about 16 requests a second fills the tail with less than 5 minutes, and the rates are then those of the newest lines.
 export function checkApiLogs(ctx) {
   const kong = ctx.containers().find(c => c.service === 'kong');
   if (!kong) return [];
-  const logs = ctx.run('docker', ['logs', '--since', '5m', kong.id]);
+  const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), kong.id]);
   if (logs.status !== 0) throw new Error('docker logs failed for the gateway');
-  const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`);
+  const rows = parseKongLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs });
   if (rows.length < LIMITS.minRequests) {
     return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency'),
       result('api_logs', 'api_429_rate_high', true, 'Too few requests to judge the rate-limit answers')];
