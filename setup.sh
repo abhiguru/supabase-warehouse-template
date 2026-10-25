@@ -55,7 +55,8 @@ node "$ROOT/scripts/doctor.mjs" --host-preflight
 # can only take it once configure.mjs has created the state directory.
 LOCKED=''
 if [[ -d "$STATE/config" ]]; then
-  operator_lock "$STATE"
+  # upgrade.sh holds the lock for its whole run and runs this script as one step: the inherited lock counts.
+  operator_lock_or_inherited "$STATE"
   LOCKED=1
 fi
 # An existing installation of the earlier PostgreSQL 15 release is refused here, before configure.mjs rewrites its
@@ -98,7 +99,7 @@ fi
 node "$ROOT/scripts/configure.mjs" "${CONFIG_ARGS[@]}"
 rm -f "$WEBHOOK_TMP" "$LETTERHEAD_TMP"
 if [[ -z "$LOCKED" ]]; then
-  operator_lock "$STATE"
+  operator_lock_or_inherited "$STATE"
 fi
 node "$ROOT/scripts/doctor.mjs" --preflight
 bash "$ROOT/scripts/compose.sh" config --quiet
