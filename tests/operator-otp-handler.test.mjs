@@ -18,6 +18,7 @@ function harness(overrides = {}, env = environment) {
     operator_verify_otp: { success: true, data: { action: 'login' } },
     operator_enrollment_status: { success: true, data: { status: 'pending' } },
     operator_enrollment_signout: { success: true },
+    operator_break_glass_open: false,
     msg91: Response.json({ type: 'success', message: 'provider-request-id' }),
     ...overrides,
   };
@@ -275,6 +276,34 @@ test('a provider failure seals the challenge before the 503 is returned', async 
     assert.deepEqual(finish.body, { p_request_id: requestId, p_delivered: false, p_provider_id: expected, p_attempts: sent[expected] });
     assert.deepEqual(await bodyOf(response), { status: 503, body: { success: false, error: 'SMS delivery unavailable. Try again later.' } });
   }
+});
+
+test('while a break-glass code is open for the number, a request the provider could not take is answered as sent (migration 126)', async () => {
+  // The operator made a code with scripts/break-glass-admin.sh because SMS does not work. The app only reaches its code screen when the
+  // request succeeds, so the refusal of the provider is not shown; the challenge is still sealed as undelivered and no code is returned.
+  const normal = await bodyOf(await harness().call('request', phone));
+  for (const overrides of [{ msg91: Response.json({ type: 'error' }, { status: 401 }) }, { msg91: new TypeError('network down') },
+    { operator_sms_config: { success: false, code: 'unavailable' } }]) {
+    const { calls, call } = harness({ operator_break_glass_open: true, ...overrides });
+    const answered = await bodyOf(await call('request', phone));
+    assert.deepEqual(answered, normal, 'the answer is the same as for an SMS that went out');
+    assert.ok(!JSON.stringify(answered).includes('123456'), 'the code is not returned');
+    const names = calls.map(entry => entry.name);
+    assert.deepEqual(names.slice(-2), ['operator_break_glass_open', 'operator_finish_otp'], 'asked before the challenge is sealed, which is the last call');
+    assert.deepEqual(calls.at(-2).body, { p_phone_number: '919888888801' });
+    assert.equal(calls.at(-1).body.p_delivered, false, 'the challenge is sealed as undelivered');
+  }
+  // Only a plain true counts; anything else, or a failure to ask, leaves the 503.
+  const refused = { status: 503, body: { success: false, error: 'SMS delivery unavailable. Try again later.' } };
+  for (const open of [false, null, 'true', 1, { open: true }]) {
+    assert.deepEqual(await bodyOf(await harness({ operator_break_glass_open: open, msg91: new TypeError('network down') }).call('request', phone)), refused, JSON.stringify(open));
+  }
+  const broken = Response.json({ message: 'relation "x" does not exist' }, { status: 500 });
+  assert.deepEqual(await bodyOf(await harness({ operator_break_glass_open: broken, msg91: new TypeError('network down') }).call('request', phone)), refused);
+  // A request the provider took does not ask at all.
+  const quiet = harness({ operator_break_glass_open: true });
+  await quiet.call('request', phone);
+  assert.ok(!quiet.calls.some(entry => entry.name === 'operator_break_glass_open'));
 });
 
 test('a delivery that cannot be recorded is not reported as sent', async () => {

@@ -27,6 +27,14 @@ async function rpc(deps: HandlerDeps, name: string, params: Record<string, unkno
   return await response.json();
 }
 
+// Migration 126: true while the operator has made a break-glass sign-in code for the administrator with this number
+// (scripts/break-glass-admin.sh) and it is still open. Any failure to ask is "no".
+async function breakGlassOpen(deps: HandlerDeps, phone: string): Promise<boolean> {
+  try {
+    return (await rpc(deps, 'operator_break_glass_open', { p_phone_number: phone }) as unknown) === true;
+  } catch { return false; }
+}
+
 function failure(result: { code?: string; retry_at?: string }): Response {
   const code = result.code || 'invalid_request';
   const status = code === 'rate_limited' || code === 'resend_cooldown' || code === 'enrollment_limited' ? 429
@@ -89,6 +97,10 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
         delivery = await deliverOtp(String(data.phone_number), String(data.otp_code),
           String(config.data.auth_key || ''), String(config.data.flow_id || ''), deps.fetch);
       } catch (error) {
+        // While a break-glass code is open for this administrator (SMS does not work, so the operator made one), the app must still
+        // reach its code screen to type it, so a request the provider could not take is answered as sent. The challenge is sealed
+        // as undelivered below, as always; no SMS went out, and nothing else tells the caller that a break-glass code exists.
+        const breakGlass = await breakGlassOpen(deps, String(data.phone_number));
         await rpc(deps, 'operator_finish_otp', {
           p_request_id: data.request_id,
           p_delivered: false,
@@ -96,6 +108,10 @@ export async function handle(req: Request, overrides: Partial<HandlerDeps> = {})
           // The provider requests made, which the database counts and never gives back.
           p_attempts: error instanceof Msg91DeliveryError ? error.attempts : 0,
         });
+        if (breakGlass) {
+          return respond({ success: true, data: { request_id: `OTP_${data.request_id}`, expires_at: data.expires_at },
+            message: 'OTP sent successfully' });
+        }
         return respond({ success: false, error: 'SMS delivery unavailable. Try again later.' }, 503);
       }
       // MSG91 accepted the request without giving its ID: the code is treated as sent (a second SMS
