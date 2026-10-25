@@ -85,6 +85,7 @@ Check: `df -h /`.
      backup (`config/backups-verified.list`) is the last one known to restore: never remove it.
      `newest=$(awk 'NF { print $1 }' "$WAREHOUSE_STATE_DIR/config/backups-verified.list" | sort | tail -n 1)`, then
      `ls -1d "$WAREHOUSE_STATE_DIR"/backups/warehouse-* | head -n -3 | grep -v "/$newest\$" | xargs -r rm -rf`.
+     The USB drive keeps its own newest three archives and needs nothing from you.
    - The saved image tarballs, about 2.5 GiB, after copying them to the drive; they come back at the next build
      (`bash scripts/build-images.sh --save`): `rm -rf "$WAREHOUSE_STATE_DIR/images"`.
    - The system journal: `sudo journalctl --vacuum-size=200M`.
@@ -509,9 +510,33 @@ it; only `functions` can.
   remove it. The run still verifies the newest archive it signed itself.
 - **USB run failed: `does not match its checksum; it was not overwritten`**: an
   archive on the drive is damaged. Copy the drive's other files elsewhere, run
-  `sha256sum -c` on each `.tar.sha256` to see which, and replace the drive if
+  `sha256sum -c` on each `.tar.enc.sha256` (`.tar.sha256` for a readable archive) to see which, and replace the drive if
   errors recur; delete a damaged archive yourself and the next run writes it
-  again.
+  again. A damaged archive is never deleted by the run and is not counted among the archives it keeps.
+- **USB: confirm the backup key copy**: a run, `setup --enroll` or `enroll` stops with `The backup key copy is not confirmed
+  (there is no key escrow record)` (or `... is for another backup key`), and `npm run doctor` and the `usb_backup` alert say that
+  archives are encrypted but the key copy is not confirmed. Nothing was written to the drive. Archives on the drive are encrypted
+  with `config/backup.key`, which lives on the disk that dies with the host, so the run waits until you have a copy elsewhere. In a
+  terminal on the host, as the installation user: `bash scripts/backup-key-escrow.sh show` (with `WAREHOUSE_STATE_DIR` set). It prints
+  the key once; copy it to a password manager or paper kept away from the facility and from the drive, type its last 8 characters
+  back, and attach the drive again. After the key was replaced the old confirmation no longer counts: confirm the new key the same
+  way. Without a terminal: `bash scripts/backup-key-escrow.sh confirm --last8 XXXXXXXX`. `bash scripts/backup-key-escrow.sh check`
+  says whether the record is good. Do not copy a `backup-key.escrow` file from another installation: it records another key's
+  fingerprint and is refused. If you would rather not encrypt, `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"
+  --no-encrypt` needs no confirmation, and then the drive holds every credential of the instance in the clear.
+- **USB: drive too small**: the run stops with `drive too small: needs X, has Y`. The archive of the newest backup does not fit next
+  to the newest valid archive already on the drive, even after the run deleted the older valid archives (it names each one it
+  deleted). The drive must hold at least two archives while a new one is written, and three at rest with the default `--keep 3`:
+  use a larger drive (or remove your own files from it). `--keep N` does not help with the size of one archive. The newest
+  valid archive is never deleted, so the drive still holds a copy. Archives are written in full, without hard links (exFAT has none):
+  each is the size of the whole backup, the database and every stored file.
+- **USB: `not enough free space in <state> to check <backup> from the drive`**: the restore check unpacks the archive's small files
+  (the database dump, the manifest, the configuration; never the photos) into the state directory first, and the free space there
+  is under their size plus 256 MiB. The archive itself was written and is kept; free space on the data disk
+  ([Disk full](#disk-full)), then attach the drive again.
+- **USB: readable `.tar` archives disappeared from the drive**: expected after the first encrypted archive was written and verified:
+  the run deletes this installation's readable archives (it prints each one), because they hold every credential. Archives it could not
+  prove to be this installation's are named and left.
 - **`db:restore`: `the backup instance.json differs from this state`**: the
   backup belongs to another installation, typically because `setup.sh` was run
   on the new host before restoring. In-place restore only replaces the instance

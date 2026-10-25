@@ -7,12 +7,15 @@ they go in the operator's secret store. Nothing here authorizes production deplo
 
 - **Unattended host.** Physical-host startup and shutdown of the VM (on Windows) and a host reboot without a login,
   checked with both doctor modes ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#windows-host-with-linux-vm)).
-- **Off-host backups.** An encrypted off-host destination, key custody, schedule, retention and RTO/RPO. Closed only by a
-  full host-loss recovery onto a replacement host using the off-host copies alone, with measured recovery time and point.
-  An encrypted USB archive has not been through a lost-host restore on real containers.
-  Local copies and the in-place restore do not close this. **Destination decided (owner, 2026-10-25): the USB drive is the
-  only off-host copy; an unattended off-site copy is not required.** The recovery point is the last time the drive was
-  plugged in. What stays open is the drill: a lost-host restore from the USB copy alone, with the time and point measured.
+- **Off-host backups.** Key custody, RTO/RPO and the drill. **Decided (owner, 2026-10-25): the USB drive is the only off-host copy;
+  an unattended off-site copy is not required.** The drive holds one self-contained archive per backup, **encrypted by default**
+  (readable only if the operator types `--no-encrypt`), and keeps the newest three; the recovery point is the last time the drive
+  was plugged in, and the days since are lost with the facility (accepted). The backup key lives only on the host's disk, so a drive is
+  not enrolled and an encrypted archive is not written until the operator has confirmed a copy kept elsewhere
+  (`scripts/backup-key-escrow.sh`); a lost key means the encrypted archives are unrecoverable. CI rebuilds a host on real containers
+  from an encrypted USB archive and the key copy alone. Still open, and closed only by the owner: a lost-host restore from the USB copy
+  alone on a real replacement host, with the recovery time and point measured, and custody of the key copy (where, and who can
+  fetch it).
 - **External alerts.** A delivered test message in the facility's Slack channel
   ([MONITORING.md](MONITORING.md)); the checker's one CI pass does not establish delivery. Incident contacts and an
   escalation policy are the operator's.
@@ -108,5 +111,7 @@ they go in the operator's secret store. Nothing here authorizes production deplo
     disabling them after 60 days without repository activity. GitHub does not say what counts as activity, so whether this works is not
     known; the owner looks at the Actions tab after any long absence (see the owner action above). It does not merge, release or renew
     anything: it only keeps the checks running and the issue they open visible.
-- **USB-only off-host copy (owner, 2026-10-25).** See "Off-host backups" above: the destination is the encrypted USB drive; the
-  stale-copy risk (a facility lost between plug-ins loses the days since) is accepted.
+- **USB-only off-host copy (owner, 2026-10-25).** See "Off-host backups" above: the destination is the encrypted USB drive
+  (encrypted by default, the newest three archives kept, the key copy confirmed before a drive is enrolled); the stale-copy risk
+  (a facility lost between plug-ins loses the days since) is accepted, and so is the loss of every encrypted archive if the host and
+  the key copy are both lost.

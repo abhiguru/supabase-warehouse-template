@@ -125,9 +125,31 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     rate limits behave differently, see "Changed" below. Once the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu`
     gives back about 380 MB. To go back to a release from before nginx, run `bash stop.sh` first (see "What the nginx gateway
     release asks of you" in `docs/OPERATOR_INSTALL.md`).
+16. **Enrolled USB drives switch to encrypted archives at the next `setup`; run `bash scripts/backup-key-escrow.sh show` and keep the key
+   copy; old unencrypted archives are removed after the first encrypted one is verified.** USB archives are now encrypted with the backup
+   key unless `--no-encrypt` is typed. An installation whose USB backup was set up by an earlier release (readable archives were the
+   default) is switched by its next `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"`, which prints a notice (`status`
+   warns until then); a `--no-encrypt` you typed is kept. Because the backup key lives only on the host's disk, a lost host plus a lost
+   key now means every encrypted archive is unrecoverable, so a drive is not enrolled and an encrypted archive is not written until
+   you have confirmed a copy of the key kept away from the host and the drive: in a terminal on the host,
+   `WAREHOUSE_STATE_DIR=… bash scripts/backup-key-escrow.sh show` prints the key once and asks for its last 8 characters
+   (`confirm --last8 XXXXXXXX` does it without a terminal). Until you do, USB runs record a failure and `npm run doctor` and the
+   `usb_backup` alert say what to run. The first run that writes and verifies an encrypted archive **deletes this installation's readable
+   `.tar` archives on the drive** (it prints each one); archives it cannot prove are this installation's are named and left. A drive now
+   keeps the newest three valid archives (`setup --keep N`) and each run copies only the newest verified backup, so the drive needs room
+   for about three times the photos. A fresh backup on attach is taken only when the newest verified backup is 20 hours old or more.
+   The restore check of a run no longer unpacks the photos onto the data disk; it needs the dump plus 256 MiB free in the state directory.
 
 ### Changed
 
+- **The USB drive: encrypted by default, pruned, self-contained archives, verified without unpacking the photos** (operator action 16).
+  `scripts/backup-usb.sh` writes one pax tar per run of the newest verified backup (`scripts/backup-archive.sh`: small files first, the
+  `storage/` tree last, hard links written out, `user.*` attributes kept), `warehouse-<utc>.tar.enc` unless `--no-encrypt` was typed, with
+  the checksum and signature files; the restore check unpacks only the small files (`verify-restore.sh --no-storage-tree`) after
+  checking that the state directory has room; the drive keeps the newest three valid archives and never deletes the newest, a damaged,
+  unsigned or foreign one; `scripts/backup-key-escrow.sh` records that a copy of the backup key was confirmed
+  (`config/backup-key.escrow`), which enrolment and encrypted runs require; the `usb_backup` alert and `npm run doctor` warn when it is
+  missing. CI's lost-host drill rebuilds a host from an encrypted USB archive and the key copy alone.
 - **The gateway is plain nginx from the official image; Kong is gone.** `docker/nginx` replaces `docker/kong.yml` and the
   `eval` entrypoint: nginx 1.30 (alpine-slim variant, pinned by tag and digest, no HIGH or CRITICAL finding at the time of the
   change), the routes, key check, CORS, body limits and the redacted access log as before, 128 MB instead of 512 MB, a read-only

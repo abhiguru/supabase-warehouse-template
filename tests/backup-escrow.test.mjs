@@ -19,6 +19,10 @@ function fixture() {
 }
 const last8 = backupKey.slice(-8);
 const haveScript = spawnSync('script', ['--version'], { encoding: 'utf8' }).status === 0;
+// REQUIRE_PTY=1 (a runner known to have `script`) turns the silent skip of the terminal tests below into a failure.
+test('the script command, which gives the terminal tests a pseudo terminal, is there when REQUIRE_PTY=1', { skip: process.env.REQUIRE_PTY !== '1' && 'REQUIRE_PTY is not 1' }, () => {
+  assert.ok(haveScript, 'REQUIRE_PTY=1, but the script command (util-linux) is missing: the terminal tests would be skipped');
+});
 
 test('the fingerprint is an HMAC of the key, 16 hexadecimal characters, that does not reveal the key', () => {
   const f = fixture();
