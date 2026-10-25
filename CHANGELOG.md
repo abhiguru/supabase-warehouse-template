@@ -49,6 +49,11 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    objects (role and schema `pgbouncer`, database `_supabase`, three secrets) and records `POOLER_ENABLED=false`; an installation that
    ran supavisor is recorded as on. If `_supabase` holds data the clean-up is refused with a warning and asked again at the next setup.
    To use the pooler: `bash scripts/pooler.sh on` (`off`, `status`); see "Pooler (optional)" in `docs/OPERATOR_INSTALL.md`.
+10. **Migration 126 (sessions, per-source limits, break-glass).** Runs with `setup.sh`; no data is changed. Sessions now slide (30 days
+   idle, 90 days at most; before: 7 days from sign-in), so an SMS outage no longer signs everybody out within a week. If many phones share
+   the facility Wi-Fi, list its public address once as `otp_trusted_sources` (`docs/OPERATOR_INSTALL.md`, "The facility's own Wi-Fi
+   address"). Learn `bash scripts/break-glass-admin.sh <admin number>` ("Break-glass administrator sign-in") before the day SMS stops.
+   The `functions` container is recreated by setup (the `operator-otp` function changed); the app needs no change.
 
 ### Changed
 
@@ -136,6 +141,36 @@ older app build and `fas-sync`'s bulk push (named arguments, no flag) behave exa
 - Tests: `tests/duplicate_warning_124.sql` (new, registered in `tests/migrations.sh`); case 12 of `tests/concurrent_rules.sh` (two sessions: the
   second of two creates is warned and names the first; an overlapping resend gets the stored answer); `tests/grn_rates.sql` names the new last parameter.
 
+
+### Sliding sessions, per-source limits and break-glass sign-in (migration 126)
+
+New migration (`sessions_and_source_limits`), the owner decisions of 2026-10-25 for review items 2 and 20 of the production-readiness review.
+The app needs no change (it never reads the refresh token's lifetime; the one answer it treats as definitive, `Session expired`, is kept).
+
+- **Sliding sessions.** `warehouse_security.issue_session`: for an active, approved profile each refresh moves the session's end to
+  `now() + session_idle_seconds` (default 2592000, 30 days; kept between 1 hour and 365 days) but never past `refresh_sessions.created_at +
+  session_max_seconds` (default 7776000, 90 days; never below the idle time, at most 1095 days). A new sign-in ends after the idle time (was
+  a fixed 7 days). Another active profile keeps 7 days and is not extended. A session already past the absolute limit is not renewed
+  (`Session expired`, `P0001`). `update_user_status(false)` still deletes sessions; `refresh_jwt_token` is unchanged. The keys are seeded
+  once by the migration and `scripts/configure-auth.sql` (`ON CONFLICT DO NOTHING`: a rerun of setup keeps an operator's value, unlike
+  `access_seconds`, which is rewritten from `JWT_EXP`).
+- **Per-source OTP limits are `auth_config` keys.** `otp_source_hourly_sends` (30; was the literal in `operator_prepare_otp`) and
+  `otp_source_hourly_failures` (20; was the literal in `operator_verify_otp`), same defaults. New optional `otp_trusted_sources`
+  (comma separated addresses and CIDR ranges; the facility's Wi-Fi address) gets `otp_trusted_source_hourly_sends` (default 120; the larger
+  of the two limits applies). `reset_otp_limits` is unchanged (per-phone counts only). New helpers `warehouse_security.address_in_list`,
+  `otp_source_send_cap`, `otp_source_failure_cap` (not granted to any API role).
+- **Break-glass administrator sign-in.** `warehouse_security.break_glass_code(phone)` (`supabase_admin` only) makes a one-time six-digit code,
+  valid 10 minutes, for an existing active, approved administrator; `operator_verify_otp` accepts it after looking for an SMS code, once,
+  until five wrong tries, without marking the number verified or the address trusted, and writes `audit_log` rows (`break_glass`,
+  `CODE_ISSUED` and `SIGN_IN`). `scripts/break-glass-admin.sh <number>` runs it under the operator lock and prints the code once with a
+  warning. New table `warehouse_security.break_glass_codes` (keyed hash, RLS on, no API grants). The `operator-otp` edge function answers a
+  request as sent while a code is open for the number and the SMS provider refuses it (new service-role function
+  `operator_break_glass_open`), so the app reaches its code screen. The two `operator_*` bodies are patched from their latest definition
+  with the marker-count pattern; `issue_session` is replaced as a whole.
+- Tests: `tests/sessions_sliding.sql`, `tests/break_glass.sql`, `tests/otp_source_limits.sql` (new, registered in `tests/migrations.sh`, which
+  also checks that a rerun of `configure-auth.sql` keeps an operator's values); `tests/break-glass-admin.test.mjs` and a new case in
+  `tests/operator-lock.test.mjs` for the script; new cases in `tests/operator-otp-handler.test.mjs`; classification assertions in
+  `tests/role_allowlist.sql` and `tests/security_baseline.sql`.
 
 ### Earlier in this release (not yet tagged)
 

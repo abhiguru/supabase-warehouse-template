@@ -306,6 +306,15 @@ it; only `functions` can.
   refusal, not silence.
 - **A user cannot get a code because someone used up the limits of their number**: clear that phone's counters
   with `warehouse_security.reset_otp_limits` (same section).
+- **Nobody can get a code at all (MSG91 balance, DLT header or provider outage) and an administrator cannot sign in**: use the
+  break-glass sign-in. On the server, `bash scripts/break-glass-admin.sh 9XXXXXXXXX` prints a one-time code for that administrator, valid
+  10 minutes; they type it instead of the SMS code ([Break-glass administrator sign-in](OPERATOR_INSTALL.md#break-glass-administrator-sign-in)).
+  It refuses a number that is not an active administrator, and every code made and used is in `public.audit_log`
+  (`table_name = 'break_glass'`). Staff and customers wait for the SMS service to be repaired; an administrator who is signed in
+  can then help from the app. Sessions that are open keep working while they are used (30 days idle, 90 days at most).
+- **Many people on the facility Wi-Fi get "Too many OTP requests" in the same hour** (after a key rotation, or a morning when sessions ended
+  together): the Wi-Fi is one address and the limit is 30 requests an hour per address. List the facility's public address in
+  `otp_trusted_sources` (limit 120 an hour); see [The facility's own Wi-Fi address](OPERATOR_INSTALL.md#the-facilitys-own-wi-fi-address).
 
 ## Backup, USB drive and restore
 
