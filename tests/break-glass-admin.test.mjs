@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // scripts/break-glass-admin.sh with a stand-in docker: what it asks the database, what it prints, and when it refuses.
-// The real function is proved in tests/break_glass.sql against a real database.
+// The real function is proved in tests/break_glass.sql against a real database. The script prints the code to a terminal only; these
+// tests read a pipe, so they pass --to-stdout (the tty tests below run it on a pseudo-terminal with script(1) instead).
 const root = new URL('..', import.meta.url).pathname;
 
-function run(args, { answer = '', fail = '', env = {} } = {}) {
+function run(args, { answer = '', fail = '', env = {}, toStdout = true, wrap = null } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), 'warehouse-break-glass-test-'));
   try {
     const state = join(scratch, 'state');
@@ -28,7 +29,9 @@ case "$*" in
     printf '%s' "$FAKE_ANSWER" ;;
 esac
 `, { mode: 0o700 });
-    const result = spawnSync('bash', [join(root, 'scripts/break-glass-admin.sh'), ...args], {
+    const scriptArgs = [join(root, 'scripts/break-glass-admin.sh'), ...(toStdout ? ['--to-stdout'] : []), ...args];
+    const [command, commandArgs] = wrap ? wrap(scriptArgs) : ['bash', scriptArgs];
+    const result = spawnSync(command, commandArgs, {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WAREHOUSE_STATE_DIR: state, FAKE_DOCKER_LOG: log, FAKE_STDIN: sent, FAKE_ANSWER: answer, FAKE_FAIL: fail, ...env },
     });
@@ -88,4 +91,32 @@ test('refuses a missing or malformed number before it touches the database', () 
     assert.equal(result.docker, '', `no database call for ${JSON.stringify(args)}`);
     assert.equal(result.stdout, '');
   }
+});
+
+test('refuses to print the code when standard output is not a terminal, and does not touch the database', () => {
+  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\n', toStdout: false });
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, '');
+  assert.doesNotMatch(result.stderr, /482910/);
+  assert.match(result.stderr, /standard output is not a terminal/);
+  assert.match(result.stderr, /--to-stdout/);
+  assert.equal(result.docker, '', 'no database call, so no code was made');
+});
+
+const hasScript = spawnSync('script', ['--version'], { encoding: 'utf8' }).status === 0;
+test('prints the code on a terminal without any flag', { skip: !hasScript && 'script(1) is not installed' }, () => {
+  // script(1) runs the command on a pseudo-terminal and copies what it writes to its own stdout (with CR LF line ends).
+  const result = run(['9888888911'], {
+    answer: '482910\tBreak Glass Administrator\n', toStdout: false,
+    wrap: scriptArgs => ['script', ['-qec', ['bash', ...scriptArgs].map(a => `'${a}'`).join(' '), '/dev/null']],
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.split('482910').length - 1, 1, 'the code is printed once');
+  assert.match(result.stdout, /use it only when SMS is down\./);
+});
+
+test('the code screen advice names mobile data for an address at its limit', () => {
+  const result = run(['9888888911'], { answer: '482910\tBreak Glass Administrator\n' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Too many OTP requests.*switch the phone from the facility Wi-Fi to mobile data/s);
 });
