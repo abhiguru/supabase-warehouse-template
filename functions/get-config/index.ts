@@ -2,6 +2,7 @@ import { restClient } from '../_shared/supabase-rest.ts';
 import { securityHeaders } from '../_shared/security-headers.ts';
 import { validateUserAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
+import { lanOrigin } from '../_shared/lan-url.ts';
 
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
@@ -21,6 +22,9 @@ Deno.serve(async (req: Request) => {
     const settings = Object.fromEntries((settingsResult.data || []).map(row => [row.key, row.value]));
     const number = (key: string, fallback: number) => Number(settings[key]) || fallback;
     const config = configResult.data!;
+    // The LAN fallback address (plain http, owner decision of 2026-10-26), only while the operator has it on. The app uses it after a
+    // transport failure of the public address and not otherwise. get-public-config never carries it.
+    const lan = lanOrigin({ enabled: Deno.env.get('LAN_ENABLED'), address: Deno.env.get('LAN_BIND_IP'), port: Deno.env.get('LAN_HTTP_PORT') });
     return new Response(JSON.stringify({ success: true, data: {
       apiKeys: { supabase: { url: baseUrl, anonKey: Deno.env.get('SUPABASE_ANON_KEY') } },
       features: {
@@ -30,7 +34,7 @@ Deno.serve(async (req: Request) => {
         enabledFeatures: (flagsResult.data || []).filter(flag => flag.user_roles === null || flag.user_roles.includes(profile.role)).map(flag => flag.name),
       },
       environment: { name: environment, version: config.app_version, buildDate: config.build_date, region: settings.region || 'local' },
-      urls: { api: `${baseUrl}/rest/v1`, storage: `${baseUrl}/storage/v1`, realtime: `${baseUrl.replace(/^http/, 'ws')}/realtime/v1`, auth: `${baseUrl}/rest/v1/rpc` },
+      urls: { api: `${baseUrl}/rest/v1`, storage: `${baseUrl}/storage/v1`, realtime: `${baseUrl.replace(/^http/, 'ws')}/realtime/v1`, auth: `${baseUrl}/rest/v1/rpc`, ...(lan ? { lan } : {}) },
       limits: {
         otpHourlyLimit: number('otp_hourly_limit', 5), otpDailyLimit: number('otp_daily_limit', 20),
         sessionTimeout: number('session_timeout', 3600), refreshTokenExpiry: number('refresh_token_expiry', 604800),

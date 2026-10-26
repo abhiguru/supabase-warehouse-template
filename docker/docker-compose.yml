@@ -71,6 +71,74 @@ services:
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
 
+  # gateway-lan - the LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): the gateway's own image (the one built for the `gateway`
+  # service above, not a second build: an upgrade that rebuilds the gateway rebuilds this too, and the two can never be different
+  # versions) with a second server (docker/nginx/lan/gateway-lan.conf.template, kept in that image under /etc/nginx/templates-lan)
+  # that listens on plain http on the warehouse network. Phones use it only when the internet path to the public address fails. It is
+  # a Compose profile, off by default: `bash scripts/lan.sh on` writes LAN_ENABLED, LAN_BIND_IP, LAN_HTTP_PORT, LAN_CIDR and
+  # COMPOSE_PROFILES=lan to config/compose.env, and start.sh, setup.sh and the boot unit start it with the rest (start.sh and
+  # setup.sh start it apart from the others and never wait for it: a fault of the fallback is a warning there, never a stop).
+  # A separate container, so that a failed bind (the router gave the host another address) or a mistake in the LAN server cannot
+  # take the public gateway down. It publishes the host's own private address only. The default is loopback, where nothing outside
+  # the host can reach it. Docker accepts the traffic of a published port in its own firewall rules before ufw sees it, so no ufw rule
+  # is needed or has any effect: the bind address, the allow list and the Host pin of the LAN server are the controls
+  # (docs/CONTAINER_SECURITY.md, "LAN fallback").
+  gateway-lan:
+    # The tag Compose gives the image it builds for `gateway`: <project>-gateway (scripts/compose.sh passes the project name from
+    # WAREHOUSE_PROJECT_NAME). `pull_policy: never`: this tag is local, and a missing one is an error to read, not something to look for
+    # on a registry. There is no `build:` here, so nothing builds or records this service on its own (scripts/image-recipes.mjs,
+    # scripts/scan-images.sh).
+    image: ${WAREHOUSE_PROJECT_NAME:?Run setup.sh to write the project name}-gateway
+    pull_policy: never
+    restart: unless-stopped
+    profiles: ["lan"]
+    logging: *default-logging
+    # As the gateway: read-only root, no capability, tmpfs for the pid file and the rendered configuration.
+    read_only: true
+    tmpfs:
+      - /tmp:size=4m
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0755,size=1m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
+    # /health is answered by nginx itself (docker/nginx/lan/gateway-lan.conf.template), to the container only.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    ports:
+      # LAN_BIND_IP is the host's own private address (scripts/lan.sh refuses any other); loopback while the LAN is off.
+      - "${LAN_BIND_IP:-127.0.0.1}:${LAN_HTTP_PORT:-8080}:8080/tcp"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # The image's entrypoint renders the templates of this directory (the LAN server and the http-level template) instead of the
+      # public ones. docker/nginx/docker-entrypoint.d/18-require-env.sh then requires LAN_CIDR (the allow list), LAN_BIND_IP and
+      # LAN_HTTP_PORT (the Host the server answers to): empty here while the LAN is off, and the container refuses to start then.
+      # GATEWAY_ROLE says the same thing a second way. The other three are the gateway's.
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-lan
+      GATEWAY_ROLE: lan
+      LAN_CIDR: ${LAN_CIDR:-}
+      LAN_BIND_IP: ${LAN_BIND_IP:-}
+      LAN_HTTP_PORT: ${LAN_HTTP_PORT:-}
+      ANON_KEY: ${ANON_KEY:?Set the anon key}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
+
   rest:
     # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".
     image: postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df
@@ -203,6 +271,11 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       PDF_RENDERER_URL: http://pdf-renderer:3000
+      # The LAN fallback address (scripts/lan.sh): get-config offers it to signed-in phones as urls.lan. get-public-config never
+      # does. ":-" so a state from before these lines still renders.
+      LAN_ENABLED: ${LAN_ENABLED:-}
+      LAN_BIND_IP: ${LAN_BIND_IP:-}
+      LAN_HTTP_PORT: ${LAN_HTTP_PORT:-}
       VERIFY_JWT: "true"
       SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
       APP_ENV: ${APP_ENV:?Operator environment required}

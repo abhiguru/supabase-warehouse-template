@@ -61,7 +61,8 @@ address pools (about 30 networks); `docker network prune` removes unused ones.
 ## Gateway limits and routes
 
 The gateway is plain nginx (`docker/nginx`; Kong until 2026-10). Only it publishes a host port, on loopback
-(`127.0.0.1:${GATEWAY_HTTP_PORT}`, default 18000; `KONG_HTTP_PORT`, the name it had, is still read). The Cloudflare Tunnel
+(`127.0.0.1:${GATEWAY_HTTP_PORT}`, default 18000; `KONG_HTTP_PORT`, the name it had, is still read), apart from the optional
+`gateway-lan` service, which publishes the host's own private address while the LAN fallback is on ([LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)). The Cloudflare Tunnel
 connector is the only ingress: nginx reads the client address from `CF-Connecting-IP` (`real_ip_header`) and trusts it
 only from the loopback hop and Docker's private ranges, with recursion off. That trust is written in the public server only
 (`templates/gateway.conf.template`), never in the routes file `api-locations.conf` that a second server shares, so a server
@@ -96,15 +97,20 @@ the key itself is checked inside `record_sensor_batch` against a SHA-256 in `war
 The mobile app reads the 401 answer of the key check: `{"message":"Unauthorized"}` for a key the gateway does not know (what
 every installed app holds after `rotate-keys.sh`) and `{"message":"No API key found in request"}` for none; both end the app's
 session and reload the configuration (`GATEWAY_KEY_REJECTIONS` in the app's `src/config/supabaseConfig.ts`). Do not change those words.
+**That is the rule for the public path only.** A 401 with these messages that arrives over the LAN path (the answer carries
+`X-Warehouse-Path: lan`) must never end the session: it means the `gateway-lan` container holds other keys than the installation (a
+container that was not recreated after `rotate-keys.sh`), and ending the session there would sign the phone out at the moment it cannot
+sign in again, because sign-in needs the internet. The app marks the LAN path unusable and goes on (see "LAN fallback" below).
 
 **The configuration is not filled in by a shell.** The image's entrypoint (`/docker-entrypoint.d/20-envsubst-on-templates.sh`)
 puts the three values in the two templates with `envsubst`, restricted by `NGINX_ENVSUBST_FILTER` to `CORS_ALLOWED_ORIGIN`,
-`ANON_KEY` and `SERVICE_ROLE_KEY`; every other `$` in the templates is nginx's own. Before it,
+`ANON_KEY` and `SERVICE_ROLE_KEY` (and `LAN_CIDR`, `LAN_BIND_IP` and `LAN_HTTP_PORT`, which only the `gateway-lan` container has); every other `$` in the templates is nginx's own. Before it,
 `docker-entrypoint.d/18-require-env.sh` stops the container with a message if one of the three is empty or holds a character
 outside letters, digits and `. _ ~ : / -` (a quote, a semicolon, a dollar sign or a space would change the configuration), or
-if the origin is not `http(s)://host`. This closes the earlier open item about Kong's `eval` of `kong.yml`. A running gateway
-keeps the configuration it started with: a change to `docker/nginx` needs the image rebuilt and the container recreated
-(`bash setup.sh --operator ...`, or `bash scripts/build-images.sh` and `bash scripts/compose.sh up -d --force-recreate --wait gateway`).
+if the origin is not `http(s)://host`; in the `gateway-lan` container (the one that reads the LAN template directory, `GATEWAY_ROLE=lan`) it also refuses a `LAN_CIDR` that is not one private IPv4 range, a `LAN_BIND_IP` that is not one private IPv4 address and a `LAN_HTTP_PORT` outside 1024 to 65535. This closes the earlier open item about Kong's `eval` of `kong.yml`. A running gateway
+keeps the configuration it started with, **and so does `gateway-lan`, which is the same image**: a change to `docker/nginx` needs the image rebuilt and both containers recreated
+(`bash setup.sh --operator ...`, or `bash scripts/build-images.sh` and `bash scripts/compose.sh up -d --force-recreate --wait gateway`, plus
+`bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps gateway-lan` while the LAN fallback is on; a key rotation needs the same, `rotate-keys.sh` does it).
 
 **Hardening.** The container runs as the `nginx` user (101) with `cap_drop: [ALL]`, `no-new-privileges`, a read-only root file
 system and two small tmpfs (`/tmp` for the pid file, and the directory the templates are rendered into), one worker, 128 MB and
@@ -177,6 +183,119 @@ client address and has no hourly window**. Since the gateway became nginx (2026-
 
 `tests/gateway-config.test.mjs` pins the table above, the arithmetic and this wording; `tests/gateway-nginx.test.mjs` runs the
 real image against stand-in upstreams and checks that a burst of 1800 is passed and the next request is refused (the request that opens the bucket makes it 1801), and that another address is not affected.
+
+## LAN fallback (gateway-lan)
+
+**Owner decision of 2026-10-26: cleartext to a private LAN address, fallback only.** This amends the rule of the app's decision log
+(D24) that the app never uses cleartext http: for exactly one case, an internet outage, the app may talk plain http to the server's own
+private address on the warehouse network. The app uses it only after a transport failure of the public https address, and returns to
+the public address when that works again. No other cleartext is allowed: the app still refuses an `http` address anywhere else.
+
+**What runs.** The optional Compose service `gateway-lan` (profile `lan`, switched by `bash scripts/lan.sh on|off`, off by default).
+It is **the gateway's own image**, not a second build: the image holds the public server in `/etc/nginx/templates` and the LAN server
+(`docker/nginx/lan/gateway-lan.conf.template`) with a copy of the http-level template in `/etc/nginx/templates-lan`, and the
+service tells the image's entrypoint to render that directory (`NGINX_ENVSUBST_TEMPLATE_DIR`). So an upgrade that rebuilds the
+gateway rebuilds this too, nothing is mounted from the checkout, and the two containers can never run different versions of the
+routes. It has the same hardening and limits as the gateway (read-only root, no capability, 128 MB, half a CPU) and is on `default`
+only. It listens on 8080 inside the container, plain http, no TLS and no HTTP/2, and is published on
+`${LAN_BIND_IP}:${LAN_HTTP_PORT}` only; the default bind is loopback, where nothing outside the host can reach it. A separate
+container, so a failed bind (the router gave the host another address) or a mistake in the LAN server cannot take the public gateway
+down; `scripts/compose.sh` also leaves the profile out of a command while the host does not have the address, so the public services
+still start. **A fault of the fallback never stops a start, a setup, an upgrade or a restore**: `start.sh`, `setup.sh` and `restore.sh`
+wait for the public services only and start `gateway-lan` on its own afterwards (`scripts/lan.sh start`), where a failure is a
+warning, and the health check (`doctor --local`) counts it as a warning like an optional service.
+
+**Trust boundary.**
+
+- *No trust in a header for the client address.* The LAN server has no `set_real_ip_from` or `real_ip_header`; the client address is the
+  connection's. Every route that passes an address on sets `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For` from `$remote_addr`
+  (the routes file is shared with the public server, which takes the address from the tunnel hop instead), so a phone cannot choose the
+  address that the rate limits and the per-source OTP limits of `operator-otp` and `central-exchange` see. The limits are per phone, not
+  per facility. A request that names another address in a header gets nothing from it (`tests/gateway-nginx.test.mjs` forges the
+  headers and reads what the upstream sees).
+- *The same checks.* One routes file: the `apikey` check on REST, the 10 / 50 MB body limits, the 1800 and 100 buckets, the 404 for a
+  dot segment, the error bodies the app reads. The functions and PostgREST check tokens, sessions and roles exactly as they do for
+  the public path.
+- *Who may connect.* Four layers: the published address (the host's own private address, never `0.0.0.0`), `allow ${LAN_CIDR}; deny all;`
+  inside the server (a private range, checked by `18-require-env.sh`, which refuses to start the container without one), the Host pin
+  (below), and, if the host needs it, a filter of its own in Docker's `DOCKER-USER` chain (below). The allow-list is checked after the
+  rewrite-phase answers of the routes (the 401 of the key check, the 404 of an unknown path), which show a client nothing it could use;
+  a refused client gets 403 and no upstream is reached.
+- *The Host header is pinned* (owner decision of 2026-10-26). The LAN server answers only when the request's `Host` is `LAN_BIND_IP` or
+  `LAN_BIND_IP:LAN_HTTP_PORT` (the app addresses the server by its IP address, so a phone writes exactly that), plus `127.0.0.1:8080` and
+  `localhost:8080` for the container's own health check. Any other Host is a 404 (the JSON body of any unknown path, with
+  `X-Warehouse-Path: lan`) answered before the location, the allow list and any rate-limit bucket, so nothing reaches an upstream. This
+  closes DNS rebinding: a web page in a browser on the Wi-Fi that was moved onto the server's address by its own DNS name carries that
+  name as Host and reads nothing from the API. It is a `map` on `$http_host` in the LAN template, with the two values written into it at
+  start by the entrypoint. Do not forward `LAN_HTTP_PORT` on the router: some routers re-address forwarded traffic to their own LAN
+  address, which is inside `LAN_CIDR`.
+- *`/health`* answers the container's own check only, as on the public server.
+- *The path is named.* Every API answer carries `X-Warehouse-Path: lan` (the public server sends `public`), which the app shows and
+  `doctor` and the checker use to tell the two listeners apart. It is on the answers the gateway makes itself too: 401, 403, 404, 413,
+  429, 502, 503, 504 and the preflight. Answers that Cloudflare makes (530, 52x) do not carry it.
+
+**The firewall of the host.** Nothing needs to be added, and no ufw command helps. Docker puts its own FORWARD rules (`DOCKER-USER`,
+then `DOCKER`) in front of ufw's and accepts the traffic of a published port there, so ufw rules, incoming or routed
+(`ufw default deny routed` included), never see these packets. The controls that count are the bind address and the allow-list of the
+LAN server. A host that must filter Docker-published traffic itself does it in the `DOCKER-USER` chain (Docker documents this under
+"Packet filtering and firewalls"), where the packet has already been translated: its destination is the container's address and port
+8080, so a rule has to name the original address and port with conntrack. For example, to drop connections to this published address
+from outside the warehouse network (default iptables firewall backend; adjust the address, port and range to `lan.sh status`; rules in
+`DOCKER-USER` are not saved across a reboot by Docker, so the host's own firewall tooling has to restore them):
+
+```
+sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdst 192.168.1.20 --ctorigdstport 8080 ! -s 192.168.1.0/24 -j DROP
+```
+
+**The source address (an assumption).** The allow-list, the per-phone limits and the per-source OTP limits all rest on `$remote_addr`
+being the phone's own address. That holds on the documented baseline: a **rootful Docker Engine with its iptables rules**, where a port
+published on a specific host address is forwarded by address translation in the host's nat table and the packets keep their source (the
+userland proxy only carries loopback and hairpin traffic). It does not hold with rootless Docker (its port driver presents every phone as
+the bridge's address), with `"iptables": false` in `/etc/docker/daemon.json`, or with Docker Desktop: every phone then appears as one
+Docker address, which a normal `LAN_CIDR` answers 403, and one that overlaps Docker's own networks (`192.168.0.0/16` against Compose's
+`192.168.x.0/20` pools, or `172.16.0.0/12`) lets every device in and gives them all one rate-limit bucket. `doctor` and `lan.sh` warn about
+rootless Docker, Docker Desktop, `"iptables": false` and a `LAN_CIDR` that overlaps a Docker network of the installation. A host
+that probes from itself cannot see the phone's side, so also compare one phone's Wi-Fi address with `LAN_CIDR`.
+
+**The keys.** `gateway-lan` holds the API keys in its configuration, like the gateway (the map of the `apikey` header, written at
+start). After `rotate-keys.sh` a container that was not recreated still has the old keys and answers the gateway's
+`401 {"message":"Unauthorized"}` to every REST request of every phone, while `get-public-config`, which has no key check, keeps
+answering. `rotate-keys.sh` therefore recreates `gateway-lan` whenever a container of it exists (a failure there is a warning that
+names the repair), and `doctor` and the checker (`lan_http_down`) send the anon key of `compose.env` to the LAN address on `GET /rest/v1/`
+and fail on the gateway's 401. **The app must not end its session on a 401 that arrives over the LAN path**: that is what makes this
+fault dangerous (see the note under "Gateway limits and routes").
+
+**The exposure the owner accepted** (decision of 2026-10-26; stated in full here). Plain http means that, while a phone is on
+this path, its access token (one hour), any refresh token it exchanges, and every photo and document it sends or receives are readable by
+anyone who can see the warehouse Wi-Fi traffic. In particular:
+
+- **A token that is read works from anywhere, not only on the LAN.** Access tokens and the session check are not bound to an origin, so a
+  token sniffed on the Wi-Fi works through the public address as well, including from the attacker's own mobile data during the
+  facility's outage, until it ends (one hour).
+- **A stolen refresh token keeps a session alive.** The refresh call goes over REST, so a phone uses the LAN path for it during an outage,
+  and its answer carries the next refresh token. With sliding sessions (30 days idle, 90 days at most), a thief who refreshes first keeps
+  the session going until the real phone presents the token it had; reuse detection then deletes the session for both. The same
+  mechanism lets anyone on the Wi-Fi sign real phones out during an outage, when they cannot sign back in.
+- **Administrator tokens carry administrator rights.** A sniffed administrator token can do whatever the administrator can, until it ends.
+- **A stale saved address can send tokens to another device.** If the host's address changes (a DHCP lease) and a phone still holds the old
+  one, it would send its token to whichever device now has that address, unless the app checks first. The app that uses the fallback
+  (not released yet) is to probe the saved address without credentials before it sends any (`GET /functions/v1/get-public-config`,
+  which must answer 200 with `X-Warehouse-Path: lan` and this installation's `instanceId`), and to check it once a day while the
+  internet is up and the phone is on Wi-Fi, so a stale address shows before the outage.
+- **A break-glass sign-in code crosses the Wi-Fi in clear** when an administrator signs in over the LAN path during an outage
+  (OPERATOR_INSTALL.md, "Break-glass administrator sign-in"): it is valid for 10 minutes and works once, so a code read from the traffic
+  is a race the administrator wins by typing it first.
+
+Mitigations that stay: refresh tokens rotate at every use and a stolen one used beside the real phone deletes the session (reuse
+detection, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#authentication-and-otp-limits)); sessions are deleted when a person is deactivated;
+the app uses the LAN address only while the public address fails; the listener answers the warehouse network only and only by its own
+address; the SMS code and the central identity token still never cross it (sign-in needs the internet, except the break-glass case
+above). The facility's Wi-Fi password is therefore a credential of this system
+([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)). Turning the fallback off
+(`bash scripts/lan.sh off`) removes the listener entirely.
+
+**Logs.** `gateway-lan` writes the gateway's access-log format (path without the query, no credential), with the phone's own address in
+front; the checker reads both logs together (`checkApiLogs`).
 
 ## Logs
 
@@ -525,7 +644,7 @@ then generate the value, existing ones gain it on the next setup, restores add i
 - The database has no `http`, `pg_net`, `pg_graphql` or `supabase_vault` extension and no pgjwt; the database has no way to
   send a web request. A session's access token is signed by `warehouse_security.jwt_sign_hs256` (pgcrypto's `hmac`), which
   no API role can execute. `PGRST_DB_SCHEMAS` is `public` (an old `public,storage` is rewritten by `setup.sh` and the restore scripts), so the REST API cannot reach the `storage` schema, and `PGRST_OPENAPI_MODE=disabled`: `/rest/v1/` serves no OpenAPI document.
-- `no-new-privileges`, dropped capabilities and a read-only root filesystem are set on the gateway, the PDF renderer and the
+- `no-new-privileges`, dropped capabilities and a read-only root filesystem are set on the gateway, `gateway-lan`, the PDF renderer and the
   sensor bridge. The other services have not been trialled, so they are not hardened this way.
 - **CUPS runs privileged** (optional profile). It also accepts print jobs from any container on `default` without a login;
   no function reaches it while the router refuses the printing functions.

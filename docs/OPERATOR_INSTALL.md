@@ -16,6 +16,7 @@ Sections: [host prerequisites](#host-prerequisites),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [central sign-in](#central-sign-in),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
 [ordinary operation](#ordinary-operation), [retention](#retention),
 [rotate signing keys](#rotate-signing-keys),
@@ -223,7 +224,7 @@ anything when no address pool is free), starts only the database, applies the mi
 storage, bootstraps the administrator, starts every service with `--wait` and runs the local doctor. The gateway listens
 on `127.0.0.1:18000` only; the database, CUPS and the sensor bridge are never published.
 
-Optional services are Compose profiles that setup does not start: `printing`, `pooler` and `sensors`. The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
+Optional services are Compose profiles that setup does not start: `printing`, `pooler`, `sensors` and `lan` (the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network), switched with `bash scripts/lan.sh on|off|status`; once it is on, setup and start bring it up too, apart from the services they wait for, so that a fault of the fallback is a warning and never stops them). The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
 bridge; set up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
 `node scripts/set-capability.mjs sensors on` and a new `db:backup`).
 
@@ -642,6 +643,15 @@ Give the code to that administrator in person or by a call you trust. On their p
 app shows its code screen even while the SMS provider refuses the request, as long as the break-glass code is open), and type the break-glass
 code instead of the SMS code.
 
+**An administrator can sign in over the LAN fallback with a break-glass code.** An internet outage is exactly when SMS fails, so the
+sign-in functions `operator-otp` (the request for a code and the verification) may be used over the
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network) as well: the provider cannot be reached (the name does not resolve, the
+connection is refused or times out; it can take up to 10 seconds to give up), and while a break-glass code is open for that number the
+request is answered "OTP sent successfully" anyway, as above, so the app reaches its code screen. Only that sign-in goes over the LAN: the
+association's sign-in (`central-exchange`) needs the internet, and a phone that is not an administrator's gets "SMS delivery unavailable"
+and cannot sign in until the line is back. The cost is the one of the fallback: the code crosses the Wi-Fi in clear. It is valid for
+10 minutes and works once, so give it only to the administrator who is standing there, and make it just before it is typed.
+
 Making the code also clears that number's own per-phone request counters (the same two statements as `reset_otp_limits`, [above](#authentication-and-otp-limits)),
 because they fill during an SMS outage: a request the provider refused is not given back, so an administrator who tried five times before
 calling is at the hourly limit and would be refused the code screen. It does **not** clear the limits of the address or of the warehouse.
@@ -875,7 +885,9 @@ by hand (a unit that runs as the installation user, not root (`User=` and `Group
 restore on a new host then needs your private copy or a new tunnel.
 
 If the LAN router cannot hairpin to the public hostname, configure local DNS
-for the same name; the app must always use the same HTTPS origin.
+for the same name; the app's own address is always this HTTPS origin. The only
+other address a phone may use is the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
+which it tries after this one has failed and never otherwise.
 
 ### Cloudflare zone settings
 
@@ -898,6 +910,123 @@ zone, by someone who never touches the warehouse server, is enough.
   `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
   or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
 
+## LAN fallback (plain http on the warehouse network)
+
+An internet outage stops the public path (the Cloudflare Tunnel) and, with it, the app on every phone, although the server and the
+phones are on the same Wi-Fi. The LAN fallback gives the phones a second address for the same server: the server's own address on the
+warehouse network, over **plain http**. The app is built to try the public address first and to use the LAN address only after the
+public one has failed, and to return to the public address by itself when the internet is back. Owner decision of 2026-10-26: no
+certificate, no DNS record and no router setting are involved, and this reverses the earlier rule that the app never uses cleartext, for
+this one case.
+
+**The app that uses it ships separately and is not released yet.** Until a version of the app that has it is installed on the phones,
+turning the fallback on only opens the listener: nothing uses it, and the exposure below is not yet incurred, only the listener is there.
+(The app's version number will be named here when it is released.)
+
+- **What it is.** A second nginx container, `gateway-lan` (Compose profile `lan`, off by default), that is **the gateway's own image**
+  (`docker/nginx`; it has no build of its own, so an upgrade that rebuilds the gateway rebuilds this too). It listens on port 8080 inside
+  the container and is published on the host's **own private address** only (`LAN_BIND_IP:LAN_HTTP_PORT`). It has the same key check,
+  body limits and rate limits as the public gateway, with differences that matter: it takes the client address from the connection,
+  never from a header (the public gateway trusts the tunnel's `CF-Connecting-IP`), so the limits and the sign-in functions see each
+  phone's own address; it answers the warehouse network only (`LAN_CIDR`); it answers only a request whose `Host` is the server's own
+  LAN address (see below); and every answer carries `X-Warehouse-Path: lan`, which is how the app and `doctor` tell the two paths apart.
+- **What it is not.** It is not a way to sign in with an SMS code or through the association: those need the internet, so a phone that
+  is not signed in cannot sign in during an outage, with one exception: **an administrator can sign in over the LAN fallback with a
+  break-glass code** ([Break-glass administrator sign-in](#break-glass-administrator-sign-in)). It does not publish anything to the
+  internet, and the tunnel and the public gateway are unchanged (the public gateway has no LAN listener at all).
+- **The exposure you accept** (owner decision of 2026-10-26). While a phone uses this path, its access token (one hour) and any
+  refresh token it exchanges cross the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has
+  the Wi-Fi password, or is on the network, can read them. That has these consequences:
+  - **A token that is read works from anywhere, not only on the LAN**, including from the attacker's own mobile data during your outage,
+    until it ends.
+  - **A stolen refresh token keeps a session alive**: a thief who refreshes first keeps the session going (30 days idle, 90 at most)
+    until the real phone presents the token it had; reuse detection then ends the session for both. The same mechanism lets anyone on
+    the Wi-Fi **sign phones out during an outage**, when they cannot sign back in.
+  - **Administrator tokens carry administrator rights.**
+  - **A stale saved address can send tokens to another device**: if the host's address changes and a phone still holds the old one, the
+    app is to check the address before it sends anything (and once a day while the internet is up), but a phone that was offline since
+    the change has no way to know.
+  - What stays in force: a refresh token is replaced at every use and a stolen one used beside the real phone ends that session (reuse
+    detection), sessions are deleted when a person is deactivated, the LAN path is used only while the public path fails, the listener
+    refuses every address outside `LAN_CIDR` and every `Host` but its own address, and it is published on that address only.
+  Protect the Wi-Fi like a key: a strong password that visitors do not get (give them a guest network that cannot reach the server),
+  and turn the fallback off with `bash scripts/lan.sh off` if the facility does not want this exposure. The full statement is in
+  [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan).
+
+Steps (the stack must be running; the host needs a private address on the warehouse network):
+
+```bash
+export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+bash scripts/lan.sh on auto        # the private address of the interface with the default route; or: bash scripts/lan.sh on 192.168.1.20
+bash scripts/lan.sh status         # the address for the app, whether the host still has it, the container
+bash scripts/lan.sh off            # removes the container and the variables
+```
+
+`on` takes `[<address>|auto] [--cidr <range>] [--port <n>]`. It refuses an address that is not private (10.x.x.x, 172.16-31.x.x,
+192.168.x.x) or is not on an interface of this host, a range outside those blocks or without the host in it, a port outside
+1024-65535, and a port something else holds (one held by this installation's own `gateway-lan` is fine, so it is safe to repeat; a rerun
+that fails puts the earlier settings back and starts the service with them again). The range defaults to the network of the interface
+(`192.168.1.0/24` for `192.168.1.20/24`) and the port to 8080, or to the one already set. It writes `LAN_ENABLED`, `LAN_BIND_IP`,
+`LAN_HTTP_PORT`, `LAN_CIDR` and `COMPOSE_PROFILES=lan` (added beside any profile already listed) to `config/compose.env`, starts
+`gateway-lan`, recreates the function runtime (a few seconds; it now offers the address to signed-in phones), runs the LAN checks of
+`doctor` and prints, for example:
+
+```
+LAN fallback: 192.168.1.20:8080 on ens33, allowing 192.168.1.0/24
+LAN address for the app: http://192.168.1.20:8080
+The app that uses this address ships separately and is not released yet: until a version that has the fallback is installed on the phones, turning it on only opens the listener.
+Allowed clients: 192.168.1.0/24. Once the app has it, phones use this address only when the public address fails; sign-in still needs the internet, except that an administrator can sign in over it with a break-glass code ...
+Check one phone: on the warehouse Wi-Fi its address ... must be inside 192.168.1.0/24. ... Do not forward port 8080 on the router.
+Host firewall: nothing to add. ufw rules, incoming or routed, do not apply to a port that Docker publishes ... The controls are the bind address (the container is published on 192.168.1.20 only) and the allow-list of the LAN server (192.168.1.0/24 only). ...
+Reserve this address for the host in the router (DHCP reservation). ...
+```
+
+1. **Reserve the address.** Give the host a DHCP reservation in the router, so its address stays the same. If it changes anyway (a power
+   cut and a new lease), the container cannot be published on the old one: `compose.sh` leaves the `lan` profile out of the command
+   and says so, the public services start as usual, `bash scripts/lan.sh status` and `doctor` print a warning, and the checker alerts
+   `lan_ip_changed` ([MONITORING.md](MONITORING.md)). Run `bash scripts/lan.sh on auto` again. The phones learn the new address the
+   next time they connect over the internet (the app refreshes it from `get-config`); a phone that has been offline since the change
+   cannot use the fallback until then.
+2. **The firewall: there is nothing to add.** ufw does not see the traffic of a port that Docker publishes: Docker accepts it in its own
+   rules first, so **no `ufw allow` or `ufw route` rule is needed, and none would have any effect** (that includes
+   `ufw default deny routed`). The controls are the bind address (the container is published on that one address, not on every
+   interface) and the allow-list inside the LAN server (that one network). A host that must filter Docker-published traffic itself does
+   it in Docker's `DOCKER-USER` chain, where the packet's destination is already the container's; the example line is in
+   [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan). Check that the router does not give guests or other VLANs
+   a route to the host; a Wi-Fi with client isolation will not reach the server at all. **Do not forward `LAN_HTTP_PORT` on the
+   router**: some routers re-address forwarded traffic to their own LAN address, which is inside `LAN_CIDR`.
+3. **Check one phone.** `doctor` and `lan.sh` connect from the host, whose own address is always inside `LAN_CIDR`, so they cannot see
+   a range that no phone is in (a narrow `--cidr`, a Wi-Fi on another subnet than the server's, an interface that is a /31 or /32: they
+   warn about a range of fewer than 4 addresses). Look at the Wi-Fi details of one phone: its address must be inside `LAN_CIDR`
+   (`bash scripts/lan.sh status` prints it). A phone outside it is answered `403` and never reaches the server. The app is to check the
+   address while the internet is up and show the result in Settings, which is the check that tells before the outage.
+4. **The server's address is the Host the phones write.** The listener answers only a request whose `Host` header is
+   `LAN_BIND_IP` or `LAN_BIND_IP:LAN_HTTP_PORT` (anything else gets `404`), because the app addresses the server by its IP address.
+   A browser, a `curl` that names the host by a DNS name, or a phone that was given a name for the server, gets 404: use the address
+   `lan.sh status` prints.
+5. **Reading the address.** `bash scripts/lan.sh status` and `node scripts/doctor.mjs --local` print `LAN address for the app: http://<address>:<port>`.
+   The app is given it by the server (a signed-in phone has it after its next successful `get-config`); in Settings it shows the
+   address and the path it is on, "Connected via: warehouse network" or "internet" (the app change ships separately, and the address can be typed there when the saved one is stale).
+6. **Several facilities on one host** each need their own address or port: `--port` (the public gateway ports are loopback).
+7. **Backups and restore.** `compose.env` is in every backup, so a restore brings the LAN lines back. On a new host that does not have
+   the address, the guard above leaves the container out until you run `lan.sh on auto` there.
+8. **Upgrades, key rotation and restarts.** `gateway-lan` is the gateway's image, so `setup.sh` and `upgrade.sh` rebuild and recreate both
+   together. They (and `start.sh` and `restore.sh`) **never stop for the fallback**: they wait for the public services only and start
+   `gateway-lan` afterwards on its own (`bash scripts/lan.sh start`), where a fault is a warning (the port is taken by another program,
+   the container is unhealthy). `bash rotate-keys.sh --yes` recreates `gateway-lan` with the new keys; if that fails it says so and names
+   the repair, because a container with the old keys refuses every REST request of every phone on the LAN path while the rest of the
+   fallback looks fine. `doctor` and the checker send the installation's anon key to the LAN address to catch exactly that.
+9. **Docker.** The fallback assumes a rootful Docker Engine with its iptables rules (the default), where a phone's packets keep their
+   source address. Rootless Docker, `"iptables": false` and Docker Desktop do not, and `doctor --lan` warns about them and about a
+   `LAN_CIDR` that overlaps one of Docker's own networks ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan)).
+
+`node scripts/doctor.mjs --lan` runs only the LAN checks: the address is on this host, the container is published on that address and
+nothing else, `http://<address>:<port>/functions/v1/get-public-config` answers from this host with this installation's `instanceId` and
+`X-Warehouse-Path: lan`, and a REST request with this installation's anon key (`GET /rest/v1/`) is not refused by the gateway's key
+check. `doctor --local` (what `start.sh`, `setup.sh` and `upgrade.sh` run) shows a fault of the fallback as a warning, so a router
+problem or a taken port never stops a start or an upgrade; the full `node scripts/doctor.mjs` and `--lan` fail on it.
+If it does not work, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-app-says-the-lan-address-is-unreachable).
+
 ## External doctor
 
 ```bash
@@ -908,7 +1037,8 @@ node scripts/doctor.mjs
 The external doctor repeats the local health check, then fetches the public configuration through the canonical origin
 (no redirects allowed) and verifies that the anon key, instance ID and canonical origin it returns are this installation's.
 Repeat it from warehouse Wi-Fi and from cellular data. `doctor --local` covers the loopback gateway only;
-`--host-preflight` and `--preflight` are the checks setup runs before touching anything.
+`--host-preflight` and `--preflight` are the checks setup runs before touching anything; `--lan` runs only the checks of the
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network).
 
 If the external doctor reports `fetch failed` right after you routed the hostname, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address).
@@ -1061,7 +1191,9 @@ operator lock, requires a healthy database, and then:
    never as an argument;
 3. renames the staged file over `config/compose.env` (mode 0600);
 4. recreates the running key consumers (`db gateway rest storage functions`, plus `supavisor` when the pooler is on (`POOLER_ENABLED=true` and
-   running) with `--force-recreate --wait`, and runs `node scripts/doctor.mjs --local`.
+   running) with `--force-recreate --wait`; then, apart from them, the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)
+   container `gateway-lan` when one exists, which holds the keys too (a failure there is a warning that names the repair: the rotation
+   itself stands); and runs `node scripts/doctor.mjs --local`.
 
 Consequences: every signed-in device is logged out and must complete OTP login again; any copied anon key is invalid and
 `get-public-config` advertises the new one; the service key changes. A failure before step 3 leaves the file and database

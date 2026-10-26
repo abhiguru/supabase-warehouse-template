@@ -282,7 +282,13 @@ test('while a break-glass code is open for the number, a request the provider co
   // The operator made a code with scripts/break-glass-admin.sh because SMS does not work. The app only reaches its code screen when the
   // request succeeds, so the refusal of the provider is not shown; the challenge is still sealed as undelivered and no code is returned.
   const normal = await bodyOf(await harness().call('request', phone));
+  // The cases that matter during an internet outage (the LAN fallback, WS-L of the production-readiness review): the provider cannot be reached at
+  // all, which is not a refusal. DNS fails, the connection is refused, or the request times out; fetch rejects in each (a TypeError "fetch failed"
+  // with the reason in its cause, or a TimeoutError). deliverOtp turns every rejection into a Msg91DeliveryError, and the break-glass answer covers all.
+  const unreachable = code => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
   for (const overrides of [{ msg91: Response.json({ type: 'error' }, { status: 401 }) }, { msg91: new TypeError('network down') },
+    { msg91: unreachable('ENOTFOUND') }, { msg91: unreachable('ECONNREFUSED') }, { msg91: unreachable('ENETUNREACH') },
+    { msg91: new DOMException('The operation timed out.', 'TimeoutError') }, { msg91: new DOMException('The operation was aborted.', 'AbortError') },
     { operator_sms_config: { success: false, code: 'unavailable' } }]) {
     const { calls, call } = harness({ operator_break_glass_open: true, ...overrides });
     const answered = await bodyOf(await call('request', phone));

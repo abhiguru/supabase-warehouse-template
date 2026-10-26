@@ -45,7 +45,12 @@ order, and what not to do. The commands run from the checkout with `WAREHOUSE_ST
 4. When the line is back, wait two minutes. The tunnel reconnects by itself. Check `bash scripts/tunnel.sh status` and
    `node scripts/doctor.mjs`. If the public check still fails: `sudo systemctl restart warehouse-<state name>-tunnel.service`.
 5. The app cannot save a receipt, dispatch or invoice meanwhile. Write them on paper and enter them afterwards in the order of
-   the paper numbers; check the number the app suggests against the paper before saving.
+   the paper numbers; check the number the app suggests against the paper before saving. If the
+   [LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network) is on (`bash scripts/lan.sh status`) **and the
+   phones have a version of the app that uses it (not released yet; until then it changes nothing for them)**, phones that are signed in
+   and on the warehouse Wi-Fi switch to it after the public address fails and keep working; signing in still needs the internet, except
+   for an administrator with a [break-glass code](OPERATOR_INSTALL.md#break-glass-administrator-sign-in). If they do not, see
+   [the app says the LAN address is unreachable](#the-app-says-the-lan-address-is-unreachable).
 6. Alerts that could not be sent are not sent later. After the outage run `node scripts/watch.mjs status`.
 
 ### Power cut
@@ -426,6 +431,48 @@ it; only `functions` can.
 - **`tunnel.sh install-service`: `did not start`**: read
   `journalctl -u warehouse-<state name>-tunnel.service -n 50`; a dated copy of the
   previous unit is next to it in `/etc/systemd/system/` if you need to go back.
+
+### The app says the LAN address is unreachable
+
+A version of the app that has the [LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network) (not released yet)
+uses it (plain http, `http://<address>:<port>`) only after the public address has failed. If it then says the LAN address is
+unreachable, work from the host:
+
+1. `bash scripts/lan.sh status`. It prints `LAN address for the app: http://<address>:<port>`, whether the host still has that address,
+   and the state of the `gateway-lan` container. Compare the address with the one the phone shows.
+2. **`WARNING: this host no longer has <address>`** (also the alert `lan_ip_changed` and a warning in `doctor`): the router gave the host
+   another address, usually after a power cut. Run `bash scripts/lan.sh on auto`, then give the host a DHCP reservation in the router so
+   it stays put. Phones learn the new address the next time they connect over the internet; until then a phone holds the old one.
+   Meanwhile the public path is unaffected: `compose.sh` leaves the `lan` profile out while the address is missing, so `start.sh` and
+   the boot unit start everything else.
+3. **The container is not running or not healthy**: `bash scripts/compose.sh --profile lan logs --tail 50 gateway-lan`. A message
+   starting `gateway:` is the entrypoint refusing a missing or non-private `LAN_CIDR`: run `bash scripts/lan.sh on auto` again.
+4. **The host answers but the phone does not** (`node scripts/doctor.mjs --lan` passes): doctor connects from the host, which is always
+   inside `LAN_CIDR`, so it cannot see what a phone sees. Work through these:
+   - **The phone is outside `LAN_CIDR`**: a `403` in the `gateway-lan` log (`bash scripts/compose.sh --profile lan logs --tail 50 gateway-lan`)
+     means a connection from an address outside the range arrived. Compare the phone's Wi-Fi address (the Wi-Fi details of the phone) with
+     `LAN_CIDR` (`bash scripts/lan.sh status`); if the Wi-Fi uses another range, run `bash scripts/lan.sh on <address> --cidr <the warehouse network>`.
+   - **The phone is on a different network or isolated**: a guest network, "AP isolation" or "client isolation" on the access point, or a
+     Wi-Fi on another subnet that the router does not route to the server. From a laptop on the same Wi-Fi:
+     `curl -s -o /dev/null -w '%{http_code}\n' http://<address>:<port>/functions/v1/hello` should print 200.
+   - **The phone holds an old address**: the router gave the host another one (`lan_ip_changed`), or the saved address is stale. Run
+     `bash scripts/lan.sh status` and compare the address; the phone learns the new one when it next connects over the internet.
+   - **The router has a port rule** for `LAN_HTTP_PORT`, or re-addresses traffic. Remove port forwarding for it.
+   - **The request names the server by a DNS name** (`404` with `{"message":"no Route matched ..."}`): the listener answers only a `Host` that
+     is the server's own address (`LAN_BIND_IP` or `LAN_BIND_IP:LAN_HTTP_PORT`). Use the address.
+   - **The host's firewall: there is nothing to add for ufw.** ufw does not see the traffic of a port that Docker publishes, so
+     `ufw default deny routed` does not block it and no `ufw route` rule helps. A host that filters Docker traffic in its `DOCKER-USER`
+     chain has a rule there that matches it: look at that chain (`sudo iptables -S DOCKER-USER`;
+     [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#lan-fallback-gateway-lan) has the form of a correct rule).
+5. **`doctor` or the alert `lan_http_down` says the LAN listener refuses the anon key** (`HTTP 401 from the gateway`, "before a key rotation"):
+   the `gateway-lan` container was not recreated after `rotate-keys.sh`, so it still has the old keys and refuses every REST request of
+   every phone. Run `bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps gateway-lan` (or `bash scripts/lan.sh on auto`),
+   then `node scripts/doctor.mjs --lan`. (`rotate-keys.sh` recreates it itself; this appears only when that step failed or a rotation
+   was done by hand.)
+6. **Every phone says it with the internet working**: the app only uses the LAN address after a transport failure of the public one, so
+   look at the public path first ([Tunnel and public address](#tunnel-and-public-address)).
+
+Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working over the internet.
 
 ## Sign-in codes
 

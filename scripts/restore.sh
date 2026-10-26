@@ -317,7 +317,9 @@ bash "$ROOT/scripts/db-roles.sh" apply
 phase='start services'
 # The restore brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
 rm -f -- "$state/config/stopped-by-operator"
-compose up -d --wait --wait-timeout 180
+# Without the LAN fallback: its faults never stop a restore (WAREHOUSE_COMPOSE_WITHOUT_LAN, scripts/compose.sh); lan.sh starts it after, as a warning.
+WAREHOUSE_COMPOSE_WITHOUT_LAN=1 compose up -d --wait --wait-timeout 180
+bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not started (message above). The public services are up.' >&2
 # Whatever the format, the restored files may carry no content type: a v5 backup holds no extended attributes, and neither
 # does a v6 backup of files that had lost theirs, or a copy of one that went through a USB archive written before archives kept
 # them. Such files would be served as application/octet-stream and no-cache. Look at up to 20 files; if any has none, set the

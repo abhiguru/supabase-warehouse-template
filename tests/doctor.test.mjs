@@ -501,3 +501,67 @@ test('free space: a new installation needs 10 GiB; a start only warns below 10 G
   const doctor = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   assert.match(doctor, /freeSpaceVerdict\(Number\(fs\.bavail\) \* Number\(fs\.bsize\), \{ newInstall: hostPreflight \}\)/);
 });
+
+// ---- the LAN fallback checks (scripts/lan.mjs, lanChecks), as doctor reports them ---------------------------------------------------
+import { lanDoctor, lanReport } from '../scripts/doctor.mjs';
+
+const LAN_HOST = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
+const LAN_ENV = { LAN_ENABLED: 'true', LAN_BIND_IP: '192.168.1.52', LAN_HTTP_PORT: '8080', LAN_CIDR: '192.168.1.0/24', COMPOSE_PROFILES: 'lan', WAREHOUSE_PROJECT_NAME: 'warehouse-test', ANON_KEY: 'unit.anon.key' };
+const LAN_ANSWER = { ok: true, status: 200, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ success: true, data: { instanceId: 'iid-1' } }) };
+const lanOptions = (over = {}) => ({ interfaces: LAN_HOST, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }), fetchImpl: async () => LAN_ANSWER, readText: () => '', ...over });
+
+test('doctor LAN report: nothing while off; the address line while it works; the failures and warnings when it does not', async () => {
+  assert.deepEqual(await lanReport({ ...LAN_ENV, LAN_ENABLED: 'false' }, 'iid-1', lanOptions()), { failures: [], warnings: [], address: '' });
+  assert.deepEqual(await lanReport({}, 'iid-1', lanOptions()), { failures: [], warnings: [], address: '' });
+  assert.deepEqual(await lanReport(LAN_ENV, 'iid-1', lanOptions()), { failures: [], warnings: [], address: 'LAN address for the app: http://192.168.1.52:8080' });
+  const gone = await lanReport(LAN_ENV, 'iid-1', lanOptions({ interfaces: [] }));
+  assert.equal(gone.address, 'LAN address for the app: http://192.168.1.52:8080', 'the address is still printed, so the operator sees what the phones have saved');
+  assert.match(gone.failures[0], /LAN_BIND_IP 192\.168\.1\.52 is not an address of this host \(it has no IPv4 address\)/);
+  const silent = await lanReport(LAN_ENV, 'iid-1', lanOptions({ fetchImpl: async () => { throw new Error('boom'); } }));
+  assert.match(silent.failures[0], /does not answer from this host \(boom\)/);
+  const wrongPublisher = await lanReport(LAN_ENV, 'iid-1', lanOptions({ run: () => ({ ok: true, output: '0.0.0.0:8080->8080/tcp\n' }) }));
+  assert.match(wrongPublisher.failures[0], /not only on 192\.168\.1\.52:8080/);
+  const noDocker = await lanReport(LAN_ENV, 'iid-1', lanOptions({ run: () => ({ ok: false, output: '' }) }));
+  assert.deepEqual([noDocker.failures.length, noDocker.warnings.length], [0, 1]);
+});
+
+test('doctor --lan: the address and a closing line when it works; an error naming each failure when it does not; a hint while it is off', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'doctor-lan-'));
+  const saved = process.env.WAREHOUSE_STATE_DIR;
+  try {
+    const state = join(scratch, 'state');
+    const provider = join(scratch, 'provider.env');
+    writeFileSync(provider, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=isolated-no-delivery-key\nMSG91_TEMPLATE_ID=000000000000000000000001\nMSG91_PE_ID=1\nMSG91_SENDER_ID=CHECK\n', { mode: 0o600 });
+    configure(new URL('..', import.meta.url).pathname, { stateDir: state, apiUrl: 'https://api.example.test', company: 'Acme', providerEnv: provider });
+    process.env.WAREHOUSE_STATE_DIR = state;
+    const manifest = JSON.parse(readFileSync(join(state, 'public/instance.json'), 'utf8'));
+    const answer = { ...LAN_ANSWER, json: async () => ({ success: true, data: { instanceId: manifest.instanceId } }) };
+    assert.match(await lanDoctor(lanOptions()), /^The LAN fallback is off \(LAN_ENABLED is not true in config\/compose\.env\)\. Turn it on with: bash scripts\/lan\.sh on auto$/);
+    const envPath = join(state, 'config/compose.env');
+    const base = readFileSync(envPath, 'utf8');
+    writeFileSync(envPath, `${base.replace(/^LAN_ENABLED=.*$/m, 'LAN_ENABLED=true').replace(/^LAN_BIND_IP=.*$/m, 'LAN_BIND_IP=192.168.1.52').replace(/^LAN_CIDR=.*$/m, 'LAN_CIDR=192.168.1.0/24')}COMPOSE_PROFILES=lan\n`, { mode: 0o600 });
+    assert.equal(await lanDoctor(lanOptions({ fetchImpl: async () => answer })), 'LAN address for the app: http://192.168.1.52:8080\nThe LAN fallback answers from this host as this installation.');
+    // The instance id of the manifest is the one compared.
+    await assert.rejects(lanDoctor(lanOptions()), /LAN fallback: http:\/\/192\.168\.1\.52:8080 answers, but not as this installation \(instanceId differs\)\./);
+    await assert.rejects(lanDoctor(lanOptions({ interfaces: [], fetchImpl: async () => answer })), /LAN fallback: LAN_BIND_IP 192\.168\.1\.52 is not an address of this host/);
+  } finally {
+    if (saved === undefined) delete process.env.WAREHOUSE_STATE_DIR; else process.env.WAREHOUSE_STATE_DIR = saved;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('doctor: the LAN report is made after the health check and before the local return; --local shows its faults as warnings, the full run and --lan fail on them', () => {
+  // That a service of the fallback never fails the health check itself is tested on the report that check makes (tests/watch.test.mjs, "health: the LAN
+  // fallback ... is a warning"); the order of the steps is what this test pins.
+  const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
+  const health = source.indexOf('const health = await runHealth(');
+  const report = source.indexOf('await lanReport(env, manifest.instanceId)');
+  const local = source.indexOf('if (local) return `Local operator services and gateway are healthy.${note}`;');
+  const external = source.indexOf("if (lan.failures.length) throw new Error(`The public address works, but the LAN fallback does not:");
+  assert.ok(health > 0 && report > health && local > report && external > local, 'the LAN report is made after the health check and before the local return; the full run throws after the public check');
+  assert.match(source, /\.\.\.\(local \? lan\.failures : \[\]\)/);
+  assert.equal(source.split('await lanReport(env, manifest.instanceId)').length, 2, 'one call site in doctor()');
+  assert.match(source, /'--lan'/);
+  // The preflight (start.sh, before anything starts) does not look at the fallback at all.
+  assert.ok(source.indexOf("return 'Operator configuration, private paths and gateway port preflight passed.'") < report);
+});

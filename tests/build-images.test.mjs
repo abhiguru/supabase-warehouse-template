@@ -114,6 +114,42 @@ test('a first installation builds the core images, leaves optional services alon
   } finally { cleanup(f); }
 });
 
+test('gateway-lan runs the gateway\'s image (M4 of the review of WS-L): it is never built, recorded or saved on its own, and it is not replaced by the optional step', () => {
+  const f = fixture();
+  try {
+    // As docker/docker-compose.yml: the gateway is built; gateway-lan names the tag Compose gives that build and has no `build` of its own.
+    const dir = join(f.root, 'docker/nginx');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'Dockerfile'), 'FROM example.invalid/nginx:1\n');
+    f.services.gateway = { build: { context: dir, dockerfile: 'Dockerfile' } };
+    f.services['gateway-lan'] = { image: `${PROJECT}-gateway`, pull_policy: 'never', profiles: ['lan'] };
+    f.writeConfig();
+    // A first installation, with a gateway-lan container already on this host (the fallback was on before the upgrade): the gateway image is built once.
+    const first = run(f, { containers: 'gateway-lan', running: 'gateway-lan' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.builds, 'db functions gateway', 'one build of the gateway recipe, none for gateway-lan');
+    assert.deepEqual(recorded(f.record).map(line => line[1]), ['db', 'functions', 'gateway'], 'nothing is recorded under gateway-lan');
+    assert.deepEqual(tarballs(f).filter(name => name.endsWith('.tar')), ['db.tar', 'functions.tar', 'gateway.tar'], 'one saved image serves both services');
+    // --all rebuilds the image once as well. The recipe changing reaches gateway-lan through the same image: one build, one record.
+    writeFileSync(join(dir, 'Dockerfile'), 'FROM example.invalid/nginx:2\n');
+    const changed = run(f, { containers: 'gateway-lan', running: 'gateway-lan' });
+    assert.equal(changed.status, 0, changed.stderr);
+    assert.equal(changed.builds, 'gateway', 'an upgrade that changes the nginx recipe rebuilds the one image the fallback runs');
+    assert.match(changed.stdout, /Building the gateway image: recipe changed\./);
+    const all = run(f, { args: ['--all'], containers: 'gateway-lan', running: 'gateway-lan' });
+    assert.equal(all.builds, 'db functions gateway');
+    assert.deepEqual(recorded(f.record).map(line => line[1]), ['db', 'functions', 'gateway']);
+    // The step that replaces running optional services does not take gateway-lan: scripts/lan.sh start starts it (and its failure is its own warning).
+    const replace = run(f, { args: ['--replace-optional'], running: 'gateway-lan supavisor' });
+    assert.equal(replace.status, 0, replace.stderr);
+    assert.match(replace.stdout, /Optional services that are running: supavisor\./);
+    assert.equal(replace.ups, '--wait --wait-timeout 180 supavisor', 'only supavisor is started or replaced (the log keeps what follows `up -d`)');
+    const onlyLan = run(f, { args: ['--replace-optional'], running: 'gateway-lan' });
+    assert.equal(onlyLan.status, 0, onlyLan.stderr);
+    assert.equal(onlyLan.ups, '', 'nothing to replace');
+  } finally { cleanup(f); }
+});
+
 const images = f => join(f.state, 'images');
 const tarballs = f => (existsSync(images(f)) ? readdirSync(images(f)).sort() : []);
 const SIGNED = ['SHA256SUMS', 'SHA256SUMS.hmac'];
@@ -497,9 +533,12 @@ test('setup.sh builds before its first start; setup.sh and start.sh replace opti
   const firstStart = setup.findIndex(line => line.includes('compose.sh" up -d'));
   assert.ok(buildStep > 0 && buildStep < firstStart, 'setup.sh builds before the first start');
   for (const [name, script] of [['setup.sh', setup], ['start.sh', lines('start.sh')]]) {
-    const fullStart = script.indexOf('bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
+    // The full start leaves the LAN fallback out and waits for the public services only (WAREHOUSE_COMPOSE_WITHOUT_LAN); lan.sh starts it
+    // on its own, before the optional services are replaced (tests/lan-switch.test.mjs).
+    const fullStart = script.indexOf('WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
+    const lanStart = script.findIndex(line => line.startsWith('bash "$ROOT/scripts/lan.sh" start'));
     const replace = script.findIndex(line => line.startsWith('bash "$ROOT/scripts/build-images.sh" --replace-optional'));
-    assert.ok(fullStart > 0 && replace > fullStart, `${name} replaces optional services after the full start`);
+    assert.ok(fullStart > 0 && lanStart === fullStart + 1 && replace > lanStart, `${name} replaces optional services after the full start and the LAN start`);
   }
   assert.ok(!lines('start.sh').includes('bash "$ROOT/scripts/build-images.sh"'), 'start.sh never builds');
 });

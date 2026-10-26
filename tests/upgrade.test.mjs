@@ -551,7 +551,8 @@ test('setup.sh accepts the lock upgrade.sh holds and recreates the functions con
   // how it is moved into, so upgrade.sh (the old release's script, still running from memory) no longer does it.
   const lines = setup.split('\n');
   const recreate = lines.indexOf('bash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait --wait-timeout 180 functions');
-  const fullStart = lines.indexOf('bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
+  // (The full start leaves the LAN fallback out, so that a fault of it never stops a setup or an upgrade; lan.sh start brings it up next, as a warning.)
+  const fullStart = lines.indexOf('WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180');
   const doctor = lines.indexOf('node "$ROOT/scripts/doctor.mjs" --local');
   assert.ok(fullStart > 0 && recreate > fullStart && doctor > recreate, 'full start, then the functions recreate, then the local doctor');
   assert.match(setup, /bind-mounted into the functions container and the edge\n# runtime keeps the modules it has loaded/);

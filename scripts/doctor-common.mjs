@@ -46,6 +46,20 @@ export function readEnv(path) {
 // a file that configure.mjs has not rewritten yet (docker/docker-compose.yml reads both in the same order). An empty line counts as
 // unset, as in Compose's `${GATEWAY_HTTP_PORT:-...}`: `||`, not `??`.
 export const gatewayPortText = env => env.GATEWAY_HTTP_PORT || env.KONG_HTTP_PORT;
+// Whether a running container of this installation's own Compose project publishes the loopback gateway port (a line of `docker ps`
+// such as `127.0.0.1:18000->8000/tcp`). The port is then the installation's own, not a stranger's. Which service it is does not
+// matter, and must not: an installation made before the nginx gateway has a `kong` container on the port and no `gateway`
+// container, and setup.sh and start.sh run this preflight from the new checkout before `up --remove-orphans` can replace it, so
+// asking for `gateway` alone stopped every such upgrade (and `compose ps -q kong` is no answer: Compose refuses a service the
+// file no longer has). A container of another project, or a process that is not a container, does not count.
+export function projectPublishesPort(project, port, run = probe) {
+  const listed = run('docker', ['ps', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Ports}}']);
+  if (!listed.ok) return false;
+  return listed.output.split(/[\r\n]+/).flatMap(line => line.split(',')).some(published => {
+    const range = /(?:^|:)(\d+)(?:-(\d+))?->/.exec(published.trim());
+    return range !== null && Number(range[1]) <= port && port <= Number(range[2] ?? range[1]);
+  });
+}
 export function operatorEnvPath() {
   const state = process.env.WAREHOUSE_STATE_DIR;
   if (!state || !isAbsolute(state)) throw new Error('Set WAREHOUSE_STATE_DIR to the installed operator state.');

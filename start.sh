@@ -22,8 +22,12 @@ node "$ROOT/scripts/upgrade-record.mjs" message || true
 # --remove-orphans removes the containers of services that were removed from the Compose file (see CHANGELOG.md).
 # Services of a profile (printing, sensors, pooler) are disabled services, not
 # orphans, so they are kept.
-bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180
-# Optional services (printing, sensors, pooler) are not part of that start.
+# The LAN fallback (gateway-lan) is left out of this start (WAREHOUSE_COMPOSE_WITHOUT_LAN, scripts/compose.sh): a fault of the fallback (its port
+# is taken, the container is unhealthy) must never stop a start, so this waits for the public services only, and the next line starts
+# gateway-lan on its own, where a fault is a warning.
+WAREHOUSE_COMPOSE_WITHOUT_LAN=1 bash "$ROOT/scripts/compose.sh" up -d --remove-orphans --wait --wait-timeout 180
+bash "$ROOT/scripts/lan.sh" start || echo 'Warning: the LAN fallback was not started (message above). The public services are up.' >&2
+# Optional services (printing, sensors, pooler) are not part of that start; the LAN fallback was started by lan.sh above.
 # Replace the running ones whose image or configuration changed.
 bash "$ROOT/scripts/build-images.sh" --replace-optional || echo 'Warning: a running optional service was not replaced (message above). The core services are up.' >&2
 node "$ROOT/scripts/doctor.mjs" --local

@@ -21,6 +21,10 @@ server {
     real_ip_header CF-Connecting-IP;
     real_ip_recursive off;
 
+    # Which path an answer came by: the app reads X-Warehouse-Path (cors-headers.conf puts it on every API answer). The LAN server
+    # (lan/gateway-lan.conf.template) says `lan`.
+    set $warehouse_path public;
+
     # The container's health check (docker-compose.yml). Not in api-locations.conf, which is shared with servers that
     # have no use for it, and not logged: it runs every ten seconds. Only the container itself may ask: the check comes from
     # 127.0.0.1 inside the container; a request through the tunnel carries its client's address (real_ip_header above; Cloudflare

@@ -43,6 +43,7 @@ import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
+import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
@@ -292,6 +293,8 @@ export function defaultDeps(env = process.env) {
     fetch: (url, options) => fetch(url, options),
     post: (url, text) => postSlackMessage(url, text),
     proc: '/proc', cgroup: '/sys/fs/cgroup',
+    // The host's IPv4 addresses (the LAN fallback check), replaceable for tests.
+    interfaces: () => readHostInterfaces(env),
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
     dailyAt: env.WAREHOUSE_WATCH_DAILY_AT || DEFAULT_DAILY_AT,
     heartbeatAt: env.WAREHOUSE_WATCH_HEARTBEAT_AT || DEFAULT_HEARTBEAT_AT,
@@ -587,6 +590,36 @@ export async function checkApiPublic(ctx) {
     return [result('api_public', 'public_https_down', true, 'Public HTTPS address works')];
   } catch (error) { return [result('api_public', 'public_https_down', false, 'The public HTTPS address does not work (tunnel or DNS)', error.message)]; }
 }
+// The LAN fallback (scripts/lan.sh), only while it is on: the host must still have the address the container publishes on (the router
+// may hand it another one: `lan_ip_changed`), and that address must answer the public configuration as this installation with the
+// header that says the LAN listener answered, and must accept the installation's anon key on the REST route (probeLanKeys: get-public-config
+// has no key check, and a container that was not recreated after a key rotation refuses every REST request of every phone while it is
+// still green) (`lan_http_down`, after two failing runs like the other API checks). Silent while the fallback is off: nothing is returned,
+// so an alert left over from before it was turned off is cleared.
+export async function checkApiLan(ctx) {
+  const lan = lanSettings(ctx.env_());
+  if (!lan.enabled) return [];
+  const interfaces = (ctx.interfaces ?? (() => readHostInterfaces()))();
+  if (!hostHasAddress(interfaces, lan.ip)) {
+    return [
+      result('api_lan', 'lan_ip_changed', false, `The LAN address ${lan.ip} is no longer an address of this host`,
+        `The host has ${describeAddresses(interfaces)}. Phones cannot reach ${lanOrigin(lan)} and the gateway-lan service is not started; the app keeps working over the internet. Run bash scripts/lan.sh on auto (docs/TROUBLESHOOTING.md, "The app says the LAN address is unreachable").`),
+      result('api_lan', 'lan_http_down', true, 'The LAN listener is not probed (its address is gone)'),
+    ];
+  }
+  const manifest = publicManifest(ctx);
+  const down = (summary, detail) => [result('api_lan', 'lan_ip_changed', true, `The host still has ${lan.ip}`), result('api_lan', 'lan_http_down', false, summary, detail)];
+  try {
+    const response = await ctx.fetch(`${lanOrigin(lan)}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json = await response.json();
+    if (json.success !== true || json.data?.instanceId !== manifest.instanceId) return down('The LAN address answers, but not as this installation', 'instanceId differs.');
+    if (response.headers?.get('x-warehouse-path') !== 'lan') return down('The LAN address answers, but not from the gateway-lan listener', 'The header X-Warehouse-Path: lan is missing.');
+    const keys = await probeLanKeys(lan, ctx.env_().ANON_KEY, (url, options) => ctx.fetch(url, options));
+    if (!keys.ok) return down('The LAN listener does not accept this installation\'s API key', keys.text);
+    return [result('api_lan', 'lan_ip_changed', true, `The host still has ${lan.ip}`), result('api_lan', 'lan_http_down', true, `LAN fallback answers on ${lanOrigin(lan)}`)];
+  } catch (error) { return down(`The LAN fallback does not answer on ${lanOrigin(lan)}`, `${error.cause?.code ?? error.message} (bash scripts/lan.sh status)`); }
+}
 // `sinceMs` (an epoch time) keeps only the lines that `docker logs -t` stamped at or after it: each such line starts with an
 // RFC 3339 time with nanoseconds ("2026-10-19T10:00:00.123456789Z "). A line with no readable stamp is kept (it cannot be placed).
 export function parseGatewayLog(text, { sinceMs = null } = {}) {
@@ -606,12 +639,18 @@ export function parseGatewayLog(text, { sinceMs = null } = {}) {
 // any window up to an hour while `--tail` and `--since 24h` worked, which would have made every rate below read "too few requests"
 // for good. The last gatewayLogTail lines are read with their time stamps (-t) and cut to the window here. A gateway busier than
 // about 16 requests a second fills the tail with less than 5 minutes, and the rates are then those of the newest lines.
+// The LAN fallback's container (gateway-lan) writes the same log format, and its requests count in the same rates: a phone that
+// is refused on the warehouse network is as much a fault as one refused through the tunnel.
 export function checkApiLogs(ctx) {
-  const gateway = ctx.containers().find(c => c.service === 'gateway');
-  if (!gateway) return [];
-  const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), gateway.id]);
-  if (logs.status !== 0) throw new Error('docker logs failed for the gateway');
-  const rows = parseGatewayLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs });
+  const all = ctx.containers();
+  const gateways = ['gateway', 'gateway-lan'].map(name => all.find(c => c.service === name)).filter(Boolean);
+  if (!gateways.length) return [];
+  const rows = [];
+  for (const gateway of gateways) {
+    const logs = ctx.run('docker', ['logs', '-t', '--tail', String(LIMITS.gatewayLogTail), gateway.id]);
+    if (logs.status !== 0) throw new Error(`docker logs failed for the ${gateway.service}`);
+    rows.push(...parseGatewayLog(`${logs.stdout}\n${logs.stderr}`, { sinceMs: ctx.now() - LIMITS.gatewayLogWindowMs }));
+  }
   if (rows.length < LIMITS.minRequests) {
     return [result('api_logs', 'api_error_rate_high', true, `Too few requests (${rows.length}) to judge the error rate`), result('api_logs', 'api_latency_p95_high', true, 'Too few requests to judge latency'),
       result('api_logs', 'api_429_rate_high', true, 'Too few requests to judge the rate-limit answers')];
@@ -677,9 +716,12 @@ export async function runHealth(deps, { waitMs = 90000 } = {}) {
   const add = (ok, text) => lines.push({ ok, text });
   // Only the default-profile services can fail the health check. A profile service (supavisor, cups, sensor-bridge) that has
   // a container but is not healthy is a warning: an unconfigured sensor bridge exits and restarts, and a stopped pooler is a choice.
+  // The LAN fallback (gateway-lan, profile lan) is expected while compose.env turns it on, but it is the fallback: a fault of it is a warning
+  // here like an optional service's, never a failure, so a start, a setup, an upgrade, a restore or a key rotation is not stopped by it.
   const expected = ctx.expectedServices();
   for (const r of checkServices(ctx)) {
-    if (expected.includes(r.id.replace(/^service_down:/, ''))) add(r.ok, r.summary);
+    const name = r.id.replace(/^service_down:/, '');
+    if (expected.includes(name) && (name !== LAN_SERVICE || r.ok)) add(r.ok, r.summary);
     else if (!r.ok) lines.push({ ok: true, warn: true, text: r.summary });
   }
   const databaseOk = databaseReady(ctx);
@@ -854,7 +896,7 @@ export async function checkClock(ctx) {
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
-  ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic],
+  ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
 ];

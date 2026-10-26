@@ -62,7 +62,10 @@ for id in $ids; do
     exit 1
   fi
 done
-unset_args=()
+# COMPOSE_PROFILES is always unset first, so that config/compose.env alone decides which profile services a command sees: a shell that
+# has COMPOSE_PROFILES='*' or lan in its environment must not start gateway-lan, a printing service or the pooler (the guard below
+# sets it again, for one command, when it has a reason to).
+unset_args=(-u COMPOSE_PROFILES)
 while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then unset_args+=(-u "${BASH_REMATCH[1]}"); fi
 done < "$ENV_FILE"
@@ -78,5 +81,23 @@ if [[ -n "${WAREHOUSE_COMPOSE_EXTRA:-}" ]]; then
   fi
   extra=(-f "$WAREHOUSE_COMPOSE_EXTRA")
 fi
-exec env "${unset_args[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+# The LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): COMPOSE_PROFILES=lan in compose.env starts the gateway-lan service, which
+# publishes the host's own LAN address. Two things leave the profile out of one command:
+#  - WAREHOUSE_COMPOSE_WITHOUT_LAN=1, which start.sh, setup.sh and restore.sh set on the `up` that waits for the services: a fault of the
+#    fallback (the port is taken, the container is unhealthy) must never stop a start, a setup, an upgrade or a restore, so that start
+#    waits for the public services only and gateway-lan is started apart (scripts/lan.sh start), as a warning when it fails;
+#  - the guard (scripts/lan.mjs guard): the host no longer has the address (the router gave it another one) and Docker cannot start the
+#    container, and a failed start can stop `up` for the public services beside it; or the address is not private. It prints the replacement
+#    list and says why on stderr; without node, or on any error, nothing is changed.
+lan_override=()
+if grep -Eq '^COMPOSE_PROFILES=.*\blan\b' "$ENV_FILE"; then
+  if [[ "${WAREHOUSE_COMPOSE_WITHOUT_LAN:-}" == 1 ]]; then
+    others="$(sed -n 's/^COMPOSE_PROFILES=//p' "$ENV_FILE" | head -n 1 | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | { grep -vx -e lan -e '' || true; } | paste -sd, -)"
+    lan_override=("COMPOSE_PROFILES=$others")
+  elif command -v node >/dev/null 2>&1; then
+    guard="$(node "$ROOT/scripts/lan.mjs" guard "$ENV_FILE" || true)"
+    if [[ "$guard" == COMPOSE_PROFILES=* ]]; then lan_override=("$guard"); fi
+  fi
+fi
+exec env "${unset_args[@]}" "${lan_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" "${extra[@]}" "$@"

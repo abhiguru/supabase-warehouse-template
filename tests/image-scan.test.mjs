@@ -74,7 +74,8 @@ test('the scan builds without cache, scans each image once, in full, and names e
     const log = join(root, 'calls.log');
     // A built service (no image name) and a pulled one; the built image has one
     // HIGH row without a fix, covered only by its recipe's no-fix exception.
-    const config = composeConfig({ app: { build: { context: join(root, 'docker/app'), dockerfile: 'Dockerfile' } }, rest: { image: 'example.test/rest:1@sha256:' + 'a'.repeat(64) } });
+    // A second service runs the built one's image (gateway-lan runs the gateway's): it is that image already, scanned once with the recipe that builds it.
+    const config = composeConfig({ app: { build: { context: join(root, 'docker/app'), dockerfile: 'Dockerfile' } }, 'app-lan': { image: 'warehouse-scan-test-app', pull_policy: 'never', profiles: ['lan'] }, rest: { image: 'example.test/rest:1@sha256:' + 'a'.repeat(64) } });
     const containers = join(root, 'containers.txt');
     writeFileSync(containers, '');
     writeFileSync(join(root, 'scripts/compose.sh'), `#!/bin/sh\necho "compose $*" >> '${log}'\ncase "$*" in\n  *" ps "*) cat '${containers}';;\n  *build*) exit 0;;\n  *) echo '${config}';;\nesac\n`);
@@ -114,7 +115,7 @@ test('the scan builds without cache, scans each image once, in full, and names e
     const calls = readFileSync(log, 'utf8').trim().split('\n');
     assert.ok(calls.some(line => /^compose .*build --no-cache$/.test(line)), 'images are built without the build cache');
     const scans = calls.filter(line => line.startsWith('trivy '));
-    assert.equal(scans.length, 2, 'one pass per image');
+    assert.equal(scans.length, 2, 'one pass per image: a service that runs another service\'s image adds none');
     assert.equal(scans.filter(line => line.includes('--ignore-unfixed')).length, 0, 'no pass uses --ignore-unfixed');
     for (const line of scans) assert.match(line, /--severity HIGH,CRITICAL .*--list-all-pkgs --exit-code 0 --format json --output /);
 

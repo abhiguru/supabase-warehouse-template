@@ -17,7 +17,8 @@
 // current when its recipe has the recorded fingerprint and its tag still names
 // the recorded image; a tag moved by anything else (a manual build, a build
 // that failed half way) is built again. No built service names its image, so
-// Compose tags each `<project>-<service>` and installations never share a tag.
+// Compose tags each `<project>-<service>` and installations never share a tag. One service runs another's image: gateway-lan names
+// `<project>-gateway` and has no `build` of its own, so it has no recipe here, is never built or recorded twice, and follows the gateway.
 // scripts/build-images.sh is the only caller: `plan` before a build, and again
 // in --replace-optional to leave alone a running optional service whose image
 // does not match this checkout.
@@ -27,6 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const SERVICE = '[a-zA-Z0-9][a-zA-Z0-9._-]*';
+const LAN_SERVICE = 'gateway-lan';
 const [mode, ...rest] = process.argv.slice(2);
 const recordPath = mode === 'optional' ? '' : rest.shift();
 const savedPath = mode === 'adopt' ? rest.shift() : '';
@@ -130,6 +132,9 @@ if (mode === 'record') {
   const config = readConfig();
   const running = containerServices(config.name, { running: true });
   for (const [service, definition] of sorted(config.services)) {
+    // gateway-lan (the LAN fallback) runs the gateway's image and is started, and replaced when its definition changed, by scripts/lan.sh
+    // start: it is not part of the replace-optional step, whose failure would then be the fallback's failure counted twice.
+    if (service === LAN_SERVICE) continue;
     if (optional(definition) && running.has(service)) process.stdout.write(`${service}\n`);
   }
 } else {
