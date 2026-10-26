@@ -798,6 +798,22 @@ test('USB backup: encrypted archives with no confirmed copy of the backup key ra
   } finally { clean(h); }
 });
 
+test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises usb_backup, and the setup rerun clears it', () => {
+  const h = harness();
+  try {
+    mkdirSync(join(h.scratch, 'etc'));
+    writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
+    // The configuration the previous release's setup wrote: ENCRYPT=no and no ENCRYPT_SET.
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\n`);
+    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /USB archives are still written unencrypted .*run sudo bash scripts\/backup-usb\.sh setup --state /);
+    // After the rerun the configuration says what was chosen; a readable archive typed on purpose is fine.
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
+    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+  } finally { clean(h); }
+});
+
 // ---------------------------------------------------------------- alerting
 test('an alert fires only after 2 failing runs; posts at start, repeats after 4 h, and clears once', async () => {
   const h = harness();

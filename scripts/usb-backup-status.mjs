@@ -1,7 +1,9 @@
 // Doctor warning for the USB backup drive (scripts/backup-usb.sh). Returns null when
 // USB backup is not set up for this state or the last copy is recent and successful and,
-// when archives are encrypted, the operator has confirmed a copy of the backup key.
-import { readFileSync } from 'node:fs';
+// when archives are encrypted, the operator has confirmed a copy of the backup key. It warns first when the installation
+// still writes readable archives although nobody typed --no-encrypt: it never ran `backup-usb.sh setup` after encryption
+// became the default.
+import { readFileSync, lstatSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 
@@ -17,10 +19,14 @@ export function escrowProblem(state) {
   const keyText = read(resolve(state, 'config/backup.key'));
   const key = (keyText ?? '').split('\n')[0].replace(/\r$/, '');
   if (!/^[0-9a-f]{64}$/.test(key)) return null; // no usable key here: the backup commands say so themselves
-  const record = read(resolve(state, 'config/backup-key.escrow'));
+  // As scripts/backup-key.sh does: a record that is a link is not trusted, and the first fingerprint line counts.
+  const path = resolve(state, 'config/backup-key.escrow');
+  let isLink = false;
+  try { isLink = lstatSync(path).isSymbolicLink(); } catch { /* absent: read() says so */ }
+  const record = isLink ? null : read(path);
   if (record === null) return 'there is no key escrow record';
   const lines = record.split('\n');
-  const recorded = fields(record).key_fingerprint;
+  const recorded = lines.find(line => line.startsWith('key_fingerprint='))?.slice('key_fingerprint='.length);
   if (lines[0] !== 'warehouse-backup-key-escrow-v1' || !/^[0-9a-f]{16}$/.test(recorded ?? '')) return 'the key escrow record is not valid';
   if (recorded !== keyFingerprint(key)) return 'the key escrow record is for another backup key (the key was replaced since the copy was confirmed)';
   return null;
@@ -34,9 +40,20 @@ export function usbBackupWarning(state, {
   const conf = read(resolve(etc, 'warehouse-usb-backup.conf'));
   const last = read(resolve(state, 'config/usb-backup.last'));
   if (!last && (!conf || fields(conf).STATE !== resolve(state))) return null;
+  const setUp = conf && fields(conf).STATE === resolve(state) ? fields(conf) : null;
+  if (setUp) {
+    // The setup of an earlier release stored ENCRYPT=no and wrote WAREHOUSE_BACKUP_ENCRYPT=0 into the unit as the default, not as
+    // the operator's choice. Only a typed --no-encrypt (ENCRYPT_SET=typed) keeps readable archives; every other installation is
+    // still writing them until it runs setup again, which also installs the longer time limit and the keep count of this release.
+    const unit = read(resolve(etc, 'systemd/system/warehouse-usb-backup@.service')) ?? '';
+    const unitReadable = /^Environment=WAREHOUSE_BACKUP_ENCRYPT=0$/m.test(unit);
+    if (setUp.ENCRYPT_SET !== 'typed' && (setUp.ENCRYPT === 'no' || unitReadable)) {
+      return `USB archives are still written unencrypted (the default of earlier releases; nobody typed --no-encrypt), and this installation has not run the USB setup since encryption became the default: run sudo bash scripts/backup-usb.sh setup --state ${resolve(state)}; it switches them to encrypted archives (readable archives, which hold every credential, stay only with --no-encrypt) and installs this release's unit`;
+    }
+  }
   // Archives are encrypted with the backup key, which lives only on this machine's disk: without a confirmed copy kept
   // elsewhere, the loss of the host is also the loss of every archive. Runs and enrolment are refused until it is confirmed.
-  if (conf && fields(conf).STATE === resolve(state) && fields(conf).ENCRYPT === 'yes') {
+  if (setUp && setUp.ENCRYPT === 'yes') {
     const problem = escrowProblem(state);
     if (problem) return `USB archives are encrypted but the backup key copy is not confirmed (${problem}); runs are refused until it is: run WAREHOUSE_STATE_DIR=${resolve(state)} bash scripts/backup-key-escrow.sh show`;
   }

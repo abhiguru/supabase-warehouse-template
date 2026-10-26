@@ -3,13 +3,13 @@
 // contents (which backup is copied, what is deleted, the key escrow gate) are in tests/backup-usb-drive.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, chmodSync, copyFileSync, symlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, composeEnv, backupKey, hmacHex, writeKey, writeEscrow, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
+import { makeBackup, composeEnv, backupKey, hmacHex, writeKey, writeEscrow, escrowFingerprint, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
 import { fixture, UUID, PART, marker, devRow } from './usb-test-helpers.mjs';
-import { usbBackupWarning } from '../scripts/usb-backup-status.mjs';
+import { usbBackupWarning, escrowProblem } from '../scripts/usb-backup-status.mjs';
 
 const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const PLAIN = { WAREHOUSE_BACKUP_ENCRYPT: '0' };
@@ -661,7 +661,11 @@ test('setup switches an installation set up before encryption became the default
     assert.equal(flipped.status, 0, flipped.stderr);
     assert.match(conf(), /^ENCRYPT=yes\nENCRYPT_SET=default$/m);
     assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=1$/m);
+    assert.match(unit(), /^TimeoutStartSec=6h$/m, 'the rewritten unit has the longer limit of this release');
+    assert.match(unit(), /^Environment=WAREHOUSE_USB_KEEP=3$/m, 'and the keep count');
     assert.match(flipped.stdout, /NOTICE: this installation had USB backup set up with unencrypted archives[\s\S]*switched them to encrypted ones[\s\S]*unencrypted archives on enrolled drives are deleted[\s\S]*--no-encrypt/);
+    // Deleting is not wiping: the notice says what to do before the drive leaves the operator's hands.
+    assert.match(flipped.stdout, /Deleting a file does not wipe it from an exFAT drive[\s\S]*rotate the credentials \(rotate-keys\.sh, the MSG91 key, the tunnel credential\) or retire the drive/);
     assert.doesNotMatch(f.run(['status']).stdout, /still written unencrypted/);
     // The notice is for the switch only.
     assert.doesNotMatch(f.asRoot(['setup', '--state', f.state]).stdout, /NOTICE/);
@@ -672,6 +676,14 @@ test('setup switches an installation set up before encryption became the default
     assert.match(conf(), /^ENCRYPT=no\nENCRYPT_SET=typed$/m);
     assert.match(unit(), /^Environment=WAREHOUSE_BACKUP_ENCRYPT=0$/m);
     assert.doesNotMatch(kept.stdout, /NOTICE/);
+    // A typed --encrypt over a typed --no-encrypt starts the same deletion of readable archives, so it says so too, once.
+    const typedYes = f.asRoot(['setup', '--state', f.state, '--encrypt']);
+    assert.equal(typedYes.status, 0, typedYes.stderr);
+    assert.match(conf(), /^ENCRYPT=yes\nENCRYPT_SET=typed$/m);
+    assert.match(typedYes.stdout, /NOTICE: this installation wrote unencrypted archives and you typed --encrypt, so they are now encrypted\. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted/);
+    assert.match(typedYes.stdout, /Deleting a file does not wipe it from an exFAT drive/);
+    assert.doesNotMatch(f.asRoot(['setup', '--state', f.state, '--encrypt']).stdout, /NOTICE/, 'not again once the choice is stored');
+    previous('ENCRYPT=no\nENCRYPT_SET=typed\n');
     // A `yes` stays a `yes`, typed or not.
     previous('ENCRYPT=yes\n');
     assert.equal(f.asRoot(['setup', '--state', f.state]).status, 0);
@@ -772,6 +784,73 @@ test('the doctor warning asks for the key copy when archives are encrypted and t
     rmSync(join(state, 'config/backup-key.escrow'));
     conf('ENCRYPT=no\nENCRYPT_SET=typed\n');
     assert.equal(usbBackupWarning(state, { etc, now }), null, 'readable archives need no key copy');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the doctor warning and the checker say when an installation still writes readable archives because it never reran the USB setup', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-usb-doctor-stale-'));
+  try {
+    const state = join(scratch, 'state'); mkdirSync(join(state, 'config'), { recursive: true });
+    const etc = join(scratch, 'etc'); mkdirSync(join(etc, 'systemd/system'), { recursive: true });
+    writeKey(join(state, 'config/backup.key'));
+    writeEscrow(state);
+    const now = Date.UTC(2026, 9, 9);
+    // The last copy is recent and good: only the setup state can make this a warning.
+    writeFileSync(join(state, 'config/usb-backup.last'), `result=ok\nfinished_utc=x\nlast_success_epoch=${Math.floor(now / 1000) - 86400}\nmessage=copied 1\n`);
+    const conf = lines => writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${state}\n${lines}`);
+    const unit = value => writeFileSync(join(etc, 'systemd/system/warehouse-usb-backup@.service'), `[Service]\nEnvironment=WAREHOUSE_STATE_DIR=${state}\nEnvironment=WAREHOUSE_BACKUP_ENCRYPT=${value}\n`);
+    const stale = /USB archives are still written unencrypted \(the default of earlier releases; nobody typed --no-encrypt\).*run sudo bash scripts\/backup-usb\.sh setup --state .*state; it switches them to encrypted archives .*--no-encrypt\) and installs this release's unit/;
+    // What the previous release's setup wrote: ENCRYPT=no, no ENCRYPT_SET, and WAREHOUSE_BACKUP_ENCRYPT=0 in the unit.
+    conf('FRESH_BACKUP=yes\nDAILY=no\nENCRYPT=no\n'); unit(0);
+    assert.match(usbBackupWarning(state, { etc, now }), stale);
+    // The unit alone says it too (the stored configuration lost its ENCRYPT line).
+    conf('FRESH_BACKUP=yes\nDAILY=no\n');
+    assert.match(usbBackupWarning(state, { etc, now }), stale);
+    // After the rerun: encrypted by default, or readable on purpose with --no-encrypt typed: no warning.
+    conf('ENCRYPT=yes\nENCRYPT_SET=default\n'); unit(1);
+    assert.equal(usbBackupWarning(state, { etc, now }), null);
+    conf('ENCRYPT=no\nENCRYPT_SET=typed\n'); unit(0);
+    assert.equal(usbBackupWarning(state, { etc, now }), null, 'a typed --no-encrypt is the operator\'s choice');
+    // Another state\'s configuration is not this installation\'s.
+    writeFileSync(join(etc, 'warehouse-usb-backup.conf'), `STATE=${join(scratch, 'elsewhere')}\nENCRYPT=no\n`); unit(0);
+    assert.equal(usbBackupWarning(state, { etc, now }), null);
+    // Not set up at all: the usual silence.
+    rmSync(join(etc, 'warehouse-usb-backup.conf')); rmSync(join(state, 'config/usb-backup.last'));
+    assert.equal(usbBackupWarning(state, { etc, now }), null);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('backup-usb.sh status and the setup it asks for agree with the doctor warning about a stale unit', () => {
+  const f = fixture('warehouse-usb-stale-status-');
+  try {
+    // The previous release's configuration and unit; the escrow record is there, so nothing else can raise a warning.
+    writeFileSync(join(f.etc, 'warehouse-usb-backup.conf'), `STATE=${f.state}\nCHECKOUT=${f.root}\nUSER=installer\nUID=${process.getuid()}\nGID=${process.getgid()}\nFRESH_BACKUP=yes\nDAILY=no\nENCRYPT=no\n`);
+    mkdirSync(join(f.etc, 'systemd/system'), { recursive: true });
+    writeFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), '[Service]\nEnvironment=WAREHOUSE_BACKUP_ENCRYPT=0\nTimeoutStartSec=2h\n');
+    assert.match(usbBackupWarning(f.state, { etc: f.etc }), /still written unencrypted/);
+    assert.match(f.run(['status']).stdout, /WARNING: archives are still written unencrypted/);
+    assert.equal(f.asRoot(['setup', '--state', f.state]).status, 0);
+    assert.doesNotMatch(usbBackupWarning(f.state, { etc: f.etc }), /still written unencrypted/, 'the setup rerun clears it (what is left is that no copy has been made yet)');
+    assert.doesNotMatch(f.run(['status']).stdout, /still written unencrypted/);
+    assert.match(readFileSync(join(f.etc, 'systemd/system/warehouse-usb-backup@.service'), 'utf8'), /^TimeoutStartSec=6h$/m);
+  } finally { f.cleanup(); }
+});
+
+test('the checker reads the key escrow record as backup-key.sh does: the first fingerprint counts and a link is not trusted', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-usb-escrow-node-'));
+  try {
+    const state = join(scratch, 'state'); mkdirSync(join(state, 'config'), { recursive: true });
+    writeKey(join(state, 'config/backup.key'));
+    const record = join(state, 'config/backup-key.escrow');
+    const good = `warehouse-backup-key-escrow-v1\nkey_fingerprint=${escrowFingerprint()}\nconfirmed_utc=2026-10-26T00:00:00Z\nconfirmed_by=tester\n`;
+    writeFileSync(record, good);
+    assert.equal(escrowProblem(state), null);
+    // A second fingerprint line (the right one) after a wrong first one must not rescue the record: bash counts the first.
+    writeFileSync(record, good.replace(/key_fingerprint=.*/, `key_fingerprint=${escrowFingerprint('d4'.repeat(32))}\nkey_fingerprint=${escrowFingerprint()}`));
+    assert.match(escrowProblem(state), /for another backup key/);
+    // A record that is a link elsewhere is not trusted, even when what it points to is a good record.
+    rmSync(record); writeFileSync(join(scratch, 'elsewhere.escrow'), good); symlinkSync(join(scratch, 'elsewhere.escrow'), record);
+    assert.equal(escrowProblem(state), 'there is no key escrow record');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
