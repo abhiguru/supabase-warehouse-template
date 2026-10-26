@@ -154,15 +154,23 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    that time (`docs/MONITORING.md`).
 17. **Optional: turn on the LAN fallback so phones keep working when the internet is down. Off by default; nothing to do if you do not
     want it.** `bash scripts/lan.sh on auto` (the stack must be running) starts a second nginx container, `gateway-lan`, on the host's
-    own private address (plain http, port 8080, only the warehouse network may connect), restarts the function runtime for a few seconds
-    and prints `LAN address for the app: http://<address>:<port>`, which the server also hands to signed-in phones. The new
-    app that uses it ships separately; it tries the public address first and the LAN address only after the public one fails. **Plain
-    http is an accepted exposure (owner decision of 2026-10-26):** while a phone is on this path, its tokens, photos and documents
-    cross the Wi-Fi unencrypted; read "LAN fallback" in `docs/OPERATOR_INSTALL.md` and `docs/CONTAINER_SECURITY.md` before you turn it
-    on, give the host a DHCP reservation, and run `bash scripts/lan.sh off` to remove it. An upgrade changes nothing for an installation
-    that does not use it, except that `compose.env` gains no lines until you run `lan.sh` (the defaults are loopback and off). `compose.sh`
-    leaves the `lan` profile out of a command while the host does not have the address, so a changed address never keeps the public
-    services from starting; the checker alerts `lan_ip_changed` and `lan_http_down` only while the fallback is on.
+    own private address (plain http, port 8080, only the warehouse network may connect, and only a request that names the server by its
+    own address), restarts the function runtime for a few seconds and prints `LAN address for the app: http://<address>:<port>`, which
+    the server also hands to signed-in phones. **The app that uses it ships separately and is not released yet**: until it is
+    installed, turning this on only opens the listener. It tries the public address first and the LAN address only after the public one
+    fails. **Plain http is an accepted exposure (owner decision of 2026-10-26):** while a phone is on this path, its tokens, photos and
+    documents cross the Wi-Fi unencrypted; a token that is read works from anywhere until it ends, a stolen refresh token keeps a session
+    alive, anyone on the Wi-Fi can sign phones out during an outage, administrator tokens carry administrator rights, and a stale saved
+    address can send tokens to another device. Read "LAN fallback" in `docs/OPERATOR_INSTALL.md` and `docs/CONTAINER_SECURITY.md` before
+    you turn it on, give the host a DHCP reservation, and run `bash scripts/lan.sh off` to remove it. During an outage an administrator
+    can sign in over it with a break-glass code. No firewall command is needed: ufw does not see the traffic of a port that Docker
+    publishes. An upgrade changes nothing for an
+    installation that does not use it, except that `compose.env` gains no lines until you run `lan.sh` (the defaults are loopback and
+    off). `compose.sh` leaves the `lan` profile out of a command while the host does not have the address, so a changed address never
+    keeps the public services from starting; `start.sh`, `setup.sh`, `upgrade.sh` and `restore.sh` wait for the public services only and
+    start `gateway-lan` apart, so a fault of the fallback (its port is taken, the container is unhealthy) is a warning and never stops
+    them; `rotate-keys.sh` recreates it with the new keys; the checker alerts `lan_ip_changed` and `lan_http_down` only while the
+    fallback is on.
 
 ### Changed
 
@@ -183,10 +191,16 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 - **LAN fallback (`gateway-lan`, `scripts/lan.sh`).** A second, optional nginx container (Compose profile `lan`) that serves the
   gateway's routes over plain http on the host's own private address, for phones on the warehouse network while the internet is down:
   the same key check, body limits and rate limits, no trust in a client-supplied address (the per-phone limits and the per-source OTP
-  limits see each phone's own address), `allow <warehouse network>; deny all;`, and `X-Warehouse-Path: lan` on every answer (the public
-  server sends `public`). `get-config` offers the address to signed-in phones as `urls.lan` while it is on; `get-public-config` never
-  does. `doctor` (`--lan`, and `--local` as a warning) and the checker (`lan_http_down`, `lan_ip_changed`, and the `gateway-lan`
-  log in the gateway rates) look after it. See Operator actions, item 17.
+  limits see each phone's own address), `allow <warehouse network>; deny all;`, a pinned `Host` (the server's own address, with or
+  without the port, or 404), and `X-Warehouse-Path: lan` on every answer (the public server sends `public`). It is **the gateway's own
+  image** (the LAN server and a copy of the http template are kept in it under `/etc/nginx/templates-lan`; no second build, no mount from
+  the checkout), so an upgrade that rebuilds the gateway rebuilds the fallback with it. `get-config` offers the address to signed-in
+  phones as `urls.lan` while it is on; `get-public-config` never does. `doctor` (`--lan`, and `--local` as a warning) and the checker
+  (`lan_http_down`, `lan_ip_changed`, and the `gateway-lan` log in the gateway rates) look after it, including a REST request with the
+  installation's anon key, which catches a container that holds the keys from before a rotation. `doctor --lan` also warns about a range
+  with fewer than 4 addresses, rootless Docker, Docker Desktop, `"iptables": false` and a `LAN_CIDR` that overlaps a Docker network. A
+  caller's `COMPOSE_PROFILES` no longer reaches Compose through `scripts/compose.sh` (compose.env alone decides). See Operator actions,
+  item 17.
 - **The gateway is plain nginx from the official image; Kong is gone.** `docker/nginx` replaces `docker/kong.yml` and the
   `eval` entrypoint: nginx 1.30 (alpine-slim variant, pinned by tag and digest, no HIGH or CRITICAL finding at the time of the
   change), the routes, key check, CORS, body limits and the redacted access log as before, 128 MB instead of 512 MB, a read-only

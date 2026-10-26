@@ -140,16 +140,61 @@ No function changes its arguments or the shape of an answer; the app needs no ch
 
 - **Optional.** `urls.lan` is absent while the fallback is off, and also when the configured address is not a private IPv4 address or
   the port is invalid (a damaged value is left out, never offered). A client treats a missing `urls.lan` as "no fallback" and removes
-  an address it saved earlier.
+  an address it saved earlier (and any address typed in Settings).
 - **`get-public-config` never has it.** That answer is readable by anyone on the internet; the facility's LAN address is for its own
-  signed-in users. A client refreshes the saved address from every successful `get-config` over the public path.
-- **Plain http, by owner decision (2026-10-26).** It is an origin, `http://<private address>:<port>`, with no path. It serves the same
-  `/rest/v1`, `/storage/v1` and `/functions/v1` routes as the public origin and carries the response header `X-Warehouse-Path: lan`
-  (the public origin sends `public`). A client uses it only after a transport failure of the public path (the request is rejected, no
-  answer in time, or HTTP 530 from Cloudflare), never when the public path works, and never resends a write that may have been
-  applied (the lost-answer rule, [Request codes](#request-codes-and-get_submission_result-owner-decision-d22-one-rule-for-a-lost-answer)). Sign-in
-  (`operator-otp`, `central-exchange`) needs the internet and does not use it. Tokens and signed URLs are the same on both paths, and
-  the identity of the installation (`instanceId`, the canonical origin, the token store key) stays the public origin.
+  signed-in users. A client refreshes the saved address from every successful `get-config`, which also comes back over the LAN path.
+- **Format.** `http://<IPv4 in 10/8, 172.16/12 or 192.168/16>:<port>`, the port always explicit (1024-65535), no path, no trailing slash.
+  Validate it on the client with the same rule (`functions/_shared/lan-url.ts`) and refuse anything else, a typed address included.
+- **Plain http, by owner decision (2026-10-26).** It is an origin with no path. It serves the same `/rest/v1`, `/storage/v1` and
+  `/functions/v1` routes as the public origin. A client uses it only after a transport failure of the public path (the request is
+  rejected, no answer in time, or HTTP 530 from Cloudflare), never when the public path works, and never resends a write that may have
+  been applied (the lost-answer rule, [Request codes](#request-codes-and-get_submission_result-owner-decision-d22-one-rule-for-a-lost-answer)).
+  Tokens and signed URLs are the same on both paths, and the identity of the installation (`instanceId`, the canonical origin, the
+  token store key and the client URL) stays the public origin: the transport rewrites only scheme, host and port and keeps path and query,
+  also in URLs the server hands out (storage signed URLs, the `pdf_url` of the PDF functions, which are built on the canonical host).
+
+#### What the client does with the LAN path (the hand-off for the app; stable)
+
+These are the rules the server is built to and tested against. `urls.lan`, the `X-Warehouse-Path` header and the status codes below
+are stable: they are the interface, and a change to them is announced here.
+
+1. **Which path answered.** The response header `X-Warehouse-Path` is `lan` or `public` on every answer the gateway makes: success and
+   401/403/404/413/429/502/503/504, and the preflight. Answers that Cloudflare makes (530, 52x) do not carry it; a public-path error
+   **without** the header is a Cloudflare or tunnel failure, not the server. The LAN `403` (an HTML page, not JSON) carries it.
+2. **Probe before sending credentials to the LAN origin.** `GET <lan>/functions/v1/get-public-config` with no `Authorization` header.
+   Accept the path only if the status is 200, `X-Warehouse-Path: lan` is present, and `data.instanceId` equals the saved
+   `OperatorServer.instanceId`. Liveness only: `GET <lan>/functions/v1/hello` (public, 200, body `"Hello from Edge Functions!"`).
+   Both count against the functions bucket (100 at once, then one every 0.6 s, per phone). The body's `canonicalOrigin` is the public
+   https origin: do not apply the bootstrap origin-equality check to the LAN origin. The request must carry the host the way the URL
+   writes it (`Host: <address>:<port>`, which any HTTP client does by itself): see the status codes.
+3. **Check it while the internet is up.** While the phone is on Wi-Fi and the public path works, the app is to probe the saved LAN
+   address (item 2, no credentials) about once a day and to show "reachable", "refused" or "unreachable" in Settings, so a wrong range,
+   client isolation or a stale address shows before the outage and not during it. The server asks nothing more for this than to keep
+   `urls.lan` and `X-Warehouse-Path` stable.
+4. **The address can change** (DHCP). The probe is also what stops a phone from sending tokens to whichever device now holds an old
+   address. The operator reads the current address with `bash scripts/lan.sh status` or `node scripts/doctor.mjs --local`
+   (`LAN address for the app: http://...`).
+5. **Status codes specific to the LAN path.**
+   - `403` with `X-Warehouse-Path: lan` (nginx's HTML page): this phone's address is outside the allowed range. The LAN is unusable from
+     this network. Do not retry in a loop.
+   - `404` with `X-Warehouse-Path: lan` and the JSON body `{"message":"no Route matched with those values"}` on a path that exists on the
+     public origin: the request carried another `Host` than the server's own address (the listener is pinned to it). The client used a name
+     or another address for it. Treat the path as unusable.
+   - Connection refused or a timeout: the listener is down or the address is stale. The LAN is unusable.
+   - **`401` with a gateway key message (`{"message":"Unauthorized"}` or `{"message":"No API key found in request"}`) received over the LAN
+     path: mark the LAN path unusable and do not end the session.** Ending the session is right only on the public path. Over the LAN it
+     means the `gateway-lan` container holds other keys than the installation (after `rotate-keys.sh`, until it is recreated), and
+     sign-in needs the internet, so signing the phone out would leave it unable to work until the line is back.
+   - `429` and 5xx are answers from the server, not transport failures: they do not trigger a switch of path.
+6. **Limits on the LAN path are per phone**: REST is a burst of 1800, then 30 a second; functions a burst of 100, then one every
+   0.6 s. `429` carries `Retry-After: 1`.
+7. **Sign-in.** `central-exchange` goes over the public path only. **`operator-otp` (`request` and `verify`) may go over the LAN path, for
+   an administrator's break-glass sign-in during an outage:** with no internet the SMS provider cannot be reached, and while the operator has
+   made a break-glass code for the number, `operator-otp/request` answers the normal success body ("OTP sent successfully") even though no
+   SMS was sent, as in the break-glass item above, so the app reaches its code screen; any other number gets 503 "SMS delivery
+   unavailable". The request can take up to 10 seconds to answer in that case (the provider call has a 10-second limit). The code
+   is typed in clear on the Wi-Fi (valid 10 minutes, once). The refresh RPC (REST) may use the LAN path.
+8. **Writes** are never resent after a transport failure or a switch of path (the lost-answer rule above).
 
 ## Writes: refusals, version tokens, request codes and locks
 
