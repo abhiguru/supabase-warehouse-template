@@ -1364,7 +1364,9 @@ function dailyFake(h, spec = {}) {
     const backup = s.backup ?? 'ok';
     const fields = { lock: 'acquired', backup, verify: backup === 'ok' ? 'ok' : 'skipped', prune: 'ok', pruned: 0, retention: 'ok', done: '1', ...s };
     if (backup === 'ok' && !('backup_dir' in s)) fields.backup_dir = addBackup(h, stampOf(h.clock.t));
-    if (s.verify && s.verify !== 'ok' || backup !== 'ok') { fields.prune = 'skipped'; fields.retention = 'skipped'; }
+    // As scripts/watch-daily.sh: pruning and retention run after a failed backup or verify too; only the skipped backup
+    // (database not healthy) ends the pass before them.
+    if (backup === 'skipped') { fields.prune = 'skipped'; fields.retention = 'skipped'; }
     writeFileSync(file, Object.entries(fields).map(([k, v]) => `${k}=${v}`).join('\n') + '\n');
     return { status: s.exit ?? 0, stdout: '', stderr: s.stderr ?? '' };
   };
@@ -1484,9 +1486,10 @@ test('daily: a failed pass is retried after an hour, at most 3 times a day; the 
     assert.equal(s.lastDailyRun.backup.result, 'failed');
     assert.match(s.lastDailyRun.backup.message, /attempt 3 of 3/);
     assert.ok(!JSON.stringify(s).includes('supersecretpassword123'));
-    assert.equal(s.lastDailyRun.retention.result, 'skipped');
-    assert.match(s.lastDailyRun.retention.message, /today's backup failed/);
-    assert.equal(existsSync(join(h.state, 'config/watch-retention.last')), false, 'retention was not run and records no result');
+    // Retention and pruning run after a backup that failed, so a disk that is full of old backups is cleared even then.
+    assert.equal(s.lastDailyRun.retention.result, 'ok');
+    assert.equal(s.lastDailyRun.retention.message, 'retention applied');
+    assert.match(readFileSync(join(h.state, 'config/watch-retention.last'), 'utf8'), /^result=ok$/m, 'retention ran and records its result');
     assert.equal(h.posts.filter(p => /^\[FAILED\]/.test(p.text)).length, 0, 'no separate [FAILED] message');
     const fired = h.posts.filter(p => /^\[FIRING\]/.test(p.text) && /The last backup failed/.test(p.text));
     assert.equal(fired.length, 1, 'the alert path reports it once');
@@ -1513,15 +1516,54 @@ test('daily: a retry that succeeds ends the day', async () => {
   } finally { clean(h); }
 });
 
-test('daily: a backup that fails verification is a failure; nothing is pruned and retention is skipped', async () => {
+test('daily: a backup that fails verification is a failure, but pruning and retention still ran; the message names the verified backup that is kept', async () => {
   const h = harness();
   try {
-    h.seed(); dailyFake(h, { verify: 'failed', verify_message: 'Backup signature mismatch' });
+    h.seed(); dailyFake(h, { verify: 'failed', verify_message: 'Backup signature mismatch', pruned: 2, verified_kept: 'warehouse-20261015T020000Z' });
     h.clock.t = at(19, 3, 0); await daily(h);
     const run = h.state_().lastDailyRun;
     assert.equal(run.backup.result, 'failed');
-    assert.match(run.backup.message, /was made but verification failed: Backup signature mismatch/);
-    assert.equal(run.retention.result, 'skipped');
+    assert.match(run.backup.message, /^backup warehouse-\d{8}T\d{6}Z was made but verification failed \(the newest verified backup, warehouse-20261015T020000Z, is kept\): Backup signature mismatch \(attempt 1 of 3\)$/);
+    // The retention line shows what ran, not "skipped": pruning removed 2 and retention was applied.
+    assert.equal(run.retention.result, 'ok');
+    assert.equal(run.retention.message, 'retention applied; removed 2 old backups (the newest verified backup, warehouse-20261015T020000Z, is kept)');
+    assert.match(readFileSync(join(h.state, 'config/watch-retention.last'), 'utf8'), /^result=ok$/m);
+    const out = [];
+    await W.main(['status'], h.deps, t => out.push(t));
+    assert.match(out[0], /Daily backup: failed on .* - backup \S+ was made but verification failed/);
+    assert.match(out[0], /Daily retention: ok on .* - retention applied; removed 2 old backups \(the newest verified backup, warehouse-20261015T020000Z, is kept\)/);
+    // No backup has ever been verified: the message says so instead of naming one. One old backup removed reads as singular.
+    const none = harness();
+    try {
+      none.seed(); dailyFake(none, { verify: 'failed', verify_message: 'bad', pruned: 1, verified_kept: '' });
+      none.clock.t = at(19, 3, 0); await daily(none);
+      assert.match(none.state_().lastDailyRun.backup.message, /verification failed \(no backup is on record as verified yet\): bad \(attempt 1 of 3\)$/);
+      assert.equal(none.state_().lastDailyRun.retention.message, 'retention applied; removed 1 old backup (no backup is on record as verified yet)');
+    } finally { clean(none); }
+    // A long reason from the verify is what the 400-character cut takes, not the note about the kept backup or the attempt counter.
+    const long = harness();
+    try {
+      long.seed(); dailyFake(long, { verify: 'failed', verify_message: 'x'.repeat(400), pruned: 1, verified_kept: 'warehouse-20261015T020000Z' });
+      long.clock.t = at(19, 3, 0); await daily(long);
+      const text = long.state_().lastDailyRun.backup.message;
+      assert.match(text, /^backup warehouse-\d{8}T\d{6}Z was made but verification failed \(the newest verified backup, warehouse-20261015T020000Z, is kept\): x+/);
+      assert.match(readFileSync(join(long.state, 'config/watch-backup.last'), 'utf8'), /^message=backup warehouse-\d{8}T\d{6}Z was made but verification failed \(the newest verified backup, warehouse-20261015T020000Z, is kept\): x+/m);
+    } finally { clean(long); }
+    // What pruning has to say (the backup of an interrupted upgrade that it kept, say) is on the retention line when the backup failed.
+    const note = harness();
+    try {
+      note.seed(); dailyFake(note, { backup: 'failed', backup_message: 'Refusing: not enough free space in /x: ...', pruned: 0, prune_message: 'kept warehouse-20261001T020000Z, the backup of the interrupted upgrade (config/upgrade-in-progress)' });
+      note.clock.t = at(19, 3, 0); await daily(note);
+      assert.equal(note.state_().lastDailyRun.retention.message, 'retention applied; kept warehouse-20261001T020000Z, the backup of the interrupted upgrade (config/upgrade-in-progress)');
+    } finally { clean(note); }
+    // Pruning that fails after a failed verify is still reported as a retention failure.
+    const broke = harness();
+    try {
+      broke.seed(); dailyFake(broke, { verify: 'failed', verify_message: 'bad', prune: 'failed', prune_message: 'permission denied' });
+      broke.clock.t = at(19, 3, 0); await daily(broke);
+      assert.equal(broke.state_().lastDailyRun.retention.result, 'failed');
+      assert.match(broke.state_().lastDailyRun.retention.message, /removing old backups failed: permission denied/);
+    } finally { clean(broke); }
   } finally { clean(h); }
 });
 
@@ -1594,6 +1636,13 @@ test('daily: the backup location guard, a cut-short pass and a timeout', async (
     }
     const cut = W.interpretDaily(ctx, { status: 143, stdout: '', stderr: 'Terminated' }, { lock: 'acquired', backup: 'ok' });
     assert.equal(cut.backup.result, 'failed'); assert.match(cut.backup.message, /did not finish: Terminated/);
+    assert.deepEqual(cut.retention, { result: 'skipped', message: 'retention not run: the daily run did not finish' }, 'cut short before retention: no claim about the backup');
+    // Cut short after retention ran: what the file says is kept.
+    assert.deepEqual(W.interpretDaily(ctx, { status: 143, stdout: '', stderr: '' }, { lock: 'acquired', backup: 'ok', retention: 'ok' }).retention, { result: 'ok', message: '' });
+    // A failed backup and a failed verify keep their pruning and retention results; the verified backup that is kept is passed on.
+    const failedBackup = W.interpretDaily(ctx, ran, { done: '1', backup: 'failed', backup_message: 'Refusing: not enough free space', verify: 'skipped', prune: 'ok', pruned: '3', verified_kept: 'warehouse-20261015T020000Z', retention: 'ok' });
+    assert.deepEqual([failedBackup.backup.result, failedBackup.prune.result, failedBackup.prune.pruned, failedBackup.prune.verifiedKept, failedBackup.retention.result], ['failed', 'ok', 3, 'warehouse-20261015T020000Z', 'ok']);
+    assert.equal(W.interpretDaily(ctx, ran, { done: '1', backup: 'ok', backup_dir: good, verify: 'failed', prune: 'ok', retention: 'ok' }).prune.verifiedKept, '', 'none on record');
     const timed = W.interpretDaily(ctx, { status: 143, stdout: '', stderr: '', timedOut: true }, {});
     assert.match(timed.backup.message, /timed out/);
     assert.equal(W.interpretDaily(ctx, { status: 75, stdout: '', stderr: '' }, { lock: 'held', done: '1' }).skipped, 'operator lock is held');
@@ -1601,6 +1650,7 @@ test('daily: the backup location guard, a cut-short pass and a timeout', async (
     h.seed(); h.clock.t = at(19, 3, 0);
     await W.runDailyCommand(h.deps, { checks: HEALTHY, daily: async () => { throw new Error('spawn exploded'); } });
     assert.match(h.state_().lastDailyRun.backup.message, /the daily run crashed: spawn exploded/);
+    assert.equal(h.state_().lastDailyRun.retention.message, 'retention not run: the daily run crashed');
     assert.equal(h.state_().dailyRunning, null);
   } finally { clean(h); }
 });
@@ -1971,12 +2021,15 @@ case "\${FAKE_BACKUP:-ok}" in
   ok) d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d" ;;
   unhealthy) echo 'Database service is not healthy.' >&2; exit 1 ;;
   fail) echo 'pg_dump: error: boom' >&2; exit 1 ;;
-  warn|warn1|other-warning)
+  warn|warn1|other-warning|space-warn|both-warn)
     d="$WAREHOUSE_STATE_DIR/backups/warehouse-20261019T020000Z"; mkdir -p "$d"; echo x > "$d/metadata.txt"; cp "$WAREHOUSE_STATE_DIR/public/instance.json" "$d/"; echo "Backup created at $d"
     case "$FAKE_BACKUP" in
       warn) echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       warn1) echo 'WARNING: 1 file re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
       other-warning) echo 'WARNING: something else entirely' >&2; echo 'WARNING: 3 files re-copied: backup not-a-backup has a damaged copy.' >&2 ;;
+      space-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2 ;;
+      both-warn) echo 'WARNING: df gave no free space for /srv/state/backups, so stat -f was used for the free-space check; find out why df fails there (docs/TROUBLESHOOTING.md, "backup refused: not enough free space").' >&2
+        echo 'WARNING: 2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy. This backup holds good copies.' >&2 ;;
     esac ;;
   hang) sleep 30 ;;
 esac`,
@@ -2012,6 +2065,11 @@ test('watch-daily.sh: backup, verify, prune and retention in that order, all und
     assert.equal(r.fields.pruned, '2', 'the 9 of this installation (8 + the new one) are cut to 7');
     assert.ok(existsSync(join(f.state, 'backups/warehouse-20261001T020000Z')), 'another installation\'s directory is untouched');
     assert.ok(!existsSync(join(f.state, 'backups/warehouse-20261010T020000Z')));
+    // The backup whose verify passed is on the verified list (private), and it is the one pruning reports as kept.
+    const list = join(f.state, 'config/backups-verified.list');
+    assert.match(readFileSync(list, 'utf8'), /^warehouse-20261019T020000Z \d{10}\n$/);
+    assert.equal(statSync(list).mode & 0o777, 0o600);
+    assert.equal(r.fields.verified_kept, 'warehouse-20261019T020000Z');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
@@ -2035,25 +2093,70 @@ test('watch-daily.sh: the sentence backup.sh prints when it re-copied files from
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
-test('watch-daily.sh: an unhealthy database is skipped; a failed backup skips retention; a failed verify skips prune and retention', () => {
+test('watch-daily.sh: the WARNING backup.sh prints when df gave no free space and stat -f stood in is passed on as backup_warning too (joined with the other one, when both are there)', () => {
   const f = dailyScriptFixture();
   try {
+    // The line is the one scripts/backup.sh prints (tests/backup-storage.test.mjs pins its text from that side).
+    const space = 'df gave no free space for /srv/state/backups, so stat -f was used for the free-space check';
+    let r = f.run({ FAKE_BACKUP: 'space-warn' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.retention, r.fields.done], ['ok', 'ok', 'ok', '1']);
+    assert.equal(r.fields.backup_warning, space);
+    assert.match(r.stderr, /WARNING: df gave no free space/, 'and still on standard error for the journal');
+    r = f.run({ FAKE_BACKUP: 'both-warn' });
+    assert.equal(r.fields.backup_warning, `2 files re-copied: backup warehouse-20261018T020000Z has a damaged copy; ${space}`);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('watch-daily.sh: only an unhealthy database ends the pass before pruning and retention; a failed backup or a failed verify still prunes, keeps the verified backup and applies retention', () => {
+  const f = dailyScriptFixture();
+  try {
+    const day = n => `warehouse-202610${n}T020000Z`;
+    for (let n = 10; n <= 18; n++) addBackup({ state: f.state }, day(n));
+    const list = join(f.state, 'config/backups-verified.list');
+    const reset = () => fs.writeFileSync(join(f.scratch, 'order.log'), '');
+    const remaining = () => readdirSync(join(f.state, 'backups')).sort();
+    // The database is not healthy: nothing runs after the backup, nothing is pruned, nothing is recorded.
     let r = f.run({ FAKE_BACKUP: 'unhealthy' });
     assert.equal(r.status, 0);
-    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.retention, r.fields.done], ['skipped', 'skipped', 'skipped', '1']);
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.prune, r.fields.retention, r.fields.done], ['skipped', 'skipped', 'skipped', 'skipped', '1']);
     assert.match(r.fields.backup_message, /not healthy/);
     assert.deepEqual(r.log.filter(l => /verify|retention/.test(l)), []);
-    writeFileSync(join(f.root, 'order.reset'), ''); fs.writeFileSync(join(f.scratch, 'order.log'), '');
+    assert.equal(remaining().length, 9, 'nothing was pruned');
+    assert.equal(existsSync(list), false);
+    // The oldest backup was verified long ago; every later one was not.
+    fs.writeFileSync(list, `${day(10)} 1790000000\n`, { mode: 0o600 });
+    // The backup fails (a refusal for lack of space is the example): the pass still prunes and applies retention. The 9
+    // are cut to the newest 7 and the verified one: only day 11 goes.
+    reset();
     r = f.run({ FAKE_BACKUP: 'fail' });
-    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.retention], ['failed', 'skipped', 'skipped']);
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.prune, r.fields.retention, r.fields.done], ['failed', 'skipped', 'ok', 'ok', '1']);
     assert.match(r.fields.backup_message, /pg_dump: error: boom/);
-    assert.match(r.fields.retention_message, /today's backup failed/);
-    fs.writeFileSync(join(f.scratch, 'order.log'), '');
+    assert.equal(r.fields.pruned, '1');
+    assert.equal(r.fields.verified_kept, day(10));
+    assert.equal('retention_message' in r.fields, false);
+    assert.ok(r.log.includes('retention apply'), 'retention ran after the failed backup');
+    assert.deepEqual(remaining(), [day(10), ...[12, 13, 14, 15, 16, 17, 18].map(day)]);
+    // The backup is made and fails its verify: it is kept (just made) but not recorded; the pass prunes (day 12 goes: the
+    // newest 7 are now days 13 to 18 and the new one) and applies retention; the verified backup is still there.
+    reset();
     r = f.run({ FAKE_VERIFY: 'bad' });
-    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.prune, r.fields.retention], ['ok', 'failed', 'skipped', 'skipped']);
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.prune, r.fields.retention], ['ok', 'failed', 'ok', 'ok']);
     assert.match(r.fields.verify_message, /signature mismatch/);
-    assert.equal(r.log.some(l => l.startsWith('retention')), false);
-    fs.writeFileSync(join(f.scratch, 'order.log'), '');
+    assert.equal(r.fields.pruned, '1');
+    assert.equal(r.fields.verified_kept, day(10), 'the verified backup is named, not the unverified new one');
+    assert.ok(r.log.includes('retention apply'));
+    assert.equal(readFileSync(list, 'utf8'), `${day(10)} 1790000000\n`, 'the list is unchanged: a backup that failed its verify is not recorded');
+    assert.deepEqual(remaining(), [day(10), ...[13, 14, 15, 16, 17, 18, 19].map(day)]);
+    // The next night verifies: the new backup joins the list, the old verified one is no longer protected and leaves it.
+    reset();
+    r = f.run();
+    assert.deepEqual([r.fields.backup, r.fields.verify, r.fields.prune, r.fields.retention], ['ok', 'ok', 'ok', 'ok']);
+    assert.equal(r.fields.pruned, '1');
+    assert.equal(r.fields.verified_kept, day(19));
+    assert.match(readFileSync(list, 'utf8'), /^warehouse-20261019T020000Z \d{10}\n$/, 'the old line was trimmed with its backup');
+    assert.deepEqual(remaining(), [13, 14, 15, 16, 17, 18, 19].map(day));
+    reset();
     r = f.run({ FAKE_RETENTION: 'bad' });
     assert.deepEqual([r.fields.backup, r.fields.retention], ['ok', 'failed']);
     assert.match(r.fields.retention_message, /retention broke/);
@@ -2075,7 +2178,7 @@ test('watch-daily.sh: another operator command holding the lock ends the pass wi
     const r = f.run({ FAKE_BACKUP: 'hang', WAREHOUSE_WATCH_BACKUP_SECS: '1', WAREHOUSE_WATCH_KILL_AFTER: '1s' });
     assert.ok(Date.now() - started < 15000);
     assert.equal(r.fields.backup, 'failed'); assert.match(r.fields.backup_message, /timed out/);
-    assert.equal(r.fields.retention, 'skipped');
+    assert.deepEqual([r.fields.prune, r.fields.retention], ['ok', 'ok'], 'a backup that timed out does not stop pruning and retention');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });
 
@@ -2154,15 +2257,267 @@ test('prune removes nothing, and says so, when a backup is dated more than an ho
   } finally { clean(h); }
 });
 
-test('prune-backups command prints removed= and note= and protects the path it is given', async () => {
+test('prune-backups command prints removed=, note= and verified_kept= and protects the path it is given; a backup that failed has no path', async () => {
   const h = harness();
   try {
     const names = Array.from({ length: 8 }, (_, i) => `warehouse-202610${String(10 + i).padStart(2, '0')}T020000Z`);
     for (const n of names) addBackup(h, n);
     const out = [];
     assert.equal(await W.main(['prune-backups', join(h.state, 'backups', names[7])], h.deps, t => out.push(t)), 0);
-    assert.equal(out[0], `removed=1\nnote=`);
-    assert.equal(await W.main(['prune-backups'], h.deps, t => out.push(t)), 1);
+    assert.equal(out[0], `removed=1\nnote=\nverified_kept=`);
+    // No path: the daily backup failed, so there is no backup just made; pruning still runs.
+    addBackup(h, 'warehouse-20261018T020000Z');
+    assert.equal(await W.main(['prune-backups'], h.deps, t => out.push(t)), 0);
+    assert.equal(out[1], `removed=1\nnote=\nverified_kept=`);
+    assert.ok(!existsSync(join(h.state, 'backups', names[1])));
+    // Arguments that make no sense are refused before anything is touched, on standard error (watch-daily.sh reads the reason there).
+    for (const bad of [['--verified'], ['--bogus'], ['a', 'b'], ['--verified', names[7], '--verified', names[7]]]) {
+      const before = readdirSync(join(h.state, 'backups')).length;
+      const shown = []; const printed = [];
+      assert.equal(await W.main(['prune-backups', ...bad], h.deps, t => printed.push(t), t => shown.push(t)), 1, bad.join(' '));
+      assert.deepEqual(shown, ['Usage: prune-backups [PATH_OF_THE_BACKUP_JUST_MADE] [--verified NAME]'], bad.join(' '));
+      assert.deepEqual(printed, [], 'nothing on standard output');
+      assert.equal(readdirSync(join(h.state, 'backups')).length, before, 'nothing removed');
+    }
+    assert.equal(existsSync(join(h.state, 'config/backups-verified.list')), false, 'nothing recorded');
+    // A --verified name that is not a backup of this installation is a note: pruning goes on, nothing is recorded.
+    addBackup(h, 'warehouse-20261019T020000Z');
+    for (const bad of ['not-a-backup', 'warehouse-20200101T000000Z']) {
+      const shown = []; const printed = [];
+      assert.equal(await W.main(['prune-backups', '--verified', bad], h.deps, t => printed.push(t), t => shown.push(t)), 0, bad);
+      assert.deepEqual(shown, []);
+      assert.match(printed[0], new RegExp(`^removed=\\d+\nnote=--verified needs the name of a backup directory in ${join(h.state, 'backups')} \\(it was '${bad}'\\); nothing was recorded as verified\nverified_kept=$`));
+    }
+    assert.equal(readdirSync(join(h.state, 'backups')).length, 7, 'the newest 7 are what is left: pruning ran');
+    assert.equal(existsSync(join(h.state, 'config/backups-verified.list')), false, 'nothing recorded');
+  } finally { clean(h); }
+});
+
+test('prune-backups --verified records the backup in config/backups-verified.list (private, one line per name, trimmed to the backups that still exist) and then prunes', async () => {
+  const h = harness();
+  try {
+    const list = join(h.state, 'config/backups-verified.list');
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    for (let n = 10; n <= 14; n++) addBackup(h, nm(n));
+    const run = async (...args) => { const out = []; assert.equal(await W.main(['prune-backups', ...args], h.deps, t => out.push(t)), 0); return out[0]; };
+    h.clock.t = at(16, 3, 0);
+    // The first call creates the file with mode 0600; the path or the bare name both do.
+    assert.equal(await run(join(h.state, 'backups', nm(10)), '--verified', join(h.state, 'backups', nm(10))), `removed=0\nnote=\nverified_kept=${nm(10)}`);
+    assert.equal(readFileSync(list, 'utf8'), `${nm(10)} ${Math.floor(at(16, 3, 0) / 1000)}\n`);
+    assert.equal(statSync(list).mode & 0o777, 0o600);
+    // Later nights append: one line per name, the newest last.
+    h.clock.t = at(16, 3, 30); await run(nm(11), '--verified', nm(11));
+    h.clock.t = at(16, 4, 0); await run(nm(12), '--verified', nm(12));
+    assert.equal(readFileSync(list, 'utf8'), `${nm(10)} ${Math.floor(at(16, 3, 0) / 1000)}\n${nm(11)} ${Math.floor(at(16, 3, 30) / 1000)}\n${nm(12)} ${Math.floor(at(16, 4, 0) / 1000)}\n`);
+    // Verified again (a re-check of the same backup): the old line is replaced, not repeated, and moves last.
+    h.clock.t = at(16, 5, 0); await run('--verified', nm(10));
+    const epoch = (hh, mm) => Math.floor(at(16, hh, mm) / 1000);
+    assert.deepEqual(readFileSync(list, 'utf8').trim().split('\n'), [`${nm(11)} ${epoch(3, 30)}`, `${nm(12)} ${epoch(4, 0)}`, `${nm(10)} ${epoch(5, 0)}`]);
+    // A backup that is gone from the disk (removed by hand) leaves the list at the next record. Junk lines and links are never trusted.
+    rmSync(join(h.state, 'backups', nm(11)), { recursive: true });
+    addBackup(h, nm(13));
+    h.clock.t = at(16, 6, 0); await run(nm(13), '--verified', nm(13));
+    assert.deepEqual(readFileSync(list, 'utf8').trim().split('\n').map(l => l.split(' ')[0]), [nm(12), nm(10), nm(13)], 'the removed backup left the list');
+    assert.deepEqual(W.readVerifiedList(h.state).map(e => e.name), [nm(12), nm(10), nm(13)]);
+    writeFileSync(list, `garbage\n../../etc/passwd 1\n${nm(12)} 5\n\n${nm(12)} 9\n${nm(13)}\n`);
+    assert.deepEqual(W.readVerifiedList(h.state), [{ name: nm(12), epoch: 9 }, { name: nm(13), epoch: 0 }], 'a name seen twice counts once, as its last line says');
+    rmSync(list); symlinkSync(join(h.scratch, 'elsewhere'), list); writeFileSync(join(h.scratch, 'elsewhere'), `${nm(13)} 1\n`);
+    assert.deepEqual(W.readVerifiedList(h.state), [], 'a link in its place is ignored');
+    h.clock.t = at(16, 7, 0); await run(nm(13), '--verified', nm(13));
+    assert.equal(fs.lstatSync(list).isSymbolicLink(), false, 'and replaced by a plain private file');
+    assert.equal(readFileSync(join(h.scratch, 'elsewhere'), 'utf8'), `${nm(13)} 1\n`, 'the link target was not written through');
+    assert.equal(statSync(list).mode & 0o777, 0o600);
+    // Names that pruning removes leave the list with them.
+    for (let n = 15; n <= 20; n++) addBackup(h, nm(n));
+    fs.writeFileSync(list, `${nm(10)} 1\n${nm(12)} 2\n`, { mode: 0o600 });
+    h.clock.t = at(22, 3, 0);
+    const result = await run(nm(20));
+    assert.match(result, /^removed=\d+\nnote=\nverified_kept=warehouse-20261012T020000Z$/);
+    assert.equal(readFileSync(list, 'utf8'), `${nm(12)} 2\n`, 'day 10 was removed (older than the newest verified, outside the newest 7)');
+  } finally { clean(h); }
+});
+
+test('prune keeps the newest verified backup beyond the newest 7, through any number of nights whose verify fails; unverified backups older than it go first', async () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    const backups = join(h.state, 'backups');
+    const out = [];
+    const run = async (...args) => { out.length = 0; assert.equal(await W.main(['prune-backups', ...args], h.deps, t => out.push(t)), 0); return out[0]; };
+    // Day 1 is verified; from day 2 on every night's verify fails (the backup is made, the verify is not passed): no --verified.
+    addBackup(h, nm(1));
+    h.clock.t = at(2, 12); await run(nm(1), '--verified', nm(1));
+    for (let day = 2; day <= 12; day++) {
+      addBackup(h, nm(day));
+      h.clock.t = at(day + 1, 12);
+      await run(nm(day));
+      const kept = readdirSync(backups).sort();
+      assert.ok(kept.includes(nm(1)), `night ${day}: the verified backup is still there`);
+      assert.equal(kept.length, Math.min(day, 7) + (day > 7 ? 1 : 0), `night ${day}: the newest 7 and the verified one`);
+    }
+    assert.deepEqual(readdirSync(backups).sort(), [nm(1), ...[6, 7, 8, 9, 10, 11, 12].map(nm)]);
+    assert.equal(readFileSync(join(h.state, 'config/backups-verified.list'), 'utf8').trim().split('\n').length, 1, 'only the verified one is on the list');
+    // Nothing on the list for lack of any verify: the newest 7, as before.
+    const bare = harness();
+    try {
+      for (let n = 10; n <= 19; n++) addBackup(bare, nm(n));
+      const r = W.pruneBackups(bare.state, { now: at(21, 12) });
+      assert.deepEqual(r.removed, [nm(12), nm(11), nm(10)]); assert.equal(r.verifiedKept, '');
+    } finally { clean(bare); }
+    // Removal order when the pass is cut short: never-verified backups older than the newest verified one first (newest first),
+    // then the rest. Days 3 and 5 are verified, day 5 the newest: 1, 2, 4 are older and never verified; 3 is older but verified.
+    const order = harness();
+    try {
+      for (let n = 1; n <= 12; n++) addBackup(order, nm(n));
+      writeFileSync(join(order.state, 'config/backups-verified.list'), `${nm(3)} 1\n${nm(5)} 2\n`);
+      const r = W.pruneBackups(order.state, { now: at(21, 12) });
+      assert.deepEqual(r.removed, [nm(4), nm(2), nm(1), nm(3)], 'unverified older ones first, then the older verified backup');
+      assert.equal(r.verifiedKept, nm(5));
+      assert.deepEqual(readdirSync(join(order.state, 'backups')).sort(), [nm(5), ...[6, 7, 8, 9, 10, 11, 12].map(nm)]);
+      assert.equal(readFileSync(join(order.state, 'config/backups-verified.list'), 'utf8'), `${nm(5)} 2\n`, 'removed names left the list');
+    } finally { clean(order); }
+    // The backup just made and the newest verified one are both kept even when both are outside the newest 7.
+    const both = harness();
+    try {
+      for (let n = 1; n <= 10; n++) addBackup(both, nm(n));
+      writeFileSync(join(both.state, 'config/backups-verified.list'), `${nm(2)} 1\n`);
+      const r = W.pruneBackups(both.state, { protect: join(both.state, 'backups', nm(1)), now: at(21, 12) });
+      assert.deepEqual(r.removed, [nm(3)]);
+      assert.deepEqual(readdirSync(join(both.state, 'backups')).sort(), [nm(1), nm(2), ...[4, 5, 6, 7, 8, 9, 10].map(nm)]);
+    } finally { clean(both); }
+    // A listed backup that is another installation's, not a backup directory of this one, or gone is not "the newest verified".
+    const foreign = harness();
+    try {
+      for (let n = 1; n <= 10; n++) addBackup(foreign, nm(n));
+      addBackup(foreign, nm(11), 'another-installation');
+      writeFileSync(join(foreign.state, 'config/backups-verified.list'), `${nm(11)} 1\nwarehouse-20261020T020000Z 1\n${nm(2)} 1\n`);
+      const r = W.pruneBackups(foreign.state, { now: at(21, 12) });
+      assert.equal(r.verifiedKept, nm(2), 'the foreign and the missing entries are passed over');
+      assert.ok(existsSync(join(foreign.state, 'backups', nm(2))) && existsSync(join(foreign.state, 'backups', nm(11))));
+      assert.deepEqual(r.removed, [nm(1), nm(3)]);
+    } finally { clean(foreign); }
+    // The clock guard still wins: nothing is removed, and the verified backup is still reported.
+    const future = harness();
+    try {
+      for (let n = 1; n <= 10; n++) addBackup(future, nm(n));
+      addBackup(future, 'warehouse-20271231T235959Z');
+      writeFileSync(join(future.state, 'config/backups-verified.list'), `${nm(4)} 1\n`);
+      const r = W.pruneBackups(future.state, { now: at(21, 12) });
+      assert.deepEqual(r.removed, []); assert.match(r.note, /dated in the future/); assert.equal(r.verifiedKept, nm(4));
+    } finally { clean(future); }
+  } finally { clean(h); }
+});
+
+test('prune: a backups folder that does not exist yet has nothing to prune (a first night can fail before the folder is made)', async () => {
+  const h = harness();
+  try {
+    rmSync(join(h.state, 'backups'), { recursive: true, force: true });
+    assert.deepEqual(W.pruneBackups(h.state, { now: at(19, 12) }), { removed: [], note: '', verifiedKept: '' });
+    const out = [];
+    assert.equal(await W.main(['prune-backups'], h.deps, t => out.push(t)), 0);
+    assert.equal(out[0], 'removed=0\nnote=\nverified_kept=');
+    // Anything else that stops the folder being read is still an error, not a quiet pass.
+    writeFileSync(join(h.state, 'backups'), 'a file where the folder should be');
+    assert.throws(() => W.pruneBackups(h.state, { now: at(19, 12) }), /ENOTDIR/);
+  } finally { clean(h); }
+});
+
+// The record upgrade.sh writes before its first change (scripts/upgrade-record.mjs reads it).
+function upgradeRecord(h, backup, extra = {}) {
+  const fields = { format: 1, from_sha: 'a'.repeat(40), to_sha: 'b'.repeat(40), verified: 'yes', backup, step: 'setup', ...extra };
+  writeFileSync(join(h.state, 'config/upgrade-in-progress'), `${Object.entries(fields).map(([k, v]) => `${k}=${v}`).join('\n')}\n`, { mode: 0o600 });
+}
+
+test('prune keeps the backup that an interrupted upgrade recorded as its way back, however old, and says so; a record that names no backup protects nothing', async () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    const backups = join(h.state, 'backups');
+    for (let n = 1; n <= 10; n++) addBackup(h, nm(n));
+    upgradeRecord(h, join(backups, nm(1)));
+    const out = [];
+    assert.equal(await W.main(['prune-backups', join(backups, nm(10))], h.deps, t => out.push(t)), 0);
+    assert.equal(out[0], `removed=2\nnote=kept ${nm(1)}, the backup of the interrupted upgrade (config/upgrade-in-progress)\nverified_kept=`);
+    assert.deepEqual(readdirSync(backups).sort(), [nm(1), ...[4, 5, 6, 7, 8, 9, 10].map(nm)], 'days 2 and 3 went, day 1 stayed');
+    // Night after night, with failing verifies, it stays: it is the one backup the upgrade can go back to.
+    for (let n = 11; n <= 20; n++) { addBackup(h, nm(n)); assert.ok(W.pruneBackups(h.state, { now: at(25, 12) }).removed.every(name => name !== nm(1))); }
+    assert.ok(existsSync(join(backups, nm(1))));
+    // A backup that the record names but that is among the newest 7 needs no note.
+    upgradeRecord(h, join(backups, nm(20)));
+    assert.equal(W.pruneBackups(h.state, { now: at(25, 12) }).note, '');
+    // It protects whatever the record says about verification, and the path may come from another folder: only the name counts.
+    upgradeRecord(h, join(backups, nm(1)), { verified: 'no' });
+    assert.equal(W.pruneBackups(h.state, { now: at(25, 12) }).removed.includes(nm(1)), false);
+    upgradeRecord(h, join('/somewhere/else', nm(1)));
+    assert.equal(W.pruneBackups(h.state, { now: at(25, 12) }).removed.includes(nm(1)), false);
+    // No record that names a backup: no protection and no error. (An invalid record, one with no backup, a name that is no backup, no file, a folder in its place.)
+    for (const record of [() => upgradeRecord(h, join(backups, nm(1)), { from_sha: 'short' }), () => upgradeRecord(h, '', { verified: 'no' }), () => upgradeRecord(h, join(backups, 'manual-backup')),
+      () => {}, () => mkdirSync(join(h.state, 'config/upgrade-in-progress'))]) {
+      rmSync(join(h.state, 'config/upgrade-in-progress'), { recursive: true, force: true });
+      addBackup(h, nm(1));
+      record();
+      const r = W.pruneBackups(h.state, { now: at(25, 12) });
+      assert.equal(r.removed.includes(nm(1)), true, 'not protected');
+      assert.equal(r.note, '');
+    }
+  } finally { clean(h); }
+});
+
+test('prune removes a backup by renaming it first, finishes a removal that was cut short (a leftover is not a backup), and empties a tree that has a read-only folder', () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    const backups = join(h.state, 'backups');
+    for (let n = 1; n <= 9; n++) addBackup(h, nm(n));
+    // Day 1 holds a v6-style tree with a folder that rsync kept read-only; a removal that was cut short left half of day 0 behind.
+    for (const root of [join(backups, nm(1)), join(backups, `.warehouse-backup-removing.${nm(0)}`)]) {
+      mkdirSync(join(root, 'storage/a/b'), { recursive: true });
+      writeFileSync(join(root, 'storage/a/b/file'), 'photo');
+      chmodSync(join(root, 'storage/a/b'), 0o500);
+      chmodSync(join(root, 'storage/a'), 0o500);
+    }
+    const r = W.pruneBackups(h.state, { now: at(19, 12) });
+    assert.deepEqual(r.removed, [nm(2), nm(1)], 'the leftover is not counted: two of the nine are over');
+    assert.deepEqual(readdirSync(backups).sort(), [3, 4, 5, 6, 7, 8, 9].map(nm), 'the backups, the leftover and the tree are all gone');
+    // While the clock is wrong nothing is removed, the leftover included.
+    addBackup(h, 'warehouse-20271231T235959Z');
+    const left = join(backups, `.warehouse-backup-removing.${nm(0)}`);
+    mkdirSync(left);
+    assert.match(W.pruneBackups(h.state, { now: at(19, 12) }).note, /dated in the future/);
+    assert.ok(existsSync(left));
+  } finally { clean(h); }
+});
+
+test('prune names the verified backup of THIS installation also when it skips pruning (the clock, a missing instanceId): a listed backup of another installation is not it', () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    for (let n = 1; n <= 9; n++) addBackup(h, nm(n));
+    addBackup(h, nm(15), 'another-installation');
+    addBackup(h, 'warehouse-20271231T235959Z');
+    writeFileSync(join(h.state, 'config/backups-verified.list'), `${nm(15)} 3\nwarehouse-20261020T020000Z 3\n${nm(4)} 2\n`);
+    const r = W.pruneBackups(h.state, { now: at(25, 12) });
+    assert.match(r.note, /dated in the future/);
+    assert.equal(r.verifiedKept, nm(4), 'the other installation\'s backup and the missing one are passed over');
+    rmSync(join(h.state, 'backups/warehouse-20271231T235959Z'), { recursive: true });
+    writeFileSync(join(h.state, 'public/instance.json'), '{}');
+    const none = W.pruneBackups(h.state, { now: at(25, 12) });
+    assert.match(none.note, /has no instanceId/);
+    assert.equal(none.verifiedKept, '', 'none can be said to be ours');
+  } finally { clean(h); }
+});
+
+test('prune-backups --verified that cannot be recorded (the list cannot be written) is a note, and pruning still runs', async () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    for (let n = 1; n <= 9; n++) addBackup(h, nm(n));
+    mkdirSync(join(h.state, 'config/backups-verified.list'));            // a folder where the file belongs
+    const out = [];
+    assert.equal(await W.main(['prune-backups', join(h.state, 'backups', nm(9)), '--verified', nm(9)], h.deps, t => out.push(t)), 0);
+    assert.match(out[0], new RegExp(`^removed=2\nnote=could not record ${nm(9)} as verified: .+\nverified_kept=$`));
+    assert.deepEqual(readdirSync(join(h.state, 'backups')).sort(), [3, 4, 5, 6, 7, 8, 9].map(nm), 'the pass pruned all the same');
+    assert.deepEqual(readdirSync(join(h.state, 'config')).filter(name => name.includes('backups-verified')), ['backups-verified.list'], 'and left no temporary file behind');
   } finally { clean(h); }
 });
 

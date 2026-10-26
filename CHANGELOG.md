@@ -91,15 +91,21 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    supported for the current and the previous minor release (`SECURITY.md`); a backport never carries a migration (`CONTRIBUTING.md`).
    `setup.sh` now accepts the operator lock when its caller already holds it (`upgrade.sh` does), as `migrate.sh` and `backup.sh` already
    did; a descriptor 9 that only names the lock file no longer counts as holding it.
-14. **Backups keep the photos as files that later backups share (format `warehouse-backup-v6`); install `rsync` before `setup.sh`; if
-   the installation ever went through a restore, run `npm run storage:retag` right after `setup.sh` and before the first backup.**
+14. **Backups keep the photos as files that later backups share (format `warehouse-backup-v6`); install `rsync` before `setup.sh`;
+   make sure the backup disk has room for the first v6 backup (the photo tree once plus about 2.5 GiB); if the installation ever went
+   through a restore, run `npm run storage:retag` right after `setup.sh` and before the first backup.**
    Install the package `rsync` (`sudo apt-get install rsync`) before you run `setup.sh`: `setup.sh` and `db:restore-host`
    now refuse a host without it or without GNU `tar` (`node scripts/doctor.mjs --host-preflight` checks both), while `start.sh`
    only warns, so a host that has not installed it yet still starts its services, but `db:backup` fails until it has. The first backup
    after the update is a full copy of the photos as a tree; each later one costs the database dump and the new photos, because an
    unchanged file is a hard link to the previous backup's copy, and the API is stopped only for the dump and the last pass of the
-   copy (`db:backup` prints how long). Disk: the new tree is a second copy of the photos next to the v5 tarballs until those age
-   out (the seven newest backups are kept); the older `warehouse-backup-v5` backups are left alone and restore as before. Backups
+   copy (`db:backup` prints how long). **Disk: check the room before the first v6 backup.** `db:backup` now measures the backup disk
+   first and refuses, before it stops anything, unless it has free the whole photo tree once plus 10% of it, plus 1.5 times the
+   database, plus 256 MiB, plus a 2 GiB reserve (`WAREHOUSE_BACKUP_RESERVE_MB`): compare `du -sh "$WAREHOUSE_STATE_DIR/data/storage"` with
+   `df -h "$WAREHOUSE_STATE_DIR/backups"`. The new tree sits on the disk next to the v5 tarballs, which are never a base and age out
+   only as new backups push them out of the newest seven, so **until the v5 backups age out a refused night makes no new backup**;
+   if the check refuses, delete the oldest `warehouse-backup-v5` backups by hand (each frees about the size of the photo volume; copy
+   them to the USB drive first if you want to keep them) and take the backup again. The older v5 backups restore as before. Backups
    now also keep each stored file's content type and cache control, which every earlier restore dropped, including the
    PostgreSQL 17 to 18 upgrade (an in-place restore): after such a restore the files are served as `application/octet-stream`.
    `npm run storage:retag` sets them again from the catalog (safe to repeat; see "Content types of stored files" in
@@ -218,6 +224,23 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   `tar -p --xattrs` (modes kept). `doctor` checks for
   `rsync` (built with extended-attribute support) and GNU tar `--xattrs`: a refusal for `setup.sh` and `db:restore-host`, a warning
   for `start.sh`. The USB copy still archives the whole backup folder; its archive form changes in a later release.
+- **A backup checks the free space first, and old backups are pruned whatever the verify says.** `db:backup` now refuses, before it
+  stops any service or writes anything, when the disk of the backup folder has less free than it needs plus a reserve
+  (`WAREHOUSE_BACKUP_RESERVE_MB`, 2048 by default). Linking from an earlier backup it needs twice the new stored files (and their
+  folders) plus the database dump plus 256 MiB; with nothing to link from (the first v6 backup) it needs the whole photo tree once plus
+  10%, plus the dump, plus 256 MiB. The free space is read with `df`, else with `stat -f`; if neither answers the backup is refused
+  (the check is never silently off), and when `stat -f` had to stand in, the daily status line carries a warning. The numbers are the
+  last line on standard error and in Slack `backup_failed`, and a backup that goes ahead records `preflight_need_mb=` and
+  `preflight_avail_mb=` in `metadata.txt`. Until now `watch-daily.sh` skipped pruning and retention whenever the day's backup or its
+  verify failed, which is when a full disk needed them most, and each failed attempt left another backup behind. The daily pass now
+  prunes and applies retention after every attempt (only a database that is not running or not healthy ends it before them). A backup
+  whose verify passed is written to `config/backups-verified.list`; pruning keeps the newest 7 backups **and the newest verified one**,
+  however old, **and the backup that an interrupted `upgrade.sh` recorded as its way back**, so nights of failing verifies cannot push
+  the last good backup out. The next backup links from the newest backup verified within the last two days, else from the newest one
+  that passes its signature check, so failing verifies do not make every night copy the same new photos again. The failed-verify
+  message in the daily status names the verified backup that is kept. The local restore points stay at 7. Operator action: see
+  action 14 for the first v6 backup (it needs room on the backup disk); otherwise none (the list fills at the first night that
+  verifies; until then the newest 7 are kept, as before). TROUBLESHOOTING has an entry "backup refused: not enough free space".
 - **Setup asks for the PDF letterhead.** A first `setup.sh --operator` without `--letterhead-file` asks on a terminal for the path of a
   JPEG or PNG (Enter means plain PDFs) and, with no terminal (a script or an agent running setup), refuses with "choose the PDF
   letterhead" until `--letterhead-file PATH` or `--letterhead-file off` is given, as for the Slack webhook. A rerun without the option

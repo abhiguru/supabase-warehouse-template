@@ -173,7 +173,9 @@ alone.
 Once a day, inside the 6 hours after the chosen time, and only while the database and the services the backup stops
 (`gateway`, `functions`, `rest`, `storage`) are up, `watch.mjs daily` runs `scripts/watch-daily.sh` under one operator lock:
 `scripts/backup.sh`, then `scripts/verify-restore.sh` on that backup, then it prunes older backups, then
-`scripts/retention.sh apply`. The PDF renderer, a stopped or unhealthy `cups` or `sensor-bridge`, and a pooler that was stopped
+`scripts/retention.sh apply`. **Pruning and retention do not wait for the backup or its verify**: they run after every attempt,
+also when the backup was refused for lack of free space (the very night the disk needs them) or failed its verify. Only a
+database that is not running or not healthy ends the pass before them (nothing was tried that day). The PDF renderer, a stopped or unhealthy `cups` or `sensor-bridge`, and a pooler that was stopped
 on purpose do not hold the backup back; a pooler that runs but is unhealthy does (the backup restarts it and waits for it).
 A pass that a power cut or a kill cut short is recognised at the next trigger (the operator lock is free while the state still
 says "running") and made again at once. The daily timer
@@ -181,8 +183,27 @@ fires at the chosen time and at each of the 5 hours after it: a trigger with not
 attempt was under an hour ago) exits at once, and a pass that failed or found the services down is tried again at the next
 one. At most 3 times a day. Pruning keeps the newest 7 backup directories of this installation in `<state>/backups` (backups made
 by hand there, with the same name pattern and instance, count towards the 7) and removes nothing if a backup is dated in
-the future. Retention runs only after a verified backup. The USB backup drive is separate
-([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
+the future. **On top of the 7 it always keeps the newest backup that passed its verify**, however old, and never removes the one just
+made. A backup counts as verified when `verify-restore.sh` passed on it: the pass then writes its name and the time to
+`<state>/config/backups-verified.list` (one `name epoch` line per backup, mode 0600; the lines of backups that no longer exist
+are dropped). So a run of nights whose backup or verify fails cannot push the last good backup out of the 7, and a bad week
+does not leave the disk with seven unchecked copies and nothing known to restore. **It also keeps the backup of an interrupted
+`upgrade.sh`** (the one `config/upgrade-in-progress` names as the way back; the prune line says "kept ..., the backup of the
+interrupted upgrade"), so the nightly backups cannot push it out while the upgrade waits to be finished or undone. The newest backup
+verified within the last two days is also the one the next night's backup links its photos from; when none is that recent (nights
+whose verify keeps failing), it links from the newest backup that passes its signature check instead, so the same new photos are not
+copied again every night ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#backup-and-restore)). If nothing has been verified yet
+(the list is empty until the first night that passes, for example right after an update to this release), the newest 7 are
+kept, as before. When pruning is cut short, the backups that were never verified and are older than the newest verified one are
+removed first; a backup that was half removed is finished at the next pass.
+The daily status line (`node scripts/watch.mjs status`) shows what ran even on a night that failed: `Daily backup` carries the
+failure, and when the verify failed it names the verified backup that is kept ("… verification failed (the newest verified backup,
+warehouse-…, is kept): <reason>"); `Daily retention` says whether pruning and retention ran, how many old backups pruning removed and
+anything else pruning had to say. A backup that went ahead with something to report carries it on a verified night's line: stored files
+re-copied from a damaged earlier copy, or free space read with `stat -f` because `df` gave no number. A backup refused for
+lack of space (or because the free space could not be read at all) is reported by `backup_failed` with the numbers
+([TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore), "backup refused: not enough free space"). The USB
+backup drive is separate ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
 
 ## Mute and unmute
 
