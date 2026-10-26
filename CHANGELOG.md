@@ -152,6 +152,17 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    verified backup is 20 hours old or more. The restore check of a run no longer unpacks the photos onto the data disk; it needs the
    dump plus 256 MiB free in the state directory. A USB run holds the operator lock while it works, so the 5-minute checker is quiet for
    that time (`docs/MONITORING.md`).
+17. **Optional: turn on the LAN fallback so phones keep working when the internet is down. Off by default; nothing to do if you do not
+    want it.** `bash scripts/lan.sh on auto` (the stack must be running) starts a second nginx container, `gateway-lan`, on the host's
+    own private address (plain http, port 8080, only the warehouse network may connect), restarts the function runtime for a few seconds
+    and prints `LAN address for the app: http://<address>:<port>`, which the server also hands to signed-in phones. The new
+    app that uses it ships separately; it tries the public address first and the LAN address only after the public one fails. **Plain
+    http is an accepted exposure (owner decision of 2026-10-26):** while a phone is on this path, its tokens, photos and documents
+    cross the Wi-Fi unencrypted; read "LAN fallback" in `docs/OPERATOR_INSTALL.md` and `docs/CONTAINER_SECURITY.md` before you turn it
+    on, give the host a DHCP reservation, and run `bash scripts/lan.sh off` to remove it. An upgrade changes nothing for an installation
+    that does not use it, except that `compose.env` gains no lines until you run `lan.sh` (the defaults are loopback and off). `compose.sh`
+    leaves the `lan` profile out of a command while the host does not have the address, so a changed address never keeps the public
+    services from starting; the checker alerts `lan_ip_changed` and `lan_http_down` only while the fallback is on.
 
 ### Changed
 
@@ -169,6 +180,13 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   by an interrupted copy are removed. Readable archives are never deleted on a run with restore verification switched off. The
   lost-host restore accepts stored files whose names have spaces. CI's lost-host drill rebuilds a host from an encrypted USB archive and
   the key copy alone.
+- **LAN fallback (`gateway-lan`, `scripts/lan.sh`).** A second, optional nginx container (Compose profile `lan`) that serves the
+  gateway's routes over plain http on the host's own private address, for phones on the warehouse network while the internet is down:
+  the same key check, body limits and rate limits, no trust in a client-supplied address (the per-phone limits and the per-source OTP
+  limits see each phone's own address), `allow <warehouse network>; deny all;`, and `X-Warehouse-Path: lan` on every answer (the public
+  server sends `public`). `get-config` offers the address to signed-in phones as `urls.lan` while it is on; `get-public-config` never
+  does. `doctor` (`--lan`, and `--local` as a warning) and the checker (`lan_http_down`, `lan_ip_changed`, and the `gateway-lan`
+  log in the gateway rates) look after it. See Operator actions, item 17.
 - **The gateway is plain nginx from the official image; Kong is gone.** `docker/nginx` replaces `docker/kong.yml` and the
   `eval` entrypoint: nginx 1.30 (alpine-slim variant, pinned by tag and digest, no HIGH or CRITICAL finding at the time of the
   change), the routes, key check, CORS, body limits and the redacted access log as before, 128 MB instead of 512 MB, a read-only
@@ -176,7 +194,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   the image's own envsubst puts the origin and the two API keys (only those three variables, and the container refuses to start
   on a value that could change the configuration); the old `eval` of a shell string over `kong.yml` is gone, which closes the open item
   in `docs/CONTAINER_SECURITY.md`. Real-IP trust is in the public server block only, in front of a routes file shared with the
-  LAN server that a later change adds. Upstream names are looked up again every 5 seconds without a reload. The Compose service
+  LAN server of the optional `gateway-lan` service. Upstream names are looked up again every 5 seconds without a reload. The Compose service
   is `gateway`, the in-network name `http://gateway:8000`, and the variable `GATEWAY_HTTP_PORT` (`KONG_HTTP_PORT` still works).
 - **Rate limits are a leaky bucket, not a counter per clock minute.** REST: 30 requests a second per client address with a burst
   of 1800 (`rate=30r/s burst=1800 nodelay`), which is the same 1800 a minute on average and 18 a minute for each of 100 phones,

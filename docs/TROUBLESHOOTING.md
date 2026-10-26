@@ -45,7 +45,11 @@ order, and what not to do. The commands run from the checkout with `WAREHOUSE_ST
 4. When the line is back, wait two minutes. The tunnel reconnects by itself. Check `bash scripts/tunnel.sh status` and
    `node scripts/doctor.mjs`. If the public check still fails: `sudo systemctl restart warehouse-<state name>-tunnel.service`.
 5. The app cannot save a receipt, dispatch or invoice meanwhile. Write them on paper and enter them afterwards in the order of
-   the paper numbers; check the number the app suggests against the paper before saving.
+   the paper numbers; check the number the app suggests against the paper before saving. If the
+   [LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network) is on (`bash scripts/lan.sh status`), phones that
+   are signed in and on the warehouse Wi-Fi switch to it by themselves after the public address fails, and work normally; signing
+   in still needs the internet. If they do not, see
+   [the app says the LAN address is unreachable](#the-app-says-the-lan-address-is-unreachable).
 6. Alerts that could not be sent are not sent later. After the outage run `node scripts/watch.mjs status`.
 
 ### Power cut
@@ -426,6 +430,30 @@ it; only `functions` can.
 - **`tunnel.sh install-service`: `did not start`**: read
   `journalctl -u warehouse-<state name>-tunnel.service -n 50`; a dated copy of the
   previous unit is next to it in `/etc/systemd/system/` if you need to go back.
+
+### The app says the LAN address is unreachable
+
+The app uses the [LAN fallback](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network) (plain http, `http://<address>:<port>`)
+only after the public address has failed. If it then says the LAN address is unreachable, work from the host:
+
+1. `bash scripts/lan.sh status`. It prints `LAN address for the app: http://<address>:<port>`, whether the host still has that address,
+   and the state of the `gateway-lan` container. Compare the address with the one the phone shows.
+2. **`WARNING: this host no longer has <address>`** (also the alert `lan_ip_changed` and a warning in `doctor`): the router gave the host
+   another address, usually after a power cut. Run `bash scripts/lan.sh on auto`, then give the host a DHCP reservation in the router so
+   it stays put. Phones learn the new address the next time they connect over the internet; until then a phone holds the old one.
+   Meanwhile the public path is unaffected: `compose.sh` leaves the `lan` profile out while the address is missing, so `start.sh` and
+   the boot unit start everything else.
+3. **The container is not running or not healthy**: `bash scripts/compose.sh --profile lan logs --tail 50 gateway-lan`. A message
+   starting `gateway:` is the entrypoint refusing a missing or non-private `LAN_CIDR`: run `bash scripts/lan.sh on auto` again.
+4. **The host answers but the phone does not** (`node scripts/doctor.mjs --lan` passes): the phone is not allowed or cannot reach the
+   host. A `403` in the gateway-lan log or an HTTP 403 in `doctor` means the phone's address is outside `LAN_CIDR` (a Wi-Fi on a
+   different range; run `bash scripts/lan.sh on <address> --cidr <the warehouse network>`). No answer at all: the Wi-Fi isolates
+   clients (a guest network, "AP isolation") or the host firewall routes Docker traffic (`ufw default deny routed`): run the `sudo ufw
+   route allow ...` line that `lan.sh on` printed. Try `curl -sI http://<address>:<port>/functions/v1/hello` from a laptop on the same Wi-Fi.
+5. **Every phone says it with the internet working**: the app only uses the LAN address after a transport failure of the public one, so
+   look at the public path first ([Tunnel and public address](#tunnel-and-public-address)).
+
+Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working over the internet.
 
 ## Sign-in codes
 

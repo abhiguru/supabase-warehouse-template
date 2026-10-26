@@ -72,13 +72,15 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `db_long_transaction` | The oldest open transaction is older than 300 s |
 | `db_cache_hit_low` | The cache hit ratio is below 90%, judged only once at least 10,000 blocks were read since the last restart |
 | `db_dead_tuples_high` | More than 100,000 dead tuples (consider `VACUUM`) |
-| `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`) |
+| `service_down:<name>` | A service of the default profile is not running, or is unhealthy; the optional `supavisor`, `cups` and `sensor-bridge` only while their container exists (`supavisor` only after `pooler.sh on`); `service_down:gateway-lan` only while the LAN fallback is on (`COMPOSE_PROFILES` lists `lan`) |
 | `service_healed:<name>` | The checker started or restarted that service itself, or has done so 6 times in 24 hours and stopped (see "Self-healing"; at once; stays for an hour, or while it is stopped trying) |
 | `container_oom:<name>` | A container was killed for lack of memory (at once; stays for an hour) |
 | `container_restarts:<name>` | More than 3 restarts in the last hour |
 | `container_memory:<name>` | A container uses 90% or more of its memory limit |
 | `api_down` | The gateway does not answer `get-public-config` on this host |
 | `public_https_down` | The public HTTPS address does not answer, or answers as another installation |
+| `lan_http_down` | The LAN fallback is on (`LAN_ENABLED=true`) and `http://<LAN address>:<port>/functions/v1/get-public-config` does not answer from this host, answers as another installation, or answers without `X-Warehouse-Path: lan` (two failing runs; silent while the fallback is off; see "LAN fallback") |
+| `lan_ip_changed` | The LAN fallback is on and the host no longer has the address `LAN_BIND_IP` (the router gave it another one): phones cannot reach the fallback and the `gateway-lan` service is not started; the public path is not affected. Run `bash scripts/lan.sh on auto` |
 | `api_error_rate_high` | More than 5% of the gateway's requests in the last 5 minutes were 5xx (judged from 10 requests up) |
 | `api_latency_p95_high` | The gateway's p95 latency over the last 5 minutes is above 2 s (same minimum) |
 | `api_429_rate_high` | More than 2% of the gateway's requests in the last 5 minutes (judged from 50 requests up), or more than 20 of them, were answered 429 (rate limit): a client, or every phone on one Wi-Fi, is being refused |
@@ -104,7 +106,19 @@ every check, but not self-healing, back on.
 
 The gateway rates (`api_error_rate_high`, `api_latency_p95_high`, `api_429_rate_high`) are read from the last 5000 lines of the gateway
 log with their time stamps, cut to the last 5 minutes (`docker logs --since` is not used: on one Docker 29 host it returned nothing for
-any window up to an hour).
+any window up to an hour). While the LAN fallback is on, the `gateway-lan` log (the same format) is read the same way and its requests
+are counted in the same rates, so a phone that is refused on the warehouse network shows up here too.
+
+### LAN fallback
+
+The two alerts above are silent while `LAN_ENABLED` is not `true` (an alert left from before `bash scripts/lan.sh off` is cleared at the
+next run). `lan_ip_changed` is the usual one after a power cut: Docker cannot publish the container on an address the host no longer
+has, so `scripts/compose.sh` leaves the `lan` profile out of the command (`start.sh` and the boot unit still bring the public services
+up), `service_down:gateway-lan` is not raised (the service is not expected without the profile), and this alert says what happened.
+Repair: `bash scripts/lan.sh on auto`, and give the host a DHCP reservation. `lan_http_down` with the address still on the host means
+the container is stopped or unhealthy (`bash scripts/lan.sh status`, `bash scripts/compose.sh --profile lan logs --tail 50 gateway-lan`).
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-app-says-the-lan-address-is-unreachable) and
+[OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network).
 
 ## SMS delivery and the clock
 

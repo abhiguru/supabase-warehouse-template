@@ -16,6 +16,7 @@ Sections: [host prerequisites](#host-prerequisites),
 [authentication and OTP limits](#authentication-and-otp-limits),
 [central sign-in](#central-sign-in),
 [Cloudflare Tunnel ingress](#cloudflare-tunnel-ingress),
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
 [external doctor](#external-doctor), [first-use checks](#first-use-checks),
 [ordinary operation](#ordinary-operation), [retention](#retention),
 [rotate signing keys](#rotate-signing-keys),
@@ -223,7 +224,7 @@ anything when no address pool is free), starts only the database, applies the mi
 storage, bootstraps the administrator, starts every service with `--wait` and runs the local doctor. The gateway listens
 on `127.0.0.1:18000` only; the database, CUPS and the sensor bridge are never published.
 
-Optional services are Compose profiles that setup does not start: `printing`, `pooler` and `sensors`. The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
+Optional services are Compose profiles that setup does not start: `printing`, `pooler`, `sensors` and `lan` (the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network), switched with `bash scripts/lan.sh on|off|status` and then started with the rest). The pooler is off by default and is switched with `bash scripts/pooler.sh on|off|status`, not with `--profile` (see [Pooler (optional)](#pooler-optional)); `sensors` is the Tapo sensor
 bridge; set up as in [SENSORS.md](SENSORS.md#run-it-as-a-profile-of-the-installation), then
 `node scripts/set-capability.mjs sensors on` and a new `db:backup`).
 
@@ -875,7 +876,9 @@ by hand (a unit that runs as the installation user, not root (`User=` and `Group
 restore on a new host then needs your private copy or a new tunnel.
 
 If the LAN router cannot hairpin to the public hostname, configure local DNS
-for the same name; the app must always use the same HTTPS origin.
+for the same name; the app's own address is always this HTTPS origin. The only
+other address a phone may use is the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network),
+which it tries after this one has failed and never otherwise.
 
 ### Cloudflare zone settings
 
@@ -898,6 +901,78 @@ zone, by someone who never touches the warehouse server, is enough.
   `curl -sI https://warehouse-api.example.com/functions/v1/get-public-config` answers with a `cf-mitigated: challenge` header
   or a 403 page instead of JSON. Undo the setting; nothing on the host needs to change.
 
+## LAN fallback (plain http on the warehouse network)
+
+An internet outage stops the public path (the Cloudflare Tunnel) and, with it, the app on every phone, although the server and the
+phones are on the same Wi-Fi. The LAN fallback gives the phones a second address for the same server: the server's own address on the
+warehouse network, over **plain http**. The app tries the public address first and uses the LAN address only after the public one
+has failed; when the internet is back it returns to the public address by itself. Owner decision of 2026-10-26: no certificate, no DNS
+record and no router setting are involved, and this reverses the earlier rule that the app never uses cleartext, for this one case.
+
+- **What it is.** A second nginx container, `gateway-lan` (Compose profile `lan`, off by default), built from the gateway's own image
+  and routes (`docker/nginx`). It listens on port 8080 inside the container and is published on the host's **own private address**
+  only (`LAN_BIND_IP:LAN_HTTP_PORT`). It has the same key check, body limits and rate limits as the public gateway, with one
+  difference that matters: it takes the client address from the connection, never from a header (the public gateway trusts the
+  tunnel's `CF-Connecting-IP`), so the limits and the sign-in functions see each phone's own address. It answers the warehouse network
+  only (`LAN_CIDR`) and every answer carries `X-Warehouse-Path: lan`, which is how the app and `doctor` tell the two paths apart.
+- **What it is not.** It is not a way to sign in: the SMS code and the central sign-in need the internet, so a phone that is not
+  signed in cannot sign in during an outage. It does not publish anything to the internet, and the tunnel and the public gateway are
+  unchanged (the public gateway has no LAN listener at all).
+- **The exposure you accept.** While a phone uses this path, its access token (one hour) and any refresh token it exchanges cross
+  the Wi-Fi **unencrypted**, and so do the photos and documents it sends and receives. Anybody who has the Wi-Fi password, or is on
+  the network, can read them and act as that user until the access token ends. What stays in force: a refresh token is replaced at
+  every use and a stolen one used beside the real phone ends that session (reuse detection), sessions are deleted when a person is
+  deactivated, the LAN path is used only while the public path fails, and the listener refuses every address outside `LAN_CIDR`.
+  Protect the Wi-Fi like a key: a strong password that visitors do not get (give them a guest network that cannot reach the server),
+  and turn the fallback off with `bash scripts/lan.sh off` if the facility does not want this exposure.
+
+Steps (the stack must be running; the host needs a private address on the warehouse network):
+
+```bash
+export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
+bash scripts/lan.sh on auto        # the private address of the interface with the default route; or: bash scripts/lan.sh on 192.168.1.20
+bash scripts/lan.sh status         # the address for the app, whether the host still has it, the container
+bash scripts/lan.sh off            # removes the container and the variables
+```
+
+`on` takes `[<address>|auto] [--cidr <range>] [--port <n>]`. It refuses an address that is not private (10.x.x.x, 172.16-31.x.x,
+192.168.x.x) or is not on an interface of this host, a range outside those blocks or without the host in it, a port outside
+1024-65535, and a port something else holds (one held by this installation's own `gateway-lan` is fine, so it is safe to repeat).
+The range defaults to the network of the interface (`192.168.1.0/24` for `192.168.1.20/24`) and the port to 8080, or to the one
+already set. It writes `LAN_ENABLED`, `LAN_BIND_IP`, `LAN_HTTP_PORT`, `LAN_CIDR` and `COMPOSE_PROFILES=lan` (added beside any profile
+already listed) to `config/compose.env`, starts `gateway-lan`, recreates the function runtime (a few seconds; it now offers the address
+to signed-in phones), runs the LAN checks of `doctor` and prints, for example:
+
+```
+LAN fallback: 192.168.1.20:8080 on ens33, allowing 192.168.1.0/24
+LAN address for the app: http://192.168.1.20:8080
+Allowed clients: 192.168.1.0/24. Phones use this address only when the public address fails; sign-in still needs the internet. ...
+Host firewall: if this host runs ufw with routed traffic denied (ufw default deny routed), phones are refused until you run: sudo ufw route allow proto tcp from 192.168.1.0/24 to 192.168.1.20 port 8080
+```
+
+1. **Reserve the address.** Give the host a DHCP reservation in the router, so its address stays the same. If it changes anyway (a power
+   cut and a new lease), the container cannot be published on the old one: `compose.sh` leaves the `lan` profile out of the command
+   and says so, the public services start as usual, `bash scripts/lan.sh status` and `doctor` print a warning, and the checker alerts
+   `lan_ip_changed` ([MONITORING.md](MONITORING.md)). Run `bash scripts/lan.sh on auto` again. The phones learn the new address the
+   next time they connect over the internet (the app refreshes it from `get-config`); a phone that has been offline since the change
+   cannot use the fallback until then.
+2. **The firewall.** ufw does not filter Docker-published ports by default, so most hosts need nothing. The real controls are the bind
+   address (the container is published on that one address, not on every interface) and the allow-list inside the LAN server (that
+   one network). If the host runs `ufw default deny routed`, add the line `lan.sh` printed. Check that the router does not give
+   guests or other VLANs a route to the host; a Wi-Fi with client isolation will not reach the server at all.
+3. **Reading the address.** `bash scripts/lan.sh status` and `node scripts/doctor.mjs --local` print `LAN address for the app: http://<address>:<port>`.
+   The app is given it by the server (a signed-in phone has it after its next successful `get-config`); in Settings it shows the
+   address and the path it is on, "Connected via: warehouse network" or "internet" (the app change ships separately, and the address can be typed there when the saved one is stale).
+4. **Several facilities on one host** each need their own address or port: `--port` (the public gateway ports are loopback).
+5. **Backups and restore.** `compose.env` is in every backup, so a restore brings the LAN lines back. On a new host that does not have
+   the address, the guard above leaves the container out until you run `lan.sh on auto` there.
+
+`node scripts/doctor.mjs --lan` runs only the LAN checks: the address is on this host, the container is published on that address and
+nothing else, and `http://<address>:<port>/functions/v1/get-public-config` answers from this host with this installation's
+`instanceId` and `X-Warehouse-Path: lan`. `doctor --local` (what `start.sh`, `setup.sh` and `upgrade.sh` run) shows a fault of the
+fallback as a warning, so a router problem never stops a start or an upgrade; the full `node scripts/doctor.mjs` and `--lan` fail on it.
+If it does not work, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-app-says-the-lan-address-is-unreachable).
+
 ## External doctor
 
 ```bash
@@ -908,7 +983,8 @@ node scripts/doctor.mjs
 The external doctor repeats the local health check, then fetches the public configuration through the canonical origin
 (no redirects allowed) and verifies that the anon key, instance ID and canonical origin it returns are this installation's.
 Repeat it from warehouse Wi-Fi and from cellular data. `doctor --local` covers the loopback gateway only;
-`--host-preflight` and `--preflight` are the checks setup runs before touching anything.
+`--host-preflight` and `--preflight` are the checks setup runs before touching anything; `--lan` runs only the checks of the
+[LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network).
 
 If the external doctor reports `fetch failed` right after you routed the hostname, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#tunnel-and-public-address).
