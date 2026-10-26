@@ -518,12 +518,23 @@ it; only `functions` can.
   archives are encrypted but the key copy is not confirmed. Nothing was written to the drive. Archives on the drive are encrypted
   with `config/backup.key`, which lives on the disk that dies with the host, so the run waits until you have a copy elsewhere. In a
   terminal on the host, as the installation user: `bash scripts/backup-key-escrow.sh show` (with `WAREHOUSE_STATE_DIR` set). It prints
-  the key once; copy it to a password manager or paper kept away from the facility and from the drive, type its last 8 characters
-  back, and attach the drive again. After the key was replaced the old confirmation no longer counts: confirm the new key the same
-  way. Without a terminal: `bash scripts/backup-key-escrow.sh confirm --last8 XXXXXXXX`. `bash scripts/backup-key-escrow.sh check`
-  says whether the record is good. Do not copy a `backup-key.escrow` file from another installation: it records another key's
-  fingerprint and is refused. If you would rather not encrypt, `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"
-  --no-encrypt` needs no confirmation, and then the drive holds every credential of the instance in the clear.
+  the key once; copy it to a password manager or paper kept away from the facility and from the drive, then type or paste the **whole
+  key** back from your copy (a copy with one wrong character is refused, with the number of characters you gave; three tries), clear the
+  terminal as it says, and attach the drive again. After the key was replaced the old confirmation no longer counts: confirm the new
+  key the same way. Without a terminal: `bash scripts/backup-key-escrow.sh confirm --key-file FILE`, where FILE holds your copy of the
+  key. A rebuilt host (after `db:restore-host`) has no record either, because the record is not part of a backup: confirm again with
+  the copy you restored from. `bash scripts/backup-key-escrow.sh check` says whether the record is good. Do not copy a
+  `backup-key.escrow` file from another installation: it records another key's fingerprint and is refused. If you would rather not
+  encrypt, `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --no-encrypt` needs no confirmation, and then the
+  drive holds every credential of the instance in the clear.
+- **USB: `archives are still written unencrypted` (doctor, `usb_backup`, `backup-usb.sh status`)**: this installation's USB backup was
+  set up by an earlier release, when readable archives were the default, and nobody has run the setup since. It keeps writing readable
+  archives (every credential on the drive) with the old 2-hour limit. Run `sudo bash scripts/backup-usb.sh setup --state
+  "$WAREHOUSE_STATE_DIR"` (a tty and your password), then confirm the key copy as above; or type `--no-encrypt` if readable archives are
+  what you want, which clears the warning.
+- **USB: `could not read the free space of the drive`** (or of the state directory): `df` and the file system gave no number, so the
+  run could not tell whether the new archive fits. It stopped before writing or deleting anything. Look for a read error in `dmesg`,
+  try another USB port or cable, and attach the drive again; a drive that keeps doing this is failing.
 - **USB: drive too small**: the run stops with `drive too small: needs X, has Y`. The archive of the newest backup does not fit next
   to the newest valid archive already on the drive, even after the run deleted the older valid archives (it names each one it
   deleted). The drive must hold at least two archives while a new one is written, and three at rest with the default `--keep 3`:
@@ -536,7 +547,14 @@ it; only `functions` can.
   ([Disk full](#disk-full)), then attach the drive again.
 - **USB: readable `.tar` archives disappeared from the drive**: expected after the first encrypted archive was written and verified:
   the run deletes this installation's readable archives (it prints each one), because they hold every credential. Archives it could not
-  prove to be this installation's are named and left.
+  prove to be this installation's (an archive without a signature, one signed with another key) are named and left, on every run, until
+  you remove them yourself. **Deleting is not wiping:** on an exFAT drive the contents of a deleted archive can still be recovered
+  until they are overwritten. Before a drive that ever held readable archives leaves your hands, rotate the credentials they held
+  (`./rotate-keys.sh --yes`, the MSG91 key, the tunnel credential: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)) or
+  retire the drive and enrol a new one.
+- **USB: the drive fills up with archives that are never deleted**: the run never prunes an archive that is damaged, unsigned or signed
+  with another key, so the archives written under a replaced backup key stay (it cannot tell them from files somebody planted). After
+  you change the backup key, delete the old ones yourself once you no longer need the backups they hold.
 - **`db:restore`: `the backup instance.json differs from this state`**: the
   backup belongs to another installation, typically because `setup.sh` was run
   on the new host before restoring. In-place restore only replaces the instance
@@ -612,7 +630,7 @@ it; only `functions` can.
      backup that still has a `storage.tar.gz` is a `warehouse-backup-v5` backup and holds a whole copy of the photos, so deleting
      one frees about the size of the photo volume (`du -sh data/storage`). The first v6 backup has nothing to link from and needs the
      tree once plus 10%, and **until the v5 backups age out a refused night makes no new backup, so nothing is pruned by itself**: delete
-     the oldest v5 backups by hand (after copying them to the USB drive, if you want to keep them) until the numbers fit.
+     the oldest v5 backups by hand until the numbers fit. (The USB script copies only the newest verified backup, so it keeps no old backup for you; to keep one, write its archive into a separate folder of the drive outside this installation's folder, for example `warehouse-backups/kept/`: [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#backup-and-restore).)
      Which one is the newest verified (**never delete that one**: it is the last backup known to restore, and the next backup links its
      photos from it):
      `awk 'NF { print $1 }' "$WAREHOUSE_STATE_DIR/config/backups-verified.list" | sort | tail -n 1`

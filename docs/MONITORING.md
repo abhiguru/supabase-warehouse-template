@@ -89,7 +89,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
 | `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
 | `backup_failed` | The last daily backup failed; never muted |
-| `usb_backup` | The USB backup is set up and stale or failed, or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor` |
+| `usb_backup` | The USB backup is set up and stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor` |
 | `retention_failed` | The last retention clean-up failed |
 | `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
 | `operator_lock_stuck` | A setup or restore (or any command but the daily pass) has held the operator lock for 2 hours or more; the daily pass, 4 hours or more |
@@ -204,6 +204,16 @@ re-copied from a damaged earlier copy, or free space read with `stat -f` because
 lack of space (or because the free space could not be read at all) is reported by `backup_failed` with the numbers
 ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore), "backup refused: not enough free space"). The USB
 backup drive is separate: it keeps its own newest three archives ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#usb-backup-drive)).
+
+### USB run and the checker
+
+A USB backup run holds the operator lock from the moment it starts writing until it ends (it hashes every archive on the drive, checks
+the restore of the newest, and prunes). For that time the 5-minute checker finds the lock held and **skips all its checks**: it pings
+the external heartbeat but judges nothing and alerts on nothing, and it does not self-heal. A run is normally minutes; with 20 GB of
+photos, three archives kept and a USB 2.0 stick it can take about an hour, and a slow stick longer. This is accepted: it is no
+different from a `setup.sh` or a restore. `operator_lock_stuck` fires when a command other than the daily pass has held the lock
+for **2 hours** (the 4-hour limit is the daily pass's own), so a very slow drive can raise it; the alert clears when the run ends.
+If a run really hangs, the unit's own limit (6 hours) ends it.
 
 ## Mute and unmute
 
