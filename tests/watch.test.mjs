@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
 
@@ -17,7 +17,8 @@ const WEBHOOK = 'https://hooks.slack.com/services/T0AAAA/B0BBBB/abcDEF123456';
 const T0 = new Date(2026, 9, 19, 10, 0, 0).getTime();
 // The default-profile services of the final compose; supavisor, cups and sensor-bridge are profile services.
 const SERVICES = ['db', 'gateway', 'rest', 'storage', 'functions', 'pdf-renderer'];
-const idOf = name => Buffer.from(name.padEnd(6, '_')).toString('hex').slice(0, 12).padEnd(12, '0');
+// A container id (12 hex characters) that differs for every service name: gateway and gateway-lan share their first six letters.
+const idOf = name => createHash('sha1').update(name).digest('hex').slice(0, 12);
 const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 const bad = (stderr = 'failed') => ({ status: 1, stdout: '', stderr });
 
@@ -339,6 +340,132 @@ test('API: local gateway probe, public HTTPS probe', async () => {
     assert.equal((await W.checkApiPublic(h.ctx()))[0].ok, true);
     h.fetchTable[pub] = { status: 200, body: { success: true, data: { instanceId: 'other' } } };
     assert.equal((await W.checkApiPublic(h.ctx()))[0].ok, false, 'another installation answers');
+  } finally { clean(h); }
+});
+
+// The LAN fallback (scripts/lan.sh): the checker is silent while it is off, and alerts when the host loses the address or the
+// listener stops answering as this installation.
+const LAN_ENV = 'LAN_ENABLED=true\nLAN_BIND_IP=192.168.1.52\nLAN_HTTP_PORT=8080\nLAN_CIDR=192.168.1.0/24\nCOMPOSE_PROFILES=lan\n';
+const lanOn = h => writeFileSync(join(h.state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-test\nGATEWAY_HTTP_PORT=18000\nPOSTGRES_PASSWORD=supersecretpassword123\n${LAN_ENV}`, { mode: 0o600 });
+const HOST_WITH_LAN = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
+const LAN_URL = 'http://192.168.1.52:8080/functions/v1/get-public-config';
+const lanAnswer = (instanceId = 'iid-1', path = 'lan', status = 200) => async () => ({ ok: status < 400, status, headers: new Headers(path ? { 'x-warehouse-path': path } : {}), json: async () => ({ success: true, data: { instanceId } }) });
+
+test('LAN fallback: silent while off, and an alert left from before it was turned off is cleared', async () => {
+  const h = harness();
+  try {
+    h.deps.interfaces = () => HOST_WITH_LAN;
+    assert.deepEqual(await W.checkApiLan(h.ctx()), []);
+    writeFileSync(join(h.state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-test\nLAN_ENABLED=false\nLAN_BIND_IP=192.168.1.52\n', { mode: 0o600 });
+    assert.deepEqual(await W.checkApiLan(h.ctx()), []);
+    // lan_http_down failed twice, then the operator ran lan.sh off: the check runs, returns nothing, and the alert recovers.
+    lanOn(h);
+    h.deps.fetch = async () => { throw new Error('connect ECONNREFUSED'); };
+    const data = W.freshState(h.clock.t);
+    for (let run = 0; run < 2; run += 1) {
+      const ctx = W.makeContext(h.deps, data);
+      const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]);
+      W.evaluate(data, results, ran, h.clock.t + run * 5 * 60000);
+    }
+    assert.ok(data.alerts.lan_http_down.firingSince, 'two failing runs fire it');
+    data.alerts.lan_http_down.lastSent = h.clock.t;   // as if it had been posted
+    writeFileSync(join(h.state, 'config/compose.env'), 'WAREHOUSE_PROJECT_NAME=warehouse-test\nLAN_ENABLED=false\n', { mode: 0o600 });
+    const ctx = W.makeContext(h.deps, data);
+    const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]);
+    const plan = W.evaluate(data, results, ran, h.clock.t + 15 * 60000);
+    assert.deepEqual(plan.clear.map(item => item.id), ['lan_http_down'], 'cleared, not left firing');
+  } finally { clean(h); }
+});
+
+test('LAN fallback: the listener must answer as this installation with the LAN header; two failing runs alert', async () => {
+  const h = harness();
+  try {
+    lanOn(h);
+    h.deps.interfaces = () => HOST_WITH_LAN;
+    const ids = results => results.map(r => [r.id, r.ok]);
+    h.deps.fetch = async (url, options) => { h.asked = [url, options.redirect]; return lanAnswer()(); };
+    assert.deepEqual(ids(await W.checkApiLan(h.ctx())), [['lan_ip_changed', true], ['lan_http_down', true]]);
+    assert.deepEqual(h.asked, [LAN_URL, 'error']);
+    h.deps.fetch = lanAnswer('other');
+    const other = await W.checkApiLan(h.ctx());
+    assert.deepEqual(ids(other), [['lan_ip_changed', true], ['lan_http_down', false]]);
+    assert.match(other[1].summary, /not as this installation/);
+    h.deps.fetch = lanAnswer('iid-1', 'public');
+    assert.match((await W.checkApiLan(h.ctx()))[1].summary, /not from the gateway-lan listener/);
+    h.deps.fetch = lanAnswer('iid-1', null);
+    assert.match((await W.checkApiLan(h.ctx()))[1].summary, /not from the gateway-lan listener/);
+    h.deps.fetch = lanAnswer('iid-1', 'lan', 502);
+    assert.match((await W.checkApiLan(h.ctx()))[1].detail, /HTTP 502/);
+    h.deps.fetch = async () => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }); };
+    const refused = await W.checkApiLan(h.ctx());
+    assert.equal(refused[1].ok, false);
+    assert.match(refused[1].summary, /does not answer on http:\/\/192\.168\.1\.52:8080/);
+    assert.match(refused[1].detail, /ECONNREFUSED/);
+    // The rule of the other API checks: the first failing run does not alert, the second does.
+    const data = W.freshState(h.clock.t);
+    const run = async n => { const ctx = W.makeContext(h.deps, data); const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]); return W.evaluate(data, results, ran, h.clock.t + n * 5 * 60000); };
+    assert.deepEqual((await run(0)).start, []);
+    assert.deepEqual((await run(1)).start.map(item => item.id), ['lan_http_down']);
+  } finally { clean(h); }
+});
+
+test('LAN fallback: a host that no longer has the address alerts lan_ip_changed with the command, and the listener is not probed', async () => {
+  const h = harness();
+  try {
+    lanOn(h);
+    let probed = false;
+    h.deps.fetch = async () => { probed = true; return lanAnswer()(); };
+    h.deps.interfaces = () => [{ name: 'ens33', address: '192.168.1.53', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
+    const results = await W.checkApiLan(h.ctx());
+    assert.deepEqual(results.map(r => [r.id, r.ok]), [['lan_ip_changed', false], ['lan_http_down', true]]);
+    assert.equal(probed, false);
+    assert.match(results[0].summary, /The LAN address 192\.168\.1\.52 is no longer an address of this host/);
+    assert.match(results[0].detail, /The host has 192\.168\.1\.53 on ens33\..*bash scripts\/lan\.sh on auto.*"The app says the LAN address is unreachable"/);
+    // Two runs fire it; the alert text is the one an operator reads in Slack.
+    const data = W.freshState(h.clock.t);
+    const run = async n => { const ctx = W.makeContext(h.deps, data); const { results: list, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]); return W.evaluate(data, list, ran, h.clock.t + n * 5 * 60000); };
+    await run(0);
+    assert.deepEqual((await run(1)).start.map(item => item.id), ['lan_ip_changed']);
+    // The address comes back (a new lan.sh on auto, or the lease renewed): it recovers.
+    h.deps.interfaces = () => HOST_WITH_LAN;
+    h.deps.fetch = lanAnswer();
+    const back = await run(2);
+    assert.deepEqual(back.start, []);
+  } finally { clean(h); }
+});
+
+test('LAN fallback: the checker is registered, gateway-lan is expected only when the profile is on, and its log counts with the gateway\'s', () => {
+  assert.ok(W.CHECKS.some(([name, fn]) => name === 'api_lan' && fn === W.checkApiLan));
+  const h = harness();
+  try {
+    // checkServices: the compose file lists gateway-lan as an expected service only while COMPOSE_PROFILES has lan.
+    assert.equal(find(W.checkServices(h.ctx()), 'service_down:gateway-lan'), undefined, 'off: not expected, not reported');
+    h.expected = [...SERVICES, 'gateway-lan'];
+    const missing = find(W.checkServices(h.ctx()), 'service_down:gateway-lan');
+    assert.equal(missing.ok, false);
+    assert.equal(missing.summary, 'Service gateway-lan is missing');
+    h.services = [...SERVICES, 'gateway-lan'];
+    h.stateOf = { 'gateway-lan': 'running|healthy' };
+    assert.equal(find(W.checkServices(h.ctx()), 'service_down:gateway-lan').ok, true);
+    // Logs: the gateway's ten good requests alone are fine; the LAN container's ten failing ones are counted in the same rates.
+    const lines = (n, status) => Array.from({ length: n }, () => gatewayLine(status, '0.100')).join('\n');
+    h.runs[`docker logs -t --tail 5000 ${idOf('gateway')}`] = ok(lines(10, 200));
+    h.runs[`docker logs -t --tail 5000 ${idOf('gateway-lan')}`] = ok(lines(10, 200));
+    let r = W.checkApiLogs(h.ctx());
+    assert.match(find(r, 'api_error_rate_high').summary, /API 5xx rate 0\.0% over 20 requests/, 'both logs are read');
+    h.runs[`docker logs -t --tail 5000 ${idOf('gateway-lan')}`] = ok(lines(10, 500));
+    r = W.checkApiLogs(h.ctx());
+    assert.equal(find(r, 'api_error_rate_high').ok, false);
+    assert.match(find(r, 'api_error_rate_high').summary, /API 5xx rate 50\.0% over 20 requests/);
+    // 429s on the LAN count too.
+    h.runs[`docker logs -t --tail 5000 ${idOf('gateway-lan')}`] = ok(lines(10, 429));
+    assert.match(find(W.checkApiLogs(h.ctx()), 'api_429_rate_high').summary, /429 \(too many requests\) to 10 of 20 requests/);
+    // A log that cannot be read is an error naming the container; with no LAN container only the gateway is read.
+    h.runs[`docker logs -t --tail 5000 ${idOf('gateway-lan')}`] = bad();
+    assert.throws(() => W.checkApiLogs(h.ctx()), /docker logs failed for the gateway-lan/);
+    h.services = [...SERVICES];
+    delete h.runs[`docker logs -t --tail 5000 ${idOf('gateway-lan')}`];
+    assert.match(find(W.checkApiLogs(h.ctx()), 'api_error_rate_high').summary, /over 10 requests/);
   } finally { clean(h); }
 });
 
