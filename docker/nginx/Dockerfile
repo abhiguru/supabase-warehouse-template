@@ -15,15 +15,18 @@ RUN apk upgrade --no-cache \
 # nginx.conf replaces the image's: one worker, no `user` directive (the master runs as the nginx user already), the pid
 # file and every temporary path under /tmp, so the root file system can be read-only, and the logs on stdout/stderr.
 COPY nginx.conf api-http.conf api-locations.conf cors-headers.conf /etc/nginx/
-# Only these three variables are put into the templates (see the filter below). A template is rendered into
-# /etc/nginx/conf.d at start by the image's entrypoint; Compose mounts a tmpfs there.
+# Only these variables are put into the templates (see the filter below). A template is rendered into
+# /etc/nginx/conf.d at start by the image's entrypoint; Compose mounts a tmpfs there. The image holds the public server only.
+# The LAN server (lan/gateway-lan.conf.template, the gateway-lan service of docker-compose.yml) is not copied in: Compose mounts
+# it over templates/gateway.conf.template of that one container, so the public container has no LAN listener at all.
 COPY templates/ /etc/nginx/templates/
 # 18-require-env.sh runs before the image's own scripts: it refuses to start on a missing or odd value.
 COPY --chmod=0755 docker-entrypoint.d/ /docker-entrypoint.d/
 
 # A regular expression on the NAMES of the environment variables; only a name that matches in full is replaced, so
-# $remote_addr, $uri and the other nginx variables in the templates stay as they are.
-ENV NGINX_ENVSUBST_FILTER="^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY)$"
-# The user `nginx` (101) of the image. Port 8000 needs no capability.
+# $remote_addr, $uri and the other nginx variables in the templates stay as they are. LAN_CIDR is set in the gateway-lan container
+# only (the allow list of the LAN server); the public container has none, so nothing is replaced there.
+ENV NGINX_ENVSUBST_FILTER="^(CORS_ALLOWED_ORIGIN|ANON_KEY|SERVICE_ROLE_KEY|LAN_CIDR)$"
+# The user `nginx` (101) of the image. Ports 8000 (the public server) and 8080 (the LAN server of gateway-lan) need no capability.
 USER 101:101
-EXPOSE 8000
+EXPOSE 8000 8080

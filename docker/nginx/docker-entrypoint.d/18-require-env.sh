@@ -23,3 +23,17 @@ case "$CORS_ALLOWED_ORIGIN" in
 esac
 check ANON_KEY "${ANON_KEY:-}"
 check SERVICE_ROLE_KEY "${SERVICE_ROLE_KEY:-}"
+
+# The LAN container (docker-compose.yml, service gateway-lan, profile `lan`) also writes LAN_CIDR into its server as the allow
+# list. An empty one would leave the server answering nobody (or, written carelessly, everybody), so it is refused here: one
+# IPv4 range in CIDR form inside a private block (10.0.0.0/8 or longer, 172.16.0.0/12 or longer, 192.168.0.0/16 or longer).
+# scripts/lan.sh on writes it, derived from the interface of the host. The public container has no GATEWAY_ROLE and ignores it. A
+# container whose server template names LAN_CIDR (the LAN server is mounted over the public one) is held to the same rule whatever
+# its role says, so a missing role cannot leave the allow list unchecked.
+if [ "${GATEWAY_ROLE:-}" = lan ] || grep -q 'LAN_CIDR' /etc/nginx/templates/gateway.conf.template 2>/dev/null; then
+  check LAN_CIDR "${LAN_CIDR:-}"
+  octet='[0-9]{1,3}'
+  if ! printf '%s\n' "$LAN_CIDR" | grep -Eq "^(10\.$octet\.$octet\.$octet/([89]|[12][0-9]|3[0-2])|172\.(1[6-9]|2[0-9]|3[01])\.$octet\.$octet/(1[2-9]|2[0-9]|3[0-2])|192\.168\.$octet\.$octet/(1[6-9]|2[0-9]|3[0-2]))\$"; then
+    fail "LAN_CIDR must be one private IPv4 range such as 192.168.1.0/24 (10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16 or a part of one); the gateway-lan container does not start with $LAN_CIDR"
+  fi
+fi

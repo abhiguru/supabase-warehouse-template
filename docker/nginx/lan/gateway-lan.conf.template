@@ -1,0 +1,36 @@
+# The LAN server: the only listener of the gateway-lan container (docker-compose.yml, profile `lan`), the fallback phones use on
+# the warehouse network when the internet path is down (docs/OPERATOR_INSTALL.md, "LAN fallback"). Compose mounts this file over
+# the image's templates/gateway.conf.template, so the public server of that file is not present in this container.
+#
+# Owner decision of 2026-10-26: plain http, no certificate. The container publishes only on the host's own private address
+# (LAN_BIND_IP) and this server answers only the warehouse network. Access tokens cross the Wi-Fi unencrypted while this path is in
+# use (docs/CONTAINER_SECURITY.md, "LAN fallback").
+#
+# Trust boundary: the client address is the address of the connection. Nothing in this server trusts a header for it (no real-IP
+# module setting, unlike the public server), so a phone cannot choose the address the limits and the sign-in functions see:
+# api-locations.conf sets CF-Connecting-IP from the connection on every route that passes one on, and the limits in api-http.conf are
+# kept per phone. The same key check, body limits and rate limits apply as on the public path (one shared file).
+server {
+    listen 8080;
+    server_name _;
+
+    # Which path an answer came by. The app reads it (cors-headers.conf puts it on every API answer).
+    set $warehouse_path lan;
+
+    # The warehouse network only; the value is LAN_CIDR of compose.env, checked by docker-entrypoint.d/18-require-env.sh. This
+    # is the second control after the bind address. It runs after the rewrite-phase answers of api-locations.conf (the 401 of the
+    # key check, the 404 of an unknown path), which show nothing a client outside the range could use.
+    allow ${LAN_CIDR};
+    deny all;
+
+    # The container's health check (docker-compose.yml), as in the public server: only the container itself may ask (the check
+    # comes from 127.0.0.1 inside the container; `return` is answered before the allow list is looked at).
+    location = /health {
+        if ($remote_addr != "127.0.0.1") { return 404; }
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    include /etc/nginx/api-locations.conf;
+}

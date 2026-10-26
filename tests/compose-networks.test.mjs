@@ -105,6 +105,19 @@ test('every service still shares a network with each host it is configured to ca
   assert.deepEqual(Object.keys(services['sensor-bridge'].networks), ['default']);
 });
 
+test('the LAN gateway is in profile lan, on the default network only, and reaches what the gateway reaches and nothing else', { skip }, () => {
+  const { services, reaches, peers, members } = topology();
+  assert.deepEqual(services['gateway-lan'].profiles, ['lan']);
+  assert.deepEqual(Object.keys(services['gateway-lan'].networks), ['default']);
+  assert.ok(members.default.includes('gateway-lan'));
+  // The upstream names its routes file uses (api-http.conf) resolve from it; the database does not.
+  for (const match of read('docker/nginx/api-http.conf').matchAll(/^\s+server ([a-z0-9-]+):\d+ resolve;$/gm)) assert.ok(reaches('gateway-lan', match[1]), `gateway-lan cannot resolve ${match[1]}`);
+  assert.ok(!peers('gateway-lan').includes('db'), 'gateway-lan cannot reach the database');
+  assert.equal(services['gateway-lan'].networks.renderer, undefined);
+  // Only the gateway's own profile-less services start without it: the LAN service is not part of a default `up`.
+  assert.equal(services.gateway.profiles, undefined);
+});
+
 test('operator probes run in a container that shares a network with their target', { skip }, () => {
   const { reaches } = topology();
   for (const path of ['tests/gateway-dns-check.sh', 'tests/pooler-check.sh']) {

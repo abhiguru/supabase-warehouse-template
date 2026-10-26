@@ -9,10 +9,11 @@ network table from the rendered configuration).
 
 ```
  cloudflared ──▶ 127.0.0.1:18000
-                      │
+                      │                    LAN address:8080 (only while the LAN fallback is on)
               ┌───────▼────────────────── default ──────────────────────────┐
               │  gateway :8000 ──▶ REST :3000   Storage :5000               │
               │              └──▶ Functions :9000                           │
+              │  gateway-lan :8080 (profile; the same routes, plain http)   │
               │  CUPS :631 (profile)                                        │
               │  sensor-bridge ──▶ gateway (profile; polls hubs on the LAN) │
               └────────────────────┬────────────────────────────────────────┘
@@ -33,19 +34,20 @@ network table from the rendered configuration).
 | functions | Supabase edge-runtime 1.77.4 | 9000 | always |
 | db | PostgreSQL 18 (official `postgres:18.6-trixie` image; roles from `docker/volumes/db/00-bootstrap.sql`, superuser `supabase_admin`, no `postgres` role; schema from the one baseline migration, [DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#migration-conventions)) | 5432 | always |
 | pdf-renderer | own recipe, chrome-headless-shell | 3000 | always |
+| gateway-lan | the gateway's image and routes with a plain-http LAN server ([`docker/nginx/lan`](../docker/nginx/lan)) | 8080, published on `${LAN_BIND_IP}:${LAN_HTTP_PORT}` (the host's own private address) | profile `lan`; off by default, switched with `bash scripts/lan.sh on\|off` ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)) |
 | supavisor | Supavisor 2.9.13 | 4000, 5432, 6543 | profile `pooler`; off by default, switched with `bash scripts/pooler.sh on\|off` |
 | cups | CUPS on Ubuntu 22.04 | 631 | profile `printing` |
 | sensor-bridge | own recipe (GPL-3.0-or-later) | none | profile `sensors` |
 
-Only the gateway publishes a host port, on loopback. Addresses are assigned by Docker; nothing uses a fixed container address.
+Only the gateway publishes a host port, on loopback; while the LAN fallback is on, gateway-lan also publishes one, on the host's own private address. Addresses are assigned by Docker; nothing uses a fixed container address.
 
 | Network | Attached services | Purpose |
 |---|---|---|
-| `default` | gateway, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
+| `default` | gateway, gateway-lan, rest, storage, functions, cups, sensor-bridge | The gateway and everything it or a function calls; the sensor bridge's calls to the gateway |
 | `database` | db, rest, storage, supavisor (only while the pooler is on) | Connections to PostgreSQL |
 | `renderer` | functions, pdf-renderer | The PDF renderer. The network is `internal`: Docker gives it no route to the host, the internet or any other network, so the renderer cannot reach the database or the gateway, and only the function runtime can reach it |
 
-The gateway, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF
+The gateway, gateway-lan, CUPS and the sensor bridge are on `default` only; the function runtime is on `default` and `renderer`; the PDF
 renderer is on `renderer` only. None of them can open a connection to PostgreSQL. There is no web dashboard for the
 database; operators use `psql` (see [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#ordinary-operation)). Rules for each image
 and network: [CONTAINER_SECURITY.md](CONTAINER_SECURITY.md).
