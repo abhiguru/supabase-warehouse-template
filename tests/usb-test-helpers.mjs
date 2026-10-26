@@ -73,14 +73,19 @@ export function fixture(prefix, { escrow = true } = {}) {
   const bin = join(scratch, 'shims'); mkdirSync(bin);
   for (const [name, body] of Object.entries(shims)) writeFileSync(join(bin, name), body, { mode: 0o755 });
   const dockerBin = fakeDocker(join(scratch, 'dockerbin'));
-  // A stand-in df for the free-space rules: the drive folder has FAKE_DRIVE_CAP bytes minus what is stored on it, the state
-  // directory has FAKE_STATE_AVAIL; every other question is the real df's. Put on PATH only by dfEnv().
+  // A stand-in df for the free-space rules: the drive folder has FAKE_DRIVE_CAP bytes minus what is stored on it (never below
+  // zero), the state directory has FAKE_STATE_AVAIL; every other question is the real df's. FAKE_DF_BROKEN=drive|state makes the
+  // answer for that place fail, as a df that cannot read the file system does. Put on PATH only by dfEnv().
   const dfBin = join(scratch, 'dfbin'); mkdirSync(dfBin);
   writeFileSync(join(dfBin, 'df'), String.raw`#!/bin/sh
 for last; do :; done
 case "$last" in
-  "$FAKE_MOUNT"/*) if [ -n "$FAKE_DRIVE_CAP" ]; then used=$(du -sb "$FAKE_MOUNT" | cut -f1); printf 'Avail\n%s\n' $((FAKE_DRIVE_CAP - used)); exit 0; fi ;;
-  "$FAKE_STATE") if [ -n "$FAKE_STATE_AVAIL" ]; then printf 'Avail\n%s\n' "$FAKE_STATE_AVAIL"; exit 0; fi ;;
+  "$FAKE_MOUNT"/*)
+    if [ "$FAKE_DF_BROKEN" = drive ]; then echo 'df: cannot read the file system' >&2; exit 1; fi
+    if [ -n "$FAKE_DRIVE_CAP" ]; then used=$(du -sb "$FAKE_MOUNT" | cut -f1); free=$((FAKE_DRIVE_CAP - used)); [ "$free" -ge 0 ] || free=0; printf 'Avail\n%s\n' "$free"; exit 0; fi ;;
+  "$FAKE_STATE")
+    if [ "$FAKE_DF_BROKEN" = state ]; then echo 'df: cannot read the file system' >&2; exit 1; fi
+    if [ -n "$FAKE_STATE_AVAIL" ]; then printf 'Avail\n%s\n' "$FAKE_STATE_AVAIL"; exit 0; fi ;;
 esac
 exec /usr/bin/df "$@"
 `, { mode: 0o755 });

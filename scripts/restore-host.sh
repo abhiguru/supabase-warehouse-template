@@ -162,7 +162,8 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
     archive="$scratch/$name.tar"
   fi
   # Only regular files and directories under <name>/, no absolute paths or '..'.
-  bad="$(tar -tvf "$archive" | awk -v n="$name" '{ t = substr($1, 1, 1); p = $NF } t != "-" && t != "d" { print; next } p != n && p != n "/" && index(p, n "/") != 1 { print; next } p ~ /(^|\/)\.\.(\/|$)/ { print }' | head -n 3)"
+  # The member name is what follows the size, date and time of the listing, spaces included (a stored file's name may have them).
+  bad="$(tar -tvf "$archive" | awk -v n="$name" '{ t = substr($1, 1, 1); p = $0; if (!sub(/^[^ ]+ +[^ ]+ +[0-9]+ +[0-9-]+ +[0-9:]+ /, "", p)) p = $NF } t != "-" && t != "d" { print; next } p != n && p != n "/" && index(p, n "/") != 1 { print; next } p ~ /(^|\/)\.\.(\/|$)/ { print }' | head -n 3)"
   [[ -z "$bad" ]] || die "Refusing an archive with unexpected entries: $bad"
   # --xattrs keeps the extended attributes of a v6 tree (content type and cache control of each stored file); -p keeps the
   # modes against the umask above, as restore.sh copies them on into data/storage.

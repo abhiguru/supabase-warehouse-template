@@ -89,13 +89,18 @@ backup_archive_extract() {
 backup_archive_small_bytes() {
   local archive="$1" name bytes
   name="$(backup_archive_name "$archive")"
-  # tar lists the members in archive order; the tree comes last, so the listing stops at its first member and the rest of the
-  # archive is never read (the broken pipe that ends the stream is expected).
-  bytes="$({ backup_archive_stream "$archive" | tar -tvf -; } 2>/dev/null | awk -v tree="$name/storage/" '
+  # tar lists the members in archive order; this release writes the tree last, so the listing stops at its first member and the
+  # rest of the archive is never read (the broken pipe that ends the stream is expected). The count is right only if
+  # storage.manifest, which is written just before the tree, came first: an archive from an earlier release has its members in
+  # directory order, where a small file may come after the tree, so for one that reaches the tree without the manifest the whole
+  # archive size is the room to ask for. A v5 archive has no tree and is listed to its end.
+  bytes="$({ backup_archive_stream "$archive" | tar -tvf -; } 2>/dev/null | awk -v tree="$name/storage/" -v manifest="$name/storage.manifest" '
     { path = $0; sub(/^[^ ]+ +[^ ]+ +[0-9]+ +[0-9-]+ +[0-9:]+ /, "", path) }
-    index(path, tree) == 1 { exit }
-    substr($1, 1, 1) == "-" { total += $3 }
-    END { print total + 0 }' || true)"
+    path == manifest { seen = 1 }
+    index(path, tree) == 1 { if (!seen) total = "all"; exit }
+    total != "all" && substr($1, 1, 1) == "-" { total += $3 }
+    END { print total == "all" ? "all" : total + 0 }' || true)"
+  if [[ "$bytes" == all ]]; then bytes="$(stat -c %s -- "$archive" 2>/dev/null || true)"; fi
   [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$bytes"
 }

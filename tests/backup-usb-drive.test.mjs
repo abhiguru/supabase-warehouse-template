@@ -194,6 +194,9 @@ test('a damaged archive of the backup being copied is a failure, and a run that 
     const result = f.run(RUN, f.verifyEnv());
     assert.equal(result.status, 1);
     assert.match(result.stderr, /does not match its checksum or signature; it was not overwritten/);
+    // The restore check hashes the archive before it lists or opens it.
+    assert.match(result.stderr, new RegExp(`restore verification of ${f.bname(4)} from the drive failed: the archive ${f.bname(4)}\\.tar\\.enc does not match its checksum or its signature \\(it is damaged\\); it was not opened`));
+    assert.doesNotMatch(result.stderr, /could not be listed/);
     assert.equal(f.archives().length, 4);
     assert.equal(readFileSync(join(f.dest, `${f.bname(4)}.tar.enc`), 'utf8'), 'bit rot');
   } finally { f.cleanup(); }
@@ -218,21 +221,96 @@ test('when the new archive will not fit, the oldest valid archives go one at a t
   } finally { f.cleanup(); }
 });
 
-test('when no deletion can make room the run fails with "drive too small", and the newest valid archive is still there', () => {
+test('when no deletion can make room the run fails with "drive too small", deletes nothing, and the newest valid archive is still there', () => {
   const f = fixture('warehouse-usb-toosmall-');
   try {
     f.enroll();
     for (const day of [1, 2, 3]) seed(f, day);
     f.localBackup(f.bname(4));
     const wanted = need(join(f.state, 'backups', f.bname(4)));
+    const before = readdirSync(f.dest).sort();
+    // Even every older archive deleted would leave less than the new archive needs: the cap is below what one archive wants.
     const result = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), WAREHOUSE_USB_KEEP: '99', FAKE_DRIVE_CAP: String(wanted - 1) }));
     assert.equal(result.status, 1);
     assert.match(result.stderr, /FAILED: drive too small: needs \S+, has \S+; the drive must hold the new archive next to the newest valid one it already has/);
-    // The older two went; the newest valid one is never deleted; the new archive was not started.
-    assert.deepEqual(f.archives(), [`${f.bname(3)}.tar.enc`]);
-    assert.deepEqual(readdirSync(f.dest).filter(n => n.endsWith('.partial')), []);
+    assert.match(result.stderr, /No archive was deleted: deleting the 2 older one\(s\) would still not make room/);
+    assert.doesNotMatch(result.stdout, /Making room for the new archive/);
+    assert.deepEqual(f.archives(), [1, 2, 3].map(day => `${f.bname(day)}.tar.enc`), 'every archive is still on the drive: deleting could not have helped');
+    assert.deepEqual(readdirSync(f.dest).sort(), before, 'and so is everything else');
     assert.match(f.last(), /^result=failed$/m);
     assert.match(f.last(), /drive too small: needs/);
+  } finally { f.cleanup(); }
+});
+
+test('a free-space reading that fails is not zero: the run is refused with a clear message, nothing is deleted and nothing is written', () => {
+  const f = fixture('warehouse-usb-dfbroken-');
+  try {
+    f.enroll();
+    for (const day of [1, 2, 3]) seed(f, day);
+    f.localBackup(f.bname(4));
+    const before = readdirSync(f.dest).sort();
+    const result = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), WAREHOUSE_USB_KEEP: '99', FAKE_DF_BROKEN: 'drive' }));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /FAILED: could not read the free space of the drive .*so it cannot be checked that the new archive fits; nothing was written and nothing was deleted/);
+    assert.doesNotMatch(result.stderr + result.stdout, /drive too small|has 0 ?B|Making room|Deleting/);
+    assert.deepEqual(readdirSync(f.dest).sort(), before, 'the drive folder is exactly as it was');
+    assert.match(f.last(), /^result=failed$/m);
+    assert.match(f.last(), /could not read the free space of the drive/);
+  } finally { f.cleanup(); }
+});
+
+test('a free-space reading of the state directory that fails stops the restore check with a message instead of passing it or reporting zero', () => {
+  const f = fixture('warehouse-usb-dfbroken-state-');
+  try {
+    f.enroll();
+    const [newest] = f.backups(1);
+    const marker = join(f.scratch, 'verify-ran');
+    writeFileSync(join(f.root, 'scripts/verify-restore.sh'), `#!/usr/bin/env bash\necho ran >> "${marker}"\n`, { mode: 0o755 });
+    const result = f.run(RUN, f.dfEnv({ ...f.verifyEnv(), FAKE_DF_BROKEN: 'state' }));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`could not read the free space of ${f.state}, so the restore check of ${newest} from the drive was not run`));
+    assert.doesNotMatch(result.stderr, /not enough free space/);
+    assert.equal(existsSync(marker), false, 'verify-restore.sh did not run');
+    assert.deepEqual(f.archives(), [`${newest}.tar.enc`], 'the archive itself was written and is kept');
+  } finally { f.cleanup(); }
+});
+
+test('a rename that fails is a failure of the copy, not "Copied and verified", and leaves no archive and no sidecar file behind', () => {
+  const f = fixture('warehouse-usb-renamefails-');
+  try {
+    f.enroll();
+    const [newest] = f.backups(1);
+    // A mv that fails for the archive's final name only (the checksum and signature files move normally).
+    const wrap = join(f.scratch, 'mvwrap'); mkdirSync(wrap);
+    writeFileSync(join(wrap, 'mv'), '#!/bin/sh\nfor last; do :; done\ncase "$last" in */warehouse-*.tar.enc) echo "mv: simulated failure" >&2; exit 1 ;; esac\nexec /usr/bin/mv "$@"\n', { mode: 0o755 });
+    const result = f.run(RUN, { ...f.verifyEnv(), PATH: `${wrap}:${join(f.scratch, 'shims')}:${join(f.scratch, 'dockerbin')}:${process.env.PATH}` });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, new RegExp(`FAILED: moving the archive of ${newest} into place failed`));
+    assert.doesNotMatch(result.stdout, /Copied and verified/);
+    assert.match(result.stdout, /copied=0 /);
+    assert.match(f.last(), /^result=failed$/m);
+    assert.deepEqual(readdirSync(f.dest).filter(n => n.startsWith('warehouse-') || n.endsWith('.partial')), [], 'no archive, no sidecar, no partial file');
+  } finally { f.cleanup(); }
+});
+
+test('checksum and signature files left without an archive by an interrupted copy are removed; other files are left alone', () => {
+  const f = fixture('warehouse-usb-orphans-');
+  try {
+    f.enroll();
+    const [newest] = f.backups(1);
+    mkdirSync(f.dest, { recursive: true });
+    const orphans = ['warehouse-20251230T000000Z.tar.enc.sha256', 'warehouse-20251230T000000Z.tar.enc.hmac', 'warehouse-20251229T000000Z.tar.sha256'];
+    for (const name of orphans) writeFileSync(join(f.dest, name), 'left by an interrupted copy\n');
+    for (const name of ['warehouse-notes.sha256', 'backup.sha256', 'warehouse-20251228T000000Z.tar.enc.sha256.old']) writeFileSync(join(f.dest, name), 'the operator\'s own file\n');
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    for (const name of orphans) {
+      assert.equal(existsSync(join(f.dest, name)), false, `${name} was removed`);
+      assert.match(result.stdout, new RegExp(`Removing the leftover checksum or signature file ${name.replace(/\./g, '\\.')}: its archive is not on the drive`));
+    }
+    for (const name of ['warehouse-notes.sha256', 'backup.sha256', 'warehouse-20251228T000000Z.tar.enc.sha256.old']) assert.equal(readFileSync(join(f.dest, name), 'utf8'), 'the operator\'s own file\n', `${name} is untouched`);
+    assert.deepEqual(f.archives(), [`${newest}.tar.enc`]);
+    assert.ok(existsSync(join(f.dest, `${newest}.tar.enc.sha256`)) && existsSync(join(f.dest, `${newest}.tar.enc.hmac`)), 'the new archive keeps its own');
   } finally { f.cleanup(); }
 });
 
@@ -268,6 +346,8 @@ test('readable archives are deleted once an encrypted one is written and verifie
       assert.deepEqual(readdirSync(f.dest).filter(n => n.includes(`${f.bname(day)}.tar`)), []);
     }
     assert.match(result.stdout, /unencrypted-removed=3/);
+    // Deleting is not wiping: the run says so where it deletes.
+    assert.match(result.stdout, /NOTE: deleting a file does not wipe it from an exFAT drive[\s\S]*rotate the credentials they held \(rotate-keys\.sh, the MSG91 key, the tunnel credential\) or retire the drive/);
     assert.deepEqual(f.archives(), ['warehouse-20241201T000000Z.tar', `${f.bname(4)}.tar.enc`]);
     assert.match(result.stdout, /Not counted and not deleted .*warehouse-20241201T000000Z\.tar/);
     assert.match(result.stdout, /WARNING: archives written by this run are encrypted, but the drive still holds unencrypted \.tar archives/);
@@ -293,7 +373,7 @@ test('the first encrypted archive of an installation switched at setup replaces 
   } finally { f.cleanup(); }
 });
 
-test('with restore verification switched off an encrypted archive that was written and read back still lets the readable ones go', () => {
+test('with restore verification switched off no readable archive is deleted: a hash alone is not enough, and the newest archive need not be the one just written', () => {
   const f = fixture('warehouse-usb-noverify-');
   try {
     f.enroll();
@@ -301,7 +381,38 @@ test('with restore verification switched off an encrypted archive that was writt
     f.localBackup(f.bname(2));
     const result = f.run(RUN, { ...f.verifyEnv(), ...NOVERIFY });
     assert.equal(result.status, 0, result.stderr + result.stdout);
-    assert.deepEqual(f.archives(), [`${f.bname(2)}.tar.enc`]);
+    assert.deepEqual(f.archives(), [`${f.bname(1)}.tar`, `${f.bname(2)}.tar.enc`], 'the readable archive stays');
+    assert.match(result.stdout, /Restore verification is switched off .*no unencrypted archive is deleted in this run/);
+    assert.doesNotMatch(result.stdout, /Deleting the unencrypted archive/);
+    assert.match(result.stdout, /unencrypted-removed=0/);
     assert.equal(f.dockerCalls(), '', 'no restore verification');
+    // The same drive with verification on: now they go.
+    const checked = f.run(RUN, f.verifyEnv());
+    assert.equal(checked.status, 0, checked.stderr + checked.stdout);
+    assert.deepEqual(f.archives(), [`${f.bname(2)}.tar.enc`]);
+  } finally { f.cleanup(); }
+});
+
+test('the newest archive on the drive holds an unsigned backup (written by an earlier release): the run names it and does not verify it', () => {
+  const f = fixture('warehouse-usb-unsignedinside-');
+  try {
+    f.enroll();
+    f.backups(1);
+    // A signed archive, as an earlier release wrote them, of a backup that carries no SHA256SUMS.hmac, and newer than the local one.
+    const planted = 'warehouse-20260201T000000Z';
+    const folder = join(f.scratch, 'planted-src', planted);
+    makeBackup(folder, { env: composeEnv(f.state), format: 'warehouse-backup-v6', key: null });
+    mkdirSync(f.dest, { recursive: true });
+    const out = join(f.dest, `${planted}.tar.enc`);
+    const made = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; source "$2"; backup_key_load "$3"; hash="$(backup_archive_write "$4" "$5" encrypt)"; printf "%s  %s\\n" "$hash" "$6" > "$5.sha256"; backup_sign_archive "$5" "$BACKUP_KEY"',
+      'sh', join(f.root, 'scripts/backup-key.sh'), join(f.root, 'scripts/backup-archive.sh'), join(f.state, 'config/backup.key'), folder, out, `${planted}.tar.enc`], { encoding: 'utf8' });
+    assert.equal(made.status, 0, made.stderr);
+    const result = f.run(RUN, f.verifyEnv());
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, new RegExp(`FAILED: the newest backup on the drive \\(${planted}\\) is unsigned, written by an earlier release, so its restore was not verified; take a new backup with npm run db:backup`));
+    assert.equal(f.dockerCalls(), '', 'no restore verification ran');
+    assert.doesNotMatch(result.stdout, /Restore verification of the copy on the drive passed/);
+    assert.ok(existsSync(out), 'the archive is kept');
+    assert.match(f.last(), /^result=failed$/m);
   } finally { f.cleanup(); }
 });

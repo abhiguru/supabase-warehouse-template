@@ -18,7 +18,7 @@ const migrations = { '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select
 const ledger = (names = Object.keys(migrations)) =>
   `migration_count=${names.length}\nmigration_fingerprint=${sha(names.map(n => `${n}:${sha(migrations[n])}`).join('\n'))}\n`;
 
-function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {} } = {}) {
+function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {}, objects } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), prefix));
   const root = scriptRoot(scratch);
   mkdirSync(join(root, 'migrations'));
@@ -35,7 +35,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
 `);
   const original = '/srv/warehouse/lost-host';
   const backup = makeBackup(join(scratch, 'drive', NAME), {
-    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity, format, xattrs });
+    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity, format, xattrs, ...(objects ? { objects } : {}) });
   // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
   const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '', databaseImage = currentDatabaseImage() } = {}) => {
     writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n${databaseImage === null ? "" : `database_image=${databaseImage}\n`}`);
@@ -964,5 +964,20 @@ test('restore-host refuses the archive of a v6 backup whose tree was changed on 
     const plain = f.usbArchive({ encrypt: false });
     result = f.run(['--state-dir', f.state, '--yes', plain]);
     assert.equal(result.status, 1); assert.match(result.stderr, /a file of the backup storage\/ tree does not match storage\.manifest/); nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host\'s safety listing takes the whole member name: a stored file whose name has spaces does not stop a lost-host restore', () => {
+  const object = 'documents/delivery note (copy 2).pdf/v1';
+  const f = fixture('warehouse-restore-host-spaces-', { format: 'warehouse-backup-v6', objects: [object] });
+  try {
+    const archive = f.usbArchive({ encrypt: false });
+    const listed = spawnSync('tar', ['-tf', archive], { encoding: 'utf8' }).stdout;
+    assert.ok(listed.split('\n').includes(`${NAME}/storage/stub/stub/${object}`), 'the archive does name a file with spaces');
+    rmSync(f.backup, { recursive: true });
+    const result = f.run(['--state-dir', f.state, '--yes', archive]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.doesNotMatch(result.stderr, /unexpected entries/);
+    assert.ok(existsSync(join(f.state, 'backups', NAME, 'storage', 'stub/stub', object)), 'and the file came back');
   } finally { clean(f); }
 });

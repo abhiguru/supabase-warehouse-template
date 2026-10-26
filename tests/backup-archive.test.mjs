@@ -143,6 +143,29 @@ test('extracting with --no-tree writes no storage/ at all, and the rest authenti
   } finally { f.cleanup(); }
 });
 
+test('the room for the small files is the size of the archive when the tree comes before the manifest, as in an archive an earlier release wrote', () => {
+  const f = fixture();
+  try {
+    // An earlier release archived the backup folder in directory order: here the tree first, the small files after it.
+    const out = join(f.drive, `${NAME}.tar`);
+    const rest = filesUnder(f.dir).filter(path => !path.startsWith('storage/')).map(path => `${NAME}/${path}`);
+    const packed = spawnSync('tar', ['--format=posix', '-C', join(f.state, 'backups'), '-cf', out, `${NAME}/storage`, ...rest], { encoding: 'utf8' });
+    assert.equal(packed.status, 0, packed.stderr);
+    const small = f.sh('backup_archive_small_bytes "$1"', out);
+    assert.equal(small.status, 0, small.stderr);
+    assert.equal(Number(small.stdout), statSync(out).size, 'the count of the members before the tree would be short here, so the archive size is the room to ask for');
+    // This release's order is unchanged: the same backup written by backup_archive_write gets the figure for the small files only.
+    mkdirSync(join(f.drive, 'new'));
+    const named = join(f.drive, 'new', `${NAME}.tar`);
+    assert.equal(f.write(named).status, 0);
+    const sized = f.sh('backup_archive_small_bytes "$1"', named);
+    assert.equal(sized.status, 0, sized.stderr);
+    const expected = rest.reduce((sum, path) => sum + statSync(join(f.state, 'backups', path)).size, 0);
+    assert.equal(Number(sized.stdout), expected);
+    assert.ok(Number(sized.stdout) < statSync(named).size, 'the small files are less than the whole archive');
+  } finally { f.cleanup(); }
+});
+
 test('a v5 backup is archived with its storage.tar.gz last, and that file is not left out of an extraction without the tree', () => {
   const f = fixture({ format: 'warehouse-backup-v5' });
   try {

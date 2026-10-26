@@ -119,7 +119,7 @@ load_archive_lib() {
 }
 # The refusal for a key copy that was not confirmed (scripts/backup-key-escrow.sh). Needs backup-key.sh loaded.
 escrow_refusal() {
-  printf 'The backup key copy is not confirmed (%s). Archives on the drive are encrypted with the backup key, and without a copy of it kept away from this machine and from the drive they cannot be opened after the host is lost. As the installation user run: WAREHOUSE_STATE_DIR=%s bash scripts/backup-key-escrow.sh show   (it prints the key once and asks you to type its last 8 characters), then %s' \
+  printf 'The backup key copy is not confirmed (%s). Archives on the drive are encrypted with the backup key, and without a copy of it kept away from this machine and from the drive they cannot be opened after the host is lost. As the installation user run: WAREHOUSE_STATE_DIR=%s bash scripts/backup-key-escrow.sh show   (it prints the key once and asks you to type the whole key back from your copy), then %s' \
     "$BACKUP_ESCROW_PROBLEM" "$1" "$2"
 }
 # Whether archives are (or, after the next setup, will be) encrypted according to the stored configuration: yes, or no that
@@ -209,7 +209,7 @@ kept_setting() {
 }
 
 cmd_setup() {
-  local state='' enroll='' daily='' fresh='' encrypt='' keep='' uid gid user group old legacy encrypt_set flipped=0 stored_encrypt escrow=unknown
+  local state='' enroll='' daily='' fresh='' encrypt='' keep='' uid gid user group old legacy encrypt_set switched='' stored_encrypt escrow=unknown
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -245,12 +245,15 @@ cmd_setup() {
   # Encryption is the default. A stored `no` is kept only when the operator typed --no-encrypt (ENCRYPT_SET=typed); a `no`
   # that is merely the old default is switched to `yes`, with a notice below, because it was never a choice.
   stored_encrypt="$(conf_get ENCRYPT)"
-  if [[ -n "$encrypt" ]]; then encrypt_set=typed
+  if [[ -n "$encrypt" ]]; then
+    encrypt_set=typed
+    # A typed --encrypt over a stored `no` (typed or not) also starts the deletion of the readable archives: it gets the notice too.
+    if [[ "$encrypt" == yes && "$stored_encrypt" == no ]]; then switched=typed; fi
   elif [[ "$stored_encrypt" == yes ]]; then encrypt=yes; encrypt_set="$(conf_get ENCRYPT_SET)"; [[ "$encrypt_set" == typed ]] || encrypt_set=default
   elif [[ "$stored_encrypt" == no && "$(conf_get ENCRYPT_SET)" == typed ]]; then encrypt=no; encrypt_set=typed
   else
     encrypt=yes; encrypt_set=default
-    [[ "$stored_encrypt" != no ]] || flipped=1
+    [[ "$stored_encrypt" != no ]] || switched=default
   fi
   # The key copy must be confirmed before a drive is enrolled for encrypted archives: checked before anything is installed.
   if [[ "$encrypt" == yes && -f "$state/config/backup.key" ]]; then
@@ -319,8 +322,13 @@ EOF
   echo "USB backup is set up for $state, running as $user (fresh backup on attach: $fresh, daily timer: $daily, encrypted archives: $encrypt, archives kept on a drive: $keep)."
   if [[ "$encrypt" == yes ]]; then
     echo "Archives are encrypted with the backup key $state/config/backup.key. Without a copy of that key, kept away from this machine and from the drive, the archives cannot be restored after the host is lost."
-    if ((flipped)); then
-      echo 'NOTICE: this installation had USB backup set up with unencrypted archives, which was the default of earlier releases. Archives are now encrypted by default, so this setup switched them to encrypted ones. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted. To keep readable archives, which put every credential on the drive, run setup again with --no-encrypt.'
+    if [[ -n "$switched" ]]; then
+      if [[ "$switched" == default ]]; then
+        echo 'NOTICE: this installation had USB backup set up with unencrypted archives, which was the default of earlier releases. Archives are now encrypted by default, so this setup switched them to encrypted ones. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted. To keep readable archives, which put every credential on the drive, run setup again with --no-encrypt.'
+      else
+        echo 'NOTICE: this installation wrote unencrypted archives and you typed --encrypt, so they are now encrypted. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted. To keep readable archives, which put every credential on the drive, run setup again with --no-encrypt.'
+      fi
+      echo 'Deleting a file does not wipe it from an exFAT drive: a drive that ever held readable archives still holds their contents until the space is overwritten. Before such a drive leaves your hands, rotate the credentials (rotate-keys.sh, the MSG91 key, the tunnel credential) or retire the drive; see "USB backup drive" in docs/OPERATOR_INSTALL.md.'
     fi
     if [[ "$escrow" == missing ]]; then
       echo "ACTION NEEDED: the backup key copy is not confirmed ($BACKUP_ESCROW_PROBLEM). Encrypted runs and enrolling a drive are refused until you run, as $user: WAREHOUSE_STATE_DIR=$state bash scripts/backup-key-escrow.sh show"
@@ -419,10 +427,13 @@ ARCHIVE_NAME='^warehouse-[0-9]{8}T[0-9]{6}Z\.tar(\.enc)?$'
 declare -A VCACHE=()
 fail() { echo "FAILED: $*" >&2; FAILED=$((FAILED + 1)); FAILURES="${FAILURES:+$FAILURES; }$*"; }
 human() { numfmt --to=iec-i --suffix=B "$1" 2>/dev/null || echo "$1 bytes"; }
+# The free bytes of the file system holding $1. Returns 1, printing nothing, when no number can be read: an unreadable figure is
+# never taken for zero, because a caller that deletes to make room would then delete for nothing.
 free_bytes() {
   local n
   n="$(df -B1 --output=avail -- "$1" 2>/dev/null | tail -n1 | tr -d ' ')" || n=''
-  [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$n"
 }
 
 # Hash a file as stored on the drive: direct I/O bypasses the page cache where the filesystem allows it.
@@ -477,19 +488,36 @@ backup_epoch() { local t="${1#warehouse-}"; date -u -d "${t:0:4}-${t:4:2}-${t:6:
 
 # Makes room for an archive of NEED bytes on the drive by deleting the oldest valid archives of this installation while more
 # than one remains (the newest valid archive is never deleted). Returns 1 when the room cannot be made; ROOM_MSG says why.
+# Nothing is deleted when the free space cannot be read, nor when deleting every archive that may go would still not make room.
 make_room() {
-  local need="$1" avail f
+  local need="$1" avail f size i reclaim=0
   local -a own=()
-  avail="$(free_bytes "$DEST")"
+  if ! avail="$(free_bytes "$DEST")"; then
+    ROOM_MSG="could not read the free space of the drive ($DEST), so it cannot be checked that the new archive fits; nothing was written and nothing was deleted. Check the drive (dmesg, another USB port), then attach it again"
+    return 1
+  fi
   if ((avail > need)); then return 0; fi
   while IFS= read -r f; do
     if [[ "$f" =~ $ARCHIVE_NAME ]] && archive_valid "$DEST/$f"; then own+=("$f"); fi
   done < <(drive_archives)
+  # The archives that may go are all but the newest valid one (own is newest first), with their checksum and signature files.
+  for ((i = 1; i < ${#own[@]}; i++)); do
+    size="$(stat -c %s -- "$DEST/${own[i]}" 2>/dev/null || echo 0)"
+    reclaim=$((reclaim + size))
+  done
+  if ((avail + reclaim <= need)); then
+    ROOM_MSG="drive too small: needs $(human "$need"), has $(human "$avail"); the drive must hold the new archive next to the newest valid one it already has (that one is never deleted), so use a larger drive"
+    if ((${#own[@]} > 1)); then ROOM_MSG+=". No archive was deleted: deleting the $(( ${#own[@]} - 1 )) older one(s) would still not make room"; fi
+    return 1
+  fi
   while ((avail <= need && ${#own[@]} > 1)); do
     f="${own[${#own[@]} - 1]}"
     echo "Making room for the new archive: deleting the oldest valid archive on the drive, $f"
     drop_archive "$f"; unset "own[${#own[@]} - 1]"; sync; PRUNED=$((PRUNED + 1))
-    avail="$(free_bytes "$DEST")"
+    if ! avail="$(free_bytes "$DEST")"; then
+      ROOM_MSG="could not read the free space of the drive ($DEST) after deleting $f; nothing more was deleted and nothing was written"
+      return 1
+    fi
   done
   if ((avail > need)); then return 0; fi
   ROOM_MSG="drive too small: needs $(human "$need"), has $(human "$avail"); the drive must hold the new archive next to the newest valid one it already has (that one is never deleted), so use a larger drive"
@@ -519,13 +547,18 @@ copy_backup() {
   if [[ "$(media_hash "$partial")" != "$hash" ]]; then
     rm -f -- "$partial"; fail "the archive of $n read back from the drive does not match what was written"; return 2
   fi
-  printf '%s  %s\n' "$hash" "$n.$SUFFIX" > "$DEST/.$n.sha.partial"
-  mv -f -- "$DEST/.$n.sha.partial" "$archive.sha256"
+  # This function runs inside `|| copy_rc=$?` in the caller, where errexit does not apply: every step is checked by hand, and a
+  # step that fails leaves neither the archive nor a sidecar file behind.
+  if ! { printf '%s  %s\n' "$hash" "$n.$SUFFIX" > "$DEST/.$n.sha.partial" && mv -f -- "$DEST/.$n.sha.partial" "$archive.sha256"; }; then
+    rm -f -- "$partial" "$DEST/.$n.sha.partial" "$archive.sha256"; fail "writing the checksum file of the archive of $n failed"; return 2
+  fi
   # The signature covers the checksum line, so the archive cannot be swapped with its checksum.
   if ! backup_sign_archive "$archive" "$BACKUP_KEY"; then
     rm -f -- "$partial" "$archive.sha256" "$archive.hmac"; fail "signing the archive of $n failed"; return 2
   fi
-  mv -f -- "$partial" "$archive"
+  if ! mv -f -- "$partial" "$archive"; then
+    rm -f -- "$partial" "$archive.sha256" "$archive.hmac"; fail "moving the archive of $n into place failed"; return 2
+  fi
   sync -f "$archive" 2>/dev/null || sync
   VCACHE[$archive]=ok
   COPIED=$((COPIED + 1)); echo "Copied and verified from the drive: ${archive##*/}"
@@ -542,6 +575,9 @@ remove_plaintext() {
       drop_archive "$f"; PLAIN_REMOVED=$((PLAIN_REMOVED + 1))
     fi
   done < <(drive_archives)
+  if ((PLAIN_REMOVED)); then
+    echo "NOTE: deleting a file does not wipe it from an exFAT drive: the readable archives just deleted can still be recovered with data-recovery tools until the space is overwritten, which is not certain. Before this drive leaves your hands, rotate the credentials they held (rotate-keys.sh, the MSG91 key, the tunnel credential) or retire the drive: docs/OPERATOR_INSTALL.md, \"USB backup drive\"."
+  fi
 }
 # Keeps the newest KEEP valid archives of this installation. Damaged archives, unsigned ones and ones signed with another key
 # are not counted and never deleted.
@@ -593,7 +629,7 @@ on_run_exit() {
 }
 
 cmd_run() {
-  local name mp data_mm mp_mm label n archive newest candidate unsigned first_unsigned tmp instance_id id_file marker recorded plain=0 state copy_rc small avail age
+  local name mp data_mm mp_mm label n archive newest candidate unsigned first_unsigned tmp instance_id id_file marker recorded plain=0 state copy_rc small avail age f base
   local -a cands=()
   while (($#)); do case "$1" in --device) (($# > 1)) || usage; DEVICE="$2"; shift 2 ;; *) usage ;; esac; done
   [[ -n "$DEVICE" ]] || usage
@@ -667,6 +703,15 @@ cmd_run() {
   [[ -z "$instance_id" ]] || printf '%s\n' "$instance_id" > "$id_file"
   # The lock is held, so partial files are leftovers of an interrupted run.
   find "$DEST" -maxdepth 1 -name '.*.partial' -type f -delete
+  # A checksum or signature file whose archive is not there is what an interrupted copy leaves (the sidecars are written before
+  # the archive is moved into place); nothing else would ever remove it.
+  while IFS= read -r f; do
+    base="${f%.sha256}"; base="${base%.hmac}"
+    if [[ "$base" =~ $ARCHIVE_NAME && ! -e "$DEST/$base" ]]; then
+      echo "Removing the leftover checksum or signature file $f: its archive is not on the drive."
+      rm -f -- "$DEST/$f"
+    fi
+  done < <(find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.sha256' -o -name 'warehouse-*.hmac' \) -printf '%f\n' | LC_ALL=C sort)
 
   # Only the newest verified backup is copied, as one archive: the drive keeps the newest few, so an older local backup is
   # not copied now. A backup that fails its own check is named and the next older one is tried.
@@ -705,22 +750,29 @@ cmd_run() {
   if [[ -z "$newest" ]]; then
     ((unsigned)) || fail 'there is no backup on the drive; take one with npm run db:backup'
   elif [[ "${WAREHOUSE_USB_BACKUP_VERIFY_RESTORE:-yes}" != no ]]; then
-    # Only the small files are unpacked, onto the data disk: the photos are vouched for by the manifest the signature covers
-    # and by the hash made as the archive was written, and unpacking them would fill the disk the application runs on.
+    # The archive is hashed and its signature checked before anything is read out of it: the size estimate below lists it.
     small=''
-    if small="$(backup_archive_small_bytes "$DEST/$newest")"; then
-      avail="$(free_bytes "$STATE")"
-      if ((avail < small + 268435456)); then
-        fail "not enough free space in $STATE to check $n from the drive: its small files need $(human "$small") plus 256 MiB, and $(human "$avail") are free; free disk space, then attach the drive again"
+    if ! archive_valid "$DEST/$newest"; then
+      fail "restore verification of $n from the drive failed: the archive $newest does not match its checksum or its signature (it is damaged); it was not opened"
+    elif small="$(backup_archive_small_bytes "$DEST/$newest")"; then
+      # Only the small files are unpacked, onto the data disk: the photos are vouched for by the manifest the signature covers
+      # and by the hash made as the archive was written, and unpacking them would fill the disk the application runs on.
+      if avail="$(free_bytes "$STATE")"; then
+        if ((avail < small + 268435456)); then
+          fail "not enough free space in $STATE to check $n from the drive: its small files need $(human "$small") plus 256 MiB, and $(human "$avail") are free; free disk space, then attach the drive again"
+          small=''
+        fi
+      else
+        fail "could not read the free space of $STATE, so the restore check of $n from the drive was not run; check the disk, then attach the drive again"
         small=''
       fi
     else
       fail "restore verification of $n from the drive failed: the archive could not be listed"
+      small=''
     fi
     if [[ -n "$small" ]]; then
       tmp="$(mktemp -d "$STATE/.usb-verify.XXXXXX")"; TMPDIRS+=("$tmp")
-      if archive_valid "$DEST/$newest" &&
-         backup_archive_extract "$DEST/$newest" "$tmp" --no-tree &&
+      if backup_archive_extract "$DEST/$newest" "$tmp" --no-tree &&
          [[ -f "$tmp/$n/SHA256SUMS.hmac" ]] && bash "$ROOT/scripts/verify-restore.sh" --no-storage-tree "$tmp/$n"; then
         echo "Restore verification of the copy on the drive passed: $n"
         if [[ "$newest" == *.enc ]]; then ENC_VERIFIED=1; fi
@@ -731,9 +783,10 @@ cmd_run() {
       fi
       rm -rf -- "$tmp"
     fi
-  elif [[ "$newest" == *.enc ]] && ((COPIED)); then
-    # Restore verification was switched off; the archive written in this run was at least read back and compared.
-    ENC_VERIFIED=1
+  else
+    # Restore verification was switched off (a test switch): the archive written in this run was read back and compared, but it
+    # was not opened, and deleting the readable archives is not done on a hash alone.
+    echo 'Restore verification is switched off (WAREHOUSE_USB_BACKUP_VERIFY_RESTORE=no): no unencrypted archive is deleted in this run.'
   fi
 
   # Deleting happens only after a run that finished without a failure, and only with the key copy confirmed (the run is not
