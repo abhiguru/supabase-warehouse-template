@@ -3,7 +3,7 @@
 # binary does not link either (ldd shows only libgcc_s, libm and libc).
 # Both FROM lines must move together: the final stage's Debian release must match
 # the upstream image's, because the binary needs that release's glibc.
-FROM supabase/edge-runtime:v1.77.4@sha256:ad45164b7548bf5820ed7be714789c17ac2865edce79a09cfb4c3756c3d365a8 AS upstream
+FROM supabase/edge-runtime:v1.77.8@sha256:178c041398a33ded8219344382d0672a90051d1babbf0af03425cafe20039a75 AS upstream
 
 # Same Debian release (bookworm) as the upstream image, so the binary's libc matches.
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587

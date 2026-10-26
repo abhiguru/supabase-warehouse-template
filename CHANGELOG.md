@@ -358,6 +358,9 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   review (`docs/ATTRIBUTION_REVIEW.md` is merged into it). CI: the `pdf-renderer` and golden-page jobs are one job that runs only when `docker/pdf-renderer/`, `tests/golden-pdf/`, `functions/_shared/` or `ci.yml` changed (a `changes` job decides; none is a required check); no npm cache in `validate`, one `CI_RUNNER` comment, no duplicate
   verify in `operator-install`, and the `contract` job runs `tests/rpc-callers.test.mjs` against the pinned app. The alert-webhook
   terminal test skips on a runner without a usable pty. `tests/sensor-bridge-check.sh` fails, not "Skipped", without its Dockerfile.
+- **Images: supabase/edge-runtime 1.77.8 and PostgREST 16.5.** Bug-fix releases of both (v1.77.4 and v16.4 before), pinned by digest as
+  before. Nothing to do beyond the normal upgrade: `setup.sh` rebuilds the `functions` image (its recipe changed) and pulls the new `rest`
+  image. The image-scan exception `rest-no-package-inventory` now names the v16.5 digest, and `THIRD_PARTY_NOTICES.md` the new versions.
 
 ### Removed
 
