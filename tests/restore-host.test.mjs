@@ -18,7 +18,7 @@ const migrations = { '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select
 const ledger = (names = Object.keys(migrations)) =>
   `migration_count=${names.length}\nmigration_fingerprint=${sha(names.map(n => `${n}:${sha(migrations[n])}`).join('\n'))}\n`;
 
-function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {} } = {}) {
+function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {}, objects } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), prefix));
   const root = scriptRoot(scratch);
   mkdirSync(join(root, 'migrations'));
@@ -35,7 +35,7 @@ mkdir -m 700 "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
 `);
   const original = '/srv/warehouse/lost-host';
   const backup = makeBackup(join(scratch, 'drive', NAME), {
-    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity, format, xattrs });
+    env: env ?? composeEnv(original, 'JWT_SECRET=kept-secret\nMSG91_AUTH_KEY=kept-key\n'), integrity, format, xattrs, ...(objects ? { objects } : {}) });
   // Rewrites SHA256SUMS as the backup tool would; only `sign` adds a valid signature.
   const resum = ({ format = 'warehouse-backup-v5', sign = true, files = '', databaseImage = currentDatabaseImage() } = {}) => {
     writeFileSync(join(backup, 'metadata.txt'), `format=${format}\ncreated_at_utc=20260101T000000Z\nsource_commit=abc1234\n${databaseImage === null ? "" : `database_image=${databaseImage}\n`}`);
@@ -91,7 +91,17 @@ exec ${bin}/docker "$@"
     signArchive(`${tar}.enc`);
     return `${tar}.enc`;
   };
-  return { scratch, root, backup, parent, run, tarball, encrypted, signArchive, resum, keyFile, original, wrap, state: join(parent, 'acme') };
+  // The archive backup-usb.sh writes (scripts/backup-archive.sh), checksum and signature files included: `.tar.enc` by default.
+  const usbArchive = ({ encrypt = true } = {}) => {
+    const archive = join(scratch, 'drive', `${NAME}.tar${encrypt ? '.enc' : ''}`);
+    const written = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1"; source "$2"; backup_key_load "$3"; backup_archive_write "$4" "$5" $6', 'sh',
+      join(root, 'scripts/backup-key.sh'), join(root, 'scripts/backup-archive.sh'), keyFile, backup, archive, encrypt ? 'encrypt' : ''], { encoding: 'utf8' });
+    assert.equal(written.status, 0, written.stderr);
+    writeFileSync(`${archive}.sha256`, `${written.stdout.trim()}  ${NAME}.tar${encrypt ? '.enc' : ''}\n`);
+    signArchive(archive);
+    return archive;
+  };
+  return { scratch, root, backup, parent, run, tarball, encrypted, usbArchive, signArchive, resum, keyFile, original, wrap, state: join(parent, 'acme') };
 }
 const clean = f => rmSync(f.scratch, { recursive: true, force: true });
 const nothingCreated = (f, result) => {
@@ -914,5 +924,60 @@ test('restore-host checks the room for a backup folder before it copies it: twic
     nothingCreated(f, result);
     const enough = f.run(['--state-dir', f.state, '--yes', f.backup], { ...env, FAKE_AVAIL: String(50 * 1024 ** 3) });
     assert.equal(enough.status, 0, enough.stderr + enough.stdout);
+  } finally { clean(f); }
+});
+
+test('restore-host rebuilds a host from the archive of a v6 backup as backup-usb.sh writes it, encrypted or not: the drive and the key copy are all it needs', { skip: xattrSkip() }, () => {
+  const xattrs = { [OBJECT]: { 'user.supabase.content-type': 'application/pdf', 'user.supabase.cache-control': 'max-age=3600' } };
+  for (const encrypt of [true, false]) {
+    const label = encrypt ? '.tar.enc' : '.tar';
+    const f = fixture(`warehouse-restore-host-usb-${encrypt ? 'enc' : 'tar'}-`, { format: 'warehouse-backup-v6', xattrs });
+    try {
+      const archive = f.usbArchive({ encrypt });
+      if (encrypt) assert.doesNotMatch(readFileSync(archive, 'latin1'), /kept-secret|JWT_SECRET|database\.dump|storage\.manifest/, 'nothing readable on the drive');
+      // Only the drive is carried over: the original folder is gone, as the lost host's disk is.
+      rmSync(f.backup, { recursive: true });
+      const result = f.run(['--state-dir', f.state, '--yes', archive]);
+      assert.equal(result.status, 0, `${label}: ${result.stderr}${result.stdout}`);
+      const unpacked = join(f.state, 'backups', NAME, 'storage', OBJECT);
+      assert.equal(readFileSync(unpacked, 'utf8'), `bytes of ${OBJECT}`);
+      assert.equal(xattrTool().get(unpacked, 'user.supabase.content-type'), 'application/pdf', `${label}: the content type came through`);
+      assert.equal(xattrTool().get(unpacked, 'user.supabase.cache-control'), 'max-age=3600');
+      assert.ok(existsSync(join(f.state, 'backups', NAME, 'storage.manifest')) && existsSync(join(f.state, 'backups', NAME, 'SHA256SUMS.hmac')));
+      assert.equal(readFileSync(join(f.state, 'config/compose.env'), 'utf8').match(/^JWT_SECRET=.*$/m)[0], 'JWT_SECRET=kept-secret', 'the configuration of the lost host');
+      assert.equal(result.restoreCalls, `STATE=${f.state} ARGS=--yes --relocated ${join(f.state, 'backups', NAME)}\n`);
+      assert.deepEqual(readdirSync(f.parent), ['acme'], 'no scratch directory is left');
+    } finally { clean(f); }
+  }
+});
+
+test('restore-host refuses the archive of a v6 backup whose tree was changed on the drive, or whose signature does not match the key', () => {
+  const f = fixture('warehouse-restore-host-usb-refuse-', { format: 'warehouse-backup-v6' });
+  try {
+    const archive = f.usbArchive({ encrypt: true });
+    // Another key: the archive cannot be opened, and the signature is the first thing to say so.
+    const other = writeKey(join(f.scratch, 'other-key.txt'), 'd4'.repeat(32));
+    let result = f.run(['--state-dir', f.state, '--yes', archive], {}, { key: other });
+    assert.equal(result.status, 1); assert.match(result.stderr, /signature of .*\.tar\.enc does not match the backup key/); nothingCreated(f, result);
+    // A photo changed inside a plain archive and the archive's own checksum made again: the backup's manifest still says no.
+    writeFileSync(join(f.backup, 'storage', OBJECT), 'planted bytes');
+    const plain = f.usbArchive({ encrypt: false });
+    result = f.run(['--state-dir', f.state, '--yes', plain]);
+    assert.equal(result.status, 1); assert.match(result.stderr, /a file of the backup storage\/ tree does not match storage\.manifest/); nothingCreated(f, result);
+  } finally { clean(f); }
+});
+
+test('restore-host\'s safety listing takes the whole member name: a stored file whose name has spaces does not stop a lost-host restore', () => {
+  const object = 'documents/delivery note (copy 2).pdf/v1';
+  const f = fixture('warehouse-restore-host-spaces-', { format: 'warehouse-backup-v6', objects: [object] });
+  try {
+    const archive = f.usbArchive({ encrypt: false });
+    const listed = spawnSync('tar', ['-tf', archive], { encoding: 'utf8' }).stdout;
+    assert.ok(listed.split('\n').includes(`${NAME}/storage/stub/stub/${object}`), 'the archive does name a file with spaces');
+    rmSync(f.backup, { recursive: true });
+    const result = f.run(['--state-dir', f.state, '--yes', archive]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.doesNotMatch(result.stderr, /unexpected entries/);
+    assert.ok(existsSync(join(f.state, 'backups', NAME, 'storage', 'stub/stub', object)), 'and the file came back');
   } finally { clean(f); }
 });

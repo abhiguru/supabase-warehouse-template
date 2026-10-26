@@ -17,6 +17,9 @@
 #   backup_sign_archive FILE KEY      write FILE.hmac over FILE.sha256
 #   backup_check_archive FILE KEY     verify FILE.hmac
 #   backup_encrypt KEY / backup_decrypt KEY   stdin to stdout, AES-256-CTR
+#   backup_key_fingerprint KEY        first 16 hexadecimal characters of an HMAC of the key (it does not reveal the key)
+#   backup_escrow_ok STATE            0 when <state>/config/backup-key.escrow records that the operator confirmed a copy
+#                                     of the key now in <state>/config/backup.key (scripts/backup-key-escrow.sh)
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   echo 'scripts/backup-key.sh is a sourced helper, not a command.' >&2
   exit 1
@@ -238,3 +241,36 @@ backup_cipher() {
 }
 backup_encrypt() { backup_cipher -e "$1"; }
 backup_decrypt() { backup_cipher -d "$1"; }
+
+# The key escrow record: the operator has seen the key once and typed back its last characters, so a copy exists away from
+# this machine and the drive. An encrypted archive cannot be opened without the key, so a USB drive is not enrolled and an
+# encrypted archive is not written until the record matches the key now in use (a replaced key needs a new confirmation).
+# scripts/backup-key-escrow.sh writes it; the fingerprint is not the key and cannot be turned back into it.
+BACKUP_ESCROW_HEADER=warehouse-backup-key-escrow-v1
+backup_key_fingerprint() {
+  local mac
+  mac="$(backup_hmac "$1" warehouse-backup-key-fingerprint-v1 < /dev/null)" || return 1
+  printf '%s\n' "${mac:0:16}"
+}
+# backup_escrow_check RECORD KEY: 0 when the record is well formed and its fingerprint is that of KEY; otherwise 1 with the
+# reason in BACKUP_ESCROW_PROBLEM.
+BACKUP_ESCROW_PROBLEM=''
+backup_escrow_check() {
+  local record="$1" key="$2" header recorded expected
+  BACKUP_ESCROW_PROBLEM=''
+  if [[ ! -f "$record" || -L "$record" ]]; then BACKUP_ESCROW_PROBLEM="there is no key escrow record"; return 1; fi
+  IFS= read -r header < "$record" || true
+  if [[ "$header" != "$BACKUP_ESCROW_HEADER" ]]; then BACKUP_ESCROW_PROBLEM="the key escrow record is not valid"; return 1; fi
+  recorded="$(sed -n 's/^key_fingerprint=//p' "$record" | head -n 1)"
+  if [[ ! "$recorded" =~ ^[0-9a-f]{16}$ ]]; then BACKUP_ESCROW_PROBLEM="the key escrow record has no key fingerprint"; return 1; fi
+  expected="$(backup_key_fingerprint "$key")" || { BACKUP_ESCROW_PROBLEM='the backup key is not usable'; return 1; }
+  if [[ "$recorded" != "$expected" ]]; then BACKUP_ESCROW_PROBLEM="the key escrow record is for another backup key (the key was replaced since the copy was confirmed)"; return 1; fi
+}
+backup_escrow_ok() {
+  local state="$1" key
+  [[ -f "$state/config/backup.key" && ! -L "$state/config/backup.key" ]] || { BACKUP_ESCROW_PROBLEM="the backup key $state/config/backup.key does not exist"; return 1; }
+  IFS= read -r key < "$state/config/backup.key" || true
+  key="${key%$'\r'}"
+  [[ "$key" =~ ^[0-9a-f]{64}$ ]] || { BACKUP_ESCROW_PROBLEM="$state/config/backup.key does not hold a backup key"; return 1; }
+  backup_escrow_check "$state/config/backup-key.escrow" "$key"
+}

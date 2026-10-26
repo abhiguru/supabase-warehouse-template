@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHmac } from 'node:crypto';
 import { repo } from './backup-test-helpers.mjs';
 import * as W from '../scripts/watch.mjs';
 
@@ -769,6 +770,47 @@ test('USB backup: a failed last copy is reported', () => {
     writeFileSync(join(h.state, 'config/usb-backup.last'), 'result=failed\nfinished_utc=2026-10-18T00:00:00Z\nmessage=drive missing\n');
     const r = find(W.checkBackups(h.ctx()), 'usb_backup');
     assert.equal(r.ok, false); assert.match(r.summary, /drive missing/);
+  } finally { clean(h); }
+});
+
+test('USB backup: encrypted archives with no confirmed copy of the backup key raise usb_backup, and the confirmation clears it', () => {
+  const h = harness();
+  try {
+    const key = '5a'.repeat(16) + '0f'.repeat(16);
+    const fingerprint = key2 => createHmac('sha256', Buffer.from(key2, 'hex')).update('warehouse-backup-key-fingerprint-v1\n').digest('hex').slice(0, 16);
+    writeFileSync(join(h.state, 'config/backup.key'), `${key}\n`, { mode: 0o600 });
+    mkdirSync(join(h.scratch, 'etc'));
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=yes\nENCRYPT_SET=default\n`);
+    writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
+    let r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /USB archives are encrypted but the backup key copy is not confirmed \(there is no key escrow record\).*bash scripts\/backup-key-escrow\.sh show/);
+    // A record for another key does not count; the right one does.
+    const record = fp => writeFileSync(join(h.state, 'config/backup-key.escrow'), `warehouse-backup-key-escrow-v1\nkey_fingerprint=${fp}\nconfirmed_utc=2026-10-19T08:00:00Z\nconfirmed_by=op\n`);
+    record(fingerprint('d4'.repeat(32)));
+    assert.match(find(W.checkBackups(h.ctx()), 'usb_backup').summary, /for another backup key/);
+    record(fingerprint(key));
+    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+    // Readable archives, typed at setup, need no copy of the key.
+    rmSync(join(h.state, 'config/backup-key.escrow'));
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
+    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
+  } finally { clean(h); }
+});
+
+test('USB backup: an installation that never reran the USB setup (readable archives, nothing typed) raises usb_backup, and the setup rerun clears it', () => {
+  const h = harness();
+  try {
+    mkdirSync(join(h.scratch, 'etc'));
+    writeFileSync(join(h.state, 'config/usb-backup.last'), `result=ok\nfinished_utc=2026-10-19T08:00:00Z\nlast_success_epoch=${Math.floor((T0 - 3 * HOUR) / 1000)}\nmessage=copied 1\n`);
+    // The configuration the previous release's setup wrote: ENCRYPT=no and no ENCRYPT_SET.
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\n`);
+    const r = find(W.checkBackups(h.ctx()), 'usb_backup');
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /USB archives are still written unencrypted .*run sudo bash scripts\/backup-usb\.sh setup --state /);
+    // After the rerun the configuration says what was chosen; a readable archive typed on purpose is fine.
+    writeFileSync(join(h.scratch, 'etc/warehouse-usb-backup.conf'), `STATE=${h.state}\nENCRYPT=no\nENCRYPT_SET=typed\n`);
+    assert.equal(find(W.checkBackups(h.ctx()), 'usb_backup').ok, true);
   } finally { clean(h); }
 });
 

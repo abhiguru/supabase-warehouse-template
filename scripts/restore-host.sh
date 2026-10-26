@@ -24,7 +24,11 @@
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
 # written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
-# an archive without a `.hmac` is unpacked only with --allow-unsigned).
+# an archive without a `.hmac` is unpacked only with --allow-unsigned). The archive is one self-contained tar of the backup
+# folder (scripts/backup-archive.sh), encrypted with the backup key unless the operator typed --no-encrypt: this script is all
+# that is needed to rebuild a host from a drive alone, key copy in hand. A v6 archive is read as follows: the checksum and
+# signature of the archive, the decryption, the safety listing of every member, the unpacking with the stored files' attributes,
+# then the signature of the unpacked backup, its file list and its storage.manifest against the tree (backup_authenticate).
 # KEYFILE is the operator's copy of the lost installation's config/backup.key:
 # the signature is checked with it before anything in the backup is read, and an
 # encrypted archive cannot be opened without it. --allow-unsigned is only for a
@@ -158,7 +162,8 @@ if [[ -f "$source" && ( "$source" == *.tar || "$source" == *.tar.enc ) ]]; then
     archive="$scratch/$name.tar"
   fi
   # Only regular files and directories under <name>/, no absolute paths or '..'.
-  bad="$(tar -tvf "$archive" | awk -v n="$name" '{ t = substr($1, 1, 1); p = $NF } t != "-" && t != "d" { print; next } p != n && p != n "/" && index(p, n "/") != 1 { print; next } p ~ /(^|\/)\.\.(\/|$)/ { print }' | head -n 3)"
+  # The member name is what follows the size, date and time of the listing, spaces included (a stored file's name may have them).
+  bad="$(tar -tvf "$archive" | awk -v n="$name" '{ t = substr($1, 1, 1); p = $0; if (!sub(/^[^ ]+ +[^ ]+ +[0-9]+ +[0-9-]+ +[0-9:]+ /, "", p)) p = $NF } t != "-" && t != "d" { print; next } p != n && p != n "/" && index(p, n "/") != 1 { print; next } p ~ /(^|\/)\.\.(\/|$)/ { print }' | head -n 3)"
   [[ -z "$bad" ]] || die "Refusing an archive with unexpected entries: $bad"
   # --xattrs keeps the extended attributes of a v6 tree (content type and cache control of each stored file); -p keeps the
   # modes against the umask above, as restore.sh copies them on into data/storage.

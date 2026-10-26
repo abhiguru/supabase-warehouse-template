@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Copy verified backups to an operator-attached exFAT USB drive, automatically when it is attached.
-#   setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt]
+#   setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt] [--keep N]
 #                          root (sudo): install the udev rule, systemd units and root helper; enroll a drive.
 #                          Run again after every checkout update: an option that is not given keeps the
-#                          value the previous setup stored.
+#                          value the previous setup stored (except that an installation set up before encryption became
+#                          the default, and never told `--no-encrypt`, is switched to encrypted archives).
 #   enroll --device DEV    root: allow another drive (writes a signed enrolment marker onto it)
 #   uninstall              root: remove the rule, units, helper and configuration; drives are untouched
 #   status                 installation user, read-only: installation, enrolled drives, last result
-#   run --device NAME      installation user (the service runs this): fresh backup, copy, verify, record
+#   run --device NAME      installation user (the service runs this): a fresh backup only if the newest verified one is
+#                          older than 20 hours, copy the newest verified backup as one archive, verify it, prune, record
 #   mount NAME | unmount NAME | scan
 #                          root, run by systemd from the installed helper copy
 #   refused NAME UUID TEXT internal: the root helper, as the installation user, records a drive it did not mount
@@ -16,8 +18,14 @@
 # with the backup key (<state>/config/backup.key) over the filesystem UUID, the partition UUID and
 # the instance id, and run copies nothing unless that marker verifies for the drive it is on.
 # The drive is never partitioned or formatted and nothing outside warehouse-backups/ is touched.
-# Archives are signed with the backup key. They are encrypted only when WAREHOUSE_BACKUP_ENCRYPT=1
-# (setup --encrypt); otherwise they are readable and contain compose.env, which holds every credential.
+# Archives are signed with the backup key and, unless `setup --no-encrypt` was typed (WAREHOUSE_BACKUP_ENCRYPT=0), encrypted
+# with it. A readable archive contains compose.env, which holds every credential. The key must be confirmed as kept elsewhere
+# (scripts/backup-key-escrow.sh) before a drive is enrolled and before an encrypted archive is written: without a copy of the
+# key every encrypted archive is lost with the host.
+# Each backup is one self-contained archive (scripts/backup-archive.sh). A run copies only the newest verified backup, checks
+# the copy from the drive without unpacking the photos, and then keeps the newest N valid archives of this installation
+# (setup --keep N, default 3), deleting older ones, and, once an encrypted archive is written and verified, the readable
+# archives an earlier release left. Archives that are damaged, unsigned or signed with another key are reported and never deleted.
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,7 +50,7 @@ TMPDIRS=()
 
 die() { LAST_ERR="$*"; echo "$*" >&2; exit 1; }
 usage() {
-  die 'Usage: backup-usb.sh setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt] | enroll --device DEV | uninstall | status | run --device NAME | mount NAME | unmount NAME | scan'
+  die 'Usage: backup-usb.sh setup --state DIR [--enroll DEV] [--daily|--no-daily] [--fresh-backup|--no-fresh-backup] [--encrypt|--no-encrypt] [--keep N] | enroll --device DEV | uninstall | status | run --device NAME | mount NAME | unmount NAME | scan'
 }
 kv() { sed -n "s/.*\\b$2=\"\\([^\"]*\\)\".*/\\1/p" <<<"$1" | head -n1; }
 conf_get() { [[ -f "$CONF" ]] || return 0; sed -n "s/^$1=//p" "$CONF" | head -n1; }
@@ -102,6 +110,24 @@ load_backup_key_lib() {
   # shellcheck source=scripts/backup-key.sh
   source "$lib"
 }
+load_archive_lib() {
+  local lib="$ROOT/scripts/backup-archive.sh"
+  [[ -f "$lib" ]] || lib="$(conf_get CHECKOUT)/scripts/backup-archive.sh"
+  [[ -f "$lib" ]] || die 'scripts/backup-archive.sh is missing from the checkout.'
+  # shellcheck source=scripts/backup-archive.sh
+  source "$lib"
+}
+# The refusal for a key copy that was not confirmed (scripts/backup-key-escrow.sh). Needs backup-key.sh loaded.
+escrow_refusal() {
+  printf 'The backup key copy is not confirmed (%s). Archives on the drive are encrypted with the backup key, and without a copy of it kept away from this machine and from the drive they cannot be opened after the host is lost. As the installation user run: WAREHOUSE_STATE_DIR=%s bash scripts/backup-key-escrow.sh show   (it prints the key once and asks you to type the whole key back from your copy), then %s' \
+    "$BACKUP_ESCROW_PROBLEM" "$1" "$2"
+}
+# Whether archives are (or, after the next setup, will be) encrypted according to the stored configuration: yes, or no that
+# was not typed (an installation set up before encryption became the default is switched at its next setup).
+conf_encrypts() {
+  local stored; stored="$(conf_get ENCRYPT)"
+  [[ "$stored" != no || "$(conf_get ENCRYPT_SET)" != typed ]]
+}
 # The text the enrolment marker signs: this drive, this partition, this instance.
 enrolment_hmac() { printf '%s\n%s\n%s\n' "$D_UUID" "$D_PARTUUID" "$2" | backup_hmac "$1" warehouse-usb-enrolment-v1; }
 instance_id_of() { sed -n 's/.*"instanceId"[^"]*"\([^"]*\)".*/\1/p' "$1/public/instance.json" 2>/dev/null | head -n1 || true; }
@@ -143,6 +169,9 @@ do_enroll() {
   load_backup_key_lib
   [[ -f "$state/config/backup.key" ]] || die "The backup key $state/config/backup.key does not exist yet. As the installation user run: npm run db:backup (it creates the key), then enroll the drive again."
   backup_key_load "$state/config/backup.key" || exit 1
+  # An encrypted archive is lost with the host unless a copy of the key exists elsewhere: no drive is enrolled before the
+  # operator has confirmed one (a drive for plain archives, typed with --no-encrypt, needs no confirmation).
+  if conf_encrypts && ! backup_escrow_ok "$state"; then die "$(escrow_refusal "$state" 'enroll the drive again.')"; fi
   instance="$(instance_id_of "$state")"
   [[ -n "$instance" ]] || die "$state/public/instance.json has no instanceId."
   # The marker is written onto the drive itself, so it must be mounted for a moment.
@@ -170,16 +199,17 @@ do_enroll() {
 safe_path() { [[ "$1" == /* && "$1" != *[[:space:]%\\\"\']* ]] || die "$2 must be an absolute path without spaces, quotes or %: $1"; }
 
 # The value given on the command line, else the one the previous setup stored, else the default.
+# The fourth argument is the pattern a stored value must match (yes or no unless given).
 kept_setting() {
   local stored
   stored="$(conf_get "$2")"
   if [[ -n "$1" ]]; then printf '%s\n' "$1"
-  elif [[ "$stored" == yes || "$stored" == no ]]; then printf '%s\n' "$stored"
+  elif [[ "$stored" =~ ${4:-^(yes|no)$} ]]; then printf '%s\n' "$stored"
   else printf '%s\n' "$3"; fi
 }
 
 cmd_setup() {
-  local state='' enroll='' daily='' fresh='' encrypt='' uid gid user group old legacy
+  local state='' enroll='' daily='' fresh='' encrypt='' keep='' uid gid user group old legacy encrypt_set switched='' stored_encrypt escrow=unknown
   while (($#)); do
     case "$1" in
       --state) (($# > 1)) || usage; state="$2"; shift 2 ;;
@@ -190,6 +220,7 @@ cmd_setup() {
       --no-fresh-backup) fresh=no; shift ;;
       --encrypt) encrypt=yes; shift ;;
       --no-encrypt) encrypt=no; shift ;;
+      --keep) (($# > 1)) || usage; keep="$2"; [[ "$keep" =~ ^[1-9][0-9]?$ ]] || die '--keep needs a whole number from 1 to 99: how many archives the drive keeps.'; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -209,7 +240,27 @@ cmd_setup() {
   [[ -z "$old" || "$old" == "$state" ]] || die "USB backup is already set up for $old; run uninstall first."
   # Setup is run again after every checkout update, usually with nothing but --state.
   # That must not switch encryption or the daily timer off: only a named option changes a choice.
-  daily="$(kept_setting "$daily" DAILY no)"; fresh="$(kept_setting "$fresh" FRESH_BACKUP yes)"; encrypt="$(kept_setting "$encrypt" ENCRYPT no)"
+  daily="$(kept_setting "$daily" DAILY no)"; fresh="$(kept_setting "$fresh" FRESH_BACKUP yes)"
+  keep="$(kept_setting "$keep" KEEP 3 '^[1-9][0-9]?$')"
+  # Encryption is the default. A stored `no` is kept only when the operator typed --no-encrypt (ENCRYPT_SET=typed); a `no`
+  # that is merely the old default is switched to `yes`, with a notice below, because it was never a choice.
+  stored_encrypt="$(conf_get ENCRYPT)"
+  if [[ -n "$encrypt" ]]; then
+    encrypt_set=typed
+    # A typed --encrypt over a stored `no` (typed or not) also starts the deletion of the readable archives: it gets the notice too.
+    if [[ "$encrypt" == yes && "$stored_encrypt" == no ]]; then switched=typed; fi
+  elif [[ "$stored_encrypt" == yes ]]; then encrypt=yes; encrypt_set="$(conf_get ENCRYPT_SET)"; [[ "$encrypt_set" == typed ]] || encrypt_set=default
+  elif [[ "$stored_encrypt" == no && "$(conf_get ENCRYPT_SET)" == typed ]]; then encrypt=no; encrypt_set=typed
+  else
+    encrypt=yes; encrypt_set=default
+    [[ "$stored_encrypt" != no ]] || switched=default
+  fi
+  # The key copy must be confirmed before a drive is enrolled for encrypted archives: checked before anything is installed.
+  if [[ "$encrypt" == yes && -f "$state/config/backup.key" ]]; then
+    load_backup_key_lib
+    if backup_escrow_ok "$state"; then escrow=ok; else escrow=missing; fi
+    if [[ -n "$enroll" && "$escrow" == missing ]]; then die "$(escrow_refusal "$state" 'run setup again.')"; fi
+  fi
 
   # System directories created here must stay world-readable: under umask 077 a new
   # /usr/local/libexec became 0700, and the Docker CLI, which searches
@@ -217,7 +268,7 @@ cmd_setup() {
   (umask 022; mkdir -p "$LIBEXEC" "$UNITS")
   install -m 0755 -- "$SELF" "$HELPER"; chown root:root "$HELPER"
   local tmp; tmp="$(mktemp "$CONF.XXXXXX")"
-  printf 'STATE=%s\nCHECKOUT=%s\nUSER=%s\nUID=%s\nGID=%s\nFRESH_BACKUP=%s\nDAILY=%s\nENCRYPT=%s\n' "$state" "$ROOT" "$user" "$uid" "$gid" "$fresh" "$daily" "$encrypt" > "$tmp"
+  printf 'STATE=%s\nCHECKOUT=%s\nUSER=%s\nUID=%s\nGID=%s\nFRESH_BACKUP=%s\nDAILY=%s\nENCRYPT=%s\nENCRYPT_SET=%s\nKEEP=%s\n' "$state" "$ROOT" "$user" "$uid" "$gid" "$fresh" "$daily" "$encrypt" "$encrypt_set" "$keep" > "$tmp"
   chmod 0644 "$tmp"; mv -f -- "$tmp" "$CONF"
   # The enrolment list names the drives; only root reads it.
   [[ -f "$DRIVES" ]] || : > "$DRIVES"
@@ -236,10 +287,11 @@ Group=$group
 Environment=WAREHOUSE_STATE_DIR=$state
 Environment=WAREHOUSE_USB_BACKUP_FRESH=$fresh
 Environment=WAREHOUSE_BACKUP_ENCRYPT=$([[ "$encrypt" == yes ]] && echo 1 || echo 0)
+Environment=WAREHOUSE_USB_KEEP=$keep
 ExecStartPre=+$HELPER mount %I
 ExecStart=/bin/bash $ROOT/scripts/backup-usb.sh run --device %I
 ExecStopPost=+$HELPER unmount %I
-TimeoutStartSec=2h
+TimeoutStartSec=6h
 EOF
   cat > "$UNITS/$UNIT-scan.service" <<EOF
 [Unit]
@@ -267,12 +319,24 @@ EOF
   if [[ -n "$enroll" ]]; then do_enroll "$enroll"; else write_rule; fi
   if [[ "$daily" == yes ]]; then systemctl enable --now "$UNIT.timer"; else systemctl disable --now "$UNIT.timer" >/dev/null 2>&1 || true; fi
 
-  echo "USB backup is set up for $state, running as $user (fresh backup on attach: $fresh, daily timer: $daily, encrypted archives: $encrypt)."
+  echo "USB backup is set up for $state, running as $user (fresh backup on attach: $fresh, daily timer: $daily, encrypted archives: $encrypt, archives kept on a drive: $keep)."
   if [[ "$encrypt" == yes ]]; then
     echo "Archives are encrypted with the backup key $state/config/backup.key. Without a copy of that key, kept away from this machine and from the drive, the archives cannot be restored after the host is lost."
+    if [[ -n "$switched" ]]; then
+      if [[ "$switched" == default ]]; then
+        echo 'NOTICE: this installation had USB backup set up with unencrypted archives, which was the default of earlier releases. Archives are now encrypted by default, so this setup switched them to encrypted ones. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted. To keep readable archives, which put every credential on the drive, run setup again with --no-encrypt.'
+      else
+        echo 'NOTICE: this installation wrote unencrypted archives and you typed --encrypt, so they are now encrypted. From the first encrypted archive that is written and verified, the unencrypted archives on enrolled drives are deleted. To keep readable archives, which put every credential on the drive, run setup again with --no-encrypt.'
+      fi
+      echo 'Deleting a file does not wipe it from an exFAT drive: a drive that ever held readable archives still holds their contents until the space is overwritten. Before such a drive leaves your hands, rotate the credentials (rotate-keys.sh, the MSG91 key, the tunnel credential) or retire the drive; see "USB backup drive" in docs/OPERATOR_INSTALL.md.'
+    fi
+    if [[ "$escrow" == missing ]]; then
+      echo "ACTION NEEDED: the backup key copy is not confirmed ($BACKUP_ESCROW_PROBLEM). Encrypted runs and enrolling a drive are refused until you run, as $user: WAREHOUSE_STATE_DIR=$state bash scripts/backup-key-escrow.sh show"
+    fi
   else
-    echo 'Archives are NOT encrypted. Run setup again with --encrypt to encrypt them with the backup key (keep a copy of the key off this machine first).'
+    echo 'Archives are NOT encrypted (you typed --no-encrypt). They contain every credential of the instance. Run setup again with --encrypt to encrypt them with the backup key (confirm a copy of the key off this machine first: bash scripts/backup-key-escrow.sh show).'
   fi
+  echo "Each drive keeps the newest $keep valid archives of this installation; older ones are deleted after a run that finishes without a failure (change it with --keep N)."
   # Lines of one column were written by a release that enrolled a drive by its volume serial alone.
   legacy="$(grep -E '^[A-Za-z0-9-]+$' "$DRIVES" || true)"
   while IFS= read -r D_UUID; do
@@ -283,7 +347,7 @@ EOF
   [[ -s "$DRIVES" ]] || echo 'No drive is enrolled yet: attach the exFAT USB drive and run: sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1'
   echo "From now on, attaching an enrolled drive runs the backup; it is unmounted when done."
   echo "Watch a run:  journalctl -f -u '$UNIT@*'      Last result:  bash scripts/backup-usb.sh status"
-  echo 'After updating this checkout, run setup again so the installed root helper matches it; the choices above are kept unless you name another (--no-encrypt, --no-daily, --fresh-backup).'
+  echo 'After updating this checkout, run setup again so the installed root helper matches it; the choices above are kept unless you name another (--no-encrypt, --no-daily, --fresh-backup, --keep N).'
 }
 
 cmd_enroll() {
@@ -357,9 +421,20 @@ cmd_scan() {
 }
 
 # ---------------------------------------------------------------- installation user
-STATE=''; RESULT_FILE=''; DEST=''; DEVICE=''; ENCRYPT=0
-COPIED=0; PRESENT=0; FAILED=0; FAILURES=''
+STATE=''; RESULT_FILE=''; DEST=''; DEVICE=''; ENCRYPT=0; KEEP=3; SUFFIX=tar
+COPIED=0; PRESENT=0; FAILED=0; FAILURES=''; PRUNED=0; PLAIN_REMOVED=0; FRESH_TAKEN=0; ENC_VERIFIED=0; ROOM_MSG=''
+ARCHIVE_NAME='^warehouse-[0-9]{8}T[0-9]{6}Z\.tar(\.enc)?$'
+declare -A VCACHE=()
 fail() { echo "FAILED: $*" >&2; FAILED=$((FAILED + 1)); FAILURES="${FAILURES:+$FAILURES; }$*"; }
+human() { numfmt --to=iec-i --suffix=B "$1" 2>/dev/null || echo "$1 bytes"; }
+# The free bytes of the file system holding $1. Returns 1, printing nothing, when no number can be read: an unreadable figure is
+# never taken for zero, because a caller that deletes to make room would then delete for nothing.
+free_bytes() {
+  local n
+  n="$(df -B1 --output=avail -- "$1" 2>/dev/null | tail -n1 | tr -d ' ')" || n=''
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$n"
+}
 
 # Hash a file as stored on the drive: direct I/O bypasses the page cache where the filesystem allows it.
 media_hash() {
@@ -376,6 +451,150 @@ media_hash() {
 archive_ok() {
   [[ -f "$1.sha256" ]] && [[ "$(media_hash "$1")" == "$(cut -d' ' -f1 "$1.sha256")" ]] || return 1
   if [[ -e "$1.hmac" || "$1" == *.enc ]]; then backup_check_archive "$1" "$BACKUP_KEY" || return 2; fi
+}
+# archive_ok, remembered for the run, and whether the archive counts as one of this installation's: it matches its checksum and
+# carries a valid signature of the current backup key (archive_ok alone also passes an archive from before signing).
+archive_state() {
+  local file="$1" state=0
+  archive_ok "$file" || state=$?
+  if ((state == 0)) && [[ -f "$file.hmac" && ! -L "$file.hmac" ]]; then VCACHE[$file]=ok; else VCACHE[$file]=bad; fi
+  return "$state"
+}
+archive_valid() {
+  case "${VCACHE[$1]:-}" in ok) return 0 ;; bad) return 1 ;; esac
+  archive_state "$1" || true
+  [[ "${VCACHE[$1]}" == ok ]]
+}
+# Archive files in the drive folder, newest name first (an encrypted archive before a readable one of the same backup).
+drive_archives() { find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.tar' -o -name 'warehouse-*.tar.enc' \) -printf '%f\n' | LC_ALL=C sort -r; }
+drop_archive() { rm -f -- "$DEST/$1" "$DEST/$1.sha256" "$DEST/$1.hmac"; unset "VCACHE[$DEST/$1]"; }
+
+# Local backups the run may copy, newest first: the ones the daily check verified (config/backups-verified.list, "name epoch"
+# per line, written by scripts/watch.mjs; the file may not exist) that are still there, else every signed one. With `all`
+# (a fresh backup was just taken, and nothing has verified it yet) every signed one.
+backup_candidates() {
+  local list="$STATE/config/backups-verified.list" name found=0
+  if [[ "${1:-}" != all && -f "$list" && ! -L "$list" ]]; then
+    while read -r name; do
+      if [[ "$name" =~ ^warehouse-[0-9]{8}T[0-9]{6}Z$ && -d "$STATE/backups/$name" && ! -L "$STATE/backups/$name" ]]; then printf '%s\n' "$name"; found=1; fi
+    done < <(awk 'NF { print $1 }' "$list" | LC_ALL=C sort -ru)
+    if ((found)); then return 0; fi
+  fi
+  while read -r name; do
+    if [[ -f "$STATE/backups/$name/SHA256SUMS.hmac" && ! -L "$STATE/backups/$name" ]]; then printf '%s\n' "$name"; fi
+  done < <(find "$STATE/backups" -mindepth 1 -maxdepth 1 -type d -name 'warehouse-*' -printf '%f\n' 2>/dev/null | LC_ALL=C sort -r)
+}
+backup_epoch() { local t="${1#warehouse-}"; date -u -d "${t:0:4}-${t:4:2}-${t:6:2} ${t:9:2}:${t:11:2}:${t:13:2}" +%s 2>/dev/null || echo 0; }
+
+# Makes room for an archive of NEED bytes on the drive by deleting the oldest valid archives of this installation while more
+# than one remains (the newest valid archive is never deleted). Returns 1 when the room cannot be made; ROOM_MSG says why.
+# Nothing is deleted when the free space cannot be read, nor when deleting every archive that may go would still not make room.
+make_room() {
+  local need="$1" avail f size i reclaim=0
+  local -a own=()
+  if ! avail="$(free_bytes "$DEST")"; then
+    ROOM_MSG="could not read the free space of the drive ($DEST), so it cannot be checked that the new archive fits; nothing was written and nothing was deleted. Check the drive (dmesg, another USB port), then attach it again"
+    return 1
+  fi
+  if ((avail > need)); then return 0; fi
+  while IFS= read -r f; do
+    if [[ "$f" =~ $ARCHIVE_NAME ]] && archive_valid "$DEST/$f"; then own+=("$f"); fi
+  done < <(drive_archives)
+  # The archives that may go are all but the newest valid one (own is newest first), with their checksum and signature files.
+  for ((i = 1; i < ${#own[@]}; i++)); do
+    size="$(stat -c %s -- "$DEST/${own[i]}" 2>/dev/null || echo 0)"
+    reclaim=$((reclaim + size))
+  done
+  if ((avail + reclaim <= need)); then
+    ROOM_MSG="drive too small: needs $(human "$need"), has $(human "$avail"); the drive must hold the new archive next to the newest valid one it already has (that one is never deleted), so use a larger drive"
+    if ((${#own[@]} > 1)); then ROOM_MSG+=". No archive was deleted: deleting the $(( ${#own[@]} - 1 )) older one(s) would still not make room"; fi
+    return 1
+  fi
+  while ((avail <= need && ${#own[@]} > 1)); do
+    f="${own[${#own[@]} - 1]}"
+    echo "Making room for the new archive: deleting the oldest valid archive on the drive, $f"
+    drop_archive "$f"; unset "own[${#own[@]} - 1]"; sync; PRUNED=$((PRUNED + 1))
+    if ! avail="$(free_bytes "$DEST")"; then
+      ROOM_MSG="could not read the free space of the drive ($DEST) after deleting $f; nothing more was deleted and nothing was written"
+      return 1
+    fi
+  done
+  if ((avail > need)); then return 0; fi
+  ROOM_MSG="drive too small: needs $(human "$need"), has $(human "$avail"); the drive must hold the new archive next to the newest valid one it already has (that one is never deleted), so use a larger drive"
+  return 1
+}
+
+# Copies one local backup to the drive as one archive, reads it back and signs it. Returns 1 when the source backup is not
+# good (the caller may try an older one) and 2 when the drive side failed.
+copy_backup() {
+  local n="$1" b="$STATE/backups/$1" archive="$DEST/$1.$SUFFIX" partial="$DEST/.$1.$SUFFIX.partial" need files problem hash
+  local -a enc_arg=()
+  # The signature, the list, every file and (v6) every file of the tree, before a byte is written.
+  if ! problem="$(WAREHOUSE_BACKUP_KEY_FILE="$STATE/config/backup.key" backup_authenticate "$b" false 2>&1)"; then
+    problem="${problem%%$'\n'*}"
+    fail "source backup $n fails its checksums or signature, nothing copied (${problem#Refusing: })"
+    return 1
+  fi
+  need="$(du -sb -- "$b" | cut -f1)"; files="$(find "$b" -type f | wc -l)"
+  need=$((need + files * 2048 + 67108864))
+  if ! make_room "$need"; then fail "$ROOM_MSG"; return 2; fi
+  if ((ENCRYPT)); then enc_arg=(encrypt); fi
+  # Hash the stream as it is written, then read the file back from the drive and compare.
+  if ! hash="$(backup_archive_write "$b" "$partial" "${enc_arg[@]}")"; then
+    rm -f -- "$partial"; fail "writing the archive of $n failed"; return 2
+  fi
+  sync -f "$partial" 2>/dev/null || sync
+  if [[ "$(media_hash "$partial")" != "$hash" ]]; then
+    rm -f -- "$partial"; fail "the archive of $n read back from the drive does not match what was written"; return 2
+  fi
+  # This function runs inside `|| copy_rc=$?` in the caller, where errexit does not apply: every step is checked by hand, and a
+  # step that fails leaves neither the archive nor a sidecar file behind.
+  if ! { printf '%s  %s\n' "$hash" "$n.$SUFFIX" > "$DEST/.$n.sha.partial" && mv -f -- "$DEST/.$n.sha.partial" "$archive.sha256"; }; then
+    rm -f -- "$partial" "$DEST/.$n.sha.partial" "$archive.sha256"; fail "writing the checksum file of the archive of $n failed"; return 2
+  fi
+  # The signature covers the checksum line, so the archive cannot be swapped with its checksum.
+  if ! backup_sign_archive "$archive" "$BACKUP_KEY"; then
+    rm -f -- "$partial" "$archive.sha256" "$archive.hmac"; fail "signing the archive of $n failed"; return 2
+  fi
+  if ! mv -f -- "$partial" "$archive"; then
+    rm -f -- "$partial" "$archive.sha256" "$archive.hmac"; fail "moving the archive of $n into place failed"; return 2
+  fi
+  sync -f "$archive" 2>/dev/null || sync
+  VCACHE[$archive]=ok
+  COPIED=$((COPIED + 1)); echo "Copied and verified from the drive: ${archive##*/}"
+}
+
+# Deletes the readable archives of this installation once an encrypted archive has been written and checked (they hold every
+# credential). Only archives that carry this installation's signature are deleted; the others are reported by the caller.
+remove_plaintext() {
+  local f
+  while IFS= read -r f; do
+    [[ "$f" == *.tar && "$f" =~ $ARCHIVE_NAME ]] || continue
+    if archive_valid "$DEST/$f"; then
+      echo "Deleting the unencrypted archive $f: an encrypted archive has been written and verified in this run, and the backup key copy is confirmed."
+      drop_archive "$f"; PLAIN_REMOVED=$((PLAIN_REMOVED + 1))
+    fi
+  done < <(drive_archives)
+  if ((PLAIN_REMOVED)); then
+    echo "NOTE: deleting a file does not wipe it from an exFAT drive: the readable archives just deleted can still be recovered with data-recovery tools until the space is overwritten, which is not certain. Before this drive leaves your hands, rotate the credentials they held (rotate-keys.sh, the MSG91 key, the tunnel credential) or retire the drive: docs/OPERATOR_INSTALL.md, \"USB backup drive\"."
+  fi
+}
+# Keeps the newest KEEP valid archives of this installation. Damaged archives, unsigned ones and ones signed with another key
+# are not counted and never deleted.
+prune_drive() {
+  local f listed
+  local -a own=() other=()
+  while IFS= read -r f; do
+    if [[ "$f" =~ $ARCHIVE_NAME ]] && archive_valid "$DEST/$f"; then own+=("$f"); else other+=("$f"); fi
+  done < <(drive_archives)
+  for f in "${own[@]:KEEP}"; do
+    echo "Deleting the archive $f: the drive keeps the newest $KEEP valid archives of this installation."
+    drop_archive "$f"; PRUNED=$((PRUNED + 1))
+  done
+  if ((${#other[@]})); then
+    listed="$(printf '%s, ' "${other[@]}")"
+    echo "Not counted and not deleted (damaged, unsigned, or signed with another key): ${listed%, }. Remove them yourself if you no longer need them."
+  fi
 }
 
 record() {
@@ -396,6 +615,7 @@ record() {
         echo 'These archives are NOT encrypted and contain every credential of the instance. Keep this drive locked away;'
         echo 'if it is lost, run ./rotate-keys.sh --yes on the server and take a new backup.'
       fi
+      echo "A run keeps the newest $KEEP valid archives of this installation on this drive and deletes older ones."
     } > "$DEST/.LAST-RESULT.txt.partial" 2>/dev/null && mv -f -- "$DEST/.LAST-RESULT.txt.partial" "$DEST/LAST-RESULT.txt" 2>/dev/null || true
   fi
   RECORDED=1
@@ -409,7 +629,8 @@ on_run_exit() {
 }
 
 cmd_run() {
-  local name mp data_mm mp_mm label b n archive need avail hash newest candidate unsigned first_unsigned tmp instance_id id_file marker recorded suffix other plain=0 state
+  local name mp data_mm mp_mm label n archive newest candidate unsigned first_unsigned tmp instance_id id_file marker recorded plain=0 state copy_rc small avail age f base
+  local -a cands=()
   while (($#)); do case "$1" in --device) (($# > 1)) || usage; DEVICE="$2"; shift 2 ;; *) usage ;; esac; done
   [[ -n "$DEVICE" ]] || usage
   [[ "$(id -u)" != 0 ]] || die 'run copies as the installation user, never as root.'
@@ -421,7 +642,11 @@ cmd_run() {
   trap on_run_exit EXIT
   name="$(kname "$DEVICE")"; DEVICE="/dev/$name"
   probe_drive "$name"
-  [[ "${WAREHOUSE_BACKUP_ENCRYPT:-0}" != 1 ]] || ENCRYPT=1
+  # Archives are encrypted unless the operator typed --no-encrypt at setup (the unit then sets WAREHOUSE_BACKUP_ENCRYPT=0).
+  [[ "${WAREHOUSE_BACKUP_ENCRYPT:-1}" == 0 ]] || ENCRYPT=1
+  KEEP="${WAREHOUSE_USB_KEEP:-3}"
+  [[ "$KEEP" =~ ^[1-9][0-9]?$ ]] || die "WAREHOUSE_USB_KEEP must be a whole number from 1 to 99 (setup --keep N): $KEEP"
+  SUFFIX=tar; if ((ENCRYPT)); then SUFFIX=tar.enc; fi
   mp="$(findmnt -n -o TARGET -S "$DEVICE" 2>/dev/null | head -n1 || true)"
   [[ -n "$mp" ]] || die "$DEVICE is not mounted."
   [[ "$(findmnt -n -o FSTYPE --mountpoint "$mp" 2>/dev/null || true)" == exfat ]] || die "$mp is not an exFAT mount."
@@ -432,6 +657,7 @@ cmd_run() {
   # this drive's filesystem UUID, partition UUID and this instance. A drive that only imitates the
   # volume serial of an enrolled one has no such marker, and nothing is backed up or copied.
   load_backup_key_lib
+  load_archive_lib
   instance_id="$(instance_id_of "$STATE")"
   marker="$mp/$TOP/$ENROLMENT"
   recorded=''
@@ -440,13 +666,25 @@ cmd_run() {
      [[ "$recorded" != "$(enrolment_hmac "$BACKUP_KEY" "$instance_id")" ]]; then
     die "Drive $D_UUID ($DEVICE) is not enrolled for this installation (no valid enrolment marker for this drive); nothing was copied. Run: sudo bash scripts/backup-usb.sh enroll --device $DEVICE"
   fi
+  # An encrypted archive is lost with the host unless a copy of the key exists elsewhere: nothing is written, and no fresh
+  # backup is taken for it, until the operator has confirmed one.
+  if ((ENCRYPT)) && ! backup_escrow_ok "$STATE"; then
+    die "$(escrow_refusal "$STATE" 'attach the drive again. Nothing was written to the drive.')"
+  fi
   echo "Backing up to drive $D_UUID ($DEVICE, mounted at $mp)."
 
+  # A fresh backup stops the write-facing services briefly, so it is taken only when the newest verified backup is older than
+  # 20 hours: a drive attached in the morning after the night's backup copies that one and stops nothing.
   if [[ "${WAREHOUSE_USB_BACKUP_FRESH:-yes}" != no ]]; then
+    mapfile -t cands < <(backup_candidates)
+    age=-1
+    if ((${#cands[@]})); then age=$(( $(date +%s) - $(backup_epoch "${cands[0]}") )); fi
+    if ((age >= 0 && age < 72000)); then
+      echo "The newest verified backup (${cands[0]}) is $((age / 3600)) hours old; no fresh backup is taken."
     # backup.sh takes the operator lock itself; wait until no other operator command holds it.
-    if ( exec 9>"$STATE/config/operator.lock"; flock -w "$LOCK_WAIT" 9 ); then
+    elif ( exec 9>"$STATE/config/operator.lock"; flock -w "$LOCK_WAIT" 9 ); then
       echo 'Taking a fresh backup (write-facing services stop briefly).'
-      bash "$ROOT/scripts/backup.sh" || fail 'the fresh backup failed; existing backups are still copied'
+      if bash "$ROOT/scripts/backup.sh"; then FRESH_TAKEN=1; else fail 'the fresh backup failed; existing backups are still copied'; fi
     else
       fail "another operator command held the lock for ${LOCK_WAIT}s; no fresh backup was taken"
     fi
@@ -465,43 +703,36 @@ cmd_run() {
   [[ -z "$instance_id" ]] || printf '%s\n' "$instance_id" > "$id_file"
   # The lock is held, so partial files are leftovers of an interrupted run.
   find "$DEST" -maxdepth 1 -name '.*.partial' -type f -delete
+  # A checksum or signature file whose archive is not there is what an interrupted copy leaves (the sidecars are written before
+  # the archive is moved into place); nothing else would ever remove it.
+  while IFS= read -r f; do
+    base="${f%.sha256}"; base="${base%.hmac}"
+    if [[ "$base" =~ $ARCHIVE_NAME && ! -e "$DEST/$base" ]]; then
+      echo "Removing the leftover checksum or signature file $f: its archive is not on the drive."
+      rm -f -- "$DEST/$f"
+    fi
+  done < <(find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.sha256' -o -name 'warehouse-*.hmac' \) -printf '%f\n' | LC_ALL=C sort)
 
-  suffix=tar; other=tar.enc
-  if ((ENCRYPT)); then suffix=tar.enc; other=tar; fi
-  while IFS= read -r b; do
-    n="$(basename "$b")"; archive="$DEST/$n.$suffix"
-    # An archive written before the encryption setting changed still counts as this backup.
-    [[ -e "$archive" || ! -e "$DEST/$n.$other" ]] || archive="$DEST/$n.$other"
+  # Only the newest verified backup is copied, as one archive: the drive keeps the newest few, so an older local backup is
+  # not copied now. A backup that fails its own check is named and the next older one is tried.
+  if ((FRESH_TAKEN)); then mapfile -t cands < <(backup_candidates all); else mapfile -t cands < <(backup_candidates); fi
+  if ((${#cands[@]} == 0)); then fail 'there is no verified or signed backup to copy; take one with npm run db:backup'; fi
+  for n in "${cands[@]}"; do
+    archive="$DEST/$n.$SUFFIX"
+    # A readable archive of this backup does not stand in for the encrypted one (the run replaces it); an encrypted archive
+    # does stand in for a readable one, which would put the credentials in the clear next to it.
+    if ((ENCRYPT == 0)) && [[ ! -e "$archive" && -e "$DEST/$n.tar.enc" ]]; then archive="$DEST/$n.tar.enc"; fi
     if [[ -e "$archive" ]]; then
-      state=0; archive_ok "$archive" || state=$?
+      state=0; archive_state "$archive" || state=$?
       if ((state == 0)); then PRESENT=$((PRESENT + 1)); echo "Already on the drive and verified: ${archive##*/}"
       elif ((state == 2)); then fail "the archive of $n on the drive matches its checksum but was not signed with the current backup key; it was not overwritten. If you replaced the backup key, move the archives written before that into another folder on the drive (they verify only with the old key); otherwise the archive was changed on the drive"
       else fail "the archive of $n on the drive does not match its checksum or signature; it was not overwritten"; fi
-      continue
+      break
     fi
-    [[ -f "$b/SHA256SUMS" && -f "$b/metadata.txt" ]] || { fail "$n is not a complete backup"; continue; }
-    [[ -z "$(find "$b" -type l -print -quit)" ]] || { fail "$n contains symbolic links"; continue; }
-    (cd "$b" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1) || { fail "source backup $n fails its checksums; nothing copied"; continue; }
-    need="$(du -sb "$b" | cut -f1)"; avail="$(df -B1 --output=avail "$DEST" | tail -n1 | tr -d ' ')"
-    (( avail > need + 67108864 )) || { fail "not enough free space on the drive for $n"; continue; }
-    # Hash the stream as it is written, then read the file back from the drive and compare.
-    if ! hash="$(tar -C "$STATE/backups" -cf - "$n" | { if ((ENCRYPT)); then backup_encrypt "$BACKUP_KEY"; else cat; fi; } | tee "$DEST/.$n.$suffix.partial" | sha256sum | cut -d' ' -f1)"; then
-      rm -f -- "$DEST/.$n.$suffix.partial"; fail "writing the archive of $n failed"; continue
-    fi
-    sync -f "$DEST/.$n.$suffix.partial" 2>/dev/null || sync
-    if [[ "$(media_hash "$DEST/.$n.$suffix.partial")" != "$hash" ]]; then
-      rm -f -- "$DEST/.$n.$suffix.partial"; fail "the archive of $n read back from the drive does not match what was written"; continue
-    fi
-    printf '%s  %s\n' "$hash" "$n.$suffix" > "$DEST/.$n.sha.partial"
-    mv -f -- "$DEST/.$n.sha.partial" "$archive.sha256"
-    # The signature covers the checksum line, so the archive cannot be swapped with its checksum.
-    if ! backup_sign_archive "$archive" "$BACKUP_KEY"; then
-      rm -f -- "$DEST/.$n.$suffix.partial" "$archive.sha256" "$archive.hmac"; fail "signing the archive of $n failed"; continue
-    fi
-    mv -f -- "$DEST/.$n.$suffix.partial" "$archive"
-    sync -f "$archive" 2>/dev/null || sync
-    COPIED=$((COPIED + 1)); echo "Copied and verified from the drive: ${archive##*/}"
-  done < <(find "$STATE/backups" -mindepth 1 -maxdepth 1 -type d -name 'warehouse-*' 2>/dev/null | sort)
+    copy_rc=0; copy_backup "$n" || copy_rc=$?
+    # Done, or the drive side failed (an older backup would fail the same way); only a bad source backup tries the next one.
+    if ((copy_rc != 1)); then break; fi
+  done
 
   # The restore check opens the newest archive this installation signed. An archive
   # without a valid signature is never unpacked: anyone holding the drive can add a
@@ -511,7 +742,7 @@ cmd_run() {
   while IFS= read -r candidate; do
     if backup_check_archive "$DEST/$candidate" "$BACKUP_KEY"; then newest="$candidate"; break; fi
     unsigned=$((unsigned + 1)); [[ -n "$first_unsigned" ]] || first_unsigned="$candidate"
-  done < <(find "$DEST" -maxdepth 1 -type f \( -name 'warehouse-*.tar' -o -name 'warehouse-*.tar.enc' \) -printf '%f\n' | sort -r)
+  done < <(drive_archives)
   if ((unsigned)); then
     fail "the archive $first_unsigned on the drive carries no valid signature of this installation's backup key; it was not opened ($unsigned such archive(s) are newer than every archive this installation signed). An earlier release wrote unsigned archives: take a new backup with npm run db:backup. Otherwise remove them from the drive unless you put them there"
   fi
@@ -519,30 +750,63 @@ cmd_run() {
   if [[ -z "$newest" ]]; then
     ((unsigned)) || fail 'there is no backup on the drive; take one with npm run db:backup'
   elif [[ "${WAREHOUSE_USB_BACKUP_VERIFY_RESTORE:-yes}" != no ]]; then
-    tmp="$(mktemp -d "$STATE/.usb-verify.XXXXXX")"; TMPDIRS+=("$tmp")
-    if archive_ok "$DEST/$newest" &&
-       { if [[ "$newest" == *.enc ]]; then backup_decrypt "$BACKUP_KEY" < "$DEST/$newest" | tar -C "$tmp" -xf -; else tar -C "$tmp" -xf "$DEST/$newest"; fi; } &&
-       [[ -f "$tmp/$n/SHA256SUMS.hmac" ]] && bash "$ROOT/scripts/verify-restore.sh" "$tmp/$n"; then
-      echo "Restore verification of the copy on the drive passed: $n"
-    elif [[ -d "$tmp/$n" && ! -e "$tmp/$n/SHA256SUMS.hmac" ]]; then
-      fail "the newest backup on the drive ($n) is unsigned, written by an earlier release, so its restore was not verified; take a new backup with npm run db:backup"
+    # The archive is hashed and its signature checked before anything is read out of it: the size estimate below lists it.
+    small=''
+    if ! archive_valid "$DEST/$newest"; then
+      fail "restore verification of $n from the drive failed: the archive $newest does not match its checksum or its signature (it is damaged); it was not opened"
+    elif small="$(backup_archive_small_bytes "$DEST/$newest")"; then
+      # Only the small files are unpacked, onto the data disk: the photos are vouched for by the manifest the signature covers
+      # and by the hash made as the archive was written, and unpacking them would fill the disk the application runs on.
+      if avail="$(free_bytes "$STATE")"; then
+        if ((avail < small + 268435456)); then
+          fail "not enough free space in $STATE to check $n from the drive: its small files need $(human "$small") plus 256 MiB, and $(human "$avail") are free; free disk space, then attach the drive again"
+          small=''
+        fi
+      else
+        fail "could not read the free space of $STATE, so the restore check of $n from the drive was not run; check the disk, then attach the drive again"
+        small=''
+      fi
     else
-      fail "restore verification of $n from the drive failed"
+      fail "restore verification of $n from the drive failed: the archive could not be listed"
+      small=''
     fi
-    rm -rf -- "$tmp"
+    if [[ -n "$small" ]]; then
+      tmp="$(mktemp -d "$STATE/.usb-verify.XXXXXX")"; TMPDIRS+=("$tmp")
+      if backup_archive_extract "$DEST/$newest" "$tmp" --no-tree &&
+         [[ -f "$tmp/$n/SHA256SUMS.hmac" ]] && bash "$ROOT/scripts/verify-restore.sh" --no-storage-tree "$tmp/$n"; then
+        echo "Restore verification of the copy on the drive passed: $n"
+        if [[ "$newest" == *.enc ]]; then ENC_VERIFIED=1; fi
+      elif [[ -d "$tmp/$n" && ! -e "$tmp/$n/SHA256SUMS.hmac" ]]; then
+        fail "the newest backup on the drive ($n) is unsigned, written by an earlier release, so its restore was not verified; take a new backup with npm run db:backup"
+      else
+        fail "restore verification of $n from the drive failed"
+      fi
+      rm -rf -- "$tmp"
+    fi
+  else
+    # Restore verification was switched off (a test switch): the archive written in this run was read back and compared, but it
+    # was not opened, and deleting the readable archives is not done on a hash alone.
+    echo 'Restore verification is switched off (WAREHOUSE_USB_BACKUP_VERIFY_RESTORE=no): no unencrypted archive is deleted in this run.'
+  fi
+
+  # Deleting happens only after a run that finished without a failure, and only with the key copy confirmed (the run is not
+  # here otherwise).
+  if ((FAILED == 0)); then
+    if ((ENCRYPT && ENC_VERIFIED)); then remove_plaintext; fi
+    prune_drive
   fi
   [[ -z "$(find "$DEST" -maxdepth 1 -type f -name 'warehouse-*.tar' -print -quit)" ]] || plain=1
 
-  echo "Summary: copied=$COPIED already-present=$PRESENT failed=$FAILED. Nothing is deleted on either side; remove old backups yourself."
+  echo "Summary: copied=$COPIED already-present=$PRESENT failed=$FAILED pruned=$PRUNED unencrypted-removed=$PLAIN_REMOVED. The drive keeps the newest $KEEP valid archives of this installation; damaged, unsigned and foreign archives are reported and never deleted."
   if ((ENCRYPT == 0)); then
     echo 'WARNING: the archives are not encrypted and contain every credential of this instance. Keep the drive locked away.'
   elif ((plain)); then
-    echo 'WARNING: archives written by this run are encrypted, but the drive still holds unencrypted .tar archives from earlier runs; they contain every credential of this instance. Remove them once you no longer need them.'
+    echo 'WARNING: archives written by this run are encrypted, but the drive still holds unencrypted .tar archives from earlier runs; they contain every credential of this instance. They are deleted by a run that writes and verifies an encrypted archive and finishes without a failure; otherwise remove them yourself.'
   else
     echo "The archives are encrypted with the backup key $STATE/config/backup.key. Keep a copy of that key away from this machine and from the drive: without it they cannot be restored."
   fi
   if ((FAILED)); then record failed "$FAILURES"; exit 1; fi
-  record ok "copied $COPIED, already present $PRESENT, restore verified $n"
+  record ok "copied $COPIED, already present $PRESENT, pruned $PRUNED, unencrypted removed $PLAIN_REMOVED, restore verified $n"
 }
 
 # Internal: called by the root helper through setpriv, as the installation user.
@@ -567,9 +831,17 @@ cmd_status() {
     return 0
   fi
   state="$(conf_get STATE)"
-  echo "Set up for $state as $(conf_get USER) (fresh backup on attach: $(conf_get FRESH_BACKUP), daily timer: $(conf_get DAILY), encrypted archives: $(conf_get ENCRYPT))."
+  echo "Set up for $state as $(conf_get USER) (fresh backup on attach: $(conf_get FRESH_BACKUP), daily timer: $(conf_get DAILY), encrypted archives: $(conf_get ENCRYPT), archives kept on a drive: $(conf_get KEEP))."
   if [[ -f "$HELPER" ]] && ! cmp -s -- "$HELPER" "$SELF"; then
     echo 'WARNING: the installed root helper differs from this checkout; run setup again.'
+  fi
+  if [[ "$(conf_get ENCRYPT)" == no && "$(conf_get ENCRYPT_SET)" != typed ]]; then
+    echo 'WARNING: archives are still written unencrypted, which was the default of earlier releases. Run setup again (sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"): it switches them to encrypted archives.'
+  fi
+  if conf_encrypts && [[ -f "$state/config/backup.key" ]]; then
+    load_backup_key_lib
+    if backup_escrow_ok "$state"; then echo 'Backup key copy: confirmed.'
+    else echo "WARNING: the backup key copy is not confirmed ($BACKUP_ESCROW_PROBLEM). Encrypted runs and enrolling a drive are refused until you run: WAREHOUSE_STATE_DIR=$state bash scripts/backup-key-escrow.sh show"; fi
   fi
   if [[ ! -r "$DRIVES" ]]; then
     echo 'The list of enrolled drives is readable by root only: sudo bash scripts/backup-usb.sh status'

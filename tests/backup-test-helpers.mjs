@@ -40,6 +40,13 @@ export function signBackup(dir, key = backupKey) {
   return dir;
 }
 export function writeKey(path, key = backupKey) { writeFileSync(path, `${key}\n`, { mode: 0o600 }); return path; }
+// The key escrow record scripts/backup-key-escrow.sh writes (the operator confirmed a copy of the key): a fingerprint of the key.
+export const escrowFingerprint = (key = backupKey) => hmacHex(key, 'warehouse-backup-key-fingerprint-v1', '').slice(0, 16);
+export function writeEscrow(state, key = backupKey) {
+  const path = join(state, 'config/backup-key.escrow');
+  writeFileSync(path, `warehouse-backup-key-escrow-v1\nkey_fingerprint=${escrowFingerprint(key)}\nconfirmed_utc=2026-10-26T00:00:00Z\nconfirmed_by=tester\n`, { mode: 0o600 });
+  return path;
+}
 
 export function makeState(scratch, { env } = {}) {
   const state = join(scratch, 'state');

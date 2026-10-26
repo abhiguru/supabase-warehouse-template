@@ -104,8 +104,10 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
    database, plus 256 MiB, plus a 2 GiB reserve (`WAREHOUSE_BACKUP_RESERVE_MB`): compare `du -sh "$WAREHOUSE_STATE_DIR/data/storage"` with
    `df -h "$WAREHOUSE_STATE_DIR/backups"`. The new tree sits on the disk next to the v5 tarballs, which are never a base and age out
    only as new backups push them out of the newest seven, so **until the v5 backups age out a refused night makes no new backup**;
-   if the check refuses, delete the oldest `warehouse-backup-v5` backups by hand (each frees about the size of the photo volume; copy
-   them to the USB drive first if you want to keep them) and take the backup again. The older v5 backups restore as before. Backups
+   if the check refuses, delete the oldest `warehouse-backup-v5` backups by hand (each frees about the size of the photo volume; the USB script
+   copies only the newest verified backup, so to keep an old one write its archive into a folder of its own on the drive, outside the
+   installation's folder, for example `warehouse-backups/kept/`: a signed archive left in the installation's folder is pruned at the next
+   good run, and a run never looks into sub-folders) and take the backup again. The older v5 backups restore as before. Backups
    now also keep each stored file's content type and cache control, which every earlier restore dropped, including the
    PostgreSQL 17 to 18 upgrade (an in-place restore): after such a restore the files are served as `application/octet-stream`.
    `npm run storage:retag` sets them again from the catalog (safe to repeat; see "Content types of stored files" in
@@ -125,9 +127,48 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     rate limits behave differently, see "Changed" below. Once the upgrade is accepted, `docker image rm kong:3.9.4-ubuntu`
     gives back about 380 MB. To go back to a release from before nginx, run `bash stop.sh` first (see "What the nginx gateway
     release asks of you" in `docs/OPERATOR_INSTALL.md`).
+16. **Every installation with USB backup reruns `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"`; run `bash scripts/backup-key-escrow.sh show`
+   and keep the key copy; old unencrypted archives are removed after the first encrypted one is verified.** The rerun is for everyone
+   who set USB backup up with an earlier release, not only for those who want encryption: it installs the new unit (a 6-hour time
+   limit for a run instead of 2 hours, which is too short for a large drive, and the keep count) and the new root helper, and until it
+   is done `backup-usb.sh status`, `npm run doctor` and the `usb_backup` alert warn when the installation still writes readable archives.
+   USB archives are now encrypted with the backup key unless `--no-encrypt` is typed. An installation whose USB backup was set up by
+   an earlier release (readable archives were the default) is switched to encrypted archives by that rerun, which prints a notice; a
+   `--no-encrypt` you typed is kept, and then no warning is shown. A typed `--encrypt` over a typed `--no-encrypt` prints the same notice. Because the backup key lives only on the host's disk, a lost host
+   plus a lost key now means every encrypted archive is unrecoverable, so a drive is not enrolled and an encrypted archive is not
+   written until you have confirmed a copy of the key kept away from the host and the drive: in a terminal on the host,
+   `WAREHOUSE_STATE_DIR=… bash scripts/backup-key-escrow.sh show` prints the key once and asks you to type or paste the **whole key**
+   back from your copy (a copy with one wrong character is refused); `confirm --key-file FILE` does it without a terminal from a file
+   that holds your copy. Until you do, USB runs record a failure and `npm run doctor` and the `usb_backup` alert say what to run. The
+   confirmation is not part of a backup: after `db:restore-host` on a new host, confirm again. The first run that writes and verifies
+   an encrypted archive **deletes this installation's readable `.tar` archives on the drive** (it prints each one); archives it cannot
+   prove are this installation's (no signature, or another key's) are named on every run and left. **Deleting does not wipe a file from
+   an exFAT drive:** the contents of a deleted readable archive can be recovered with data-recovery tools until the space is
+   overwritten. Before a drive that ever held readable archives leaves your hands, rotate the credentials they held
+   (`./rotate-keys.sh --yes`, the MSG91 key, the tunnel credential: "USB backup drive" in `docs/OPERATOR_INSTALL.md`) or retire the
+   drive and enrol a new one. A drive now keeps the newest three valid archives (`setup --keep N`) and each run copies only the newest
+   verified backup, so the drive needs room for about three times the photos; archives signed with a replaced backup key are never
+   pruned, so after you change the backup key, clear the old ones by hand. A fresh backup on attach is taken only when the newest
+   verified backup is 20 hours old or more. The restore check of a run no longer unpacks the photos onto the data disk; it needs the
+   dump plus 256 MiB free in the state directory. A USB run holds the operator lock while it works, so the 5-minute checker is quiet for
+   that time (`docs/MONITORING.md`).
 
 ### Changed
 
+- **The USB drive: encrypted by default, pruned, self-contained archives, verified without unpacking the photos** (operator action 16).
+  `scripts/backup-usb.sh` writes one pax tar per run of the newest verified backup (`scripts/backup-archive.sh`: small files first, the
+  `storage/` tree last, hard links written out, `user.*` attributes kept), `warehouse-<utc>.tar.enc` unless `--no-encrypt` was typed, with
+  the checksum and signature files; the restore check unpacks only the small files (`verify-restore.sh --no-storage-tree`) after
+  checking that the state directory has room (the archive is hashed before it is listed or opened); the drive keeps the newest three
+  valid archives and never deletes the newest, a damaged, unsigned or foreign one, and deletes nothing to make room when deleting could
+  not make enough or when the free space cannot be read (the run is then refused); `scripts/backup-key-escrow.sh` records that the whole
+  backup key was given back from a copy kept elsewhere (`show` asks for the whole key, `confirm --key-file FILE` compares a file;
+  `config/backup-key.escrow` holds a fingerprint), which enrolment and encrypted runs require; the `usb_backup` alert and `npm run
+  doctor` warn when it is missing, and when an installation still writes readable archives because it never reran the USB setup. A
+  step of the copy that fails (the rename, the checksum file) fails the run, and checksum or signature files left without an archive
+  by an interrupted copy are removed. Readable archives are never deleted on a run with restore verification switched off. The
+  lost-host restore accepts stored files whose names have spaces. CI's lost-host drill rebuilds a host from an encrypted USB archive and
+  the key copy alone.
 - **The gateway is plain nginx from the official image; Kong is gone.** `docker/nginx` replaces `docker/kong.yml` and the
   `eval` entrypoint: nginx 1.30 (alpine-slim variant, pinned by tag and digest, no HIGH or CRITICAL finding at the time of the
   change), the routes, key check, CORS, body limits and the redacted access log as before, 128 MB instead of 512 MB, a read-only
@@ -223,7 +264,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   sample first). `db:restore-host` checks the disk for an archive or a backup folder before copying it, and unpacks with
   `tar -p --xattrs` (modes kept). `doctor` checks for
   `rsync` (built with extended-attribute support) and GNU tar `--xattrs`: a refusal for `setup.sh` and `db:restore-host`, a warning
-  for `start.sh`. The USB copy still archives the whole backup folder; its archive form changes in a later release.
+  for `start.sh`. The USB copy archives the whole backup folder as one self-contained archive, see operator action 16.
 - **A backup checks the free space first, and old backups are pruned whatever the verify says.** `db:backup` now refuses, before it
   stops any service or writes anything, when the disk of the backup folder has less free than it needs plus a reserve
   (`WAREHOUSE_BACKUP_RESERVE_MB`, 2048 by default). Linking from an earlier backup it needs twice the new stored files (and their

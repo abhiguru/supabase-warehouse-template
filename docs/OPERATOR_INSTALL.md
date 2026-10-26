@@ -932,7 +932,8 @@ origin and confirm the company name it discovers. Then, with fictional data and 
    denied.
 5. Disable a user (Settings → Users → edit → Account Status) and confirm login is refused (the code can still be requested,
    verification is rejected), then re-enable and sign in again.
-6. Take a backup and verify it (below), and copy `config/backup.key` away from this machine and from the backup drive
+6. Take a backup and verify it (below), and keep a copy of the backup key away from this machine and from the backup drive:
+   run `bash scripts/backup-key-escrow.sh show`, copy the key it prints, and type the whole key back to confirm it
    ([Backup key](#backup-key)).
 
 One phone is enough to exercise every role if you sign out and in again for each, but each role needs its own number that
@@ -1121,8 +1122,12 @@ records the numbers it was judged by in `metadata.txt` (`preflight_need_mb=`, wi
 **The week after the update to this backup format needs the most room.** The first v6 backup has nothing to link from, and the
 older `warehouse-backup-v5` backups are never a base. If the disk was sized for the v5 scheme (seven whole-photo tarballs), it can
 have less free than the photo tree plus the 2 GiB reserve, and then every night is refused until you free the room: a refused night
-makes no new backup, so nothing ages out by itself. Delete the oldest `warehouse-backup-v5` backups by hand, after copying them to the USB
-drive if you want to keep them (each holds a whole `storage.tar.gz`, so each frees about the size of the photo volume). Check first
+makes no new backup, so nothing ages out by itself. Delete the oldest `warehouse-backup-v5` backups by hand (each holds a whole `storage.tar.gz`, so each frees about the size of the photo
+volume). The USB script copies only the newest verified backup and prunes the drive to the newest three archives, so it does not keep
+an old backup for you; to keep one, write its archive into a folder of its own on the drive, outside this installation's folder (for
+example `warehouse-backups/kept/`: a run never looks into sub-folders, and a signed archive left in `warehouse-backups/<state name>/`
+is pruned at the next good run), with the `backup_archive_write` commands under "Manual fallback" in
+[DEVELOPER_HANDOFF.md](DEVELOPER_HANDOFF.md#usb-backup-drive) (set `DST` to that folder). Check first
 with `du -sh "$WAREHOUSE_STATE_DIR/data/storage"` and `df -h "$WAREHOUSE_STATE_DIR/backups"`.
 
 To change the reserve, give the process that makes the backup the variable. For the nightly run, use the daily unit
@@ -1159,8 +1164,8 @@ damaged copy` (also in the daily status line, `metadata.txt` as `rot_repaired=` 
 hold the damaged file: check them with `db:verify-restore` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md), "storage file fails its
 checksum"). Only when the live file does not match the recorded checksum either does the night fail. Keep the copies on the USB
 drive (a full, separate copy of the photos each) for that case.
-Copy every retained backup to an operator-provided encrypted off-host destination
-([PRODUCTION_DEPENDENCIES.md](PRODUCTION_DEPENDENCIES.md) keeps off-host custody, schedule and retention open). Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
+The USB drive ([below](#usb-backup-drive)) is the one copy that leaves the host: there is no unattended off-site copy, so after a
+host loss you have the data as of the last time the drive was plugged in. Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
 this backup either (the bridge's volume holds only readings not yet delivered).
 
 **`$WAREHOUSE_STATE_DIR/images` is not in a backup, and the USB copy does not take it.** It holds the images this
@@ -1238,14 +1243,32 @@ made before signed backups, the next `setup.sh` run or `db:backup` creates it an
   requires its `.sha256` to hold exactly one record, naming that archive, with the SHA-256 of its bytes, so a checksum and
   signature copied from another archive are refused before anything is opened;
 - a USB drive is **enrolled** with it ([USB backup drive](#usb-backup-drive));
-- USB archives are **encrypted** with it when you switch encryption on.
+- USB archives are **encrypted** with it (they are, unless you typed `--no-encrypt`).
 
 The key is never written into a backup and must never be stored on the backup drive. **Keep a copy away from the server and
-away from the drive**: a password manager, or a file on a different device kept somewhere else.
+away from the drive**: a password manager, or paper kept somewhere else. The encrypted archives on the drive are only as
+recoverable as that copy: the key lives on the disk that dies with the host, so a lost host plus a lost key is the loss of every
+encrypted archive.
+
+**Confirm the copy once, and again after the key is ever replaced.** In a terminal on the host, as the installation user:
 
 ```bash
-cat "$WAREHOUSE_STATE_DIR/config/backup.key"     # 64 hexadecimal characters; copy them exactly
+bash scripts/backup-key-escrow.sh show
 ```
+
+It prints the key once (64 hexadecimal characters; copy them exactly), with where to keep them, and then asks you to **type or paste the whole
+key back from your copy** (capital letters and spaces do not matter; nothing is shown as you type; three tries). Every character is
+compared, so a copy with one wrong or swapped character is found now and not after the host is lost. When the whole key matches it
+writes `config/backup-key.escrow` (mode 0600: a fingerprint of the key, the time and your user name; never the key), and tells you to
+clear the terminal, because the key is still on its screen and in its scrollback (run `clear`, close the window, and in tmux or screen
+clear the history too; do not keep a log of the session). **A USB drive is not enrolled, and an encrypted archive is not written, until
+this record matches the key in use**: `backup-usb.sh setup --enroll` and `enroll` refuse, and a run records a failure that
+`npm run doctor` and the checker's `usb_backup` alert show, with the command to run. Without a terminal (an unattended install, a script)
+`bash scripts/backup-key-escrow.sh confirm --key-file FILE` does the same from a file that holds your copy of the key (bring it from
+where you keep it; the file of the host's own key is refused, since it is lost with the host). It compares the whole key as well and
+never creates a key; `show` is the command that creates one on an installation that has none. `bash scripts/backup-key-escrow.sh check`
+says whether the record is good. The record proves that the whole key was given back once; it does not prove that the copy stays
+readable, so check the copy again from time to time, as described next.
 
 After the host is lost, `db:restore-host` refuses a backup unless you give it the key (`--backup-key FILE`), and an
 encrypted archive cannot be opened at all without it. Without the key (lost), a signed backup can only be restored with
@@ -1255,33 +1278,47 @@ copy once: put it in a file and run
 
 The restored installation keeps the same key. If the key itself may have been disclosed: move `config/backup.key` aside
 (keep it with the old backups, which only verify with it), take a new `db:backup` (it creates a new key), store the new
-copy, and enroll each USB drive again. On each drive, also move the archives written before the change
+copy and confirm it (`bash scripts/backup-key-escrow.sh show`; the old confirmation is for the old key and no longer counts), and
+enroll each USB drive again. On each drive, also move the archives written before the change
 (`warehouse-<utc>.tar*` with their `.sha256` and `.hmac` files) into another folder, for example
 `warehouse-backups/<state name>/old-key-<date>/`: they carry signatures of the old key, and as long as an older backup is
 still under `backups/` the USB run would report its archive as "not signed with the current backup key" on every attach.
+**A run never prunes an archive signed with another key** (it cannot tell one from a file somebody planted, so it names it and leaves it),
+and a run never looks into sub-folders, so these archives take space on the drive until you delete them: once you no longer need the
+backups they hold (they open only with the old key, which you must keep for as long as you keep them), delete them yourself. A drive
+that holds them next to the new archives reaches `drive too small` sooner.
 Do the same after a `db:restore-host --allow-unsigned` that was run without the key (its first backup creates a new one).
 
 ### USB backup drive
 
-A backup on the same disk as `data/` is lost with it, which is why `db:backup` warns. The backup script copies every
+A backup on the same disk as `data/` is lost with it, which is why `db:backup` warns. The USB script copies the newest verified
 backup to a **USB drive formatted exFAT**, which the operator attaches; exFAT is readable by a Linux host and by the Linux
 VM of a [Windows host](#windows-host-with-linux-vm), so a restore works on either. The drive is never partitioned or
-formatted, and other files on it are left alone. Backups go under `warehouse-backups/<state name>/` as one `.tar` archive
-(file modes kept inside) per backup, with a `.tar.sha256` checksum and a `.tar.hmac` signature made with the
-[backup key](#backup-key) (`.tar.enc` instead of `.tar` with encryption, below).
+formatted, and other files on it are left alone. The copy goes under `warehouse-backups/<state name>/` as one self-contained
+**encrypted** archive, `warehouse-<utc>.tar.enc` (a tar of the whole backup folder, with file modes, modification times and the
+stored files' content types kept inside, and the photos written out in full: the drive has no hard links), with a
+`.tar.enc.sha256` checksum and a `.tar.enc.hmac` signature made with the [backup key](#backup-key). It is `.tar`, readable, only if
+you typed `--no-encrypt` (below). The drive keeps the newest three archives of this installation and deletes older ones, so it needs
+room for about three times the photos plus the databases (the oldest archive is deleted early when a new one would not fit), and **the point you can recover to is the last time the drive was plugged
+in**: everything recorded after it is lost with the host.
 
 The operator's only job is to **attach the drive**. `scripts/backup-usb.sh` installs a udev rule and a systemd unit once;
-after that, attaching an **enrolled** drive takes a fresh `db:backup` (write-facing services stop briefly), writes each
-backup not yet on the drive, reads every new archive back from the drive and compares checksums, runs `db:verify-restore`
-on the newest archive extracted from the drive, and unmounts the drive. Only an enrolled drive receives anything.
+after that, attaching an **enrolled** drive takes a fresh `db:backup` only if the newest verified backup is 20 hours old or more
+(write-facing services stop briefly; a drive attached in the morning after the night's backup stops nothing), writes the newest
+verified backup (the daily check's verified list, else the newest signed one) as one archive, checks the signature and every file of
+that backup before a byte is written, reads the archive back from the drive and compares checksums, runs `db:verify-restore` on
+the archive's small files (the databases, the manifest, the configuration: the photos are never unpacked onto the data disk, and the
+run first checks that the state directory has room for the dump plus 256 MiB), deletes what the keep rule below says, and unmounts
+the drive. Only an enrolled drive receives anything.
 Enrolling writes a marker file, `warehouse-backups/.drive-enrolment`: a signature made with the backup key over the drive's
 filesystem UUID, its partition UUID and this installation's identity, recomputed before a run takes a backup or copies a
 byte. The exFAT volume serial alone does not enrol a drive (it is 32 bits and can be chosen when formatting), so a stick
 that imitates it receives nothing.
 
-1. Set it up once, as the installation user with `sudo`, with the drive attached (on VMware connect it to the VM under
-   Removable Devices first). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it must show `usb` and
-   `exfat`:
+1. **Confirm the backup key copy** ([Backup key](#backup-key): `bash scripts/backup-key-escrow.sh show`); setup with `--enroll`
+   and `enroll` refuse until you have. Then set it up once, as the installation user with `sudo`, with the drive attached (on VMware
+   connect it to the VM under Removable Devices first). Find the partition with `lsblk -o NAME,TRAN,FSTYPE,LABEL,MOUNTPOINTS`; it
+   must show `usb` and `exfat`:
 
    ```bash
    cd /path/to/installed/backend
@@ -1296,16 +1333,25 @@ that imitates it receives nothing.
    `/usr/local/libexec/warehouse-usb-backup` and writes `/etc/warehouse-usb-backup.conf`, the enrolled-drive list
    `/etc/warehouse-usb-backup.drives` (root only, mode 0600), `/etc/udev/rules.d/90-warehouse-usb-backup.rules` and the
    `warehouse-usb-backup@.service` unit. Options: `--daily` for a drive that stays attached (a daily timer starts the same
-   run), `--no-fresh-backup` to copy only existing backups, `--encrypt` to encrypt the archives (below). A later setup run
-   that does not name one keeps what you chose; switch one back with `--no-daily`, `--fresh-backup` or `--no-encrypt`.
+   run), `--no-fresh-backup` to copy only existing backups, `--keep N` for how many archives a drive keeps (default 3), and
+   `--no-encrypt` to write readable archives (not recommended; below). A later setup run that does not name one keeps what
+   you chose; switch one back with `--no-daily`, `--fresh-backup` or `--encrypt`.
    Enroll a second drive for rotation with `sudo bash scripts/backup-usb.sh enroll --device /dev/sdX1`; enrolling needs the
-   backup key, so take one `npm run db:backup` first on an installation that has none yet. **Run setup again after updating
-   the checkout** ([Rerun and upgrade](#rerun-and-upgrade); `setup.sh` runs first) so the installed helper matches it
-   (`status` warns when it does not). `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
+   backup key, so run `bash scripts/backup-key-escrow.sh show` (it creates the key if there is none) or `npm run db:backup` first on an
+   installation that has none yet. **Run setup again after updating
+   the checkout** ([Rerun and upgrade](#rerun-and-upgrade); `setup.sh` runs first) so the installed helper and the unit match it
+   (`status` warns when they do not): the unit of this release has a 6-hour time limit for a run (the old one had 2 hours, too short
+   for a large drive) and carries a keep count other than 3 if you chose one; both reach an installation only through this rerun. An installation that was
+   set up with readable archives and never reruns it keeps writing them: `status`, `npm run doctor` and the checker's `usb_backup`
+   alert say so until it does. `sudo bash scripts/backup-usb.sh uninstall` removes everything it installed and never
    touches a drive.
-2. From then on: plug the drive in and wait. The run takes a few minutes; when the drive disappears from the file manager
+2. From then on: plug the drive in and wait. The run takes minutes at first and longer as the photos grow (it reads the backup,
+   writes and reads back one archive, and checks every archive it keeps); when the drive disappears from the file manager
    (or `lsblk` shows no mount point for it), it is unmounted and safe to remove. Do not unplug during a copy; an
-   interrupted archive is left as a `.partial` file that the next run removes.
+   interrupted archive is left as a `.partial` file that the next run removes, together with any checksum or signature file
+   left without its archive. The run holds the operator lock from the copy to the end (it hashes every archive it keeps), so
+   `setup.sh`, `upgrade.sh` and the other operator commands wait for it, and the monitoring checker skips its checks meanwhile
+   ([MONITORING.md](MONITORING.md#usb-run-and-the-checker)).
 3. Check the result as the installation user:
 
    ```bash
@@ -1315,31 +1361,58 @@ that imitates it receives nothing.
 
    Until the first run, `journalctl` answers "Failed to add filter for units: No data available"; that only means no run
    has happened yet. The result is also written to `warehouse-backups/<state name>/LAST-RESULT.txt` on the drive, and
-   `npm run doctor` warns when the last run failed or the last successful copy is older than 7 days
-   (`WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`).
+   `npm run doctor` warns when the last run failed, the last successful copy is older than 7 days
+   (`WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`), or archives are encrypted and the [key copy](#backup-key) is not confirmed.
 
-Nothing is ever deleted from the drive or from `backups/`; remove old archives yourself. A run that finds an archive that no
-longer matches its checksum reports it and leaves it alone. Problems: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore).
+**What a run deletes, and what it never does.** After a run that finished without a failure, the drive keeps the newest
+three valid archives of this installation (`--keep N`) and deletes the older ones with their `.sha256` and `.hmac` files. Valid
+means the bytes match the checksum and the signature is one of the current backup key. An archive that is damaged, has no signature,
+or was signed with another key (after a key replacement, see [Backup key](#backup-key)) is **reported by name and never counted or
+deleted**; neither is any other file on the drive. An archive without a signature (a readable one that an earlier release wrote before
+archives were signed) is kept as well, and the run names it **on every run** until you remove it yourself. The newest valid archive is
+never deleted. A run that fails deletes nothing, with
+one exception: if the new archive will not fit, it deletes the oldest valid archives, one at a time while more than one remains, until
+it does; it deletes nothing at all when even all of them would not make room, and if it still will not fit the run fails with
+`drive too small: needs X, has Y`; use a larger drive, because the drive must hold the new archive next to the newest one it already has.
+If the drive's free space cannot be read, the run is refused (`could not read the free space of the drive`) and deletes nothing. Nothing is ever deleted from `backups/` on the host by this script. A run
+that finds an archive of the backup it is copying that no longer matches its checksum reports it and leaves it alone.
+Problems: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#backup-usb-drive-and-restore).
 
-**Encryption is off unless you switch it on.** By default the archives are **not encrypted** and contain `compose.env`,
-which holds every credential of the instance, the whole customer database, and, after `tunnel.sh adopt`, the tunnel
-credential: whoever holds the drive could run a connector for your hostname and receive part of the phones' traffic,
-sign-in codes included. Keep the drive locked away. To encrypt, first store a copy of the [backup key](#backup-key) away
-from the server and the drive, then run setup again with `--encrypt`:
+**Archives are encrypted by default.** Each archive is written as `warehouse-<utc>.tar.enc` (AES-256, key derived from the
+[backup key](#backup-key), with a signed checksum next to it) and the run verifies the restore from the encrypted copy. Unencrypted,
+an archive contains `compose.env`, which holds every credential of the instance, the whole customer database, and, after
+`tunnel.sh adopt`, the tunnel credential: whoever held the drive could run a connector for your hostname and receive part of the
+phones' traffic, sign-in codes included. **The price: after the switch, a lost backup key means the encrypted archives are
+unrecoverable.** That is why the key copy must be confirmed before a drive is enrolled or an encrypted archive is written
+(`bash scripts/backup-key-escrow.sh show`), and why the copy belongs somewhere that survives the loss of the facility.
 
-```bash
-sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR" --encrypt
-```
+**An installation set up before this release** wrote readable archives (encryption was off unless you typed `--encrypt`), and its stored
+configuration says `ENCRYPT=no`. The first `sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"` after the update
+switches it to encrypted archives and prints a notice saying so (`status` warns until you run it). Until you confirm the key copy,
+the runs then refuse. When the first encrypted archive has been written and verified in a run, the **readable archives of this
+installation on the drive are deleted** (the run prints each one): they hold every credential, and keeping them would defeat the
+switch. During the first few runs after it the drive therefore holds fewer than three archives. A readable archive that carries no
+valid signature of this installation is not provably yours, so it is not deleted; the run names it on every run, and you remove it
+yourself. The deletion is done only after the run has hashed the encrypted archive and checked its restore; a run with restore
+verification switched off (a test switch) deletes nothing readable.
 
-From the next run on, each new archive is written as `warehouse-<utc>.tar.enc` (AES-256, key derived from the backup key,
-with a signed checksum next to it) and the run verifies the restore from the encrypted copy. A lost key makes the
-encrypted archives unrecoverable, which is why encryption is not the default. It is covered by automated tests that
-encrypt and decrypt an archive with the database replay simulated; it has not been through a lost-host drill on real
-containers, so until you have done one restore from an encrypted archive yourself, keep another copy you know you can
-restore. Archives already on the drive stay as they are; the run names them in a warning until you delete them. Run setup
-without `--encrypt` to switch it off again.
+**Deleting a readable archive does not wipe it from an exFAT drive.** `rm` only frees the space; the contents of a deleted
+`warehouse-<utc>.tar` (the `compose.env` with every credential, the database dump, the tunnel credential) stay on the stick until
+new data happens to overwrite them, and a data-recovery tool such as photorec or testdisk can read them back. The new encrypted archive
+may well land in other free space. So a drive that ever held readable archives is still as sensitive as the server's disk, even after
+the run has deleted them. **Before such a drive leaves your hands** (taken off site, lent, sold, thrown away), either rotate what the
+archives held, as in the next paragraph (`./rotate-keys.sh --yes`, the MSG91 key, the tunnel credential), or retire the drive and enrol a
+new one that has only ever held encrypted archives, which is the better course. The run prints this where it deletes, and so does the
+notice that setup prints when it switches an installation to encrypted archives.
+Typing `--no-encrypt` is a choice that setup keeps (`ENCRYPT_SET=typed` in `/etc/warehouse-usb-backup.conf`); it needs no key copy,
+and a drive written that way is as sensitive as the server's disk. To encrypt again run setup with `--encrypt`; it prints the same notice
+(the readable archives on enrolled drives will be deleted, and deleting does not wipe them) because it starts the same deletion. Encryption is
+covered by automated tests that encrypt and decrypt an archive with the database replay simulated, and CI rebuilds a host from an
+encrypted archive and the key copy alone on real containers; until you have done one restore from an encrypted archive on a
+real new host yourself, treat the drive as unproven.
 
-If an unencrypted drive is ever lost, act at once: run `./rotate-keys.sh --yes`, rotate the MSG91 key, and replace the
+If a drive that ever held readable archives is lost (or leaves your hands without having been retired), even if a run deleted them,
+act at once: run `./rotate-keys.sh --yes`, rotate the MSG91 key, and replace the
 tunnel credential (for a dashboard tunnel, refresh its token in the Cloudflare dashboard; for a locally managed tunnel,
 create a new tunnel, route the hostname to it with `route dns --overwrite-dns` and delete the old one), then
 `mv "$WAREHOUSE_STATE_DIR/config/tunnel" <private place>`, `tunnel.sh adopt` the new credential,
@@ -1348,9 +1421,22 @@ create a new tunnel, route the hostname to it with `route dns --overwrite-dns` a
 on site is local custody only; taking it (or a second drive in rotation) to another location is what protects against
 loss of the host, theft or fire.
 
-To use an archive from the drive: on the **same** installation (its state directory intact) extract it into
-`$WAREHOUSE_STATE_DIR/backups/` and follow [In-place restore of the same instance](#in-place-restore-of-the-same-instance);
+To use an archive from the drive: on the **same** installation (its state directory intact) unpack it into
+`$WAREHOUSE_STATE_DIR/backups/` (it decrypts a `.tar.enc` with the state's key and keeps the stored files' attributes; the
+state needs room for the whole backup) and follow [In-place restore of the same instance](#in-place-restore-of-the-same-instance);
 after losing the host, follow [Recover a lost host from the USB drive](#recover-a-lost-host-from-the-usb-drive).
+
+```bash
+( set -e; source scripts/backup-key.sh; source scripts/backup-archive.sh
+  backup_key_load "$WAREHOUSE_STATE_DIR/config/backup.key"
+  A="$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar.enc"
+  ( cd "$(dirname "$A")" && sha256sum -c "$(basename "$A").sha256" )     # the bytes are the ones that were written
+  backup_check_archive "$A" "$BACKUP_KEY"                                # and this installation's key signed that checksum
+  backup_archive_extract "$A" "$WAREHOUSE_STATE_DIR/backups" )
+```
+
+Both checks come first: an archive changed on the drive, or put there by somebody else, is not unpacked (`db:restore-host` makes the
+same two checks).
 
 **Record a fingerprint with each backup you may need to prove later.** Right after a USB run, before anyone uses the app
 again:
@@ -1473,9 +1559,9 @@ keys, MSG91 settings, users, sessions and data, exactly as at the moment of the
 backup. Phones keep working without selecting the server again. Everything
 recorded after the backup is lost.
 
-> **Status:** CI runs a lost-host drill on real containers (fresh backup, containers
-> removed, restore into a different path, identical fingerprint). Record the result of your first drill on a
-> real new host.
+> **Status:** CI runs a lost-host drill on real containers (fresh backup, an encrypted USB archive made from it,
+> containers removed, restore from that archive and the key copy alone into a different path, identical fingerprint).
+> Record the result of your first drill on a real new host.
 
 **Never run the old and the new host at the same time.** They would answer as
 the same warehouse with the same keys. If the old host might come back, wipe
@@ -1514,7 +1600,7 @@ one rerun with both sets of options does.
    DRIVE="/media/$USER/<label>"
    ls "$DRIVE"/warehouse-backups/*/                       # one folder per installation
    cd "$DRIVE/warehouse-backups/<state name>"
-   sha256sum -c warehouse-<utc>.tar.sha256                # the newest that says OK (.tar.enc.sha256 for an encrypted archive)
+   sha256sum -c warehouse-<utc>.tar.enc.sha256            # the newest that says OK (.tar.sha256 for a readable archive)
    ```
 
 3. **Restore.** Choose the state directory for this host. The original path is
@@ -1526,7 +1612,7 @@ one rerun with both sets of options does.
    export WAREHOUSE_STATE_DIR=/srv/warehouse/acme
    sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" "$(dirname "$WAREHOUSE_STATE_DIR")"
    npm run db:restore-host -- --state-dir "$WAREHOUSE_STATE_DIR" --backup-key ~/backup.key --yes \
-     "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar"
+     "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar.enc"
    ```
 
    The built images come from the saved tarballs when you have them: an `images` folder next to the archive (as in the
@@ -1609,15 +1695,21 @@ one rerun with both sets of options does.
    says so; SMS sign-in is unaffected.
 8. **Protect the new host.** Set up the [USB backup drive](#usb-backup-drive)
    again (`sudo bash scripts/backup-usb.sh setup …`, then re-plug the drive) and
-   check that a new backup appears next to the old ones.
+   check that a new backup appears next to the old ones. **The key copy confirmation is not on the rebuilt host**: the record
+   `config/backup-key.escrow` lives in the state's `config/` and is not part of a backup, so on the new host the drive is not enrolled
+   and no run writes until you confirm the key again. The restore has put the key itself back (`config/backup.key`, the copy you gave
+   with `--backup-key`); as the installation user run `bash scripts/backup-key-escrow.sh confirm --key-file ~/backup.key` (or `show`
+   in a terminal, and type the key back from your copy), then enrol the drive. `setup --enroll` and `enroll` say the same if you
+   forget.
 
    Install the monitoring checker again too, with the command `db:restore-host` printed
    (`sudo bash scripts/watch-timer.sh install --state <state>`). The Slack webhook URL is a
    secret and is not in a backup: if this installation sent alerts to Slack,
    alerts are local only until you run `setup.sh --operator` again with your
    usual inputs, leaving out `--alert-webhook-file off` (it then asks for the URL on a terminal), or with `--alert-webhook-file` ([MONITORING.md](MONITORING.md#alert-delivery)).
-9. **Rotate if the drive may have been exposed.** Unencrypted archives hold every
-   key in plain text. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
+9. **Rotate if the drive may have been exposed.** Unencrypted archives (a drive set up with `--no-encrypt`, or one that an
+   earlier release wrote and no run has cleaned yet, or a drive that held readable archives that a run has since deleted: deleting
+   does not wipe them from an exFAT drive) hold every key in plain text; an encrypted one is as safe as your key copy. `bash rotate-keys.sh --yes` replaces the signing keys (every phone
    signs in again). Rotate the MSG91 key in its console and apply it as in
    [Replacing MSG91 credentials](#authentication-and-otp-limits), replace
    the tunnel credential (see [USB backup drive](#usb-backup-drive)) and the
@@ -1858,8 +1950,9 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
 8. A line in `upgrades.log`, and the record deleted.
 
-The last manual line keeps the USB choices of your earlier setup (`--encrypt`, `--daily`, `--no-fresh-backup`); it prints them, so
-check that line. Database migrations need no separate step: setup applies them. If setup prints a
+The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
+check that line. A setup from before encryption became the default is switched to encrypted archives by it, and says so; confirm the backup key
+copy first (`bash scripts/backup-key-escrow.sh show`, [Backup key](#backup-key)). Database migrations need no separate step: setup applies them. If setup prints a
 `sudo bash scripts/watch-timer.sh install …` command, run it.
 
 </details>
