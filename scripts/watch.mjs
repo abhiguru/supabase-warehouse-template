@@ -40,13 +40,17 @@
 // (5 s limit). A service such as healthchecks.io alerts when the pings stop; a failed ping is logged, never alerted.
 // Self-healing: while no operator command holds the lock, an `exited` (or `created`) service of the default profile is started
 // again and one `unhealthy` for 3 runs in a row is restarted, at most once an hour and 6 times in 24 hours each (selfHeal); a
-// muted service is left alone, and nothing is done while config/stopped-by-operator exists (stop.sh writes it, start.sh removes it).
+// muted service is left alone, and nothing is done while config/stopped-by-operator exists (stop.sh writes it, start.sh removes it) or
+// while config/upgrade-in-progress exists (a service restarted then could run the new release's code on a half-migrated schema).
 // Mute before a deliberate stop.sh: a stopped service is an alert like any other.
+// Upgrades: upgrade.sh holds the operator lock for a backup, its verification and the migrations, so while config/upgrade-in-progress exists the
+// lock is called stuck only after max(2 hours, twice the time of the last backup plus the last verify) (upgradeStuckMs, at most a day); and
+// once the lock is free again with the record still there, the upgrade did not finish: `upgrade_interrupted` is raised at once and is never muted.
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
-import { interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
+import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
 import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
@@ -704,6 +708,11 @@ for (const [name, url, headers, init] of [
 }
 `;
 export function gatewayProbe(ctx, waitMs) {
+  // Maintenance mode answers 503 "upgrading" to both of these on purpose (and setup of an upgrade ends with this check while it is on): they cannot be
+  // probed, so it is said, as a warning that passes. scripts/maintenance.sh off runs this check again once the API is open.
+  if (ctx.state && maintenanceMarked(ctx.state)) {
+    return [{ ok: true, warn: true, text: 'Gateway: maintenance mode is on (config/maintenance), so the API answers 503 "upgrading" on purpose and REST and the public configuration were not probed through it. bash scripts/maintenance.sh off opens it and runs this check' }];
+  }
   const readiness = ctx.readText(join(ctx.root, 'scripts/http-readiness.mjs'));
   if (readiness === null) throw new Error('scripts/http-readiness.mjs is missing');
   const input = `${readiness}\nconst WAIT_MS = ${Number(waitMs)};${GATEWAY_PROBES}`;
@@ -734,7 +743,7 @@ export async function runHealth(deps, { waitMs = 90000 } = {}) {
   }
   const databaseOk = databaseReady(ctx);
   add(databaseOk, databaseOk ? 'PostgreSQL accepts connections' : 'PostgreSQL is not accepting connections');
-  for (const line of gatewayProbe(ctx, waitMs)) add(line.ok, line.text);
+  for (const line of gatewayProbe(ctx, waitMs)) { if (line.warn) lines.push(line); else add(line.ok, line.text); }
   for (const r of checkPdfRenderer(ctx)) add(r.ok, r.ok ? r.summary : `${r.summary} (${r.detail})`);
   return { ok: lines.every(line => line.ok), lines };
 }
@@ -928,7 +937,7 @@ export const CHECKS = [
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
-  ['restore_space', checkRestoreSpace], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -963,6 +972,7 @@ export async function runChecks(ctx, checks = CHECKS) {
 // recovery reports unhealthy too, and a restart only begins the recovery again. The start touches that one container and
 // nothing else: --no-recreate keeps it, --no-deps leaves its dependencies alone, --no-build and --pull never keep `up` from
 // building or pulling anything. Applying a changed compose file or image is the operator's job (setup.sh), not the checker's.
+// Nothing is done at all while config/upgrade-in-progress exists (see the first lines of selfHeal).
 // Every action is reported as the alert service_healed:<name>, held for an hour like an OOM kill.
 export const holdPath = state => join(state, 'config/stopped-by-operator');
 export const stoppedByOperator = state => lstatSync(holdPath(state), { throwIfNoEntry: false }) !== undefined;
@@ -972,6 +982,9 @@ export function selfHeal(ctx) {
   const by = new Map();
   let expected;
   if (stoppedByOperator(ctx.state)) return out;
+  // An upgrade that stopped half way (config/upgrade-in-progress, and the lock is free): a person decides. A service started or restarted now could be the
+  // new release's code (the functions container reads its code at start) on a schema that is only part migrated.
+  if (upgradeRecordExists(ctx.state)) return out;
   try {
     for (const c of ctx.containers()) if (!by.has(c.service) || c.status === 'running') by.set(c.service, c);
     expected = ctx.expectedServices();
@@ -1022,11 +1035,86 @@ export function lockIsHeld(ctx) {
   });
 }
 
+// ---------------------------------------------------------------- upgrades and maintenance mode
+// The record upgrade.sh leaves from before its backup until it succeeds (scripts/upgrade-record.mjs), and the marker of maintenance mode
+// (scripts/maintenance.sh; scripts/compose.sh turns it into WAREHOUSE_MAINTENANCE=upgrading for the gateways). Both are looked for by name:
+// whatever is there counts, even a file that cannot be read.
+export const upgradeRecordExists = state => lstatSync(join(state, RECORD_FILE), { throwIfNoEntry: false }) !== undefined;
+export const maintenancePath = state => join(state, 'config/maintenance');
+export const maintenanceMarked = state => lstatSync(maintenancePath(state), { throwIfNoEntry: false }) !== undefined;
+
+// How long the newest backup that says so took (duration_seconds= in its metadata.txt), or null.
+function newestBackupSeconds(state) {
+  let names;
+  try { names = readdirSync(join(state, 'backups')); } catch { return null; }
+  for (const name of names.filter(n => BACKUP_DIR_PATTERN.test(n)).sort().reverse()) {
+    try {
+      const meta = join(state, 'backups', name, 'metadata.txt');
+      if (!lstatSync(meta, { throwIfNoEntry: false })?.isFile()) continue;
+      const seconds = /^duration_seconds=(\d{1,7})$/m.exec(readFileSync(meta, 'utf8'))?.[1];
+      if (seconds !== undefined) return Number(seconds);
+    } catch { /* the next one */ }
+  }
+  return null;
+}
+// When the operator lock, held while config/upgrade-in-progress exists, is called stuck: twice the time of the last backup plus the last
+// verify, but never under the 2 hours any other command gets and never over a day. An upgrade does what the daily pass does (a backup and the
+// proof that it restores) and then the migrations, so a limit that is only 2 hours would be passed by a healthy upgrade of a large facility. The
+// verify time is the newest one on config/backups-verified.list (upgrade.sh records the third field: how long its verify took); a backup
+// verified by the daily pass has none, and the backup's own time stands in.
+export function upgradeStuckMs(state) {
+  const backup = newestBackupSeconds(state) ?? 0;
+  const verify = readVerifiedList(state).filter(e => e.seconds !== undefined).at(-1)?.seconds ?? backup;
+  return Math.min(DAY, Math.max(LIMITS.busyGiveUpMs, 2 * (backup + verify) * 1000));
+}
+
+// The upgrade that did not finish: the record exists and the operator lock is free, so upgrade.sh is not running. Raised at once and never
+// muted (UPGRADE_ALERT is in NEVER_MUTED): the facility may be half upgraded and is closed to phones until a person finishes or undoes it. While
+// the lock is held the check says nothing (null: the alert stays as it is); a run of upgrade.sh that is too slow is operator_lock_stuck.
+export function checkUpgrade(ctx) {
+  if (lockIsHeld(ctx)) return null;
+  if (!upgradeRecordExists(ctx.state)) return [result('upgrade', UPGRADE_ALERT, true, 'No upgrade is left half done')];
+  let record = null;
+  try { record = readUpgradeRecord(ctx.state); } catch { record = { invalid: `${RECORD_FILE} cannot be read` }; }
+  if (record?.invalid) {
+    return [result('upgrade', UPGRADE_ALERT, false, 'The record of an upgrade cannot be read',
+      `${record.invalid}. upgrade.sh left it: read it ('cat'), and remove it when no upgrade is pending. If the API answers "upgrading" to phones: bash scripts/maintenance.sh off.`, { immediate: true })];
+  }
+  // The detail is clipped to a few hundred characters in Slack: what matters comes first, and the full way forward and way back are one command away
+  // (upgrade-record.mjs report, the text upgrade.sh printed when it stopped).
+  const summary = `An upgrade from ${record.fromLabel} to ${record.toLabel} did not finish`;
+  const closed = record.maintenance ? 'The API is closed to phones (maintenance mode) until then: bash scripts/maintenance.sh off opens it. '
+    : record.apiOpen ? 'The API is open to phones (maintenance mode is off), but the health check after opening it failed: node scripts/watch.mjs health. ' : '';
+  if (!record.verified) {
+    return [result('upgrade', UPGRADE_ALERT, false, summary,
+      `It stopped before the first backup was proved to restore, so the facility was not changed. ${closed}Run the same command again: bash upgrade.sh ${record.command || '<the same command as before>'}`, { immediate: true })];
+  }
+  return [result('upgrade', UPGRADE_ALERT, false, summary,
+    `Stopped at step "${record.step}": the facility may be half upgraded. ${closed}On the server: node scripts/upgrade-record.mjs report (the way forward and the way back).`, { immediate: true })];
+}
+
+// What the gateways say about maintenance mode, for `status` and the health check: 'upgrading' when a gateway container was created with
+// WAREHOUSE_MAINTENANCE=upgrading (so it answers 503 to every API request), 'off' when they were not, null when no gateway container can be read.
+export function gatewayMaintenance(ctx) {
+  let found = null;
+  try {
+    for (const c of ctx.containers().filter(item => item.service === 'gateway' || item.service === LAN_SERVICE)) {
+      const inspected = ctx.run('docker', ['inspect', '--format', '{{range .Config.Env}}{{println .}}{{end}}', c.id]);
+      if (inspected.status !== 0) continue;
+      const word = /^WAREHOUSE_MAINTENANCE=(.*)$/m.exec(String(inspected.stdout ?? ''))?.[1];
+      if (word === 'upgrading') return 'upgrading';
+      found = 'off';
+    }
+  } catch { return null; }
+  return found;
+}
+
 // ---------------------------------------------------------------- alerting
-// A mute covers every alert but the ones that say no backup exists, or that the backup depends on a unit that is out of date: a
-// facility that muted "everything" for a week while a service was being repaired would otherwise also silence the only
-// warning that its data is not being saved.
-export const NEVER_MUTED = ['backup_missing', 'backup_failed', LEGACY_DAILY_ALERT];
+// A mute covers every alert but the ones that say no backup exists, that the backup depends on a unit that is out of date, or that an
+// upgrade stopped half way: a facility that muted "everything" for a week while a service was being repaired would otherwise also silence
+// the only warning that its data is not being saved, or that it is closed to phones and half upgraded.
+export const UPGRADE_ALERT = 'upgrade_interrupted';
+export const NEVER_MUTED = ['backup_missing', 'backup_failed', LEGACY_DAILY_ALERT, UPGRADE_ALERT];
 const listIds = ids => (ids.length > 1 ? `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}` : ids.join(''));
 export const isMuted = (data, id, now) => !NEVER_MUTED.includes(id) && Boolean((data.muteUntil && now < data.muteUntil) || (data.mutes?.[id] && now < data.mutes[id]));
 
@@ -1496,10 +1584,12 @@ export async function runOnce(deps, { checks = CHECKS, heal = selfHeal } = {}) {
     // Backup, restore, setup and stop stop services on purpose: judge nothing while one runs, unless it hangs. The daily pass
     // is such a command that runs for hours by design: the checks that do not need the stopped services go on, and the lock
     // is called stuck only after the pass's own limit (jobStaleMs, 4 h, the daily unit's TimeoutStartSec) instead of 2 hours.
-    // Any other command: after 2 hours. Either way the lock cannot stay unnoticed for longer than 4 hours.
+    // Any other command: after 2 hours, an upgrade after upgradeStuckMs (2 hours at least). Either way a lock cannot stay unnoticed for longer than a day.
     if (data.busySince === null || data.busySince > now) data.busySince = now;
     passHolds = dailyPassRunning(data, now);
-    if (now - data.busySince >= (passHolds ? LIMITS.jobStaleMs : LIMITS.busyGiveUpMs)) { stuck = true; passHolds = false; }
+    // An upgrade holds the lock for a backup, the proof that it restores and the migrations: its limit follows how long those took last time.
+    const limit = passHolds ? LIMITS.jobStaleMs : upgradeRecordExists(deps.state) ? upgradeStuckMs(deps.state) : LIMITS.busyGiveUpMs;
+    if (now - data.busySince >= limit) { stuck = true; passHolds = false; }
     else if (!passHolds) {
       saveState(deps.state, data, deps.fsApi);
       await pingExternalHeartbeat(ctx);   // the checker is alive; it is the operator command that is busy
@@ -1580,6 +1670,12 @@ function statusLines(ctx, webhook, now) {
   if (stoppedByOperator(ctx.state)) lines.push('Stack: stopped by the operator (config/stopped-by-operator); nothing restarts it at boot or by self-healing. Run start.sh to bring it back.');
   const interruptedUpgrade = interruptedUpgradeWarning(ctx.state);
   if (interruptedUpgrade) lines.push(`Upgrade: ${interruptedUpgrade}`);
+  // Maintenance mode: what the gateway containers were started with (the fact: they answer 503 "upgrading" to every API request), and the marker
+  // that makes the next start of one the same (the intention). Both are said when they differ.
+  const gatewayWord = gatewayMaintenance(ctx);
+  const marked = maintenanceMarked(ctx.state);
+  if (gatewayWord === 'upgrading') lines.push('Maintenance mode: upgrading (the gateway answers 503 "upgrading" to every API request; phones are told the server is being updated). Open it with: bash scripts/maintenance.sh off');
+  else if (marked) lines.push(`Maintenance mode: marked (${maintenancePath(ctx.state)} exists) but the gateway ${gatewayWord === 'off' ? 'runs without it; the next recreate closes it' : 'is not running; it starts closed'}. Open it with: bash scripts/maintenance.sh off`);
   if (data.alerts[LEGACY_DAILY_ALERT]) lines.push(`Daily backup: still run by the old checker unit, inside the 5-minute check. ${legacyDailyAdvice(ctx.root, ctx.state)}`);
   const firing = Object.entries(data.alerts).filter(([, a]) => a.firingSince);
   lines.push(firing.length ? `Firing: ${firing.map(([id]) => id).join(', ')}` : 'Firing: none');
@@ -1665,7 +1761,11 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     const until = now + minutes * MIN;
     if (args[1]) {
       if (!ALERT_ID.test(args[1])) { out('Not an alert id.'); return 1; }
-      if (NEVER_MUTED.includes(args[1])) { out(`${args[1]} cannot be muted: ${args[1] === LEGACY_DAILY_ALERT ? 'it says the daily backup is kept running by an out-of-date unit' : 'it says no backup exists'}.`); return 1; }
+      if (NEVER_MUTED.includes(args[1])) {
+        const why = { [LEGACY_DAILY_ALERT]: 'it says the daily backup is kept running by an out-of-date unit', [UPGRADE_ALERT]: 'it says an upgrade stopped half way, with the facility closed to phones' }[args[1]] ?? 'it says no backup exists';
+        out(`${args[1]} cannot be muted: ${why}.`);
+        return 1;
+      }
       data.mutes[args[1]] = until;
     } else data.muteUntil = until;
     saveMutes(deps.state, data);

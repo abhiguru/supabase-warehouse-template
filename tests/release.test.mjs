@@ -65,6 +65,7 @@ const releaseFiles = {
   'CHANGELOG.md': '# Changelog\n\n## Unreleased\n\n## v0.7.0 (2026-11-01)\n\nText.\n',
   'upgrade.sh': '#!/usr/bin/env bash\n',
   'scripts/pg-major.sh': '#!/usr/bin/env bash\n',
+  'scripts/maintenance.sh': '#!/usr/bin/env bash\n',
   'scripts/upgrade-lib.sh': '# sourced\n',
   'scripts/upgrade-preflight.sh': '#!/usr/bin/env bash\n# needs: scripts CHANGELOG.md\n',
   'scripts/upgrade-floor.txt': '# comment\nfrom_floor=\nstepping_stone=\n',
@@ -88,6 +89,9 @@ test('the release contents gate names what is missing', () => {
   missing('v0.7.0', noUpgrade, /upgrade\.sh is missing/);
   const { 'scripts/pg-major.sh': _b, ...noMajor } = releaseFiles;
   missing('v0.7.0', noMajor, /scripts\/pg-major\.sh is missing/);
+  // The upgrade.sh of the release an installation runs now opens the API again, after setup, with the maintenance.sh of the release it moved to.
+  const { 'scripts/maintenance.sh': _m, ...noMaintenance } = releaseFiles;
+  missing('v0.7.0', noMaintenance, /scripts\/maintenance\.sh is missing: the upgrade\.sh of the release an installation runs now opens the API again/);
   // The preflight and the floor are read by the upgrade.sh of the release an installation runs now, out of this release.
   const { 'scripts/upgrade-preflight.sh': _c, ...noPreflight } = releaseFiles;
   missing('v0.7.0', noPreflight, /scripts\/upgrade-preflight\.sh is missing/);
@@ -121,6 +125,6 @@ test('this repository has the files and the setup.sh lines the contents gate ask
   // Only the CHANGELOG section is missing for an invented tag; the files upgrade.sh needs are all here.
   assert.notEqual(own.status, 0);
   assert.match(own.stderr, /no section/);
-  assert.doesNotMatch(own.stderr, /upgrade\.sh is missing|pg-major\.sh is missing|upgrade-preflight\.sh|upgrade-floor\.txt|operator_lock_or_inherited|recreate the functions/);
+  assert.doesNotMatch(own.stderr, /upgrade\.sh is missing|pg-major\.sh is missing|maintenance\.sh is missing|upgrade-preflight\.sh|upgrade-floor\.txt|operator_lock_or_inherited|recreate the functions/);
   assert.match(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'), /run: bash scripts\/check-release-contents\.sh/);
 });

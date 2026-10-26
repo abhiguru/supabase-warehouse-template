@@ -11,7 +11,8 @@
 #      waits for Enter: the moment to do what says "before"), checks the host minimums and the oldest release it accepts an upgrade
 #      from, and checks that the way back would fit on the disk. It may refuse; nothing has been changed then. A release from before
 #      the preflight has none, and only the checks of this script are made
-#   1. back up (scripts/backup.sh) and prove the backup restores (scripts/verify-restore.sh), on the OLD release; the verified
+#   1. close the API to phones (scripts/maintenance.sh on: both gateways answer 503 "upgrading", so nothing is written from here until step 3
+#      has finished), back up (scripts/backup.sh) and prove the backup restores (scripts/verify-restore.sh), on the OLD release; the verified
 #      backup goes on config/backups-verified.list (scripts/watch.mjs record-verified), so the daily pruning treats it like a nightly one
 #   2. tag the images the running services use as <project>-<service>:pre-<old release> (scripts/pre-images.sh; the way back puts
 #      them back instead of building them again), fetch the tags and check the tag out (detached HEAD, the same as the "Major
@@ -20,6 +21,7 @@
 #      `functions` container (its code is bind-mounted and the edge runtime keeps what it loaded) and ends with
 #      `doctor --local`: everything that depends on the release being moved to lives in that release's setup.sh,
 #      because from the checkout on, this script is the OLD release's, still running from memory
+#      then open the API again (scripts/maintenance.sh off, of the new release, which also runs the health check)
 #   4. print what CHANGELOG.md asks of the operator between the old and the new release
 #   5. append one line to $WAREHOUSE_STATE_DIR/config/upgrades.log, and drop the pre-* image tags of earlier upgrades
 #
@@ -27,7 +29,16 @@
 # that is not a release tag on origin, a release the checkout is already past (it only moves forward), a release that changes the
 # PostgreSQL major (that is the separate "Major PostgreSQL upgrade" procedure), a database whose migration ledger names migrations the
 # release does not contain (a new baseline, or a downgrade), a stored Slack webhook file that setup would not accept, a release
-# without upgrade.sh, and whatever the release's own preflight refuses.
+# without upgrade.sh, whatever the release's own preflight refuses, and a psql session open on the database from outside the stack
+# (fas-sync writes straight to the database that way: pause it first; see "Write freeze" below).
+#
+# Write freeze. From before the backup to the end of setup nothing may write to the database, or the way back (an in-place restore of the
+# backup) would lose it without a trace. The API is closed by maintenance mode (scripts/maintenance.sh: the marker config/maintenance, which
+# scripts/compose.sh turns into WAREHOUSE_MAINTENANCE=upgrading for every Compose command, so that no step of the upgrade recreates a gateway
+# that is open); fas-sync is not part of the stack and is paused by the operator: the check above can only partly confirm it (it sees a session that
+# is open at that moment, and fas-sync opens one per statement, so it is usually not seen; it catches a psql left open). When a step fails after
+# the checkout has moved the API STAYS closed (the facility may be half upgraded: the way forward and the way back, printed, end with the command
+# that opens it); until then, while nothing of the facility was changed (a refused check, a failed backup or proof) it is opened again at once.
 #
 # An interrupted upgrade can be finished or undone. Before the first change the script writes $WAREHOUSE_STATE_DIR/config/
 # upgrade-in-progress (mode 0600; scripts/upgrade-record.mjs reads it): the old commit, the target, the setup inputs and the
@@ -88,6 +99,9 @@ ASSUME_YES=no
 # or none): both go into the record.
 PREFLIGHT=absent
 PRE_IMAGES=none
+# Whether this run has put the gateways in maintenance mode (on, or none): it goes into the record, so that the report of an interrupted
+# upgrade can say that the API is closed and that nothing was recorded by phones after the backup.
+MAINTENANCE=none
 PREFLIGHT_TREE=''
 CMD_TEXT=''
 ORIG_ARGS=()
@@ -134,6 +148,7 @@ record_write() {
     printf 'backup=%s\n' "$(one_line "$BACKUP_DIR")"
     printf 'preflight=%s\n' "$PREFLIGHT"
     printf 'pre_images=%s\n' "$(one_line "$PRE_IMAGES")"
+    printf 'maintenance=%s\n' "$MAINTENANCE"
     printf 'step=%s\n' "$(one_line "$STEP")"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   sync -- "$tmp" 2>/dev/null || true
@@ -203,8 +218,13 @@ finish() {
     if ((code == 0)); then
       record_remove
     else
-      # Nothing of the facility changed: no half-done upgrade to report, and a rerun takes a fresh backup.
-      if facility_unchanged; then record_remove; fi
+      # Nothing of the facility changed: no half-done upgrade to report, and a rerun takes a fresh backup. The API this run closed is opened again
+      # (a facility that is as it was must not stay closed for a refusal); once the checkout has moved it stays closed with the record. A record is
+      # removed only when the API is not left closed by it: while it is, the record is what makes the checker say so (upgrade_interrupted).
+      if facility_unchanged; then
+        reopen_unchanged_api
+        [[ "$MAINTENANCE" == on ]] || record_remove
+      fi
       recovery_text >&2
     fi
   fi
@@ -217,6 +237,9 @@ recovery_text() {
   if facility_unchanged; then
     [[ -z "$BACKUP_DIR" ]] || echo "The backup taken first: $BACKUP_DIR"
     echo "The checkout was not changed (still at $FROM_LABEL). Fix the cause shown above and run the same command again: bash upgrade.sh $CMD_TEXT"
+    if [[ "$MAINTENANCE" == on ]]; then
+      echo 'The API is still closed to phones (maintenance mode): the same command goes on with it closed, and this opens it: bash scripts/maintenance.sh off'
+    fi
     return 0
   fi
   local head
@@ -293,6 +316,66 @@ webhook_stored() {
 # The answer on stdout; whatever the command says on stderr goes to $DB_ERR, so a warning never reads as an answer.
 db_query() {
   bash "$ROOT/scripts/compose.sh" exec -T db psql -X -A -t -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -c "$1" < /dev/null 2> "$DB_ERR"
+}
+
+# The psql sessions on the facility's database that are not this command's own, one line each ("user state age"), at most five; nothing when there
+# are none. fas-sync writes straight to the database with `docker exec ... psql`, and so does anyone who left a psql open. The services of the
+# stack connect under their own application names (PostgREST, Storage, the function runtime), and the operator scripts that run psql in the
+# container are not running: this command holds the operator lock. Fails when the database does not answer.
+outside_psql_sessions() {
+  db_query "SELECT usename || ' ' || coalesce(state, 'unknown') || ' ' || (extract(epoch FROM now() - backend_start))::int || 's' FROM pg_stat_activity WHERE backend_type = 'client backend' AND application_name = 'psql' AND pid <> pg_backend_pid() ORDER BY backend_start LIMIT 5"
+}
+# Prints the sessions found (after a short wait, so that a probe that is just finishing is not taken for fas-sync) or nothing.
+find_outside_psql() {
+  local found
+  found="$(outside_psql_sessions)" || return 1
+  if [[ -n "$found" ]]; then sleep 3; found="$(outside_psql_sessions)" || return 1; fi
+  printf '%s' "$found"
+}
+outside_psql_text() {
+  printf '%s\n' "$1" | sed 's/^/  /'
+  echo "That is a psql session on the database from outside the stack. fas-sync writes to the database that way (pause it: let its run finish and do not start another), and so does a psql that someone left open. Nothing may write between the backup and the end of setup, or the way back to the backup would lose it."
+}
+
+# Maintenance mode, closed before the backup and opened after setup (scripts/maintenance.sh; the marker it writes makes scripts/compose.sh pass
+# WAREHOUSE_MAINTENANCE=upgrading to every Compose command, so the setup of the new release cannot recreate a gateway that is open).
+# MAINTENANCE goes into the record before the gateways are touched: if this process dies between the two, the report still says the API may be closed.
+close_api() {
+  MAINTENANCE=on
+  step 'Close the API to phones (maintenance mode)'
+  bash "$ROOT/scripts/maintenance.sh" on
+}
+# Exit status 2 of `off` is "the API is open, but the health check failed": the record then says the API is open (`opened`), not closed, because
+# the report, the checker's alert and the operator read it to know whether phones can reach the facility. Any other failure leaves it closed.
+open_api() {
+  step 'Open the API to phones again (maintenance mode off, then the health check)'
+  local code=0
+  bash "$ROOT/scripts/maintenance.sh" off || code=$?
+  ((code == 0)) || {
+    if ((code == 2)); then
+      MAINTENANCE=opened
+      record_write || warn "could not update $RECORD"
+    fi
+    return "$code"
+  }
+  MAINTENANCE=none
+}
+# A run that is stopped before the facility was changed (a refusal after the API was closed, a backup that failed) opens the API again: the
+# facility is as it was, and the same command closes it again. Not on a resumed upgrade, whose database may be half upgraded already. It
+# runs in the EXIT handler: a failure here only says so (MAINTENANCE stays `on`, which keeps the record).
+reopen_unchanged_api() {
+  [[ "$MAINTENANCE" == on && "$RESUME" == no ]] || return 0
+  local code=0
+  bash "$ROOT/scripts/maintenance.sh" off >&2 || code=$?
+  if ((code == 0)); then
+    MAINTENANCE=none
+    echo 'The API was opened again (maintenance mode off): nothing of the facility was changed.' >&2
+  elif ((code == 2)); then
+    MAINTENANCE=none
+    echo 'The API was opened again (maintenance mode off) and nothing of the facility was changed, but the health check failed (message above): look at it before you run the command again.' >&2
+  else
+    echo 'Could not open the API again (message above). It is closed to phones until you run: bash scripts/maintenance.sh off' >&2
+  fi
 }
 
 # A commit for REF: a name is tried as a branch of origin before a possibly stale local branch; a hexadecimal string as a commit first.
@@ -525,11 +608,32 @@ main() {
   say '     (setup of the release also recreates the functions container and ends with node scripts/doctor.mjs --local)'
   say '  4. print the operator actions of CHANGELOG.md between the two releases'
   say "  5. append a line to $STATE/config/upgrades.log, remove $RECORD, and remove the pre-* image tags of earlier upgrades"
+  say '  The facility is closed for the backup, its verification and the migrations: before step 1 both gateways are put in maintenance mode (phones are told the server is being updated)'
+  say '  and after step 3 they are opened again. Pause fas-sync now (it writes straight to the database): nothing may write meanwhile, or the way back would lose it.'
   if [[ "$DRY" == yes ]]; then
     [[ "$DB_OK" == yes ]] || warn "not checked: the migration ledger and the administrator ($DB_NOTE)"
+    if [[ "$DB_OK" == yes ]]; then
+      local OUTSIDE=''
+      if OUTSIDE="$(find_outside_psql)"; then
+        [[ -z "$OUTSIDE" ]] || { warn 'a psql session is open on the database, and the real run refuses to start while it is:'; outside_psql_text "$OUTSIDE" >&2; }
+      else
+        warn "could not ask the database which sessions are open ($(head -c 200 "$DB_ERR" | tr '\n' ' ')); the real run needs the answer"
+      fi
+    fi
     say
     say 'Dry run: nothing was changed (the tags were fetched into git; the working tree, the state and the containers are as they were).'
     exit 0
+  fi
+
+  # --- fas-sync and anyone else with a psql session open: nothing may write from here to the end of setup ------------------
+  # (A resumed upgrade whose database does not answer cannot be asked; setup starts it, and the API is closed again below.)
+  if [[ "$DB_OK" == yes ]]; then
+    local OUTSIDE=''
+    OUTSIDE="$(find_outside_psql)" || refuse "could not ask the database which sessions are open ($(head -c 200 "$DB_ERR" | tr '\n' ' ')). Nothing was changed."
+    if [[ -n "$OUTSIDE" ]]; then
+      outside_psql_text "$OUTSIDE" >&2
+      refuse "pause fas-sync (or close the session) and run this command again. Nothing was changed."
+    fi
   fi
 
   # --- the upgrade ----------------------------------------------------------------------------------------------------
@@ -538,7 +642,7 @@ main() {
   # doctor and the status commands do not call a run in progress "interrupted".
   export WAREHOUSE_UPGRADE_RUNNING=1
   say
-  say 'The facility is unavailable for part of this: the backup pauses the API, and setup restarts services. The monitoring checker stays quiet while this command holds the operator lock.'
+  say 'The facility is closed to phones from the backup to the end of setup (maintenance mode: they are told the server is being updated), and setup restarts services. The monitoring checker stays quiet while this command holds the operator lock.'
   say 'Run it in tmux or screen when you are connected over SSH: a dropped connection would stop it half way (the rerun finishes it).'
 
   if [[ "$RESUME" == yes ]]; then
@@ -546,6 +650,9 @@ main() {
     RECORD_LIVE=yes
     step "Resuming: the backup taken before the upgrade began is reused"
     say "Backup, verified before the first change: $BACKUP_DIR"
+    # Closed again, whatever the first run did: an upgrade.sh from before maintenance mode did not close it, and a facility that was opened by hand
+    # in between must not take writes that the backup does not hold.
+    close_api
   else
     STAGE=backup
     RECORD_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -553,6 +660,7 @@ main() {
     # Before the first change: from here on a rerun, doctor and start.sh can say what was going on. Without the record there is no start.
     STEP='Backup'
     record_write || { echo "Could not write the upgrade record $RECORD. Nothing was changed." >&2; exit 1; }
+    close_api
     step 'Backup'
     BACKUP_OUT="$(mktemp)"
     bash "$ROOT/scripts/backup.sh" | tee "$BACKUP_OUT"
@@ -596,6 +704,8 @@ main() {
   [[ "$WEBHOOK_OFF" == no ]] || SETUP+=(--alert-webhook-file off)
   bash "$ROOT/setup.sh" "${SETUP[@]}" "${SETUP_EXTRA[@]+"${SETUP_EXTRA[@]}"}"
   STAGE=done
+  # The release's own scripts open the API: its maintenance.sh runs the health check that setup could not make through a closed gateway.
+  open_api
   # The tags of earlier upgrades go, by exact name (never an image prune); the set of this one stays until the next upgrade succeeds.
   # scripts/pre-images.sh is the new release's copy by now: it keeps the commands that this script calls. The tag to keep is the one
   # recorded when the images were tagged (the third argument), not one worked out again by the new release's own naming.

@@ -24,6 +24,14 @@ esac
 check ANON_KEY "${ANON_KEY:-}"
 check SERVICE_ROLE_KEY "${SERVICE_ROLE_KEY:-}"
 
+# Maintenance mode (docker-compose.yml passes it; 17-maintenance-default.envsh has made it `off` when nothing was set): one of two words, written
+# into the configuration as the value of a map (templates/http.conf.template). `upgrading` makes every API route answer 503; any other
+# word is refused here rather than read as `off`, so that a mistyped value cannot leave the API open when the operator meant it closed.
+case "${WAREHOUSE_MAINTENANCE:-}" in
+  off|upgrading) ;;
+  *) fail "WAREHOUSE_MAINTENANCE must be off or upgrading" ;;
+esac
+
 # The LAN container (docker-compose.yml, service gateway-lan, profile `lan`) also writes three more values into its server: LAN_CIDR
 # as the allow list, and LAN_BIND_IP and LAN_HTTP_PORT as the Host the server answers to (the Host pin). An empty or odd one would
 # leave the server answering nobody or, written carelessly, everybody, so each is refused here: LAN_CIDR is one IPv4 range in CIDR

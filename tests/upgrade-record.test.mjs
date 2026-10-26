@@ -165,3 +165,51 @@ test('the timer helper\'s hint and status name an interrupted upgrade', () => {
     }
   } finally { w.cleanup(); quiet.cleanup(); }
 });
+
+test('a record that says the API was opened but its health check failed (maintenance=opened) says the API is open, and nothing about it being closed', () => {
+  const w = world(record({ maintenance: 'opened' }));
+  try {
+    const r = readUpgradeRecord(w.state);
+    assert.equal(r.maintenance, false);
+    assert.equal(r.apiOpen, true);
+    const message = interruptedMessage(r);
+    assert.match(message, /The API is open to phones again \(maintenance mode is off\); the health check that follows failed, so look at it: node scripts\/watch\.mjs health\./);
+    assert.doesNotMatch(message, /stays closed/);
+    assert.doesNotMatch(rollbackLines(r).join('\n'), /maintenance\.sh off/);
+    // Any other word is not it.
+    for (const extra of [{ maintenance: 'on' }, { maintenance: 'none' }, {}]) {
+      writeFileSync(join(w.state, 'config/upgrade-in-progress'), record(extra));
+      assert.equal(readUpgradeRecord(w.state).apiOpen, false, JSON.stringify(extra));
+    }
+  } finally { w.cleanup(); }
+});
+
+test('a record that says the API was closed (maintenance=on) says so in the message and the way back, with the line that opens it; a record without the line gets neither', () => {
+  const w = world(record({ maintenance: 'on' }));
+  try {
+    const r = readUpgradeRecord(w.state);
+    assert.equal(r.maintenance, true);
+    assert.match(interruptedMessage(r), /The API stays closed to phones \(maintenance mode: they are told the server is being updated\) until the upgrade has finished or you run: bash scripts\/maintenance\.sh off\.$/);
+    const text = rollbackLines(r).join('\n');
+    assert.match(text, /The API has been closed to phones since before the backup, so phones recorded nothing after it; what reached the database another way \(fas-sync, if it was not paused, or a psql session\) is lost:/);
+    assert.doesNotMatch(text, /Everything the facility recorded after the backup was taken is lost/);
+    // The opening comes after the old release's setup and its functions recreate, and before the check that proves the facility healthy.
+    const order = ['bash setup.sh --operator', 'bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions', 'bash scripts/maintenance.sh off', 'node scripts/doctor.mjs --local', 'rm -f '];
+    let at = -1;
+    for (const part of order) {
+      const found = text.indexOf(part, at + 1);
+      assert.ok(found > at, `${part}\n${text}`);
+      at = found;
+    }
+    // A record written by an upgrade.sh from before maintenance mode (no such line), or with any other word: the old way back, and no script the old release may not have.
+    for (const extra of [{}, { maintenance: 'none' }, { maintenance: '' }, { maintenance: 'yes' }]) {
+      writeFileSync(join(w.state, 'config/upgrade-in-progress'), record(extra));
+      const old = readUpgradeRecord(w.state);
+      assert.equal(old.maintenance, false, JSON.stringify(extra));
+      assert.doesNotMatch(interruptedMessage(old), /maintenance/, JSON.stringify(extra));
+      const oldText = rollbackLines(old).join('\n');
+      assert.doesNotMatch(oldText, /maintenance/, JSON.stringify(extra));
+      assert.match(oldText, /Everything the facility recorded after the backup was taken is lost:/);
+    }
+  } finally { w.cleanup(); }
+});
