@@ -30,7 +30,12 @@
 // (same name pattern, same instance) count towards those 7. It also always keeps the newest backup on record as verified
 // ($STATE/config/backups-verified.list, written by `prune-backups --verified`), however old, so that nights whose verify
 // fails (or whose backup is refused) cannot push the last good backup out, and the backup that an interrupted upgrade.sh
-// recorded as its way back (config/upgrade-in-progress, read with readUpgradeRecord).
+// recorded as its way back (config/upgrade-in-progress, read with readUpgradeRecord). It also keeps, for 60 days, the newest
+// verified backup of each distinct migration state (the migration_fingerprint= of its integrity.txt): the last copy from before
+// each release that changed the schema, which is what a late-found defect is compared against.
+// The check restore_space_low warns when the free space of the state's data directory is below what an in-place restore of the
+// newest verified backup needs (its stored files again, as scripts/restore.sh checks, plus the database dump that is replayed and
+// 1 GiB), because that restore is the way back. It repeats daily, not every 4 hours.
 // External heartbeat: if config/heartbeat-url holds an https URL (mode 0600), every successful run of `run` fetches it
 // (5 s limit). A service such as healthchecks.io alerts when the pings stop; a failed ping is logged, never alerted.
 // Self-healing: while no operator command holds the lock, an `exited` (or `created`) service of the default profile is started
@@ -58,6 +63,9 @@ export const LIMITS = {
   containerMemoryRatio: 0.9, restartsPerHour: 3, oomHoldMs: HOUR,
   errorRate: 0.05, latencySeconds: 2, minRequests: 10, backupMaxAgeMs: 26 * HOUR,
   failingRuns: 2, repeatMs: 4 * HOUR, busyGiveUpMs: 2 * HOUR, keepBackups: 7,
+  // Pruning also keeps the newest verified backup of each migration state this long (by the backup's own date); restore.sh needs the
+  // stored files of the backup again plus this much free space.
+  keepMigrationStateMs: 60 * DAY, restoreReserveBytes: 1024 ** 3,
   // A daily pass in progress older than this is taken as interrupted (the unit stops after 4 h).
   jobStaleMs: 4 * HOUR, dailyWindowMs: 6 * HOUR, dailyAttempts: 3,
   // "An hour" less 2 minutes: the daily timer fires on the hour, and a start a few seconds late must not push a retry
@@ -792,6 +800,28 @@ export function checkBackups(ctx) {
   return out;
 }
 
+// Room for the way back. The way back from an upgrade is `db:restore` of the backup the upgrade took: it keeps the data it replaces and
+// copies the stored files in again, so scripts/restore.sh refuses unless the free space holds them plus 1 GiB, and only after it has been
+// started; the database is then replayed from the dump, which takes room too. This says it in advance: below the sum of the three (the
+// stored files, the size of database.dump as a stand-in for the replayed database, 1 GiB), the way back would not fit. It is a minimum:
+// the photos added since that backup and the images a release builds come on top. Judged against the newest verified backup, on the
+// filesystem of the state's data directory; no verified backup yet, nothing to compare. Not run while the daily pass holds the lock (the
+// pass's own copy takes space for a while); a facility with room is never told anything. It repeats once a day (repeatHours), because
+// a facility that cannot add disk at once has nothing to do about it every 4 hours.
+export function checkRestoreSpace(ctx) {
+  const newest = newestVerifiedBackup(ctx.state);
+  if (!newest) return [];
+  const stat = ctx.statfs(join(ctx.state, 'data'));
+  const free = Number(stat.bavail) * Number(stat.bsize);
+  if (!Number.isFinite(free)) throw new Error('could not read the free space of the data directory');
+  const need = newest.bytes + newest.dumpBytes + LIMITS.restoreReserveBytes;
+  const gib = bytes => (bytes / 1024 ** 3).toFixed(1);
+  return [result('restore_space', 'restore_space_low', free >= need,
+    `Free space in data/ is ${gib(free)} GiB, and an in-place restore of ${newest.name} needs ${gib(need)} GiB (its stored files, ${gib(newest.bytes)} GiB, ${newest.dumpBytes ? `its database dump, ${gib(newest.dumpBytes)} GiB, ` : ''}plus 1 GiB)`,
+    'The way back from an upgrade is an in-place restore, which copies the stored files in again and replays the database while it keeps the replaced ones; this is a minimum (the photos added since that backup and any new images come on top). Free space (the data/*.pre-restore-* directories of restores you have accepted, backups you no longer need) or add disk: docs/OPERATOR_INSTALL.md, "Disk space".',
+    { repeatHours: 24 })];
+}
+
 // ---------------------------------------------------------------- SMS delivery, break-glass, clock
 // The sign-in codes of the last 24 hours (public.otp_verifications): `delivery_status` is 'accepted' when MSG91 took the
 // request, 'failed' when it refused it (balance, DLT header, sender ID, template) or the request expired, and 'sending' until
@@ -898,7 +928,7 @@ export const CHECKS = [
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
-  ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['restore_space', checkRestoreSpace], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.
@@ -1009,6 +1039,7 @@ export function evaluate(data, results, ran, now) {
     if (!r.ok) {
       a ??= data.alerts[r.id] = { failingRuns: 0, firingSince: null, lastSent: null };
       a.failingRuns = (a.failingRuns || 0) + 1; a.check = r.check; a.summary = r.summary; a.detail = r.detail;
+      if (r.repeatHours !== undefined) a.repeatHours = r.repeatHours;   // an alert that repeats less often than the 4 hours of every other one
       if (!a.firingSince && (a.failingRuns >= LIMITS.failingRuns || r.immediate)) a.firingSince = now;
       a.clearPending = false;
     } else if (a) recover(data, r.id, a);
@@ -1023,7 +1054,7 @@ export function evaluate(data, results, ran, now) {
     if (!a.firingSince || isMuted(data, id, now)) continue;
     // A clock that went backwards must not silence an alert for good.
     if (a.lastSent === null || a.lastSent > now) start.push(line);
-    else if (now - a.lastSent >= LIMITS.repeatMs) repeat.push(line);
+    else if (now - a.lastSent >= (a.repeatHours > 0 ? a.repeatHours * HOUR : LIMITS.repeatMs)) repeat.push(line);
   }
   return { start, repeat, clear };
 }
@@ -1142,10 +1173,12 @@ const BACKUP_STAMP = /^warehouse-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/;
 const stampMs = name => { const m = BACKUP_STAMP.exec(name); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null; };
 const instanceIdOf = path => { try { return JSON.parse(readFileSync(path, 'utf8')).instanceId ?? null; } catch { return null; } };
 
-// The backups the daily pass has verified: $STATE/config/backups-verified.list, one "NAME EPOCH" line per backup (EPOCH: seconds
-// since 1970 when its verify passed), newest last. Outside any backup, written only by `prune-backups --verified`, read by
+// The backups the daily pass has verified: $STATE/config/backups-verified.list, one "NAME EPOCH [SECONDS]" line per backup (EPOCH: seconds
+// since 1970 when its verify passed; SECONDS, when the writer knew it: how long that verify took), newest last. Outside any backup, written
+// by `prune-backups --verified` and by `record-verified` (upgrade.sh records the backup it proved before an upgrade), read by
 // the pruning below and by scripts/backup.sh (the newest backup verified within the last two days is the next night's link base). A name that no
-// longer exists as a directory is dropped when the list is written; a line that is not a backup name is ignored.
+// longer exists as a directory is dropped when the list is written; a line that is not a backup name is ignored; a reader that knows only
+// "NAME EPOCH" (backup.sh, backup-usb.sh and the preflight take the first and second field with awk) is not disturbed by the third.
 export const verifiedListPath = state => join(state, 'config/backups-verified.list');
 export function readVerifiedList(state) {
   const path = verifiedListPath(state);
@@ -1155,22 +1188,54 @@ export function readVerifiedList(state) {
   try { text = readFileSync(path, 'utf8'); } catch { return []; }
   const byName = new Map();
   for (const line of text.split('\n')) {
-    const [name, epoch] = line.trim().split(/\s+/);
-    if (name && BACKUP_DIR_PATTERN.test(name)) { byName.delete(name); byName.set(name, Number(epoch) || 0); }
+    const [name, epoch, seconds] = line.trim().split(/\s+/);
+    if (name && BACKUP_DIR_PATTERN.test(name)) { byName.delete(name); byName.set(name, { epoch: Number(epoch) || 0, seconds: /^\d{1,7}$/.test(seconds ?? '') ? Number(seconds) : null }); }
   }
-  return [...byName].map(([name, epoch]) => ({ name, epoch }));
+  return [...byName].map(([name, { epoch, seconds }]) => (seconds === null ? { name, epoch } : { name, epoch, seconds }));
 }
-const writeVerifiedList = (state, entries) => writeFileAtomic(verifiedListPath(state), entries.map(e => `${e.name} ${e.epoch}\n`).join(''));
+const writeVerifiedList = (state, entries) => writeFileAtomic(verifiedListPath(state), entries.map(e => `${e.name} ${e.epoch}${e.seconds === undefined ? '' : ` ${e.seconds}`}\n`).join(''));
 const backupDirExists = (state, name) => Boolean(lstatSync(join(state, 'backups', name), { throwIfNoEntry: false })?.isDirectory());
 // Records `name` (a backup directory in $STATE/backups) as verified now: its line goes last, any older line of the same name
 // goes, and so do the lines of backups that no longer exist. Throws when `name` is not such a directory.
-export function recordVerified(state, name, now = Date.now()) {
+export function recordVerified(state, name, now = Date.now(), seconds = null) {
   if (typeof state !== 'string' || !state.startsWith('/')) throw new Error(`the state path must be absolute: ${state}`);
   if (!BACKUP_DIR_PATTERN.test(String(name))) throw new Error(`not a backup name: ${name}`);
   if (!backupDirExists(state, name)) throw new Error(`${name} is not a backup directory in ${join(state, 'backups')}`);
+  if (seconds !== null && !(Number.isInteger(seconds) && seconds >= 0 && seconds <= 9999999)) throw new Error(`not a number of seconds: ${seconds}`);
   const kept = readVerifiedList(state).filter(e => e.name !== name && backupDirExists(state, e.name));
-  writeVerifiedList(state, [...kept, { name, epoch: Math.floor(now / 1000) }]);
+  writeVerifiedList(state, [...kept, seconds === null ? { name, epoch: Math.floor(now / 1000) } : { name, epoch: Math.floor(now / 1000), seconds }]);
 }
+
+// The size of the stored files a backup holds: storage_bytes= in metadata.txt (format v6, a tree), else the size of storage.tar.gz
+// (format v5), the same two figures scripts/restore.sh checks the free space against. Null when the backup records neither.
+export function backupStorageBytes(dir) {
+  try {
+    const meta = lstatSync(join(dir, 'metadata.txt'), { throwIfNoEntry: false });
+    if (!meta?.isFile()) return null;
+    const recorded = /^storage_bytes=(\d{1,15})$/m.exec(readFileSync(join(dir, 'metadata.txt'), 'utf8'))?.[1];
+    if (recorded !== undefined) return Number(recorded);
+    const tarball = lstatSync(join(dir, 'storage.tar.gz'), { throwIfNoEntry: false });
+    return tarball?.isFile() ? tarball.size : null;
+  } catch { return null; }
+}
+// The newest backup on the verified list that still exists and records a size: { name, bytes, dumpBytes }, or null.
+export function newestVerifiedBackup(state) {
+  const names = readVerifiedList(state).map(e => e.name).filter(name => backupDirExists(state, name)).sort().reverse();
+  for (const name of names) {
+    const bytes = backupStorageBytes(join(state, 'backups', name));
+    if (bytes !== null) return { name, bytes, dumpBytes: backupDumpBytes(join(state, 'backups', name)) };
+  }
+  return null;
+}
+// The size of the database dump of a backup (what a restore replays), 0 when there is none to be read.
+function backupDumpBytes(dir) {
+  try {
+    const dump = lstatSync(join(dir, 'database.dump'), { throwIfNoEntry: false });
+    return dump?.isFile() ? dump.size : 0;
+  } catch { return 0; }
+}
+// The migration state a backup was taken at: migration_fingerprint= of its integrity.txt (scripts/backup-integrity.sql), or null.
+const migrationFingerprintOf = path => { try { return /^migration_fingerprint=([0-9a-f]{64})$/m.exec(readFileSync(path, 'utf8'))?.[1] ?? null; } catch { return null; } };
 
 // A backup that is being removed is first renamed to this prefix (one atomic step): the name is then no longer a backup, so a
 // pass cut short while it removes a large tree leaves a leftover that the next pass finds and finishes instead of an
@@ -1201,6 +1266,9 @@ function upgradeBackupName(state) {
 // verified and are older than the newest verified one first, then the rest, each newest first. Nothing at all is removed when
 // any warehouse-* name is dated more than an hour ahead of now (a clock that was wrong would otherwise make the newest-first
 // order delete good backups). Names of removed backups leave the verified list. A folder that does not exist yet has nothing to prune.
+// Also kept, for LIMITS.keepMigrationStateMs after the backup's own date: the newest verified backup of each distinct migration state
+// (a changed set of applied migrations makes a new fingerprint), so that the copy from before a schema change outlives the nightly
+// rotation for two months. A backup without a readable integrity.txt has no state to be the newest of.
 // Returns { removed, note, verifiedKept } (verifiedKept: the name of the newest verified backup of this installation that exists, or '').
 export function pruneBackups(state, { keep = LIMITS.keepBackups, protect = null, now = Date.now() } = {}) {
   if (typeof state !== 'string' || !state.startsWith('/')) throw new Error(`the state path must be absolute: ${state}`);
@@ -1222,8 +1290,17 @@ export function pruneBackups(state, { keep = LIMITS.keepBackups, protect = null,
   const protectName = protect ? String(protect).split('/').pop() : null;
   const upgradeName = upgradeBackupName(state);
   const kept = new Set([...ours.slice(0, keep), protectName, newestVerified]);
+  const newestOfState = new Map();   // fingerprint -> newest verified backup that has it (ours is newest first)
+  for (const name of ours) {
+    if (!verified.has(name)) continue;
+    const fingerprint = migrationFingerprintOf(join(dir, name, 'integrity.txt'));
+    if (fingerprint !== null && !newestOfState.has(fingerprint)) newestOfState.set(fingerprint, name);
+  }
+  const ofEarlierState = [...newestOfState.values()].filter(name => !kept.has(name) && now - stampMs(name) <= LIMITS.keepMigrationStateMs);
+  for (const name of ofEarlierState) kept.add(name);
   const doomed = ours.filter(name => !kept.has(name));
   const notes = [];
+  if (ofEarlierState.length) notes.push(`kept ${ofEarlierState.join(', ')}, the newest verified backup of an earlier migration state (60 days)`);
   if (upgradeName && doomed.includes(upgradeName)) { doomed.splice(doomed.indexOf(upgradeName), 1); notes.push(`kept ${upgradeName}, the backup of the interrupted upgrade (config/upgrade-in-progress)`); }
   const neverVerifiedOlder = name => newestVerified !== null && !verified.has(name) && name < newestVerified;
   const removed = [...doomed.filter(neverVerifiedOlder), ...doomed.filter(name => !neverVerifiedOlder(name))];
@@ -1558,6 +1635,18 @@ export async function main(argv, deps = defaultDeps(), out = text => console.log
     const { removed, note, verifiedKept } = pruneBackups(deps.state, { protect, now });
     if (note) notes.push(note);
     out(`removed=${removed.length}\nnote=${notes.join('; ')}\nverified_kept=${verifiedKept}`);
+    return 0;
+  }
+  if (command === 'record-verified') {
+    // record-verified NAME [SECONDS]. Used by upgrade.sh, which has just proved the backup it took before an upgrade with
+    // scripts/verify-restore.sh (SECONDS: how long that took): the backup goes on config/backups-verified.list, so that the
+    // keep-for-60-days rule of pruneBackups holds for it too, and is not pruned as an unverified one. Nothing is pruned here.
+    // NAME is a backup directory of this installation (or a path to one). Exit 1, with the reason on standard error, when it is not.
+    const name = String(args[0] ?? '').split('/').filter(Boolean).pop() ?? '';
+    const seconds = args.length > 1 ? (/^\d{1,7}$/.test(args[1]) ? Number(args[1]) : NaN) : null;
+    if (args.length < 1 || args.length > 2 || Number.isNaN(seconds)) { err('Usage: record-verified BACKUP_NAME [SECONDS_THE_VERIFY_TOOK]'); return 1; }
+    try { recordVerified(deps.state, name, now, seconds); } catch (error) { err(`could not record ${name} as verified: ${error.message}`); return 1; }
+    out(`recorded ${name} as verified`);
     return 0;
   }
   const ctx = makeContext(deps, Object.assign(loadState(deps.state, now, deps.readText), loadMutes(deps.state, deps.readText)));

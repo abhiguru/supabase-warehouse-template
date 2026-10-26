@@ -33,6 +33,7 @@ export function replaceEnvLines(text, values) {
   return result;
 }
 
+// Compatibility shim (a compose.env from before PostgREST served `public` only): the first release with a from_floor after v0.6.1 (scripts/upgrade-floor.txt) may drop it.
 // PostgREST exposes the `public` schema only. The earlier defaults also listed storage (no client reads it through
 // /rest/v1, and it let roles with storage policies write storage.objects rows directly) and, before migration 103,
 // graphql_public (a schema that no longer exists). A compose.env still holding one of the two old defaults is

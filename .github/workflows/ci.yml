@@ -563,12 +563,12 @@ jobs:
           if [ "$PREVIOUS_KIND" = tag ] && git -C "$previous" cat-file -e HEAD:upgrade.sh 2>/dev/null && git -C "$previous" cat-file -e HEAD:scripts/pg-major.sh 2>/dev/null; then
             echo "The drill runs the upgrade.sh of $PREVIOUS_REF, unchanged."
           else
-            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF."
+            echo "The drill adds the upgrade.sh and pg-major.sh of the change under test to $PREVIOUS_REF (with the two helpers upgrade.sh sources and calls)."
             cp backend/upgrade.sh "$previous/upgrade.sh"
-            cp backend/scripts/pg-major.sh "$previous/scripts/pg-major.sh"
-            git -C "$previous" add upgrade.sh scripts/pg-major.sh
+            cp backend/scripts/pg-major.sh backend/scripts/upgrade-lib.sh backend/scripts/pre-images.sh "$previous/scripts/"
+            git -C "$previous" add upgrade.sh scripts/pg-major.sh scripts/upgrade-lib.sh scripts/pre-images.sh
             if ! git -C "$previous" diff --cached --quiet; then
-              git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and pg-major.sh of the change under test'
+              git -C "$previous" -c user.name=ci -c user.email=ci@example.invalid commit -q -m 'CI: upgrade.sh and its helpers of the change under test'
             fi
           fi
           install -m 600 /dev/null "$RUNNER_TEMP/msg91-upgrade.env"

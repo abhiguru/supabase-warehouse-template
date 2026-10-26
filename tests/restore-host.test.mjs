@@ -9,19 +9,19 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
+import { fixtureMigrations, ledgerText, makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, previousReleaseDbLines, instanceJson, repo, backupKey, signBackup, writeKey, hmacHex, centralKeySet, currentDatabaseImage, pngLetterhead, jpegLetterhead, xattrTool, xattrSkip } from './backup-test-helpers.mjs';
 import { composeAvailable, renderedCompose } from './compose-render.mjs';
 
 const NAME = 'warehouse-20260101T000000Z';
 const sha = text => createHash('sha256').update(text).digest('hex');
-const migrations = { '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select 2;\n' };
-const ledger = (names = Object.keys(migrations)) =>
-  `migration_count=${names.length}\nmigration_fingerprint=${sha(names.map(n => `${n}:${sha(migrations[n])}`).join('\n'))}\n`;
+// The migration files and the ledger of a backup's integrity.txt are the helpers' (backup-test-helpers.mjs: scriptRoot() puts the same files in the checkout).
+const migrations = fixtureMigrations;
+const ledger = names => ledgerText(fixtureMigrations, names);
 
 function fixture(prefix, { integrity = ledger(), env, format = 'warehouse-backup-v5', xattrs = {}, objects } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), prefix));
   const root = scriptRoot(scratch);
-  mkdirSync(join(root, 'migrations'));
+  mkdirSync(join(root, 'migrations'), { recursive: true });   // scriptRoot() already made it, with the same two files
   for (const [name, body] of Object.entries(migrations)) writeFileSync(join(root, 'migrations', name), body);
   writeFileSync(join(root, 'scripts/doctor.mjs'), "console.log('Host prerequisites and state filesystem preflight passed.');\n");
   // A stand-in for restore.sh that records its call and sets data aside as the real one does.

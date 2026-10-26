@@ -91,6 +91,7 @@ An alert fires after two failing runs in a row (10 minutes), except the event al
 | `central_key_file` | The central sign-in key file the configuration names is missing or unusable |
 | `backup_missing` | No successful backup for 26 hours (or none yet, 26 hours after the first run); never muted |
 | `backup_failed` | The last daily backup failed; never muted |
+| `restore_space_low` | The free space in the state's `data/` is below the stored files of the newest verified backup, plus the size of its database dump, plus 1 GiB: the in-place restore that is the way back from an upgrade (`scripts/restore.sh` refuses below the first and last of these; the dump is replayed into the new database) would not fit. A minimum: the photos added since and new images come on top. Judged every run, from the newest backup on `config/backups-verified.list` (its `storage_bytes=`, for a v5 backup the size of its tarball); nothing is judged until a backup has been verified; not judged while the daily pass holds the lock. **Repeats once a day**, not every 4 hours like the other alerts: it needs disk, not a quick fix. Free space or add disk ([Disk space](OPERATOR_INSTALL.md#disk-space)) |
 | `usb_backup` | The USB backup is set up and stale or failed; or it still writes readable archives although nobody typed `--no-encrypt` (the installation never reran `sudo bash scripts/backup-usb.sh setup --state <state>` after encryption became the default); or its archives are encrypted and the key copy is not confirmed (no `config/backup-key.escrow`, or one for another key: `bash scripts/backup-key-escrow.sh show`); the same rule as `npm run doctor` |
 | `retention_failed` | The last retention clean-up failed |
 | `daily_timer_legacy` | The checker unit is from before the daily timer: the backup still runs inside it (at once; never muted; see "Install the timer") |
@@ -204,11 +205,17 @@ one. At most 3 times a day. Pruning keeps the newest 7 backup directories of thi
 by hand there, with the same name pattern and instance, count towards the 7) and removes nothing if a backup is dated in
 the future. **On top of the 7 it always keeps the newest backup that passed its verify**, however old, and never removes the one just
 made. A backup counts as verified when `verify-restore.sh` passed on it: the pass then writes its name and the time to
-`<state>/config/backups-verified.list` (one `name epoch` line per backup, mode 0600; the lines of backups that no longer exist
-are dropped). So a run of nights whose backup or verify fails cannot push the last good backup out of the 7, and a bad week
+`<state>/config/backups-verified.list` (one `name epoch` line per backup, with a third field, the seconds its verify took, when the writer knew it; mode 0600; the lines of backups that no longer exist
+are dropped; `upgrade.sh` records the backup it takes and proves before an upgrade the same way, so that one counts as verified too). So a run of nights whose backup or verify fails cannot push the last good backup out of the 7, and a bad week
 does not leave the disk with seven unchecked copies and nothing known to restore. **It also keeps the backup of an interrupted
 `upgrade.sh`** (the one `config/upgrade-in-progress` names as the way back; the prune line says "kept ..., the backup of the
-interrupted upgrade"), so the nightly backups cannot push it out while the upgrade waits to be finished or undone. The newest backup
+interrupted upgrade"), so the nightly backups cannot push it out while the upgrade waits to be finished or undone. **For 60 days it also
+keeps the newest verified backup of each migration state** (the `migration_fingerprint=` line of the backup's `integrity.txt`: a new
+fingerprint appears whenever a release applied a migration), the last copy from before each schema change, so that a defect found a
+week or two after an upgrade can still be compared with the data as it was before it (the age is the backup's own date; the prune line
+says "kept ..., the newest verified backup of an earlier migration state"). A backup that was never verified, or whose `integrity.txt`
+has no fingerprint, is not kept for this. The photos of these backups are hard links to the photos of the other backups (never to the live files), so a kept
+backup adds little beyond the files that changed since; the database dump of each is the cost ([Disk space](OPERATOR_INSTALL.md#disk-space)). The newest backup
 verified within the last two days is also the one the next night's backup links its photos from; when none is that recent (nights
 whose verify keeps failing), it links from the newest backup that passes its signature check instead, so the same new photos are not
 copied again every night ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#backup-and-restore)). If nothing has been verified yet

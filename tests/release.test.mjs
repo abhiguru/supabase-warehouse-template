@@ -65,6 +65,9 @@ const releaseFiles = {
   'CHANGELOG.md': '# Changelog\n\n## Unreleased\n\n## v0.7.0 (2026-11-01)\n\nText.\n',
   'upgrade.sh': '#!/usr/bin/env bash\n',
   'scripts/pg-major.sh': '#!/usr/bin/env bash\n',
+  'scripts/upgrade-lib.sh': '# sourced\n',
+  'scripts/upgrade-preflight.sh': '#!/usr/bin/env bash\n# needs: scripts CHANGELOG.md\n',
+  'scripts/upgrade-floor.txt': '# comment\nfrom_floor=\nstepping_stone=\n',
   'setup.sh': 'operator_lock_or_inherited "$STATE"\nbash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait --wait-timeout 180 functions\n',
 };
 test('the release contents gate passes a complete release and a pre-release of it', () => {
@@ -85,8 +88,32 @@ test('the release contents gate names what is missing', () => {
   missing('v0.7.0', noUpgrade, /upgrade\.sh is missing/);
   const { 'scripts/pg-major.sh': _b, ...noMajor } = releaseFiles;
   missing('v0.7.0', noMajor, /scripts\/pg-major\.sh is missing/);
+  // The preflight and the floor are read by the upgrade.sh of the release an installation runs now, out of this release.
+  const { 'scripts/upgrade-preflight.sh': _c, ...noPreflight } = releaseFiles;
+  missing('v0.7.0', noPreflight, /scripts\/upgrade-preflight\.sh is missing/);
+  const { 'scripts/upgrade-floor.txt': _d, ...noFloor } = releaseFiles;
+  missing('v0.7.0', noFloor, /scripts\/upgrade-floor\.txt is missing/);
+  missing('v0.7.0', { ...releaseFiles, 'scripts/upgrade-preflight.sh': '# needs: scripts scripts/not-there.sh\n' }, /names scripts\/not-there\.sh on its '# needs:' line, which this release does not contain/);
+  // A path that upgrade.sh refuses to read out of a release must be refused by the gate too, whether or not the file exists (/etc/hosts and the
+  // three files below do): the rule is the one of run_target_preflight in upgrade.sh, and the next test compares the two patterns.
+  const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const bad of ['../outside.txt', '/etc/hosts', '-dash.txt', 'scripts/../CHANGELOG.md', 'a..b', 'semi;colon']) {
+    const files = { ...releaseFiles, 'scripts/upgrade-preflight.sh': `# needs: scripts ${bad}\n`, '-dash.txt': 'x\n', 'a..b': 'x\n', 'semi;colon': 'x\n' };
+    missing('v0.7.0', files, new RegExp(`names '${escape(bad)}' on its '# needs:' line, which upgrade\\.sh will not read from a release`));
+  }
+  missing('v0.7.0', { ...releaseFiles, 'scripts/upgrade-floor.txt': 'from_floor=\n' }, /exactly one 'stepping_stone=' line/);
+  missing('v0.7.0', { ...releaseFiles, 'scripts/upgrade-floor.txt': 'from_floor=0.6.0\nstepping_stone=\n' }, /from_floor= holds '0\.6\.0', which is not a release tag/);
+  missing('v0.7.0', { ...releaseFiles, 'scripts/upgrade-floor.txt': 'from_floor=\nstepping_stone=v0.6.1\nstepping_stone=v0.6.2\n' }, /exactly one 'stepping_stone=' line/);
   missing('v0.7.0', { ...releaseFiles, 'setup.sh': 'operator_lock "$STATE"\nbash "$ROOT/scripts/compose.sh" up -d --force-recreate --no-deps --wait functions\n' }, /does not call operator_lock_or_inherited/);
   missing('v0.7.0', { ...releaseFiles, 'setup.sh': 'operator_lock_or_inherited "$STATE"\n' }, /does not recreate the functions container/);
+});
+test('the gate and upgrade.sh accept the same paths on a preflight\'s "# needs:" line', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const pattern = /\^\[A-Za-z0-9\._\]\[A-Za-z0-9\._\/-\]\*\$/;
+  const of = file => readFileSync(join(root, file), 'utf8').match(pattern)?.[0];
+  assert.ok(of('upgrade.sh'), 'upgrade.sh has the path pattern');
+  assert.equal(of('scripts/check-release-contents.sh'), of('upgrade.sh'), 'a path one accepts is accepted by the other');
+  for (const file of ['upgrade.sh', 'scripts/check-release-contents.sh']) assert.match(readFileSync(join(root, file), 'utf8'), /"\$path" != \*\.\.\*/, `${file} refuses a path with ..`);
 });
 test('this repository has the files and the setup.sh lines the contents gate asks for, and release.yml runs the gate', () => {
   const root = fileURLToPath(new URL('..', import.meta.url));
@@ -94,6 +121,6 @@ test('this repository has the files and the setup.sh lines the contents gate ask
   // Only the CHANGELOG section is missing for an invented tag; the files upgrade.sh needs are all here.
   assert.notEqual(own.status, 0);
   assert.match(own.stderr, /no section/);
-  assert.doesNotMatch(own.stderr, /upgrade\.sh is missing|pg-major\.sh is missing|operator_lock_or_inherited|recreate the functions/);
+  assert.doesNotMatch(own.stderr, /upgrade\.sh is missing|pg-major\.sh is missing|upgrade-preflight\.sh|upgrade-floor\.txt|operator_lock_or_inherited|recreate the functions/);
   assert.match(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'), /run: bash scripts\/check-release-contents\.sh/);
 });

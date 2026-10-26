@@ -1,16 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, copyFileSync, chmodSync, appendFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, copyFileSync, chmodSync, appendFileSync, readdirSync, truncateSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readUpgradeRecord } from '../scripts/upgrade-record.mjs';
 
 // upgrade.sh against a scratch "origin" with release tags and an installed checkout of it. The operator scripts that
-// upgrade.sh calls (backup, verify-restore, compose, setup, checkout-permissions) are stubs that append what they were given, whether
+// upgrade.sh calls (backup, verify-restore, compose, setup, checkout-permissions, pre-images, and watch.mjs for record-verified) are stubs that append what they were given, whether
 // the operator lock was held while they ran and what the upgrade record said at that moment, to one log; upgrade.sh,
-// scripts/operator-lock.sh, scripts/pg-major.sh, scripts/db-image.sh, scripts/ci-previous-tag.sh, scripts/alert-webhook.mjs and
-// scripts/upgrade-record.mjs are the real files.
+// scripts/operator-lock.sh, scripts/pg-major.sh, scripts/db-image.sh, scripts/ci-previous-tag.sh, scripts/alert-webhook.mjs,
+// scripts/upgrade-lib.sh and scripts/upgrade-record.mjs are the real files.
 const root = new URL('..', import.meta.url).pathname;
 const gitEnv = {
   GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
@@ -70,6 +70,24 @@ echo "setup $* | lock=${LOG_LOCK} version=$(cat "$(dirname "$0")/VERSION") runni
   'scripts/checkout-permissions.sh': `#!/usr/bin/env bash
 [[ "\${FAKE_FAIL:-}" != perms ]] || { echo 'checkout-permissions failed (fake)' >&2; exit 1; }
 `,
+  // The image helper is a stub here (the real one has its own test with a fake docker, tests/pre-images.test.mjs); what it was asked,
+  // from which release's tree and under which record, goes to a log of its own so the order of the main log is not changed.
+  'scripts/pre-images.sh': `#!/usr/bin/env bash
+set -euo pipefail
+${REC_FN}
+case "$1" in
+  name) printf 'pre-%s\\n' "$2"; exit 0 ;;
+  tag) echo "pre-images tag $2 version=$(cat "$(dirname "$0")/../VERSION") ${REC} head=$(git -C "$(dirname "$0")/.." rev-parse HEAD)" >> "$FAKE_LOG.pre"
+       case "\${FAKE_PRE:-}" in none) echo 'nothing to tag (fake)' >&2; exit 3 ;; fail) echo 'docker said no (fake)' >&2; exit 1 ;; esac ;;
+  *) echo "pre-images $1 $2\${3:+ $3} version=$(cat "$(dirname "$0")/../VERSION")" >> "$FAKE_LOG.pre" ;;
+esac
+`,
+  // The checker is a stand-in too (it has its own tests): upgrade.sh asks it to record the verified backup; FAKE_WATCH=fail makes it refuse.
+  'scripts/watch.mjs': `import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.FAKE_LOG + '.pre', 'watch ' + process.argv.slice(2).join(' ') + '\\n');
+if (process.env.FAKE_WATCH === 'fail') { console.error('watch could not record it (fake)'); process.exit(1); }
+console.log('recorded');
+`,
 };
 const statModeOf = path => parseInt(spawnSync('stat', ['-c', '%a', path], { encoding: 'utf8' }).stdout.trim(), 8);
 const dockerfile = major => `FROM postgres:${major}.6-trixie@sha256:${'ab'.repeat(32)}\n`;
@@ -78,6 +96,11 @@ const S010 = '## v0.1.0 (2026-01-01)\n\nThe first release.\n\n';
 const S011 = '## v0.1.1 (2026-02-01)\n\nA fix with no subsections: PLAIN-SECTION-LINE.\n\n';
 const S020 = '## v0.2.0 (2026-03-01)\n\n### Operator actions\n\n1. Do the thing: ACTION-TWO.\n\n### Changed\n\n- Something changed: HIDDEN-CHANGE.\n\n';
 const S009 = '## v0.0.9 (2026-01-15)\n\nA backport on its own line: BACKPORT-LINE.\n\n';
+// An older release than the backport's, listed below v0.1.0 in a later CHANGELOG: the print stops at the first section that is not newer than
+// the old release (v0.0.9, which has no section here), so this one must not appear.
+const S005 = '## v0.0.5 (2025-12-01)\n\nAn older release: OLDER-THAN-BACKPORT-LINE.\n\n';
+// A release whose section lists no operator actions.
+const S0216 = '## v0.2.16 (2026-05-01)\n\n### Changed\n\n- A change that asks nothing of the operator: NOTHING-TO-DO-LINE.\n\n';
 
 // `at` is the release the installed checkout sits on.
 function world({ at = 'v0.1.0' } = {}) {
@@ -91,13 +114,16 @@ function world({ at = 'v0.1.0' } = {}) {
   const base = (version, extra = {}) => {
     put(src, 'VERSION', `${version}\n`);
     for (const [path, text] of Object.entries(stubs)) put(src, path, text, path.endsWith('.sh') ? 0o755 : 0o644);
-    for (const path of ['scripts/operator-lock.sh', 'scripts/pg-major.sh', 'scripts/db-image.sh', 'scripts/ci-previous-tag.sh', 'scripts/alert-webhook.mjs', 'scripts/is-main.mjs', 'scripts/upgrade-record.mjs']) {
+    for (const path of ['scripts/operator-lock.sh', 'scripts/pg-major.sh', 'scripts/db-image.sh', 'scripts/ci-previous-tag.sh', 'scripts/alert-webhook.mjs', 'scripts/is-main.mjs', 'scripts/upgrade-record.mjs', 'scripts/upgrade-lib.sh']) {
       mkdirSync(dirname(join(src, path)), { recursive: true });
       copyFileSync(join(root, path), join(src, path));
     }
     put(src, 'docker/postgres/Dockerfile', extra.dockerfile ?? dockerfile(18));
     put(src, 'CHANGELOG.md', extra.changelog);
     for (const name of extra.migrations ?? ['00000000000000_baseline.sql']) put(src, `migrations/${name}`, `-- ${name}\n`);
+    // Files of a release that has a preflight: its own text, and real files of this repository (the preflight and the library it sources).
+    for (const [path, text] of Object.entries(extra.files ?? {})) put(src, path, text);
+    for (const path of extra.copy ?? []) { mkdirSync(dirname(join(src, path)), { recursive: true }); copyFileSync(join(root, path), join(src, path)); }
     if (extra.upgrade) {
       // Each release's upgrade.sh differs from the one before, so the running script's file is replaced by the checkout.
       copyFileSync(join(root, 'upgrade.sh'), join(src, 'upgrade.sh'));
@@ -117,7 +143,7 @@ function world({ at = 'v0.1.0' } = {}) {
   git(src, 'checkout', '-q', 'main');
   base('v0.1.1', { upgrade: true, changelog: changelog(S011 + S010) });
   git(src, 'tag', 'v0.1.1');                       // a lightweight tag
-  base('v0.2.0', { upgrade: true, changelog: changelog(S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
+  base('v0.2.0', { upgrade: true, changelog: changelog(S020 + S011 + S010 + S005), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'] });
   git(src, 'tag', '-a', '-m', 'release 0.2.0', 'v0.2.0');
   git(src, 'branch', 'squash');
   // A release on a new PostgreSQL major.
@@ -128,6 +154,41 @@ function world({ at = 'v0.1.0' } = {}) {
   git(src, 'rm', '-q', '-r', 'migrations');
   base('v0.4.0', { upgrade: true, changelog: changelog(S020 + S011 + S010), migrations: ['00000000000100_new_baseline.sql'] });
   git(src, 'tag', '-a', '-m', 'release 0.4.0', 'v0.4.0');
+  // Releases that carry scripts/upgrade-preflight.sh, each on a branch of its own from v0.2.0 (the installed checkout's tags stay as they were):
+  //   v0.2.11 a preflight that refuses; v0.2.12 the real preflight with no floor, a stand-in doctor.mjs and a CHANGELOG section with a "before" action
+  //   v0.2.13 the same with the floor at v0.2.0; v0.2.14 a preflight that names a file the release does not contain; v0.2.15 one that names a path
+  //   outside its tree; v0.2.16 the real preflight and a CHANGELOG section with no operator actions.
+  const S0212 = '## v0.2.12 (2026-04-01)\n\n### Operator actions\n\n1. Before the upgrade, do this: BEFORE-ACTION-TWO-TWO.\n\n### Changed\n\n- HIDDEN-CHANGE-TWO-TWO.\n\n';
+  const realPreflight = (floor, sections = S0212) => ({ upgrade: true, changelog: changelog(sections + S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
+    copy: ['scripts/upgrade-preflight.sh', 'scripts/upgrade-lib.sh'],
+    files: { 'scripts/upgrade-floor.txt': `# fixture\n${floor}`, 'scripts/doctor.mjs': `import { appendFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+appendFileSync(process.env.FAKE_LOG + '.pre', 'doctor ' + process.argv.slice(2).join(' ') + ' from=' + dirname(fileURLToPath(import.meta.url)) + '\\n');
+if (process.env.FAKE_DOCTOR_FAIL) { console.error('Doctor: this host is too old (fake).'); process.exit(1); }
+console.log('Host prerequisites and state filesystem preflight passed.');
+` } });
+  git(src, 'checkout', '-q', '-b', 'pf-refuse', 'v0.2.0');
+  base('v0.2.11', { upgrade: true, changelog: changelog(S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
+    files: { 'scripts/upgrade-preflight.sh': '#!/usr/bin/env bash\n# needs:\necho "PREFLIGHT-SAYS-NO: fixture refusal" >&2\nexit 1\n' } });
+  git(src, 'tag', 'v0.2.11');
+  git(src, 'checkout', '-q', '-b', 'pf-real', 'v0.2.0');
+  base('v0.2.12', realPreflight('from_floor=\nstepping_stone=\n'));
+  git(src, 'tag', 'v0.2.12');
+  git(src, 'checkout', '-q', '-b', 'pf-floor', 'v0.2.0');
+  base('v0.2.13', realPreflight('from_floor=v0.2.0\nstepping_stone=v0.2.0\n'));
+  git(src, 'tag', 'v0.2.13');
+  git(src, 'checkout', '-q', '-b', 'pf-needs', 'v0.2.0');
+  base('v0.2.14', { upgrade: true, changelog: changelog(S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
+    files: { 'scripts/upgrade-preflight.sh': '#!/usr/bin/env bash\n# needs: scripts/not-in-this-release.txt\nexit 0\n' } });
+  git(src, 'tag', 'v0.2.14');
+  git(src, 'checkout', '-q', '-b', 'pf-quiet', 'v0.2.0');
+  base('v0.2.16', realPreflight('from_floor=\nstepping_stone=\n', S0216));
+  git(src, 'tag', 'v0.2.16');
+  git(src, 'checkout', '-q', '-b', 'pf-climb', 'v0.2.0');
+  base('v0.2.15', { upgrade: true, changelog: changelog(S020 + S011 + S010), migrations: ['00000000000000_baseline.sql', '00000000000001_more.sql'],
+    files: { 'scripts/upgrade-preflight.sh': '#!/usr/bin/env bash\n# needs: scripts ../outside-the-tree.txt\nexit 0\n' } });
+  git(src, 'tag', 'v0.2.15');
   git(src, 'checkout', '-q', 'main');
   git(scratch, 'init', '-q', '--bare', '-b', 'main', origin);
   git(src, 'push', '-q', origin, '--all');
@@ -138,9 +199,10 @@ function world({ at = 'v0.1.0' } = {}) {
   const log = join(scratch, 'fake.log');
   writeFileSync(log, '');
   const env = (extra = {}) => ({ ...process.env, ...gitEnv, WAREHOUSE_STATE_DIR: state, FAKE_LOG: log, FAKE_LEDGER: '00000000000000_baseline.sql\n', FAKE_ADMIN: '919888888871|Fictional Administrator', ...extra });
-  const run = (args, extra = {}) => {
+  // `input` is what standard input holds (the child sees a pipe, never a terminal; none: it is empty and closed).
+  const run = (args, extra = {}, input = undefined) => {
     writeFileSync(log, '');
-    const r = spawnSync('bash', [join(install, 'upgrade.sh'), ...args], { encoding: 'utf8', cwd: scratch, env: env(extra) });
+    const r = spawnSync('bash', [join(install, 'upgrade.sh'), ...args], { encoding: 'utf8', cwd: scratch, env: env(extra), input });
     return { ...r, log: readFileSync(log, 'utf8').split('\n').filter(Boolean), head: git(install, 'rev-parse', 'HEAD') };
   };
   const upgradesLog = () => (existsSync(join(state, 'config/upgrades.log')) ? readFileSync(join(state, 'config/upgrades.log'), 'utf8') : '');
@@ -491,6 +553,9 @@ test('the changelog print keeps the releases in between when the old release has
     assert.match(r.stdout, /== v0\.1\.1 \(2026-02-01\)[^]*PLAIN-SECTION-LINE/);
     assert.match(r.stdout, /== v0\.1\.0 \(2026-01-01\)[^]*The first release/);
     assert.doesNotMatch(r.stdout, /UNRELEASED-ACTION|Git has it/);
+    // v0.0.5 is older than the backport's v0.0.9 (which has no section here): the print stops before it, by version order. A print that went on to
+    // "Older history" instead would show it.
+    assert.doesNotMatch(r.stdout, /OLDER-THAN-BACKPORT-LINE|v0\.0\.5/);
   } finally { w.cleanup(); }
 });
 
@@ -663,5 +728,383 @@ test('the CI drill installs the newest release before the change, falls back to 
     git(e, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
     commit(e, 'notes.txt', 'after\n');
     assert.match(pick(e), /^skip=true\nreason=v0\.2\.2 predates the inherited operator lock[^\n]*; the merge base with origin\/main \([0-9a-f]+\) predates the inherited operator lock/);
+  } finally { w.cleanup(); }
+});
+
+// --- the release's own preflight, the floor, the room for the way back, and the images of the old release ------------------------------
+const GIB = 1024 ** 3;
+const preLog = w => (existsSync(`${w.log}.pre`) ? readFileSync(`${w.log}.pre`, 'utf8').split('\n').filter(Boolean) : []);
+const recordText = w => readFileSync(w.recordPath, 'utf8');
+// A run with a TMPDIR of its own, to see that nothing is left behind in it.
+const withTmp = (w, extra = {}) => {
+  const tmp = join(w.scratch, 'tmp');
+  mkdirSync(tmp, { recursive: true });
+  return { tmp, env: { TMPDIR: tmp, ...extra } };
+};
+// A verified backup of `bytes` stored files (and a database dump of `dump` bytes), and a `df` that reports `avail` bytes free (PATH shim), for the
+// free-space rule.
+function roomFor(w, bytes, avail, dump = 0) {
+  const name = 'warehouse-20251231T000000Z';
+  mkdirSync(join(w.state, 'backups', name), { recursive: true });
+  writeFileSync(join(w.state, 'backups', name, 'metadata.txt'), `format=warehouse-backup-v6\nstorage_bytes=${bytes}\n`);
+  if (dump) { writeFileSync(join(w.state, 'backups', name, 'database.dump'), ''); truncateSync(join(w.state, 'backups', name, 'database.dump'), dump); }   // sparse: only its size counts
+  writeFileSync(join(w.state, 'config/backups-verified.list'), `${name} 1\n`);
+  const bin = join(w.scratch, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'df'), '#!/bin/sh\nprintf "Avail\\n%s\\n" "$FAKE_DF_AVAIL"\n', { mode: 0o755 });
+  return { PATH: `${bin}:${process.env.PATH}`, FAKE_DF_AVAIL: String(avail) };
+}
+
+test('a preflight of the target that refuses stops the upgrade before the backup: nothing changed, no record, no line logged, a dry run refuses too', () => {
+  const w = world();
+  try {
+    const before = w.tag('v0.1.0');
+    const { tmp, env } = withTmp(w);
+    for (const args of [['v0.2.11'], ['--dry-run', 'v0.2.11']]) {
+      const r = w.run(args, env);
+      assert.notEqual(r.status, 0, args.join(' '));
+      assert.match(r.stderr, /PREFLIGHT-SAYS-NO: fixture refusal/, 'the preflight\'s own message is shown');
+      assert.match(r.stderr, /Refusing: the preflight of v0\.2\.11 stopped this upgrade \(exit 1; its message is above\)\. Nothing was changed\./);
+      assert.deepEqual(r.log, [], `${args.join(' ')}: no backup, no verify, no setup`);
+      assert.equal(r.head, before, 'the checkout did not move');
+      assert.equal(existsSync(w.recordPath), false, 'no record: nothing was started');
+      assert.equal(w.upgradesLog(), '');
+      assert.deepEqual(readdirSync(join(w.state, 'backups')), [], 'no backup was taken');
+      assert.deepEqual(preLog(w), [], 'no images were tagged');
+      assert.deepEqual(readdirSync(tmp), [], 'the extracted copy of the preflight is removed');
+    }
+  } finally { w.cleanup(); }
+});
+
+test('a release without a preflight says so, goes the old way, and the record says preflight=absent', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.match(r.stdout, /Preflight: {4}v0\.2\.0 has no scripts\/upgrade-preflight\.sh \(it is from before the release preflight\), so only the checks above were made\./);
+    assert.deepEqual(r.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup'], 'the old path');
+    assert.match(recordText(w), /^preflight=absent$/m);
+    assert.match(recordText(w), /^format=1$/m, 'the format only gained fields');
+  } finally { w.cleanup(); }
+});
+
+test('the target\'s preflight runs from a temporary copy of the target, prints the target\'s own "before" actions first, and the record says preflight=ok', () => {
+  const w = world();
+  try {
+    const { tmp, env } = withTmp(w);
+    const r = w.run(['v0.2.12'], { FAKE_FAIL: 'setup', ...env });
+    assert.notEqual(r.status, 0);
+    // The installed v0.1.0 has no such text: it can only come out of the target's CHANGELOG, read before the backup.
+    const marker = r.stdout.indexOf('BEFORE-ACTION-TWO-TWO');
+    assert.ok(marker > 0, r.stdout);
+    assert.ok(marker < r.stdout.indexOf('==> Backup'), 'printed before the backup starts');
+    assert.match(r.stdout, /Preflight of v0\.2\.12 passed\./);
+    assert.doesNotMatch(r.stdout, /HIDDEN-CHANGE-TWO-TWO|UNRELEASED-ACTION/);
+    const doctor = preLog(w).find(line => line.startsWith('doctor '));
+    assert.match(doctor, /^doctor --host-preflight from=/, 'the target\'s doctor was asked for the host minimums');
+    assert.ok(doctor.includes(`from=${tmp}/warehouse-preflight.`) && doctor.endsWith('/scripts'), `it ran from a temporary copy: ${doctor}`);
+    assert.ok(!doctor.includes(w.install), 'not from the installed checkout');
+    assert.deepEqual(readdirSync(tmp), [], 'the copy is removed again');
+    assert.match(recordText(w), /^preflight=ok$/m);
+    assert.deepEqual(r.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup']);
+  } finally { w.cleanup(); }
+});
+
+test('--dry-run prints the span\'s before-actions from the TARGET\'s CHANGELOG, then the plan, and changes nothing', () => {
+  const w = world();
+  try {
+    const before = w.tag('v0.1.0');
+    const r = w.run(['--dry-run', 'v0.2.12']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const marker = r.stdout.indexOf('BEFORE-ACTION-TWO-TWO');
+    assert.ok(marker > 0 && marker < r.stdout.indexOf('Plan: v0.1.0 -> v0.2.12'), r.stdout);
+    assert.match(r.stdout, /== v0\.2\.12 \(2026-04-01\)[^]*== v0\.2\.0 \(2026-03-01\)[^]*ACTION-TWO[^]*== v0\.1\.1/, 'the whole span, newest first');
+    assert.match(r.stdout, /Preflight of v0\.2\.12 passed \(dry run\)\./);
+    assert.match(r.stdout, /2\. tag the running images <project>-<service>:pre-v0\.1\.0 \(the way back uses them\), then git checkout --detach/);
+    assert.deepEqual(r.log, []);
+    assert.equal(r.head, before);
+    assert.equal(existsSync(w.recordPath), false);
+    assert.equal(w.upgradesLog(), '');
+    assert.deepEqual(readdirSync(join(w.state, 'backups')), []);
+    // The same dry run is refused when the target's host check refuses.
+    const refused = w.run(['--dry-run', 'v0.2.12'], { FAKE_DOCTOR_FAIL: '1' });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /Doctor: this host is too old \(fake\)[^]*Refusing: this host does not meet what v0\.2\.12 needs[^]*Nothing was changed\./);
+  } finally { w.cleanup(); }
+});
+
+test('the floor: an installation older than the target\'s from_floor is refused before the backup and told the stepping stone; one at it passes', () => {
+  const w = world();
+  try {
+    const before = w.tag('v0.1.0');
+    const r = w.run(['v0.2.13']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Refusing: v0\.2\.13 accepts an upgrade only from v0\.2\.0 or newer, and this checkout is at v0\.1\.0\. Upgrade to v0\.2\.0 first \(bash upgrade\.sh v0\.2\.0\)[^]*Nothing was changed\./);
+    assert.deepEqual(r.log, []);
+    assert.equal(r.head, before);
+    assert.equal(existsSync(w.recordPath), false);
+    assert.deepEqual(readdirSync(join(w.state, 'backups')), []);
+  } finally { w.cleanup(); }
+  const at = world({ at: 'v0.2.0' });
+  try {
+    const r = at.run(['--dry-run', 'v0.2.13']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Preflight of v0\.2\.13 passed/);
+  } finally { at.cleanup(); }
+});
+
+test('the room for the way back is checked before the backup: below the newest verified backup\'s stored files, its database dump and 1 GiB the upgrade is refused', () => {
+  const w = world();
+  try {
+    const before = w.tag('v0.1.0');
+    const short = w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB - 1));
+    assert.notEqual(short.status, 0);
+    assert.match(short.stderr, /Refusing: the way back from this upgrade is an in-place restore[^]*needs at least 6144 MiB free in [^\n]*\/data \(5120 MiB of stored files of warehouse-20251231T000000Z, 0 MiB of its database dump, and 1 GiB to spare\)[^]*and only 6143 MiB are free[^]*Nothing was changed\./);
+    assert.deepEqual(short.log, [], 'refused before the backup');
+    assert.equal(short.head, before);
+    assert.equal(existsSync(w.recordPath), false);
+    assert.deepEqual(readdirSync(join(w.state, 'backups')).filter(name => name !== 'warehouse-20251231T000000Z'), [], 'no backup was taken');
+    const enough = w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB));
+    assert.equal(enough.status, 0, enough.stderr);
+    assert.match(enough.stdout, /Room for the way back: 6144 MiB free, 6144 MiB needed \(the stored files of warehouse-20251231T000000Z, its database dump and 1 GiB; a minimum, since the photos added since, the new backup's dump and new images come on top\)/);
+    // The dump counts too: 6 GiB free was enough for 5 GiB of stored files, it is not for the same files and a 512 MiB dump.
+    const withDump = w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB, 512 * 1024 * 1024));
+    assert.notEqual(withDump.status, 0);
+    assert.match(withDump.stderr, /needs at least 6656 MiB free[^]*\(5120 MiB of stored files of warehouse-20251231T000000Z, 512 MiB of its database dump, and 1 GiB to spare\)[^]*only 6144 MiB are free/);
+    assert.equal(w.run(['v0.2.12'], roomFor(w, 5 * GIB, 6 * GIB + 512 * 1024 * 1024, 512 * 1024 * 1024)).status, 0, 'exactly the three parts is enough');
+  } finally { w.cleanup(); }
+});
+
+test('the running images are tagged after the backup is proved and before the checkout, from the old release; the older tags go once setup has succeeded', () => {
+  const w = world();
+  try {
+    const from = w.tag('v0.1.0');
+    const r = w.run(['v0.2.0']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const [watch, tag, prune, ...rest] = preLog(w);
+    assert.deepEqual(rest, []);
+    // The verified backup is put on the list of verified backups by the OLD release's checker, between the proof and the tags.
+    assert.match(watch, new RegExp(`^watch record-verified ${w.state}/backups/warehouse-20260101T000000Z \\d+$`));
+    assert.equal(tag, `pre-images tag v0.1.0 version=v0.1.0 record=[yes|Checkout: v0.2.0] head=${from}`,
+      'tagged by the OLD release\'s script, with the backup already verified and the checkout not yet made');
+    assert.equal(prune, 'pre-images prune v0.1.0 pre-v0.1.0 version=v0.2.0', 'pruned by the new release\'s script, keeping the set of the release moved away from, named by the tag recorded when it was made');
+    assert.equal(existsSync(w.recordPath), false);
+    assert.match(r.stdout, /remove [^\n]*upgrade-in-progress[^\n]*pre-\* image tags/);
+  } finally { w.cleanup(); }
+});
+
+test('the record names the saved images and the way back puts them back before the restore; when none could be saved the way back is the old one', () => {
+  const w = world();
+  try {
+    const r = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(r.status, 0);
+    assert.match(recordText(w), /^pre_images=pre-v0\.1\.0$/m);
+    assert.equal(preLog(w).filter(line => line.startsWith('pre-images prune')).length, 0, 'nothing is pruned when setup failed');
+    const order = ['bash stop.sh', "bash scripts/pre-images.sh restore 'v0.1.0'", 'npm run db:restore -- --yes --restore-config', 'bash setup.sh --operator', 'bash scripts/build-images.sh --save',
+      'bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions'];
+    let at = -1;
+    for (const line of order) {
+      const found = r.stderr.indexOf(line, at + 1);
+      assert.ok(found > at, `the way back names, in order: ${line}\n${r.stderr}`);
+      at = found;
+    }
+  } finally { w.cleanup(); }
+  for (const [mode, pattern] of [['none', null], ['fail', /could not tag the running images as pre-v0\.1\.0 \(message above\)\. The upgrade goes on;[^]*builds its images again/]]) {
+    const n = world();
+    try {
+      const r = n.run(['v0.2.0'], { FAKE_FAIL: 'setup', FAKE_PRE: mode });
+      assert.notEqual(r.status, 0);
+      assert.deepEqual(r.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup'], `${mode}: the upgrade went on to setup`);
+      assert.match(recordText(n), /^pre_images=none$/m);
+      assert.doesNotMatch(r.stderr, /pre-images\.sh restore/, `${mode}: no restore line in a way back with no saved images`);
+      assert.match(r.stderr, /npm run db:restore -- --yes --restore-config/);
+      if (pattern) assert.match(r.stderr, pattern);
+    } finally { n.cleanup(); }
+  }
+});
+
+test('a rerun of an interrupted upgrade does not run the preflight or tag again, keeps what the record says, and prunes against the recorded old release', () => {
+  const w = world();
+  try {
+    const first = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    assert.equal(preLog(w).filter(line => line.startsWith('doctor ')).length, 1, 'the first run made the preflight');
+    rmSync(`${w.log}.pre`);
+    const second = w.run(['v0.2.12'], { FAKE_DOCTOR_FAIL: '1' });
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.match(second.stdout, /Preflight: {4}not run again: the first run of this upgrade ran the release preflight \(record: preflight=ok\)/);
+    assert.deepEqual(preLog(w), ['pre-images prune v0.1.0 pre-v0.1.0 version=v0.2.12'], 'no doctor, no tag, nothing recorded as verified again; the prune keeps the set of the old release from the record');
+  } finally { w.cleanup(); }
+});
+
+test('a target whose preflight names a file it does not contain is refused before anything changes, and the half-made copy is removed by the EXIT trap', () => {
+  const w = world();
+  try {
+    const { tmp, env } = withTmp(w);
+    const r = w.run(['v0.2.14'], env);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Refusing: the preflight of v0\.2\.14 names a file that release does not contain \(message above\)\. Nothing was changed\./);
+    assert.match(r.stderr, /not-in-this-release\.txt/, 'git says which');
+    assert.deepEqual(r.log, []);
+    assert.equal(existsSync(w.recordPath), false);
+    assert.deepEqual(readdirSync(tmp), [], 'the directory made for the copy was removed: nothing but the trap does that on this path');
+  } finally { w.cleanup(); }
+});
+
+test('a preflight may name only files inside its release: a path that climbs out of the tree is refused before anything is extracted', () => {
+  const w = world();
+  try {
+    const { tmp, env } = withTmp(w);
+    const r = w.run(['v0.2.15'], env);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Refusing: the preflight of v0\.2\.15 names a file this script will not read from it \('\.\.\/outside-the-tree\.txt'\)\. Nothing was changed\./);
+    assert.deepEqual(r.log, []);
+    assert.deepEqual(readdirSync(tmp), [], 'nothing was extracted');
+  } finally { w.cleanup(); }
+});
+
+test('the CI drill, which adds this change\'s upgrade.sh to a tree that has none of its own, adds the two helpers upgrade.sh sources and calls', () => {
+  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const copy = ci.split('\n').find(line => line.includes('cp backend/scripts/pg-major.sh'));
+  assert.ok(copy, 'the drill copies the scripts of the change');
+  const add = ci.split('\n').find(line => line.includes('add upgrade.sh scripts/pg-major.sh'));
+  for (const helper of ['scripts/upgrade-lib.sh', 'scripts/pre-images.sh']) {
+    assert.ok(copy.includes(`backend/${helper}`), `${helper} is copied`);
+    assert.ok(add.includes(helper), `${helper} is added to the commit`);
+    assert.match(readFileSync(join(root, 'upgrade.sh'), 'utf8'), new RegExp(helper.replace(/[.]/g, '\\.')), `upgrade.sh still uses ${helper}`);
+  }
+});
+
+// A `tty` that says standard input is a terminal (a PATH shim): the preflight asks `tty -s`. Nothing here opens a pseudo-terminal; without the
+// shim the child's standard input is a pipe, which is what CI, `ssh host command` and `</dev/null` give it.
+function asTerminal(w) {
+  const bin = join(w.scratch, 'bin-tty');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'tty'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  return { PATH: `${bin}:${process.env.PATH}` };
+}
+
+test('the operator actions are followed by a pause only at a terminal, in a real run, when there are some, and unless --yes: Enter goes on, no answer stops before the backup', () => {
+  const w = world({ at: 'v0.2.0' });
+  try {
+    const before = w.tag('v0.2.0');
+    const prompt = 'Press Enter to continue, Ctrl-C to stop';
+    // No terminal (pipe, CI, </dev/null): never a pause, and the text says the run goes on.
+    const piped = w.run(['v0.2.12'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(piped.status, 0, 'setup is made to fail');
+    assert.deepEqual(piped.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup'], 'it went on to the backup');
+    assert.ok(!piped.stdout.includes(prompt), 'no prompt without a terminal');
+    assert.match(piped.stdout, /This run goes on after the list without stopping, so an action that says "before" should be done already \(--dry-run prints this list without changing anything\):/);
+    assert.ok(piped.stdout.includes('BEFORE-ACTION-TWO-TWO'));
+    // A terminal (stand-in) and Enter: the prompt comes after the actions and before the backup, then the run goes on.
+    git(w.install, 'checkout', '-q', '--detach', before);
+    rmSync(w.recordPath, { force: true });
+    const entered = w.run(['v0.2.12'], { FAKE_FAIL: 'setup', ...asTerminal(w) }, '\n');
+    assert.deepEqual(entered.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup']);
+    const text = entered.stdout;
+    assert.match(text, /Do every action that says "before" now; nothing has been changed yet:/);
+    assert.ok(text.indexOf('BEFORE-ACTION-TWO-TWO') > 0 && text.indexOf('BEFORE-ACTION-TWO-TWO') < text.indexOf(prompt) && text.indexOf(prompt) < text.indexOf('==> Backup'), 'actions, then the pause, then the backup');
+    assert.ok(text.includes(`${prompt} (--yes skips this pause): `));
+  } finally { w.cleanup(); }
+  // A terminal and no answer (the input ended): the upgrade stops before anything changes.
+  const stop = world({ at: 'v0.2.0' });
+  try {
+    const { tmp, env } = withTmp(stop);
+    const r = stop.run(['v0.2.12'], { ...asTerminal(stop), ...env });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Refusing: no answer was read, so the upgrade did not go on\. Do the actions listed above, then run this command again\. Nothing was changed\./);
+    assert.ok(r.stdout.includes('Press Enter to continue, Ctrl-C to stop'));
+    assert.deepEqual(r.log, [], 'no backup');
+    assert.equal(r.head, stop.tag('v0.2.0'));
+    assert.equal(existsSync(stop.recordPath), false);
+    assert.deepEqual(readdirSync(join(stop.state, 'backups')), []);
+    assert.deepEqual(readdirSync(tmp), [], 'the copy of the preflight is removed');
+  } finally { stop.cleanup(); }
+  // --yes: no pause, though standard input is a terminal and says nothing. --dry-run: no pause either (nothing would change).
+  const skip = world({ at: 'v0.2.0' });
+  try {
+    const yes = skip.run(['--yes', 'v0.2.12'], { FAKE_FAIL: 'setup', ...asTerminal(skip) });
+    assert.deepEqual(yes.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup'], yes.stderr);
+    assert.ok(!yes.stdout.includes('Press Enter'));
+    assert.match(skip.record().command, /^--yes v0\.2\.12$/, 'the command a rerun is told to repeat keeps --yes');
+  } finally { skip.cleanup(); }
+  const dryWorld = world({ at: 'v0.2.0' });
+  try {
+    const dry = dryWorld.run(['--dry-run', 'v0.2.12'], asTerminal(dryWorld));
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.ok(!dry.stdout.includes('Press Enter'));
+    assert.match(dry.stdout, /Do every action that says "before" before you run the upgrade for real; this dry run changes nothing:/);
+  } finally { dryWorld.cleanup(); }
+  // No operator actions in the span: nothing to stop for, whatever the terminal says.
+  const quiet = world({ at: 'v0.2.0' });
+  try {
+    const r = quiet.run(['v0.2.16'], { FAKE_FAIL: 'setup', ...asTerminal(quiet) });
+    assert.deepEqual(r.log.map(line => line.split(' ')[0]), ['backup', 'verify-restore', 'setup'], r.stderr);
+    assert.ok(r.stdout.includes('NOTHING-TO-DO-LINE') === false && r.stdout.includes('(no operator actions listed)'));
+    assert.ok(!r.stdout.includes('Press Enter'));
+  } finally { quiet.cleanup(); }
+});
+
+test('a rerun after a partial way back (the old commit checked out again) tags no image again and keeps the recorded set, even when tagging would find nothing', () => {
+  const w = world();
+  try {
+    const from = w.tag('v0.1.0');
+    const first = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    assert.match(recordText(w), /^pre_images=pre-v0\.1\.0$/m);
+    // The operator began the printed way back: the old commit is checked out again, and whatever runs may be the new release's images.
+    git(w.install, 'checkout', '-q', '--detach', from);
+    rmSync(`${w.log}.pre`, { force: true });
+    const second = w.run(['v0.2.0'], { FAKE_FAIL: 'setup', FAKE_PRE: 'none' });
+    assert.notEqual(second.status, 0);
+    assert.equal(second.head, w.tag('v0.2.0'), 'the checkout was made again');
+    assert.deepEqual(preLog(w).filter(line => line.startsWith('pre-images')), [], 'nothing was tagged (a tag call here would also have recorded none)');
+    assert.match(second.stdout, /Images: {7}not tagged again: the first run of this upgrade did that \(record: pre_images=pre-v0\.1\.0\)/);
+    assert.match(second.stdout, /2\. git checkout --detach [0-9a-f]{12} \(no image is tagged again: the first run did that, record pre_images=pre-v0\.1\.0\)/, 'the plan says so too');
+    assert.match(recordText(w), /^pre_images=pre-v0\.1\.0$/m, 'the record still names the good set');
+    assert.match(second.stderr, /bash scripts\/pre-images\.sh restore 'v0\.1\.0'/, 'and the way back still puts it back');
+    // Finished, the prune keeps that recorded set.
+    rmSync(`${w.log}.pre`, { force: true });
+    const third = w.run(['v0.2.0']);
+    assert.equal(third.status, 0, third.stdout + third.stderr);
+    assert.deepEqual(preLog(w), ['pre-images prune v0.1.0 pre-v0.1.0 version=v0.2.0']);
+  } finally { w.cleanup(); }
+});
+
+test('the resume line tells a record from a release without a preflight (preflight=absent) from one written before the preflight existed (no preflight= line)', () => {
+  const w = world();
+  try {
+    const first = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.notEqual(first.status, 0);
+    assert.match(recordText(w), /^preflight=absent$/m, 'written by this script: the release had no preflight');
+    const absent = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.match(absent.stdout, /Preflight: {4}not run again: v0\.2\.0 had no scripts\/upgrade-preflight\.sh when this upgrade began \(record: preflight=absent\)/);
+    assert.doesNotMatch(absent.stdout, /before the release preflight/);
+    // A record of an upgrade.sh that knew nothing of either field: not a statement that the release had no preflight.
+    writeFileSync(w.recordPath, recordText(w).split('\n').filter(line => !/^(preflight|pre_images)=/.test(line)).join('\n'));
+    assert.doesNotMatch(recordText(w), /preflight/);
+    const old = w.run(['v0.2.0'], { FAKE_FAIL: 'setup' });
+    assert.match(old.stdout, /Preflight: {4}none: this upgrade was begun by an upgrade\.sh from before the release preflight \(the record has no preflight= line\); setup makes the host checks/);
+    assert.doesNotMatch(old.stdout, /preflight=absent/);
+    assert.match(recordText(w), /^preflight=$/m, 'the record is not turned into a statement it never made');
+  } finally { w.cleanup(); }
+});
+
+test('the verified backup is put on the list of verified backups after its proof; when the checker cannot, that is a warning and the upgrade goes on', () => {
+  const w = world();
+  try {
+    const dir = `${w.state}/backups/warehouse-20260101T000000Z`;
+    const r = w.run(['v0.2.0'], { FAKE_WATCH: 'fail' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`Warning: could not put ${dir} on config/backups-verified\\.list \\(message above\\), so the nightly pruning does not know it passed its verify; the upgrade goes on`));
+    assert.match(r.stderr, /watch could not record it \(fake\)/, 'the checker\'s own message is shown');
+    assert.deepEqual(preLog(w)[0], `watch record-verified ${dir} 0`.replace(/ 0$/, ` ${preLog(w)[0].split(' ').at(-1)}`));
+    assert.match(preLog(w)[0], /^watch record-verified \S+ \d+$/);
+    // A failed proof records nothing.
+    const bad = world();
+    try {
+      const f = bad.run(['v0.2.0'], { FAKE_FAIL: 'verify' });
+      assert.notEqual(f.status, 0);
+      assert.deepEqual(preLog(bad), [], 'the checker was not asked: the backup did not prove itself');
+    } finally { bad.cleanup(); }
   } finally { w.cleanup(); }
 });

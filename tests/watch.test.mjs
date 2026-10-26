@@ -3330,3 +3330,203 @@ test('containers: an id gone between ps and inspect is skipped; any other inspec
   h2.runs['docker inspect'] = () => bad('permission denied while trying to connect to the docker API');
   assert.throws(() => h2.ctx().containers(), /docker inspect failed: permission denied/);
 });
+
+// ---------------------------------------------------------------- room for the way back, and the backups kept across migration states
+const GIB = 1024 ** 3;
+const DAY_MS = 24 * HOUR;
+// A backup directory of this installation that has been verified (it is on config/backups-verified.list). `bytes` is the size of its stored
+// files as metadata.txt records it (format v6); `tarball` makes it a v5 backup of that size instead; `fingerprint` is the migration state in
+// its integrity.txt (a 64-character hex string; none: no integrity.txt); `dump` the size of its database.dump (none: no such file).
+function addVerified(h, name, { bytes = 0, tarball = null, fingerprint = null, verified = true, dump = 0 } = {}) {
+  const dir = addBackup(h, name);
+  if (dump) { fs.writeFileSync(join(dir, 'database.dump'), ''); fs.truncateSync(join(dir, 'database.dump'), dump); }   // sparse: only its size counts
+  writeFileSync(join(dir, 'metadata.txt'), tarball === null ? `format=warehouse-backup-v6\nstorage_bytes=${bytes}\n` : 'format=warehouse-backup-v5\n');
+  if (tarball !== null) writeFileSync(join(dir, 'storage.tar.gz'), Buffer.alloc(tarball));
+  if (fingerprint !== null) writeFileSync(join(dir, 'integrity.txt'), `migration_count=3\nmigration_fingerprint=${fingerprint}\ncustomer_count=1\n`);
+  if (verified) writeFileSync(join(h.state, 'config/backups-verified.list'), `${name} 1\n`, { flag: 'a' });
+  return dir;
+}
+const dataSpace = (h, bytes) => { h.statfsTable[join(h.state, 'data')] = { bavail: Math.floor(bytes / 4096), blocks: 1e9 }; };
+
+test('restore_space_low: free space below the newest verified backup\'s stored files plus 1 GiB fails, from that size on it passes', () => {
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB });
+    const need = 6 * GIB;
+    dataSpace(h, need - 4096);
+    let r = W.checkRestoreSpace(h.ctx());
+    assert.equal(r.length, 1);
+    assert.deepEqual([r[0].id, r[0].ok], ['restore_space_low', false]);
+    assert.match(r[0].summary, /Free space in data\/ is 6\.0 GiB, and an in-place restore of warehouse-20261018T020000Z needs 6\.0 GiB \(its stored files, 5\.0 GiB, plus 1 GiB\)/);
+    assert.match(r[0].detail, /way back from an upgrade is an in-place restore[^]*docs\/OPERATOR_INSTALL\.md, "Disk space"/);
+    dataSpace(h, need);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'exactly enough is enough, as in scripts/restore.sh');
+    dataSpace(h, 100 * GIB);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true);
+  } finally { clean(h); }
+});
+
+test('restore_space_low judges the newest VERIFIED backup that records a size: a v5 backup by its tarball, an unverified or sizeless one is passed over, none at all is not judged', () => {
+  const h = harness();
+  try {
+    // Nothing verified yet: nothing to compare with, and no statfs is needed.
+    assert.deepEqual(W.checkRestoreSpace(h.ctx()), []);
+    addVerified(h, 'warehouse-20261015T020000Z', { bytes: 40 * GIB, verified: false });
+    assert.deepEqual(W.checkRestoreSpace(h.ctx()), [], 'a backup that was never verified is not the way back');
+    addVerified(h, 'warehouse-20261016T020000Z', { bytes: 9 * GIB });
+    addVerified(h, 'warehouse-20261017T020000Z', { tarball: 2 * 1024 * 1024 });
+    dataSpace(h, GIB + 2 * 1024 * 1024);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'the newest verified one is the v5 backup of 2 MiB');
+    dataSpace(h, GIB + 2 * 1024 * 1024 - 4096);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, false);
+    // A newer verified entry that records no size is passed over for the next older one.
+    const sizeless = addVerified(h, 'warehouse-20261018T020000Z', { bytes: 1 });
+    writeFileSync(join(sizeless, 'metadata.txt'), 'format=warehouse-backup-v6\n');
+    assert.match(W.checkRestoreSpace(h.ctx())[0].summary, /restore of warehouse-20261017T020000Z/);
+    // Space that cannot be read is a failing check, not a pass.
+    delete h.statfsTable[join(h.state, 'data')];
+    assert.throws(() => W.checkRestoreSpace(h.ctx()), /no statfs for/);
+  } finally { clean(h); }
+});
+
+test('restore_space_low alerts after two runs, clears when space is freed, and is judged by the checker but not while the daily pass holds the lock', async () => {
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB });
+    dataSpace(h, 2 * GIB);
+    const checks = W.CHECKS.filter(([name]) => name === 'restore_space');
+    assert.equal(checks.length, 1, 'the check is one of the checker\'s checks');
+    const alerts = () => h.posts.filter(p => !p.text.startsWith('Monitoring is alive'));
+    await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(alerts().length, 0, 'one failing run is not enough');
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.equal(alerts().length, 1);
+    assert.match(alerts()[0].text, /^\[FIRING\] Acme Cold \(warehouse-test\)\n- Free space in data\/ is 2\.0 GiB, and an in-place restore of warehouse-20261018T020000Z needs 6\.0 GiB/);
+    dataSpace(h, 8 * GIB);
+    h.advance(5 * 60000); await W.runOnce(h.deps, { checks, ...NO_JOBS });
+    assert.match(alerts().at(-1).text, /^\[CLEARED\]/);
+    assert.ok(!W.PASS_SAFE_CHECKS.includes('restore_space'), 'the daily pass\'s own copy takes space while it runs: not judged then');
+  } finally { clean(h); }
+});
+
+test('prune keeps, for 60 days, the newest verified backup of each migration state beyond the newest 7, and removes the rest', () => {
+  const h = harness();
+  try {
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    const [F1, F2, F3, F4, F5, F6] = ['1', '2', '3', '4', '5', '6'].map(c => c.repeat(64));
+    const now = at(25, 12);
+    // Oct 10-11 at state 1, Oct 12-14 at state 2, Oct 15-21 at state 3 (the newest seven), all verified.
+    for (const n of [10, 11]) addVerified(h, nm(n), { fingerprint: F1 });
+    for (const n of [12, 13, 14]) addVerified(h, nm(n), { fingerprint: F2 });
+    for (let n = 15; n <= 21; n++) addVerified(h, nm(n), { fingerprint: F3 });
+    // Older than the seven too: never verified (state 4); verified at state 5 but 61 days old; verified at state 6, 59 days old; verified with no integrity.txt.
+    addVerified(h, nm(9), { fingerprint: F4, verified: false });
+    const stale = stampOf(now - 61 * DAY_MS); addVerified(h, stale, { fingerprint: F5 });
+    const fresh = stampOf(now - 59 * DAY_MS); addVerified(h, fresh, { fingerprint: F6 });
+    const noState = stampOf(now - 14 * DAY_MS); addVerified(h, noState);
+    const r = W.pruneBackups(h.state, { now });
+    assert.deepEqual(r.removed.sort(), [nm(10), nm(12), nm(13), nm(9), stale, noState].sort(),
+      'the older copies of a state, the never verified one, the one of a state older than 60 days and the one with no state');
+    assert.deepEqual(readdirSync(join(h.state, 'backups')).sort(), [nm(11), nm(14), fresh, ...[15, 16, 17, 18, 19, 20, 21].map(nm)].sort(),
+      'the newest verified of state 1 and of state 2, the 59-day-old one of state 6, and the newest 7');
+    assert.equal(r.note, `kept ${[nm(14), nm(11), fresh].join(', ')}, the newest verified backup of an earlier migration state (60 days)`, 'newest first');
+    assert.equal(r.verifiedKept, nm(21));
+    assert.equal(readFileSync(join(h.state, 'config/backups-verified.list'), 'utf8').trim().split('\n').map(line => line.split(' ')[0]).sort().join(), [nm(11), nm(14), fresh, ...[15, 16, 17, 18, 19, 20, 21].map(nm)].sort().join(), 'removed names left the list');
+    // Nothing more to remove; a state that is already within the newest 7 needs no note.
+    const again = W.pruneBackups(h.state, { now });
+    assert.deepEqual(again.removed, []);
+    // Two months on, the 59-day-old backup is past its 60 days and goes; the others of that kind stay only while they are in time.
+    const later = W.pruneBackups(h.state, { now: now + 2 * DAY_MS });
+    assert.ok(later.removed.includes(fresh), 'past 60 days');
+    assert.ok(!later.removed.includes(nm(11)) && !later.removed.includes(nm(14)), 'the others are not yet 60 days old');
+  } finally { clean(h); }
+});
+
+test('restore_space_low counts the newest backup\'s database dump besides its stored files and 1 GiB, and says so', () => {
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB, dump: 512 * 1024 * 1024 });
+    const need = 6 * GIB + 512 * 1024 * 1024;
+    dataSpace(h, need - 4096);
+    let r = W.checkRestoreSpace(h.ctx());
+    assert.equal(r[0].ok, false, 'the stored files plus 1 GiB would have been enough: the dump counts too');
+    assert.match(r[0].summary, /needs 6\.5 GiB \(its stored files, 5\.0 GiB, its database dump, 0\.5 GiB, plus 1 GiB\)/);
+    assert.match(r[0].detail, /this is a minimum/);
+    dataSpace(h, need);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'exactly the three parts is enough');
+    // A dump that is a link or a directory counts for nothing (a backup that holds one is refused by every other script).
+    const dir = join(h.state, 'backups/warehouse-20261018T020000Z');
+    fs.rmSync(join(dir, 'database.dump')); fs.mkdirSync(join(dir, 'database.dump'));
+    dataSpace(h, 6 * GIB);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].ok, true, 'no readable dump: the stored files plus 1 GiB, as before');
+  } finally { clean(h); }
+});
+
+test('restore_space_low reminds once a day, every other alert still every 4 hours', () => {
+  const alert = (id, extra = {}) => ({ check: id, id, ok: false, summary: `${id} summary`, detail: '', ...extra });
+  const results = [alert('restore_space_low', { repeatHours: 24 }), alert('other_alert')];
+  const data = { alerts: {} };
+  const t0 = T0;
+  W.evaluate(data, results, new Set(['restore_space_low', 'other_alert']), t0);
+  const first = W.evaluate(data, results, new Set(['restore_space_low', 'other_alert']), t0 + 5 * 60000);
+  assert.deepEqual(first.start.map(a => a.id).sort(), ['other_alert', 'restore_space_low']);
+  for (const id of ['restore_space_low', 'other_alert']) data.alerts[id].lastSent = t0 + 5 * 60000;
+  const ids = at => W.evaluate(structuredClone(data), results, new Set(['restore_space_low', 'other_alert']), t0 + 5 * 60000 + at).repeat.map(a => a.id);
+  assert.deepEqual(ids(4 * HOUR - 1), [], 'nothing before 4 hours');
+  assert.deepEqual(ids(4 * HOUR), ['other_alert'], 'an ordinary alert repeats at 4 hours; restore_space_low does not');
+  assert.deepEqual(ids(23 * HOUR + 59 * 60000), ['other_alert']);
+  assert.deepEqual(ids(24 * HOUR - 1), ['other_alert']);
+  assert.deepEqual(ids(24 * HOUR).sort(), ['other_alert', 'restore_space_low'], 'restore_space_low repeats at 24 hours');
+  // The check itself asks for it, so the setting cannot be left behind.
+  const h = harness();
+  try {
+    addVerified(h, 'warehouse-20261018T020000Z', { bytes: 5 * GIB });
+    dataSpace(h, 2 * GIB);
+    assert.equal(W.checkRestoreSpace(h.ctx())[0].repeatHours, 24);
+  } finally { clean(h); }
+});
+
+test('record-verified puts a backup on config/backups-verified.list with the time its verify took, keeps that for the other lines, prunes nothing, and refuses what is not a backup', async () => {
+  const h = harness();
+  try {
+    const list = join(h.state, 'config/backups-verified.list');
+    const nm = n => `warehouse-202610${String(n).padStart(2, '0')}T020000Z`;
+    for (let n = 10; n <= 20; n++) addBackup(h, nm(n));   // eleven: more than the newest 7; nothing may be pruned by this command
+    const run = async (...args) => { const out = []; const err = []; const status = await W.main(['record-verified', ...args], h.deps, t => out.push(t), t => err.push(t)); return { status, out: out.join('\n'), err: err.join('\n') }; };
+    h.clock.t = at(21, 3, 0);
+    let r = await run(nm(10));
+    assert.deepEqual([r.status, r.out], [0, `recorded ${nm(10)} as verified`]);
+    assert.equal(readFileSync(list, 'utf8'), `${nm(10)} ${Math.floor(at(21, 3, 0) / 1000)}\n`, 'the line every reader knows: name and epoch');
+    assert.equal(statSync(list).mode & 0o777, 0o600);
+    h.clock.t = at(21, 4, 0);
+    r = await run(join(h.state, 'backups', nm(11)), '95');
+    assert.equal(r.status, 0, r.err);
+    assert.equal(readFileSync(list, 'utf8'), `${nm(10)} ${Math.floor(at(21, 3, 0) / 1000)}\n${nm(11)} ${Math.floor(at(21, 4, 0) / 1000)} 95\n`, 'a path works as a name; the verify duration is a third field');
+    // The duration survives the list being rewritten for another backup, and is read back; a reader that knows two fields sees the same name and epoch.
+    h.clock.t = at(21, 5, 0);
+    assert.equal((await run(nm(12), '7')).status, 0);
+    assert.deepEqual(W.readVerifiedList(h.state), [{ name: nm(10), epoch: Math.floor(at(21, 3, 0) / 1000) }, { name: nm(11), epoch: Math.floor(at(21, 4, 0) / 1000), seconds: 95 }, { name: nm(12), epoch: Math.floor(at(21, 5, 0) / 1000), seconds: 7 }]);
+    assert.deepEqual(readFileSync(list, 'utf8').trim().split('\n').map(line => line.split(' ').slice(0, 2).join(' ')), [`${nm(10)} ${Math.floor(at(21, 3, 0) / 1000)}`, `${nm(11)} ${Math.floor(at(21, 4, 0) / 1000)}`, `${nm(12)} ${Math.floor(at(21, 5, 0) / 1000)}`]);
+    // Verified again: the old line goes, the new one is last.
+    h.clock.t = at(21, 6, 0);
+    assert.equal((await run(nm(10), '3')).status, 0);
+    assert.deepEqual(W.readVerifiedList(h.state).map(e => e.name), [nm(11), nm(12), nm(10)]);
+    assert.equal(readdirSync(join(h.state, 'backups')).length, 11, 'no backup was pruned');
+    // Refused, with the reason on standard error and the list untouched.
+    const before = readFileSync(list, 'utf8');
+    for (const bad of [[], [nm(10), '1', '2'], ['not-a-backup'], [nm(99)], [nm(10), 'abc'], [nm(10), '-1'], ['../../etc']]) {
+      r = await run(...bad);
+      assert.equal(r.status, 1, bad.join(' '));
+      assert.match(r.err, /Usage: record-verified|could not record/, bad.join(' '));
+      assert.equal(r.out, '', bad.join(' '));
+      assert.equal(readFileSync(list, 'utf8'), before, `${bad.join(' ')}: the list is as it was`);
+    }
+    // A recorded backup is a verified one for the pruning of the daily pass: with only the oldest backup on the list, it is kept beyond
+    // the newest 7 (the newest verified backup is kept however old); without the line it would go.
+    rmSync(list);
+    assert.equal((await run(nm(10))).status, 0);
+    const kept = W.pruneBackups(h.state, { now: at(21, 7, 0) });
+    assert.equal(kept.verifiedKept, nm(10));
+    assert.deepEqual(readdirSync(join(h.state, 'backups')).sort(), [nm(10), ...[14, 15, 16, 17, 18, 19, 20].map(nm)]);
+  } finally { clean(h); }
+});

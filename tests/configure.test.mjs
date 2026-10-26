@@ -774,10 +774,16 @@ test('a state that still has the gateway port under its old Kong name keeps work
     assert.equal(gatewayPortText({ GATEWAY_HTTP_PORT: '', KONG_HTTP_PORT: '18001' }), '18001');
     writeFileSync(join(scratch, 'empty.env'), 'GATEWAY_HTTP_PORT=\nKONG_HTTP_PORT=18001\n', { mode: 0o600 });
     assert.equal(gatewayPortText(readEnv(join(scratch, 'empty.env'))), '18001');
-    // Setup without the option, or with the same port, leaves the file byte for byte as it was.
+    // Setup without the option renames the old line in place (every run does: the fallback to the old name can then be dropped, see the
+    // next test); the port is the same, so nothing changes for Compose and the port counts as unchanged. With the same port, nothing more.
+    const renamedOnce = old.replace('KONG_HTTP_PORT=18001', 'GATEWAY_HTTP_PORT=18001');
     assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortChanged, false);
+    assert.equal(readFileSync(envPath, 'utf8'), renamedOnce, 'the old name is renamed by a rerun without --gateway-port');
+    assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'the same port under the new name changes nothing');
+    assert.equal(readFileSync(envPath, 'utf8'), renamedOnce);
+    writeFileSync(envPath, old, { mode: 0o600 });
     assert.equal(configure(root, { stateDir: state, gatewayPort: '18001', ...hooks }).gatewayPortChanged, false, 'the same port under the old name changes nothing');
-    assert.equal(readFileSync(envPath, 'utf8'), old);
+    assert.equal(readFileSync(envPath, 'utf8'), renamedOnce, 'it is renamed on this run too');
     // An empty new-name line over the old one: the old port is the current one, so the same port changes nothing.
     writeFileSync(envPath, `GATEWAY_HTTP_PORT=\n${old}`, { mode: 0o600 });
     const emptied = readFileSync(envPath, 'utf8');
@@ -793,6 +799,50 @@ test('a state that still has the gateway port under its old Kong name keeps work
     assert.equal(configure(root, { stateDir: state, gatewayPort: '18003', ...hooks }).gatewayPortChanged, true);
     assert.equal(readEnv(envPath).GATEWAY_HTTP_PORT, '18003');
     assert.equal(readEnv(envPath).KONG_HTTP_PORT, undefined);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('every rerun of setup renames a compose.env line that has only the old Kong port name; a renamed line and a file with both lines are left alone', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-config-port-rename-'));
+  const root = join(scratch, 'checkout');
+  const providerEnv = join(scratch, 'provider.env');
+  try {
+    mkdirSync(root);
+    copyFileSync(new URL('../.env.example', import.meta.url), join(root, '.env.example'));
+    writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=provider-key\nMSG91_TEMPLATE_ID=flow-id\nMSG91_PE_ID=pe-id\nMSG91_SENDER_ID=WHOUSE\n', { mode: 0o600 });
+    const hooks = { portFree: () => true, containersRunning: () => false };
+    const state = join(scratch, 'state');
+    configure(root, { apiUrl: 'https://api.example.com', company: 'Acme Stores', providerEnv, stateDir: state, gatewayPort: '18001', ...hooks });
+    const envPath = join(state, 'config/compose.env');
+    const current = readFileSync(envPath, 'utf8');
+    assert.match(current, /^GATEWAY_HTTP_PORT=18001$/m);
+    // A state with the new name already: nothing is rewritten (idempotent), and no rename is reported.
+    const settled = configure(root, { stateDir: state, ...hooks });
+    assert.equal(settled.gatewayPortRenamed, false);
+    assert.equal(readFileSync(envPath, 'utf8'), current);
+    // Only the old name: the next setup, with no option at all, writes the new name in the same place, with the same value.
+    const kongOnly = current.replace('GATEWAY_HTTP_PORT=18001', 'KONG_HTTP_PORT=18001');
+    writeFileSync(envPath, kongOnly, { mode: 0o600 });
+    const first = configure(root, { stateDir: state, ...hooks });
+    assert.equal(first.gatewayPortRenamed, true);
+    assert.equal(first.gatewayPortChanged, false, 'the port itself did not change');
+    assert.equal(readFileSync(envPath, 'utf8'), current, 'the file is as it was before the old name was put in');
+    assert.equal(readEnv(envPath).KONG_HTTP_PORT, undefined);
+    assert.equal(gatewayPortText(readEnv(envPath)), '18001');
+    // The same setup again changes nothing.
+    assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortRenamed, false);
+    assert.equal(readFileSync(envPath, 'utf8'), current);
+    // Both lines (a hand edit): the new one is kept as it is, the old one is not read into it and the file is not rewritten.
+    const both = `${current}KONG_HTTP_PORT=18009\n`;
+    writeFileSync(envPath, both, { mode: 0o600 });
+    assert.equal(configure(root, { stateDir: state, ...hooks }).gatewayPortRenamed, false);
+    assert.equal(readFileSync(envPath, 'utf8'), both);
+    assert.equal(readEnv(envPath).GATEWAY_HTTP_PORT, '18001');
+    // The rename and a new port in one run: the line ends up with the new port, once, and no old line.
+    writeFileSync(envPath, kongOnly, { mode: 0o600 });
+    const moved = configure(root, { stateDir: state, gatewayPort: '18002', ...hooks });
+    assert.equal(moved.gatewayPortChanged, true);
+    assert.equal(readFileSync(envPath, 'utf8'), current.replace('GATEWAY_HTTP_PORT=18001', 'GATEWAY_HTTP_PORT=18002'));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

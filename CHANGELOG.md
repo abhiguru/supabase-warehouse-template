@@ -174,6 +174,33 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **`upgrade.sh` runs the release's own preflight before the backup, enforces an oldest release to upgrade from, and keeps the old images for the
+  way back.** `upgrade.sh` is the script of the release you run now and cannot know what the release you move to needs, so every release now
+  carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`; `upgrade.sh` reads them out of the release (`git archive`, as it reads the
+  PostgreSQL major) and runs the preflight first, in `--dry-run` too. It prints the operator actions of `CHANGELOG.md` for the whole span **before
+  anything is changed** (they are still printed at the end): **run `bash upgrade.sh --dry-run vX.Y.Z` first** and do what it lists under "before";
+  the real run, at a terminal and when the list has operator actions, then waits ("Press Enter to continue, Ctrl-C to stop"), and the new option
+  `--yes` skips that pause (a run without a terminal on standard input, such as cron, CI or `</dev/null`, never pauses). It checks the host against
+  what that release needs (Node.js, Docker and Compose, `rsync` and `tar` with extended attributes, free space: the checks of the release's own
+  `setup.sh`, which used to stop an upgrade only after the checkout), refuses an installation older than the release's floor and names the release
+  to upgrade to first (no floor yet), and refuses when the free space is below the stored files of the newest verified backup, plus the size of its
+  database dump, plus 1 GiB, because the way back is an in-place restore that needs that room (a minimum: the photos added since and new images
+  come on top). A refusal says "Nothing was changed". Only an installation that already runs this release (or a later one) reads a release's
+  preflight: the move **to** this release is still made by the `upgrade.sh` you have now, which does not, so the preflight works from the next
+  release on; a release without one is moved to as before, with a line saying so. The upgrade record gains `preflight=` and `pre_images=`. The backup
+  the upgrade takes and proves is put on `config/backups-verified.list`, so the 60-day keep below applies to it, not only to the nightly one before it.
+  Before the checkout, `upgrade.sh` tags the images the containers use (running ones, and stopped optional services) as
+  `<project>-<service>:pre-<old release>` (`scripts/pre-images.sh`) and keeps a copy of the build record; the printed way back puts them back
+  (`bash scripts/pre-images.sh restore <old release>`) so that the old release's setup normally builds nothing and needs no network, and then runs
+  `bash scripts/build-images.sh --save` (builds nothing) so that `<state>/images`, the signed copy a lost-host restore loads, holds the old images
+  again; after a successful upgrade only the newest set is kept (older tags are removed one by exact name, never with an image prune). A rerun of
+  an interrupted upgrade never tags the images again. `restore.sh` now checks, before it moves anything, that the
+  checkout contains every migration the backup applied (the check `db:restore-host` already made), so a way back from the wrong checkout stops while the data is
+  intact. The checker raises `restore_space_low` when the free space in `data/` is below that same size (it repeats once a day), and the nightly pruning keeps,
+  for 60 days, the newest verified backup of each migration state besides the newest 7 (the copy from before a schema change). The install guide has a
+  disk-sizing rule, "at least 3 × the photos + 3 × the database + the images + 20 %" ("Disk space"), and the Major PostgreSQL upgrade's disk check now counts
+  the photo copy. Every run of `setup.sh` now renames a `KONG_HTTP_PORT` line of `compose.env` to `GATEWAY_HTTP_PORT` (same port; it used to happen only
+  with `--gateway-port`), which is what lets a later release drop the old name; the compatibility shims name the release that may drop them. Nothing to do.
 - **The USB drive: encrypted by default, pruned, self-contained archives, verified without unpacking the photos** (operator action 16).
   `scripts/backup-usb.sh` writes one pax tar per run of the newest verified backup (`scripts/backup-archive.sh`: small files first, the
   `storage/` tree last, hard links written out, `user.*` attributes kept), `warehouse-<utc>.tar.enc` unless `--no-encrypt` was typed, with
