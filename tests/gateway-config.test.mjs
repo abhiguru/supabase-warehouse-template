@@ -46,7 +46,7 @@ const route = name => block(CODE.locations, `location ${name}`);
 // way it does it: GNU envsubst replaces both forms, $NAME and the braced form, for a name the filter matches in full (checked on the
 // real image in tests/gateway-nginx.test.mjs); every other dollar sign is left alone.
 const filter = /^ENV NGINX_ENVSUBST_FILTER="\^\(([A-Z_|]+)\)\$"$/m.exec(dockerfile)?.[1].split('|');
-const VALUES = { CORS_ALLOWED_ORIGIN: 'https://app.example.test', ANON_KEY: 'unit.anon.key', SERVICE_ROLE_KEY: 'unit.service.key', LAN_CIDR: '192.168.7.0/24' };
+const VALUES = { CORS_ALLOWED_ORIGIN: 'https://app.example.test', ANON_KEY: 'unit.anon.key', SERVICE_ROLE_KEY: 'unit.service.key', LAN_CIDR: '192.168.7.0/24', LAN_BIND_IP: '192.168.7.20', LAN_HTTP_PORT: '8181' };
 const render = text => text.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (all, braced, bare) => (filter.includes(braced ?? bare) ? VALUES[braced ?? bare] : all));
 const RENDERED = { http: render(FILES.httpTemplate), gateway: render(FILES.gatewayTemplate), lan: render(FILES.lanTemplate) };
 
@@ -67,8 +67,8 @@ test('the gateway is nginx from docker/nginx: no Kong file, entrypoint override 
   assert.doesNotMatch(read('.env.example'), /^KONG_/m);
 });
 
-test('the public templates hold exactly three variables, the LAN server one more, the image puts in only those, and no key or origin can add to the configuration', () => {
-  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_CIDR', 'SERVICE_ROLE_KEY']);
+test('the public templates hold exactly three variables, the LAN server three more, the image puts in only those, and no key or origin can add to the configuration', () => {
+  assert.deepEqual([...filter].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'LAN_BIND_IP', 'LAN_CIDR', 'LAN_HTTP_PORT', 'SERVICE_ROLE_KEY']);
   const used = new Set();
   for (const [name, text] of Object.entries({ http: FILES.httpTemplate, gateway: FILES.gatewayTemplate })) {
     for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) used.add(match[1]);
@@ -80,14 +80,17 @@ test('the public templates hold exactly three variables, the LAN server one more
     assert.doesNotMatch(code(text), /\$(?:ANON_KEY|SERVICE_ROLE_KEY|CORS_ALLOWED_ORIGIN)\b/, `${name}: a variable without braces`);
   }
   assert.deepEqual([...used].sort(), ['ANON_KEY', 'CORS_ALLOWED_ORIGIN', 'SERVICE_ROLE_KEY'], 'the public templates have no LAN variable');
-  // The LAN server holds LAN_CIDR, once, and writes it in no comment (the entrypoint would put the value into the comment too).
-  assert.deepEqual([...FILES.lanTemplate.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]), ['LAN_CIDR']);
-  assert.doesNotMatch(FILES.lanTemplate.split('\n').filter(line => line.trim().startsWith('#')).join('\n'), /\$\{?LAN_CIDR\b|\$\{/);
-  assert.doesNotMatch(code(FILES.lanTemplate), /\$LAN_CIDR\b/, 'the braced form only');
+  // The LAN server holds LAN_CIDR (the allow list) once and LAN_BIND_IP and LAN_HTTP_PORT (the Host pin), and writes none of them in a comment (the
+  // entrypoint would put the value into the comment too).
+  assert.deepEqual([...FILES.lanTemplate.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]), ['LAN_BIND_IP', 'LAN_BIND_IP', 'LAN_HTTP_PORT', 'LAN_CIDR']);
+  assert.doesNotMatch(FILES.lanTemplate.split('\n').filter(line => line.trim().startsWith('#')).join('\n'), /\$\{?LAN_|\$\{/);
+  assert.doesNotMatch(code(FILES.lanTemplate), /\$LAN_[A-Z_]+\b/, 'the braced form only');
   // The values are put in as they are: the rendered templates have none left, and keep every nginx variable.
   for (const [name, text] of Object.entries(RENDERED)) assert.doesNotMatch(text, /\$\{/, `${name}: an unreplaced variable`);
   assert.doesNotMatch(RENDERED.lan, /\$\{/, 'lan: an unreplaced variable');
   assert.match(RENDERED.lan, /^\s*allow 192\.168\.7\.0\/24;$/m);
+  assert.match(RENDERED.lan, /^\s*"192\.168\.7\.20"\s+1;$/m);
+  assert.match(RENDERED.lan, /^\s*"192\.168\.7\.20:8181"\s+1;$/m);
   assert.match(RENDERED.http, /default "https:\/\/app\.example\.test";/);
   assert.match(RENDERED.http, /"unit\.anon\.key"\s+"";/);
   assert.match(RENDERED.http, /"unit\.service\.key"\s+"";/);
@@ -95,14 +98,22 @@ test('the public templates hold exactly three variables, the LAN server one more
   // The container refuses to start on a value the configuration could not hold safely (checked for real in tests/gateway-nginx.test.mjs).
   const entry = read('docker/nginx/docker-entrypoint.d/18-require-env.sh');
   assert.match(entry, /\*\[!A-Za-z0-9\._~:\/-\]\*\)/);
-  // The LAN container also refuses a missing or non-private LAN_CIDR; the public one is not asked for it (checked for real in the lab).
-  assert.match(entry, /if \[ "\$\{GATEWAY_ROLE:-\}" = lan \] \|\| grep -q 'LAN_CIDR' \/etc\/nginx\/templates\/gateway\.conf\.template 2>\/dev\/null; then\n  check LAN_CIDR "\$\{LAN_CIDR:-\}"/);
+  // The LAN container also refuses a missing or non-private LAN_CIDR, LAN_BIND_IP and a bad LAN_HTTP_PORT; the public one is not asked for them (checked
+  // for real in the lab). Which container is the LAN one is decided by the template directory it reads (or the role), and by a template line that is
+  // not a comment, never by a comment.
+  assert.match(entry, /if \[ "\$\{GATEWAY_ROLE:-\}" = lan \] \|\| \[ "\$template_dir" = \/etc\/nginx\/templates-lan \]; then\n  lan_server=yes\nelif cat "\$template_dir"\/\*\.template 2>\/dev\/null \| grep -v '\^\[\[:space:\]\]\*#' \| grep -Eq /);
+  assert.match(entry, /if \[ "\$lan_server" = yes \]; then\n  check LAN_CIDR "\$\{LAN_CIDR:-\}"/);
+  assert.match(entry, /check LAN_BIND_IP "\$\{LAN_BIND_IP:-\}"/);
+  assert.match(entry, /check LAN_HTTP_PORT "\$\{LAN_HTTP_PORT:-\}"/);
   assert.doesNotMatch(entry, /\beval\b/);
   assert.match(dockerfile, /^COPY --chmod=0755 docker-entrypoint\.d\/ \/docker-entrypoint\.d\/$/m);
+  // The LAN server and the http-level template are in the image under templates-lan; nothing is mounted from the checkout.
+  assert.match(dockerfile, /^COPY lan\/ \/etc\/nginx\/templates-lan\/$/m);
+  assert.match(dockerfile, /^COPY templates\/http\.conf\.template \/etc\/nginx\/templates-lan\/http\.conf\.template$/m);
   // The compose environment names exactly those three and requires each.
-  for (const name of filter.filter(name => name !== 'LAN_CIDR')) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
-  // LAN_CIDR is for gateway-lan only and may be empty in Compose (the entrypoint refuses an empty one); the public gateway is not given it.
-  assert.equal((compose.match(/\n      LAN_CIDR: \$\{LAN_CIDR:-\}\n/g) || []).length, 1);
+  for (const name of filter.filter(name => !name.startsWith('LAN_'))) assert.match(compose, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`), `${name} is required by Compose`);
+  // The LAN names are for gateway-lan only and may be empty in Compose (the entrypoint refuses an empty one); the public gateway is not given them.
+  for (const name of ['LAN_CIDR', 'LAN_BIND_IP', 'LAN_HTTP_PORT']) assert.equal((compose.match(new RegExp(`\\n      ${name}: \\$\\{${name}:-\\}\\n`, 'g')) || []).length, name === 'LAN_CIDR' ? 1 : 2, name);
 });
 
 test('gateway takes the client address from the tunnel hop only, in the public server only, and limits per client IP', () => {
@@ -501,6 +512,12 @@ test('the LAN server: plain http on 8080 only, the same routes, no trust in a cl
   assert.match(CODE.gatewayTemplate, /^\s*set \$warehouse_path public;$/m);
   // Every API answer carries the header: cors-headers.conf is included by every route, the preflight and every error answer.
   assert.match(CODE.cors, /^add_header X-Warehouse-Path \$warehouse_path always;$/m);
+  // The Host pin: the header must be LAN_BIND_IP (with or without LAN_HTTP_PORT), or the container's own health check; anything else is a 404 answered in
+  // the rewrite phase of the server, after the routes file (which sets what the 404 uses) and before the location, the allow list and any limit.
+  assert.match(server, /^map \$http_host \$lan_host_ok \{\n\s+default\s+0;\n\s+"\$\{LAN_BIND_IP\}"\s+1;\n\s+"\$\{LAN_BIND_IP\}:\$\{LAN_HTTP_PORT\}"\s+1;\n\s+"127\.0\.0\.1:8080"\s+1;\n\s+"localhost:8080"\s+1;\n\}$/m);
+  assert.match(server, /^\s*if \(\$lan_host_ok = 0\) \{ return 404; \}$/m);
+  assert.ok(server.indexOf('include /etc/nginx/api-locations.conf;') < server.indexOf('if ($lan_host_ok = 0)'), 'the pin follows the include (the 404 uses what the routes file sets)');
+  assert.doesNotMatch(CODE.gatewayTemplate, /lan_host_ok|\$http_host/, 'the public server has no Host pin');
   // /health for the container only, as in the public server.
   assert.match(server, /location = \/health \{\n\s+if \(\$remote_addr != "127\.0\.0\.1"\) \{ return 404; \}\n\s+access_log off;\n\s+default_type text\/plain;\n\s+return 200 "ok\\n";\n\s+\}/);
   // The per-client keys the sign-in functions and the limits use are the connection's address on the routes that pass one on.
@@ -510,11 +527,14 @@ test('the LAN server: plain http on 8080 only, the same routes, no trust in a cl
   assert.doesNotMatch(CODE.gatewayTemplate, /\ballow\b|\bdeny\b|LAN_CIDR/);
 });
 
-test('the gateway-lan service: profile lan, built like the gateway, published on LAN_BIND_IP only (loopback by default), on the default network', () => {
+test('the gateway-lan service: profile lan, the gateway\'s own image (no build of its own), published on LAN_BIND_IP only (loopback by default), on the default network', () => {
   const service = compose.slice(compose.indexOf('\n  gateway-lan:\n'), compose.indexOf('\n  rest:\n'));
   assert.ok(service.length > 300, 'the gateway-lan service was read');
   assert.match(service, /\n    profiles: \["lan"\]\n/);
-  assert.match(service, /\n    build:\n      context: \.\/nginx\n/, 'the same recipe as the gateway');
+  // One image: the tag Compose gives the gateway's build, never a second build of the same recipe (a second build could be another version).
+  assert.match(service, /\n    image: \$\{WAREHOUSE_PROJECT_NAME:\?[^}]+\}-gateway\n    pull_policy: never\n/);
+  assert.doesNotMatch(code(service), /^\s+build:/m, 'no build of its own');
+  assert.doesNotMatch(code(service), /\n    volumes:/, 'nothing is mounted from the checkout: the LAN server is in the image');
   assert.doesNotMatch(service, /^\s+(?:entrypoint|command):/m);
   assert.deepEqual(service.match(/^\s+- "[^"]*:8080\/tcp"$/gm), ['      - "${LAN_BIND_IP:-127.0.0.1}:${LAN_HTTP_PORT:-8080}:8080/tcp"']);
   assert.match(service, /\n    read_only: true\n/);
@@ -528,13 +548,12 @@ test('the gateway-lan service: profile lan, built like the gateway, published on
   assert.doesNotMatch(service, /\n    networks:/, 'the default network only');
   assert.match(service, /- \/tmp:size=4m\n/);
   assert.match(service, /- \/etc\/nginx\/conf\.d:uid=101,gid=101,mode=0755,size=1m\n/);
-  // Its server replaces the public one in this container only.
-  assert.match(service, /\n      - \.\/nginx\/lan\/gateway-lan\.conf\.template:\/etc\/nginx\/templates\/gateway\.conf\.template:ro,z\n/);
-  assert.match(service, /\n      GATEWAY_ROLE: lan\n      LAN_CIDR: \$\{LAN_CIDR:-\}\n/);
+  // Its server replaces the public one in this container only: the image's entrypoint reads the LAN template directory.
+  assert.match(service, /\n      NGINX_ENVSUBST_TEMPLATE_DIR: \/etc\/nginx\/templates-lan\n      GATEWAY_ROLE: lan\n      LAN_CIDR: \$\{LAN_CIDR:-\}\n      LAN_BIND_IP: \$\{LAN_BIND_IP:-\}\n      LAN_HTTP_PORT: \$\{LAN_HTTP_PORT:-\}\n/);
   for (const name of ['ANON_KEY', 'SERVICE_ROLE_KEY', 'CORS_ALLOWED_ORIGIN']) assert.match(service, new RegExp(`\\n      ${name}: \\$\\{${name}:\\?[^}]+\\}\\n`));
-  // The public gateway has neither the role nor the range, and mounts nothing.
+  // The public gateway has neither the role, the range nor the template directory, and mounts nothing.
   const gateway = code(compose.slice(compose.indexOf('\n  gateway:\n'), compose.indexOf('\n  gateway-lan:\n')));
-  assert.doesNotMatch(gateway, /GATEWAY_ROLE|LAN_|\n    volumes:|profiles:/);
+  assert.doesNotMatch(gateway, /GATEWAY_ROLE|LAN_|NGINX_ENVSUBST_TEMPLATE_DIR|\n    volumes:|profiles:/);
   // get-config reads the address from the function runtime's environment; get-public-config has no such name.
   assert.match(compose, /\n      LAN_ENABLED: \$\{LAN_ENABLED:-\}\n      LAN_BIND_IP: \$\{LAN_BIND_IP:-\}\n      LAN_HTTP_PORT: \$\{LAN_HTTP_PORT:-\}\n/);
 });
@@ -543,8 +562,8 @@ test('the rendered Compose project: the LAN port is loopback until lan.sh gives 
   const publishers = edit => {
     const result = renderCompose(edit);
     assert.equal(result.status, 0, result.stderr);
-    const { services } = JSON.parse(result.stdout);
-    return { services, ports: Object.fromEntries(Object.entries(services).filter(([, service]) => service.ports?.length).map(([name, service]) => [name, service.ports.map(({ host_ip, published, target }) => `${host_ip}:${published}->${target}`)])) };
+    const { services, name } = JSON.parse(result.stdout);
+    return { services, name, ports: Object.fromEntries(Object.entries(services).filter(([, service]) => service.ports?.length).map(([name, service]) => [name, service.ports.map(({ host_ip, published, target }) => `${host_ip}:${published}->${target}`)])) };
   };
   // A new state: .env.example has LAN off with loopback and 8080.
   const fresh = publishers();
@@ -553,6 +572,12 @@ test('the rendered Compose project: the LAN port is loopback until lan.sh gives 
   assert.deepEqual(Object.keys(fresh.ports).sort(), ['gateway', 'gateway-lan']);
   assert.deepEqual(fresh.services['gateway-lan'].profiles, ['lan']);
   assert.deepEqual(fresh.services['gateway-lan'].networks, { default: null });
+  // One image: gateway-lan runs the tag Compose gives the gateway's build (<project>-gateway), and has no build of its own.
+  assert.equal(fresh.services['gateway-lan'].image, `${fresh.name}-gateway`);
+  assert.equal(fresh.services['gateway-lan'].pull_policy, 'never');
+  assert.equal(fresh.services['gateway-lan'].build, undefined);
+  assert.ok(fresh.services.gateway.build?.context.endsWith('/docker/nginx'));
+  assert.equal(fresh.services['gateway-lan'].environment.NGINX_ENVSUBST_TEMPLATE_DIR, '/etc/nginx/templates-lan');
   assert.equal(fresh.services['gateway-lan'].environment.GATEWAY_ROLE, 'lan');
   assert.equal(fresh.services['gateway-lan'].environment.LAN_CIDR, '');
   // Written by lan.sh on.

@@ -43,7 +43,7 @@ import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
 import { centralKeyFault, gatewayPortText, letterheadProblem, readEnv, root as checkoutRoot } from './doctor-common.mjs';
-import { describeAddresses, hostHasAddress, lanOrigin, lanSettings, readHostInterfaces } from './lan-common.mjs';
+import { LAN_SERVICE, describeAddresses, hostHasAddress, lanOrigin, lanSettings, probeLanKeys, readHostInterfaces } from './lan-common.mjs';
 import { redactServiceLog } from './service-diagnostics.mjs';
 import { usbBackupWarning } from './usb-backup-status.mjs';
 import { postSlackMessage, storedWebhook, testMessage } from './alert-webhook.mjs';
@@ -592,8 +592,10 @@ export async function checkApiPublic(ctx) {
 }
 // The LAN fallback (scripts/lan.sh), only while it is on: the host must still have the address the container publishes on (the router
 // may hand it another one: `lan_ip_changed`), and that address must answer the public configuration as this installation with the
-// header that says the LAN listener answered (`lan_http_down`, after two failing runs like the other API checks). Silent while the
-// fallback is off: nothing is returned, so an alert left over from before it was turned off is cleared.
+// header that says the LAN listener answered, and must accept the installation's anon key on the REST route (probeLanKeys: get-public-config
+// has no key check, and a container that was not recreated after a key rotation refuses every REST request of every phone while it is
+// still green) (`lan_http_down`, after two failing runs like the other API checks). Silent while the fallback is off: nothing is returned,
+// so an alert left over from before it was turned off is cleared.
 export async function checkApiLan(ctx) {
   const lan = lanSettings(ctx.env_());
   if (!lan.enabled) return [];
@@ -613,6 +615,8 @@ export async function checkApiLan(ctx) {
     const json = await response.json();
     if (json.success !== true || json.data?.instanceId !== manifest.instanceId) return down('The LAN address answers, but not as this installation', 'instanceId differs.');
     if (response.headers?.get('x-warehouse-path') !== 'lan') return down('The LAN address answers, but not from the gateway-lan listener', 'The header X-Warehouse-Path: lan is missing.');
+    const keys = await probeLanKeys(lan, ctx.env_().ANON_KEY, (url, options) => ctx.fetch(url, options));
+    if (!keys.ok) return down('The LAN listener does not accept this installation\'s API key', keys.text);
     return [result('api_lan', 'lan_ip_changed', true, `The host still has ${lan.ip}`), result('api_lan', 'lan_http_down', true, `LAN fallback answers on ${lanOrigin(lan)}`)];
   } catch (error) { return down(`The LAN fallback does not answer on ${lanOrigin(lan)}`, `${error.cause?.code ?? error.message} (bash scripts/lan.sh status)`); }
 }
@@ -712,9 +716,12 @@ export async function runHealth(deps, { waitMs = 90000 } = {}) {
   const add = (ok, text) => lines.push({ ok, text });
   // Only the default-profile services can fail the health check. A profile service (supavisor, cups, sensor-bridge) that has
   // a container but is not healthy is a warning: an unconfigured sensor bridge exits and restarts, and a stopped pooler is a choice.
+  // The LAN fallback (gateway-lan, profile lan) is expected while compose.env turns it on, but it is the fallback: a fault of it is a warning
+  // here like an optional service's, never a failure, so a start, a setup, an upgrade, a restore or a key rotation is not stopped by it.
   const expected = ctx.expectedServices();
   for (const r of checkServices(ctx)) {
-    if (expected.includes(r.id.replace(/^service_down:/, ''))) add(r.ok, r.summary);
+    const name = r.id.replace(/^service_down:/, '');
+    if (expected.includes(name) && (name !== LAN_SERVICE || r.ok)) add(r.ok, r.summary);
     else if (!r.ok) lines.push({ ok: true, warn: true, text: r.summary });
   }
   const databaseOk = databaseReady(ctx);

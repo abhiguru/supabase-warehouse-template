@@ -42,6 +42,8 @@ case "$1" in
       *' ps -a -q') printf 'a00000000001\\na00000000002\\na00000000003\\na00000000004\\na00000000005\\na00000000006\\n' ;;
       *' exec -T storage node '*) cat >/dev/null; printf 'OK REST\\nOK configuration\\n' ;;
       *' ps -q supavisor') : ;;
+      *' ps -a -q gateway-lan') if [ "$FAKE_LAN" = yes ]; then printf 'a00000000007\\n'; fi ;;
+      *'up -d --force-recreate'*' gateway-lan') if [ "$FAKE_DOCKER_FAIL" = lan ]; then echo 'fake: gateway-lan did not start' >&2; exit 4; fi ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *'exec -T db psql'*) cat >> "$FAKE_PSQL_INPUT"; if [ "$FAKE_DOCKER_FAIL" = psql ]; then exit 3; fi ;;
       *'exec -T '*) cat >/dev/null ;;
@@ -123,6 +125,44 @@ test('rotation stages new keys, applies SQL over stdin, swaps the file and recre
     assert.equal(/--force-recreate[^\n]*supavisor/.test(calls), false, 'stopped optional consumer is not started');
     assert.ok(calls.indexOf('--force-recreate') < calls.indexOf('pg_isready'), 'doctor runs after recreation');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('rotation recreates the LAN fallback with the new keys whenever a container of it exists, after the others and before the doctor (H1 of the review of WS-L)', () => {
+  const f = fixture('warehouse-rotate-lan-');
+  try {
+    const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...f.env, FAKE_LAN: 'yes' }, timeout: 120000 });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const calls = readFileSync(f.log, 'utf8');
+    // gateway-lan holds the keys in its configuration (the map of the apikey header), so it is recreated; it is a profile service, hence the explicit profile.
+    assert.match(calls, /--profile lan up -d --force-recreate --no-deps --wait --wait-timeout 180 gateway-lan\n/);
+    assert.match(calls, /--profile lan ps -a -q gateway-lan\n/, 'looked up whatever COMPOSE_PROFILES says, and also when it is not running');
+    assert.ok(calls.indexOf('--profile * up -d --force-recreate') < calls.indexOf('--profile lan up -d --force-recreate'), 'after the others');
+    assert.ok(calls.indexOf('--profile lan up -d --force-recreate') < calls.indexOf('pg_isready'), 'the doctor runs after it');
+    assert.doesNotMatch(result.stderr, /Warning: the LAN fallback/);
+    // The main recreate line is the same as without the fallback: it never waits on gateway-lan.
+    assert.match(calls, /--profile \* up -d --force-recreate --wait --wait-timeout 180 db gateway rest storage functions\n/);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('without a gateway-lan container nothing of the fallback is touched; one that cannot be recreated is a warning, the rotation stands', () => {
+  const f = fixture('warehouse-rotate-lan-fault-');
+  try {
+    const plain = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: f.env, timeout: 120000 });
+    assert.equal(plain.status, 0, `${plain.stdout}\n${plain.stderr}`);
+    assert.doesNotMatch(readFileSync(f.log, 'utf8'), /force-recreate[^\n]*gateway-lan/);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  const g = fixture('warehouse-rotate-lan-fault2-');
+  try {
+    const before = readEnv(g.envPath);
+    const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...g.env, FAKE_LAN: 'yes', FAKE_DOCKER_FAIL: 'lan' }, timeout: 120000 });
+    // A fault of the fallback does not undo or fail a rotation that has been applied to the database and to compose.env.
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.notEqual(readEnv(g.envPath).ANON_KEY, before.ANON_KEY, 'the new keys are in compose.env');
+    assert.match(result.stderr, /Warning: the LAN fallback \(gateway-lan\) was not recreated and still holds the OLD keys: every REST request over the LAN path is refused until it is\. The rotation itself is complete\. Repair: bash scripts\/lan\.sh on auto/);
+    assert.match(result.stdout, /Signing keys rotated/);
+    const calls = readFileSync(g.log, 'utf8');
+    assert.ok(calls.indexOf('--profile lan up -d --force-recreate') < calls.indexOf('pg_isready'), 'the doctor still runs');
+  } finally { rmSync(g.scratch, { recursive: true, force: true }); }
 });
 
 test('a failing SQL step leaves the configuration untouched and recreates nothing', () => {

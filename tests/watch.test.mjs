@@ -346,10 +346,15 @@ test('API: local gateway probe, public HTTPS probe', async () => {
 // The LAN fallback (scripts/lan.sh): the checker is silent while it is off, and alerts when the host loses the address or the
 // listener stops answering as this installation.
 const LAN_ENV = 'LAN_ENABLED=true\nLAN_BIND_IP=192.168.1.52\nLAN_HTTP_PORT=8080\nLAN_CIDR=192.168.1.0/24\nCOMPOSE_PROFILES=lan\n';
-const lanOn = h => writeFileSync(join(h.state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-test\nGATEWAY_HTTP_PORT=18000\nPOSTGRES_PASSWORD=supersecretpassword123\n${LAN_ENV}`, { mode: 0o600 });
+const lanOn = h => writeFileSync(join(h.state, 'config/compose.env'), `WAREHOUSE_PROJECT_NAME=warehouse-test\nGATEWAY_HTTP_PORT=18000\nPOSTGRES_PASSWORD=supersecretpassword123\nANON_KEY=unit.anon.key\n${LAN_ENV}`, { mode: 0o600 });
 const HOST_WITH_LAN = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
 const LAN_URL = 'http://192.168.1.52:8080/functions/v1/get-public-config';
+const LAN_REST_URL = 'http://192.168.1.52:8080/rest/v1/';
 const lanAnswer = (instanceId = 'iid-1', path = 'lan', status = 200) => async () => ({ ok: status < 400, status, headers: new Headers(path ? { 'x-warehouse-path': path } : {}), json: async () => ({ success: true, data: { instanceId } }) });
+// The listener as it is: the public configuration answers whatever the keys, and the REST root is where the key check is (the gateway's 401 for a key it does not have).
+const lanWithKeys = (restStatus, restBody = { message: 'Unauthorized' }) => async url => (String(url) === LAN_REST_URL
+  ? { ok: restStatus < 400, status: restStatus, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => restBody }
+  : lanAnswer()());
 
 test('LAN fallback: silent while off, and an alert left from before it was turned off is cleared', async () => {
   const h = harness();
@@ -383,9 +388,10 @@ test('LAN fallback: the listener must answer as this installation with the LAN h
     lanOn(h);
     h.deps.interfaces = () => HOST_WITH_LAN;
     const ids = results => results.map(r => [r.id, r.ok]);
-    h.deps.fetch = async (url, options) => { h.asked = [url, options.redirect]; return lanAnswer()(); };
+    h.asked = [];
+    h.deps.fetch = async (url, options) => { h.asked.push([url, options.redirect, options.headers?.apikey]); return lanAnswer()(); };
     assert.deepEqual(ids(await W.checkApiLan(h.ctx())), [['lan_ip_changed', true], ['lan_http_down', true]]);
-    assert.deepEqual(h.asked, [LAN_URL, 'error']);
+    assert.deepEqual(h.asked, [[LAN_URL, 'error', undefined], [LAN_REST_URL, 'error', 'unit.anon.key']], 'the public configuration, then the REST root with the anon key of compose.env');
     h.deps.fetch = lanAnswer('other');
     const other = await W.checkApiLan(h.ctx());
     assert.deepEqual(ids(other), [['lan_ip_changed', true], ['lan_http_down', false]]);
@@ -402,6 +408,33 @@ test('LAN fallback: the listener must answer as this installation with the LAN h
     assert.match(refused[1].summary, /does not answer on http:\/\/192\.168\.1\.52:8080/);
     assert.match(refused[1].detail, /ECONNREFUSED/);
     // The rule of the other API checks: the first failing run does not alert, the second does.
+    const data = W.freshState(h.clock.t);
+    const run = async n => { const ctx = W.makeContext(h.deps, data); const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]); return W.evaluate(data, results, ran, h.clock.t + n * 5 * 60000); };
+    assert.deepEqual((await run(0)).start, []);
+    assert.deepEqual((await run(1)).start.map(item => item.id), ['lan_http_down']);
+  } finally { clean(h); }
+});
+
+test('LAN fallback: a listener that answers the public configuration but refuses the anon key (a container not recreated after a key rotation) raises lan_http_down', async () => {
+  // H1 of the review of WS-L: get-public-config has no key check, so the first probe stays green with the keys from before rotate-keys.sh.
+  const h = harness();
+  try {
+    lanOn(h);
+    h.deps.interfaces = () => HOST_WITH_LAN;
+    const ids = results => results.map(r => [r.id, r.ok]);
+    h.deps.fetch = lanWithKeys(200);
+    assert.deepEqual(ids(await W.checkApiLan(h.ctx())), [['lan_ip_changed', true], ['lan_http_down', true]]);
+    h.deps.fetch = lanWithKeys(404, { code: 'PGRST126' });
+    assert.equal((await W.checkApiLan(h.ctx()))[1].ok, true, 'PostgREST\'s own answer for its root is a pass');
+    h.deps.fetch = lanWithKeys(401);
+    const stale = await W.checkApiLan(h.ctx());
+    assert.deepEqual(ids(stale), [['lan_ip_changed', true], ['lan_http_down', false]]);
+    assert.equal(stale[1].summary, 'The LAN listener does not accept this installation\'s API key');
+    assert.match(stale[1].detail, /refuses the anon key of this installation \(HTTP 401 from the gateway\).*before a key rotation.*--force-recreate --no-deps gateway-lan/);
+    h.deps.fetch = lanWithKeys(502, {});
+    assert.match((await W.checkApiLan(h.ctx()))[1].detail, /answered HTTP 502: the LAN listener does not reach the REST service/);
+    // Two runs in a row alert, like the other API checks.
+    h.deps.fetch = lanWithKeys(401);
     const data = W.freshState(h.clock.t);
     const run = async n => { const ctx = W.makeContext(h.deps, data); const { results, ran } = await W.runChecks(ctx, [['api_lan', W.checkApiLan]]); return W.evaluate(data, results, ran, h.clock.t + n * 5 * 60000); };
     assert.deepEqual((await run(0)).start, []);
@@ -826,6 +859,46 @@ test('health: an exited, restarting or starting optional container is a warning,
     const bad_ = await W.runHealth(h.deps, { waitMs: 0 });
     assert.equal(bad_.ok, false);
     assert.deepEqual(bad_.lines.filter(line => !line.ok).map(line => line.text), ['Service rest is running unhealthy']);
+  } finally { clean(h); }
+});
+
+test('health: the LAN fallback (gateway-lan, expected while compose.env turns it on) that is missing, exited, restarting, starting or unhealthy is a warning, never a failure', async () => {
+  // M1 of the review of WS-L: setup.sh, start.sh, upgrade.sh, restore.sh and rotate-keys.sh all end with `doctor --local`, which fails on this report. A fault
+  // of the fallback (its port is taken, the container is unhealthy) must not stop any of them; the public services are what the facility runs on.
+  const h = harness();
+  try {
+    healthy(h);
+    h.expected = [...SERVICES, 'gateway-lan'];
+    const cases = [[null, 'Service gateway-lan is missing'], ['exited|', 'Service gateway-lan is exited'], ['restarting|', 'Service gateway-lan is restarting'],
+      ['running|starting', 'Service gateway-lan is running starting'], ['running|unhealthy', 'Service gateway-lan is running unhealthy']];
+    for (const [state, text] of cases) {
+      h.services = state === null ? [...SERVICES] : [...SERVICES, 'gateway-lan'];
+      h.stateOf = state === null ? {} : { 'gateway-lan': state };
+      const report = await W.runHealth(h.deps, { waitMs: 0 });
+      assert.equal(report.ok, true, `${state}: ${JSON.stringify(report.lines)}`);
+      assert.deepEqual(report.lines.filter(line => line.warn).map(line => line.text), [text], String(state));
+      assert.equal(report.lines.some(line => !line.ok), false, String(state));
+    }
+    // And well: no warning at all.
+    h.services = [...SERVICES, 'gateway-lan'];
+    h.stateOf = { 'gateway-lan': 'running|healthy' };
+    const fine = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(fine.ok, true);
+    assert.equal(fine.lines.some(line => line.warn), false);
+    assert.ok(fine.lines.some(line => line.text === 'Service gateway-lan is running healthy'), 'a healthy fallback is listed with the others');
+    // The fallback does not hide a real fault beside it: a core service that is down still fails the check, and the fallback is still only a warning.
+    h.stateOf = { 'gateway-lan': 'exited|', rest: 'running|unhealthy' };
+    const bad_ = await W.runHealth(h.deps, { waitMs: 0 });
+    assert.equal(bad_.ok, false);
+    assert.deepEqual(bad_.lines.filter(line => !line.ok).map(line => line.text), ['Service rest is running unhealthy']);
+    assert.deepEqual(bad_.lines.filter(line => line.warn).map(line => line.text), ['Service gateway-lan is exited']);
+    // watch.mjs health (health-check.sh, doctor --local) exits 0 with the fallback down and prints it as a warning.
+    h.stateOf = { 'gateway-lan': 'exited|' };
+    const lines = [];
+    assert.equal(await W.main(['health', '--wait', '0'], h.deps, text => lines.push(text)), 0);
+    assert.deepEqual(lines.filter(line => line.startsWith('warn   ')), ['warn   Service gateway-lan is exited']);
+    // The monitoring check still reports the service, so the checker alerts service_down:gateway-lan while the fallback is on.
+    assert.equal(find(W.checkServices(h.ctx()), 'service_down:gateway-lan').ok, false);
   } finally { clean(h); }
 });
 

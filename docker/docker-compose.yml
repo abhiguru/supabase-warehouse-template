@@ -71,18 +71,25 @@ services:
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
 
-  # gateway-lan - the LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): the same nginx image and recipe as the gateway, with a
-  # second server (docker/nginx/lan/gateway-lan.conf.template, mounted over the public one) that listens on plain http on the
-  # warehouse network. Phones use it only when the internet path to the public address fails. It is a Compose profile, off by
-  # default: `bash scripts/lan.sh on` writes LAN_ENABLED, LAN_BIND_IP, LAN_HTTP_PORT, LAN_CIDR and COMPOSE_PROFILES=lan to
-  # config/compose.env, so start.sh, setup.sh and the boot unit start it with the rest. A separate container, so that a failed
-  # bind (the router gave the host another address) or a mistake in the LAN server cannot take the public gateway down.
-  # It publishes the host's own private address only. The default is loopback, where nothing outside the host can reach it.
-  # Docker publishes ports through its own firewall rules, which ufw does not filter by default: the bind address and the allow
-  # list of the LAN server are the controls (docs/CONTAINER_SECURITY.md, "LAN fallback").
+  # gateway-lan - the LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): the gateway's own image (the one built for the `gateway`
+  # service above, not a second build: an upgrade that rebuilds the gateway rebuilds this too, and the two can never be different
+  # versions) with a second server (docker/nginx/lan/gateway-lan.conf.template, kept in that image under /etc/nginx/templates-lan)
+  # that listens on plain http on the warehouse network. Phones use it only when the internet path to the public address fails. It is
+  # a Compose profile, off by default: `bash scripts/lan.sh on` writes LAN_ENABLED, LAN_BIND_IP, LAN_HTTP_PORT, LAN_CIDR and
+  # COMPOSE_PROFILES=lan to config/compose.env, and start.sh, setup.sh and the boot unit start it with the rest (start.sh and
+  # setup.sh start it apart from the others and never wait for it: a fault of the fallback is a warning there, never a stop).
+  # A separate container, so that a failed bind (the router gave the host another address) or a mistake in the LAN server cannot
+  # take the public gateway down. It publishes the host's own private address only. The default is loopback, where nothing outside
+  # the host can reach it. Docker accepts the traffic of a published port in its own firewall rules before ufw sees it, so no ufw rule
+  # is needed or has any effect: the bind address, the allow list and the Host pin of the LAN server are the controls
+  # (docs/CONTAINER_SECURITY.md, "LAN fallback").
   gateway-lan:
-    build:
-      context: ./nginx
+    # The tag Compose gives the image it builds for `gateway`: <project>-gateway (scripts/compose.sh passes the project name from
+    # WAREHOUSE_PROJECT_NAME). `pull_policy: never`: this tag is local, and a missing one is an error to read, not something to look for
+    # on a registry. There is no `build:` here, so nothing builds or records this service on its own (scripts/image-recipes.mjs,
+    # scripts/scan-images.sh).
+    image: ${WAREHOUSE_PROJECT_NAME:?Run setup.sh to write the project name}-gateway
+    pull_policy: never
     restart: unless-stopped
     profiles: ["lan"]
     logging: *default-logging
@@ -115,17 +122,19 @@ services:
     ports:
       # LAN_BIND_IP is the host's own private address (scripts/lan.sh refuses any other); loopback while the LAN is off.
       - "${LAN_BIND_IP:-127.0.0.1}:${LAN_HTTP_PORT:-8080}:8080/tcp"
-    volumes:
-      # The LAN server in place of the public one; the image's entrypoint renders it like any template.
-      - ./nginx/lan/gateway-lan.conf.template:/etc/nginx/templates/gateway.conf.template:ro,z
     depends_on:
       db:
         condition: service_healthy
     environment:
-      # GATEWAY_ROLE=lan makes docker/nginx/docker-entrypoint.d/18-require-env.sh require LAN_CIDR, the allow list of the LAN
-      # server (empty here while the LAN is off, and the container refuses to start then). The other three are the gateway's.
+      # The image's entrypoint renders the templates of this directory (the LAN server and the http-level template) instead of the
+      # public ones. docker/nginx/docker-entrypoint.d/18-require-env.sh then requires LAN_CIDR (the allow list), LAN_BIND_IP and
+      # LAN_HTTP_PORT (the Host the server answers to): empty here while the LAN is off, and the container refuses to start then.
+      # GATEWAY_ROLE says the same thing a second way. The other three are the gateway's.
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-lan
       GATEWAY_ROLE: lan
       LAN_CIDR: ${LAN_CIDR:-}
+      LAN_BIND_IP: ${LAN_BIND_IP:-}
+      LAN_HTTP_PORT: ${LAN_HTTP_PORT:-}
       ANON_KEY: ${ANON_KEY:?Set the anon key}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}

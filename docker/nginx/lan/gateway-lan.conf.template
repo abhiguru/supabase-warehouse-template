@@ -1,6 +1,8 @@
 # The LAN server: the only listener of the gateway-lan container (docker-compose.yml, profile `lan`), the fallback phones use on
-# the warehouse network when the internet path is down (docs/OPERATOR_INSTALL.md, "LAN fallback"). Compose mounts this file over
-# the image's templates/gateway.conf.template, so the public server of that file is not present in this container.
+# the warehouse network when the internet path is down (docs/OPERATOR_INSTALL.md, "LAN fallback"). It is part of the gateway's own
+# image, in /etc/nginx/templates-lan (docker/nginx/Dockerfile), together with a copy of the http-level template; the gateway-lan
+# service runs that same image with NGINX_ENVSUBST_TEMPLATE_DIR pointing there, so the public server (templates/) is not rendered in
+# this container and there is no second build to keep in step with the gateway.
 #
 # Owner decision of 2026-10-26: plain http, no certificate. The container publishes only on the host's own private address
 # (LAN_BIND_IP) and this server answers only the warehouse network. Access tokens cross the Wi-Fi unencrypted while this path is in
@@ -10,6 +12,22 @@
 # module setting, unlike the public server), so a phone cannot choose the address the limits and the sign-in functions see:
 # api-locations.conf sets CF-Connecting-IP from the connection on every route that passes one on, and the limits in api-http.conf are
 # kept per phone. The same key check, body limits and rate limits apply as on the public path (one shared file).
+
+# The Host header must be this host's own LAN address (LAN_BIND_IP, with or without LAN_HTTP_PORT; compose.env, checked by
+# docker-entrypoint.d/18-require-env.sh). A phone writes exactly that, because the app addresses the server by its IP address. A web
+# page in a browser on the Wi-Fi that was moved onto this address by DNS rebinding (owner decision of 2026-10-26) carries the
+# page's own name instead, and gets 404 instead of the answers of the API. The other two names are the container's own health
+# check (docker-compose.yml, wget http://127.0.0.1:8080/health): nothing outside the container can make a browser send them to
+# this address. The map is keyed on the header as it was written (the port included); nginx compares a map key without regard to
+# letter case.
+map $http_host $lan_host_ok {
+    default                              0;
+    "${LAN_BIND_IP}"                     1;
+    "${LAN_BIND_IP}:${LAN_HTTP_PORT}"    1;
+    "127.0.0.1:8080"                     1;
+    "localhost:8080"                     1;
+}
+
 server {
     listen 8080;
     server_name _;
@@ -33,4 +51,10 @@ server {
     }
 
     include /etc/nginx/api-locations.conf;
+
+    # The Host pin (map above). Placed after the include on purpose: the routes file sets $cors_expose at the top of the server,
+    # and this answer, the 404 of the routes (error_page in api-locations.conf), uses it. A rewrite-phase answer of the server, so
+    # it comes before the location is chosen, before the allow list, before a rate-limit bucket is touched and before anything
+    # reaches an upstream.
+    if ($lan_host_ok = 0) { return 404; }
 }

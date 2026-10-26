@@ -9,6 +9,9 @@ import { readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 
 export const LAN_DEFAULT_PORT = '8080';
+// The Compose service of the LAN fallback. It is expected while compose.env turns the fallback on, but a fault of it is a warning wherever the
+// services are checked (watch.mjs runHealth), never a failure.
+export const LAN_SERVICE = 'gateway-lan';
 
 // 'a.b.c.d' -> [a, b, c, d], or null. No leading zeros ("010" would be read as octal by some tools) and no octet over 255.
 export function parseIPv4(text) {
@@ -77,14 +80,31 @@ export function lanSettings(env) {
 }
 export const lanOrigin = settings => `http://${settings.ip}:${settings.port}`;
 export const lanAddressLine = settings => `LAN address for the app: ${lanOrigin(settings)}`;
-// The one host firewall line an operator may need. ufw does not filter Docker-published ports (they are forwarded, and Docker's
-// own rules accept them before ufw's), so on a default install nothing is needed; with `ufw default deny routed` this allows it.
-export const ufwLine = settings => `sudo ufw route allow proto tcp from ${settings.cidr} to ${settings.ip} port ${settings.port}`;
+// What an operator is told about the host firewall (owner decision 5 of 2026-10-26, after the review of WS-L). There is no command to run: Docker
+// puts its own FORWARD rules (DOCKER-USER, then DOCKER) in front of ufw's and accepts the traffic of a published port there, so ufw rules,
+// incoming or routed, never see these packets and none is needed. The controls that count are the bind address and the allow-list of the LAN
+// server. A host that must filter Docker-published traffic itself does it in the DOCKER-USER chain, where the packet has already been
+// translated (its destination is the container, port 8080) so a rule has to name the original address and port with conntrack:
+// dockerUserExample is that one line, for the default iptables firewall backend, and docs/CONTAINER_SECURITY.md carries it.
+export const dockerUserExample = settings => `sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdst ${settings.ip} --ctorigdstport ${settings.port} ! -s ${settings.cidr} -j DROP`;
 export function firewallNote(settings) {
   return [
-    `Host firewall: if this host runs ufw with routed traffic denied (ufw default deny routed), phones are refused until you run: ${ufwLine(settings)}`,
-    'ufw does not filter Docker-published ports by default, so most hosts need nothing. The real controls are the bind address (the container is published on that one address only) and the allow-list of the LAN server (that one network only).',
+    `Host firewall: nothing to add. ufw rules, incoming or routed, do not apply to a port that Docker publishes (Docker accepts that traffic before ufw sees it), so no ufw command is needed and none would have an effect. The controls are the bind address (the container is published on ${settings.ip} only) and the allow-list of the LAN server (${settings.cidr} only). A host that must filter Docker-published traffic itself does it in Docker's DOCKER-USER chain (docs/CONTAINER_SECURITY.md, "LAN fallback").`,
   ];
+}
+
+// ---------------------------------------------------------------- ranges that are too small or overlap another network
+// The number of addresses in a range, or null when the text is not a range.
+export function cidrSize(cidr) {
+  const range = normalizeCidr(cidr);
+  return range === null ? null : 2 ** (32 - Number(range.split('/')[1]));
+}
+// Whether two ranges share an address (one contains the start of the other).
+export function cidrsOverlap(a, b) {
+  const first = normalizeCidr(a);
+  const second = normalizeCidr(b);
+  if (first === null || second === null) return false;
+  return inCidr(first.split('/')[0], second) || inCidr(second.split('/')[0], first);
 }
 
 // ---------------------------------------------------------------- the host's interfaces
@@ -166,4 +186,31 @@ export function lanOffText(text, current = {}) {
   }
   const rest = profileList(current.COMPOSE_PROFILES).filter(item => item !== 'lan');
   return rest.length ? setEnvLine(result, 'COMPOSE_PROFILES', rest.join(',')) : removeEnvLine(result, 'COMPOSE_PROFILES');
+}
+
+// ---------------------------------------------------------------- the probe of the key check
+// The LAN listener must hold the same API keys as the rest of the installation. They are written into its configuration when it starts
+// (docker/nginx/templates/http.conf.template, the map of the `apikey` header), so a container that was not recreated after rotate-keys.sh
+// still holds the old ones and answers the gateway's 401 ("Unauthorized") to every REST request of every phone, while the probe of
+// get-public-config, which has no key check, keeps passing. This sends the anon key of compose.env to the REST route the way a phone does
+// (GET /rest/v1/ with the `apikey` header) and fails on that 401, and on a 5xx (the route does not reach PostgREST). Any other answer is
+// PostgREST's own (its root is 404 while the OpenAPI document is off, PGRST_OPENAPI_MODE=disabled) or a pass. Returns { ok: true } or
+// { ok: false, text }.
+export async function probeLanKeys(lan, anonKey, fetchImpl = fetch) {
+  const origin = lanOrigin(lan);
+  if (!anonKey) return { ok: false, text: 'ANON_KEY is not set in config/compose.env, so the key check of the LAN listener cannot be tried.' };
+  let response;
+  try {
+    response = await fetchImpl(`${origin}/rest/v1/`, { headers: { apikey: anonKey }, signal: AbortSignal.timeout(15000), redirect: 'error' });
+  } catch (error) {
+    return { ok: false, text: `${origin}/rest/v1/ does not answer from this host (${error.cause?.code ?? error.message}).` };
+  }
+  if (response.status === 401) {
+    // The gateway's own refusal has one of its two fixed messages (docker/nginx/templates/http.conf.template); PostgREST's 401 has an error code.
+    const body = typeof response.json === 'function' ? await response.json().catch(() => null) : null;
+    if (body && typeof body === 'object' && body.code !== undefined) return { ok: false, text: `${origin}/rest/v1/ answered HTTP 401 from the REST service itself (${String(body.code)}): the LAN listener passes the key, but the REST service refuses the request.` };
+    return { ok: false, text: `${origin}/rest/v1/ refuses the anon key of this installation (HTTP 401 from the gateway): the gateway-lan container holds other keys, usually the ones from before a key rotation. Every REST request of every phone would be refused on the LAN path. Recreate it: bash scripts/compose.sh --profile lan up -d --force-recreate --no-deps gateway-lan` };
+  }
+  if (response.status >= 500) return { ok: false, text: `${origin}/rest/v1/ answered HTTP ${response.status}: the LAN listener does not reach the REST service.` };
+  return { ok: true };
 }

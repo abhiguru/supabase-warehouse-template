@@ -506,9 +506,9 @@ test('free space: a new installation needs 10 GiB; a start only warns below 10 G
 import { lanDoctor, lanReport } from '../scripts/doctor.mjs';
 
 const LAN_HOST = [{ name: 'ens33', address: '192.168.1.52', prefix: 24, cidr: '192.168.1.0/24', defaultRoute: true }];
-const LAN_ENV = { LAN_ENABLED: 'true', LAN_BIND_IP: '192.168.1.52', LAN_HTTP_PORT: '8080', LAN_CIDR: '192.168.1.0/24', COMPOSE_PROFILES: 'lan', WAREHOUSE_PROJECT_NAME: 'warehouse-test' };
+const LAN_ENV = { LAN_ENABLED: 'true', LAN_BIND_IP: '192.168.1.52', LAN_HTTP_PORT: '8080', LAN_CIDR: '192.168.1.0/24', COMPOSE_PROFILES: 'lan', WAREHOUSE_PROJECT_NAME: 'warehouse-test', ANON_KEY: 'unit.anon.key' };
 const LAN_ANSWER = { ok: true, status: 200, headers: new Headers({ 'x-warehouse-path': 'lan' }), json: async () => ({ success: true, data: { instanceId: 'iid-1' } }) };
-const lanOptions = (over = {}) => ({ interfaces: LAN_HOST, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }), fetchImpl: async () => LAN_ANSWER, ...over });
+const lanOptions = (over = {}) => ({ interfaces: LAN_HOST, run: () => ({ ok: true, output: '192.168.1.52:8080->8080/tcp\n' }), fetchImpl: async () => LAN_ANSWER, readText: () => '', ...over });
 
 test('doctor LAN report: nothing while off; the address line while it works; the failures and warnings when it does not', async () => {
   assert.deepEqual(await lanReport({ ...LAN_ENV, LAN_ENABLED: 'false' }, 'iid-1', lanOptions()), { failures: [], warnings: [], address: '' });
@@ -550,7 +550,9 @@ test('doctor --lan: the address and a closing line when it works; an error namin
   }
 });
 
-test('doctor: --local shows LAN faults as warnings (a start, setup or upgrade never stops for the fallback), the full run and --lan fail on them', () => {
+test('doctor: the LAN report is made after the health check and before the local return; --local shows its faults as warnings, the full run and --lan fail on them', () => {
+  // That a service of the fallback never fails the health check itself is tested on the report that check makes (tests/watch.test.mjs, "health: the LAN
+  // fallback ... is a warning"); the order of the steps is what this test pins.
   const source = readFileSync(new URL('../scripts/doctor.mjs', import.meta.url), 'utf8');
   const health = source.indexOf('const health = await runHealth(');
   const report = source.indexOf('await lanReport(env, manifest.instanceId)');

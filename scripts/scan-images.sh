@@ -36,8 +36,13 @@ images=$(printf '%s' "$config" | node --input-type=module -e '
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
   const config = JSON.parse(text);
-  for (const [service, definition] of Object.entries(config.services ?? {})) {
+  const services = Object.entries(config.services ?? {});
+  // A service that names the image another service builds (gateway-lan runs the gateway image) is that image already: it is scanned once, with the
+  // recipe that builds it, not a second time with the image name standing in for a recipe.
+  const built = new Set(services.filter(([, definition]) => definition.build).map(([service, definition]) => definition.image ?? `${config.name}-${service}`));
+  for (const [service, definition] of services) {
     const image = definition.image ?? `${config.name}-${service}`;
+    if (!definition.build && built.has(image)) continue;
     const recipe = definition.build
       ? relative(process.argv[1], resolve(definition.build.context, definition.build.dockerfile ?? "Dockerfile"))
       : definition.image;

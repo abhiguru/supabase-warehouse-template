@@ -15,8 +15,8 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { probe, projectPublishesPort, readEnv } from './doctor-common.mjs';
 import {
-  LAN_DEFAULT_PORT, autoInterface, describeAddresses, firewallNote, hostHasAddress, inCidr, isPrivateIPv4, lanAddressLine, lanAddressValue,
-  lanCidrValue, lanOffText, lanOnText, lanOrigin, lanPortValue, lanSettings, profileList, readHostInterfaces,
+  LAN_DEFAULT_PORT, autoInterface, cidrSize, cidrsOverlap, describeAddresses, firewallNote, hostHasAddress, inCidr, isPrivateIPv4, lanAddressLine,
+  lanAddressValue, lanCidrValue, lanOffText, lanOnText, lanOrigin, lanPortValue, lanSettings, probeLanKeys, profileList, readHostInterfaces,
 } from './lan-common.mjs';
 
 // ---------------------------------------------------------------- turning it on
@@ -88,11 +88,18 @@ export function statusLines(env, { interfaces = readHostInterfaces(), container 
   lines.push(`Container gateway-lan: ${container.trim() || 'not found (is the stack started?)'}`);
   return lines;
 }
+// A range with fewer than 4 addresses (a /31 or /32: the interface of the host is a point-to-point link, or --cidr named one address) holds the
+// host and at most one other device: no phone on a Wi-Fi network can be inside it.
+export const smallRangeWarning = cidr => `The allowed range ${cidr} holds fewer than 4 addresses, so no phone on the warehouse Wi-Fi can be inside it and every phone would be refused (HTTP 403). Give the range of the warehouse network: bash scripts/lan.sh on <address> --cidr <range>`;
 export const announceLines = env => {
   const lan = lanSettings(env);
+  const small = cidrSize(lan.cidr) !== null && cidrSize(lan.cidr) < 4;
   return [
     lanAddressLine(lan),
-    `Allowed clients: ${lan.cidr}. Phones use this address only when the public address fails; sign-in still needs the internet. Plain http: tokens cross the Wi-Fi unencrypted while it is in use (docs/CONTAINER_SECURITY.md, "LAN fallback").`,
+    'The app that uses this address ships separately and is not released yet: until a version that has the fallback is installed on the phones, turning it on only opens the listener.',
+    `Allowed clients: ${lan.cidr}. Once the app has it, phones use this address only when the public address fails; sign-in still needs the internet, except that an administrator can sign in over it with a break-glass code (docs/OPERATOR_INSTALL.md, "Break-glass administrator sign-in"). Plain http: tokens cross the Wi-Fi unencrypted while it is in use (docs/CONTAINER_SECURITY.md, "LAN fallback").`,
+    ...(small ? [`WARNING: ${smallRangeWarning(lan.cidr)}`] : []),
+    `Check one phone: on the warehouse Wi-Fi its address (Wi-Fi settings, the network's details) must be inside ${lan.cidr}. A phone outside it is answered 403 and does not reach the server; doctor cannot see that, it connects from this host. Do not forward port ${lan.port} on the router.`,
     ...firewallNote(lan),
     'Reserve this address for the host in the router (DHCP reservation). If it changes, run bash scripts/lan.sh on auto again and let the phones connect once over the internet to learn the new address.',
   ];
@@ -129,9 +136,42 @@ export function lanPublishers(project, run = probe) {
   return published;
 }
 
-// The checks of `doctor` while the fallback is on. Returns [{ level: 'fail' | 'warn' | 'info', text }]. `fetch`, `run` and
+// What Docker does with the source address of a connection to a published port decides what the allow-list and the per-phone limits see
+// (docs/CONTAINER_SECURITY.md, "LAN fallback", "The source address"). The supported baseline is a rootful Docker Engine with its iptables
+// rules, where a phone's packets keep their source. Returns warning texts for what can be read cheaply: rootless Docker and Docker Desktop
+// (`docker info`), `"iptables": false` in the daemon configuration, and a LAN_CIDR that overlaps one of this installation's Docker networks
+// (a connection that Docker re-addresses to its bridge would then look like a phone inside the range). The userland proxy is not listed
+// in `docker info` and does not change the source address of forwarded phone traffic, so it is not checked.
+export function dockerSourceWarnings(env, { run = probe, readText = path => { try { return readFileSync(path, 'utf8'); } catch { return ''; } } } = {}) {
+  const warnings = [];
+  const lan = lanSettings(env);
+  const info = run('docker', ['info', '--format', '{{json .SecurityOptions}} {{.OperatingSystem}}']);
+  if (info.ok && /name=rootless|Docker Desktop/i.test(info.output)) {
+    warnings.push('Docker runs rootless or as Docker Desktop. A phone\'s connection can then reach the container from Docker\'s own address instead of the phone\'s, so the allow-list refuses every phone, or (if LAN_CIDR overlaps Docker\'s networks) lets every device in and gives them one rate-limit bucket. This installation assumes a rootful Docker Engine with its iptables rules (docs/CONTAINER_SECURITY.md, "LAN fallback").');
+  }
+  try {
+    if (JSON.parse(readText('/etc/docker/daemon.json') || '{}').iptables === false) {
+      warnings.push('/etc/docker/daemon.json sets "iptables": false. Docker then does not forward published ports by address translation, and a phone\'s connection reaches the container from Docker\'s own address: the allow-list would refuse every phone (docs/CONTAINER_SECURITY.md, "LAN fallback").');
+    }
+  } catch { /* an unreadable or odd daemon.json says nothing about this */ }
+  const listed = run('docker', ['network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${env.WAREHOUSE_PROJECT_NAME}`]);
+  const ids = listed.ok ? listed.output.split(/\s+/).filter(id => /^[0-9a-f]{6,64}$/.test(id)) : [];
+  if (ids.length) {
+    const nets = run('docker', ['network', 'inspect', '--format', '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}', ...ids]);
+    for (const line of nets.ok ? nets.output.split(/[\r\n]+/) : []) {
+      const [name, ...subnets] = line.trim().split(/\s+/);
+      const clash = subnets.find(subnet => cidrsOverlap(subnet, lan.cidr));
+      if (name && clash) {
+        warnings.push(`LAN_CIDR ${lan.cidr} overlaps the Docker network ${name} (${clash}) of this installation. A connection that Docker re-addresses to its bridge would look like a phone inside the range: every device could be let in and share one rate-limit bucket. Give the real warehouse network (bash scripts/lan.sh on <address> --cidr <range>) or move Docker's address pools (default-address-pools in /etc/docker/daemon.json).`);
+      }
+    }
+  }
+  return warnings;
+}
+
+// The checks of `doctor` while the fallback is on. Returns [{ level: 'fail' | 'warn' | 'info', text }]. `fetch`, `run`, `readText` and
 // `interfaces` are replaceable for tests; `instanceId` is the manifest's.
-export async function lanChecks(env, { instanceId, interfaces = readHostInterfaces(), run = probe, fetchImpl = fetch } = {}) {
+export async function lanChecks(env, { instanceId, interfaces = readHostInterfaces(), run = probe, fetchImpl = fetch, readText } = {}) {
   const lan = lanSettings(env);
   if (!lan.enabled) return [];
   const out = [];
@@ -150,7 +190,10 @@ export async function lanChecks(env, { instanceId, interfaces = readHostInterfac
     fail(`LAN_BIND_IP ${lan.ip} is not an address of this host (it has ${describeAddresses(interfaces)}): the router gave the host another address, so the LAN fallback cannot start and phones that saved ${lanOrigin(lan)} cannot use it. ${rerun}, reserve the address in the router, and let each phone connect once over the internet to learn the new one.`);
     return out;
   }
-  if (cidrOk && !interfaces.some(item => inCidr(item.address, lan.cidr))) warn(`No address of this host is inside LAN_CIDR ${lan.cidr}: the host has no route to the warehouse network it allows.`);
+  // The host's own address is always inside the range (lan.sh insists), so the checks below, which connect from this host, pass for any
+  // range that holds it. What they cannot see is a range that no phone is in: one with fewer than 4 addresses, or a Wi-Fi on another subnet.
+  if (cidrOk && cidrSize(lan.cidr) < 4) warn(smallRangeWarning(lan.cidr));
+  if (cidrOk) for (const text of dockerSourceWarnings(env, { run, ...(readText ? { readText } : {}) })) warn(text);
   if (!profileList(env.COMPOSE_PROFILES).includes('lan')) {
     fail(`LAN_ENABLED is true but COMPOSE_PROFILES in config/compose.env does not include lan, so start.sh and the boot unit do not start the gateway-lan service. ${rerun}`);
   }
@@ -163,6 +206,7 @@ export async function lanChecks(env, { instanceId, interfaces = readHostInterfac
   }
   // The listener itself, from the host, the way a phone on the network reaches it: the plain-http address answers the public
   // configuration, as this installation, with the header that says the LAN path answered.
+  let answers = false;
   try {
     const response = await fetchImpl(`${lanOrigin(lan)}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
     if (!response.ok) fail(`${lanOrigin(lan)} answered HTTP ${response.status} to get-public-config${response.status === 403 ? ' (refused by the allow-list: LAN_CIDR does not include the address the host connects from)' : ''}.`);
@@ -170,9 +214,17 @@ export async function lanChecks(env, { instanceId, interfaces = readHostInterfac
       const json = await response.json();
       if (json.success !== true || (instanceId && json.data?.instanceId !== instanceId)) fail(`${lanOrigin(lan)} answers, but not as this installation (instanceId differs).`);
       else if (response.headers.get('x-warehouse-path') !== 'lan') fail(`${lanOrigin(lan)} answers without the header X-Warehouse-Path: lan, so it is not the gateway-lan listener.`);
+      else answers = true;
     }
   } catch (error) {
     fail(`${lanOrigin(lan)} does not answer from this host (${error.cause?.code ?? error.message}).`);
+  }
+  // get-public-config has no key check, so the probe above passes with keys the installation no longer has. This one has: a REST request with
+  // the anon key of compose.env must not be answered with the gateway's own 401 (H1 of the review of WS-L: after rotate-keys.sh, a container
+  // that was not recreated refuses every REST request of every phone while the probe above is still green).
+  if (answers) {
+    const keys = await probeLanKeys(lan, env.ANON_KEY, fetchImpl);
+    if (!keys.ok) fail(keys.text);
   }
   return out;
 }
