@@ -34,7 +34,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime v1.77.4 image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through the gateway.",
+      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through the gateway.",
       "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },
@@ -96,17 +96,17 @@
     },
     {
       "id": "rest-no-package-inventory",
-      "recipe": "postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df",
+      "recipe": "postgrest/postgrest:v16.5@sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc",
       "class": "no-package-inventory",
-      "digest": "sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df",
+      "digest": "sha256:1347d7552b88f17832912c06afbf7c43209af6eeeb60834b04aae12c9bd9d5cc",
       "compensatingControls": [
         "No host port: outside requests reach PostgREST only through the gateway (nginx), which requires the API key, caps request bodies at 10 MB and limits each client address to a burst of 1800 requests and then 30 a second (docs/CONTAINER_SECURITY.md, REST request limit)",
         "public.check_session runs before every request (PGRST_DB_PRE_REQUEST), and business data is written only through RPCs guarded by warehouse_security.authorize_rpc",
-        "The image is the publisher's v16.4 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
+        "The image is the publisher's v16.5 index, pinned by digest in Compose; another digest is not covered by this exception and fails the scan"
       ],
       "owner": "abhiguru",
-      "reason": "The publisher's static PostgREST binary yields no package results in Trivy and the image carries no SBOM, so a clean scan proves nothing (TW-BE-010, option c). Planned replacement: a source build with a recorded dependency closure (option a). The historical aeson advisory HSEC-2026-0007 is unverified for v16.4.",
-      "reviewed": "2026-10-17",
+      "reason": "The publisher's static PostgREST binary yields no package results in Trivy and the image carries no SBOM, so a clean scan proves nothing (TW-BE-010, option c). Planned replacement: a source build with a recorded dependency closure (option a). The historical aeson advisory HSEC-2026-0007 is unverified for v16.5.",
+      "reviewed": "2026-10-26",
       "expires": "2027-01-15"
     }
   ]
