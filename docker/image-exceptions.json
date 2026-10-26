@@ -34,7 +34,7 @@
       ],
       "pkgClass": "os-pkgs",
       "owner": "abhiguru",
-      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime v1.77.8 image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through the gateway.",
+      "reason": "Debian 12 packages of the debian:bookworm-slim base of the slim functions image (the supabase/edge-runtime image only supplies the binary) with no fixed version (2026-10-19 rescan of the new image after the full apt-get upgrade: 58 HIGH rows, and 1 CRITICAL in zlib1g that Debian marks will_not_fix; the fixed-only pass is clean). The recipe applies every Debian update. The container has no host port; outside requests reach it only through the gateway.",
       "reviewed": "2026-10-19",
       "expires": "2027-01-15"
     },

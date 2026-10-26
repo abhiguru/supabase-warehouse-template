@@ -13,9 +13,9 @@ An installation on this release's predecessor (PostgreSQL 15 image, migrations 0
 reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. An installation on PostgreSQL 17 needs the one-time
 [Major PostgreSQL upgrade](docs/OPERATOR_INSTALL.md#major-postgresql-upgrade). On every update, run `setup.sh` again, and:
 
-1. **Images rebuild.** The `db`, `storage` and `pdf-renderer` recipes changed, so `setup.sh` rebuilds those three images
-   (`scripts/build-images.sh` sees the new `image-recipes.sha256`). The first run takes a few minutes longer and the Storage
-   image is about half the size (1.01 GB to 553 MB).
+1. **Images rebuild.** The `db`, `storage`, `pdf-renderer` and `functions` recipes changed, so `setup.sh` rebuilds those four
+   images (`scripts/build-images.sh` sees the new `image-recipes.sha256`), and it downloads the new `rest` image (PostgREST 16.5).
+   The first run takes a few minutes longer and the Storage image is about half the size (1.01 GB to 553 MB).
 2. **`PGRST_DB_SCHEMAS` becomes `public`.** `setup.sh` and the restore scripts rewrite an old default (`public,storage` or
    `public,storage,graphql_public`) in `compose.env` to `public` and recreate `rest`. A list you changed yourself is left alone.
    `/rest/v1/` no longer serves an OpenAPI document (`PGRST_OPENAPI_MODE=disabled`) and no longer reaches the `storage` schema.
@@ -359,7 +359,7 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   verify in `operator-install`, and the `contract` job runs `tests/rpc-callers.test.mjs` against the pinned app. The alert-webhook
   terminal test skips on a runner without a usable pty. `tests/sensor-bridge-check.sh` fails, not "Skipped", without its Dockerfile.
 - **Images: supabase/edge-runtime 1.77.8 and PostgREST 16.5.** Bug-fix releases of both (v1.77.4 and v16.4 before), pinned by digest as
-  before. Nothing to do beyond the normal upgrade: `setup.sh` rebuilds the `functions` image (its recipe changed) and pulls the new `rest`
+  before; edge-runtime also updates its TLS library (rustls) and root certificates, which the functions use for outbound HTTPS. Nothing to do beyond the normal upgrade: `setup.sh` rebuilds the `functions` image (its recipe changed) and pulls the new `rest`
   image. The image-scan exception `rest-no-package-inventory` now names the v16.5 digest, and `THIRD_PARTY_NOTICES.md` the new versions.
 
 ### Removed
