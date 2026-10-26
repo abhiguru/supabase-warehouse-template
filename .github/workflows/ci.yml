@@ -413,11 +413,14 @@ jobs:
           # The operator's off-machine copy of the backup key: the lost-host restore refuses without it.
           install -m 600 "$WAREHOUSE_STATE_DIR/config/backup.key" "$RUNNER_TEMP/backup-key-copy"
           # The key escrow record (scripts/backup-key-escrow.sh): a USB drive is not enrolled and an encrypted archive is not written
-          # until the operator has confirmed a copy of the key. No record yet; a wrong copy is refused; the right one is recorded.
+          # until the operator has confirmed a copy of the key, and the whole copy is compared. No record yet; a copy with one wrong
+          # character at the start (the end of the key right) is refused; the right copy is recorded.
           if bash scripts/backup-key-escrow.sh check; then echo 'a key copy counted as confirmed with no record' >&2; exit 1; fi
-          if bash scripts/backup-key-escrow.sh confirm --last8 00000000; then echo 'a wrong key copy was accepted' >&2; exit 1; fi
+          key_copy="$(cat "$RUNNER_TEMP/backup-key-copy")"; first=a; if [ "${key_copy:0:1}" = a ]; then first=b; fi
+          printf '%s%s\n' "$first" "${key_copy:1}" > "$RUNNER_TEMP/backup-key-miscopied"
+          if bash scripts/backup-key-escrow.sh confirm --key-file "$RUNNER_TEMP/backup-key-miscopied"; then echo 'a mistaken key copy was accepted' >&2; exit 1; fi
           test ! -e "$WAREHOUSE_STATE_DIR/config/backup-key.escrow"
-          bash scripts/backup-key-escrow.sh confirm --last8 "$(tail -c 9 "$RUNNER_TEMP/backup-key-copy" | head -c 8)"
+          bash scripts/backup-key-escrow.sh confirm --key-file "$RUNNER_TEMP/backup-key-copy"
           bash scripts/backup-key-escrow.sh check
           test "$(stat -c %a "$WAREHOUSE_STATE_DIR/config/backup-key.escrow")" = 600
           # What a USB drive holds: one encrypted archive of the backup, written with the functions backup-usb.sh uses, with the
