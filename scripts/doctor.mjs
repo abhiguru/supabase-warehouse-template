@@ -4,7 +4,7 @@ import { join, resolve, sep } from 'node:path';
 import { createConnection } from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { backupToolProblems, centralKeyFault, gatewayPortText, letterheadProblem, probe, readEnv, root, supportedNode } from './doctor-common.mjs';
+import { backupToolProblems, centralKeyFault, gatewayPortText, letterheadProblem, probe, projectPublishesPort, readEnv, root, supportedNode } from './doctor-common.mjs';
 import { canonicalOrigin } from './configure.mjs';
 import { validateDbValues } from './db-roles.mjs';
 import { isFixtureAddress, isProviderPlaceholder } from './provider-placeholder.mjs';
@@ -13,6 +13,8 @@ import { usbBackupWarning } from './usb-backup-status.mjs';
 import { interruptedUpgradeWarning } from './upgrade-record.mjs';
 import { storedWebhook } from './alert-webhook.mjs';
 import { defaultDeps, legacyDailyAdvice, runHealth, statePath, stoppedByOperator } from './watch.mjs';
+import { lanChecks } from './lan.mjs';
+import { lanAddressLine, lanSettings } from './lan-common.mjs';
 
 export const CHECKER_MAX_AGE_MS = 15 * 60 * 1000;
 // The unit is named from the facility's Compose project (WAREHOUSE_PROJECT_NAME in config/compose.env), not from the
@@ -91,20 +93,9 @@ export const listening = port => new Promise(resolve => {
   socket.once('error', () => done(false));
 });
 
-// Whether a running container of this installation's own Compose project publishes the loopback gateway port (a line of `docker ps`
-// such as `127.0.0.1:18000->8000/tcp`). The port is then the installation's own, not a stranger's. Which service it is does not
-// matter, and must not: an installation made before the nginx gateway has a `kong` container on the port and no `gateway`
-// container, and setup.sh and start.sh run this preflight from the new checkout before `up --remove-orphans` can replace it, so
-// asking for `gateway` alone stopped every such upgrade (and `compose ps -q kong` is no answer: Compose refuses a service the
-// file no longer has). A container of another project, or a process that is not a container, does not count.
-export function projectPublishesPort(project, port, run = probe) {
-  const listed = run('docker', ['ps', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Ports}}']);
-  if (!listed.ok) return false;
-  return listed.output.split(/[\r\n]+/).flatMap(line => line.split(',')).some(published => {
-    const range = /(?:^|:)(\d+)(?:-(\d+))?->/.exec(published.trim());
-    return range !== null && Number(range[1]) <= port && port <= Number(range[2] ?? range[1]);
-  });
-}
+// projectPublishesPort (whether this installation's own containers publish a port) is in doctor-common.mjs, where scripts/lan.mjs
+// uses it too; it is exported from here as well.
+export { projectPublishesPort };
 
 export function validateOperatorEnv(env, stateDir) {
   const state = resolve(stateDir);
@@ -173,6 +164,31 @@ export function checkStatePlacement(state, checkoutRoot = root) {
   return parent;
 }
 
+// The checks of the LAN fallback (scripts/lan.mjs, lanChecks), only while it is on (LAN_ENABLED=true in compose.env). Returns the
+// failures and warnings as text and the address line for the app.
+export async function lanReport(env, instanceId, options = {}) {
+  const lan = lanSettings(env);
+  if (!lan.enabled) return { failures: [], warnings: [], address: '' };
+  const checks = await lanChecks(env, { instanceId, ...options });
+  return {
+    failures: checks.filter(check => check.level === 'fail').map(check => check.text),
+    warnings: checks.filter(check => check.level === 'warn').map(check => check.text),
+    address: lanAddressLine(lan),
+  };
+}
+
+// `doctor --lan`: only the LAN checks (scripts/lan.sh runs it after turning the fallback on). Throws with the failures.
+export async function lanDoctor(options = {}) {
+  const state = process.env.WAREHOUSE_STATE_DIR;
+  checkStatePlacement(state);
+  const env = readEnv(resolve(state, 'config/compose.env'));
+  if (!lanSettings(env).enabled) return 'The LAN fallback is off (LAN_ENABLED is not true in config/compose.env). Turn it on with: bash scripts/lan.sh on auto';
+  const manifest = JSON.parse(readFileSync(resolve(state, 'public/instance.json'), 'utf8'));
+  const report = await lanReport(env, manifest.instanceId, options);
+  if (report.failures.length) throw new Error(`LAN fallback: ${report.failures.join('; ')}.${report.warnings.map(text => `\nWarning: ${text}`).join('')}`);
+  return [report.address, ...report.warnings.map(text => `Warning: ${text}`), 'The LAN fallback answers from this host as this installation.'].join('\n');
+}
+
 export async function doctor({ hostPreflight = false, preflight = false, local = false } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x86-64 required.');
   if (!supportedNode()) throw new Error('Node.js 22.18+ required.');
@@ -223,16 +239,22 @@ export async function doctor({ hostPreflight = false, preflight = false, local =
   const upgradeWarning = interruptedUpgradeWarning(state);
   if (!health.ok) throw new Error(`Local service health check failed: ${health.lines.filter(line => !line.ok).map(line => line.text).join('; ')}.${stoppedByOperator(state) ? ` ${stoppedWarning}` : ''}${upgradeWarning ? ` ${upgradeWarning}` : ''}`);
   for (const line of health.lines.filter(l => l.warn)) console.error(`Warning: ${line.text}`);
+  // The LAN fallback, when it is on. Its address is printed here (`--local` is what start.sh and setup.sh show last). A fault of
+  // it never stops a start, an upgrade or a setup: with `--local` it is a warning, because the public path is the facility's;
+  // `node scripts/doctor.mjs` (the full check) and `--lan` fail on it.
+  const lan = await lanReport(env, manifest.instanceId);
+  const lanNote = (lan.address ? `\n${lan.address}` : '') + [...lan.warnings, ...(local ? lan.failures : [])].map(text => `\nWarning: LAN fallback: ${text}`).join('');
   const usb = usbBackupWarning(state);
   // The monitoring checker (scripts/watch.mjs) is run by a systemd timer that an operator installs with sudo
   // (scripts/watch-timer.sh); doctor warns when it is missing, silent, or has nowhere to post.
   const checker = checkerWarnings(state);
-  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('');
+  const note = [upgradeWarning, usb, ...checker].filter(Boolean).map(text => `\nWarning: ${text}`).join('') + lanNote;
   if (local) return `Local operator services and gateway are healthy.${note}`;
   const response = await fetch(`${origin}/functions/v1/get-public-config`, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!response.ok) throw new Error(`External public configuration returned HTTP ${response.status}.`);
   const json = await response.json();
   if (json.success !== true || json.data?.anonKey !== env.ANON_KEY || json.data?.instanceId !== manifest.instanceId || json.data?.canonicalOrigin !== origin) throw new Error('External public configuration does not match this instance.');
+  if (lan.failures.length) throw new Error(`The public address works, but the LAN fallback does not: ${lan.failures.join('; ')}.`);
   return `Local services and external HTTPS discovery are healthy.${note}`;
 }
 
@@ -272,8 +294,9 @@ export function checkLetterhead(env, stateDir) {
 if (isMain(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.some(arg => !['--host-preflight', '--preflight', '--local'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/doctor.mjs [--host-preflight|--preflight|--local]');
-    console.log(await doctor({ hostPreflight: args.includes('--host-preflight'), preflight: args.includes('--preflight'), local: args.includes('--local') }));
+    if (args.some(arg => !['--host-preflight', '--preflight', '--local', '--lan'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/doctor.mjs [--host-preflight|--preflight|--local|--lan]');
+    if (args.includes('--lan')) console.log(await lanDoctor());
+    else console.log(await doctor({ hostPreflight: args.includes('--host-preflight'), preflight: args.includes('--preflight'), local: args.includes('--local') }));
   } catch (error) {
     // Node's fetch reports only "fetch failed"; the reason (DNS, refused, unreachable) is in error.cause.
     const cause = error.cause ? ` (${error.cause.code ?? ''} ${error.cause.message ?? error.cause})`.replace('( ', '(') : '';

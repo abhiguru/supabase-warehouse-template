@@ -252,6 +252,10 @@ function projectContainersRunning(project) {
   if (listed.status !== 0) throw new Error('Cannot check whether this installation\'s containers are running (docker ps failed); stop them first and retry.');
   return listed.stdout.trim() !== '';
 }
+// The LAN fallback (scripts/lan.sh) keeps its own lines in compose.env: LAN_ENABLED, LAN_BIND_IP, LAN_HTTP_PORT, LAN_CIDR and a `lan` entry in
+// COMPOSE_PROFILES. A rerun of setup changes none of them (the existing-state branch below replaces only the lines it names), so the fallback
+// survives every setup, upgrade and restore; lan.sh is the one writer. Its validators are in lan-common.mjs, beside this file's gatewayPortValue.
+export { lanAddressValue, lanCidrValue, lanPortValue } from './lan-common.mjs';
 export const GATEWAY_PORT_REMINDER = 'Update the Cloudflare Tunnel ingress for this installation to http://127.0.0.1:<port> (deploy/cloudflared-config.example.yml), then restart the tunnel.';
 
 export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv, centralIssuer, centralJwksUrl, centralJwksFile, centralLocalCode, alertWebhookFile, letterheadFile, gatewayPort, portFree = loopbackPortFree, containersRunning = projectContainersRunning, faultAfterManifest = false } = {}) {
@@ -295,7 +299,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (company && company !== manifest.companyName) throw new Error('Existing company differs; refusing to replace instance identity.');
       // A rerun may replace only the SMS provider lines, the central sign-in lines (with the key file) and
       // GATEWAY_HTTP_PORT, add generated values that are missing (database passwords, backup key) and place the
-      // alert webhook; identity, paths and signing keys are preserved.
+      // alert webhook; identity, paths and signing keys are preserved, and so are the LAN fallback lines (scripts/lan.sh).
       // Unchanged values leave the file bytes intact.
       let providerUpdated = false;
       let centralUpdated = false;

@@ -78,5 +78,14 @@ if [[ -n "${WAREHOUSE_COMPOSE_EXTRA:-}" ]]; then
   fi
   extra=(-f "$WAREHOUSE_COMPOSE_EXTRA")
 fi
-exec env "${unset_args[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+# The LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): COMPOSE_PROFILES=lan in compose.env starts the gateway-lan service, which
+# publishes the host's own LAN address. If the host no longer has that address (the router gave it another one) Docker cannot start the
+# container, and a failed start can stop `up` for the public services beside it. Only then is the profile left out of this one command
+# (scripts/lan.mjs guard prints the replacement list and says why on stderr); without node, or on any error, nothing is changed.
+lan_override=()
+if grep -Eq '^COMPOSE_PROFILES=.*\blan\b' "$ENV_FILE" && command -v node >/dev/null 2>&1; then
+  guard="$(node "$ROOT/scripts/lan.mjs" guard "$ENV_FILE" || true)"
+  if [[ "$guard" == COMPOSE_PROFILES=* ]]; then lan_override=("$guard"); fi
+fi
+exec env "${unset_args[@]}" "${lan_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" "${extra[@]}" "$@"
