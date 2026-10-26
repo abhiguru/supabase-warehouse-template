@@ -1,0 +1,89 @@
+name: Base image pins
+
+# The official base images this repository pins by tag and digest (docker/*/Dockerfile, docker/docker-compose.yml) can stop
+# receiving patches without anything failing: node drops the Alpine release a pin names, nginx stops the stable branch after
+# the next one ships, python drops a Debian release. This weekly check (scripts/check-base-images.mjs) reads the
+# official-images library and Docker Hub: FAIL when the pinned variant is no longer published, WARN when its tag was last
+# pushed more than 120 days ago. It opens or updates ONE issue while there is a FAIL or a WARN, and closes it when there is
+# none. An edit sends no notification, so when the issue is already open and a FAIL or WARN is new (a pin or a kind that the issue
+# did not list), the run first adds ONE comment that lists only the new lines; a week with nothing new edits the body silently.
+# Exit 3 is Docker Hub rate limiting (HTTP 429) or an outage (5xx or a timeout twice): neutral, the run stays green, the issue is
+# left as it is, and the next week checks again. Any other failure to read, the library or a Docker Hub answer the script does not
+# understand (403, a redirect, a 200 without a date), is exit 2 and fails the run, so the age check cannot stop for good unseen.
+on:
+  schedule:
+    - cron: '47 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# A manual run next to the scheduled one must not open a second issue: the issue search can lag behind a just-created issue.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  base-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Check the pinned base images
+        id: check
+        run: |
+          set +e
+          node scripts/check-base-images.mjs > "$RUNNER_TEMP/base-images.out" 2> "$RUNNER_TEMP/base-images.err"
+          status=$?
+          cat "$RUNNER_TEMP/base-images.out" "$RUNNER_TEMP/base-images.err"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          grep -E '^(FAIL|WARN) ' "$RUNNER_TEMP/base-images.out" > "$RUNNER_TEMP/findings.txt"
+          if [[ "$status" == 3 ]]; then
+            echo "::warning title=Base image check incomplete::Docker Hub rate limited the age check (HTTP 429) or did not answer. The library check ran; nothing is changed in the issue. The next weekly run asks again."
+          fi
+          # Status 2 is a failure of the check itself (the library could not be read); it fails the run and leaves the issue alone.
+          [[ "$status" != 2 ]] || exit 2
+          exit 0
+      - name: Open or update the issue, or close it when nothing needs attention
+        # Status 3 (Docker Hub rate limited or silent, and no FAIL: a FAIL is status 1) neither opens nor closes an issue: the
+        # age check is incomplete, so "clean" is not known.
+        if: steps.check.outputs.status != '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.check.outputs.status }}
+        run: |
+          title='Base image pins need attention'
+          # Only this workflow's own issue (the repository is public: anyone can open one with the same title).
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --author app/github-actions --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          # A result is status 0, or status 1 with a FAIL line. Anything else (a start-up crash exits 1 and prints no FAIL line;
+          # a killed process exits 128 and more) is no result: it must never read as "clean" and close the issue.
+          if [[ "$STATUS" != 0 ]] && { [[ "$STATUS" != 1 ]] || ! grep -q '^FAIL ' "$RUNNER_TEMP/findings.txt"; }; then
+            echo "::error title=Base image check crashed::scripts/check-base-images.mjs exited with status $STATUS and printed no FAIL line, so there is no result. The issue is left as it is; read the log of the check step."
+            exit 1
+          fi
+          if [[ -s "$RUNNER_TEMP/findings.txt" ]]; then
+            {
+              printf 'The weekly base image check found:\n\n'
+              sed 's/^/- /' "$RUNNER_TEMP/findings.txt"
+              printf '\nFAIL: the pinned variant is no longer published; move the pin. WARN: the tag was last pushed more than 120 days ago, or is gone from Docker Hub; check the newest tag of the line (docs/CONTAINER_SECURITY.md, "Image pins").\n\nRun: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            } > "$RUNNER_TEMP/issue-body.md"
+            if [[ -n "$number" ]]; then
+              # A finding is new when the open issue does not list its pin: the text up to "): " (the age of a WARN changes every
+              # week and is not news). Editing sends no notification, so the new lines go in one comment, before the edit: if the
+              # comment fails, the body is not updated and the next run still sees them as new.
+              gh issue view "$number" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/old-body.md"
+              new=$(grep -E '^- (FAIL|WARN) ' "$RUNNER_TEMP/issue-body.md" | while IFS= read -r line; do grep -qF -- "${line%%): *}): " "$RUNNER_TEMP/old-body.md" || printf '%s\n' "$line"; done)
+              if [[ -n "$new" ]]; then
+                printf 'New since the last run:\n\n%s\n\nRun: %s/%s/actions/runs/%s\n' "$new" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/new-findings.md"
+                gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/new-findings.md"
+              fi
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue-body.md"
+            else gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
+          elif [[ -n "$number" ]]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Every pinned base image variant is published and was pushed within 120 days."
+          fi

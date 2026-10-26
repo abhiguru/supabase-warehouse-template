@@ -31,16 +31,28 @@ they go in the operator's secret store. Nothing here authorizes production deplo
   recovery objectives, each with measured evidence.
 - **Domain and ingress.** The facility's own Cloudflare hostname and tunnel, a cellular check, and the private boundary
   kept (database, CUPS, the Tapo hubs and the sensor bridge never reachable from outside).
+- **Weekly signals the owner watches (GitHub issues, one each).** None of these blocks a pull request or a tag; each opens or updates
+  one issue while it has something to say and closes it when it is clean. An edit notifies nobody, so a finding that is new in an issue
+  that is already open (a new advisory, a new base image pin) arrives as one comment that lists only the new lines:
+  - "Chrome for Testing pin is more than 14 days behind Stable" (`cft-freshness.yml`): bump `CHS_VERSION`, `CHS_SHA256` and
+    puppeteer-core together, or decide in the issue to stay on the pin (docs/CONTAINER_SECURITY.md, "PDF renderer"). A tag is never held for it.
+  - "Dependency advisories, <date>" (`dependency-audit.yml`): a HIGH or CRITICAL advisory in the Storage or PDF renderer npm tree with
+    no valid exception, an expired exception, or one that expires within 14 days. Raise the dependency, or record a reviewed exception
+    of at most 90 days in `docker/npm-audit-exceptions.json` ("Dependency advisory exceptions" in docs/CONTAINER_SECURITY.md).
+  - "Base image pins need attention" (`base-images.yml`): a pinned base image variant that the official-images library no longer
+    publishes (node's `alpine3.23` for Storage is the first, around the end of 2026; nginx 1.30, which leaves the library when 1.32
+    ships; python's `slim-bookworm`), or a pinned tag not pushed for 120 days. Move the pin, rebuild and rescan.
+  - Not weekly, but the same kind of signal: the image-scan exceptions in `docker/image-exceptions.json` expire on 2027-01-15 (see "Accepted by the owner").
 - **Owner action: the `keep-alive` workflow and the Actions tab.** Once `.github/workflows/keep-alive.yml` is on `main`, run it by hand
   (Actions, Keep scheduled workflows enabled, Run workflow) and check both steps: the branch `keep-alive` exists (the workflow pushes there
   and not to `main`, which is protected by required status checks, so no setting changes), and "Enable the scheduled workflows" is
-  green for `ci.yml` and `cft-freshness.yml` (it calls the documented `PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable`
+  green for `ci.yml`, `cft-freshness.yml`, `dependency-audit.yml` and `base-images.yml` (it calls the documented `PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable`
   with the workflow's own token, which has `actions: write` in this workflow only). If a push is refused the run fails with this fix: no
   ruleset may cover `keep-alive`, or add the GitHub Actions app as its bypass actor. **Unverified: GitHub does not define "repository
   activity", so it is not known whether a push made with the workflow's own token resets the 60-day idle clock, nor whether the enable call
   revives a schedule GitHub has already disabled.** Until that is known, after any absence longer than about 45 days open the repository's
   Actions tab, look for "This scheduled workflow is disabled because there hasn't been activity in this repository for at least 60 days"
-  on CI and on Chrome for Testing freshness, and enable them there.
+  on CI, Chrome for Testing freshness, dependency advisories and base images, and enable them there.
 - **Owner action: cut `v0.7.0`.** Operators and the CI upgrade drill start from release tags, and none exists on the PostgreSQL 18 line
   (the newest, `v0.6.1`, is from before the PostgreSQL 18 move). When the production-readiness work has merged: finish the `CHANGELOG.md` section, tag
   `v0.7.0-rc.1`, rehearse, tag the same commit `v0.7.0`, publish the release note ([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)). Until
@@ -107,8 +119,8 @@ they go in the operator's secret store. Nothing here authorizes production deplo
     dates behind it: Node 22 on the host 2027-04-30, Node 24 in the storage and PDF images 2028-04-30, Debian 12 for the
     functions image 2028-06-30.
   - Mitigation, **unverified**: `.github/workflows/keep-alive.yml` commits a timestamp once a month to the orphan branch `keep-alive`
-    and calls the documented endpoint that enables the weekly CI run and the weekly Chrome for Testing check, to keep GitHub from
-    disabling them after 60 days without repository activity. GitHub does not say what counts as activity, so whether this works is not
+    and calls the documented endpoint that enables the weekly CI run and the weekly Chrome for Testing, dependency advisory and
+    base image checks, to keep GitHub from disabling them after 60 days without repository activity. GitHub does not say what counts as activity, so whether this works is not
     known; the owner looks at the Actions tab after any long absence (see the owner action above). It does not merge, release or renew
     anything: it only keeps the checks running and the issue they open visible.
 - **USB-only off-host copy (owner, 2026-10-25).** See "Off-host backups" above: the destination is the encrypted USB drive
