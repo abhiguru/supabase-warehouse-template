@@ -465,6 +465,20 @@ test('ingress is Cloudflare Tunnel only', () => {
   assert.ok(tunnel.includes('service: http_status:404'));
 });
 
+// The gateway's nginx is the stable branch, alpine-slim variant: even minors from 1.30 on (1.30, 1.32, 1.34; the odd ones
+// are the mainline). The yearly move to the next stable branch is made by hand (docs/CONTAINER_SECURITY.md, "Image pins")
+// and needs no edit here; scripts/check-base-images.mjs tells weekly when the pinned branch is no longer published.
+const stableNginxSlimTag = tag => {
+  const match = /^1\.(\d+)\.\d+-alpine-slim$/.exec(tag ?? '');
+  return match !== null && Number(match[1]) >= 30 && Number(match[1]) % 2 === 0;
+};
+
+test('the gateway nginx rule takes any stable (even) minor from 1.30 in the alpine-slim variant, and nothing else', () => {
+  for (const tag of ['1.30.6-alpine-slim', '1.30.0-alpine-slim', '1.32.0-alpine-slim', '1.34.12-alpine-slim', '1.100.1-alpine-slim']) assert.ok(stableNginxSlimTag(tag), tag);
+  for (const tag of ['1.29.3-alpine-slim', '1.28.3-alpine-slim', '1.31.8-alpine-slim', '1.33.0-alpine-slim', '1.30.6', '1.30.6-alpine', '1.32.0-trixie',
+    '1.32-alpine-slim', '1.32.0-alpine3.24-slim', '2.0.0-alpine-slim', 'mainline-alpine-slim', undefined]) assert.ok(!stableNginxSlimTag(tag), String(tag));
+});
+
 test('publisher images are pinned by digest, the gateway base too, and the notices name the versions in use', () => {
   const images = [...compose.matchAll(/^\s+image: (\S+)$/gm)].map(match => match[1]).filter(image => !image.endsWith(':local'));
   assert.ok(images.some(image => /^postgrest\/postgrest:v[0-9.]+@sha256:[0-9a-f]{64}$/.test(image)), 'PostgREST is not pinned by digest');
@@ -474,7 +488,7 @@ test('publisher images are pinned by digest, the gateway base too, and the notic
   const notices = read('THIRD_PARTY_NOTICES.md');
   const base = (recipe, image) => new RegExp(`^FROM ${image}:([^@\\s]+)@sha256:[0-9a-f]{64}(?: AS \\w+)?$`, 'm').exec(read(`docker/${recipe}/Dockerfile`))?.[1];
   const nginxTag = base('nginx', 'nginx');
-  assert.match(nginxTag ?? '', /^1\.30\.\d+-alpine-slim$/, 'the gateway is on the nginx 1.30 stable branch, alpine-slim variant, by tag and index digest');
+  assert.ok(stableNginxSlimTag(nginxTag), `the gateway is on an nginx stable branch (even minor, 1.30 or later), alpine-slim variant, by tag and index digest: ${nginxTag}`);
   const versions = {
     nginx: nginxTag?.split('-')[0],
     PostgREST: /image: postgrest\/postgrest:(v[0-9.]+)/.exec(compose)[1],

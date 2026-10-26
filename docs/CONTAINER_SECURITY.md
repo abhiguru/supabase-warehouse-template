@@ -25,8 +25,10 @@ Compose. `tests/gateway-config.test.mjs` fails on a tag-only image and on a vers
 digest when a tag is rebuilt. Operating-system package repositories stay live: rebuild without stale layers and rescan
 before deploying; a previous passing scan is not a current guarantee.
 
-A source or dependency audit of the npm graphs of Storage and the PDF renderer (production dependencies only) runs in CI:
-`npm run check:container-dependencies` at HIGH/CRITICAL severity. Moving Storage to a new publisher tag is described in
+The npm graphs of Storage and the PDF renderer (production dependencies only) are audited at HIGH/CRITICAL severity in two
+places, neither of which is a live audit in the required check: a pull request fails only when it **adds** an advisory the base
+commit did not have, and a weekly run audits both trees and opens one issue ("Dependency advisory exceptions" below).
+`npm run check:container-dependencies` still runs the live audit by hand. Moving Storage to a new publisher tag is described in
 `docker/storage/README.md`.
 
 ## Networks
@@ -346,7 +348,25 @@ tag and digest together. The PostgREST image has no package inventory, so its ex
 ("Exceptions"). The nginx recipe runs `apk upgrade`, so its Alpine packages follow the live repository; it stays on the stable
 branch (1.30; Dependabot proposes patch releases only, `.github/dependabot.yml`), and the move to the next stable branch
 (1.32, due in 2027) is made by hand: read the nginx release notes for the changed directives, rebuild and run
-`node --test tests/gateway-nginx.test.mjs` and `npm run test:gateway`.
+`node --test tests/gateway-nginx.test.mjs` and `npm run test:gateway`. `tests/gateway-config.test.mjs` accepts any even nginx
+minor from 1.30 in the `-alpine-slim` variant, so that move needs no test edit.
+
+**Base image watch.** A pin by digest does not notice that its base stops receiving patches: node drops the Alpine release
+a tag names (the Storage image's `node:24.22.1-alpine3.23` is the first, expected around the end of 2026), nginx stops a stable
+branch when the next one ships, python drops a Debian release. Nothing fails; a later scan is the first sign.
+`.github/workflows/base-images.yml` runs `scripts/check-base-images.mjs` weekly: for every `FROM name:tag@sha256:` in
+`docker/*/Dockerfile` and every `image:` of `docker/docker-compose.yml` that is an official Docker image (node, nginx, python,
+postgres, debian, ubuntu, alpine) it reads `library/<name>` in `docker-library/official-images` and **fails** when no tag of the
+pin's line (node 24, postgres 18, python 3.15, nginx 1.30) with the pin's variant is published any more, and asks Docker Hub
+once per pin and **warns** when the pinned tag was last pushed more than 120 days ago. Either opens or updates one issue, "Base
+image pins need attention", and a clean week closes it; when the issue is already open and a FAIL or WARN is new in it (a pin
+the issue did not list), the run adds one comment that lists only the new lines, because an edit notifies nobody. A pin may be
+written `name:tag`, `library/name:tag` or `docker.io/library/name:tag`. Docker Hub rate limits anonymous clients: a 429, or a 5xx
+or a timeout on both of two tries, ends the age check for that run with exit code 3, which the workflow treats as neutral (no
+issue change, green run); the next week asks again. **Nothing else is neutral.** Any other answer the age check cannot use (a 401,
+403 or 410, a redirect because the API moved, a 200 without a push date) is exit code 2: the run fails and the issue is left
+alone, so the age check cannot stop for good without a red run. A run whose script crashes (exit 1 with no FAIL line) fails too
+and never closes the issue as clean.
 
 ## Exception ledger and the image scan
 
@@ -422,6 +442,36 @@ before moving the digest, and plan a reindex if the collation changed.
   port and is on the `database` network only.
 - **The Chrome for Testing binary** is invisible to Trivy; see "PDF renderer".
 
+### Dependency advisory exceptions
+
+The two frozen npm trees (`docker/storage`, the dependency set of the pinned Storage release, about 900 packages, and
+`docker/pdf-renderer`) meet a new advisory in any week, and Storage's tree moves only with its publisher's tag
+([docker/storage/README.md](../docker/storage/README.md)). Owner decision of 2026-10-26: the live `npm audit` is not a required
+check. On 2026-10-24 advisories published after the last merge turned every pull request red until the lock was rebuilt.
+
+- **A pull request** runs `scripts/audit-compare.mjs --base-ref <base commit>` in the `validate` job. For each tree whose
+  `package.json` or `package-lock.json` the pull request changes, it runs `npm audit --json` on the change and on the base, and fails
+  for an advisory **only** when the change introduces a HIGH or CRITICAL advisory (identified by advisory id and package) that the base did not have and
+  that no valid exception covers. A tree the pull request does not touch is not audited, so a documentation change, a Dependabot bump of
+  another tree and a pull request on a day with a newly published advisory all pass. If the audit cannot be read (registry down,
+  base commit missing) the check fails; it never passes unread, and neither does a tree whose `package-lock.json` is deleted while
+  its `package.json` stays (npm audit and the image build need the lock; removing both files removes the tree). The ledger is read
+  from the pull request's own tree, so a pull request can add a dependency and the exception for it together: every advisory an
+  exception covers is shown as a warning annotation on the checks page, with its reason and expiry, for the reviewer.
+- **Every week** `.github/workflows/dependency-audit.yml` runs `scripts/audit-compare.mjs --live`: both trees as they are, at HIGH
+  and CRITICAL. It lists advisories with no valid exception, expired exceptions, and exceptions that expire within 14 days, in one
+  issue ("Dependency advisories, <date>", closed when the audit is clean). An edit notifies nobody, and this issue is the only
+  signal for an advisory published after the last merge, so when the issue is already open and a finding line is new in it, the run
+  adds one comment that lists only the new lines; a week with nothing new edits the body silently. A finding never fails the run, so
+  there is no weekly failure e-mail; an unreadable audit does.
+- **The exception ledger** `docker/npm-audit-exceptions.json` (`schemaVersion` 1, empty to start) lists
+  `{id, package, manifest, reason, owner, reviewed, expires}`: `id` is the advisory (`GHSA-xxxx-xxxx-xxxx`, as in npm's advisory
+  URL; the numeric npm id when npm prints no GHSA), `package` the vulnerable package, `manifest` `docker/storage` or
+  `docker/pdf-renderer`. Like the image ledger, `expires` may be at most 90 days after `reviewed`, an entry that breaks a rule
+  rejects the whole ledger (`tests/audit-compare.test.mjs` checks the committed file), and an entry past its `expires` date covers
+  nothing: an advisory only it covered fails the pull request with a message to renew it, and the weekly issue lists it. Prefer to
+  raise the dependency; an exception states why the advisory does not apply or why the fix cannot be taken yet.
+
 ## PDF renderer
 
 `docker/pdf-renderer` is a small Node 24 service (`src/server.mjs`) that drives chrome-headless-shell (CHS) through
@@ -451,10 +501,22 @@ these without a new review: in particular, never feed the renderer a URL or an H
 **Update cadence.** CHS is a Chrome for Testing build, pinned by `ARG CHS_VERSION` and `ARG CHS_SHA256` in the Dockerfile
 (never `@stable`), puppeteer-core by an exact version in `package.json`, Node by digest, and the fonts and libraries by
 Debian package name only (security revisions replace and remove exact versions; see "Fonts"). Chrome has security
-releases about every week. `release.yml` fails a release when the pinned `CHS_VERSION` is more than 14 days behind the
-current Stable in Chrome for Testing's `last-known-good-versions.json`, and `.github/workflows/cft-freshness.yml` runs the
-same check weekly and opens or updates an issue. If the release dates cannot be read the result is "unknown" (exit 2): the
-run fails, and no issue is opened or closed for it. Each network fetch is tried three times. To bump: change both args and
+releases about every week. `.github/workflows/cft-freshness.yml` runs `scripts/check-cft-freshness.mjs --mode fail` weekly:
+a pinned `CHS_VERSION` more than 14 days behind the current Stable in Chrome for Testing's `last-known-good-versions.json` opens or
+updates an issue, and a current pin closes it. **That issue is the only signal: a stale pin never blocks a release.** `release.yml`
+runs the same script in `--mode warn` (the default), which prints a warning with the pinned and Stable versions and the age and
+exits 0, for an old pin, an unknown age and a network error alike, so a tag, a security backport included, is never held up by a
+Chrome bump (owner decision of 2026-10-26; the release needs no bump made in the previous two weeks). If the release dates
+cannot be read, `--mode fail` exits 2: the weekly run fails, and no issue is opened or closed for it. Each network fetch is tried three times.
+
+**Threat model of this gate.** The renderer draws only HTML that this backend itself built, on the internal `renderer` network that
+has no route out, with JavaScript off and no network access from the page: no outside markup, script or URL reaches Chrome. The only
+outside data is text that signed-in users entered or that fas-sync imported (company, customer and item names, document metadata and
+table rows), always escaped, and the operator's letterhead image; escaped text and an image still reach Chrome's text shaping, layout
+and image decoders. The risk a stale Chrome adds is therefore a browser bug triggered by such text or by that image, inside a container
+that has no sandbox but also no capabilities and no network, which is small, and a release is not held for it; the weekly issue keeps
+the pin honest, and a pin that stays stale is a decision to take in that issue, not a blocked tag. The image scan does not cover Chrome
+itself (below). To bump: change both args and
 puppeteer-core together (take the puppeteer-core release that pins that Chrome major), run the renderer's unit tests and
 `test/integration.sh`, check the golden pages in the `pdf-renderer` job, then rebuild with `bash scripts/build-images.sh --no-cache` and scan. The
 golden job renders a fictional corpus, rasterises it in a poppler container built from a fixed Debian snapshot and compares
@@ -462,8 +524,8 @@ decoded pixels with the committed goldens at fuzz 0, so a font, Chrome or puppet
 judged (Gujarati shaping by eye, the rest as a failure).
 
 **Why Trivy cannot see the CfT binary.** CHS arrives as a zip from `storage.googleapis.com/chrome-for-testing-public`, not
-as a Debian package, so a scan covers only Node, the Debian libraries and fonts, and the npm tree (also audited by `npm audit
---prefix docker/pdf-renderer --omit=dev` in `check:container-dependencies`). The Chrome release notes, the freshness check
+as a Debian package, so a scan covers only Node, the Debian libraries and fonts, and the npm tree (also audited weekly and on
+every pull request that changes it, "Dependency advisory exceptions" above). The Chrome release notes, the freshness check
 above and the pinned SHA-256 are the control for Chrome itself. No Chrome findings in a scan is not a clean bill.
 
 **Fonts.** The image installs these font packages by name, without versions: `fonts-liberation`, `fonts-liberation2`,
