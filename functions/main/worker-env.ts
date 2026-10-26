@@ -29,7 +29,8 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // Sensor bridge batches: the RPC is called with the server key; the bridge's
   // ingest key is checked by the database, not here.
   'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
-  'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL'],
+  // The LAN fallback address (scripts/lan.sh) is offered in urls.lan to signed-in phones only: get-public-config has no LAN name.
+  'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'LAN_ENABLED', 'LAN_BIND_IP', 'LAN_HTTP_PORT'],
   'generate-grn-pdf': documentLetterhead,
   'generate-dispatch-pdf': documentLetterhead,
   'generate-invoice-pdf': documentLetterhead,

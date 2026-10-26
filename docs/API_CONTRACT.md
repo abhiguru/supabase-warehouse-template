@@ -129,6 +129,28 @@ No function changes its arguments or the shape of an answer; the app needs no ch
 - **Per-source limits.** The answers of `operator-otp/request` and `/verify` are unchanged (429 "Too many OTP requests. Try again later."); the two limits per address (30 requests, 20 failed verifications an hour) are now `auth_config` keys, and a listed address gets more requests ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md), "The facility's own Wi-Fi address").
 - **Break-glass code.** `operator-otp/verify` (`operator_verify_otp`) also accepts a six-digit code the operator made for an active administrator with `scripts/break-glass-admin.sh`: the same request, the same `{success:true, data:{action:'login', user, session}}` answer, and `invalid_otp` (400 "Invalid or expired OTP") for a wrong, used, expired or ended code. While such a code is open for the number, `operator-otp/request` answers `{success:true, ...}` ("OTP sent successfully") even when the SMS provider refuses the request (otherwise 503 "SMS delivery unavailable"), so the app reaches its code screen. `public.operator_break_glass_open(p_phone_number)` (service role only) is what the edge function asks; the function that makes a code, `warehouse_security.break_glass_code`, is for `supabase_admin` alone and is not an API.
 
+### The LAN address in `get-config` (`urls.lan`, 2026-10-26)
+
+`get-config` (signed-in users only) carries one more field in `data.urls` while the operator has the LAN fallback on
+(`bash scripts/lan.sh on`, [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#lan-fallback-plain-http-on-the-warehouse-network)):
+
+```json
+"urls": { "api": "...", "storage": "...", "realtime": "...", "auth": "...", "lan": "http://192.168.1.20:8080" }
+```
+
+- **Optional.** `urls.lan` is absent while the fallback is off, and also when the configured address is not a private IPv4 address or
+  the port is invalid (a damaged value is left out, never offered). A client treats a missing `urls.lan` as "no fallback" and removes
+  an address it saved earlier.
+- **`get-public-config` never has it.** That answer is readable by anyone on the internet; the facility's LAN address is for its own
+  signed-in users. A client refreshes the saved address from every successful `get-config` over the public path.
+- **Plain http, by owner decision (2026-10-26).** It is an origin, `http://<private address>:<port>`, with no path. It serves the same
+  `/rest/v1`, `/storage/v1` and `/functions/v1` routes as the public origin and carries the response header `X-Warehouse-Path: lan`
+  (the public origin sends `public`). A client uses it only after a transport failure of the public path (the request is rejected, no
+  answer in time, or HTTP 530 from Cloudflare), never when the public path works, and never resends a write that may have been
+  applied (the lost-answer rule, [Request codes](#request-codes-and-get_submission_result-owner-decision-d22-one-rule-for-a-lost-answer)). Sign-in
+  (`operator-otp`, `central-exchange`) needs the internet and does not use it. Tokens and signed URLs are the same on both paths, and
+  the identity of the installation (`instanceId`, the canonical origin, the token store key) stays the public origin.
+
 ## Writes: refusals, version tokens, request codes and locks
 
 Rules shared by the dispatch, GRN, invoice and order writes. History: migrations 120, 121 and 124 (2026-10-20 and 21).
