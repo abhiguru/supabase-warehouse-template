@@ -49,8 +49,20 @@ jobs:
           node-version: '22'
       - run: npm ci
       - run: npm test
-      - name: Container source dependency audit
-        run: npm run check:container-dependencies
+      - name: Dependency advisories this change adds (docker/storage, docker/pdf-renderer)
+        # Owner decision of 2026-10-26: the live `npm audit` of the two frozen npm trees is not a gate any more; an advisory
+        # published after the last merge turned every pull request red (2026-10-24). This step fails when the change adds
+        # a HIGH or CRITICAL advisory that the base commit's trees did not have and docker/npm-audit-exceptions.json does not
+        # cover, when that ledger is invalid, and when the audit cannot be read (the registry, the base commit, a tree left
+        # without its lock): an unread audit is never a pass. A change that leaves both trees' manifests alone passes whatever
+        # has been published since; the weekly dependency-audit.yml runs the live audit and opens the issue
+        # (docs/CONTAINER_SECURITY.md, "Dependency advisory exceptions").
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          node scripts/audit-compare.mjs --base-ref "$BASE_SHA"
   migrations:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     needs: validate

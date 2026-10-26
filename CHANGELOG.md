@@ -388,6 +388,24 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 - **Images: supabase/edge-runtime 1.77.8 and PostgREST 16.5.** Bug-fix releases of both (v1.77.4 and v16.4 before), pinned by digest as
   before; edge-runtime also updates its TLS library (rustls) and root certificates, which the functions use for outbound HTTPS. Nothing to do beyond the normal upgrade: `setup.sh` rebuilds the `functions` image (its recipe changed) and pulls the new `rest`
   image. The image-scan exception `rest-no-package-inventory` now names the v16.5 digest, and `THIRD_PARTY_NOTICES.md` the new versions.
+- **Release and CI gates: the Chrome pin warns, the npm audit leaves the required check, base images are watched.** (1) A Chrome for
+  Testing pin more than 14 days behind Stable no longer blocks a release tag, security backports included: `release.yml` runs
+  `scripts/check-cft-freshness.mjs --mode warn` (a warning with the pinned and Stable versions and the age, always exit 0); the weekly
+  `cft-freshness.yml` (`--mode fail`) keeps opening its issue, and that issue is the only signal (`docs/CONTAINER_SECURITY.md`, "PDF
+  renderer", now states the renderer's threat model). (2) The live `npm audit` of `docker/storage` and `docker/pdf-renderer` is no longer in
+  the required `validate` check: a pull request fails only for a HIGH or CRITICAL advisory it adds itself (`scripts/audit-compare.mjs`
+  compares the change's audit with the base commit's, only for a tree whose manifests it touches), unless
+  `docker/npm-audit-exceptions.json` covers it (reviewed, owner named, at most 90 days, an expired entry covers nothing; the ledger starts
+  empty). The new weekly `dependency-audit.yml` runs the live audit and opens or closes one issue. (3) The new weekly `base-images.yml`
+  (`scripts/check-base-images.mjs`) opens one issue when a pinned official base image (node, nginx, python, postgres, debian, ubuntu) is no
+  longer published in its variant (node dropping `alpine3.23`, which Storage pins, is the first; nginx stopping 1.30; python dropping
+  `slim-bookworm`) or its tag was last pushed more than 120 days ago. A Docker Hub rate limit (429) or outage is neutral; any other
+  Docker Hub answer the check cannot use fails the run, so the age check cannot stop unseen. When one of these two issues is already open
+  and a finding is new in it, the run adds one comment with only the new lines (an edit alone notifies nobody). The keep-alive
+  workflow enables the two new schedules too. (4) The nginx pin test accepts any even minor from 1.30 in the `-alpine-slim` variant, so the
+  yearly stable move needs no test edit. (5) The `functions` image runs `edge-runtime --version` once at build, so a base that no longer
+  matches the binary's libc fails the build and not the start of every edge function; `setup.sh` rebuilds that image once (it already
+  rebuilds for this release, Operator actions item 1), and nothing else changes for an operator.
 
 ### Removed
 

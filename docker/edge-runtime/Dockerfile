@@ -17,4 +17,9 @@ RUN apt-get update \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.42-1+deb12u1' \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=upstream /usr/local/bin/edge-runtime /usr/local/bin/edge-runtime
+# The binary is only copied, so a base that no longer matches it would build and then fail when `functions` starts, with
+# every edge function down: sign-in codes, the central exchange and the PDFs (upstream moving to Debian 13 while this stage
+# stays on bookworm gives a glibc error). Run it once here, as docker/pdf-renderer's Dockerfile runs `ldd` on
+# chrome-headless-shell: if it does not link and start on this base, the build fails.
+RUN ["edge-runtime", "--version"]
 ENTRYPOINT ["edge-runtime"]

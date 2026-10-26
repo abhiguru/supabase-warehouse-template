@@ -2,10 +2,10 @@ name: Chrome for Testing freshness
 
 # The PDF renderer pins chrome-headless-shell (ARG CHS_VERSION in docker/pdf-renderer/Dockerfile).
 # Trivy cannot see that binary, so this weekly check is the control that notices a Chrome that
-# has fallen behind (docs/CONTAINER_SECURITY.md, "PDF renderer"). release.yml runs the same
-# script before a release. The check fails when the pin is more than 14 days behind the
-# current Stable; this workflow then opens or updates one issue, and closes it when the pin
-# is current again.
+# has fallen behind (docs/CONTAINER_SECURITY.md, "PDF renderer"). The check, in `--mode fail`, fails when the pin
+# is more than 14 days behind the current Stable; this workflow then opens or updates one issue, and closes it when
+# the pin is current again. This issue is the only signal: release.yml runs the same script in warn mode and never
+# blocks a tag on the Chrome pin (owner decision of 2026-10-26).
 on:
   schedule:
     - cron: '17 6 * * 1'
@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
   issues: write
+
+# A manual run next to the scheduled one must not open a second issue: the issue search can lag behind a just-created issue.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   freshness:
@@ -29,7 +34,7 @@ jobs:
         id: check
         run: |
           set +e
-          node scripts/check-cft-freshness.mjs 2> "$RUNNER_TEMP/cft.err" | tee "$RUNNER_TEMP/cft.out"
+          node scripts/check-cft-freshness.mjs --mode fail 2> "$RUNNER_TEMP/cft.err" | tee "$RUNNER_TEMP/cft.out"
           status=${PIPESTATUS[0]}
           cat "$RUNNER_TEMP/cft.err" >&2
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -49,7 +54,8 @@ jobs:
           MESSAGE: ${{ steps.check.outputs.message }}
         run: |
           title='Chrome for Testing pin is more than 14 days behind Stable'
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          # Only this workflow's own issue (the repository is public: anyone can open one with the same title).
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --author app/github-actions --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
           if [[ "$STATUS" == 1 ]]; then
             body=$(printf '%s\n\nBump `CHS_VERSION`, `CHS_SHA256` and puppeteer-core together (docs/CONTAINER_SECURITY.md, "PDF renderer"), then rebuild and scan the renderer image.\n\nRun: %s/%s/actions/runs/%s' "$MESSAGE" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
             if [[ -n "$number" ]]; then gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"

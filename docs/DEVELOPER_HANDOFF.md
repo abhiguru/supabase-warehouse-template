@@ -104,7 +104,7 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 
 | Job | Proves |
 | --- | --- |
-| `validate` | `npm test`, the container source dependency audit (`npm run check:container-dependencies`) and shell syntax. |
+| `validate` | `npm test`, and on a pull request the dependency advisories the change adds to `docker/storage` and `docker/pdf-renderer` (`scripts/audit-compare.mjs --base-ref`: it fails for an advisory the base did not have and `docker/npm-audit-exceptions.json` does not cover, for an invalid ledger, and for an audit it cannot read; the live audit is the weekly `dependency-audit.yml`), and shell syntax. |
 | `migrations` | `tests/migrations.sh` on a disposable database: idempotent ledger, security baseline, operator auth, staff/customer policies, invoice rules, enrollment status, retention. |
 | `contract` | `check-mobile-contract.mjs` against the pinned mobile commit (below). |
 | `bridge` | The sensor bridge (`docker/sensor-bridge/`) on Python 3.15 with its pinned requirements: `compileall` and the unit tests, without Docker or hubs. |
@@ -114,7 +114,7 @@ udisksctl unmount -b /dev/<partition>                                  # then un
 | `changes` | A `git diff` against the base that decides whether `pdf-renderer` runs: only when `docker/pdf-renderer/**`, `tests/golden-pdf/**`, `functions/_shared/**` (the document and report HTML templates) or `ci.yml` changed, or the base cannot be read. |
 | `pdf-renderer` | The PDF renderer (`docker/pdf-renderer/`), when `changes` says so (not a required check, so a skipped run never leaves a required check pending): its unit tests on a fake browser; the image built once; `test/integration.sh` (hardening flags, health, a real render, blocked network access, the 400/413 cases); then each golden case rendered by the same image, rasterised in a poppler container built from a fixed Debian snapshot and compared with the committed goldens at fuzz 0. |
 
-`release.yml` runs on any `v*` tag: the release readiness gate (`scripts/check-release.sh`), tests, `npm audit`, the Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs`; `cft-freshness.yml` runs it weekly and opens an issue) and Compose validation against generated operator state. Publishing a release stays manual.
+`release.yml` runs on any `v*` tag: the release readiness gate (`scripts/check-release.sh`), tests, `npm audit`, the Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a warning, never a failure; `cft-freshness.yml` runs it weekly in `--mode fail` and opens an issue) and Compose validation against generated operator state. Publishing a release stays manual.
 
 ### A self-hosted runner for `operator-install`
 

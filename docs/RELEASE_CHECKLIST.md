@@ -73,9 +73,9 @@ fresh build and scan before each release instead). Before every release tag:
 A `v*` tag runs `release.yml`: the semantic-version gate (`scripts/check-release.sh`), the release contents gate
 (`scripts/check-release-contents.sh`: the `CHANGELOG.md` section, `upgrade.sh`, `scripts/pg-major.sh`, the inherited lock and the
 functions recreate in `setup.sh`), `npm test`, `npm audit`, the
-Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs`; a Chrome more than 14 days
-behind Stable blocks the release) and a Compose validation against generated operator state. Wait for it to pass before the
-next two sections.
+Chrome for Testing freshness check of the PDF renderer (`scripts/check-cft-freshness.mjs --mode warn`: a Chrome more than 14 days
+behind Stable is a warning on the run and never blocks the tag; the weekly issue is the signal) and a Compose validation against
+generated operator state. Wait for it to pass before the next two sections.
 
 ## Upgrade rehearsal from the previous tag
 
