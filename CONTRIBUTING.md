@@ -47,9 +47,9 @@ needs a mobile change until the mobile commit exists and the pin points at it.
 Operators follow release tags, not `main` ([SECURITY.md](SECURITY.md) has the support window). The flow, step by step in
 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md): finish `CHANGELOG.md` (the `## Unreleased` section becomes
 `## vX.Y.Z (date)`; `upgrade.sh` prints the sections by that heading), tag `vX.Y.Z-rc.N` on `main` (`release.yml` validates the tag,
-including what the release must contain for `upgrade.sh`), rehearse `bash upgrade.sh vX.Y.Z-rc.N` from the previous tag on a test
+including what the release must contain for `upgrade.sh`, then builds, scans and publishes the release images and leaves a draft release with their list), rehearse `bash upgrade.sh vX.Y.Z-rc.N` from the previous tag on a test
 install, tag the same commit `vX.Y.Z` (so a failed rehearsal never leaves a published tag that has to be moved), publish the GitHub
-release note, and operators run `bash upgrade.sh vX.Y.Z`.
+release note (the draft the workflow made), and operators run `bash upgrade.sh vX.Y.Z`.
 
 ### How a security fix ships
 

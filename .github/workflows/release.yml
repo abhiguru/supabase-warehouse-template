@@ -56,6 +56,116 @@ jobs:
             --api-url https://release-validation.example.test --company 'Release Validation' \
             --provider-env "$RUNNER_TEMP/msg91-release.env"
           WAREHOUSE_STATE_DIR="$RUNNER_TEMP/release-validation-state" bash scripts/compose.sh config --quiet
-      # Publishing is an explicit maintainer step after this tag's checks pass
-      # (the first tag after the fresh public repositories is v0.3.0):
-      # gh release create v0.3.0 --verify-tag --notes-file <release-notes.md>
+      # Publishing the release note is an explicit maintainer step after this tag's checks pass (docs/RELEASE_CHECKLIST.md, "Release
+      # note"). The images are published by the next job.
+
+  # The images of the release: built without the cache, scanned with the repository's scan and exception ledger, pushed to GitHub's
+  # container registry and listed by digest in release-images.json, which is attached to the GitHub Release. A facility at this tag
+  # pulls them (scripts/build-images.sh --from-release) when the recipe in its checkout is the released one, and builds the rest.
+  # A final release whose commit is the commit of its newest pre-release (vX.Y.Z against vX.Y.Z-rc.N) builds and scans nothing: it
+  # re-tags that pre-release's images by digest and lists the same digests, so what ships is what was scanned and rehearsed
+  # (docs/RELEASE_CHECKLIST.md, "Image publication"). Any other tag builds, as above.
+  # Its own job: the checks above run with read-only permissions, only this job may write packages and release assets. The registry
+  # login comes after the build and the scan, so no step that builds or scans logs in, but the job's token (write access to the
+  # repository's contents and packages) is held by the runner from the first step to the last, so the build, the scan, the Trivy
+  # binary and the repository's scripts all run in a job that holds it. That is accepted: a read-only job for the build and the scan, handing the
+  # images to this one as an artifact, would store several GB per run, and what runs here is pinned (actions by commit, Trivy by
+  # checksum) or is this repository's own tagged code. The job has no other secret. A failure anywhere fails the run before the list
+  # is attached, and a facility then builds as it always did.
+  publish-images:
+    needs: release
+    # A fork has no right to this registry namespace; its tags are still validated by the job above.
+    if: github.repository == 'abhiguru/supabase-warehouse-template'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Throwaway operator state for the build and the scan
+        # The scan builds and scans the images of a Compose project of its own (docs/RELEASE_CHECKLIST.md, "Image scan before a
+        # release"); this is the state that names the project. The values are the isolated sentinels of the validation above.
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/msg91-publish.env"
+          cat > "$RUNNER_TEMP/msg91-publish.env" <<'ENV'
+          SMS_PROVIDER=msg91
+          MSG91_AUTH_KEY=isolated-no-delivery-key
+          MSG91_TEMPLATE_ID=000000000000000000000001
+          MSG91_PE_ID=0000000000000000001
+          MSG91_SENDER_ID=CITEST
+          ENV
+          node scripts/configure.mjs --state-dir "$RUNNER_TEMP/publish-images-state" \
+            --api-url https://release-publish.example.test --company 'Release Publish' \
+            --provider-env "$RUNNER_TEMP/msg91-publish.env"
+          echo "WAREHOUSE_STATE_DIR=$RUNNER_TEMP/publish-images-state" >> "$GITHUB_ENV"
+      - name: Reuse the images of the pre-release at this commit, if there is one
+        id: rehearsed
+        # A final tag (vX.Y.Z) on the commit of the newest vX.Y.Z-rc.N whose release-images.json can be downloaded and fits this checkout
+        # reuses those images (the next steps re-tag them); the step prints the pre-release's tag, and nothing for any other tag, which
+        # then builds and scans as before. The tags are fetched because the checkout of a tag has only that one.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force --no-tags origin 'refs/tags/v*:refs/tags/v*'
+          rc="$(bash scripts/publish-images.sh --rehearsed "$GITHUB_REF_NAME" "$RUNNER_TEMP/rehearsed-images.json")"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+      - name: Install Trivy 0.76.0
+        if: steps.rehearsed.outputs.rc == ''
+        # The release archive, checked against the SHA-256 of trivy_0.76.0_checksums.txt (Linux-64bit.tar.gz) as read on 2026-10-26.
+        # docs/RELEASE_CHECKLIST.md asks for 0.74.0 or later; moving the version means moving the checksum with it.
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz
+          echo "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/trivy"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/trivy" trivy
+          echo "$RUNNER_TEMP/trivy" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/trivy/trivy" --version
+      - name: Build every image without the cache and scan it
+        if: steps.rehearsed.outputs.rc == ''
+        # The release checklist's scan (docs/CONTAINER_SECURITY.md, "Exception ledger and the image scan"): a HIGH or CRITICAL row that
+        # no valid entry of docker/image-exceptions.json covers, an expired entry or a failed scan fails this step, so nothing below
+        # runs and nothing is published.
+        run: npm run scan:images
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Push the images that were scanned and write release-images.json
+        if: steps.rehearsed.outputs.rc == ''
+        run: bash scripts/publish-images.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-images.json"
+      - name: Re-tag the images of the pre-release and write release-images.json
+        # Nothing is built and nothing is scanned: the pre-release's images were scanned when it was published, and these are the same
+        # bytes under the final tag, with the same digests in the list.
+        if: steps.rehearsed.outputs.rc != ''
+        env:
+          REHEARSED: ${{ steps.rehearsed.outputs.rc }}
+        run: bash scripts/publish-images.sh --retag "$GITHUB_REF_NAME" "$REHEARSED" "$RUNNER_TEMP/rehearsed-images.json" "$RUNNER_TEMP/release-images.json"
+      - name: Check that the images pull without credentials
+        # A package GitHub creates on the first push can start private. A facility could not pull it and would build silently, which
+        # defeats the point: this run fails instead, before the list is attached. After the first release, set each package under
+        # github.com/abhiguru?tab=packages to Public (docs/RELEASE_CHECKLIST.md), then run this workflow again.
+        run: |
+          docker logout ghcr.io
+          for ref in $(jq -r '.images[].ref' "$RUNNER_TEMP/release-images.json"); do
+            docker manifest inspect "$ref" > /dev/null || { echo "::error::$ref cannot be read without credentials: make the package public (docs/RELEASE_CHECKLIST.md, 'Image publication')."; exit 1; }
+            echo "Readable without credentials: $ref"
+          done
+      - name: Attach release-images.json to the GitHub Release
+        # The release note is the maintainer's: when no release exists for the tag yet, a draft is made for the file, and the maintainer
+        # publishes that draft with the note (docs/RELEASE_CHECKLIST.md, "Release note"). A facility fetches the file from a published
+        # release only; before that it builds, which is the old behaviour.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            prerelease=()
+            [[ "${GITHUB_REF_NAME%%+*}" != *-* ]] || prerelease=(--prerelease)
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft "${prerelease[@]}" --title "$GITHUB_REF_NAME" \
+              --notes "Draft made by the release workflow for the image list. Replace this note, then publish the release."
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-images.json" --repo "$GITHUB_REPOSITORY" --clobber

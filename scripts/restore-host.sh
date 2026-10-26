@@ -11,8 +11,9 @@
 #
 #   npm run db:restore-host -- --state-dir /srv/warehouse/acme --backup-key KEYFILE --yes [--images DIR] BACKUP
 #
-# --images DIR is a copy of the lost host's <state>/images folder (scripts/build-images.sh writes the images it builds
-# there; it is not part of a backup). Without the option, an `images` folder next to BACKUP is used. The tarballs that its
+# --images DIR is a copy of the lost host's <state>/images folder (scripts/build-images.sh writes the images it builds or pulls
+# there; it is not part of a backup, but scripts/backup-usb.sh copies it to the drive beside its archives). Without the option, an
+# `images` folder next to BACKUP is used, which is where the drive has it. The tarballs that its
 # build record (image-recipes.sha256) names are loaded with `docker load` and the record adopted before the restore starts,
 # so the db, storage, functions and PDF images are not built again (a build needs Docker Hub, Debian, npm and Chrome for Testing to answer). A tarball
 # that does not load is reported and that image is built as usual. Images that are pulled, not built, are pulled as usual.
@@ -20,7 +21,9 @@
 # SHA256SUMS.hmac, made by build-images.sh with the backup key, is checked with the key passed as --backup-key (backup_authenticate)
 # before anything is loaded. A folder named with --images that does not authenticate stops the restore before anything is
 # created; one found next to the backup is ignored (with the reason). With --allow-unsigned (no key to check with) saved images
-# are not used at all: the images are built as usual.
+# are not used at all: the images are built as usual. When this checkout is exactly at a release tag, the images the saved ones do not
+# cover are pulled by digest from the release (build-images.sh --from-release, as setup.sh does) before restore.sh runs, and only an
+# image the release did not publish for this recipe is built; restore.sh itself is unchanged and builds whatever is still missing.
 #
 # BACKUP is a backup directory, or a `.tar` or encrypted `.tar.enc` archive
 # written by backup-usb.sh (its `.sha256` and `.hmac` files must sit next to it;
@@ -314,6 +317,15 @@ if [[ -n "$images" ]]; then
       || echo 'Warning: the build record of the saved images could not be adopted; the images are built as usual.' >&2
   fi
   if ((loaded == 0)); then echo "No saved image could be loaded from $images; the images are built as usual."; fi
+fi
+# At a release tag, the images the saved ones did not supply are pulled by digest from the release, as setup.sh does, so that the restore
+# below (restore.sh builds what is missing, and compose up builds the rest) builds only what the release did not publish for this
+# recipe. An image that is already recorded (adopted above) is not touched. A checkout that is not at a tag skips this and builds as always.
+# A failure here is not the restore's failure: restore.sh runs its own build step and says what is wrong if that fails too.
+if [[ -n "$(git -C "$ROOT" tag --points-at HEAD --list 'v[0-9]*' 2>/dev/null || true)" ]]; then
+  if ! WAREHOUSE_STATE_DIR="$state" bash "$ROOT/scripts/build-images.sh" --from-release; then
+    echo 'Warning: the images of the release could not be pulled or built here (message above); the restore below builds what is missing.' >&2
+  fi
 fi
 # 6. The database and storage replay is the in-place restore, unchanged.
 restore_args=(--yes --relocated)

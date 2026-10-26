@@ -408,6 +408,39 @@ state: every image is rebuilt with `--no-cache` and gets a new image ID, so on a
 start would pick up. `scripts/scan-images.sh` refuses while the state's project has any container, running or stopped.
 Remove the throwaway project's `<project>-*` images afterwards.
 
+**Release images: what was scanned is what runs (owner decision of 2026-10-26).** For a release tag, the `publish-images` job of
+`.github/workflows/release.yml` runs this gate on the tagged commit (`npm run scan:images`, Trivy pinned and checksum-verified in the
+workflow, the ledger above; a row no valid entry covers, an expired entry or a failed scan fails the job) and only then logs in to the
+registry and pushes the images it just scanned, as `ghcr.io/abhiguru/supabase-warehouse-template/<service>:<tag>`
+(`scripts/publish-images.sh`; the services that are pulled, such as `rest`, are not republished). Each image carries the labels
+`org.opencontainers.image.revision` (the commit) and `org.opencontainers.image.version` (the tag), added to the scanned image without
+changing its layers (the script checks that). A final release on the commit of its newest release candidate builds and scans nothing: it
+re-tags the candidate's images by digest, so the bytes released are the bytes that were scanned and rehearsed for the candidate
+([RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md#image-publication)). `release-images.json`, attached to the GitHub Release, lists each image by
+digest next to the fingerprint of its recipe. A facility at that tag pulls an image by that digest when its checkout's recipe has that
+fingerprint (`scripts/build-images.sh --from-release`, run by `setup.sh`; [OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade)),
+checks the digest of the image it got and that its revision label is its checkout's commit, so the bytes that run are the bytes the scan read.
+
+**The trust statement, in full.** What a facility relies on, in this order: (1) the maintainer's GitHub account and TLS to `github.com` and
+`ghcr.io`, as for `git fetch` of the tag; (2) the digest, which pins the content of an image once the list is trusted; (3) the release being
+**immutable**: with GitHub's immutable releases switched on for the repository (the release checklist makes it a step before the first
+candidate), a published release's tag and assets, `release-images.json` among them, cannot be changed or deleted afterwards; (4) the
+revision label: the facility refuses an image built from any other commit than its own checkout's, which closes the substitution of an older
+release's genuine image for a current one in a replaced list. It also refuses a file for another release or commit and any reference
+outside `ghcr.io/abhiguru/supabase-warehouse-template`. **What it does not do:** no cryptographic signature of the images or the list is
+checked on the host (no `cosign` or attestation tool is installed there), so the label is a statement by whoever pushed the image, not proof
+of who built it; a maintainer account that is taken over can publish a new release with images of its own, exactly as it could publish new
+code. Before immutable releases are switched on, the list is an ordinary release asset that anyone with write access to the repository's
+releases can replace. A facility whose checkout is not the released tree (a changed recipe, `main`, a branch), or that cannot fetch the
+file or an image, builds the image from the same recipe on its own host, as before: that image has the packages of the day it was built,
+and is not the scanned one. The scan of the release is then the check of the recipe, and the weekly base-image and dependency checks and each
+release's own scan stay the check of what a rebuild gets.
+
+**Release-day packages.** A published image keeps the operating-system packages of the day it was built, and nothing rescans a published
+digest. A facility that installs an old tag later gets older packages than a build on its host would, and a final release re-tags the images of
+its candidate, so its packages are those of the candidate's day. What is new is found by the weekly base-image and dependency checks and by the
+scan of the next release, not by the published image.
+
 **Build-date drift (decision D5).** Recipes that run `apt-get` or `apk` read live repositories, so two builds on different
 days can differ; base-image digests, npm lockfiles and hashed Python requirements are fixed. Build with `--no-cache` before
 reading scan numbers, record the build date with the scan, and cut no release from cached images (see the

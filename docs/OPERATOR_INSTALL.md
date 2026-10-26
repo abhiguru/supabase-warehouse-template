@@ -63,7 +63,7 @@ runtime is never removed by accident.
 
 Size the disk under `$WAREHOUSE_STATE_DIR` for **at least 3 × the photos + 3 × the database + the Docker images + 20 %**, where the
 photos are `data/storage`, the database is `data/db`, and the images are what Docker keeps for this installation (`docker system df`; the
-copy that `build-images.sh` saves in `<state>/images` is about 2.5 GiB more). The three copies are these: the live files; what the
+copy that `build-images.sh` saves in `<state>/images` is about 2.5 GiB more, and the same again on a USB drive while it is replaced). The three copies are these: the live files; what the
 backups hold besides them (**one full copy of the photos of their own**: a backup never links to the live files, only the nights'
 backups link to each other, so an unchanged photo is stored once for all the nights, plus every photo that was changed or deleted since
 the oldest night kept, plus one dump of the database for each night kept); and the second copy that the in-place restore writes next to
@@ -1321,25 +1321,28 @@ The USB drive ([below](#usb-backup-drive)) is the one copy that leaves the host:
 host loss you have the data as of the last time the drive was plugged in. Never use `down -v` on a production instance. The optional CUPS and sensor bridge volumes are not in
 this backup either (the bridge's volume holds only readings not yet delivered).
 
-**`$WAREHOUSE_STATE_DIR/images` is not in a backup, and the USB copy does not take it.** It holds the images this
-installation built (`db`, `functions`, `storage`, `pdf-renderer`, and any optional one in use) as `docker save` tarballs,
-written by `scripts/build-images.sh` after every successful build, with a copy of the build record. They are what lets a
-lost-host restore run without Docker Hub, Debian, npm and Chrome for Testing answering (they need about 2.5 GiB of disk;
+**`$WAREHOUSE_STATE_DIR/images` is not in a backup; the USB copy carries it beside the archives.** It holds the images this
+installation uses and built or pulled (`db`, `functions`, `storage`, `pdf-renderer`, and any optional one in use) as `docker save` tarballs,
+written by `scripts/build-images.sh` after every successful build or pull, with a copy of the build record. They are what lets a
+lost-host restore run without Debian, npm and Chrome for Testing answering (Docker Hub is still needed for the official postgres image that the restore check runs and for PostgREST, which are pulled, not built; they need about 2.5 GiB of disk;
 a save that would leave under 5 GiB free, or less than the size of the newest backup when that is larger, is skipped with a
 warning, and the tarball of that service is removed because the record then names a newer image than it holds; tarballs of
 services the record no longer names are removed too). The folder is **signed like a backup**: `SHA256SUMS` lists every file in it and
 `SHA256SUMS.hmac` is made with the [backup key](#backup-key), because a loaded image runs on the rebuilt host with every
 secret. `db:restore-host` loads nothing from a folder whose signature does not check out with the key you give it
-(`--backup-key`), and never with `--allow-unsigned`. Copy the folder whole, as it is, and add no file of your own. If you want
-that, copy the folder with the drive whenever it changes (after each upgrade that rebuilt images):
+(`--backup-key`), and never with `--allow-unsigned`. `scripts/backup-usb.sh` copies the folder whole, as it is, to
+`warehouse-backups/<state name>/images/` on the [USB drive](#usb-backup-drive), next to the archives, where `db:restore-host`
+looks for it: once, and again only when the folder's signed list changes (after an upgrade that built or pulled an image). Add no file of your own to the
+folder. An installation that was built before images were saved has no folder yet; write it once, and the next copy to the drive takes it:
 
 ```bash
 bash scripts/build-images.sh --save     # once, on an installation built before images were saved
-mkdir -p "$DRIVE/warehouse-backups/<state name>/images"
-cp -r --preserve=timestamps "$WAREHOUSE_STATE_DIR/images/." "$DRIVE/warehouse-backups/<state name>/images/"
 ```
 
-(Not `cp -a`: on the exFAT drive it cannot keep ownership and permissions, reports errors and exits 1 although the files were copied.)
+The images are not encrypted on the drive and are not inside the archives: they are made from this repository's recipes (or are the
+released images, below) and hold nothing of the installation, so there is nothing to protect by encrypting them, and every archive would
+otherwise carry the same few GiB again. What protects the rebuilt host is the signature. Keep the drive away from the host as for the archives; a drive
+too small for the images next to the archives fails the run with the sizes (no archive is deleted to make room for them).
 
 The images that Compose pulls (PostgREST) are not saved; a rebuilt host pulls them by digest. The gateway is built from `docker/nginx`, so its image is saved with the others (it is about 13 MB).
 
@@ -1432,14 +1435,14 @@ copy once: put it in a file and run
 The restored installation keeps the same key. If the key itself may have been disclosed: move `config/backup.key` aside
 (keep it with the old backups, which only verify with it), take a new `db:backup` (it creates a new key), store the new
 copy and confirm it (`bash scripts/backup-key-escrow.sh show`; the old confirmation is for the old key and no longer counts), and
-enroll each USB drive again. On each drive, also move the archives written before the change
+run `bash scripts/build-images.sh --save` (it builds nothing; it signs the saved images in `$WAREHOUSE_STATE_DIR/images` again with the new key, which the USB run needs before it copies them), and enroll each USB drive again. On each drive, also move the archives written before the change
 (`warehouse-<utc>.tar*` with their `.sha256` and `.hmac` files) into another folder, for example
 `warehouse-backups/<state name>/old-key-<date>/`: they carry signatures of the old key, and as long as an older backup is
 still under `backups/` the USB run would report its archive as "not signed with the current backup key" on every attach.
 **A run never prunes an archive signed with another key** (it cannot tell one from a file somebody planted, so it names it and leaves it),
 and a run never looks into sub-folders, so these archives take space on the drive until you delete them: once you no longer need the
 backups they hold (they open only with the old key, which you must keep for as long as you keep them), delete them yourself. A drive
-that holds them next to the new archives reaches `drive too small` sooner.
+that holds them next to the new archives reaches `drive too small` sooner. Move the drive's old `images` folder aside with them (it is signed with the old key and a `db:restore-host` with the new key would ignore it); the next run copies the newly signed images. Until `build-images.sh --save` has been run, the USB run still copies the archives and prunes, and says "saved images NOT copied".
 Do the same after a `db:restore-host --allow-unsigned` that was run without the key (its first backup creates a new one).
 
 ### USB backup drive
@@ -1454,6 +1457,11 @@ stored files' content types kept inside, and the photos written out in full: the
 you typed `--no-encrypt` (below). The drive keeps the newest three archives of this installation and deletes older ones, so it needs
 room for about three times the photos plus the databases (the oldest archive is deleted early when a new one would not fit), and **the point you can recover to is the last time the drive was plugged
 in**: everything recorded after it is lost with the host.
+
+The drive also carries the installation's **saved images** (`$WAREHOUSE_STATE_DIR/images`, about 2.5 GiB) in a folder `images` beside
+the archives, once and not once per archive, so it needs that much room more ([Backup and restore](#backup-and-restore)), and as much again free while a changed set is written beside the old one (about 5 GiB at each image change; the old set is deleted only after the new one has been read back). The copy is the last step of a run, after the archive is on the drive and the drive is pruned: when the images do not fit, the archive copy still counts as successful, the run says "saved images NOT copied" and `npm run doctor` shows it. The enrolment
+output says how much the images add now. A drive enrolled before this release needs no new enrolment or setup run: the run copies the
+folder as soon as it exists (`bash scripts/build-images.sh --save` writes it on an installation that has none).
 
 The operator's only job is to **attach the drive**. `scripts/backup-usb.sh` installs a udev rule and a systemd unit once;
 after that, attaching an **enrolled** drive takes a fresh `db:backup` only if the newest verified backup is 20 hours old or more
@@ -1517,7 +1525,8 @@ that imitates it receives nothing.
    `npm run doctor` warns when the last run failed, the last successful copy is older than 7 days
    (`WAREHOUSE_USB_BACKUP_MAX_AGE_DAYS`), or archives are encrypted and the [key copy](#backup-key) is not confirmed.
 
-**What a run deletes, and what it never does.** After a run that finished without a failure, the drive keeps the newest
+**What a run deletes, and what it never does.** The `images` folder is replaced whole when the installation's folder changes (the new
+one is written beside it and read back first) and is never pruned; a run deletes no archive to make room for it. After a run that finished without a failure, the drive keeps the newest
 three valid archives of this installation (`--keep N`) and deletes the older ones with their `.sha256` and `.hmac` files. Valid
 means the bytes match the checksum and the signature is one of the current backup key. An archive that is damaged, has no signature,
 or was signed with another key (after a key replacement, see [Backup key](#backup-key)) is **reported by name and never counted or
@@ -1731,8 +1740,13 @@ need your private copy of it (the tunnel `config.yml` plus its credentials
 JSON, or the dashboard token file). If this facility's central sign-in reads its
 keys from a file, backups taken with this release carry that file too
 (`central-jwks.json`); for older backups keep the key set the association sent
-you (step 7). If you kept a copy of the old host's `images` folder
-([Backup and restore](#backup-and-restore)), bring it too (step 3). **Do not run `setup.sh` before the restore**: on the new host it
+you (step 7). The drive carries the old host's saved images beside the archive (`warehouse-backups/<state name>/images`,
+[Backup and restore](#backup-and-restore)), so **no Debian, npm or Chrome for Testing mirror has to answer** to rebuild the images of a lost host. **Docker Hub is still needed:** the restore
+check runs the official postgres image (`scripts/db-image.sh`) and Compose pulls PostgREST from it, and neither is in the saved images. A drive that
+was written before this release has no such folder: bring a copy of the old host's `images` folder if you have one (step 3). Without
+saved images, a checkout that is exactly at a release tag pulls the images the release published for its recipes (`restore-host` runs
+`build-images.sh --from-release` before the restore, which needs GitHub and `ghcr.io`) and builds the rest; any other checkout builds them all
+(the fallback below). **Do not run `setup.sh` before the restore**: on the new host it
 would create a new, different warehouse. After `db:restore-host` has finished,
 `setup.sh` on the restored state keeps the identity. Step 7 needs it, and so
 does step 8 when the installation sent alerts to Slack; when both apply,
@@ -1768,15 +1782,20 @@ one rerun with both sets of options does.
      "$DRIVE/warehouse-backups/<state name>/warehouse-<utc>.tar.enc"
    ```
 
-   The built images come from the saved tarballs when you have them: an `images` folder next to the archive (as in the
-   copy command under [Backup and restore](#backup-and-restore)) is used by itself when it holds the build record
+   The built images come from the saved tarballs when you have them: the `images` folder next to the archive (the USB backup
+   puts it there, [Backup and restore](#backup-and-restore)) is used by itself when it holds the build record
    `image-recipes.sha256`, or name another folder with `--images DIR`; only the tarballs that record names are loaded, and only
    when the folder's signature (`SHA256SUMS.hmac`) checks out with your backup key: a folder named with `--images` that does not
    is refused before anything is created, one found next to the archive is ignored with the reason, and with `--allow-unsigned`
    saved images are not used at all. They are loaded with `docker load` and their build record adopted before the restore starts, so the
    `db`, `storage`, `functions` and `pdf-renderer` images are not built again (a build needs Docker Hub, Debian, npm and
    Chrome for Testing); a tarball that does not load is reported and that image is built as usual, and so is every image
-   whose recipe in this checkout differs from the saved one. Without saved images the first start rebuilds all of them.
+   whose recipe in this checkout differs from the saved one. Then, when the checkout is exactly at a release tag (the code you cloned in
+   step 1 was a tag), `restore-host` runs `bash scripts/build-images.sh --from-release` for the new state: an image that the saved images
+   did not supply is pulled by digest from the release if the release published it for the same recipe ([Rerun and upgrade](#rerun-and-upgrade);
+   it needs GitHub and `ghcr.io`), and the rest is built here as always; if that fails it says so and the restore below builds what is
+   missing. A checkout that is not at a tag (a branch, `main`) builds every image that the saved ones do not cover. `scripts/restore.sh`
+   itself is unchanged: it runs its own build step afterwards, which finds nothing left to build when the pulls succeeded.
 
    `--yes` confirms that the original host is permanently off. Before it creates
    the state the command checks, in this order: the archive, unopened, against its
@@ -2186,8 +2205,8 @@ built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and rou
   changes nothing. Look at what it names, export what you need, empty those objects, and run `setup.sh` again. A database that
   never held such data passes without a message.
 
-**Setup rebuilds the images whose recipes changed.** Before it starts
-anything, `setup.sh` runs `scripts/build-images.sh`. That script compares each
+**Setup rebuilds the images whose recipes changed, or pulls the released ones.** Before it starts
+anything, `setup.sh` runs `scripts/build-images.sh --from-release`. That script compares each
 image recipe (the files under its `docker/` build directory, its Dockerfile
 path, build target and build arguments) with a record of what it built last
 (`config/image-recipes.sha256` in the state directory) and rebuilds the images
@@ -2198,10 +2217,26 @@ start then replaces only the containers whose image changed. What to expect:
   every image in use once. That needs the network and can take a good while on
   a small machine; later reruns print "Images match their recipes; nothing to
   rebuild." and need no network.
-- After a build, every image it built is also written to `$WAREHOUSE_STATE_DIR/images/<service>.tar` (an older tarball of
-  that service is replaced) and the folder is signed with the backup key. Nothing else keeps the built images; see [Backup and restore](#backup-and-restore) for what
-  they are for and why they are not in a backup. A save that fails is a warning, not a failed build.
-- A build needs the network when a recipe changed. If it fails, setup stops
+- **At a release tag, an image that needs building is pulled when the release published it.** A checkout exactly at a tag
+  (`vX.Y.Z`, which is what `upgrade.sh vX.Y.Z` leaves and what a fresh clone of the tag is) downloads that release's
+  `release-images.json` from the GitHub Release (https, one file, 60 seconds). The release workflow built every image of the tag
+  without the build cache, scanned it with the exception ledger ([CONTAINER_SECURITY.md](CONTAINER_SECURITY.md#exception-ledger-and-the-image-scan))
+  and pushed it to `ghcr.io/abhiguru/supabase-warehouse-template/<service>`; the file lists each image by digest with the fingerprint of
+  its recipe. For each service setup would build whose fingerprint equals the one in the file, it runs `docker pull` of
+  `<service>@sha256:<digest>`, checks that the image on the host carries that digest, tags it `<project>-<service>` and records it as a build
+  would, so nothing downstream differs. It prints which services were pulled and which built, for example
+  `Pulled 4 image(s) from the release (db functions pdf-renderer storage) and built 1 here (gateway).` Everything else builds here as
+  always, with one line that says why: a checkout that is not at a tag (`main`, a branch, a copy you changed), a release whose file
+  is missing or cannot be read (the release is still a draft, GitHub or `ghcr.io` cannot be reached), a file that names another
+  commit or release, or a reference outside `ghcr.io/abhiguru/supabase-warehouse-template`, a recipe in your checkout that is not
+  the released one (a file below `docker/<service>` is not as released: changed, but also untracked or ignored, such as a `.env` left in `docker/sensor-bridge` or a `__pycache__` folder), an image that cannot be pulled, or one whose digest is not the one asked
+  for. Nothing is fetched when no image needs building. Pulling needs about the same disk and less time than building; it
+  does not need Debian, npm or Chrome for Testing to answer. The trust is GitHub's account of the repository, as for `git fetch`: the
+  digest pins the content, the file and the images come from the maintainer's account over TLS, and nothing new is installed on the host.
+- After a build or a pull, every image is also written to `$WAREHOUSE_STATE_DIR/images/<service>.tar` (an older tarball of
+  that service is replaced) and the folder is signed with the backup key. See [Backup and restore](#backup-and-restore) for what
+  they are for; the USB backup copies the folder to the drive. A save that fails is a warning, not a failed build.
+- A build, or a pull, needs the network when a recipe changed. If a build fails, setup stops
   before it starts or stops anything and records nothing as built. Running
   services stay as they are. Run setup again when the network is back rather
   than leaving the installation half way.
@@ -2225,13 +2260,17 @@ start then replaces only the containers whose image changed. What to expect:
   does not match this checkout is left running with the warning "the
   <service> image does not match this checkout"; `bash scripts/build-images.sh`
   or the next setup rerun builds it, and the following start replaces it.
+- An optional service switched on after setup (`compose --profile printing up`, `scripts/pooler.sh`) is built here by Compose on its
+  first start, from the recipes in the checkout; it is not pulled from the release, because the pull belongs to setup's build step, which
+  covers the images in use at that time.
 - `start.sh` never builds: a host that restarts offline starts what it has.
 - Every built image is tagged for its installation (`<project>-<service>`).
 
 The build cache also keeps the operating-system packages of the day an image
 was first built. Now and then, rebuild without it:
 `bash scripts/build-images.sh --no-cache`, then `bash start.sh`.
-`bash scripts/build-images.sh --all` rebuilds everything in use with the cache.
+`bash scripts/build-images.sh --all` rebuilds everything in use with the cache. Both build here, from the recipes in the checkout, and never pull;
+`bash scripts/build-images.sh --from-release` is what `setup.sh` runs (it can be run alone, under the operator lock).
 
 Update the checkout under `umask 022`, as for the first clone. Git writes the
 files it changes with the current umask: Ubuntu's default `0002` makes them

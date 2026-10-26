@@ -108,8 +108,9 @@ bash "$ROOT/scripts/network-preflight.sh"
 # Before the image is rebuilt or the db container recreated: a PostgreSQL 15 database must go through the baseline reload.
 bash "$ROOT/scripts/db-version-preflight.sh"
 # `up` builds only a missing image. Rebuild those whose recipes changed, so that
-# an upgraded checkout does not keep the images of the first installation.
-bash "$ROOT/scripts/build-images.sh"
+# an upgraded checkout does not keep the images of the first installation. A checkout at a release tag pulls the images the
+# release workflow built and scanned (by digest) where the recipe is the released one, and builds the rest here.
+bash "$ROOT/scripts/build-images.sh" --from-release
 # Setup brings the stack up: the boot unit and the checker's self-healing may act again (stop.sh wrote this file).
 rm -f -- "$STATE/config/stopped-by-operator"
 # --remove-orphans stops the old realtime container before the baseline reload's cluster replaces the old one.

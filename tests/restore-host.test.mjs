@@ -179,6 +179,75 @@ test('restore-host loads the images saved beside the backup, adopts their build 
   } finally { clean(f); }
 });
 
+// At a release tag the recovered checkout pulls the release's images before restore.sh builds what is missing (build-images.sh --from-release).
+// The stand-in build-images.sh records its arguments and state, and whether restore.sh had run yet.
+function releaseCheckout(f, { tag }) {
+  const git = (...args) => assert.equal(spawnSync('git', ['-C', f.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { encoding: 'utf8' }).status, 0, args.join(' '));
+  git('init', '-q'); git('add', 'scripts/restore.sh'); git('commit', '-q', '-m', 'release');
+  if (tag) git('tag', tag);
+  writeFileSync(join(f.root, 'scripts/build-images.sh'), `#!/usr/bin/env bash
+printf '%s\\n' "STATE=$WAREHOUSE_STATE_DIR ARGS=$* RESTORE_RAN=$([ -s "$RESTORE_LOG" ] && echo yes || echo no)" >> "$RESTORE_LOG.images"
+[[ "\${FAKE_IMAGES_FAIL:-}" != yes ]] || { echo 'fake: nothing could be pulled or built' >&2; exit 1; }
+`);
+}
+const imagesCalls = f => existsSync(join(f.scratch, 'restore.log.images')) ? readFileSync(join(f.scratch, 'restore.log.images'), 'utf8') : '';
+
+test('restore-host at a release tag runs build-images.sh --from-release for the new state before restore.sh; elsewhere it does not', () => {
+  const tagged = fixture('warehouse-restore-host-tag-');
+  const untagged = fixture('warehouse-restore-host-notag-');
+  try {
+    releaseCheckout(tagged, { tag: 'v0.7.0' });
+    const result = tagged.run(['--state-dir', tagged.state, '--yes', tagged.backup]);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(imagesCalls(tagged), `STATE=${tagged.state} ARGS=--from-release RESTORE_RAN=no\n`, 'once, with the new state, before restore.sh');
+    assert.ok(result.restoreCalls.includes('--relocated'), 'restore.sh still ran, unchanged');
+    // A tag that is not a release (no v<digit>) and an untagged commit never fetch.
+    releaseCheckout(untagged, { tag: null });
+    const plain = untagged.run(['--state-dir', untagged.state, '--yes', untagged.backup]);
+    assert.equal(plain.status, 0, plain.stderr + plain.stdout);
+    assert.equal(imagesCalls(untagged), '', 'a checkout that is not at a release tag does not run it');
+  } finally { clean(tagged); clean(untagged); }
+});
+
+test('restore-host at a release tag goes on to restore.sh when the images of the release could not be pulled or built, and says so', () => {
+  const f = fixture('warehouse-restore-host-tagfail-');
+  try {
+    releaseCheckout(f, { tag: 'v0.7.0-rc.2' });
+    const result = f.run(['--state-dir', f.state, '--yes', f.backup], { FAKE_IMAGES_FAIL: 'yes' });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(result.stderr, /fake: nothing could be pulled or built/);
+    assert.match(result.stderr, /Warning: the images of the release could not be pulled or built here \(message above\); the restore below builds what is missing\./);
+    assert.ok(result.restoreCalls.includes('--relocated'), 'the restore is not stopped by it');
+  } finally { clean(f); }
+});
+
+test('restore-host from an encrypted archive on the USB drive loads the images that backup-usb.sh copied beside it (warehouse-backups/<state>/images), and only after they authenticate', () => {
+  const f = fixture('warehouse-restore-host-usb-images-');
+  try {
+    // The layout of the drive: the archive and its sidecar files, and an `images` folder next to them, as scripts/backup-usb.sh writes it.
+    const archive = f.encrypted();
+    const images = savedImages(join(dirname(archive), 'images'));
+    rmSync(f.backup, { recursive: true });
+    const result = f.run(['--state-dir', f.state, '--yes', archive], { FAKE_LOADED_IDS: `${ID.db} ${ID.functions} ${ID.storage}` });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(dockerCalls(f).filter(c => c.startsWith('load ')), [`load --input ${images}/db.tar`, `load --input ${images}/functions.tar`, `load --input ${images}/storage.tar`]);
+    assert.match(result.stdout, /Loaded the saved image db\.tar\./);
+    assert.equal(readFileSync(join(f.state, 'config/image-recipes.sha256'), 'utf8'), `${'1'.repeat(64)}  db  ${ID.db}\n${'2'.repeat(64)}  functions  ${ID.functions}\n${'3'.repeat(64)}  storage  ${ID.storage}\n`);
+    // A copy on the drive that was changed after it was signed is not loaded: the images are built as usual.
+    const g = fixture('warehouse-restore-host-usb-images-changed-');
+    try {
+      const encrypted = g.encrypted();
+      const folder = savedImages(join(dirname(encrypted), 'images'));
+      writeFileSync(join(folder, 'db.tar'), 'changed on the drive\n');
+      rmSync(g.backup, { recursive: true });
+      const refused = g.run(['--state-dir', g.state, '--yes', encrypted], { FAKE_LOADED_IDS: ID.db });
+      assert.equal(refused.status, 0, refused.stderr + refused.stdout);
+      assert.deepEqual(dockerCalls(g).filter(c => c.startsWith('load ')), []);
+      assert.match(refused.stderr, /Note: the saved images next to the backup \(.*images\) do not authenticate with the backup key \(message above\), so they are not used\. The images are built as usual\./);
+    } finally { clean(g); }
+  } finally { clean(f); }
+});
+
 test('restore-host --images names the folder, and nothing is loaded when there is none, when it is empty or when no tarball loads', () => {
   const f = fixture('warehouse-restore-host-images-opt-');
   try {
