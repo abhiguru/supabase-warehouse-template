@@ -88,6 +88,40 @@ test('the way back is the complete recipe, in order, with the recorded values', 
   } finally { w.cleanup(); }
 });
 
+test('a record that names the saved images puts them back before the restore; the new fields are read, and a record without them gets the old way back', () => {
+  const w = world(record({ preflight: 'ok', pre_images: 'pre-v0.6.0' }));
+  try {
+    const r = readUpgradeRecord(w.state);
+    assert.equal(r.preflight, 'ok');
+    assert.equal(r.preImages, 'pre-v0.6.0');
+    const text = rollbackLines(r).join('\n');
+    // After the old release's setup (which finds the images current and so saves none) the folder the lost-host restore loads is written
+    // again, from the images that now run; before the lines that follow it.
+    const order = ['bash stop.sh', "bash scripts/pre-images.sh restore 'v0.6.0'", 'npm run db:restore -- --yes --restore-config', 'bash setup.sh --operator',
+      'bash scripts/build-images.sh --save', 'bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions', 'node scripts/doctor.mjs --local'];
+    let at = -1;
+    for (const part of order) {
+      const found = text.indexOf(part, at + 1);
+      assert.ok(found > at, `${part}\n${text}`);
+      at = found;
+    }
+    assert.match(text, /puts back the images the old release ran, pre-v0\.6\.0, and their build record, so that setup normally builds nothing/);
+    assert.match(text, /setup of the old release finds its images current/);
+    assert.ok(text.includes(`writes the old release's images and their signed build record to ${join(w.state, 'images')} again`), 'it says which folder');
+    // Records without the fields (an older upgrade.sh), with `none`, or with a value that is no tag: no images line, and the setup note of old.
+    for (const extra of [{}, { pre_images: 'none' }, { pre_images: '' }, { pre_images: 'pre-v0.6.0; rm -rf /' }, { pre_images: 'v0.6.0' }]) {
+      writeFileSync(join(w.state, 'config/upgrade-in-progress'), record(extra));
+      const old = readUpgradeRecord(w.state);
+      assert.equal(old.preImages, '', JSON.stringify(extra));
+      const oldText = rollbackLines(old).join('\n');
+      assert.doesNotMatch(oldText, /pre-images\.sh/, JSON.stringify(extra));
+      assert.doesNotMatch(oldText, /build-images\.sh --save/, `${JSON.stringify(extra)}: the old release's setup rebuilds and saves them itself`);
+      assert.match(oldText, /setup of the old release rebuilds the images that the new release changed/);
+      assert.match(oldText, /npm run db:restore -- --yes --restore-config/);
+    }
+  } finally { w.cleanup(); }
+});
+
 test('the command line: message is quiet and exits 0 without a record, report and rollback say so and exit 1', () => {
   const none = world();
   const some = world(record());

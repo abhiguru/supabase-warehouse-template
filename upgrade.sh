@@ -2,32 +2,41 @@
 # One command to move an installed facility to a tagged release (docs/OPERATOR_INSTALL.md, "Rerun and upgrade").
 #
 #   export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-#   bash upgrade.sh [--dry-run] vX.Y.Z [-- SETUP_OPTION VALUE ...]
-#   bash upgrade.sh [--dry-run] --ref COMMIT_OR_BRANCH            (tests and development only; no support)
+#   bash upgrade.sh [--dry-run] [--yes] vX.Y.Z [-- SETUP_OPTION VALUE ...]
+#   bash upgrade.sh [--dry-run] [--yes] --ref COMMIT_OR_BRANCH    (tests and development only; no support)
 #
 # Under the operator lock, from start to end:
-#   1. back up (scripts/backup.sh) and prove the backup restores (scripts/verify-restore.sh), on the OLD release
-#   2. fetch the tags and check the tag out (detached HEAD, the same as the "Major PostgreSQL upgrade" procedure)
+#   0. run scripts/upgrade-preflight.sh of the NEW release (read out of its commit with `git archive`): it prints the operator
+#      actions of CHANGELOG.md for the whole span (and, when there are some, standard input is a terminal and --yes was not given,
+#      waits for Enter: the moment to do what says "before"), checks the host minimums and the oldest release it accepts an upgrade
+#      from, and checks that the way back would fit on the disk. It may refuse; nothing has been changed then. A release from before
+#      the preflight has none, and only the checks of this script are made
+#   1. back up (scripts/backup.sh) and prove the backup restores (scripts/verify-restore.sh), on the OLD release; the verified
+#      backup goes on config/backups-verified.list (scripts/watch.mjs record-verified), so the daily pruning treats it like a nightly one
+#   2. tag the images the running services use as <project>-<service>:pre-<old release> (scripts/pre-images.sh; the way back puts
+#      them back instead of building them again), fetch the tags and check the tag out (detached HEAD, the same as the "Major
+#      PostgreSQL upgrade" procedure)
 #   3. rerun `setup.sh --operator` of the NEW release with this installation's own values. Setup also recreates the
 #      `functions` container (its code is bind-mounted and the edge runtime keeps what it loaded) and ends with
 #      `doctor --local`: everything that depends on the release being moved to lives in that release's setup.sh,
 #      because from the checkout on, this script is the OLD release's, still running from memory
 #   4. print what CHANGELOG.md asks of the operator between the old and the new release
-#   5. append one line to $WAREHOUSE_STATE_DIR/config/upgrades.log
+#   5. append one line to $WAREHOUSE_STATE_DIR/config/upgrades.log, and drop the pre-* image tags of earlier upgrades
 #
 # Before anything is changed it refuses: running as root, a dirty working tree, untracked files the release would overwrite, a name
 # that is not a release tag on origin, a release the checkout is already past (it only moves forward), a release that changes the
 # PostgreSQL major (that is the separate "Major PostgreSQL upgrade" procedure), a database whose migration ledger names migrations the
-# release does not contain (a new baseline, or a downgrade), a stored Slack webhook file that setup would not accept, and a release
-# without upgrade.sh.
+# release does not contain (a new baseline, or a downgrade), a stored Slack webhook file that setup would not accept, a release
+# without upgrade.sh, and whatever the release's own preflight refuses.
 #
 # An interrupted upgrade can be finished or undone. Before the first change the script writes $WAREHOUSE_STATE_DIR/config/
 # upgrade-in-progress (mode 0600; scripts/upgrade-record.mjs reads it): the old commit, the target, the setup inputs and the
-# current step; once the backup is verified, also the backup's path. A rerun of the same command (the database may be down)
+# current step, whether the release had a preflight (preflight=ok|absent) and the tag of the saved images (pre_images=); once the
+# backup is verified, also the backup's path. A rerun of the same command (the database may be down)
 # reads it, reuses that backup and takes no new one of the half-upgraded database, and names the right old commit. Success deletes
 # it; doctor, start.sh and the status commands report it while it exists. When a step fails the script prints the way forward and
-# the complete way back (the old commit, stop, the in-place restore of that backup with --restore-config, the old release's
-# setup, the functions recreate, doctor).
+# the complete way back (the old commit, stop, the saved images put back, the in-place restore of that backup with --restore-config,
+# the old release's setup, the functions recreate, doctor).
 #
 # Setup arguments. setup.sh needs --state-dir, --admin-phone and --admin-name; everything else is optional on a rerun and
 # keeps what the state holds (identity, URLs, provider lines, central sign-in, gateway port, letterhead, signing keys).
@@ -36,14 +45,17 @@
 # value a state cannot show is "no Slack webhook" (--alert-webhook-file off): when none is stored, `off` is passed again, so
 # setup does not stop to ask on a rerun. Options after `--` go to setup.sh as they are and win over those defaults.
 #
-# --dry-run runs every check and prints the plan. It does fetch the tags (git's object store only); nothing in the
-# working tree, the state or the containers changes, and no line is written to upgrades.log.
+# --dry-run runs every check, the release's preflight included, and prints the plan. It does fetch the tags (git's object store
+# only); nothing in the working tree, the state or the containers changes, and no line is written to upgrades.log. Run it first: it
+# is how the operator actions of the release are read before the real run (which pauses for them only at a terminal).
+# --yes: do not pause after the operator actions the preflight prints (a run without a terminal on standard input never pauses).
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: bash upgrade.sh [--dry-run] [--admin-phone 91XXXXXXXXXX --admin-name NAME] vX.Y.Z [-- SETUP_OPTION VALUE ...]
-       bash upgrade.sh [--dry-run] --ref COMMIT_OR_BRANCH [...]      (tests and development only)
+Usage: bash upgrade.sh [--dry-run] [--yes] [--admin-phone 91XXXXXXXXXX --admin-name NAME] vX.Y.Z [-- SETUP_OPTION VALUE ...]
+       bash upgrade.sh [--dry-run] [--yes] --ref COMMIT_OR_BRANCH [...]      (tests and development only)
+--dry-run changes nothing and prints what the release asks of you: run it first. --yes: no pause after that list.
 WAREHOUSE_STATE_DIR must name the installed operator state. docs/OPERATOR_INSTALL.md, "Rerun and upgrade".
 EOF
 }
@@ -71,11 +83,17 @@ RESUME=no
 ADMIN_PHONE=''
 ADMIN_NAME=''
 WEBHOOK_OFF=no
+ASSUME_YES=no
+# What the release's own preflight said (ok, or absent when the release has none) and the tag the running images got (pre-<label>,
+# or none): both go into the record.
+PREFLIGHT=absent
+PRE_IMAGES=none
+PREFLIGHT_TREE=''
 CMD_TEXT=''
 ORIG_ARGS=()
 # What load_record found: none, unverified (the old release was only being backed up), verified, invalid.
 REC=none
-R_FROM_SHA='' R_FROM_LABEL='' R_FROM_TAG='' R_TO_SHA='' R_TO_LABEL='' R_BACKUP='' R_STARTED='' R_STEP='' R_ADMIN_PHONE='' R_ADMIN_NAME='' R_WEBHOOK_OFF=''
+R_FROM_SHA='' R_FROM_LABEL='' R_FROM_TAG='' R_TO_SHA='' R_TO_LABEL='' R_BACKUP='' R_STARTED='' R_STEP='' R_ADMIN_PHONE='' R_ADMIN_NAME='' R_WEBHOOK_OFF='' R_PREFLIGHT='' R_PRE_IMAGES=''
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
@@ -94,36 +112,6 @@ step() {
   if [[ "$RECORD_LIVE" == yes ]]; then record_write || warn "could not update $RECORD"; fi
 }
 one_line() { local text="$1"; text="${text//$'\n'/ }"; text="${text//$'\r'/ }"; printf '%s' "${text//$'\t'/ }"; }
-
-# Version order for the CHANGELOG.md sections and for "this checkout is already past that release": major.minor.patch as
-# numbers, a pre-release before its release (semver 2.0, build metadata ignored). Used by awk below.
-AWK_SEMVER='
-function semver_cmp(a, b,   ra, rb, na, nb, pa, pb, ia, ib, ca, cb, i, x, y, xn, yn) {
-  sub(/^v/, "", a); sub(/^v/, "", b); sub(/\+.*/, "", a); sub(/\+.*/, "", b)
-  ra = ""; rb = ""
-  if (index(a, "-")) { ra = substr(a, index(a, "-") + 1); a = substr(a, 1, index(a, "-") - 1) }
-  if (index(b, "-")) { rb = substr(b, index(b, "-") + 1); b = substr(b, 1, index(b, "-") - 1) }
-  na = split(a, pa, "."); nb = split(b, pb, ".")
-  for (i = 1; i <= 3; i++) {
-    x = (i <= na) ? pa[i] + 0 : 0; y = (i <= nb) ? pb[i] + 0 : 0
-    if (x != y) return (x < y) ? -1 : 1
-  }
-  if (ra == "" && rb == "") return 0
-  if (ra == "") return 1
-  if (rb == "") return -1
-  ca = split(ra, ia, "."); cb = split(rb, ib, ".")
-  for (i = 1; i <= ca && i <= cb; i++) {
-    x = ia[i]; y = ib[i]; xn = (x ~ /^[0-9]+$/); yn = (y ~ /^[0-9]+$/)
-    if (xn && yn) { if (x + 0 != y + 0) return (x + 0 < y + 0) ? -1 : 1 }
-    else if (xn) return -1
-    else if (yn) return 1
-    else if (x != y) return (x < y) ? -1 : 1
-  }
-  if (ca != cb) return (ca < cb) ? -1 : 1
-  return 0
-}'
-semver_lt() { awk -v a="$1" -v b="$2" "$AWK_SEMVER"' BEGIN { exit !(semver_cmp(a, b) < 0) }'; }
-re_escape() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'; }
 
 # The record of this upgrade (scripts/upgrade-record.mjs reads it). Plain key=value lines, mode 0600, replaced whole by a rename.
 record_write() {
@@ -144,6 +132,8 @@ record_write() {
     printf 'webhook_off=%s\n' "$WEBHOOK_OFF"
     printf 'verified=%s\n' "$VERIFIED"
     printf 'backup=%s\n' "$(one_line "$BACKUP_DIR")"
+    printf 'preflight=%s\n' "$PREFLIGHT"
+    printf 'pre_images=%s\n' "$(one_line "$PRE_IMAGES")"
     printf 'step=%s\n' "$(one_line "$STEP")"
   } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   sync -- "$tmp" 2>/dev/null || true
@@ -166,6 +156,7 @@ load_record() {
   R_TO_SHA="$(rec_get to_sha)"; R_TO_LABEL="$(rec_get to_label)"; R_BACKUP="$(rec_get backup)"
   R_STARTED="$(rec_get started)"; R_STEP="$(rec_get step)"
   R_ADMIN_PHONE="$(rec_get admin_phone)"; R_ADMIN_NAME="$(rec_get admin_name)"; R_WEBHOOK_OFF="$(rec_get webhook_off)"
+  R_PREFLIGHT="$(rec_get preflight)"; R_PRE_IMAGES="$(rec_get pre_images)"
   if ! [[ "$R_FROM_SHA" =~ ^[0-9a-f]{40}$ && "$R_TO_SHA" =~ ^[0-9a-f]{40}$ ]]; then REC=invalid; return 0; fi
   if [[ "$(rec_get verified)" == yes ]]; then
     [[ "$R_BACKUP" == /* ]] || { REC=invalid; return 0; }
@@ -238,62 +229,52 @@ recovery_text() {
   interrupted_report
 }
 
-# The CHANGELOG.md sections from the new release down to (not including) the old one: for each, its "Operator actions"
-# subsection in full and the titles of the other subsections. A section without subsections is printed whole. When the old
-# release has no section (a backport tag's section lives on its release branch, not on main), every section is printed down to
-# the first one that is not newer than the old release, by version order. A pre-release tag (v0.7.0-rc.1) uses its release's section.
-changelog_between() {
-  local file="$1" from="$2" to="$3" mode=range
-  [[ -f "$file" ]] || { say 'This release has no CHANGELOG.md.'; return 0; }
-  [[ "$from" != "$to" ]] || { say "Already at $to: nothing new to read."; return 0; }
-  if ! grep -Eq "^## $(re_escape "$to")( |\$)" "$file"; then
-    local base="${to%%-*}"
-    if [[ "$base" != "$to" ]] && grep -Eq "^## $(re_escape "$base")( |\$)" "$file"; then
-      to="$base"
-    else
-      say "CHANGELOG.md has no section for $to. Read the release notes of $to on GitHub before you rely on this upgrade."
-      return 0
-    fi
+# The release's own preflight. This script is the script of the release the facility runs now, so it cannot know what the release it
+# moves to needs: a higher host minimum, the oldest release that one accepts an upgrade from, room for the way back. The release
+# carries scripts/upgrade-preflight.sh for that. It is read out of the target's commit with `git archive`, as scripts/pg-major.sh reads
+# db-image.sh, together with the files that script names on its `# needs:` line (a directory counts), and run from a temporary copy
+# before anything is changed, in --dry-run too. It prints what CHANGELOG.md asks of the operator (and may wait for Enter after it: standard
+# input is this script's) and exits non-zero to refuse. A release from before the preflight has none: PREFLIGHT stays `absent` and the
+# checks of this script are all there are.
+run_target_preflight() {
+  local dry="$1" needs path tree code=0
+  local -a words=() paths=()
+  PREFLIGHT=absent
+  if ! git cat-file -e "$TO_SHA:scripts/upgrade-preflight.sh" 2>/dev/null; then
+    say "Preflight:    $TO_LABEL has no scripts/upgrade-preflight.sh (it is from before the release preflight), so only the checks above were made."
+    return 0
   fi
-  if [[ -z "$from" ]]; then mode=one
-  elif ! grep -Eq "^## $(re_escape "$from")( |\$)" "$file"; then mode=below; fi
-  awk -v from="$from" -v to="$to" -v mode="$mode" "$AWK_SEMVER"'
-    function flush(   i, has_sub, in_ops, ops, others, t) {
-      if (!open) return
-      has_sub = 0
-      for (i = 1; i <= sec_n; i++) if (sec[i] ~ /^### /) has_sub = 1
-      print "== " heading
-      if (!has_sub) {
-        for (i = 1; i <= sec_n; i++) print sec[i]
-      } else {
-        in_ops = 0; ops = 0; others = ""
-        for (i = 1; i <= sec_n; i++) {
-          if (sec[i] ~ /^### /) {
-            in_ops = (sec[i] ~ /^### Operator actions[[:space:]]*$/)
-            if (in_ops) { ops = 1; print sec[i] }
-            else { t = sec[i]; sub(/^### /, "", t); others = others (others == "" ? "" : ", ") t }
-            continue
-          }
-          if (in_ops) print sec[i]
-        }
-        if (!ops) print "(no operator actions listed)"
-        if (others != "") print "Also in this release: " others " (read CHANGELOG.md)."
-      }
-      print ""
-      open = 0
-      if (mode == "one") inrange = 0
-    }
-    /^## / {
-      flush()
-      name = $2
-      if (name == to) inrange = 1
-      else if (inrange && (name == from || name == "Older" || (mode == "below" && name ~ /^v[0-9]/ && semver_cmp(name, from) <= 0))) inrange = 0
-      if (inrange) { open = 1; heading = substr($0, 4); sec_n = 0 }
-      next
-    }
-    open { sec[++sec_n] = $0 }
-    END { flush() }
-  ' "$file"
+  needs="$(git show "$TO_SHA:scripts/upgrade-preflight.sh" | sed -n 's/^# needs:[[:space:]]*//p' | head -n 1)"
+  read -r -a words <<< "$needs"
+  for path in "${words[@]+"${words[@]}"}"; do
+    [[ "$path" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ && "$path" != *..* ]] || refuse "the preflight of $TO_LABEL names a file this script will not read from it ('$path'). Nothing was changed."
+    paths+=("$path")
+  done
+  tree="$(mktemp -d "${TMPDIR:-/tmp}/warehouse-preflight.XXXXXX")" || refuse 'could not make a temporary directory for the preflight of the release. Nothing was changed.'
+  PREFLIGHT_TREE="$tree"
+  if ! git archive "$TO_SHA" scripts/upgrade-preflight.sh "${paths[@]+"${paths[@]}"}" | tar -x -C "$tree"; then
+    refuse "the preflight of $TO_LABEL names a file that release does not contain (message above). Nothing was changed."
+  fi
+  say "Preflight:    running scripts/upgrade-preflight.sh of $TO_LABEL"
+  (cd "$tree" && STATE="$STATE" FROM_SHA="$FROM_SHA" FROM_LABEL="$FROM_LABEL" FROM_TAG="$FROM_TAG" TO_SHA="$TO_SHA" TO_LABEL="$TO_LABEL" DRY="$dry" ASSUME_YES="$ASSUME_YES" bash scripts/upgrade-preflight.sh) || code=$?
+  rm -rf -- "$tree"
+  PREFLIGHT_TREE=''
+  ((code == 0)) || refuse "the preflight of $TO_LABEL stopped this upgrade (exit $code; its message is above). Nothing was changed."
+  PREFLIGHT=ok
+}
+
+# Before the checkout: the images the running services use get the tag <project>-<service>:pre-<this release>, so that the way back
+# puts them back and builds nothing (scripts/pre-images.sh). Not being able to is a warning, not a refusal: the way back then builds the
+# old images again, as it always did, and that needs the network.
+tag_running_images() {
+  local code=0
+  bash "$ROOT/scripts/pre-images.sh" tag "$FROM_LABEL" || code=$?
+  case "$code" in
+    0) PRE_IMAGES="$(bash "$ROOT/scripts/pre-images.sh" name "$FROM_LABEL")" ;;
+    3) PRE_IMAGES=none ;;
+    *) PRE_IMAGES=none; warn "could not tag the running images as pre-$FROM_LABEL (message above). The upgrade goes on; if you have to go back, the old release's setup builds its images again, which needs the network." ;;
+  esac
+  record_write || warn "could not update $RECORD"
 }
 
 # 0 when setup would find a Slack webhook in the state, 3 when none is stored, 5 when a file is there that setup would not accept
@@ -333,6 +314,7 @@ main() {
     case "$1" in
       -h|--help) usage; exit 0 ;;
       --dry-run) DRY=yes; shift ;;
+      --yes) ASSUME_YES=yes; shift ;;
       --ref|--admin-phone|--admin-name)
         if (($# < 2)) || [[ -z "$2" ]]; then echo "Missing value for $1" >&2; usage; exit 2; fi
         case "$1" in --ref) REF="$2" ;; --admin-phone) ADMIN_PHONE="$2" ;; --admin-name) ADMIN_NAME="$2" ;; esac
@@ -355,12 +337,14 @@ main() {
   for ARG in "${ORIG_ARGS[@]}"; do CMD_TEXT+="$(printf '%q' "$ARG") "; done
   CMD_TEXT="${CMD_TEXT% }"
 
-  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"' EXIT
+  trap 'rm -f -- "$BACKUP_OUT" "$DB_ERR"; [[ -z "$PREFLIGHT_TREE" ]] || rm -rf -- "$PREFLIGHT_TREE"' EXIT
   DB_ERR="$(mktemp)"
   ((EUID != 0)) || refuse 'upgrade.sh must run as the installation user (the owner of this checkout and of the state, a member of the docker group), not as root and not with sudo: root cannot read the files the way the installation does, and git refuses a checkout it does not own.'
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # shellcheck source=scripts/operator-lock.sh
   . "$ROOT/scripts/operator-lock.sh"
+  # shellcheck source=scripts/upgrade-lib.sh
+  . "$ROOT/scripts/upgrade-lib.sh"
   STATE="$(operator_state)" || exit 1
   export WAREHOUSE_STATE_DIR="$STATE"
   RECORD="$STATE/config/upgrade-in-progress"
@@ -511,6 +495,21 @@ main() {
        fi ;;
   esac
 
+  # The release's own preflight: after the checks above (cheap, local, this script's own), before the plan, so that --dry-run shows it.
+  # A rerun of an interrupted upgrade made it the first time (the record says what it found); it is not asked again.
+  if [[ "$RESUME" == yes ]]; then
+    # What the record holds stays as it is: a record written by an upgrade.sh from before the preflight has no preflight= line, and is not
+    # turned into one that says the release had none.
+    PREFLIGHT="$R_PREFLIGHT"; PRE_IMAGES="${R_PRE_IMAGES:-none}"
+    case "$R_PREFLIGHT" in
+      ok) say 'Preflight:    not run again: the first run of this upgrade ran the release preflight (record: preflight=ok)' ;;
+      absent) say "Preflight:    not run again: $TO_LABEL had no scripts/upgrade-preflight.sh when this upgrade began (record: preflight=absent)" ;;
+      *) say 'Preflight:    none: this upgrade was begun by an upgrade.sh from before the release preflight (the record has no preflight= line); setup makes the host checks' ;;
+    esac
+  else
+    run_target_preflight "$DRY"
+  fi
+
   # --- the plan -------------------------------------------------------------------------------------------------------
   local MASKED='(not read: the database did not answer)'
   [[ -z "$ADMIN_PHONE" ]] || MASKED="${ADMIN_PHONE:0:2}******${ADMIN_PHONE: -4}"
@@ -520,11 +519,12 @@ main() {
   else say '  1. backup, then verify the backup in a disposable database'; fi
   if [[ "$FROM_SHA" == "$TO_SHA" ]]; then say '  2. no checkout: this checkout is already at the release (the rest is repeated)'
   elif [[ "$(git rev-parse HEAD)" == "$TO_SHA" ]]; then say '  2. no checkout: this checkout is already at the release (the interrupted upgrade got that far)'
-  else say "  2. git checkout --detach ${TO_SHA:0:12}"; fi
+  elif [[ "$RESUME" == yes ]]; then say "  2. git checkout --detach ${TO_SHA:0:12} (no image is tagged again: the first run did that, record pre_images=$PRE_IMAGES)"
+  else say "  2. tag the running images <project>-<service>:pre-$FROM_LABEL (the way back uses them), then git checkout --detach ${TO_SHA:0:12}"; fi
   say "  3. setup.sh --operator --state-dir $STATE --admin-phone $MASKED --admin-name <administrator's name>$([[ "$WEBHOOK_OFF" == yes ]] && echo ' --alert-webhook-file off')${SETUP_EXTRA[*]+" ${SETUP_EXTRA[*]}"}"
   say '     (setup of the release also recreates the functions container and ends with node scripts/doctor.mjs --local)'
   say '  4. print the operator actions of CHANGELOG.md between the two releases'
-  say "  5. append a line to $STATE/config/upgrades.log and remove $RECORD"
+  say "  5. append a line to $STATE/config/upgrades.log, remove $RECORD, and remove the pre-* image tags of earlier upgrades"
   if [[ "$DRY" == yes ]]; then
     [[ "$DB_OK" == yes ]] || warn "not checked: the migration ledger and the administrator ($DB_NOTE)"
     say
@@ -560,16 +560,28 @@ main() {
     [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR" ]] || { echo 'The backup finished but did not report its directory.' >&2; exit 1; }
 
     step 'Verify the backup restores'
+    local verify_from=$SECONDS
     bash "$ROOT/scripts/verify-restore.sh" "$BACKUP_DIR"
     # The backup is proved: from here the record names it, and a rerun reuses it.
     VERIFIED=yes
     STAGE=checkout
+    # It also goes on the list of verified backups (with how long the proof took), so that the daily pruning keeps it like the nightly ones
+    # that passed their verify: for 60 days as the newest of its migration state, not seven nights. Not being able to is a warning.
+    node "$ROOT/scripts/watch.mjs" record-verified "$BACKUP_DIR" "$((SECONDS - verify_from))" >/dev/null \
+      || warn "could not put $BACKUP_DIR on config/backups-verified.list (message above), so the nightly pruning does not know it passed its verify; the upgrade goes on"
   fi
 
   if [[ "$(git rev-parse HEAD)" == "$TO_SHA" ]]; then
     step "Checkout: already at $TO_LABEL"
   else
     step "Checkout: $TO_LABEL"
+    if [[ "$RESUME" == yes ]]; then
+      # The first run tagged the images of the old release (or could not); whatever runs now may be the new release's, so nothing is
+      # tagged again and the record keeps what it says (PRE_IMAGES came from it above).
+      say "Images:       not tagged again: the first run of this upgrade did that (record: pre_images=$PRE_IMAGES)"
+    else
+      tag_running_images
+    fi
     # umask 022 as for the first clone: files written under 0002 or 077 are refused by the root-run helpers or unreadable by the containers.
     (umask 022; git checkout --detach "$TO_SHA")
     STAGE=setup
@@ -584,6 +596,12 @@ main() {
   [[ "$WEBHOOK_OFF" == no ]] || SETUP+=(--alert-webhook-file off)
   bash "$ROOT/setup.sh" "${SETUP[@]}" "${SETUP_EXTRA[@]+"${SETUP_EXTRA[@]}"}"
   STAGE=done
+  # The tags of earlier upgrades go, by exact name (never an image prune); the set of this one stays until the next upgrade succeeds.
+  # scripts/pre-images.sh is the new release's copy by now: it keeps the commands that this script calls. The tag to keep is the one
+  # recorded when the images were tagged (the third argument), not one worked out again by the new release's own naming.
+  if [[ "$PRE_IMAGES" != none && -f "$ROOT/scripts/pre-images.sh" ]]; then
+    bash "$ROOT/scripts/pre-images.sh" prune "$FROM_LABEL" "$PRE_IMAGES" || warn 'could not remove the image tags of earlier upgrades (message above); they hold disk space until you remove them by hand.'
+  fi
 
   step "What $TO_LABEL asks of the operator"
   local CL_TO="$TAG"

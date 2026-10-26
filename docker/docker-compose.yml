@@ -58,7 +58,9 @@ services:
       start_period: 10s
     ports:
       # GATEWAY_HTTP_PORT, or the name it had while the gateway was Kong (KONG_HTTP_PORT) in a compose.env that has not been
-      # rewritten yet; scripts/configure.mjs writes the new name when it changes the port.
+      # rewritten yet; every run of setup (scripts/configure.mjs) writes the new name.
+      # Compatibility shim: the old name may be dropped once from_floor (scripts/upgrade-floor.txt) is at or after the release
+      # whose setup renames it on every run.
       - "127.0.0.1:${GATEWAY_HTTP_PORT:-${KONG_HTTP_PORT:-18000}}:8000/tcp"
     depends_on:
       db:

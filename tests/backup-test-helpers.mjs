@@ -10,6 +10,15 @@ import { fileURLToPath } from 'node:url';
 export const repo = fileURLToPath(new URL('..', import.meta.url));
 // The database image a backup of this release records (scripts/db-image.sh: the FROM line of docker/postgres/Dockerfile).
 export const currentDatabaseImage = () => readFileSync(join(repo, 'docker/postgres/Dockerfile'), 'utf8').match(/^FROM (postgres:\S+@sha256:[0-9a-f]{64})$/m)[1];
+// The migration ledger a backup's integrity.txt records (scripts/backup-integrity.sql: the count and a fingerprint of "<name>:<sha256>" lines)
+// and the migration files of those names, which scriptRoot() puts in the checkout. scripts/restore.sh refuses a checkout whose migrations
+// are fewer than the backup's, or differ from them, before it moves anything.
+export const fixtureMigrations = { '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select 2;\n' };
+export const ledgerText = (bodies = fixtureMigrations, names = Object.keys(bodies)) =>
+  `migration_count=${names.length}\nmigration_fingerprint=${createHash('sha256').update(names.map(name => `${name}:${createHash('sha256').update(bodies[name]).digest('hex')}`).join('\n')).digest('hex')}\n`;
+// What a backup's integrity report says here, and what the fake docker answers when the restored database is asked for its report.
+export const defaultIntegrity = `fake integrity\n${ledgerText()}`;
+const shellQuote = text => `'${text.replaceAll("'", `'\\''`)}'`;
 export const instanceJson = '{"schemaVersion":1,"instanceId":"0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"}\n';
 // A fictional central key set (public keys only), as `setup.sh --central-jwks-file` copies it to public/central-jwks.json.
 export const centralKeySet = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', kid: 'central-2026-10', use: 'sig', alg: 'ES256',
@@ -133,7 +142,7 @@ export function manifestOf(root) {
 // `centralKey` adds the optional central-jwks.json (text), checksummed like the rest; `letterhead` ({ name, bytes }) adds letterhead.jpg or .png.
 // `legacyPooler` adds _supabase.dump, which backups from before the pooler became optional carry (restores skip it).
 export function makeBackup(dir, { format = 'warehouse-backup-v5', databaseImage = currentDatabaseImage(), key = backupKey, instance = instanceJson, env = 'WAREHOUSE_PROJECT_NAME=warehouse-backup-test\n', centralKey = null, letterhead = null, roles = 'anon\nauthenticated\nauthenticator\npgbouncer\nservice_role\nsupabase_admin\nsupabase_storage_admin\n', imageLines = 1,
-  legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = 'fake integrity\n', xattrs = {}, storageBytes = null } = {}) {
+  legacyPooler = false, objects = ['documents/a.pdf/v1'], files = objects.map(entry => `stub/stub/${entry}`), integrity = defaultIntegrity, xattrs = {}, storageBytes = null } = {}) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const v6 = format === 'warehouse-backup-v6';
   const tree = v6 ? join(dir, 'storage') : join(dir, '.tree');
@@ -207,7 +216,7 @@ case "$1" in
       *pg_stat_activity*) printf '41|client backend|template1|idle\\n' ;;
       *' createdb '*) if [ "$FAKE_FAIL_CREATEDB" = yes ]; then echo 'createdb: error: database creation failed: ERROR:  source database is being accessed by other users' >&2; exit 1; fi ;;
       *'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
-      *' psql '*' -d warehouse_restore') printf 'fake integrity\\n' ;;
+      *' psql '*' -d warehouse_restore') printf '%s' ${shellQuote(defaultIntegrity)} ;;
     esac ;;
   compose)
     case "$*" in
@@ -225,7 +234,7 @@ case "$1" in
         cat >> "\${FAKE_RETAG_STDIN:-/dev/null}" ;;
       *'exec -T db psql'*jsonb_build_object*) cat "\${FAKE_RETAG_CATALOG:-/dev/null}" ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
-      *'exec -T db psql'*' -d postgres') printf 'fake integrity\\n' ;;
+      *'exec -T db psql'*' -d postgres') printf '%s' ${shellQuote(defaultIntegrity)} ;;
     esac ;;
 esac
 `, { mode: 0o700 });
@@ -274,7 +283,7 @@ case "$1" in
       *'exec -T db psql'*pg_database_size*) printf '%s\\n' "\${FAKE_DB_SIZE:-10485760}" ;;
       *'exec -T db psql'*' -c SELECT rolname'*) printf 'authenticator\\nsupabase_admin\\n' ;;
       *'exec -T db psql'*'storage.objects'*) printf 'documents/a.pdf/v1\\n' ;;
-      *'exec -T db psql'*) printf 'fake integrity\\n' ;;
+      *'exec -T db psql'*) printf '%s' ${shellQuote(defaultIntegrity)} ;;
     esac ;;
 esac
 `, { mode: 0o700 });
@@ -293,6 +302,8 @@ export function scriptRoot(scratch) {
   copyFileSync(join(repo, 'docker/volumes/db/00-bootstrap.sql'), join(root, 'docker/volumes/db/00-bootstrap.sql'));
   mkdirSync(join(root, 'docker/postgres'), { recursive: true, mode: 0o700 });
   copyFileSync(join(repo, 'docker/postgres/Dockerfile'), join(root, 'docker/postgres/Dockerfile'));
+  mkdirSync(join(root, 'migrations'), { recursive: true, mode: 0o700 });
+  for (const [name, body] of Object.entries(fixtureMigrations)) writeFileSync(join(root, 'migrations', name), body);
   if (!existsSync(join(root, 'scripts/operator-lock.sh'))) {
     writeFileSync(join(root, 'scripts/operator-lock.sh'), [
       '#!/usr/bin/env bash',

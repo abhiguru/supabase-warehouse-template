@@ -1,0 +1,8 @@
+# The oldest release that this release can be upgraded from. scripts/upgrade-preflight.sh (which upgrade.sh runs from the release
+# it moves to, before anything changes) refuses an installation that is older and names the stepping stone to upgrade to first.
+#   from_floor=      a release tag (vX.Y.Z); empty = no floor
+#   stepping_stone=  the release to upgrade to first; empty = the floor release itself
+# A release that drops a compatibility shim (CONTRIBUTING.md, "Releases") sets the floor to the first release that has the code the
+# shim stood in for, and the stone to a release that can still read the older installation. Both stay empty until then.
+from_floor=
+stepping_stone=

@@ -45,6 +45,8 @@ export function readEnv(path) {
 // The loopback port of the gateway in a compose.env: GATEWAY_HTTP_PORT, or KONG_HTTP_PORT, its name while the gateway was Kong, in
 // a file that configure.mjs has not rewritten yet (docker/docker-compose.yml reads both in the same order). An empty line counts as
 // unset, as in Compose's `${GATEWAY_HTTP_PORT:-...}`: `||`, not `??`.
+// Compatibility shim: the KONG_HTTP_PORT fallback may be dropped once from_floor (scripts/upgrade-floor.txt) is at or after the release
+// whose setup renames the line on every run (renameKongPort in scripts/configure.mjs).
 export const gatewayPortText = env => env.GATEWAY_HTTP_PORT || env.KONG_HTTP_PORT;
 // Whether a running container of this installation's own Compose project publishes the loopback gateway port (a line of `docker ps`
 // such as `127.0.0.1:18000->8000/tcp`). The port is then the installation's own, not a stranger's. Which service it is does not

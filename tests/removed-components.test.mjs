@@ -200,7 +200,7 @@ const components = [
         ['CHANGELOG.md', 'history'],
         ['docker/docker-compose.yml', 'reads KONG_HTTP_PORT as the fallback of GATEWAY_HTTP_PORT'],
         ['.env.example', 'names the old name of the port variable'],
-        ['scripts/configure.mjs', 'renames a KONG_HTTP_PORT line when the port changes'],
+        ['scripts/configure.mjs', 'renames a KONG_HTTP_PORT line on every setup'],
         ['scripts/doctor-common.mjs', 'reads KONG_HTTP_PORT in a state that has not been rewritten'],
         ['scripts/doctor.mjs', 'the port preflight accepts the installation\'s own kong container (an upgrade from the Kong release)'],
         ['tests/doctor.test.mjs', 'tests that port preflight with a kong container'],

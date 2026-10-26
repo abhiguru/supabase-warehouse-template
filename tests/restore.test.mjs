@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSy
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, poolerOnLines, legacyPoolerLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage } from './backup-test-helpers.mjs';
+import { makeBackup, makeState, fakeDocker, scriptRoot, composeEnv, dbRoleLines, poolerOnLines, legacyPoolerLines, previousReleaseDbLines, instanceJson, signBackup, currentDatabaseImage, fixtureMigrations, ledgerText } from './backup-test-helpers.mjs';
 import { scramVerifier } from '../scripts/db-roles.mjs';
 import { readEnv } from '../scripts/doctor-common.mjs';
 
@@ -79,6 +79,37 @@ test('restore refuses a backup of another instance', () => {
     assert.match(result.stderr, /instance\.json differs/);
     assert.doesNotMatch(result.calls, /run |up -d| cp /);
     untouched(state);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// The way back from an upgrade is this command after the old release is checked out: a checkout whose migrations are fewer than the
+// backup's, or differ from them, must be refused while nothing has been moved (the database is dropped well before migrate.sh would notice).
+test('restore refuses, before moving anything, a backup that applied a migration this checkout lacks, or one this checkout has with other contents, or one that records no ledger', () => {
+  const ledger = (count, fingerprint) => `fake integrity\nmigration_count=${count}\nmigration_fingerprint=${fingerprint}\n`;
+  const cases = [
+    ['a migration the checkout lacks', ledgerText({ ...fixtureMigrations, '0003_third.sql': 'select 3;\n' }), /Refusing: the backup has 3 migrations and this checkout only 2\. Check out a release at least as new as the backup \(metadata\.txt source_commit=/],
+    ['a migration with other contents', ledgerText({ '0001_first.sql': 'select 1;\n', '0002_second.sql': 'select 22;\n' }), /Refusing: the migrations this backup applied differ from this checkout\. Check out the release the backup was made with/],
+    ['a fingerprint that is not one', ledger(2, 'not-a-fingerprint'), /The backup integrity report records no migration ledger\./],
+    ['no ledger at all', 'fake integrity\n', /The backup integrity report records no migration ledger\./],
+  ];
+  for (const [what, integrity, pattern] of cases) {
+    const { scratch, state, backup } = fixture('warehouse-restore-ledger-', { integrity });
+    try {
+      const result = restore(scratch, ['--yes', backup]);
+      assert.notEqual(result.status, 0, what);
+      assert.match(result.stderr, pattern, what);
+      assert.doesNotMatch(result.calls, /run |up -d| cp |createdb|pg_restore|DROP DATABASE/, `${what}: no restore was started`);
+      untouched(state);
+      assert.equal(readFileSync(join(state, 'config/compose.env'), 'utf8'), composeEnv(state), `${what}: the configuration is untouched`);
+      assert.deepEqual(readdirSync(join(state, 'config')).filter(name => name.includes('pre-restore')), [], `${what}: nothing was set aside`);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+  // The same checkout with the matching ledger gets past this check (it stops later, at the instance, for a reason of its own).
+  const { scratch, backup } = fixture('warehouse-restore-ledger-ok-', { instance: instanceJson.replace('0f0f0f0f-', 'aaaaaaaa-') });
+  try {
+    const result = restore(scratch, ['--yes', backup]);
+    assert.match(result.stderr, /instance\.json differs/, 'a backup whose ledger matches goes on to the next check');
+    assert.doesNotMatch(result.stderr, /migrations/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

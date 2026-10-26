@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Replace this instance's database and stored objects in place from a
 # warehouse-backup-v5 or -v6 directory created by scripts/backup.sh on the same instance.
-# Destructive by design: requires --yes, stopped services and a backup that passes
+# Destructive by design: requires --yes, stopped services, a checkout that contains every migration the backup applied (the way
+# back from an upgrade is this command after the old release is checked out) and a backup that passes
 # scripts/verify-restore.sh, signature included. The replaced data directories are
 # kept for rollback. Formats v5 (storage.tar.gz) and v6 (a storage/ tree) are accepted; an older
 # format is refused, and so is a backup made on the earlier supabase/postgres image
@@ -87,6 +88,23 @@ done
 # replayed: the pooler writes its tenant again when it starts, and turning it on creates the database.
 if [[ -e "$backup/_supabase.dump" ]]; then
   echo 'Note: the backup contains _supabase.dump (the pooler tenant). It is skipped: the pooler recreates its tenant when it starts.'
+fi
+# This checkout must contain every migration the backup has applied, unchanged, before anything here is touched: restore.sh drops
+# the application database below and only then runs scripts/migrate.sh, which refuses a ledger it does not know, so a checkout that
+# is older than the backup (the wrong release checked out for the way back) would leave the facility without a database. The same
+# check, with the same wording, as scripts/restore-host.sh makes before it builds a state.
+count="$(sed -n 's/^migration_count=//p' "$backup/integrity.txt")"
+fingerprint="$(sed -n 's/^migration_fingerprint=//p' "$backup/integrity.txt")"
+[[ "$count" =~ ^[0-9]+$ && "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || { echo 'The backup integrity report records no migration ledger.' >&2; exit 1; }
+mapfile -t migrations < <(find "$ROOT/migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | LC_ALL=C sort)
+if ((count > ${#migrations[@]})); then
+  echo "Refusing: the backup has $count migrations and this checkout only ${#migrations[@]}. Check out a release at least as new as the backup (metadata.txt source_commit=$(sed -n 's/^source_commit=//p' "$backup/metadata.txt"))." >&2
+  exit 1
+fi
+local_fingerprint="$(for m in "${migrations[@]:0:count}"; do printf '%s:%s\n' "$m" "$(sha256sum "$ROOT/migrations/$m" | cut -d' ' -f1)"; done | head -c -1 | sha256sum | cut -d' ' -f1)"
+if [[ "$local_fingerprint" != "$fingerprint" ]]; then
+  echo 'Refusing: the migrations this backup applied differ from this checkout. Check out the release the backup was made with (metadata.txt source_commit), or a later one.' >&2
+  exit 1
 fi
 if ! cmp -s "$backup/instance.json" "$state/public/instance.json"; then
   echo 'Refusing: the backup instance.json differs from this state; in-place restore only replaces the instance that produced the backup.' >&2

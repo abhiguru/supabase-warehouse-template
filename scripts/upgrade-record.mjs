@@ -18,6 +18,7 @@ import { isMain } from './is-main.mjs';
 
 export const RECORD_FILE = 'config/upgrade-in-progress';
 const SHA = /^[0-9a-f]{40}$/;
+const PRE_IMAGES_TAG = /^pre-[A-Za-z0-9_.-]{1,100}$/;
 const clean = text => String(text ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
 
 // The record, or null when there is none. A record that cannot be read as one is { invalid: reason }.
@@ -44,6 +45,9 @@ export function readUpgradeRecord(state) {
     toSha: fields.to_sha, toLabel: clean(fields.to_label) || fields.to_sha.slice(0, 12),
     command: clean(fields.command), backup: clean(fields.backup), step: clean(fields.step) || 'unknown', started: clean(fields.started),
     adminPhone: clean(fields.admin_phone), adminName: clean(fields.admin_name), webhookOff: fields.webhook_off === 'yes',
+    // Whether the release had a preflight (ok | absent), and the tag upgrade.sh gave the images of the old release (pre-<label>), '' when it
+    // saved none: a record of an upgrade.sh from before these fields has neither, and its way back is the one that rebuilds the images.
+    preflight: clean(fields.preflight), preImages: PRE_IMAGES_TAG.test(fields.pre_images ?? '') ? fields.pre_images : '',
   };
 }
 
@@ -69,9 +73,17 @@ export function rollbackLines(record) {
     `To go back to ${record.fromLabel} (${record.fromSha}) instead, run these in the checkout, in this order. Everything the facility recorded after the backup was taken is lost:`,
     `  (umask 022; git checkout --detach ${record.fromSha})`,
     '  bash stop.sh',
+    ...(record.preImages ? [
+      `  bash scripts/pre-images.sh restore ${quote(record.fromLabel)}`,
+      `      (puts back the images the old release ran, ${record.preImages}, and their build record, so that setup normally builds nothing; run it before the restore, which also checks the db image)`,
+    ] : []),
     `  npm run db:restore -- --yes --restore-config ${quote(record.backup)}`,
     `  ${setup}`,
-    `      (the administrator's number and name as at installation${phone ? `; the number is ${phone}` : ''}; setup of the old release rebuilds the images that the new release changed)`,
+    `      (the administrator's number and name as at installation${phone ? `; the number is ${phone}` : ''}; setup of the old release ${record.preImages ? 'finds its images current and builds only what the saved set lacks' : 'rebuilds the images that the new release changed'})`,
+    ...(record.preImages ? [
+      '  bash scripts/build-images.sh --save',
+      `      (builds nothing: writes the old release's images and their signed build record to ${join(record.state, 'images')} again, where the new release's still are, because setup found the images current and so saved none; a lost-host restore loads that folder)`,
+    ] : []),
     '  bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions',
     '  node scripts/doctor.mjs --local',
     `  rm -f ${quote(join(record.state, RECORD_FILE))}`,

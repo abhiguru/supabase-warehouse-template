@@ -77,16 +77,45 @@ Rules that keep `upgrade.sh` working for the installed base:
 
 - **Every release line keeps `upgrade.sh` and the inherited operator lock in `setup.sh`** (`operator_lock_or_inherited`); `upgrade.sh`
   refuses a release without `upgrade.sh`, and `scripts/check-release-contents.sh` (run by `release.yml`) fails a tag whose `CHANGELOG.md`
-  has no section, or that lacks `upgrade.sh`, `scripts/pg-major.sh`, the inherited lock or the functions recreate in `setup.sh`.
+  has no section, or that lacks `upgrade.sh`, `scripts/pg-major.sh`, `scripts/upgrade-preflight.sh`, `scripts/upgrade-floor.txt`, the inherited lock
+  or the functions recreate in `setup.sh`.
 - **What a release needs done after its checkout belongs in its `setup.sh`.** `upgrade.sh` is the OLD release's script, still running
   from memory after the checkout; it does only this: the lock, the backup and its verification, the checkout, `setup.sh` of the new
-  release, and the print of the operator actions. Everything that depends on the release being moved to (images, migrations, roles,
+  release, and the print of the operator actions (before it, the release's own preflight, below; around the checkout, the tags that keep the
+  old images for the way back, and the removal of the older tags once setup has succeeded). Everything that depends on the release being moved to (images, migrations, roles,
   configuration, recreating the `functions` container, the local doctor) is a step of that release's `setup.sh`, so a release can change
   how it is moved into without the old script knowing, and a hand-made upgrade gets the same steps. A new post-checkout step goes into
   `setup.sh`, never into `upgrade.sh`.
 - **`upgrade.sh` leaves a record while it runs** (`$WAREHOUSE_STATE_DIR/config/upgrade-in-progress`, read by
   `scripts/upgrade-record.mjs`; doctor, `start.sh` and the status commands report it). Keep its format (`format=1`, `key=value` lines)
   readable by every later release: add fields, never rename or remove one.
+- **Every release carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`, and they are how a release tells the installed
+  `upgrade.sh` what it needs.** `upgrade.sh` is the script of the release an installation runs now, so a check that must happen before the
+  backup (a higher host minimum, a "before" operator action, the oldest release it accepts an upgrade from) cannot live in it. It reads the
+  preflight out of the release it moves to (`git archive` of the target's commit, as `scripts/pg-major.sh` reads `db-image.sh`), together with the
+  files named on the preflight's `# needs:` line, runs it from a temporary directory before the backup, in `--dry-run` too, and refuses the
+  upgrade when it exits non-zero: so a new minimum or floor takes effect on the move **to** the release that carries it, not one release later (for an
+  installation that runs an `upgrade.sh` from the release that introduced this rule or a later one; the move to that first release is still made by the older script).
+  The environment it gets is `STATE`, `FROM_SHA`, `FROM_LABEL`, `FROM_TAG`, `TO_SHA`, `TO_LABEL`, `DRY` and `ASSUME_YES` (`yes` when the operator
+  gave `--yes`; an older `upgrade.sh` leaves it unset, which means no); keep that contract. The preflight may ask the operator to press Enter after
+  the operator actions it prints (a real run, standard input a terminal, `--yes` not given); it never waits otherwise. The floor file is
+  `from_floor=` (the oldest release the release can be upgraded from) and `stepping_stone=` (what to upgrade to first), both empty while there is no
+  floor. **A compatibility shim names the release that may drop it** (a comment at the shim, for example `configure.mjs`'s old `compose.env`
+  lines); the release that removes one sets `from_floor` to the first release that has the code the shim stood in for, so no installation can reach it
+  without passing through. That code must rewrite the old form on **every** run of setup, not only under an option (the old gateway-port name
+  was renamed only by `--gateway-port` until `scripts/configure.mjs` did it on every run): an installation that has passed through
+  the release must no longer hold the old form, or the shim cannot go. A release without a preflight (every tag before this rule) is moved to as before, with one line saying so.
+- **The preflight runs from a copy with no `node_modules`.** It runs the target's own `scripts/doctor.mjs --host-preflight` from the temporary
+  directory it was extracted into (`# needs: scripts CHANGELOG.md`: the `scripts/` tree and the changelog, nothing else). Everything `doctor.mjs` imports,
+  directly or through `configure.mjs`, `watch.mjs`, `lan` and the rest of `scripts/`, must use only `node:` built-ins and local `./` files: one
+  npm import would refuse every move to that release. The unit tests use a stand-in doctor and would not notice; the CI upgrade drill from the
+  merge base runs the real one.
+- **Keep the commands `scripts/pre-images.sh` has** (`name`, `tag`, `restore`, `prune`, each with the release label; `prune LABEL TAG` with the
+  recorded tag as its third argument): the `upgrade.sh` of an earlier release tags the running images with the old release's copy before the
+  checkout, and calls `prune` of the new release's copy after setup, passing the tag it recorded when it tagged (`pre_images=` in the upgrade
+  record), so that a release which names its tags differently cannot remove the set that was just made; the way back that
+  `scripts/upgrade-record.mjs` prints calls `restore` from the old release's checkout (the same copy that tagged), then `scripts/build-images.sh --save`
+  of that release.
 - **A new baseline names what it replaces.** If the migrations are squashed again, the new baseline file and the release note list the
   names of the migration files it replaces. `upgrade.sh` refuses to move a database that recorded a migration the release lacks, and
   points to the Baseline reload; without the list an operator cannot tell a squash from a downgrade. Tell the owner first: a squash

@@ -50,6 +50,7 @@ Sections: [host prerequisites](#host-prerequisites),
 - At least 10 GiB free on a persistent filesystem for the installation, plus capacity for the data. `setup.sh` refuses
   to start below 10 GiB. `start.sh` and `doctor` only warn below 10 GiB and refuse below 2 GiB, so a disk that has filled
   up since the install does not keep the facility down after a power cut ([Disk full](TROUBLESHOOTING.md#disk-full)).
+  Size the disk for the data with the rule in [Disk space](#disk-space).
 - Recommended for a real facility: a **USB drive formatted exFAT for backups** (an existing drive is fine; it is not
   reformatted) and `sudo` once to set up the automatic copy ([USB backup drive](#usb-backup-drive)). Setup does not need
   it; without one, `doctor` warns and the backups stay on the host, so copy them off the host yourself.
@@ -57,6 +58,26 @@ Sections: [host prerequisites](#host-prerequisites),
 
 Record the host before changing it (`cat /etc/os-release`, `uname -m`, `free -h`, `df -h`, `docker ps`) so that an existing
 runtime is never removed by accident.
+
+### Disk space
+
+Size the disk under `$WAREHOUSE_STATE_DIR` for **at least 3 × the photos + 3 × the database + the Docker images + 20 %**, where the
+photos are `data/storage`, the database is `data/db`, and the images are what Docker keeps for this installation (`docker system df`; the
+copy that `build-images.sh` saves in `<state>/images` is about 2.5 GiB more). The three copies are these: the live files; what the
+backups hold besides them (**one full copy of the photos of their own**: a backup never links to the live files, only the nights'
+backups link to each other, so an unchanged photo is stored once for all the nights, plus every photo that was changed or deleted since
+the oldest night kept, plus one dump of the database for each night kept); and the second copy that the in-place restore writes next to
+the data it keeps aside, which is the way back from an upgrade. `scripts/restore.sh` refuses to start unless the free space in `data/`
+holds the stored files of the backup again plus 1 GiB, and the database is then replayed from the dump. Measure before you decide:
+
+```bash
+du -sh "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage" "$WAREHOUSE_STATE_DIR/backups"; df -h "$WAREHOUSE_STATE_DIR"; docker system df
+```
+
+Two things tell you before it is too late. `bash upgrade.sh` refuses, before it changes anything, when the free space is below the stored
+files of the newest verified backup plus the size of its database dump plus 1 GiB (its own way back would not fit; this is a minimum, the
+photos added since and new images come on top), and the monitoring checker raises `restore_space_low` under the same rule every run, and
+repeats it once a day ([MONITORING.md](MONITORING.md)). The photos grow with the facility: look again each year.
 
 ### Host time zone
 
@@ -314,7 +335,7 @@ bash setup.sh --operator --state-dir /srv/warehouse/second \
 
 - Setup test-binds `127.0.0.1:<port>` first and refuses a port that is in use. The port is saved as `GATEWAY_HTTP_PORT` in
   the state's `config/compose.env`; `doctor` and the smoke scripts read it from there. (A state made while the gateway was
-  Kong has the line as `KONG_HTTP_PORT`: it is still read, and the next change of the port renames it.)
+  Kong has the line as `KONG_HTTP_PORT`: it is still read, and every run of `setup.sh` renames it to `GATEWAY_HTTP_PORT`, keeping the port.)
 - A rerun without `--gateway-port` keeps the saved port. A rerun with another port replaces only that line, and only while
   the installation's containers are stopped (`bash stop.sh`, then setup again).
 - Each tunnel's ingress must point at its own port: change the `service:` line of that facility's `cloudflared`
@@ -1986,13 +2007,30 @@ Read the release note, then upgrade within one PostgreSQL major (an installation
 ```bash
 cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
-bash upgrade.sh --dry-run vX.Y.Z       # optional: runs every check, prints the plan, changes nothing
-bash upgrade.sh vX.Y.Z
+bash upgrade.sh --dry-run vX.Y.Z       # first: runs every check, prints what the release asks of you and the plan, changes nothing
+bash upgrade.sh vX.Y.Z                 # then the real run, once you have done what the dry run listed under "before"
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
 
-`upgrade.sh` holds the operator lock from start to end (the monitoring checker judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours) and prints the operator actions
-of `CHANGELOG.md` between your release and the new one at the end. The facility is unavailable for part of the run: the backup pauses
+**Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
+judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours) and prints the operator actions of `CHANGELOG.md` between your
+release and the new one **twice**: first, before anything is changed, as part of the release's preflight (below), and again at the end. The first
+print is the dry run's: the real run prints it too, but then the backup follows. At a terminal the real run waits after the list when it has
+operator actions ("Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed);
+`--yes` skips that pause, and a run without a terminal (cron, CI, `ssh host command`, `</dev/null`) never pauses, so an action that says
+"before" is done only if the dry run was read.
+
+*The preflight.* `upgrade.sh` is the script of the release you run now, so it cannot know what the release you move to needs. Each release
+carries `scripts/upgrade-preflight.sh`; `upgrade.sh` reads it, and the files it names, out of the release's commit (`git archive`), runs it
+from a temporary directory before the backup, and a `--dry-run` runs it too. The preflight prints the operator actions of `CHANGELOG.md`
+for the whole span, checks the host against what **that** release needs (the Node.js version, Docker and the Compose plugin, `rsync` and
+`tar` with extended attributes, free space: the same checks as the release's own `setup.sh`, so a host that would fail after the checkout
+fails now), and enforces the oldest release it accepts an upgrade from (`scripts/upgrade-floor.txt`: an older installation is told which
+release to upgrade to first, then to run the command again). It also refuses when the free space is below the stored files of the newest
+verified backup plus its database dump plus 1 GiB, because the way back from the upgrade is an in-place restore ([Disk space](#disk-space)).
+Any refusal says "Nothing was changed". A release from before the preflight has none: `upgrade.sh` says so and goes on with its own checks. The
+`upgrade.sh` that reads a preflight is the one of the release you run now, so the move **to** the first release that has one is still made by
+the older script, and the preflight works from the move after it. The facility is unavailable for part of the run: the backup pauses
 the API and setup restarts services. **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
 **It refuses, and changes nothing,** when: it runs as root, or the checkout belongs to another user; the checkout has uncommitted changes
@@ -2003,7 +2041,8 @@ already past the release (it contains it, or sits on a higher release number: `u
 the release runs another PostgreSQL major, or the database server does (follow [Major PostgreSQL upgrade](#major-postgresql-upgrade);
 `upgrade.sh` then works again for later releases); the database recorded migrations the release does not contain (a new baseline, or an
 older release: [Baseline reload](#baseline-reload)); `--admin-phone` is not the facility's administrator; the stored Slack webhook file
-is not a Slack URL; the database is not answering (unless an interrupted upgrade is recorded, below). The checkout ends detached at the
+is not a Slack URL; the database is not answering (unless an interrupted upgrade is recorded, below); the release's own preflight refuses
+(above). The checkout ends detached at the
 tag, whatever branch it was on; that is expected.
 
 *The setup arguments.* You do not repeat them: `setup.sh --operator` needs `--state-dir`, `--admin-phone` and `--admin-name`, and every other
@@ -2015,7 +2054,8 @@ give another administrator, add `--admin-phone 91XXXXXXXXXX --admin-name NAME` b
 example `bash upgrade.sh v0.8.0 -- --alert-webhook-file /secure/slack.txt --gateway-port 18001`.
 
 *If it stops.* Before its first change `upgrade.sh` writes `$WAREHOUSE_STATE_DIR/config/upgrade-in-progress` (mode 0600): the old
-commit, the target, the setup inputs and the current step; once the backup has been proved to restore, also the path of that backup.
+commit, the target, the setup inputs and the current step, whether the release had a preflight (`preflight=ok` or `absent`) and the tag of the
+saved images (`pre_images=`); once the backup has been proved to restore, also the path of that backup.
 The file is deleted when the upgrade succeeds, and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
 `node scripts/watch.mjs status` say "an upgrade from X to Y was interrupted at step Z" (a run killed by a power cut or a lost SSH
 connection leaves it too). A failed step prints the same facts, then both ways out.
@@ -2030,16 +2070,28 @@ connection leaves it too). A failed step prints the same facts, then both ways o
   ```bash
   (umask 022; git checkout --detach <old commit>)
   bash stop.sh
+  bash scripts/pre-images.sh restore <old release>                 # only when the upgrade saved the images (below); setup then normally builds nothing
   npm run db:restore -- --yes --restore-config <the backup>
   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name NAME    # the old release's setup
+  bash scripts/build-images.sh --save                              # only after pre-images.sh restore: saves the old images again (below); builds nothing
   bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
   node scripts/doctor.mjs --local
   rm -f "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"          # only when the facility is healthy on the old release
   ```
 
   `--restore-config` is needed because the new release's setup usually rewrote `compose.env`, and the restore refuses a `compose.env`
-  that differs from the backup's. `start.sh` never builds images, so the old code would run on the images the new release built: the
-  old release's `setup.sh` rebuilds them and removes the containers of services only the new release has. Older releases' `setup.sh`
+  that differs from the backup's. The restore also refuses, before it moves anything, a checkout whose migrations are fewer than the
+  backup's or differ from them: check out the commit the backup was made on (the line above does). `start.sh` never builds images, so the
+  old code would run on the images the new release built: the old release's `setup.sh` removes the containers of services only the new
+  release has, and it builds the images the new release changed, unless the upgrade saved the old ones: before the checkout `upgrade.sh`
+  tags every image the running services use as `<project>-<service>:pre-<old release>` and keeps a copy of the build record
+  (`config/image-recipes.pre-<old release>.sha256`); `bash scripts/pre-images.sh restore <old release>` points the installation's image
+  names at them again and puts the record back, so setup finds the images current and normally builds nothing and needs no network (an
+  image that was not in the saved set is still built; that needs the network). Because setup then finds nothing to build, it also saves
+  nothing, and `<state>/images`, the signed copy of the images that a lost-host restore loads first, would still hold the new release's
+  images: `bash scripts/build-images.sh --save` after the old release's setup writes the images that now run, and their build record, there
+  again (it builds nothing). After a successful upgrade only the newest `pre-` set is kept (older tags are removed by exact name; `docker image prune` is never run);
+  remove the last one with `docker image rm <project>-<service>:pre-<release>` once the upgrade is accepted. Older releases' `setup.sh`
   does not recreate `functions`: the command after it is for them. Add `--alert-webhook-file off` to the setup line when the facility has
   no Slack webhook (the printed line does).
 
@@ -2069,10 +2121,14 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 1. `git fetch --tags origin` (the script fetches first, so that it checks the tag against origin).
 2. Take the operator lock, so that no other operator command and no checker pass interleaves (`upgrade.sh` holds it for all of the steps).
 3. Refuse if the checkout is dirty, if the tag is not on origin, if the checkout is already past it, if the release changes the PostgreSQL
-   major, or if the ledger holds migrations the release lacks. Write `config/upgrade-in-progress`.
+   major, if the ledger holds migrations the release lacks, or if the release's own preflight refuses (`scripts/upgrade-preflight.sh`, read
+   out of the release's commit; by hand, read the release's section of `CHANGELOG.md` and the free space first, [Disk space](#disk-space)).
+   Write `config/upgrade-in-progress`.
 4. `db:backup`, then `db:verify-restore` of that backup. Both run on the OLD release: a backup of the new code on an old database
-   would carry the wrong image label.
-5. A detached checkout of the tag under `umask 022`.
+   would carry the wrong image label. The proved backup is put on `config/backups-verified.list` (`node scripts/watch.mjs record-verified`),
+   so the nightly pruning keeps it like a nightly backup that passed its verify (the newest of its migration state for 60 days).
+5. Tag the images the running services use as `<project>-<service>:pre-<old release>` (`scripts/pre-images.sh tag`), then a detached
+   checkout of the tag under `umask 022`.
 6. `setup.sh --operator` of the NEW release: rebuilds the images whose recipes changed, applies the new migrations, applies the roles and
    configuration, restarts the services whose definition changed, **recreates the `functions` container** and runs
    `node scripts/doctor.mjs --local`. The edge functions (`functions/`, including `functions/_shared/`) are bind-mounted into the
@@ -2080,7 +2136,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    the recreate used to be the usual way to run new SQL under old function code. Setup does it on every run since the release that
    moved it there; a move from an older release used to need `bash scripts/compose.sh up -d --force-recreate functions` by hand.
 7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
-8. A line in `upgrades.log`, and the record deleted.
+8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
 
 The last manual line keeps the USB choices of your earlier setup (`--no-encrypt` if you typed it, `--daily`, `--no-fresh-backup`, `--keep`); it prints them, so
 check that line. A setup from before encryption became the default is switched to encrypted archives by it, and says so; confirm the backup key
@@ -2102,7 +2158,7 @@ built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and rou
   starts `gateway`: the migrations, the role changes and Storage's start come in between, so it is seconds on an upgrade without
   migrations and minutes on one with. Do the upgrade at a quiet hour. The service is named `gateway` now:
   `bash scripts/compose.sh logs --tail 50 gateway`. A script of your own that names `kong` must change.
-- `compose.env` keeps working with `KONG_HTTP_PORT`. The next `--gateway-port` writes `GATEWAY_HTTP_PORT` instead and removes the old line (to go back to an older checkout after that, put `KONG_HTTP_PORT=<port>` back: the older Compose file reads only that name).
+- `compose.env` keeps working with `KONG_HTTP_PORT` until the next `setup.sh`, which renames the line to `GATEWAY_HTTP_PORT` in place with the same port (a file that already has `GATEWAY_HTTP_PORT` is left as it is; `--gateway-port` also removes an old line that is left beside it). To go back to an older checkout after that, put `KONG_HTTP_PORT=<port>` back (the `--restore-config` restore in the way back that `upgrade.sh` prints brings back the `compose.env` of the backup, with the old name): the older Compose file reads only that name.
 - The rate limits are a leaky bucket (a burst of 1800 for the REST route, then 30 a second; functions a burst of 100, then 100 a
   minute) instead of a counter per clock minute. A facility that stays within the old limits on average stays within the new
   ones; the exception is two bursts back to back across a minute boundary, which passed under the fixed window and are now
@@ -2113,7 +2169,7 @@ built from `docker/nginx` (`docs/CONTAINER_SECURITY.md`, "Gateway limits and rou
   holding the loopback port, so its `setup.sh` and `start.sh` stop with "Loopback gateway port ... is already in use" until
   `stop.sh` has removed it; the older release's code cannot be changed (the way back that `upgrade.sh` prints when a step fails
   already begins with `stop.sh`). Then check out the older release, put
-  `KONG_HTTP_PORT=<port>` in `config/compose.env` if `--gateway-port` had renamed the line (the older Compose file reads only that
+  `KONG_HTTP_PORT=<port>` in `config/compose.env` if `setup.sh` had renamed the line (it does on every run; the older Compose file reads only that
   name), and run its `start.sh` (or `setup.sh`). The older release pulls `kong:3.9.4-ubuntu` again if you removed the image, so the
   host needs the network; the API is down from `stop.sh` until then. This covers the gateway only: a database that the newer
   release migrated is not changed back (restore the backup taken before the upgrade if the older release needs the older schema).
@@ -2512,7 +2568,7 @@ cluster, the backup and the kept 17 directory exist side by side, so check the f
 cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 B="$WAREHOUSE_STATE_DIR/backups/pg18-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"; (umask 077; mkdir -p "$B")
-df -h "$WAREHOUSE_STATE_DIR" /var/lib/docker       # free space must be at least 3 times the size of data/db plus the new images (about 1 GiB)
+df -h "$WAREHOUSE_STATE_DIR" /var/lib/docker       # free space must be at least 3 times the size of data/db plus 3 times the size of data/storage (step 6's restore copies the photos again and refuses without that much plus 1 GiB free) plus the new images (about 1 GiB)
 du -sh "$WAREHOUSE_STATE_DIR/data/db" "$WAREHOUSE_STATE_DIR/data/storage"
 ```
 

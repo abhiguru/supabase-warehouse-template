@@ -237,6 +237,13 @@ export function withGatewayPort(text, port) {
   const renamed = hasNew ? text.replace(/^KONG_HTTP_PORT=.*\n?/m, '') : text.replace(/^KONG_HTTP_PORT=.*$/m, `GATEWAY_HTTP_PORT=${port}`);
   return replaceEnvLines(renamed, { GATEWAY_HTTP_PORT: port });
 }
+// Every rerun of setup renames a compose.env line that has only the old name (KONG_HTTP_PORT, a state from the Kong gateway) to
+// GATEWAY_HTTP_PORT, in place and with the same value, whether or not --gateway-port was given; Compose reads the same port from either
+// name, so nothing is recreated. A file that has GATEWAY_HTTP_PORT already (renamed earlier, or both lines by hand) is left as it is.
+// This is what lets a later release drop the KONG_HTTP_PORT fallback of docker-compose.yml, doctor-common.mjs and the check above.
+export function renameKongPort(text) {
+  return /^GATEWAY_HTTP_PORT=/m.test(text) ? text : text.replace(/^KONG_HTTP_PORT=/m, 'GATEWAY_HTTP_PORT=');
+}
 export function gatewayPortValue(value) {
   if (value === undefined) return null;
   if (!/^[0-9]{4,5}$/.test(String(value)) || Number(value) < 1024 || Number(value) > 65535) throw new Error('--gateway-port must be a whole number from 1024 to 65535.');
@@ -309,6 +316,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       {
         const text = readFileSync(envPath, 'utf8');
         if (centralLocalCode !== undefined || central) centralLocalCodeValues(centralLocalCode, central, text);
+        // Compatibility shim (a compose.env from the Kong gateway): the KONG_HTTP_PORT fallback may be dropped once from_floor (scripts/upgrade-floor.txt) is at or after the release that renames the line on every setup (renameKongPort), because an installation that has passed through it has no such line.
         if (port !== null && (text.match(/^GATEWAY_HTTP_PORT=(.*)$/m)?.[1] || text.match(/^KONG_HTTP_PORT=(.*)$/m)?.[1]) !== port) {
           // Containers keep the published port they were created with, so the change waits for a stopped installation.
           if (containersRunning(text.match(/^WAREHOUSE_PROJECT_NAME=(.*)$/m)?.[1] ?? '')) throw new Error('This installation\'s containers are running; stop them (stop.sh) before changing --gateway-port.');
@@ -349,6 +357,11 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         }
         if (removeOtherLetterheads(publicDir, letterhead.name)) letterheadUpdated = true;
       }
+      // A compose.env from the Kong gateway: the gateway port gets its new name (see renameKongPort).
+      const beforeRename = readFileSync(envPath, 'utf8');
+      const renamedPort = renameKongPort(beforeRename);
+      const gatewayPortRenamed = renamedPort !== beforeRename;
+      if (gatewayPortRenamed) replaceFileAtomically(envPath, renamedPort);
       // An installation made before per-role database passwords gets them here
       // (docs/CONTAINER_SECURITY.md, "Database passwords"); a value that exists
       // is never replaced. setup.sh then sets them in the database with
@@ -364,6 +377,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
       if (restSchemasUpdated) replaceFileAtomically(envPath, updatedSchemas);
       // Database logins of removed components (the Auth service, the monitoring login) left a password line in
       // older states. Nothing reads them, so a rerun of setup (every facility reload runs it) removes them.
+      // Compatibility shim (a state from before the slimming): the first release with a from_floor after v0.6.1 (scripts/upgrade-floor.txt) may drop it.
       const retiredKeys = ['DB_PASSWORD_AUTH', 'DB_PASSWORD_MONITORING'];
       const beforeRetire = readFileSync(envPath, 'utf8');
       const retiredKeysRemoved = retiredKeys.filter(key => new RegExp(`^${key}=`, 'm').test(beforeRetire));
@@ -381,7 +395,7 @@ export function configure(root, { stateDir, apiUrl, appUrl, company, providerEnv
         replaceFileAtomically(envPath, withGatewayPort(readFileSync(envPath, 'utf8'), newPortText));
         gatewayPortChanged = true;
       }
-      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
+      return { created: false, state, manifest, providerUpdated, centralUpdated, letterheadUpdated, letterhead: letterhead === undefined ? undefined : letterhead.bytes ? letterhead.name : letterheadUpdated ? null : undefined, gatewayPortChanged, gatewayPortRenamed, restSchemasUpdated, graphqlSchemaKept, retiredKeysRemoved, dbValuesAdded: withDbValues.added, backupKeyCreated, monitoringUpdated: placed.moved, monitoringCleaned: placed.cleaned, webhook: webhookReport };
     }
     if (readdirSync(state).length) throw new Error('State directory is partially initialized; inspect it before retrying.');
   }
@@ -445,7 +459,8 @@ if (isMain(import.meta.url)) {
             : result.restSchemasUpdated ? 'Updated PostgREST\'s schema list in existing operator state (now `public` only).'
               : result.dbValuesAdded?.length ? 'Preserved existing operator state; only missing generated values were added.'
                 : result.retiredKeysRemoved?.length ? `Preserved existing operator state; removed the unused ${result.retiredKeysRemoved.join(', ')}.`
-                  : 'Preserved existing operator state unchanged.');
+                  : result.gatewayPortRenamed ? 'Preserved existing operator state; renamed KONG_HTTP_PORT to GATEWAY_HTTP_PORT in config/compose.env (the same port).'
+                    : 'Preserved existing operator state unchanged.');
     // The first message above names only one change; the schema list is always reported, even beside another change.
     if (result.restSchemasUpdated && (result.providerUpdated || result.centralUpdated || result.gatewayPortChanged)) {
       console.log('Updated PostgREST\'s schema list in existing operator state (now `public` only).');
