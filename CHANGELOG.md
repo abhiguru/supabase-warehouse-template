@@ -238,6 +238,26 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   database that already has those policies, as an upgrade does. A weekly `seeded-upgrade` CI job upgrades a facility with data
   (`tests/seed/`, 300 receipts, 200 dispatches, 40 invoices, photos) and, in a second variant, proves that clashing customer names refuse the
   upgrade before the checkout with migration 117 named.
+- **The backend tells the app which release it is, and the minimum app build comes from the release.** `setup.sh` writes
+  `<state>/public/release.json` (the tag or `git describe`, the commit, the newest applied migration, the time) and
+  `<state>/public/app-compat.json` (copied from `app-compat.json` of the checkout) on every run, after the migrations. `get-public-config`
+  answers `backendRelease` and `schemaHead` from the first (`null` while it is absent) and `minimumClientVersion` from the second; it no
+  longer reads the minimum from `instance.json`, which keeps the field for older readers, and it answers 503 until `setup.sh` has written
+  `app-compat.json`. `get-config` reports the same `backendRelease`. A backend
+  release supports the newest app release; an older build is told to update ([docs/API_CONTRACT.md](docs/API_CONTRACT.md)). Nothing to do
+  beyond `setup.sh`/`upgrade.sh`; the two files appear under `public/` and are not part of a backup. `setup.sh` and `scripts/restore.sh` write them
+  again for the checkout they run from (`scripts/release-info.sh`, after the migrations), so they are right after a rollback with an older checkout too.
+  A missing or invalid `app-compat.json` makes `get-public-config` answer 503 saying so, and `doctor` names the file.
+- **A restore compares the identity of the instance, not the bytes of `instance.json`.** `scripts/restore.sh` refuses a backup of another
+  facility (different `instanceId`, `canonicalOrigin` or `companyName`, and names the field) but no longer refuses one whose
+  `instance.json` differs only in the capabilities, the supported API versions, the display name or the minimum app version.
+- **The contract checker reads `DROP`.** `scripts/check-mobile-contract.mjs` follows the migrations in order, so a function, table or view
+  that the app calls and a later migration drops is reported missing (it passed before); `tests/rpc_callers_exist.sql` also fails when
+  a parameter without a default is added to a function fas-sync calls.
+- **The REST contract is tested against the real service.** `tests/migrations.sh` starts the pinned PostgREST image on its test database
+  and `tests/postgrest-contract.test.mjs` asserts the status, code and message of every refusal the app keys on; the table is in
+  [docs/API_CONTRACT.md](docs/API_CONTRACT.md), "What the app may match: codes, not texts".
+- **jose 6.2.12 (was 5.10.0)** in `functions/vendor` and the unit tests; Dependabot proposes jose updates again.
 - **`upgrade.sh` runs the release's own preflight before the backup, enforces an oldest release to upgrade from, and keeps the old images for the
   way back.** `upgrade.sh` is the script of the release you run now and cannot know what the release you move to needs, so every release now
   carries `scripts/upgrade-preflight.sh` and `scripts/upgrade-floor.txt`; `upgrade.sh` reads them out of the release (`git archive`, as it reads the

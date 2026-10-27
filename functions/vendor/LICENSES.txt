@@ -2,7 +2,7 @@ Licences of the npm packages built into jose.mjs.
 Built by scripts/vendor-edge-modules.sh from scripts/edge-vendor/package-lock.json.
 
 ========================================================================
-jose 5.10.0 (MIT)
+jose 6.2.12 (MIT)
 ========================================================================
 
 The MIT License (MIT)

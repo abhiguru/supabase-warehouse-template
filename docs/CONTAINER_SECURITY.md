@@ -610,7 +610,7 @@ devices on the facility LAN. What limits it:
 
 The functions load nothing from the network when a worker starts.
 
-- **One vendored file.** `functions/vendor/jose.mjs` (jose 5.10.0) is one self-contained module; the functions import it by
+- **One vendored file.** `functions/vendor/jose.mjs` (jose 6.2.12) is one self-contained module; the functions import it by
   relative path. `functions/vendor/LICENSES.txt` holds the licence of every package it may contain.
   `functions/_shared/supabase-rest.ts` makes the few REST, RPC and Storage calls the functions need with plain `fetch`, and
   adds a 60 s timeout to each call (the worker's own wall-clock limit is 60 s, `functions/main/index.ts`). There is no
@@ -622,7 +622,7 @@ The functions load nothing from the network when a worker starts.
   function imports anything that is not a file of this repository, or when a version in the manifest is not exact.
 - **To change a version:** edit `scripts/edge-vendor/package.json`, run `npm install --package-lock-only --ignore-scripts` in
   that directory, run the script, then start the stack and call `get-public-config`, `operator-otp`, `get-config` and one
-  PDF function before committing. The root `package.json` pins the same jose for the unit tests.
+  PDF function before committing. The root `package.json` pins the same jose for the unit tests. Dependabot proposes jose updates like any other (the root `package.json` and `scripts/edge-vendor/package.json` must move together: `tests/edge-imports.test.mjs`); jose 6 is in use since 6.2.12, with no change to the functions' calls (`jwtVerify`, `createLocalJWKSet`, `decodeProtectedHeader`).
 - **The image.** `docker/edge-runtime/Dockerfile` is multi-stage: it copies only `/usr/local/bin/edge-runtime` from the
   upstream image (which also holds a 277 MB symbols file and an unused 50 MB ONNX runtime that the binary does not link)
   onto `debian:bookworm-slim` (the same Debian release as upstream, pinned by digest), adds `ca-certificates` and `tzdata`,
@@ -762,7 +762,6 @@ then generate the value, existing ones gain it on the next setup, restores add i
   publisher's prebuilt native modules and runs no install scripts, so they would not be rebuilt. Moving to `npm ci` needs a
   build that proves Storage still starts.
 - **PostgREST scan coverage**, above.
-- **jose 5 to 6.** A version move, not made.
 - **No recovery from WAL.** WAL archiving is off (`archive_mode=off`) and the image has no WAL archiving tool, so there is no
   point-in-time recovery. The supported backup path is `db:backup` and `db:verify-restore`; PITR, external object storage
   and RTO/RPO need a separate recovery drill with approved storage and policies.

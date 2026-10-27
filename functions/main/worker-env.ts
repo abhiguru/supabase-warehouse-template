@@ -15,9 +15,10 @@ const documentLetterhead = [...documentPdf, 'LETTERHEAD_DATA_URI'];
 
 export const workerEnvNames: Record<string, readonly string[]> = {
   'hello': [],
-  // INSTANCE_MANIFEST_JSON is not in the container environment: the router
-  // reads the manifest file and passes its text.
+  // INSTANCE_MANIFEST_JSON, RELEASE_JSON and APP_COMPAT_JSON are not in the container environment: the router
+  // reads the files and passes their text.
   'get-public-config': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'INSTANCE_MANIFEST_JSON',
+    'RELEASE_JSON', 'APP_COMPAT_JSON',
     'CENTRAL_ISSUER', 'CENTRAL_JWKS_URL', 'CENTRAL_JWKS_FILE', 'CENTRAL_LOCAL_CODE', 'SUPABASE_REST_URL', ...storageApi],
   'operator-otp': ['APP_ENV', 'AUTH_MODE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
   // Central sign-in: the trusted issuer, its public keys (an address, or a
@@ -30,7 +31,7 @@ export const workerEnvNames: Record<string, readonly string[]> = {
   // ingest key is checked by the database, not here.
   'ingest-sensor-readings': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_REST_URL'],
   // The LAN fallback address (scripts/lan.sh) is offered in urls.lan to signed-in phones only: get-public-config has no LAN name.
-  'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'LAN_ENABLED', 'LAN_BIND_IP', 'LAN_HTTP_PORT'],
+  'get-config': [...signedIn, ...storageApi, 'APP_ENV', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLIC_URL', 'LAN_ENABLED', 'LAN_BIND_IP', 'LAN_HTTP_PORT', 'RELEASE_JSON'],
   'generate-grn-pdf': documentLetterhead,
   'generate-dispatch-pdf': documentLetterhead,
   'generate-invoice-pdf': documentLetterhead,

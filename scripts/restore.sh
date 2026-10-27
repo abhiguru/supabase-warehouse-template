@@ -106,8 +106,15 @@ if [[ "$local_fingerprint" != "$fingerprint" ]]; then
   echo 'Refusing: the migrations this backup applied differ from this checkout. Check out the release the backup was made with (metadata.txt source_commit), or a later one.' >&2
   exit 1
 fi
-if ! cmp -s "$backup/instance.json" "$state/public/instance.json"; then
-  echo 'Refusing: the backup instance.json differs from this state; in-place restore only replaces the instance that produced the backup.' >&2
+# The identity is compared field by field (scripts/instance-identity.mjs), not the bytes: the capabilities, the supported versions and the
+# display name may have changed since the backup. public/release.json and public/app-compat.json are not in a backup: setup.sh writes them.
+if differing="$(node "$ROOT/scripts/instance-identity.mjs" compare "$backup/instance.json" "$state/public/instance.json")"; then :; else
+  status=$?
+  if ((status == 1)); then
+    echo "Refusing: the backup instance.json differs from this state in its identity ($differing); in-place restore only replaces the instance that produced the backup." >&2
+  else
+    echo 'Refusing: the backup instance.json or the state instance.json cannot be read as an instance manifest (message above).' >&2
+  fi
   exit 1
 fi
 # A backup taken before every database login had its own password lacks those
@@ -328,6 +335,9 @@ diff -u "$backup/integrity.txt" "$scratch/integrity.txt"
 #    start everything and run the local doctor.
 phase='migrations'
 bash "$ROOT/scripts/migrate.sh" --operator
+# public/release.json and public/app-compat.json describe this checkout, which after a rollback is not the release that wrote them.
+phase='release files'
+WAREHOUSE_STATE_DIR="$state" bash "$ROOT/scripts/release-info.sh"
 # Every service login gets its password from compose.env again. While the pooler is on, this also creates its role, schema
 # and _supabase database again (they are not in the backup) and sets its password.
 phase='database logins'

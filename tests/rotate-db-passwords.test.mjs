@@ -88,6 +88,7 @@ function fixture(prefix) {
   // Setup refuses a your- placeholder as unconfigured; nothing here can send: Docker is a fake.
   writeFileSync(providerEnv, 'SMS_PROVIDER=msg91\nMSG91_AUTH_KEY=isolated-no-delivery-key\nMSG91_TEMPLATE_ID=000000000000000000000001\nMSG91_PE_ID=1\nMSG91_SENDER_ID=ROTATE\n', { mode: 0o600 });
   configure(root, { stateDir: state, apiUrl: 'https://api.example.test', company: 'Acme', providerEnv });
+  writeFileSync(join(state, 'public/app-compat.json'), readFileSync(join(root, 'app-compat.json'))); // setup.sh writes it; doctor checks it
   const envPath = join(state, 'config/compose.env');
   writeFileSync(join(bin, 'docker'), fakeDocker, { mode: 0o700 });
   const log = join(scratch, 'docker.log');

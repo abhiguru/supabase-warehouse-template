@@ -609,7 +609,8 @@ Turn the fallback off with `bash scripts/lan.sh off`; the phones keep working ov
 - **USB: the drive fills up with archives that are never deleted**: the run never prunes an archive that is damaged, unsigned or signed
   with another key, so the archives written under a replaced backup key stay (it cannot tell them from files somebody planted). After
   you change the backup key, delete the old ones yourself once you no longer need the backups they hold.
-- **`db:restore`: `the backup instance.json differs from this state`**: the
+- **`db:restore`: `the backup instance.json differs from this state in its identity (...)`**: the field in
+  brackets (`instanceId`, `canonicalOrigin` or `companyName`) differs, so the
   backup belongs to another installation, typically because `setup.sh` was run
   on the new host before restoring. In-place restore only replaces the instance
   that produced the backup. Do not edit `instance.json` to get past the check:

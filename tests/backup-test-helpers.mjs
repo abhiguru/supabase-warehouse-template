@@ -63,6 +63,7 @@ export function makeState(scratch, { env } = {}) {
   for (const path of ['config', 'public', 'data', 'data/db', 'data/storage']) mkdirSync(join(state, path), { mode: 0o700 });
   writeFileSync(join(state, 'config/compose.env'), env ?? composeEnv(state), { mode: 0o600 });
   writeFileSync(join(state, 'public/instance.json'), instanceJson);
+  writeFileSync(join(state, 'public/app-compat.json'), '{"minimumClientVersion":"0.1.0"}\n'); // setup.sh writes it; doctor checks it
   writeKey(join(state, 'config/backup.key'));
   writeFileSync(join(state, 'data/db/PG_VERSION'), '15\n');
   writeFileSync(join(state, 'data/storage/current-object'), 'current object data');
@@ -232,6 +233,7 @@ case "$1" in
         printf 'RETAG-CALL %s\\n' "$last" >> "$FAKE_DOCKER_LOG"
         if [ "$last" = probe ]; then cat >> "\${FAKE_PROBE_STDIN:-/dev/null}"; exit "\${FAKE_PROBE_RC:-10}"; fi
         cat >> "\${FAKE_RETAG_STDIN:-/dev/null}" ;;
+      *'exec -T db psql'*warehouse_migrations.applied*) printf '0002_second.sql\\n' ;;
       *'exec -T db psql'*jsonb_build_object*) cat "\${FAKE_RETAG_CATALOG:-/dev/null}" ;;
       *'exec -T db psql'*'storage.objects'*) cat "$FAKE_CATALOG_FILE" ;;
       *'exec -T db psql'*' -d postgres') printf '%s' ${shellQuote(defaultIntegrity)} ;;
@@ -302,6 +304,7 @@ export function scriptRoot(scratch) {
   copyFileSync(join(repo, 'docker/volumes/db/00-bootstrap.sql'), join(root, 'docker/volumes/db/00-bootstrap.sql'));
   mkdirSync(join(root, 'docker/postgres'), { recursive: true, mode: 0o700 });
   copyFileSync(join(repo, 'docker/postgres/Dockerfile'), join(root, 'docker/postgres/Dockerfile'));
+  copyFileSync(join(repo, 'app-compat.json'), join(root, 'app-compat.json'));
   mkdirSync(join(root, 'migrations'), { recursive: true, mode: 0o700 });
   for (const [name, body] of Object.entries(fixtureMigrations)) writeFileSync(join(root, 'migrations', name), body);
   if (!existsSync(join(root, 'scripts/operator-lock.sh'))) {

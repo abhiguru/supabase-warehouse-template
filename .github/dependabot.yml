@@ -4,17 +4,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    ignore:
-      # The root jose is the unit tests' copy of the library the edge functions
-      # carry in functions/vendor (scripts/edge-vendor/package.json), and
-      # tests/edge-imports.test.mjs requires the two to be the same release.
-      # Change both together, after a run on the edge runtime. Security updates
-      # are still proposed.
-      - dependency-name: jose
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
   - package-ecosystem: npm
     directory: "/docker/storage"
     schedule:
