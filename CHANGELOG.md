@@ -207,6 +207,17 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 
 ### Changed
 
+- **A fix to an RPC body or to `authorize_rpc` no longer needs a migration: those functions are definition files that setup applies again when they change.**
+  `migrations/definitions/` holds the current text of `warehouse_security.authorize_rpc` and of the eleven RPCs that migrations 111 to 126 had patched
+  (`save_grn`, `update_grn`, `delete_grn_safe`, `create_dispatch_with_stock_check_internal`, `get_invoice_data`, `get_invoice_detail`,
+  `get_sensor_polling_data`, `refresh_jwt_token`, `operator_prepare_otp`, `operator_verify_otp`, `apply_grn_rates`), each with its grants. After the numbered migrations,
+  `setup.sh` applies each file whose checksum differs from the row in the new table `warehouse_migrations.definitions` (the first run after this
+  release applies all twelve, which changes no function: the bodies equal what the migrations leave, and `tests/migrations.sh` compares the two
+  catalogs), and tells the API to reload. A file may hold only function statements about its one function; the plan refuses anything else before it touches the database,
+  stops at a file whose function a migration dropped, and applies every file again after a run that applied a numbered migration.
+  So an SQL security fix to one of these functions can now ship as a patch of the current line and as a backport to the previous line
+  (`ci.yml` lets a pull request into `release/*` change an existing definition file, and still refuses a numbered migration). Tables, data and
+  signature changes stay in numbered migrations. No operator action.
 - **An upgrade is a planned downtime: the API is closed to phones from before the backup to the end of setup, and the checker follows it.**
   After its preflight, before the backup, `upgrade.sh` runs `bash scripts/maintenance.sh on`: both gateways (`gateway`, and `gateway-lan` when it
   runs) answer every request for `/rest/v1/`, `/storage/v1/` and `/functions/v1/` with HTTP 503, `Retry-After: 120` and the body

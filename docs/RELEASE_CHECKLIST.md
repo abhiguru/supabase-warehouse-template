@@ -193,7 +193,11 @@ The rules and their reasons are in [CONTRIBUTING.md](../CONTRIBUTING.md), "How a
 
 - [ ] The fix is on `main` with its test.
 - [ ] **Current line.** If `main` holds nothing unreleased beyond the fix, tag the next patch from `main`. Otherwise ship the fix as the
-      next minor release from `main` (all of the checklist above applies). There is no release branch for the current line.
+      next minor release from `main` (all of the checklist above applies). The exception is a fix that is a change to a file of
+      `migrations/definitions/` only: cut `release/MAJOR.MINOR` from the current line's latest tag, apply that change (the pull request
+      runs the same CI guard as for the previous line: no numbered migration, no added, removed or renamed definition file), write the
+      `CHANGELOG.md` section on the branch and also on `main`, and tag a patch there. Only a minor release that contains
+      `migrations/definitions/` can take such a fix.
 - [ ] **Previous line, still supported** (6 months after the current minor's first release), and the fix is **code only**: no file under
       `migrations/` is part of it. Cherry-pick it onto `release/MAJOR.MINOR` of that line (create the branch from its last tag if it
       does not exist; the pull request runs CI, which refuses a change to `migrations/`), write the `CHANGELOG.md` section of the patch

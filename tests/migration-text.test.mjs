@@ -10,9 +10,9 @@ const baseline = readFileSync(new URL(`../migrations/${BASELINE}`, import.meta.u
 
 test('the migrations directory holds the baseline, pinned by its hash', () => {
   // A new migration is a new file with a number above 110; this one is never edited (the ledger refuses a changed checksum).
-  assert.deepEqual(readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name !== BASELINE && !/^\d{14}_[a-z0-9_]+\.sql$/.test(name)), []);
+  assert.deepEqual(readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name !== BASELINE && name !== 'definitions' && !/^\d{14}_[a-z0-9_]+\.sql$/.test(name)), []);
   // Numbers up to 110 belong to the baseline (and to the files in the tag): a new file may not reuse one.
-  for (const name of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name !== BASELINE)) {
+  for (const name of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name !== BASELINE && name !== 'definitions')) {
     assert.ok(Number(name.slice(0, 14)) > 110, `${name}: a new migration number must be above 110`);
   }
   assert.equal(createHash('sha256').update(baseline).digest('hex'), 'fcd627d11323af7ef35f101dd0827dff55adee3970cb420355e33a6b007b6ed8');

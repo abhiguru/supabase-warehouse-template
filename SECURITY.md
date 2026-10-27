@@ -6,13 +6,17 @@ Facilities run tagged releases (`vMAJOR.MINOR.PATCH`), not `main`: `main` is dev
 released. Security fixes are provided for:
 
 - the **current minor release line** (for example 0.7.x): the fix ships from `main`, as the next patch release when `main` holds
-  nothing unreleased beyond the fix, otherwise as the **next minor release** (0.8.0). The current line gets no release branch;
+  nothing unreleased beyond the fix, otherwise as the **next minor release** (0.8.0). The exception is a fix to the body of an RPC or of
+  `warehouse_security.authorize_rpc` (a definition file, below): it ships as a patch of the current line from a `release/` branch cut from
+  the line's latest tag, carrying that change only. This is possible from the first minor release that contains `migrations/definitions/`;
 - the **previous minor release line** (for example 0.6.x) for **6 months after the next minor release** (0.7.0) came out: a fix that is
-  code only (functions, scripts, images, documents) is backported and ships as a patch release of that line (0.6.x). **A fix that needs
-  SQL is never backported** (backports never carry a migration): that line's release note then says to upgrade to the next minor
+  code only (functions, scripts, images, documents) is backported and ships as a patch release of that line (0.6.x). A fix to the body
+  of an RPC or of `warehouse_security.authorize_rpc` is a change to its definition file (`migrations/definitions/`, which setup applies again
+  whenever the file changed) and is backported like code. **A fix that needs a table, a column, a policy, data or a changed function
+  signature is never backported** (backports never carry a migration): that line's release note then says to upgrade to the next minor
   release (0.7.x or later).
 
-Earlier lines get no fix; move to a supported line. A move between releases is `bash upgrade.sh vX.Y.Z`
+Earlier lines get no fix, and lines before the first minor release that contains `migrations/definitions/` have no definition files; move to a supported line. A move between releases is `bash upgrade.sh vX.Y.Z`
 ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md), "Rerun and upgrade"); a release on another PostgreSQL major is the separate
 "Major PostgreSQL upgrade" procedure there, and a fix in the previous line does not carry that move with it. While the version is
 0.x, a minor release can carry operator actions: read its release note.
