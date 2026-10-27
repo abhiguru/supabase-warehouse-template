@@ -220,6 +220,18 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
   So an SQL security fix to one of these functions can now ship as a patch of the current line and as a backport to the previous line
   (`ci.yml` lets a pull request into `release/*` change an existing definition file, and still refuses a numbered migration). Tables, data and
   signature changes stay in numbered migrations. No operator action.
+- **Storage's schema version is recorded, frozen on purpose and rehearsed on a populated catalog.** `docker/storage/migrations-head.txt` names the newest
+  migration of the Storage image (73, `revoke-grants-to-unused-operations` for v1.80.2); `DB_MIGRATIONS_FREEZE_AT` on the `storage` service holds the
+  same name, so an image that moves by accident (a merged Dependabot bump, a rebuilt tag) applies no migration beyond the release's own. Every backup
+  records `storage_image=` and `storage_schema_head=` in `metadata.txt`, and `storage_migrations_count=` and `storage_migrations_head=` in
+  `integrity.txt`; `db:verify-restore`, `db:restore` and `db:restore-host` refuse, before anything is changed, a backup whose Storage schema is newer than
+  the checkout's image knows (an older one, or a backup made before these lines, restores as before: Storage migrates it forward at its next start).
+  `pg-boss` in the Storage recipe is pinned to a commit (the one the lock already resolved) instead of a branch. The new `tests/storage-drill.sh`
+  (CI job `storage-drill`, weekly and on a change to `docker/storage`; not a required check) seeds thousands of objects, reads every one and a signed URL
+  through the API, and rehearses the move to the next tag of the same major, with the freeze still set (the new code must still serve the old schema) and then
+  set to that tag's own newest migration, printing how long Storage's migrations took. Dependabot may propose Storage minor updates again (majors stay ignored); each is a notice, because the tests fail until the tag,
+  `ENV VERSION`, `migrations-head.txt` and the freeze move together. The quarterly procedure is in `docker/storage/README.md`. Nothing for the
+  operator to do: the next `setup.sh` rebuilds the Storage image and recreates the container with the freeze.
 - **An upgrade is a planned downtime: the API is closed to phones from before the backup to the end of setup, and the checker follows it.**
   After its preflight, before the backup, `upgrade.sh` runs `bash scripts/maintenance.sh on`: both gateways (`gateway`, and `gateway-lan` when it
   runs) answer every request for `/rest/v1/`, `/storage/v1/` and `/functions/v1/` with HTTP 503, `Retry-After: 120` and the body

@@ -625,6 +625,7 @@ test('restore-host refuses a newer or different migration history, a damaged bac
   for (const [label, options, extra, pattern] of [
     ['newer', { integrity: 'migration_count=3\nmigration_fingerprint=' + 'a'.repeat(64) + '\n' }, {},/backup has 3 migrations and this checkout only 2.*source_commit=abc1234/],
     ['different', { integrity: 'migration_count=2\nmigration_fingerprint=' + '0'.repeat(64) + '\n' }, {}, /migrations this backup applied differ/],
+    ['storage', { integrity: `${ledgerText()}storage_migrations_head=999999\n` }, {}, /backup was taken with Storage schema version 999999 .*newer than version [0-9]+/],
     ['project', {}, { FAKE_PROJECT_EXISTS: 'yes' }, /containers of warehouse-backup-test already exist/],
   ]) {
     const f = fixture(`warehouse-restore-host-${label}-`, options);

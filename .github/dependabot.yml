@@ -50,10 +50,14 @@ updates:
       # The recipe installs this repository's manifest (docker/storage) over the
       # application the image ships. A new tag brings its own dependency set, so
       # the manifest is rebuilt from it in the same change (docker/storage/README.md).
+      # Minor updates are proposed (the quarterly move of a few minors, with the seeded drill
+      # of tests/storage-drill.sh): the pull request is only a notice, because the tag, ENV VERSION,
+      # docker/storage/migrations-head.txt and DB_MIGRATIONS_FREEZE_AT move together. tests/storage-schema.test.mjs fails until
+      # ENV VERSION matches the tag and the freeze matches the head file; tests/migrations.sh (the migrations job) fails until the head
+      # file matches the image. A major is a planned change.
       - dependency-name: supabase/storage-api
         update-types:
           - "version-update:semver-major"
-          - "version-update:semver-minor"
       # The gateway's base (docker/nginx/Dockerfile) is nginx's stable branch (1.30, even minors), alpine-slim variant,
       # by tag and digest. Patch updates of that branch come; the mainline releases (1.31, 1.33) are not the stable branch,
       # and the move to the next stable branch (1.32 in 2027) is a planned change that reads the release notes and runs

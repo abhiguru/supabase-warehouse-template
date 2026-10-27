@@ -53,7 +53,7 @@
     "json-bigint": "^1.0.0",
     "lru-cache": "^11.5.2",
     "pg": "^8.23.0",
-    "pg-boss": "github:supabase/pg-boss#feat/exactly_once",
+    "pg-boss": "github:supabase/pg-boss#89b675b057ff7cec3ca2c434e4d3005c35a76bd9",
     "pg-listen": "^1.7.0",
     "pino": "^10.3.1",
     "pino-logflare": "^0.5.2",

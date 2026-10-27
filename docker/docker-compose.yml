@@ -218,6 +218,10 @@ services:
       # The roles already exist (database bootstrap). Storage reads this as === "true", so unset is also off;
       # it is set explicitly for clarity.
       DB_INSTALL_ROLES: "false"
+      # The newest of Storage's own migrations that this image may apply (name = docker/storage/migrations-head.txt, kept equal
+      # by tests/storage-schema.test.mjs). Storage migrates the catalog at start; without a freeze an image bump applies
+      # whatever the new image ships, in setup's wait, to years of photo rows. Move it with the image (docker/storage/README.md).
+      DB_MIGRATIONS_FREEZE_AT: revoke-grants-to-unused-operations
       DATABASE_URL: postgres://supabase_storage_admin:${DB_PASSWORD_STORAGE:?Run setup.sh to generate the per-role database passwords}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
       FILE_SIZE_LIMIT: 52428800
       STORAGE_BACKEND: file

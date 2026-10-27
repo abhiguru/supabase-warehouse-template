@@ -348,6 +348,14 @@ rm -rf "$lockprobe"
 storage_recipe=$(docker build -q "$ROOT/docker/storage")
 run_storage "$container" "$net" "$storage_recipe" >/dev/null
 [[ "$(mig_psql -At -c 'SELECT count(*) > 0 FROM storage.migrations')" == t && "$(mig_psql -At -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'storage' AND tablename IN ('buckets', 'objects')")" == 2 ]] || { echo 'Storage did not build its tables.' >&2; exit 1; }
+# The Storage schema version this checkout declares (docker/storage/migrations-head.txt; docker-compose.yml freezes the migrator at its name)
+# is the newest migration the image ships and the one it applied to this catalog.
+head_id=$(sed -n 's/^id=//p' "$ROOT/docker/storage/migrations-head.txt")
+head_name=$(sed -n 's/^name=//p' "$ROOT/docker/storage/migrations-head.txt")
+[[ "$head_id" =~ ^[0-9]+$ && -n "$head_name" ]] || { echo 'docker/storage/migrations-head.txt has no id= and name=.' >&2; exit 1; }
+image_newest=$(docker run --rm --entrypoint sh "$storage_recipe" -c 'ls /app/migrations/tenant' | sed -En 's/^0*([0-9]+)-(.*)\.sql$/\1 \2/p' | sort -n | tail -n 1)
+[[ "$image_newest" == "$head_id $head_name" ]] || { echo "The newest migration file of the Storage image is '$image_newest'; docker/storage/migrations-head.txt says '$head_id $head_name'." >&2; exit 1; }
+[[ "$(mig_psql -At -c 'SELECT max(id) || '"' '"' || (SELECT name FROM storage.migrations ORDER BY id DESC LIMIT 1) FROM storage.migrations')" == "$head_id $head_name" ]] || { echo "Storage applied migrations up to something other than '$head_id $head_name' (docker/storage/migrations-head.txt)." >&2; exit 1; }
 # The baseline did not need Storage, and Storage did not need the baseline's help: the three API roles can use the schema.
 [[ "$(mig_psql -At -c "SELECT bool_and(has_schema_privilege(r, 'storage', 'USAGE')) FROM unnest(ARRAY['anon','authenticated','service_role']) r")" == t ]] || { echo 'An API role cannot use the storage schema.' >&2; exit 1; }
 # An installed facility already has the storage policies (scripts/configure-storage.sql) when the next release's migrations run; setup.sh

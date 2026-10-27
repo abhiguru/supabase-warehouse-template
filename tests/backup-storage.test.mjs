@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { makeBackup, makeState, fakeDocker, fakeBackupDocker, scriptRoot, composeEnv, signBackup, writeKey, xattrTool, xattrSkip, filesUnder, manifestOf } from './backup-test-helpers.mjs';
+import { defaultIntegrity, makeBackup, makeState, fakeDocker, fakeBackupDocker, scriptRoot, composeEnv, signBackup, writeKey, xattrTool, xattrSkip, filesUnder, manifestOf } from './backup-test-helpers.mjs';
 
 const script = name => new URL(`../scripts/${name}`, import.meta.url).pathname;
 const OBJECT = 'stub/stub/documents/a.pdf/v1';
@@ -1173,4 +1173,47 @@ test('what `watch.mjs prune-backups --verified` writes is what the next backup l
     assert.equal(statSync(list).mode & 0o777, 0o600);
     assert.equal(meta(ok(f.backup('warehouse-20260104T000000Z')).dest).link_base, names[1]);
   } finally { f.done(); }
+});
+
+// The Storage schema head (docker/storage/migrations-head.txt) that scripts/backup-integrity.sql records. backup.sh copies it into
+// metadata.txt with the image's version; the verifier refuses a catalog newer than the checkout's image and compares the rest.
+const storageHead = Number(readFileSync(new URL('../docker/storage/migrations-head.txt', import.meta.url), 'utf8').match(/^id=(\d+)$/m)[1]);
+const withStorage = head => `${defaultIntegrity}storage_migrations_count=${head}\nstorage_migrations_head=${head}\n`;
+
+test('backup.sh records the Storage image version and the schema head of the report in metadata.txt', () => {
+  const f = installation('warehouse-backup-storage-head-');
+  try {
+    f.put(OBJECT, 'a');
+    const done = ok(f.backup('warehouse-20260101T000001Z', { FAKE_RESTORED_INTEGRITY: withStorage(storageHead) }));
+    const m = meta(done.dest);
+    assert.equal(m.storage_schema_head, String(storageHead));
+    assert.match(m.storage_image, /^[0-9]+\.[0-9]+\.[0-9]+$/);
+    assert.match(readFileSync(join(done.dest, 'integrity.txt'), 'utf8'), new RegExp(`^storage_migrations_head=${storageHead}$`, 'm'));
+  } finally { f.done(); }
+});
+
+test('the verifier refuses a catalog on a newer Storage schema before starting anything, takes an older or equal one, and compares the head', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'warehouse-verify-storage-head-'));
+  try {
+    const newer = v6(join(scratch, 'newer'), { integrity: withStorage(storageHead + 1) });
+    const refused = verify(newer, scratch, { env: { FAKE_RESTORED_INTEGRITY: withStorage(storageHead + 1) } });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, new RegExp(`Refusing: the backup was taken with Storage schema version ${storageHead + 1} .*newer than version ${storageHead}`));
+    assert.doesNotMatch(refused.calls, /^run /m, 'no container is started');
+
+    for (const head of [storageHead - 1, storageHead]) {
+      const good = v6(join(scratch, `head-${head}`), { integrity: withStorage(head) });
+      const passed = verify(good, scratch, { env: { FAKE_RESTORED_INTEGRITY: withStorage(head) } });
+      assert.equal(passed.status, 0, `${head}: ${passed.stderr}`);
+    }
+    // The restored database must report the head the backup recorded.
+    const lying = v6(join(scratch, 'lying'), { integrity: withStorage(storageHead) });
+    const differs = verify(lying, scratch, { env: { FAKE_RESTORED_INTEGRITY: withStorage(storageHead - 1) } });
+    assert.notEqual(differs.status, 0);
+    assert.match(differs.stdout, new RegExp(`^-storage_migrations_head=${storageHead}$`, 'm'));
+    // A backup from before the head was recorded: the restored database's two extra lines are left out of the comparison.
+    const before = v6(join(scratch, 'before'));
+    const legacy = verify(before, scratch, { env: { FAKE_RESTORED_INTEGRITY: withStorage(storageHead) } });
+    assert.equal(legacy.status, 0, legacy.stderr);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

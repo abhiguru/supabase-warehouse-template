@@ -1,0 +1,7 @@
+# The newest of Storage's own database migrations that the image in the Dockerfile applies (its migrations/tenant directory):
+# id is the number of the file, name the rest of its name. docker-compose.yml freezes the migrator at name
+# (DB_MIGRATIONS_FREEZE_AT); a backup records the id of the newest migration applied to its catalog, and a restore refuses a
+# backup whose id is higher than this one. tests/migrations.sh checks both against the image it builds.
+# Move this file together with the Dockerfile (docker/storage/README.md).
+id=73
+name=revoke-grants-to-unused-operations

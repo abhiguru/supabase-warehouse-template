@@ -29,7 +29,12 @@ The npm graphs of Storage and the PDF renderer (production dependencies only) ar
 places, neither of which is a live audit in the required check: a pull request fails only when it **adds** an advisory the base
 commit did not have, and a weekly run audits both trees and opens one issue ("Dependency advisory exceptions" below).
 `npm run check:container-dependencies` still runs the live audit by hand. Moving Storage to a new publisher tag is described in
-`docker/storage/README.md`.
+`docker/storage/README.md`, which also holds the quarterly procedure (owner decision of 2026-10-26: move the pin every quarter, a few
+minors at a time, after the seeded drill `tests/storage-drill.sh`). Storage's own schema version is written down in three places that
+tests keep equal: `docker/storage/migrations-head.txt`, `DB_MIGRATIONS_FREEZE_AT` on the `storage` service (so an image that moved
+by accident applies no migration beyond the one the release intends) and every backup (`storage_schema_head=`). A backup made on a
+newer Storage schema than the checkout's image is refused by `db:verify-restore`, `db:restore` and `db:restore-host`. `pg-boss` is
+pinned to a commit of the publisher's fork, not to a branch.
 
 ## Networks
 
