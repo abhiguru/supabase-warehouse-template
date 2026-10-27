@@ -180,6 +180,15 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
     not fas-sync as such: fas-sync opens a session for each statement, so a run that is between two statements is not seen. Let fas-sync's run
     finish, start no other until the upgrade has finished, then use it again. A `--dry-run` only warns about an open session. **This applies from the upgrade after the move to
     this release:** the move **to** this release is made by the `upgrade.sh` you have now, which closes nothing and checks nothing.
+19. **Give the USB drive about 2.5 GiB more room (twice that while the images change).** From the next copy, a USB run also copies
+    `$WAREHOUSE_STATE_DIR/images` (about 2.5 GiB) to `warehouse-backups/<state name>/images` on the drive, once and again only after the folder
+    changes, so the drive needs that much room more than the archives, and as much again free while a changed set is written beside the old one. The run starts from your checkout, so neither `backup-usb.sh setup` nor a new
+    enrolment is needed. The images are copied last, after the archive is on the drive and the drive is pruned: a drive too small for them does not fail the run or hold back the pruning (the archive copy counts as done); the run says "saved images NOT copied" with the sizes, and `npm run doctor` shows it. Nothing is deleted to make room except what `--keep` already prunes. After a backup-key replacement, run `bash scripts/build-images.sh --save` so that the images are signed with the new key, or they are not copied. `setup.sh` writes the
+    folder when it builds or pulls an image; if nothing needed either, `bash scripts/build-images.sh --save` writes it once. Then a
+    lost-host restore from the drive loads the images with `db:restore-host`, so it needs no Debian, npm or Chrome for Testing; it still needs
+    Docker Hub for the official postgres image (the restore check) and PostgREST, and your key copy
+    ("Recover a lost host from the USB drive" in `docs/OPERATOR_INSTALL.md`). A checkout at a release tag may now pull its images
+    instead of building them (see "Changed"); nothing to do for that.
 
 ### Changed
 
@@ -292,12 +301,40 @@ reload** in `docs/OPERATOR_INSTALL.md`; a new installation needs none of that. A
 - **Built images are saved, and signed.** After a successful build `scripts/build-images.sh` writes the images it built to
   `<state>/images/<service>.tar` (`docker save`, about 2.5 GiB in all; skipped with a warning if under 5 GiB, or the size of the newest
   backup when larger, would stay free) with a copy of the build record, and `db:restore-host` loads them (`--images DIR`, or an `images`
-  folder next to the backup) before the restore, so a lost-host rebuild does not need Docker Hub, Debian, npm and Chrome for Testing.
+  folder next to the backup) before the restore, so a lost-host rebuild does not need Debian, npm and Chrome for Testing (Docker Hub is still needed for the postgres and PostgREST images).
   The folder is signed like a backup (`SHA256SUMS` over every file, `SHA256SUMS.hmac` with the backup key) and `db:restore-host` loads
   nothing that does not authenticate with the key it is given: a folder named with `--images` is refused, one found next to the backup is
   ignored, and `--allow-unsigned` never uses saved images. A tarball whose save was skipped or failed, or that the record no longer
-  names, is removed. The folder is not in a backup: `bash scripts/build-images.sh --save` writes it for an installation that is
-  already built, and the operator copies it with the drive ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
+  names, is removed. The folder is not in a backup, but the USB backup copies it to the drive beside the archives (below);
+  `bash scripts/build-images.sh --save` writes it for an installation that is already built
+  ([docs/OPERATOR_INSTALL.md](docs/OPERATOR_INSTALL.md#backup-and-restore)).
+- **Release images: built and scanned once by the release workflow, pulled by digest at a facility; the USB drive carries the saved
+  images.** The `v*` tag workflow has a second job, `publish-images`: it builds every image with `--no-cache`, scans each with the
+  repository's scan and exception ledger (a HIGH or CRITICAL row no valid exception covers fails the run before anything is pushed),
+  pushes them to `ghcr.io/abhiguru/supabase-warehouse-template/<service>` and attaches `release-images.json` (each image by digest, with the
+  fingerprint of its recipe) to a draft GitHub Release. `setup.sh` now runs `scripts/build-images.sh --from-release`: a checkout exactly at
+  a release tag downloads that file and, for each image it would build whose recipe fingerprint is the released one, pulls the image by
+  digest, checks the digest and records it as a build would; it prints which services were pulled and which built. The facility's
+  build stays the fallback and is what runs for `main`, a branch or a changed recipe, when the file or `ghcr.io` cannot be reached, or when
+  a digest does not match, each with one line that says why. What is scanned is what runs for a pulled image
+  ([docs/CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md), "Release images"). `scripts/backup-usb.sh` copies the saved images
+  (`<state>/images`, signed with the backup key) to `warehouse-backups/<state name>/images` on the drive, once and again after a change,
+  unencrypted (they hold nothing of the installation) and outside the archives; `db:restore-host` finds them next to the archive it is given.
+  The enrolment output says how much room they add (twice that while the images change). The copy is the last step of a run: when it fails
+  the archive copy still counts, pruning has already happened, and the run says "saved images NOT copied" (shown by `npm run doctor`).
+  The release checklist gains the publication steps (public packages after the first push, the asset check, publishing the draft).
+- **Release images carry their commit; a final release re-tags its candidate's images; the owner switches on immutable releases.** Every
+  published image has the labels `org.opencontainers.image.revision` (the commit) and `org.opencontainers.image.version` (the tag);
+  `build-images.sh --from-release` refuses a pulled image whose revision is not the checkout's commit (or has none) and builds it instead. A
+  `vX.Y.Z` tag on the commit of its newest `vX.Y.Z-rc.N` builds and scans nothing: it re-tags the candidate's images by digest and lists
+  the same digests, so what ships is what was scanned and rehearsed (the release checklist says what that means for a vulnerability
+  published between the two). The checklist makes GitHub's immutable releases a step before the first candidate, and
+  [docs/CONTAINER_SECURITY.md](docs/CONTAINER_SECURITY.md) states the trust honestly: the account, TLS, the digest, the immutable release and
+  the revision label; there is no cryptographic signature of the images. A pull is stopped after 20 minutes
+  (`WAREHOUSE_IMAGE_PULL_TIMEOUT`, seconds) and the image is built here; a host that is not x86-64 builds instead of pulling.
+  `db:restore-host`, at a checkout exactly at a release tag, runs `build-images.sh --from-release` before the restore, so images the
+  saved ones do not cover are pulled rather than built (`scripts/restore.sh` is unchanged). A pre-release is now recognised from the tag
+  without its `+build` part.
 - **`stop.sh` survives a reboot.** It writes `<state>/config/stopped-by-operator`; `start.sh`, `setup.sh` and `restore.sh` remove it.
   While it exists the boot unit does nothing, the checker does not self-heal, and `status`, `doctor` and the `start.sh` hint say
   "stopped by the operator; run start.sh". A reboot in the middle of a manual procedure (Baseline reload, Major PostgreSQL upgrade,
