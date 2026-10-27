@@ -1165,6 +1165,12 @@ installation user with `sudo`:
    `node scripts/watch.mjs status` shows the night's backup as ok.
 7. Write the date and the versions (`docker --version`, `cloudflared --version`, `node --version`) in your own notes.
 
+The checker also tells you weekly when this month's work was skipped: `cloudflared_old` (the installed `cloudflared` is 11 months old, or the
+tunnel still runs a binary that was replaced), `host_node_eol` (the Node.js major is within 60 days of its end) and `root_copy_stale` (a
+file installed with `sudo`, such as the USB backup helper or a systemd unit, was written by an earlier release:
+[MONITORING.md](MONITORING.md)). Dates further out, from image pins to the PostgreSQL move planned for 2029, are in
+[MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md).
+
 ## Retention
 
 Retention is the owner-approved clean-up of expired sign-in records and generated PDFs (owner decision of 2026-10-19). With
@@ -2834,6 +2840,57 @@ fi
 The kept database is the old one and has its `pgbouncer` role. If you instead keep a database where this release's `setup.sh` or `pooler.sh off`
 removed the pooler objects, create the role before an older release's `setup.sh` (it runs `ALTER ROLE pgbouncer`):
 `bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'CREATE ROLE pgbouncer LOGIN'`.
+
+### Collation changes
+
+Text indexes (customer names, document numbers, the search fields) store strings in the order the C library of the **database image**
+gives them. PostgreSQL records the library's collation version when the database is created (`pg_database.datcollversion`) and asks
+the library for it again when a session connects to the database (`pg_database_collation_actual_version`), and warns there when the two
+differ. When they differ, the order the indexes were built in may no longer be the order the library produces: a lookup can miss a row
+that exists, and a unique index can accept a duplicate. The recorded version is the glibc release only (for example `2.41`), not the
+Debian revision: a collation change that a Debian update backports inside one glibc release is invisible to this check, and the
+changelog reading that the guard in `docker/postgres/Dockerfile` asks for is the only defence against it.
+
+`node scripts/doctor.mjs` (also `--local`, which `setup.sh` and `start.sh` end with) compares the two for the `postgres` database and
+fails with `collation version changed; REINDEX required before use`; `rotate-keys.sh` and `db:rotate-passwords` run the same check
+(`node scripts/doctor.mjs --collation`) before they change anything and refuse on it. The database image's own guard refuses to build a
+base image whose `libc6` or `locales` differ from the recorded versions, so the usual cause is that a glibc update was accepted into that
+line on purpose, or that a data directory was kept across a database image with another glibc. Do not use the facility for writes until
+it is repaired. The repair, with the API closed so that nothing writes meanwhile:
+
+```bash
+npm run db:backup
+bash scripts/maintenance.sh on
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'REINDEX DATABASE postgres'
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE postgres REFRESH COLLATION VERSION'
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -At -c "SELECT datname FROM pg_database WHERE datcollversion IS NOT NULL AND datcollversion <> pg_database_collation_actual_version(oid)"
+node scripts/doctor.mjs --local
+bash scripts/maintenance.sh off
+```
+
+`REINDEX DATABASE` rebuilds every index outside the system catalogs (since PostgreSQL 16 it skips them; harmless, they use the `C`
+collation) and blocks writes to each table while it works, so the downtime is the time to
+build all indexes from nothing; it grows with the database, and is not measured here: try it on a restored copy of the newest backup
+first and plan the window from that. The query before `doctor` lists databases whose recorded version still differs (a database with no recorded version passes, as in the
+doctor); it should print nothing. The pooler's `_supabase` database (when the pooler is on) is repaired with two more commands, the
+`REINDEX` while connected to that database:
+
+```bash
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d _supabase -c 'REINDEX DATABASE _supabase'
+bash scripts/compose.sh exec -T db psql -X -U supabase_admin -d postgres -c 'ALTER DATABASE _supabase REFRESH COLLATION VERSION'
+```
+
+`template0` needs nothing: initdb records no collation version for it, and it holds no collation-dependent objects. `template1` holds
+no index that depends on the C library either (the catalogs use the `C` collation), so when the query lists it, only its version is
+refreshed, from `-d postgres`, with no `REINDEX`: `ALTER DATABASE template1 REFRESH COLLATION VERSION`.
+If the doctor says it could not read the version, run the `SELECT` of the block above by hand; the check retries three
+times before it gives up and then fails closed.
+
+**The rule.** The Debian base of the database image is never changed in place. A base change (a new Debian release, a different glibc
+line) happens only through the dump-and-restore major move, which rebuilds every index in the new image: one scripted move per
+facility, planned for the first half of 2029, with the PostgreSQL major ([MAINTENANCE_CALENDAR.md](MAINTENANCE_CALENDAR.md)). Until
+then the glibc guard line moves only with a Debian update of the same glibc series, after reading the glibc changelog for collation
+changes.
 
 ## Windows host with Linux VM
 

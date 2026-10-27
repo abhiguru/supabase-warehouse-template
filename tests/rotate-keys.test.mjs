@@ -42,6 +42,7 @@ case "$1" in
       *' ps -a -q') printf 'a00000000001\\na00000000002\\na00000000003\\na00000000004\\na00000000005\\na00000000006\\n' ;;
       *' exec -T storage node '*) cat >/dev/null; printf 'OK REST\\nOK configuration\\n' ;;
       *' ps -q supavisor') : ;;
+      *' exec -T db psql '*pg_database_collation_actual_version*) printf '%s\\n' "\${FAKE_COLLATION:-2.41|2.41}" ;;   # the collation check: recorded|actual, equal unless FAKE_COLLATION says otherwise
       *' ps -a -q gateway-lan') if [ "$FAKE_LAN" = yes ]; then printf 'a00000000007\\n'; fi ;;
       *'up -d --force-recreate'*' gateway-lan') if [ "$FAKE_DOCKER_FAIL" = lan ]; then echo 'fake: gateway-lan did not start' >&2; exit 4; fi ;;
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
@@ -198,5 +199,20 @@ test('stageRotatedEnv rewrites only the three signing lines into a private sibli
     assert.throws(() => stageRotatedEnv(f.envPath, f.envPath), /different file/);
     assert.throws(() => stageRotatedEnv('config/compose.env', staged), /absolute/);
     assert.throws(() => stageRotatedEnv(join(f.scratch, 'missing.env'), join(f.scratch, 'missing.rotating')), /owned regular file/);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+test('a collation mismatch refuses the key rotation before anything is changed or recreated', () => {
+  const f = fixture('warehouse-rotate-collation-');
+  try {
+    const before = readFileSync(f.envPath);
+    const result = spawnSync('bash', [script, '--yes'], { encoding: 'utf8', env: { ...f.env, FAKE_COLLATION: '2.36|2.41' }, timeout: 120000 });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /collation version changed; REINDEX required before use/);
+    assert.match(result.stderr, /Refusing: nothing was changed\. Fix what the collation check above reports first/);
+    assert.deepEqual(readFileSync(f.envPath), before);
+    assert.deepEqual(readdirSync(join(f.state, 'config')).sort(), ['backup.key', 'compose.env', 'operator.lock']);
+    assert.equal(existsSync(f.psqlInput), false, 'the database was not asked to change a key');
+    assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false);
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });

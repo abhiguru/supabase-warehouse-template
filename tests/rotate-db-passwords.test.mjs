@@ -53,6 +53,7 @@ case "$1" in
       *' ps -a -q') printf 'a00000000001\\na00000000002\\na00000000003\\na00000000004\\na00000000005\\na00000000006\\n' ;;
       *' exec -T storage node '*) cat >/dev/null; printf 'OK REST\\nOK configuration\\n' ;;
       *' ps -q supavisor') : ;;
+      *' exec -T db psql '*pg_database_collation_actual_version*) printf '%s\\n' "\${FAKE_COLLATION:-2.41|2.41}" ;;   # the collation check: recorded|actual, equal unless FAKE_COLLATION says otherwise
       *' ps -q '*) printf 'cccccccccccc\\n' ;;
       *' exec -T db sh -c IFS= read -r pw;'*)
         # The removal of the pooler objects (the pooler is off) comes first and is not an apply of the logins.
@@ -346,5 +347,41 @@ test('a failing database step that the database confirms changed nothing removes
     assert.match(result.stderr, /The database step failed and changed nothing \(the database still has the values of compose\.env\)\./);
     assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
     assert.match(readFileSync(f.log, 'utf8'), /verdict\(\)/, 'the database was asked');
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+// A collation fault is the database image's: the rotation refuses before it changes anything, and says so, instead of rotating,
+// failing its own doctor and putting the old passwords back.
+test('a collation mismatch refuses the rotation before anything is changed or recreated', () => {
+  const f = fixture('warehouse-rotate-db-collation-');
+  try {
+    const before = readFileSync(f.envPath);
+    const result = f.run(['--yes'], { FAKE_COLLATION: '2.36|2.41' });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /collation version changed; REINDEX required before use/);
+    assert.match(result.stderr, /Refusing: nothing was changed\. Fix what the collation check above reports first/);
+    assert.doesNotMatch(result.stderr, /did not come back with the new database passwords/);
+    assert.deepEqual(readFileSync(f.envPath), before);
+    assert.deepEqual(f.config(), ['backup.key', 'compose.env', 'operator.lock']);
+    assert.equal(existsSync(f.env.FAKE_APPLY_INPUT), false, 'the database was not asked to change a password');
+    assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false);
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+// The doctor wiring itself: run as the facility runs it, a faked mismatch fails `doctor --local`; equal versions do not.
+test('doctor --local fails on a faked collation mismatch and passes when the versions agree; --collation asks only that', () => {
+  const f = fixture('warehouse-doctor-collation-');
+  try {
+    const doctor = (args, extra = {}) => spawnSync('node', [join(root, 'scripts/doctor.mjs'), ...args], { encoding: 'utf8', env: { ...f.env, ...extra }, timeout: 120000 });
+    let result = doctor(['--local'], { FAKE_COLLATION: '2.36|2.41' });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /Doctor: collation version changed; REINDEX required before use/);
+    result = doctor(['--local']);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    result = doctor(['--collation'], { FAKE_COLLATION: '2.36|2.41' });
+    assert.equal(result.status, 1); assert.match(result.stderr, /recorded 2\.36, now 2\.41/);
+    result = doctor(['--collation']);
+    assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /matches its C library/);
+    assert.equal(readFileSync(f.log, 'utf8').includes('--force-recreate'), false, 'checking changes nothing');
   } finally { rmSync(f.scratch, { recursive: true, force: true }); }
 });

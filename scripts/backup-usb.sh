@@ -41,6 +41,8 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$(realpath "${BASH_SOURCE[0]}")"
+# Written into the udev rule and the unit as "# Recipe: sha256:...": scripts/watch.mjs (root_copy_stale) compares it with this script's hash.
+RECIPE="$(sha256sum < "$SELF" | cut -d' ' -f1)"
 # The overrides below exist for the test suite; status prints them when set.
 ETC="${WAREHOUSE_USB_BACKUP_ETC:-/etc}"
 LIBEXEC="${WAREHOUSE_USB_BACKUP_LIBEXEC:-/usr/local/libexec}"
@@ -165,6 +167,7 @@ write_rule() {
   tmp="$(mktemp "$RULE.XXXXXX")"
   {
     echo '# Managed by scripts/backup-usb.sh: attaching an enrolled drive starts a warehouse backup.'
+    echo "# Recipe: sha256:$RECIPE"
     while read -r uuid _; do
       [[ "$uuid" =~ ^[A-Za-z0-9-]+$ ]] || continue
       printf 'ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_TYPE}=="exfat", ENV{ID_FS_UUID}=="%s", TAG+="systemd", ENV{SYSTEMD_WANTS}+="%s@%%k.service"\n' "$uuid" "$UNIT"
@@ -302,6 +305,7 @@ cmd_setup() {
   chmod 0600 "$DRIVES"; chown root:root "$DRIVES"
 
   cat > "$UNITS/$UNIT@.service" <<EOF
+# Recipe: sha256:$RECIPE
 [Unit]
 Description=Warehouse backup to USB drive %I
 Wants=docker.service
@@ -943,6 +947,11 @@ cmd_status() {
   if [[ -f "$HELPER" ]] && ! cmp -s -- "$HELPER" "$SELF"; then
     echo 'WARNING: the installed root helper differs from this checkout; run setup again.'
   fi
+  # The udev rule and the unit carry the recipe hash of the script that wrote them (the root_copy_stale alert of scripts/watch.mjs compares it).
+  for f in "$RULE" "$UNITS/$UNIT@.service"; do
+    [[ -f "$f" ]] && ! grep -qxF -- "# Recipe: sha256:$RECIPE" "$f" 2>/dev/null || continue
+    echo "WARNING: $f was written by an earlier release of this script; run setup again."
+  done
   if [[ "$(conf_get ENCRYPT)" == no && "$(conf_get ENCRYPT_SET)" != typed ]]; then
     echo 'WARNING: archives are still written unencrypted, which was the default of earlier releases. Run setup again (sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"): it switches them to encrypted archives.'
   fi

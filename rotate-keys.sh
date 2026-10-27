@@ -29,6 +29,10 @@ if ! docker inspect --format '{{.State.Health.Status}}' "$db_id" | grep -qx heal
   exit 1
 fi
 
+# A collation fault is the database image's, not the rotation's: told here, before anything is changed, so that the check after the
+# rotation cannot report a rotation that went well as failed.
+node "$ROOT/scripts/doctor.mjs" --collation || { echo 'Refusing: nothing was changed. Fix what the collation check above reports first (docs/OPERATOR_INSTALL.md, "Collation changes").' >&2; exit 1; }
+
 live="$state/config/compose.env"
 staged="$state/config/compose.env.rotating"
 cleanup() {

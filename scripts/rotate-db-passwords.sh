@@ -97,6 +97,9 @@ recover() {
   exit 1
 }
 ((${#leftovers[@]} == 0)) || recover
+# A collation fault is the database image's, not the passwords': told here, before anything is changed, so that the check after the
+# rotation cannot blame (or undo) a rotation that went well.
+node "$ROOT/scripts/doctor.mjs" --collation || { echo 'Refusing: nothing was changed. Fix what the collation check above reports first (docs/OPERATOR_INSTALL.md, "Collation changes").' >&2; exit 1; }
 
 # false: the database was not asked; started: asked, outcome not known; true: it has the staged values.
 applied=false

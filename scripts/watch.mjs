@@ -48,6 +48,7 @@
 // once the lock is free again with the record still there, the upgrade did not finish: `upgrade_interrupted` is raised at once and is never muted.
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { isMain } from './is-main.mjs';
 import { RECORD_FILE, interruptedUpgradeWarning, readUpgradeRecord } from './upgrade-record.mjs';
@@ -308,6 +309,10 @@ export function defaultDeps(env = process.env) {
     // The host's IPv4 addresses (the LAN fallback check), replaceable for tests.
     interfaces: () => readHostInterfaces(env),
     usbEtc: env.WAREHOUSE_USB_BACKUP_ETC || '/etc',
+    usbLibexec: env.WAREHOUSE_USB_BACKUP_LIBEXEC || '/usr/local/libexec',
+    unitDir: env.WAREHOUSE_WATCH_UNIT_DIR || '/etc/systemd/system',
+    tunnelUnitDir: env.WAREHOUSE_TUNNEL_UNIT_DIR || '/etc/systemd/system',
+    nodeVersion: process.version,
     dailyAt: env.WAREHOUSE_WATCH_DAILY_AT || DEFAULT_DAILY_AT,
     heartbeatAt: env.WAREHOUSE_WATCH_HEARTBEAT_AT || DEFAULT_HEARTBEAT_AT,
   };
@@ -932,12 +937,121 @@ export async function checkClock(ctx) {
     'Central sign-in refuses tokens when the clock is over 30 s off. Fix: timedatectl set-ntp true (docs/TROUBLESHOOTING.md, "Monitoring and Slack alerts").')];
 }
 
+// ---------------------------------------------------------------- host drift: cloudflared, Node.js, root-installed copies
+// Three things on the host that nothing in this repository updates by itself and that fail quietly. Weekly (repeatHours 168):
+// nothing here is urgent on the day it is told, and none of it calls the network.
+export const HOST_DRIFT_REPEAT_HOURS = 168;
+// Cloudflare supports only versions within a year of its newest release (docs/OPERATOR_INSTALL.md, "Monthly host maintenance"); the
+// alert comes one month before that.
+export const CLOUDFLARED_MAX_AGE_MONTHS = 11;
+// End of security support of each Node.js major the host may run (https://nodejs.org/en/about/previous-releases); docs/MAINTENANCE_CALENDAR.md
+// cites this table. 22 is the oldest major scripts/doctor-common.mjs accepts.
+export const NODE_END_OF_LIFE = { 22: '2027-04-30', 24: '2028-04-30', 26: '2029-04-30' };
+export const NODE_WARN_DAYS = 60;
+
+// "cloudflared version 2025.11.1 (built 2025-11-26-1412 UTC)" -> the build date; the version's year and month when there is no build date.
+export function cloudflaredReleased(text) {
+  const built = /\(built (\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (built) return Date.UTC(+built[1], +built[2] - 1, +built[3]);
+  const version = /version (\d{4})\.(\d{1,2})\./.exec(text);
+  return version ? Date.UTC(+version[1], +version[2] - 1, 1) : null;
+}
+const addMonths = (ms, months) => { const d = new Date(ms); d.setUTCMonth(d.getUTCMonth() + months); return d.getTime(); };
+const isoDay = ms => new Date(ms).toISOString().slice(0, 10);
+
+// The tunnel's unit (scripts/tunnel.sh names it warehouse-<state directory name>-tunnel.service): when it runs, the process must be the
+// binary on disk. A package upgrade replaces the file and leaves the running process on the old one ("(deleted)" on its /proc exe link; the
+// file is also newer than the process start), and with --no-autoupdate nothing restarts it. Null when there is nothing to judge.
+function cloudflaredRestartDue(ctx) {
+  const unit = `warehouse-${ctx.state.split('/').filter(Boolean).pop()}-tunnel.service`;
+  const shown = ctx.run('systemctl', ['show', unit, '--timestamp=unix', '-p', 'ActiveState', '-p', 'ActiveEnterTimestamp', '-p', 'MainPID'], { timeoutMs: 10000 });
+  if (shown.status !== 0) return null;
+  const f = fieldsOf(shown.stdout);
+  const pid = Number(f.MainPID);
+  const started = Number(/^@(\d+)$/.exec(f.ActiveEnterTimestamp ?? '')?.[1]) * 1000;
+  if (f.ActiveState !== 'active' || !Number.isInteger(pid) || pid <= 0 || !Number.isFinite(started)) return null;
+  const exe = ctx.run('readlink', [join(ctx.proc, String(pid), 'exe')], { timeoutMs: 5000 });
+  if (exe.status === 0 && /\(deleted\)\s*$/.test(exe.stdout)) return `${unit} still runs the cloudflared that was replaced on disk`;
+  const mtime = ctx.run('stat', ['-L', '-c', '%Y', ctx.cloudflared ?? '/usr/bin/cloudflared'], { timeoutMs: 5000 });
+  const changed = Number(mtime.stdout.trim()) * 1000;
+  if (mtime.status === 0 && Number.isFinite(changed) && changed > started) return `${unit} started before the cloudflared on disk was installed`;
+  return null;
+}
+export function checkCloudflared(ctx) {
+  const now = ctx.now();
+  const version = ctx.run(ctx.cloudflared ?? '/usr/bin/cloudflared', ['--version'], { timeoutMs: 10000 });
+  if (version.status !== 0) return [result('cloudflared', 'cloudflared_old', true, 'cloudflared is not installed here')];   // another host runs the tunnel, or none
+  const text = `${version.stdout}\n${version.stderr}`;
+  const released = cloudflaredReleased(text);
+  if (released === null) throw new Error(`cloudflared --version said something this check does not know: ${clip(text.trim(), 120)}`);
+  const problems = [];
+  if (now >= addMonths(released, CLOUDFLARED_MAX_AGE_MONTHS)) problems.push(`this cloudflared was released on ${isoDay(released)}; Cloudflare supports only versions within a year of its newest, and the tunnel runs with --no-autoupdate`);
+  const restart = cloudflaredRestartDue(ctx);
+  if (restart) problems.push(`${restart}: restart it`);
+  return [result('cloudflared', 'cloudflared_old', problems.length === 0,
+    problems.length ? `cloudflared needs attention: ${problems.join('; ')}` : `cloudflared released ${isoDay(released)} and running`,
+    'Monthly host maintenance (docs/OPERATOR_INSTALL.md): sudo apt update && sudo apt install --only-upgrade cloudflared, then sudo systemctl restart the tunnel unit.', { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
+}
+
+export function checkHostNode(ctx) {
+  const now = ctx.now();
+  const major = Number(/^v?(\d+)\./.exec(ctx.nodeVersion ?? process.version)?.[1]);
+  const end = NODE_END_OF_LIFE[major];
+  if (!end) return [result('host_node', 'host_node_eol', true, `Node.js ${major} has no end date recorded here`)];
+  const endMs = Date.parse(`${end}T00:00:00Z`);
+  const days = Math.ceil((endMs - now) / DAY);
+  return [result('host_node', 'host_node_eol', days > NODE_WARN_DAYS,
+    days >= 0 ? `Node.js ${major} on this host reaches its end of life on ${end} (${days} days)` : `Node.js ${major} on this host reached its end of life on ${end}`,
+    'Install the next even-numbered Node.js major and point the checker at it: sudo bash scripts/watch-timer.sh install --state <state> --node /absolute/path/to/node (docs/OPERATOR_INSTALL.md, "Monthly host maintenance"; docs/MAINTENANCE_CALENDAR.md).', { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
+}
+
+// Copies that root runs and that setup writes: the USB backup helper, its udev rule and units (scripts/backup-usb.sh) and the
+// monitoring units (scripts/watch-timer.sh). Each file records the sha256 of the script that rendered it ("# Recipe: sha256:..."); the
+// helper is a byte copy of its script. A copy whose recipe is not this checkout's script (or is absent: written by an earlier release)
+// is stale, and the repair is the command that wrote it. Files that are not installed for this state are not judged.
+const RECIPE = /^# Recipe: sha256:([0-9a-f]{64})$/m;
+const sha256 = text => createHash('sha256').update(text).digest('hex');
+export function checkRootCopies(ctx) {
+  const scriptHash = name => { const text = ctx.readText(join(ctx.root, 'scripts', name)); return text === null ? null : sha256(text); };
+  const stale = [];
+  const fixes = [];
+  const judge = (path, wanted, kind, fix, byContent = false) => {
+    const text = ctx.readText(path);
+    if (text === null || wanted === null) return;
+    const have = byContent ? sha256(text) : RECIPE.exec(text)?.[1];
+    if (have !== wanted) { stale.push(path); if (!fixes.includes(fix)) fixes.push(fix); }
+  };
+  const usbEtc = ctx.usbEtc ?? '/etc';
+  const conf = ctx.readText(join(usbEtc, 'warehouse-usb-backup.conf'));
+  if (conf !== null && fieldsOf(conf).STATE === ctx.state) {
+    const wanted = scriptHash('backup-usb.sh');
+    const fix = `sudo bash ${join(ctx.root, 'scripts/backup-usb.sh')} setup --state ${ctx.state}`;
+    judge(join(ctx.usbLibexec ?? '/usr/local/libexec', 'warehouse-usb-backup'), wanted, 'helper', fix, true);
+    judge(join(usbEtc, 'udev/rules.d/90-warehouse-usb-backup.rules'), wanted, 'rule', fix);
+    judge(join(usbEtc, 'systemd/system/warehouse-usb-backup@.service'), wanted, 'unit', fix);
+  }
+  const project = ctx.env_().WAREHOUSE_PROJECT_NAME;
+  const unitDir = ctx.unitDir ?? '/etc/systemd/system';
+  if (/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(project ?? '')) {
+    const checker = ctx.readText(join(unitDir, `${project}-watch.service`));
+    if (checker !== null && checker.split('\n').includes(`Environment=WAREHOUSE_STATE_DIR=${ctx.state}`)) {
+      const wanted = scriptHash('watch-timer.sh');
+      const fix = `sudo bash ${join(ctx.root, 'scripts/watch-timer.sh')} install --state ${ctx.state}`;
+      for (const name of ['watch', 'daily', 'stack']) judge(join(unitDir, `${project}-${name}.service`), wanted, 'unit', fix);
+    }
+  }
+  return [result('root_copies', 'root_copy_stale', stale.length === 0,
+    stale.length ? `Files installed with sudo are older than this checkout: ${stale.join(', ')}` : 'Root-installed copies match this checkout',
+    `They run as root or at boot from an earlier release's recipe. Run: ${fixes.join(' ; ')}`, { repeatHours: HOST_DRIFT_REPEAT_HOURS })];
+}
+
 export const CHECKS = [
   ['cpu', checkCpu], ['memory', checkMemory], ['disk', checkDisks], ['database', checkDatabase],
   ['services', checkServices], ['container_oom', checkContainerOom], ['container_restarts', checkContainerRestarts],
   ['container_memory', checkContainerMemory], ['api_local', checkApiLocal], ['api_public', checkApiPublic], ['api_lan', checkApiLan],
   ['api_logs', checkApiLogs], ['pdf_renderer', checkPdfRenderer], ['central_key', checkCentralKey], ['letterhead', checkLetterhead], ['backups', checkBackups],
   ['restore_space', checkRestoreSpace], ['upgrade', checkUpgrade], ['sms_delivery', checkSmsDelivery], ['break_glass', checkBreakGlass], ['clock', checkClock],
+  ['cloudflared', checkCloudflared], ['host_node', checkHostNode], ['root_copies', checkRootCopies],
 ];
 
 // Runs every check; a throwing check becomes one failing result carrying its (redacted) error text.

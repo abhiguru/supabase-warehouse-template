@@ -9,6 +9,27 @@ export function probe(command, args = [], timeoutMs = 15000) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   return { ok: result.status === 0, output: result.status === 0 ? result.stdout : '' };
 }
+// The postgres database's recorded collation version (pg_database.datcollversion) against what the database image's C library
+// reports now (pg_database_collation_actual_version). They differ after the base image's glibc moved (docker/postgres/Dockerfile,
+// the collation guard): every text index may then be in the wrong order until a REINDEX. A database without a recorded version (the C
+// locale) has nothing to compare. Returns the message of a mismatch, or null when equal; throws when the answer cannot be read after
+// three tries, 2 s apart (a database that was answering a moment ago can still miss one), and then stays closed: no answer is not a pass.
+// `run` is probe, replaceable for a test; it gets the psql arguments after `compose.sh exec -T db`. `pause` is the wait between tries.
+export const COLLATION_SQL = "SELECT coalesce(datcollversion, ''), coalesce(pg_database_collation_actual_version(oid), '') FROM pg_database WHERE datname = 'postgres'";
+export const COLLATION_TRIES = 3;
+const sleepMs = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export function collationProblem(run, pause = sleepMs) {
+  let match = null;
+  for (let attempt = 1; attempt <= COLLATION_TRIES && !match; attempt++) {
+    if (attempt > 1) pause(2000);
+    const answer = run(['psql', '-X', '-qAt', '-F', '|', '-v', 'ON_ERROR_STOP=1', '-U', 'supabase_admin', '-d', 'postgres', '-c', COLLATION_SQL]);
+    match = /^([^|]*)\|([^|]*)$/.exec(answer.ok ? answer.output.trim().split('\n').pop() : '');
+  }
+  if (!match) throw new Error("Could not read the collation version of the postgres database. Run node scripts/doctor.mjs --local again; if it fails again, run the query of docs/OPERATOR_INSTALL.md, 'Collation changes', by hand.");
+  const [, recorded, actual] = match;
+  if (recorded === '' || recorded === actual) return null;
+  return `collation version changed; REINDEX required before use — see docs/OPERATOR_INSTALL.md 'Collation changes' (recorded ${recorded}, now ${actual || 'unknown'}).`;
+}
 // What backups and restores need besides Docker: rsync built with extended-attribute support (scripts/backup.sh and
 // scripts/restore.sh copy the stored files with `rsync -X`, which carries each file's content type and cache control) and GNU
 // tar with --xattrs (db:restore-host unpacks a backup archive with it). One message per missing tool, each with the command

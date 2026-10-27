@@ -622,4 +622,3 @@ test('verify-restore refuses an old image backup with no container started', () 
     assert.equal(readFileSync(log, 'utf8'), '');
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
-
