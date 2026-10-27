@@ -4,6 +4,9 @@
 // service-only database functions and their one-time codes never enter logs.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { root } from '../scripts/doctor-common.mjs';
 import { operatorFixture } from './operator-fixture.mjs';
 
 const { env, base, anon } = operatorFixture();
@@ -52,6 +55,16 @@ assert.equal(identity.status, 200, 'isolated public identity');
 const publicConfig = await identity.json();
 assert.equal(publicConfig.data?.companyName, 'Fictional Core Warehouse');
 assert.equal(publicConfig.data?.canonicalOrigin, 'https://backend-core.example.test');
+// setup.sh wrote public/release.json for the checkout that ran it, and public/app-compat.json from the checkout's file; the
+// function serves both (the app's version gate), the newest applied migration being the newest migration file.
+const published = file => JSON.parse(readFileSync(resolve(process.env.WAREHOUSE_STATE_DIR, 'public', file), 'utf8'));
+const checkoutCommit = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const newestMigration = readdirSync(resolve(root, 'migrations')).filter(name => name.endsWith('.sql')).sort().at(-1);
+assert.equal(published('release.json').backendCommit, checkoutCommit, 'release.json names the commit setup ran from');
+assert.equal(published('release.json').schemaHead, newestMigration, 'release.json names the newest migration');
+assert.equal(publicConfig.data?.backendRelease, published('release.json').backendRelease);
+assert.equal(publicConfig.data?.schemaHead, newestMigration);
+assert.equal(publicConfig.data?.minimumClientVersion, JSON.parse(readFileSync(resolve(root, 'app-compat.json'), 'utf8')).minimumClientVersion);
 assert.ok(!(await api('/rest/v1/customers?select=id')).ok, 'anonymous customer read denied');
 
 const admin = login('919888888871', 'Core Demo Administrator');

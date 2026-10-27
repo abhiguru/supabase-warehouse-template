@@ -3,6 +3,7 @@ import { securityHeaders } from '../_shared/security-headers.ts';
 import { validateUserAccess, createAuthErrorResponse } from '../_shared/auth-helpers.ts';
 import { publicBaseUrl } from '../_shared/public-url.ts';
 import { lanOrigin } from '../_shared/lan-url.ts';
+import { parseRelease } from '../_shared/release-info.ts';
 
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return new Response('Method not allowed', { status: 405, headers: securityHeaders });
@@ -33,7 +34,7 @@ Deno.serve(async (req: Request) => {
         allowedFileTypes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
         enabledFeatures: (flagsResult.data || []).filter(flag => flag.user_roles === null || flag.user_roles.includes(profile.role)).map(flag => flag.name),
       },
-      environment: { name: environment, version: config.app_version, buildDate: config.build_date, region: settings.region || 'local' },
+      environment: { name: environment, version: config.app_version, backendRelease: parseRelease(Deno.env.get('RELEASE_JSON')).backendRelease, buildDate: config.build_date, region: settings.region || 'local' },
       urls: { api: `${baseUrl}/rest/v1`, storage: `${baseUrl}/storage/v1`, realtime: `${baseUrl.replace(/^http/, 'ws')}/realtime/v1`, auth: `${baseUrl}/rest/v1/rpc`, ...(lan ? { lan } : {}) },
       limits: {
         otpHourlyLimit: number('otp_hourly_limit', 5), otpDailyLimit: number('otp_daily_limit', 20),

@@ -1,0 +1,4 @@
+{
+  "minimumClientVersion": "0.1.0",
+  "note": "The oldest app build this backend release answers. Raise it in the release that stops supporting older builds; a build below it is told to update. setup.sh copies this file to <state>/public/app-compat.json."
+}

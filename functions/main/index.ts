@@ -35,6 +35,15 @@ Deno.serve(async (req: Request) => {
       if (!path) throw new Error('Instance manifest path missing');
       extra.INSTANCE_MANIFEST_JSON = await Deno.readTextFile(path);
     }
+    // release.json and app-compat.json (setup.sh, scripts/release-info.mjs) from the public directory. A file that cannot be read is
+    // left out: get-public-config then answers a null release, and 503 without app-compat.json (functions/_shared/release-info.ts).
+    if (name === 'get-public-config' || name === 'get-config') {
+      const directory = Deno.env.get('PUBLIC_DIR');
+      const files: [string, string][] = name === 'get-config' ? [['RELEASE_JSON', 'release.json']] : [['RELEASE_JSON', 'release.json'], ['APP_COMPAT_JSON', 'app-compat.json']];
+      for (const [variable, file] of files) {
+        try { if (directory) extra[variable] = await Deno.readTextFile(`${directory}/${file}`); } catch { console.error(`${name}: ${file} could not be read`); }
+      }
+    }
     // Central sign-in with keys from a file of the installation instead of a
     // fetch: the worker gets the file's text. A file that cannot be read is
     // left out, and the function then answers "keys unavailable".
