@@ -64,8 +64,9 @@ for id in $ids; do
 done
 # COMPOSE_PROFILES is always unset first, so that config/compose.env alone decides which profile services a command sees: a shell that
 # has COMPOSE_PROFILES='*' or lan in its environment must not start gateway-lan, a printing service or the pooler (the guard below
-# sets it again, for one command, when it has a reason to).
-unset_args=(-u COMPOSE_PROFILES)
+# sets it again, for one command, when it has a reason to). WAREHOUSE_MAINTENANCE is unset first for the same reason: only the marker
+# below decides whether the gateways are in maintenance mode.
+unset_args=(-u COMPOSE_PROFILES -u WAREHOUSE_MAINTENANCE)
 while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]]; then unset_args+=(-u "${BASH_REMATCH[1]}"); fi
 done < "$ENV_FILE"
@@ -99,5 +100,12 @@ if grep -Eq '^COMPOSE_PROFILES=.*\blan\b' "$ENV_FILE"; then
     if [[ "$guard" == COMPOSE_PROFILES=* ]]; then lan_override=("$guard"); fi
   fi
 fi
-exec env "${unset_args[@]}" "${lan_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
+# Maintenance mode (scripts/maintenance.sh, upgrade.sh; docker/docker-compose.yml, the gateway services): the marker config/maintenance means the
+# gateways answer 503 "upgrading" to every API request. It is a marker and not a line of compose.env because it is not a setting of this
+# installation: it lasts for one upgrade and is removed at the end of it. Every command gets it for as long as the file exists (it counts
+# when it exists, whatever it holds: a marker nobody can read still closes the API), so that no command can recreate a gateway that is open:
+# start.sh after a reboot, the setup of the next release, a restore, the checker starting a stopped gateway.
+maintenance_override=()
+if [[ -e "$STATE/config/maintenance" || -L "$STATE/config/maintenance" ]]; then maintenance_override=(WAREHOUSE_MAINTENANCE=upgrading); fi
+exec env "${unset_args[@]}" "${lan_override[@]}" "${maintenance_override[@]}" WAREHOUSE_PUBLIC_PATH="$STATE/public" docker compose --project-directory "$ROOT/docker" --project-name "$PROJECT" \
   --env-file "$ENV_FILE" -f "$ROOT/docker/docker-compose.yml" "${extra[@]}" "$@"

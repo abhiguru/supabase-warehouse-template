@@ -2013,7 +2013,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
 ```
 
 **Run the dry run first, and do what it lists under "before".** `upgrade.sh` holds the operator lock from start to end (the monitoring checker
-judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours) and prints the operator actions of `CHANGELOG.md` between your
+judges nothing meanwhile; its `operator_lock_stuck` alert fires after 2 hours, or after twice the time of the last backup plus the last verify when that is longer) and prints the operator actions of `CHANGELOG.md` between your
 release and the new one **twice**: first, before anything is changed, as part of the release's preflight (below), and again at the end. The first
 print is the dry run's: the real run prints it too, but then the backup follows. At a terminal the real run waits after the list when it has
 operator actions ("Press Enter to continue, Ctrl-C to stop"; the lock is held while it waits, and Ctrl-C releases it with nothing changed);
@@ -2030,8 +2030,8 @@ release to upgrade to first, then to run the command again). It also refuses whe
 verified backup plus its database dump plus 1 GiB, because the way back from the upgrade is an in-place restore ([Disk space](#disk-space)).
 Any refusal says "Nothing was changed". A release from before the preflight has none: `upgrade.sh` says so and goes on with its own checks. The
 `upgrade.sh` that reads a preflight is the one of the release you run now, so the move **to** the first release that has one is still made by
-the older script, and the preflight works from the move after it. The facility is unavailable for part of the run: the backup pauses
-the API and setup restarts services. **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
+the older script, and the preflight works from the move after it. The facility is closed to phones for the backup, the proof that it restores and
+the setup of the release (*While it upgrades*, below). **Run it inside `tmux` or `screen` when you are connected over SSH:** a dropped connection stops it
 half way (the rerun below finishes it, but there is no reason to need that). Run it as the installation user, not with `sudo`.
 **It refuses, and changes nothing,** when: it runs as root, or the checkout belongs to another user; the checkout has uncommitted changes
 to tracked files, or untracked files stand where the release has files of its own; the
@@ -2042,8 +2042,43 @@ the release runs another PostgreSQL major, or the database server does (follow [
 `upgrade.sh` then works again for later releases); the database recorded migrations the release does not contain (a new baseline, or an
 older release: [Baseline reload](#baseline-reload)); `--admin-phone` is not the facility's administrator; the stored Slack webhook file
 is not a Slack URL; the database is not answering (unless an interrupted upgrade is recorded, below); the release's own preflight refuses
-(above). The checkout ends detached at the
+(above); a `psql` session from outside the stack is open on the database (*While it upgrades*, below). The checkout ends detached at the
 tag, whatever branch it was on; that is expected.
+
+*While it upgrades.* An upgrade is a planned downtime. From before the backup to the end of the setup of the release nothing may write to the
+database, or the way back (an in-place restore of that backup) would lose it without a trace. So after the preflight, and before the backup,
+`upgrade.sh` closes the API to phones (**maintenance mode**, `bash scripts/maintenance.sh on`), and it opens it again after the setup of the new
+release (`off`, which also runs the health check).
+
+- **How long, and when.** The facility is closed for the backup, the proof that it restores, and the setup (building the images the release
+  changed, the migrations, the restarts). Run it **after hours**, and plan from your own numbers: the newest backup's `duration_seconds=` in
+  its `metadata.txt`, the seconds the last verify took (the third field of its line in `config/backups-verified.list`, which `upgrade.sh`
+  writes when it proves a backup), and the setup of the release. The monitoring checker uses the same numbers: while an upgrade is recorded
+  it calls the operator lock stuck only after twice the last backup plus the last verify (never under 2 hours, never over a day).
+- **What phones get.** Both gateways (`gateway`, and `gateway-lan` while the [LAN fallback](#lan-fallback-plain-http-on-the-warehouse-network)
+  runs) answer every request for `/rest/v1/`, `/storage/v1/` and `/functions/v1/` with HTTP **503**, `Retry-After: 120` and the body
+  `{"code":"upgrading","message":"The facility's server is being updated. Try again in a few minutes."}`, whatever the request's key or path.
+  The CORS preflight and `X-Warehouse-Path` are as always, so an app can read the answer; `/health` and the paths that were never routes
+  are unchanged. An app that knows the code can show the message; an app that does not treats it as any failed request. The nightly
+  backup stops `gateway-lan` with the gateway too, so the dump is consistent for phones on the warehouse network as well.
+- **fas-sync.** It writes straight to the database (`docker exec ... psql`), not through the gateways, so closing the API does not stop it
+  and `upgrade.sh` cannot. **Pausing it is your job** (let its run finish and do not start another until the upgrade has finished). The
+  plan says so, and as a safety net the real run **refuses to start, changing nothing,** while a `psql` session from outside the stack is open on the
+  database. That check sees only a session that is open at that moment: it catches a `psql` someone left open, but fas-sync opens a session for
+  each statement, so a run that is between two statements is usually not seen, and passing the check does not show that fas-sync is paused.
+  (A session of `psql` is how fas-sync and anyone with `docker exec ... psql` connect; the services of the stack connect under
+  their own names, and the operator scripts do not run beside `upgrade.sh`, which holds the lock). It looks twice, three seconds apart, so a
+  session that is just ending does not count; `--dry-run` only warns. A session opened after that check is not stopped: keep fas-sync off
+  until the upgrade is done.
+- **When it stops.** Once the checkout has moved to the new release the API **stays closed**: the facility may be half upgraded, and `start.sh`, a restore
+  or the next release's setup all keep it closed until a person decides (`config/maintenance` is the marker; `scripts/compose.sh` gives
+  every Compose command `WAREHOUSE_MAINTENANCE=upgrading` while it exists). The printed way forward ends with the rerun, which opens it when it
+  succeeds; the way back has the line that opens it. A failed check, backup or proof, before anything was changed, opens it again by itself. The
+  checker raises `upgrade_interrupted` at once ([MONITORING.md](MONITORING.md)) and does not restart services meanwhile.
+- **By hand.** `bash scripts/maintenance.sh status` says whether it is on and what each gateway was started with (it works while an upgrade
+  holds the lock); `on` and `off` take the lock. `off` recreates the gateways without the word and runs the health check; if the gateway does
+  not come up the marker is put back, so the API is closed or down and never half open. **The first move to a release that has this is made
+  by the `upgrade.sh` you run now, which does not close the API and does not check for sessions;** from the next upgrade on it does.
 
 *The setup arguments.* You do not repeat them: `setup.sh --operator` needs `--state-dir`, `--admin-phone` and `--admin-name`, and every other
 option keeps what the state holds on a rerun (identity, URLs, provider lines, central sign-in, gateway port, letterhead, signing keys).
@@ -2055,7 +2090,7 @@ example `bash upgrade.sh v0.8.0 -- --alert-webhook-file /secure/slack.txt --gate
 
 *If it stops.* Before its first change `upgrade.sh` writes `$WAREHOUSE_STATE_DIR/config/upgrade-in-progress` (mode 0600): the old
 commit, the target, the setup inputs and the current step, whether the release had a preflight (`preflight=ok` or `absent`) and the tag of the
-saved images (`pre_images=`); once the backup has been proved to restore, also the path of that backup.
+saved images (`pre_images=`), whether it closed the API (`maintenance=on`; `maintenance=opened` once it was opened and only the health check after that failed); once the backup has been proved to restore, also the path of that backup.
 The file is deleted when the upgrade succeeds, and while it exists `doctor`, `start.sh`, `bash scripts/watch-timer.sh status` and
 `node scripts/watch.mjs status` say "an upgrade from X to Y was interrupted at step Z" (a run killed by a power cut or a lost SSH
 connection leaves it too). A failed step prints the same facts, then both ways out.
@@ -2063,9 +2098,11 @@ connection leaves it too). A failed step prints the same facts, then both ways o
 - *Finish it.* Fix the cause shown above and run **the same command again** (it prints it). The rerun reads the record, reuses the
   verified backup and **takes no new one** (a backup of a half-upgraded database is not a way back), takes the old commit from the
   record, and goes on with the checkout (skipped if it was done) and setup. It also works when the database is down: setup starts it,
-  and the administrator comes from the record. A different release is refused while the record exists.
-- *Go back to the old release.* Everything the facility recorded after the backup is lost. In the checkout, in this order (it prints
-  them with your values, and `node scripts/upgrade-record.mjs rollback` prints them again from the record):
+  and the administrator comes from the record. A different release is refused while the record exists. The API stays closed meanwhile
+  (the rerun closes it again if it was opened) and is opened when the rerun succeeds, or by `bash scripts/maintenance.sh off`.
+- *Go back to the old release.* Everything the facility recorded after the backup is lost; the API was closed from before the backup, so
+  that is only what reached the database another way (fas-sync if it was not paused, a `psql` session). In the checkout, in this order (it
+  prints them with your values, and `node scripts/upgrade-record.mjs rollback` prints them again from the record):
 
   ```bash
   (umask 022; git checkout --detach <old commit>)
@@ -2075,6 +2112,7 @@ connection leaves it too). A failed step prints the same facts, then both ways o
   bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name NAME    # the old release's setup
   bash scripts/build-images.sh --save                              # only after pre-images.sh restore: saves the old images again (below); builds nothing
   bash scripts/compose.sh up -d --force-recreate --no-deps --wait --wait-timeout 180 functions
+  bash scripts/maintenance.sh off                                  # opens the API again (the upgrade closed it) and runs the health check
   node scripts/doctor.mjs --local
   rm -f "$WAREHOUSE_STATE_DIR/config/upgrade-in-progress"          # only when the facility is healthy on the old release
   ```
@@ -2109,11 +2147,13 @@ cd /path/to/installed/backend
 export WAREHOUSE_STATE_DIR=/absolute/path/to/this/warehouse
 git status --short                     # must print nothing for tracked files
 git fetch --tags origin
+bash scripts/maintenance.sh on         # only on a release that has the script: closes the API to phones (pause fas-sync first); not on the first move
 npm run db:backup                      # prints the backup directory
 npm run db:verify-restore -- "$WAREHOUSE_STATE_DIR/backups/warehouse-<utc>"
 (umask 022; git checkout --detach vX.Y.Z)
 bash setup.sh --operator --state-dir "$WAREHOUSE_STATE_DIR" --admin-phone 91XXXXXXXXXX --admin-name 'Warehouse Administrator' \
   --alert-webhook-file off             # the same inputs as the installation; leave the --alert-webhook-file line out when a Slack webhook is stored
+bash scripts/maintenance.sh off        # only if you ran `on`
 node scripts/doctor.mjs                # the public check; setup has just run the local one
 sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if you use a USB backup drive
 ```
@@ -2124,7 +2164,7 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    major, if the ledger holds migrations the release lacks, or if the release's own preflight refuses (`scripts/upgrade-preflight.sh`, read
    out of the release's commit; by hand, read the release's section of `CHANGELOG.md` and the free space first, [Disk space](#disk-space)).
    Write `config/upgrade-in-progress`.
-4. `db:backup`, then `db:verify-restore` of that backup. Both run on the OLD release: a backup of the new code on an old database
+4. Close the API (`scripts/maintenance.sh on`), then `db:backup`, then `db:verify-restore` of that backup. Both run on the OLD release: a backup of the new code on an old database
    would carry the wrong image label. The proved backup is put on `config/backups-verified.list` (`node scripts/watch.mjs record-verified`),
    so the nightly pruning keeps it like a nightly backup that passed its verify (the newest of its migration state for 60 days).
 5. Tag the images the running services use as `<project>-<service>:pre-<old release>` (`scripts/pre-images.sh tag`), then a detached
@@ -2135,6 +2175,9 @@ sudo bash scripts/backup-usb.sh setup --state "$WAREHOUSE_STATE_DIR"   # only if
    `functions` container and the edge runtime keeps the modules it has loaded, so neither a checkout nor a start reloads them; forgetting
    the recreate used to be the usual way to run new SQL under old function code. Setup does it on every run since the release that
    moved it there; a move from an older release used to need `bash scripts/compose.sh up -d --force-recreate functions` by hand.
+   The marker `config/maintenance` is still there, so the gateways that setup recreates come back closed, and `doctor --local` says it could not probe
+   the API through them.
+   Then `scripts/maintenance.sh off` of the new release opens the API and runs the health check.
 7. The public `node scripts/doctor.mjs`, which `upgrade.sh` leaves to you.
 8. A line in `upgrades.log`, the record deleted, and the `pre-` image tags of earlier upgrades removed.
 

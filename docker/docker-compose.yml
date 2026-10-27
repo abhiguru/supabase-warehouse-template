@@ -66,12 +66,16 @@ services:
       db:
         condition: service_healthy
     environment:
-      # Put into docker/nginx/templates by the image's entrypoint (envsubst), and only these three
+      # Put into docker/nginx/templates by the image's entrypoint (envsubst), and only these four
       # (NGINX_ENVSUBST_FILTER in docker/nginx/Dockerfile). The entrypoint refuses to start on a missing value or on a
       # character that could change the configuration (docker/nginx/docker-entrypoint.d/18-require-env.sh).
       ANON_KEY: ${ANON_KEY:?Set the anon key}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
+      # Maintenance mode: `off`, or `upgrading`, which makes every API route answer 503 with a fixed body (docs/OPERATOR_INSTALL.md,
+      # "While it upgrades"). It is not an operator setting and is not in compose.env: scripts/compose.sh sets it for every command while the
+      # marker config/maintenance exists (scripts/maintenance.sh on|off; upgrade.sh turns it on for the length of an upgrade).
+      WAREHOUSE_MAINTENANCE: ${WAREHOUSE_MAINTENANCE:-off}
 
   # gateway-lan - the LAN fallback (docs/OPERATOR_INSTALL.md, "LAN fallback"): the gateway's own image (the one built for the `gateway`
   # service above, not a second build: an upgrade that rebuilds the gateway rebuilds this too, and the two can never be different
@@ -140,6 +144,8 @@ services:
       ANON_KEY: ${ANON_KEY:?Set the anon key}
       SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?Set the service-role key}
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Set trusted browser origin}
+      # As on the gateway: both ways in to the API give the same 503 while the facility is in maintenance mode.
+      WAREHOUSE_MAINTENANCE: ${WAREHOUSE_MAINTENANCE:-off}
 
   rest:
     # Index digest (amd64 and arm64): docs/CONTAINER_SECURITY.md, "Image pins".

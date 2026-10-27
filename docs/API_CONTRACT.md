@@ -50,6 +50,23 @@ Refusals do not have one shape; each family has its own, and the app reads the o
 - **Users, items, pricing and sensors:** a flat `error_code`. Users put the code in `error` too (`error` = the code, `message` = the text);
   items put the English text in `error` and the code in `error_code`. `delete_item_safe` sets `error_code` only on `NOT_FOUND`.
 
+### The gateway's "upgrading" answer (maintenance mode; stable)
+
+While an upgrade runs, or has stopped half way and left the API closed on purpose, **every request for `/rest/v1/`, `/storage/v1/` and
+`/functions/v1/`** is answered by the gateway, on the public path and on the LAN path alike, before the key check and before anything reaches
+a service, with HTTP **503**, the header `Retry-After: 120` and the body
+
+```json
+{"code":"upgrading","message":"The facility's server is being updated. Try again in a few minutes."}
+```
+
+The answer carries the CORS headers and `X-Warehouse-Path` like every answer the gateway makes. The CORS preflight (`OPTIONS`) is answered 204 as
+always, so a browser can send the request whose answer it reads; `/health` is unchanged. `code` is the word to test (`upgrading`; it will not
+change), `message` can be shown as it is. Do not sign the user out on it (a stale key is also answered 503 then, not 401), and do not retry faster
+than `Retry-After`. Any other 503 from the gateway keeps the body `{"message":"The upstream server is unavailable"}` and has no `Retry-After`.
+It lasts for the backup, its verification and the migrations of one upgrade ([OPERATOR_INSTALL.md](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it
+upgrades"). The edge functions' own 503 bodies (below and in [CENTRAL_LOGIN.md](CENTRAL_LOGIN.md)) are unrelated.
+
 ### Tested runtime behaviour
 
 CI's install job runs four operator fixture drivers against a fresh installation (`operator-api-core.mjs`,

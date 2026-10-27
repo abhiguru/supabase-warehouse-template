@@ -167,6 +167,13 @@ A 502 from the gateway usually means the service behind it (`rest`,
 for this operator instance" **by design** (`functions/main/index.ts`): that 503
 is not a fault ([PRINTING.md](PRINTING.md)).
 
+A 503 whose body is `{"code":"upgrading","message":"The facility's server is being updated. Try again in a few minutes."}` (with
+`Retry-After: 120`) is **maintenance mode**, not a fault: an upgrade is running, or stopped half way and left the API closed on purpose
+(`bash scripts/maintenance.sh status` says which; Slack says `upgrade_interrupted` in the second case). While `upgrade.sh` runs, wait for it.
+After it stopped, read what it printed, or `node scripts/upgrade-record.mjs report`: finish it with the same command, or go back, and
+`bash scripts/maintenance.sh off` opens the API ([Rerun and upgrade](OPERATOR_INSTALL.md#rerun-and-upgrade), "While it upgrades"). Do not
+open it to see whether the facility works if the upgrade is half done: the code may be the new release's on a schema that is only part migrated.
+
 A 502 with `no live upstreams` or `... could not be resolved` in the gateway log names the
 service behind the route that is down or was just replaced: the gateway looks the names up again every 5 seconds
 (`resolver 127.0.0.11 valid=5s` in `docker/nginx/nginx.conf`) and finds the new container by itself, so the 502s stop
